@@ -1,7 +1,7 @@
 {
  "device": {
-  "marker_x_px": 120,
-  "marker_y_px": 240,
+  "marker_x_px": 230,
+  "marker_y_px": 620,
   "max_zoom_mpp": 15,
   "min_zoom_mpp": 3,
   "screen_px": [
