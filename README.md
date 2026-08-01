@@ -20,6 +20,16 @@ which is where nearly everything that makes this device work came from — see
 > use [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) —
 > this fork trades its features away for a different purpose.
 
+<p align="center">
+  <img src="./docs/images/map-preview.png" alt="480x800 one-bit map: a thick route through Kostolište with junction dots, a place label and the position puck" width="300">
+</p>
+
+<p align="center">
+  <sub><b>What it should look like.</b> Produced by the map tooling on a laptop at
+  the device's exact 480x800 one-bit resolution — <b>not</b> a photo of the device,
+  which does not draw this yet.</sub>
+</p>
+
 ## Why a separate fork
 
 A phone is a bad navigation display on a motorbike. The screen washes out in
