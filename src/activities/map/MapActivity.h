@@ -6,14 +6,15 @@
 
 // First on-device checkpoint for the map/nav feature (see
 // docs/firmware-implementation-plan.md in the parent xteink repo). Draws a
-// hardcoded/mock MapViewState via MapRenderer -- real map/route loading
-// lands in a later phase.
+// hardcoded/mock road/village layout via MapRenderer -- real base-map
+// loading lands in a later phase (see docs/roadmap.md item 7).
 //
-// Also runs the BLE peripheral (Phase 3) and shows a plain-text debug
-// readout of the latest received position+heading, independent of the map
-// rendering -- lets BLE be verified end-to-end before it's wired into the
-// actual marker (see the "Wire received BLE position into actual map
-// marker" follow-up task).
+// Runs the BLE peripheral (Phase 3) and moves the marker using a
+// placeholder lat/lon-to-screen projection (the first received fix becomes
+// the screen center, later fixes offset from it by a fixed scale) --  not
+// a real map projection, just enough to prove BLE data actually drives the
+// marker until mapbuilder's real coordinate system replaces it. A plain
+// text line still shows the raw values for debugging.
 class MapActivity final : public Activity {
  public:
   MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
@@ -31,4 +32,10 @@ class MapActivity final : public Activity {
 
   bool hasReceivedAny_ = false;
   uint8_t lastDrawnSeq_ = 0;
+
+  // Placeholder projection origin: the lat/lon of the first update received
+  // since onEnter(), reset every time the screen is (re)entered.
+  bool hasOrigin_ = false;
+  int32_t originLat_ = 0;
+  int32_t originLon_ = 0;
 };
