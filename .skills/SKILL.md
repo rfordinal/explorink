@@ -1,7 +1,24 @@
-# CrossPoint Reader Development Guide
+# TrailInk Development Guide
 
-Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
-Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
+Project: Offline map and navigation firmware for Xteink X3/X4 (ESP32-C3).
+A fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader).
+
+Mission: show a rider or hiker where they are, where the route goes and what is
+around them, on a screen that is readable in direct sunlight and redraws rarely.
+
+The e-ink panel is the constraint that shapes everything: it costs nothing to
+hold an image and a lot to change one, and it has no colour and no grey. So the
+target is a still, high-contrast image redrawn as seldom as possible -- not a
+moving map. No rerouting, no voice, no live traffic; the route is planned before
+the trip.
+
+Nearly all of this codebase is CrossPoint's and still is: the e-ink driver, the
+partial refresh path, the activity system, settings, i18n, the HAL, the build
+and test setup. This fork adds the map activity, the BLE position server and the
+map style, and strips the e-reader stack (EPUB, OPDS, dictionary, the font
+library) over time. Treat inherited code as upstream's: fix it here only when
+the map feature needs it, and keep the diff against upstream small enough to
+keep merging from it.
 
 ## AI Agent Identity and Cognitive Rules
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
@@ -607,7 +624,7 @@ git status --short
 
 **Example Output** (forked repository):
 ```text
-origin      https://github.com/<your-username>/crosspoint-reader.git (fetch/push)
+origin      https://github.com/rfordinal/TrailInk.git (fetch/push)
 upstream    https://github.com/crosspoint-reader/crosspoint-reader.git (fetch/push)
 ```
 
@@ -918,4 +935,11 @@ struct PageLine {
 
 ---
 
-Philosophy: We are building a dedicated e-reader, not a Swiss Army knife. If a feature adds RAM pressure without significantly improving the reading experience, it is Out of Scope.
+Philosophy: we are building a dedicated navigation device, not a Swiss Army
+knife. If a feature adds RAM pressure without helping someone find their way on
+a trail or a road, it is out of scope.
+
+Note that `SCOPE.md` and the `scope-discipline` skill are inherited and still
+phrased around reading. Their reasoning holds -- one thing done well, the RAM
+gate, prefer no code -- but read "reading experience" as "navigation" until they
+are rewritten.
