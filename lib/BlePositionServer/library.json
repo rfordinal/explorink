@@ -1,0 +1,10 @@
+{
+  "name": "BlePositionServer",
+  "version": "0.1.0",
+  "description": "BLE peripheral (GATT server) receiving position+heading updates from the Android companion app for the map/nav feature. Capability-gated by FREEINK_CAP_BLE_PERIPHERAL -- compiles the NimBLE server code only when enabled, otherwise links stub bodies and references no BLE code. NOTE: when enabling the cap, add 'h2zero/NimBLE-Arduino@^2.3.8' to the firmware's lib_deps (same convention as freeink-sdk's BleKeyboardHost). It is intentionally not declared here so disabled builds pull in zero BLE code.",
+  "keywords": "ble, bluetooth, gatt, peripheral, map, gps, nimble",
+  "authors": [{"name": "xteink project"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}
