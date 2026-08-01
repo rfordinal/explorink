@@ -1,0 +1,323 @@
+{
+ "device": {
+  "marker_x_px": 120,
+  "marker_y_px": 240,
+  "max_zoom_mpp": 15,
+  "min_zoom_mpp": 3,
+  "screen_px": [
+   480,
+   800
+  ]
+ },
+ "layers": {
+  "buildings": {
+   "enabled": true,
+   "rule": {
+    "fill": "hatch",
+    "hatch": "XXXX",
+    "hatch_spacing_px": 4,
+    "outline_width": 0
+   }
+  },
+  "junctions": {
+   "enabled": true,
+   "halo_px": 2,
+   "max_dist_px": 6,
+   "min_spacing_px": 40,
+   "radius_px": 4,
+   "require_major": true
+  },
+  "offscreen_places": {
+   "arrow_len_px": 18,
+   "arrow_width_px": 15,
+   "edge_inset_px": 24,
+   "enabled": true,
+   "label_bg": true,
+   "label_bg_border_px": 1,
+   "label_bg_pad_px": 3,
+   "label_bold": true,
+   "label_gap_px": 6,
+   "label_px": 15,
+   "max_count": 4,
+   "min_gap_px": 70,
+   "show_distance": true
+  },
+  "places": {
+   "dot_radius_px": 5,
+   "enabled": true,
+   "label_bg": true,
+   "label_bg_border_px": 1,
+   "label_bg_pad_px": 3,
+   "label_bold": true,
+   "label_char_width_frac": 0.62,
+   "label_offset_px": 8,
+   "label_px": 17
+  },
+  "position": {
+   "arrow_px": 28,
+   "enabled": true,
+   "puck_radius_px": 26,
+   "ring_px": 3
+  },
+  "roads": {
+   "default": {
+    "pattern": "solid",
+    "width": 0.83
+   },
+   "enabled": true,
+   "rules": [
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "construction"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "cycleway"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": true,
+     "major": false,
+     "match": {
+      "highway": [
+       "footway"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": true,
+     "major": false,
+     "match": {
+      "highway": [
+       "living_street"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "path"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "pedestrian"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "platform"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "proposed"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "raceway"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "residential"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 1,
+     "hidden": false,
+     "major": true,
+     "match": {
+      "highway": [
+       "secondary"
+      ]
+     },
+     "pattern": "solid",
+     "width": 7
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "service"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": true,
+     "major": false,
+     "match": {
+      "highway": [
+       "steps"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 1,
+     "hidden": false,
+     "major": true,
+     "match": {
+      "highway": [
+       "tertiary"
+      ]
+     },
+     "pattern": "solid",
+     "width": 7
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "tertiary_link"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": true,
+     "major": false,
+     "match": {
+      "highway": [
+       "track"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    },
+    {
+     "casing_px": 0,
+     "hidden": false,
+     "major": false,
+     "match": {
+      "highway": [
+       "unclassified"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1
+    }
+   ]
+  },
+  "route": {
+   "arrow_len_px": 30,
+   "arrow_width_px": 22,
+   "pattern": "solid",
+   "width": 8
+  },
+  "water": {
+   "default": {
+    "pattern": "solid",
+    "width": 1
+   },
+   "enabled": false,
+   "rules": [
+    {
+     "match": {
+      "waterway": [
+       "river"
+      ]
+     },
+     "pattern": "solid",
+     "width": 2.78
+    },
+    {
+     "match": {
+      "waterway": [
+       "stream",
+       "canal",
+       "drain"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1.39
+    },
+    {
+     "fill": "hatch",
+     "hatch": "----",
+     "hatch_spacing_px": 5,
+     "match": {
+      "natural": [
+       "water"
+      ]
+     },
+     "pattern": "solid",
+     "width": 1.39
+    }
+   ]
+  }
+ }
+}
