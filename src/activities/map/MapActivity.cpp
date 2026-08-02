@@ -73,6 +73,22 @@ void MapActivity::loop() {
     }
   }
 
+  // P3 serial command console -- see MapSerialConsole.h. Non-blocking.
+  if (console_.poll()) {
+    const MapConsoleState& cs = console_.state();
+    if (!hasOrigin_) {
+      hasOrigin_ = true;
+      originLat_ = cs.latE7();
+      originLon_ = cs.lonE7();
+    }
+    hasReceivedAny_ = true;
+    // heading()/2 because the debug readout still speaks the BLE packet's
+    // 8-step heading; the odd 16-step values round down until the real
+    // projection lands.
+    renderDebugReadout(true, cs.latE7(), cs.lonE7(), static_cast<uint8_t>(cs.heading() / 2),
+                       static_cast<uint8_t>(cs.seq()));
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     onGoHome(HomeMenuItem::MAP);
   }

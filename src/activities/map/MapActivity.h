@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "MapSerialConsole.h"
 #include "activities/Activity.h"
 
 // First on-device checkpoint for the map/nav feature (see
@@ -38,4 +39,8 @@ class MapActivity final : public Activity {
   bool hasOrigin_ = false;
   int32_t originLat_ = 0;
   int32_t originLon_ = 0;
+
+  // P3 serial command console. Everything it does lives in its own files;
+  // this member and one block in loop() are the whole footprint here.
+  MapSerialConsole console_;
 };
