@@ -20,9 +20,24 @@ class SerialReplyWriter final : public IMapReplyWriter {
 
 uint32_t freeHeap() { return static_cast<uint32_t>(ESP.getFreeHeap()); }
 
+// Fires after the line is complete and before its reply is written, so this
+// lands between the command and its answer on the shared UART. Deliberate:
+// it is what makes the '<' marker do work on every single command instead
+// of only when some other subsystem happens to log at the right moment.
+//
+// %.*s with an explicit length, never .data() as a C string -- a
+// string_view is not null-terminated (firmware CLAUDE.md).
+void logLine(std::string_view line) {
+  (void)line;  // LOG_DBG compiles away entirely in release and slim builds
+  LOG_DBG("MAPCON", "rx: %.*s", static_cast<int>(line.size()), line.data());
+}
+
 }  // namespace
 
-MapSerialConsole::MapSerialConsole() { console_.state().setFreeHeapProvider(&freeHeap); }
+MapSerialConsole::MapSerialConsole() {
+  console_.state().setFreeHeapProvider(&freeHeap);
+  console_.setLineObserver(&logLine);
+}
 
 bool MapSerialConsole::poll() {
   SerialReplyWriter out;

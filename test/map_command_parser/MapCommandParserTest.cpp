@@ -378,6 +378,31 @@ TEST(MapCommandConsole, InfoUsesTheHeapProviderWhenSet) {
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO heap=123456")), out.lines.end());
 }
 
+// The observer is what puts a log line between a command and its reply on
+// the device. Order matters: if it fired after execute() the log would land
+// after the reply, where a sender has already stopped reading, and the
+// marker filter would never be exercised.
+std::vector<std::string> g_observed;
+
+TEST(MapCommandConsole, LineObserverFiresBeforeTheReply) {
+  MapCommandConsole console;
+  CollectingWriter out;
+  g_observed.clear();
+  console.setLineObserver([](std::string_view line) { g_observed.emplace_back(line); });
+
+  feedLine(console, out, "pos 48.4372 17.0186");
+  ASSERT_EQ(g_observed.size(), 1u);
+  EXPECT_EQ(g_observed[0], "pos 48.4372 17.0186");
+  EXPECT_EQ(out.lines.size(), 1u);
+
+  // Bad lines are observed too -- the device should log what it was sent,
+  // not only what it understood.
+  feedLine(console, out, "fly");
+  ASSERT_EQ(g_observed.size(), 2u);
+  EXPECT_EQ(g_observed[1], "fly");
+  EXPECT_EQ(out.lines.back(), "ERR unknown_command");
+}
+
 TEST(MapCommandConsole, TwoCommandsInOneBurst) {
   MapCommandConsole console;
   CollectingWriter out;

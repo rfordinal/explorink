@@ -154,8 +154,11 @@ bool MapCommandConsole::feed(char c, IMapReplyWriter& out) {
     case MapLineAssembler::Result::Pending:
       return false;
 
-    case MapLineAssembler::Result::Line:
-      return state_.execute(parseMapCommand(assembler_.line()), out);
+    case MapLineAssembler::Result::Line: {
+      const std::string_view line = assembler_.line();
+      if (lineObserver_ != nullptr) lineObserver_(line);
+      return state_.execute(parseMapCommand(line), out);
+    }
 
     case MapLineAssembler::Result::Overflow: {
       MapCommand cmd;

@@ -101,7 +101,20 @@ class MapCommandConsole {
   MapConsoleState& state() { return state_; }
   const MapConsoleState& state() const { return state_; }
 
+  // Fired the moment a line completes, before it is parsed and before any
+  // reply is written. MapSerialConsole hangs a LOG_DBG off it.
+  //
+  // That is on purpose, not incidental: the log line then lands between the
+  // command and its reply, on the same UART, which is exactly the hazard
+  // the '<' marker exists to survive. Without it nothing logs in that
+  // window and the interleaving is never actually exercised.
+  //
+  // A plain function pointer, not std::function -- see the firmware
+  // CLAUDE.md on std::function's heap and binary cost.
+  void setLineObserver(void (*observer)(std::string_view line)) { lineObserver_ = observer; }
+
  private:
   MapLineAssembler assembler_;
   MapConsoleState state_;
+  void (*lineObserver_)(std::string_view) = nullptr;
 };
