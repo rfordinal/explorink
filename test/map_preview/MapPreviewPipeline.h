@@ -27,11 +27,18 @@ struct MapPreviewRequest {
   bool singleTile = false;
   uint32_t tileCol = 0;
   uint32_t tileRow = 0;
+
+  // Draw the missing-tile hatch (src/activities/map/MapHatch.h). Off by
+  // default so the committed golden PPM stays byte-identical -- the device
+  // always hatches; this is for eyeballing the same drawing on the laptop.
+  bool drawHatch = false;
 };
 
 struct MapPreviewResult {
   int tilesLoaded = 0;
   int tilesMissing = 0;
+  // Bit per tile of the range, column-major -- what MapActivity hatches.
+  uint32_t missingMask = 0;
   uint32_t waysDrawn = 0;
   uint32_t placesDrawn = 0;
   uint8_t lodZoom = 0;

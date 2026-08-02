@@ -18,6 +18,7 @@ void MapTileSource::begin(const Config& config) {
   nextTileIndex_ = 0;
   tilesOpened_ = 0;
   tilesUnavailable_ = 0;
+  unavailableMask_ = 0;
   waysEmitted_ = 0;
   placesEmitted_ = 0;
 }
@@ -57,6 +58,7 @@ bool MapTileSource::advanceToNextTile() {
       // Absent, truncated or crc32-mismatched -- all of them mean "no data
       // here", which is a hatched area, never white or garbage geometry.
       ++tilesUnavailable_;
+      if (index < 32) unavailableMask_ |= (1u << index);
       continue;
     }
     ++tilesOpened_;

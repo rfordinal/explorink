@@ -8,41 +8,18 @@
 #include <memory>
 
 #include "HeapProbe.h"
+#include "MapHatch.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
 #include "MapTileGrid.h"
 #include "MapTileSource.h"
+#include "MapViewport.h"
 #include "StdioFileSource.h"
 
 namespace {
 
 constexpr int SCREEN_WIDTH = 480;
 constexpr int SCREEN_HEIGHT = 800;
-
-// style.device.marker_x_px / marker_y_px default -- docs/map-render-spec.md,
-// "Marker freedom is implemented in mapbuilder". The viewport re-anchors on
-// the marker at this screen position on every reset, so this harness treats
-// the requested lat/lon as both the anchor and the marker's own fix.
-constexpr int16_t kAnchorScreenX = 230;
-constexpr int16_t kAnchorScreenY = 620;
-
-// Label overhang margin for the geometry bbox -- docs/map-data-spec.md,
-// "Which tiles to load".
-constexpr double kMarginPx = 64.0;
-
-struct LodStep {
-  double mpp;
-  uint8_t z;
-};
-
-// docs/map-data-spec.md, "Zoom is a hardware button, so zoom is a ladder".
-constexpr LodStep kZoomLadder[5] = {
-    {3.0, 13},   // step 0, detail
-    {5.0, 13},   // step 1, detail
-    {7.5, 12},   // step 2, regional
-    {11.0, 11},  // step 3, overview
-    {15.0, 11},  // step 4, overview
-};
 
 long fileSizeBytes(const std::string& path) {
   struct stat st;
@@ -56,64 +33,33 @@ std::string tilePath(const std::string& tilesDir, uint8_t z, uint32_t col, uint3
   return tilesDir + buf;
 }
 
-// docs/map-data-spec.md, "Which tiles to load": rotate the viewport rect by
-// heading, take its axis-aligned Mercator bbox, inflate by the label
-// margin, then map to the tile grid at this LOD's zoom.
-void tileRangeForViewport(const MapProjection& proj, uint8_t z, uint32_t& col0, uint32_t& row0, uint32_t& col1,
-                          uint32_t& row1) {
-  double minX = 0, minY = 0, maxX = 0, maxY = 0;
-  const int corners[4][2] = {{0, 0}, {SCREEN_WIDTH, 0}, {0, SCREEN_HEIGHT}, {SCREEN_WIDTH, SCREEN_HEIGHT}};
-  for (int i = 0; i < 4; ++i) {
-    double mx, my;
-    proj.screenToMerc(static_cast<int16_t>(corners[i][0]), static_cast<int16_t>(corners[i][1]), mx, my);
-    if (i == 0) {
-      minX = maxX = mx;
-      minY = maxY = my;
-    } else {
-      minX = std::min(minX, mx);
-      maxX = std::max(maxX, mx);
-      minY = std::min(minY, my);
-      maxY = std::max(maxY, my);
-    }
-  }
-  const double marginMerc = kMarginPx * proj.mppMerc();
-  minX -= marginMerc;
-  maxX += marginMerc;
-  minY -= marginMerc;
-  maxY += marginMerc;
-
-  uint32_t cA, rA, cB, rB;
-  MapTileGrid::mercToTileColRow(minX, maxY, z, cA, rA);  // NW corner
-  MapTileGrid::mercToTileColRow(maxX, minY, z, cB, rB);  // SE corner
-  col0 = std::min(cA, cB);
-  col1 = std::max(cA, cB);
-  row0 = std::min(rA, rB);
-  row1 = std::max(rA, rB);
-}
-
 }  // namespace
 
 MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& canvas) {
   MapPreviewResult result;
-  const LodStep& lod = kZoomLadder[request.zoom];
+  const MapViewport::ZoomStep& lod = MapViewport::kZoomLadder[request.zoom];
   result.lodZoom = lod.z;
 
-  const double mppMerc = lod.mpp / std::cos(request.lat * 3.14159265358979323846 / 180.0);
-
   MapProjection proj;
-  proj.reset(request.lat, request.lon, kAnchorScreenX, kAnchorScreenY, request.heading, mppMerc);
+  proj.reset(request.lat, request.lon, MapViewport::kAnchorScreenX, MapViewport::kAnchorScreenY, request.heading,
+             MapViewport::mppMercFor(request.zoom, request.lat));
 
+  MapViewport::TileRange range;
   if (request.singleTile) {
-    result.col0 = result.col1 = request.tileCol;
-    result.row0 = result.row1 = request.tileRow;
+    range.z = lod.z;
+    range.col0 = range.col1 = request.tileCol;
+    range.row0 = range.row1 = request.tileRow;
   } else {
-    tileRangeForViewport(proj, lod.z, result.col0, result.row0, result.col1, result.row1);
-    const uint32_t tileCount = (result.col1 - result.col0 + 1) * (result.row1 - result.row0 + 1);
-    if (tileCount > 9) {
+    range = MapViewport::tileRangeFor(proj, lod.z, SCREEN_WIDTH, SCREEN_HEIGHT);
+    if (range.count() > MapViewport::kMaxTiles) {
       std::fprintf(stderr, "warning: %u tiles needed (col %u..%u, row %u..%u) -- more than the 3x3 worst case\n",
-                   tileCount, result.col0, result.col1, result.row0, result.row1);
+                   range.count(), range.col0, range.col1, range.row0, range.row1);
     }
   }
+  result.col0 = range.col0;
+  result.col1 = range.col1;
+  result.row0 = range.row0;
+  result.row1 = range.row1;
 
   // On-disk sizes, so the O(1) claim can be read against how much the tiles
   // themselves vary. Pure reporting -- the renderer never sees this.
@@ -127,8 +73,8 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   }
 
   MapViewState view;
-  view.markerX = kAnchorScreenX;
-  view.markerY = kAnchorScreenY;
+  view.markerX = MapViewport::kAnchorScreenX;
+  view.markerY = MapViewport::kAnchorScreenY;
   view.heading = static_cast<MapHeading>(request.heading);
 
   StdioFileSource file;
@@ -160,6 +106,19 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.placesDrawn = source->placesEmitted();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());
+  result.missingMask = source->unavailableMask();
+
+  // Off by default, and deliberately: the committed golden PPM is the only
+  // safety net the streaming refactor has, and it is never regenerated to
+  // make a test pass. The device always hatches (MapActivity); this flag is
+  // here so the same drawing can be eyeballed on the laptop first.
+  if (request.drawHatch && result.missingMask != 0) {
+    for (uint32_t index = 0; index < range.count() && index < 32; ++index) {
+      if ((result.missingMask & (1u << index)) == 0) continue;
+      MapHatch::drawTile(canvas, proj, range.z, range.colAt(index), range.rowAt(index));
+    }
+    MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading);
+  }
 
   return result;
 }

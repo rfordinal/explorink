@@ -60,6 +60,16 @@ class MapTileSource : public IMapSource {
   uint32_t tilesOpened() const { return tilesOpened_; }
   uint32_t tilesUnavailable() const { return tilesUnavailable_; }
 
+  // Bit per tile index in the configured range, column-major, same order
+  // advanceToNextTile() walks it and same order MapViewport::TileRange
+  // indexes it. Set means the tile was absent, truncated or crc32-mismatched
+  // on at least one pass, which is what the caller hatches.
+  //
+  // Unlike the counters above this accumulates across passes and is cleared
+  // only by begin(): the caller learns which tiles are missing from the
+  // render itself, so nothing pays a third read of every tile just to ask.
+  uint32_t unavailableMask() const { return unavailableMask_; }
+
   // Records handed out since begin(), summed across passes. Two road passes
   // will report twice the way count -- that is the streaming design working,
   // not a bug.
@@ -87,6 +97,7 @@ class MapTileSource : public IMapSource {
 
   uint32_t tilesOpened_ = 0;
   uint32_t tilesUnavailable_ = 0;
+  uint32_t unavailableMask_ = 0;
   uint32_t waysEmitted_ = 0;
   uint32_t placesEmitted_ = 0;
 

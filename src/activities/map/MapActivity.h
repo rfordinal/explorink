@@ -1,20 +1,31 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 
+#include "HalFileSource.h"
+#include "MapProjection.h"
+#include "MapTileSource.h"
 #include "activities/Activity.h"
 
-// First on-device checkpoint for the map/nav feature (see
-// docs/firmware-implementation-plan.md in the parent xteink repo). Draws a
-// hardcoded/mock road/village layout via MapRenderer -- real base-map
-// loading lands in a later phase (see docs/roadmap.md item 7).
+// Draws real OSM map data from the SD card around the position received over
+// BLE -- P4 of docs/prototype-plan.md in the parent xteink repo.
 //
-// Runs the BLE peripheral (Phase 3) and moves the marker using a
-// placeholder lat/lon-to-screen projection (the first received fix becomes
-// the screen center, later fixes offset from it by a fixed scale) --  not
-// a real map projection, just enough to prove BLE data actually drives the
-// marker until mapbuilder's real coordinate system replaces it. A plain
-// text line still shows the raw values for debugging.
+// A received fix is a viewport reset: re-anchor on the marker, rebuild the
+// MapProjection, work out which .tib tiles the rotated screen rect touches
+// (docs/map-data-spec.md, "Which tiles to load"), and stream them through
+// MapTileSource into MapRenderer. Nothing about the map is held between
+// resets, and nothing scales with how much map is on screen.
+//
+// The tile source is ~5.5 KB of fixed buffers and is heap-allocated in
+// onEnter(), never a local: a task stack here is 2-4 KB and CLAUDE.md caps
+// stack locals at 256 bytes.
+//
+// A tile that is absent, truncated or crc32-mismatched draws as hatch, never
+// as white. White is empty countryside; hatch is "no data here".
+//
+// No buttons, no zoom ladder, no mode filter and no serial console yet --
+// those are P5. Zoom is fixed at ladder step kZoomStep.
 class MapActivity final : public Activity {
  public:
   MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
@@ -28,14 +39,20 @@ class MapActivity final : public Activity {
   bool preventAutoSleep() override;
 
  private:
-  void renderDebugReadout(bool haveUpdate, int32_t lat, int32_t lon, uint8_t heading, uint8_t seq);
+  void renderWaiting();
+  void renderViewport(int32_t latE7, int32_t lonE7, uint8_t heading, uint8_t seq);
+  // Draws one line of the debug readout, trimmed to the screen width.
+  // Mutates `text` in place.
+  void drawDebugLine(int y, char* text);
+
+  // Allocated once in onEnter(), released in onExit(). MapTileSource holds
+  // references to both, so neither may move or die while it is alive.
+  std::unique_ptr<HalFileSource> file_;
+  std::unique_ptr<MapTileSource> source_;
+  // Reset per viewport reset, before the source is used again -- the source
+  // reads it live, so it must not change part-way through a render.
+  MapProjection proj_;
 
   bool hasReceivedAny_ = false;
   uint8_t lastDrawnSeq_ = 0;
-
-  // Placeholder projection origin: the lat/lon of the first update received
-  // since onEnter(), reset every time the screen is (re)entered.
-  bool hasOrigin_ = false;
-  int32_t originLat_ = 0;
-  int32_t originLon_ = 0;
 };

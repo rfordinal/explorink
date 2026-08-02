@@ -4,7 +4,7 @@
 //
 // Usage:
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
-//               [--zoom 0-4] [--tile <col>/<row>] [--out <file>]
+//               [--zoom 0-4] [--tile <col>/<row>] [--hatch] [--out <file>]
 //
 // <dir> is a mapbuilder-produced SD root (mapbuilder/build_tiles.py), i.e.
 // it contains base/<z>/<col>/<row>.tib. Loading/projection logic lives in
@@ -15,6 +15,9 @@
 // of the whole range the viewport touches. It exists to quote a per-tile RAM
 // number against the pre-P2.5 pipeline's per-tile cost, not for real
 // previews.
+//
+// --hatch draws the missing-tile hatch the device always draws (P4). It is
+// opt-in here so the committed golden PPM stays byte-identical.
 
 #include <cstdio>
 #include <cstdlib>
@@ -68,6 +71,8 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
       request.singleTile = true;
       request.tileCol = col;
       request.tileRow = row;
+    } else if (arg == "--hatch") {
+      request.drawHatch = true;
     } else if (arg == "--out") {
       const char* v = next();
       if (!v) return false;
@@ -88,7 +93,7 @@ int main(int argc, char** argv) {
   if (!parseArgs(argc, argv, request, outPath)) {
     std::fprintf(stderr,
                  "usage: map_preview --tiles <dir> --lat <d> --lon <d> "
-                 "[--heading 0-15] [--zoom 0-4] [--tile <col>/<row>] [--out <file>]\n");
+                 "[--heading 0-15] [--zoom 0-4] [--tile <col>/<row>] [--hatch] [--out <file>]\n");
     return 1;
   }
   if (request.zoom < 0 || request.zoom > 4) {
@@ -99,8 +104,9 @@ int main(int argc, char** argv) {
   PpmCanvas canvas(SCREEN_WIDTH, SCREEN_HEIGHT);
   const MapPreviewResult preview = renderMapPreview(request, canvas);
 
-  std::printf("loaded %d tiles (%d missing) at z%u, %u ways, %u places\n", preview.tilesLoaded, preview.tilesMissing,
-              preview.lodZoom, preview.waysDrawn, preview.placesDrawn);
+  std::printf("z%u col %u..%u row %u..%u: loaded %d tiles (%d missing, mask 0x%x), %u ways, %u places\n",
+              preview.lodZoom, preview.col0, preview.col1, preview.row0, preview.row1, preview.tilesLoaded,
+              preview.tilesMissing, preview.missingMask, preview.waysDrawn, preview.placesDrawn);
   std::printf("tile size on disk: %ld..%ld bytes\n", preview.smallestTileBytes, preview.largestTileBytes);
   std::printf("peak RAM: %zu B resident source + %zu B heap during render (%zu allocations) = %zu B total\n",
               preview.sourceBytes, preview.peakHeapDuringRender, preview.allocsDuringRender,

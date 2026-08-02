@@ -14,20 +14,25 @@ which is where nearly everything that makes this device work came from — see
 [Credits](#credits).
 
 > **Heavy development. Not usable yet.**
-> The map screen draws mock data. Nothing loads a real map from storage, and the
-> renderer does not yet follow the map style the tooling produces. Formats and
-> the BLE protocol change without notice. If you want a working device today,
-> use [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) —
-> this fork trades its features away for a different purpose.
+> The map screen draws real OSM data off the SD card, but every road comes out
+> the same plain line: the renderer does not follow the map style the tooling
+> produces, and the map screen has no buttons. Formats and the BLE protocol
+> change without notice. If you want a working device today, use
+> [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) — this
+> fork trades its features away for a different purpose.
 
 <p align="center">
   <img src="./docs/images/map-preview.png" alt="480x800 one-bit map: a thick route through Kostolište with junction dots, a place label and the position puck" width="300">
+  <img src="./docs/images/device-map-z13.png" alt="480x800 one-bit framebuffer dumped from the device: the road network around Malacky at 3 metres per pixel, every road the same width, a debug readout in the top left corner" width="300">
 </p>
 
 <p align="center">
-  <sub><b>What it should look like.</b> Produced by the map tooling on a laptop at
-  the device's exact 480x800 one-bit resolution — <b>not</b> a photo of the device,
-  which does not draw this yet.</sub>
+  <sub><b>Left: what it should look like.</b> Produced by the map tooling on a
+  laptop at the device's exact 480x800 one-bit resolution.
+  <b>Right: what the device draws today.</b> The real framebuffer, dumped from
+  the hardware with the POWER+DOWN screenshot combo — real map data off the SD
+  card at 3 m/px around Malacky. Every road is one width because the style is
+  not wired up yet.</sub>
 </p>
 
 ## Why a separate fork
@@ -54,8 +59,8 @@ not a pull request.
 |---|---|
 | Map activity and screen | exists |
 | BLE position receiver (phone sends GPS) | exists |
-| Map drawn from mock data | yes — this is the current state |
-| Loading a real map from storage | **not implemented** |
+| Loading a real map from the SD card | exists — this is the current state |
+| Buttons on the map screen (zoom, marker height) | **not implemented** |
 | Renderer following the map style spec | **not implemented** |
 | Companion phone app | **not started** |
 

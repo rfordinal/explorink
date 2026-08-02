@@ -8,6 +8,8 @@ add_executable(MapTileReaderGoldenTest
   ${REPO_ROOT}/src/activities/map/MapTileGrid.cpp
   ${REPO_ROOT}/src/activities/map/MapTileReader.cpp
   ${REPO_ROOT}/src/activities/map/MapTileSource.cpp
+  ${REPO_ROOT}/src/activities/map/MapViewport.cpp
+  ${REPO_ROOT}/src/activities/map/MapHatch.cpp
 )
 
 target_include_directories(MapTileReaderGoldenTest PRIVATE

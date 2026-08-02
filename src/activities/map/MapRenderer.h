@@ -29,6 +29,11 @@ class MapRenderer {
  public:
   static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state);
 
- private:
+  // Public because the missing-tile hatch is drawn after render() returns:
+  // the set of missing tiles is only known once the source has walked them,
+  // and asking for it up front would cost a third read of every tile. A
+  // missing tile's own area holds no geometry (tiles do not overlap), so
+  // hatching late is invisible -- except over the marker, which the caller
+  // puts back with this.
   static void drawMarker(IMapCanvas& canvas, int16_t x, int16_t y, MapHeading heading);
 };
