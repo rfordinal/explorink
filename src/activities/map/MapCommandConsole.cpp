@@ -156,6 +156,10 @@ bool MapCommandConsole::feed(char c, IMapReplyWriter& out) {
 
     case MapLineAssembler::Result::Line: {
       const std::string_view line = assembler_.line();
+      // Observer before execute, never after: it is what puts a log line
+      // between the command and its reply on the shared UART. Swapping
+      // these two lines makes LineObserverFiresBeforeTheReply fail, which
+      // is the point of that test.
       if (lineObserver_ != nullptr) lineObserver_(line);
       return state_.execute(parseMapCommand(line), out);
     }

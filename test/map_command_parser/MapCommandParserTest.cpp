@@ -12,9 +12,17 @@
 
 namespace {
 
+// One shared, ordered record of everything the console emitted, replies and
+// observer calls alike. Two separate containers cannot show which came
+// first, and for the observer the ordering is the whole point.
+std::vector<std::string> g_events;
+
 class CollectingWriter final : public IMapReplyWriter {
  public:
-  void reply(const char* line) override { lines.emplace_back(line); }
+  void reply(const char* line) override {
+    lines.emplace_back(line);
+    g_events.emplace_back(std::string("reply:") + line);
+  }
   std::vector<std::string> lines;
 };
 
@@ -379,28 +387,28 @@ TEST(MapCommandConsole, InfoUsesTheHeapProviderWhenSet) {
 }
 
 // The observer is what puts a log line between a command and its reply on
-// the device. Order matters: if it fired after execute() the log would land
-// after the reply, where a sender has already stopped reading, and the
-// marker filter would never be exercised.
-std::vector<std::string> g_observed;
-
+// the device. If it fired after the reply the log would land where a sender
+// has already stopped reading, and the marker filter would never be
+// exercised -- so the ordering is the entire reason the observer exists,
+// and it is what this asserts. Interleaving both into one vector is what
+// makes the order observable at all; two containers would pass either way.
 TEST(MapCommandConsole, LineObserverFiresBeforeTheReply) {
   MapCommandConsole console;
   CollectingWriter out;
-  g_observed.clear();
-  console.setLineObserver([](std::string_view line) { g_observed.emplace_back(line); });
+  g_events.clear();
+  console.setLineObserver([](std::string_view line) { g_events.emplace_back("observe:" + std::string(line)); });
 
   feedLine(console, out, "pos 48.4372 17.0186");
-  ASSERT_EQ(g_observed.size(), 1u);
-  EXPECT_EQ(g_observed[0], "pos 48.4372 17.0186");
-  EXPECT_EQ(out.lines.size(), 1u);
+  ASSERT_EQ(g_events.size(), 2u);
+  EXPECT_EQ(g_events[0], "observe:pos 48.4372 17.0186");
+  EXPECT_EQ(g_events[1], "reply:OK");
 
   // Bad lines are observed too -- the device should log what it was sent,
-  // not only what it understood.
+  // not only what it understood -- and in the same order.
   feedLine(console, out, "fly");
-  ASSERT_EQ(g_observed.size(), 2u);
-  EXPECT_EQ(g_observed[1], "fly");
-  EXPECT_EQ(out.lines.back(), "ERR unknown_command");
+  ASSERT_EQ(g_events.size(), 4u);
+  EXPECT_EQ(g_events[2], "observe:fly");
+  EXPECT_EQ(g_events[3], "reply:ERR unknown_command");
 }
 
 TEST(MapCommandConsole, TwoCommandsInOneBurst) {
