@@ -204,11 +204,12 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
            static_cast<unsigned long>(source_->waysEmitted()), static_cast<unsigned long>(elapsedMs));
   drawDebugLine(kTextLine2Y, line);
 
-  LOG_DBG(kLogTag, "reset z%u col %u..%u row %u..%u: %lu tiles ok, %lu missing (mask 0x%lx), %lu ways, %lu places",
+  LOG_DBG(kLogTag,
+          "reset z%u col %u..%u row %u..%u: %lu tiles ok, %lu missing (mask 0x%lx), %lu ways, %lu places, %lu bytes",
           range.z, range.col0, range.col1, range.row0, range.row1,
           static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->tilesUnavailable()),
           static_cast<unsigned long>(missing), static_cast<unsigned long>(source_->waysEmitted()),
-          static_cast<unsigned long>(source_->placesEmitted()));
+          static_cast<unsigned long>(source_->placesEmitted()), static_cast<unsigned long>(source_->bytesRead()));
   LOG_DBG(kLogTag, "heap: %lu before tile load, %lu after, delta %ld; framebuffer ready in %lu ms",
           static_cast<unsigned long>(heapBefore), static_cast<unsigned long>(heapAfter),
           static_cast<long>(heapBefore) - static_cast<long>(heapAfter), static_cast<unsigned long>(elapsedMs));
@@ -226,7 +227,8 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   rangeSnapshot.row1 = range.row1;
   rangeSnapshot.unavailableMask = missing;
   console_.state().setTileRange(rangeSnapshot);
-  console_.state().setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted());
+  console_.state().setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted(),
+                                   source_->bytesRead());
 
   // Timed above, deliberately: the gate is how long the framebuffer takes to
   // be ready, not how long the panel takes to show it.

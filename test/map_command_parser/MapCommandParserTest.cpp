@@ -378,11 +378,13 @@ TEST(MapCommandConsole, InfoReportsRealZoomLodMppAndTileStats) {
   MapCommandConsole console;
   CollectingWriter out;
   console.state().setZoomInfo(/*zoomStep=*/0, /*lod=*/13, /*mpp=*/3.0);
-  console.state().setRenderStats(/*tilesOk=*/3, /*tilesMissing=*/1, /*ways=*/2065);
+  console.state().setRenderStats(/*tilesOk=*/3, /*tilesMissing=*/1, /*ways=*/2065, /*bytesRead=*/61234);
 
   EXPECT_FALSE(feedLine(console, out, "info"));
   const std::vector<std::string> expected = {
-      "INFO zoom=0", "INFO lod=13", "INFO mpp=3.0", "INFO tiles_ok=3", "INFO tiles_missing=1", "INFO ways=2065",
+      "INFO zoom=0",       "INFO lod=13",          "INFO mpp=3.0",
+      "INFO tiles_ok=3",   "INFO tiles_missing=1", "INFO ways=2065",
+      "INFO bytes=61234",
   };
   for (const std::string& want : expected) {
     EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), want), out.lines.end()) << want;

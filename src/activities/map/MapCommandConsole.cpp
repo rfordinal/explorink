@@ -168,6 +168,9 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   snprintf(line, sizeof(line), "INFO ways=%lu", static_cast<unsigned long>(ways_));
   out.reply(line);
 
+  snprintf(line, sizeof(line), "INFO bytes=%lu", static_cast<unsigned long>(bytesRead_));
+  out.reply(line);
+
   if (freeHeapProvider_ != nullptr) {
     snprintf(line, sizeof(line), "INFO heap=%lu", static_cast<unsigned long>(freeHeapProvider_()));
     out.reply(line);

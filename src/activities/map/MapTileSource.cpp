@@ -21,6 +21,7 @@ void MapTileSource::begin(const Config& config) {
   unavailableMask_ = 0;
   waysEmitted_ = 0;
   placesEmitted_ = 0;
+  bytesRead_ = 0;
 }
 
 void MapTileSource::buildPath(uint32_t col, uint32_t row) {
@@ -29,6 +30,15 @@ void MapTileSource::buildPath(uint32_t col, uint32_t row) {
 }
 
 void MapTileSource::closeCurrentTile() {
+  // takeBytesRead(), not bytesRead(): this can run more than once between
+  // one open() and the next (once when a tile's layer runs dry inside
+  // nextWay()/nextPlace(), again from advanceToNextTile()'s own
+  // top-of-function call on the very next iteration) and taking zeroes the
+  // count, so a repeat call banks zero instead of the same bytes twice.
+  // Safe to call unconditionally otherwise: a failed open() still spent
+  // real bytes on the header attempt and those must be counted too, and a
+  // reader that never opened anything simply reports zero.
+  bytesRead_ += reader_.takeBytesRead();
   if (tileOpen_) {
     reader_.close();
     tileOpen_ = false;
@@ -57,7 +67,10 @@ bool MapTileSource::advanceToNextTile() {
     if (!reader_.open(file_, path_)) {
       // Absent, truncated or header-crc32-mismatched -- all of them mean
       // "no data here", which is a hatched area, never white or garbage
-      // geometry.
+      // geometry. open() already closed the reader on failure, so this only
+      // needs to bank whatever the failed attempt cost (a short or missing
+      // header read).
+      closeCurrentTile();
       ++tilesUnavailable_;
       if (index < 32) unavailableMask_ |= (1u << index);
       continue;
@@ -68,6 +81,7 @@ bool MapTileSource::advanceToNextTile() {
       // directory made skipping it free, and an empty layer is not a
       // reason to hatch the tile.
       ++tilesOpened_;
+      bytesRead_ += reader_.takeBytesRead();
       reader_.close();
       continue;
     }
@@ -79,6 +93,7 @@ bool MapTileSource::advanceToNextTile() {
       // a tile that failed to open at all.
       ++tilesUnavailable_;
       if (index < 32) unavailableMask_ |= (1u << index);
+      bytesRead_ += reader_.takeBytesRead();
       reader_.close();
       continue;
     }

@@ -76,6 +76,13 @@ class MapTileSource : public IMapSource {
   uint32_t waysEmitted() const { return waysEmitted_; }
   uint32_t placesEmitted() const { return placesEmitted_; }
 
+  // Real bytes read from the card across every tile and every pass since
+  // begin(), summed from each tile's MapTileReader::bytesRead() as it
+  // closes. This is the number the per-layer crc32 split (docs/PROGRESS.md
+  // gate 4) is measured against -- milliseconds alone cannot tell a real
+  // I/O reduction from a lucky, mostly-cached SD card.
+  uint32_t bytesRead() const { return bytesRead_; }
+
  private:
   bool startPass(MapTileReader::Layer layer);
   // Opens the next tile in the range that actually has the current layer.
@@ -100,6 +107,7 @@ class MapTileSource : public IMapSource {
   uint32_t unavailableMask_ = 0;
   uint32_t waysEmitted_ = 0;
   uint32_t placesEmitted_ = 0;
+  uint32_t bytesRead_ = 0;
 
   // The one live record. Overwritten by every nextWay()/nextPlace().
   int16_t xs_[MapTileReader::kMaxWayPoints];

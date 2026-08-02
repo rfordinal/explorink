@@ -102,6 +102,28 @@ class MapTileReader {
 
   bool readJunctionRecord(JunctionRecord& out);
 
+  // Real bytes pulled from `file` for the tile currently open -- header,
+  // directory, every layer-crc validation pass, every streamed record.
+  // Reset to zero at the start of open(). This is what gate 4
+  // (docs/PROGRESS.md) measures against the whole-file-crc32 baseline: the
+  // point of the per-layer split is that a layer never opened costs zero of
+  // these, not that it costs less.
+  uint32_t bytesRead() const { return bytesRead_; }
+
+  // Reads bytesRead() and zeroes it in one step. A caller that accumulates
+  // this into its own running total (MapTileSource::closeCurrentTile())
+  // must use this, not bytesRead(): closeCurrentTile() can run more than
+  // once between one open() and the next (once when a tile's layer runs
+  // out, again from advanceToNextTile()'s own top-of-function close), and
+  // bytesRead() alone would hand back the same already-banked count on the
+  // second call, double-counting it. Zeroing on read makes every capture
+  // safe to repeat.
+  uint32_t takeBytesRead() {
+    const uint32_t n = bytesRead_;
+    bytesRead_ = 0;
+    return n;
+  }
+
   // There is deliberately no peakBufferBytes() accessor here. It used to
   // return kStreamBufferSize, and the test asserting it equalled
   // kStreamBufferSize proved nothing -- it would have passed with a
@@ -124,6 +146,9 @@ class MapTileReader {
   const LayerEntry* findLayer(Layer layer) const;
   bool readRaw(void* dst, size_t len);
   bool refill();
+  // The one place that ever calls file_->read(). Every byte it returns is
+  // real I/O, so this is also the one place bytesRead_ is incremented.
+  int readCounted(void* dst, size_t len);
 
   IFileSource* file_ = nullptr;
 
@@ -144,4 +169,5 @@ class MapTileReader {
   size_t bufferFill_ = 0;
   uint32_t layerCursorAbs_ = 0;
   uint32_t layerEndAbs_ = 0;
+  uint32_t bytesRead_ = 0;
 };

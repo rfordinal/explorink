@@ -59,11 +59,18 @@ void MapTileReader::close() {
   }
 }
 
+int MapTileReader::readCounted(void* dst, size_t len) {
+  const int n = file_->read(dst, len);
+  if (n > 0) bytesRead_ += static_cast<uint32_t>(n);
+  return n;
+}
+
 bool MapTileReader::parseHeader() {
+  bytesRead_ = 0;
   if (!file_->seek(0)) return false;
 
   uint8_t hdr[kHeaderFixedLen];
-  int n = file_->read(hdr, sizeof(hdr));
+  int n = readCounted(hdr, sizeof(hdr));
   if (n != static_cast<int>(sizeof(hdr))) return false;
 
   if (std::memcmp(hdr, kMagic, sizeof(kMagic)) != 0) return false;
@@ -99,7 +106,7 @@ bool MapTileReader::parseHeader() {
 
   uint8_t dir[kMaxLayers * kDirEntryLen];
   const size_t dirLen = layerCount_ * kDirEntryLen;
-  n = file_->read(dir, dirLen);
+  n = readCounted(dir, dirLen);
   if (n != static_cast<int>(dirLen)) return false;
 
   // header_crc32 covers the fixed header (with its own field zeroed) plus
@@ -132,7 +139,7 @@ bool MapTileReader::validateLayerCrc32(const LayerEntry& entry) {
   uint32_t remaining = entry.length;
   while (remaining > 0) {
     const size_t toRead = remaining < kStreamBufferSize ? static_cast<size_t>(remaining) : kStreamBufferSize;
-    const int n = file_->read(streamBuffer_, toRead);
+    const int n = readCounted(streamBuffer_, toRead);
     if (n <= 0) return false;
     crc = crc32Update(crc, streamBuffer_, static_cast<size_t>(n));
     remaining -= static_cast<uint32_t>(n);
@@ -177,7 +184,7 @@ bool MapTileReader::refill() {
   const uint32_t avail = layerEndAbs_ - layerCursorAbs_;
   if (avail == 0) return false;
   const size_t toRead = avail < kStreamBufferSize ? avail : kStreamBufferSize;
-  const int n = file_->read(streamBuffer_, toRead);
+  const int n = readCounted(streamBuffer_, toRead);
   if (n <= 0) return false;
   bufferFill_ = static_cast<size_t>(n);
   bufferPos_ = 0;

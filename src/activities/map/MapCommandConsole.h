@@ -109,13 +109,14 @@ class MapConsoleState {
   }
 
   // Pushed by MapActivity after every viewport reset -- pos, heading and
-  // redraw all end in one. `info`'s tiles_ok/tiles_missing/ways lines read
-  // this. Zero before the first reset, which reads correctly: nothing has
-  // been drawn yet.
-  void setRenderStats(uint32_t tilesOk, uint32_t tilesMissing, uint32_t ways) {
+  // redraw all end in one. `info`'s tiles_ok/tiles_missing/ways/bytes lines
+  // read this. Zero before the first reset, which reads correctly: nothing
+  // has been drawn yet.
+  void setRenderStats(uint32_t tilesOk, uint32_t tilesMissing, uint32_t ways, uint32_t bytesRead) {
     tilesOk_ = tilesOk;
     tilesMissing_ = tilesMissing;
     ways_ = ways;
+    bytesRead_ = bytesRead;
   }
 
   // Pushed alongside setRenderStats() by the same reset. `tiles` reads this.
@@ -139,6 +140,7 @@ class MapConsoleState {
   uint32_t tilesOk_ = 0;
   uint32_t tilesMissing_ = 0;
   uint32_t ways_ = 0;
+  uint32_t bytesRead_ = 0;
   MapTileRangeSnapshot tileRange_;
 };
 
