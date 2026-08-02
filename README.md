@@ -143,13 +143,17 @@ pio run -e default
 
 ### Native map preview
 
-The map renderer has no hardware dependency, so it builds and runs on a laptop
-without the ESP toolchain:
+The map renderer and tile reader have no hardware dependency, so they build
+and run on a laptop without the ESP toolchain. `map_preview` reads real
+`.tib` tiles (mapbuilder/build_tiles.py output) around a coordinate:
 
 ```bash
 cmake -S test -B build/test -DCMAKE_BUILD_TYPE=Release
 cmake --build build/test --target map_preview
-./build/test/map_preview/map_preview out.ppm
+./build/test/map_preview/map_preview \
+  --tiles test/map_tile_reader/fixtures/tiny-sd \
+  --lat 48.531158410819025 --lon 17.072751469276742 \
+  --heading 0 --zoom 0 --out out.ppm
 ```
 
 It writes a 480x800 one-bit image. Note that `PpmCanvas` rasterizes separately

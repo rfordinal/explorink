@@ -88,7 +88,11 @@ void MapActivity::renderDebugReadout(bool haveUpdate, int32_t lat, int32_t lon, 
   if (haveUpdate) {
     projectPlaceholder(lat, lon, originLat_, originLon_, renderer.getScreenWidth(), renderer.getScreenHeight(),
                        state.markerX, state.markerY);
-    state.heading = static_cast<MapHeading>(heading % 8);
+    // BlePositionServer.h's wire format still sends 0-7 (the old 8-step
+    // MapHeading) -- *2 maps it onto the same compass directions in the
+    // now-16-step enum (see MapHeading.h) instead of landing on the new
+    // intermediate steps.
+    state.heading = static_cast<MapHeading>((heading % 8) * 2);
   }
 
   MapRenderer::render(canvas, state);
