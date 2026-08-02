@@ -6,11 +6,19 @@ namespace {
 
 // Byte layout is exactly mapbuilder/tiles.py's struct.calcsize("<4sHBIIiiIIIB")
 // == 36: magic(4) version(2) z(1) x(4) y(4) origin_x(4) origin_y(4)
-// build_epoch(4) osm_epoch(4) crc32(4) layer_count(1). Field offsets below
-// are that layout's cumulative sums -- change one, change all after it.
+// build_epoch(4) osm_epoch(4) header_crc32(4) layer_count(1). Field offsets
+// below are that layout's cumulative sums -- change one, change all after it.
+//
+// Format version 2: header_crc32 covers only these 36 bytes plus the layer
+// directory that follows (with header_crc32 itself zeroed while computing),
+// not the whole file. Each directory entry is 13 bytes -- id, offset,
+// length, and that layer's own crc32 -- up from version 1's 9 (no
+// per-layer crc). A reader must check the version before trusting the
+// directory's shape at all: parsing a v1 file's 9-byte entries as v2's
+// 13-byte ones produces plausible-looking garbage offsets, not an error.
 constexpr size_t kHeaderFixedLen = 36;
 constexpr size_t kCrcFieldOffset = 31;  // struct.calcsize("<4sHBIIiiII")
-constexpr size_t kDirEntryLen = 9;      // <BII>
+constexpr size_t kDirEntryLen = 13;     // <BIII>
 constexpr uint8_t kMagic[4] = {'T', 'I', 'B', '1'};
 
 // Standard IEEE CRC32 (poly 0xEDB88320, reflected), the same algorithm
@@ -36,7 +44,7 @@ bool MapTileReader::open(IFileSource& file, const char* path) {
     file_ = nullptr;
     return false;
   }
-  if (!parseHeader() || !validateCrc32()) {
+  if (!parseHeader()) {
     file_->close();
     file_ = nullptr;
     return false;
@@ -63,6 +71,12 @@ bool MapTileReader::parseHeader() {
   size_t off = 4;
   std::memcpy(&version_, &hdr[off], sizeof(version_));
   off += sizeof(version_);
+
+  // Version before anything else is trusted: a version-1 file's directory
+  // entries are 9 bytes, not this version's 13, so parsing them as v2 would
+  // produce plausible-looking garbage offsets rather than a clean refusal.
+  if (version_ != kFormatVersion) return false;
+
   z_ = hdr[off];
   off += 1;
   std::memcpy(&x_, &hdr[off], sizeof(x_));
@@ -77,8 +91,8 @@ bool MapTileReader::parseHeader() {
   off += sizeof(buildEpoch_);
   std::memcpy(&osmEpoch_, &hdr[off], sizeof(osmEpoch_));
   off += sizeof(osmEpoch_);
-  std::memcpy(&crc32Stored_, &hdr[off], sizeof(crc32Stored_));
-  off += sizeof(crc32Stored_);
+  std::memcpy(&headerCrc32Stored_, &hdr[off], sizeof(headerCrc32Stored_));
+  off += sizeof(headerCrc32Stored_);
   layerCount_ = hdr[off];
 
   if (layerCount_ > kMaxLayers) return false;
@@ -88,41 +102,44 @@ bool MapTileReader::parseHeader() {
   n = file_->read(dir, dirLen);
   if (n != static_cast<int>(dirLen)) return false;
 
+  // header_crc32 covers the fixed header (with its own field zeroed) plus
+  // the layer directory -- both already sitting in these two local buffers
+  // from the reads just above, so this costs no extra file access. This is
+  // the only crc check open() ever pays for; a layer's own bytes are
+  // checked only if and when beginLayer() actually opens that layer.
+  std::memset(&hdr[kCrcFieldOffset], 0, sizeof(headerCrc32Stored_));
+  uint32_t crc = 0xFFFFFFFFu;
+  crc = crc32Update(crc, hdr, kHeaderFixedLen);
+  crc = crc32Update(crc, dir, dirLen);
+  crc ^= 0xFFFFFFFFu;
+  if (crc != headerCrc32Stored_) return false;
+
   for (uint8_t i = 0; i < layerCount_; ++i) {
     const uint8_t* entry = &dir[i * kDirEntryLen];
     LayerEntry& out = layers_[i];
     out.id = entry[0];
     std::memcpy(&out.offset, &entry[1], sizeof(out.offset));
     std::memcpy(&out.length, &entry[5], sizeof(out.length));
+    std::memcpy(&out.crc32, &entry[9], sizeof(out.crc32));
   }
   return true;
 }
 
-bool MapTileReader::validateCrc32() {
-  if (!file_->seek(0)) return false;
+bool MapTileReader::validateLayerCrc32(const LayerEntry& entry) {
+  if (!file_->seek(entry.offset)) return false;
 
   uint32_t crc = 0xFFFFFFFFu;
-  uint32_t pos = 0;
-  for (;;) {
-    const int n = file_->read(streamBuffer_, kStreamBufferSize);
-    if (n < 0) return false;
-    if (n == 0) break;
-
-    // The crc32 field itself was zeroed when the file's own crc32 was
-    // computed (mapbuilder/tiles.py::build_tile_file) -- zero it here too,
-    // wherever it falls in this chunk, so the recomputed value can match.
-    for (size_t i = 0; i < static_cast<size_t>(n); ++i) {
-      const uint32_t abs = pos + i;
-      if (abs >= kCrcFieldOffset && abs < kCrcFieldOffset + 4) {
-        streamBuffer_[i] = 0;
-      }
-    }
+  uint32_t remaining = entry.length;
+  while (remaining > 0) {
+    const size_t toRead = remaining < kStreamBufferSize ? static_cast<size_t>(remaining) : kStreamBufferSize;
+    const int n = file_->read(streamBuffer_, toRead);
+    if (n <= 0) return false;
     crc = crc32Update(crc, streamBuffer_, static_cast<size_t>(n));
-    pos += static_cast<uint32_t>(n);
+    remaining -= static_cast<uint32_t>(n);
   }
   crc ^= 0xFFFFFFFFu;
 
-  return crc == crc32Stored_;
+  return crc == entry.crc32;
 }
 
 const MapTileReader::LayerEntry* MapTileReader::findLayer(Layer layer) const {
@@ -146,6 +163,7 @@ uint32_t MapTileReader::layerLength(Layer layer) const {
 bool MapTileReader::beginLayer(Layer layer) {
   const LayerEntry* e = findLayer(layer);
   if (!e || e->length == 0) return false;
+  if (!validateLayerCrc32(*e)) return false;
   if (!file_->seek(e->offset)) return false;
 
   layerCursorAbs_ = e->offset;

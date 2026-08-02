@@ -55,20 +55,35 @@ bool MapTileSource::advanceToNextTile() {
     buildPath(col, row);
 
     if (!reader_.open(file_, path_)) {
-      // Absent, truncated or crc32-mismatched -- all of them mean "no data
-      // here", which is a hatched area, never white or garbage geometry.
+      // Absent, truncated or header-crc32-mismatched -- all of them mean
+      // "no data here", which is a hatched area, never white or garbage
+      // geometry.
       ++tilesUnavailable_;
       if (index < 32) unavailableMask_ |= (1u << index);
       continue;
     }
-    ++tilesOpened_;
 
-    if (!reader_.hasLayer(layer_) || !reader_.beginLayer(layer_)) {
-      // Real tile, just nothing in this layer. The layer directory made
-      // skipping it free.
+    if (!reader_.hasLayer(layer_)) {
+      // Real, header-valid tile, just nothing in this layer. The layer
+      // directory made skipping it free, and an empty layer is not a
+      // reason to hatch the tile.
+      ++tilesOpened_;
       reader_.close();
       continue;
     }
+
+    if (!reader_.beginLayer(layer_)) {
+      // Present per the directory, but its own crc32 failed. hasLayer()
+      // already ruled out "absent" above, so this is corrupt data, not an
+      // empty layer -- it must count as unavailable and hatch, the same as
+      // a tile that failed to open at all.
+      ++tilesUnavailable_;
+      if (index < 32) unavailableMask_ |= (1u << index);
+      reader_.close();
+      continue;
+    }
+
+    ++tilesOpened_;
     tileOpen_ = true;
     return true;
   }

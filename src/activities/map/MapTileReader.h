@@ -50,9 +50,13 @@ class MapTileReader {
   };
 
   // Opens `path` through `file` (already constructed, not yet open), parses
-  // the header and layer directory, and validates crc32 by streaming the
-  // whole file through the internal buffer. Returns false and leaves the
-  // file closed on any failure (bad magic, short read, crc mismatch).
+  // the fixed header and layer directory, and validates `header_crc32` --
+  // which covers only those bytes, not the whole file. Returns false and
+  // leaves the file closed on any failure: bad magic, wrong format version,
+  // short read, or a header crc mismatch. A layer's own bytes are only
+  // fetched and crc-checked when beginLayer() actually opens that layer, so
+  // a layer never touched (buildings, water, junctions when the caller only
+  // draws roads and places) never costs a read.
   bool open(IFileSource& file, const char* path);
   void close();
 
@@ -67,9 +71,14 @@ class MapTileReader {
   bool hasLayer(Layer layer) const;
   uint32_t layerLength(Layer layer) const;
 
-  // Seeks to `layer`'s start and resets the streaming cursor. Only one
-  // layer is open for reading at a time. Returns false if the layer is
-  // absent or empty.
+  // Validates that layer's own crc32 -- a second full pass over just its
+  // bytes, through the same fixed stream buffer -- then seeks back to its
+  // start and resets the streaming cursor. Only one layer is open for
+  // reading at a time. Returns false if the layer is absent, empty, or
+  // fails its crc32 (which the caller must treat the same as "tile
+  // unavailable", not "nothing here": findLayer() already ruled out
+  // "absent" by the time crc is checked, so a false here past that point is
+  // corrupt data, not an empty layer).
   bool beginLayer(Layer layer);
 
   // Reads one way record's fixed header. Follow with readWayPoints() for
@@ -101,14 +110,17 @@ class MapTileReader {
   // test/map_tile_reader/MapTileReaderGoldenTest.cpp.
 
  private:
+  static constexpr uint16_t kFormatVersion = 2;
+
   struct LayerEntry {
     uint8_t id = 0;
     uint32_t offset = 0;
     uint32_t length = 0;
+    uint32_t crc32 = 0;
   };
 
   bool parseHeader();
-  bool validateCrc32();
+  bool validateLayerCrc32(const LayerEntry& entry);
   const LayerEntry* findLayer(Layer layer) const;
   bool readRaw(void* dst, size_t len);
   bool refill();
@@ -123,7 +135,7 @@ class MapTileReader {
   int32_t originY_ = 0;
   uint32_t buildEpoch_ = 0;
   uint32_t osmEpoch_ = 0;
-  uint32_t crc32Stored_ = 0;
+  uint32_t headerCrc32Stored_ = 0;
   uint8_t layerCount_ = 0;
   LayerEntry layers_[kMaxLayers];
 
