@@ -1,26 +1,53 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
-#include "MapProjection.h"
-#include "MapRenderer.h"
+#include "IMapCanvas.h"
 
 // Shared by test/map_preview (the CLI tool) and the golden-file test
 // (test/map_tile_reader) -- one place that turns "a coordinate plus a tiles
-// directory" into a projected MapViewState, so the golden test renders
-// through exactly the same path the CLI does.
-struct MapPreviewResult {
-  MapViewState state;
-  int tilesLoaded = 0;
-  int tilesMissing = 0;
-  long smallestTileBytes = -1;
-  long largestTileBytes = -1;
-  uint8_t lodZoom = 0;
+// directory" into a rendered canvas, so the golden test renders through
+// exactly the same path the CLI does.
+//
+// Nothing here holds map geometry. It picks the viewport's tile range,
+// builds a MapTileSource over it, and hands that to MapRenderer, which
+// pulls one record at a time (see src/activities/map/IMapSource.h).
+struct MapPreviewRequest {
+  std::string tilesDir;
+  double lat = 0.0;
+  double lon = 0.0;
+  uint8_t heading = 0;  // 0-15
+  int zoom = 0;         // 0-4, docs/map-data-spec.md zoom ladder
+
+  // Render exactly one named tile instead of the whole tile range the
+  // viewport touches. Only useful for quoting a per-tile RAM figure against
+  // a per-tile figure from the old pipeline; leave it off for real previews.
+  bool singleTile = false;
+  uint32_t tileCol = 0;
+  uint32_t tileRow = 0;
 };
 
-// heading: 0-15. zoom: 0-4 (docs/map-data-spec.md zoom ladder). Reads only
-// the roads and places layers of every tile the viewport touches, skipping
-// water/buildings/junctions via the layer directory
-// (docs/prototype-plan.md, P2: "Read only what you draw").
-MapPreviewResult buildMapPreview(const std::string& tilesDir, double lat, double lon, uint8_t heading, int zoom);
+struct MapPreviewResult {
+  int tilesLoaded = 0;
+  int tilesMissing = 0;
+  uint32_t waysDrawn = 0;
+  uint32_t placesDrawn = 0;
+  uint8_t lodZoom = 0;
+  uint32_t col0 = 0, row0 = 0, col1 = 0, row1 = 0;
+  long smallestTileBytes = -1;
+  long largestTileBytes = -1;
+
+  // The streaming path's whole RAM cost, split into its two honest halves.
+  // `sourceBytes` is sizeof(MapTileSource) -- reader buffer, one way's point
+  // scratch, one place name, one path -- allocated once before rendering.
+  // `peakHeapDuringRender` is a measured high-water mark of C++ operator new
+  // over the render itself (HeapProbe.h); it should be zero, because the
+  // renderer holds nothing.
+  size_t sourceBytes = 0;
+  size_t peakHeapDuringRender = 0;
+  size_t allocsDuringRender = 0;
+};
+
+MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& canvas);

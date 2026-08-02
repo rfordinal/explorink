@@ -75,8 +75,13 @@ class MapTileReader {
   // Reads one way record's fixed header. Follow with readWayPoints() for
   // exactly `out.pointCount` points before reading the next way header.
   bool readWayHeader(WayHeader& out);
-  // `outPoints` must have room for `count` entries (count == the
-  // WayHeader.pointCount just read); count is always <= kMaxWayPoints.
+  // `outXs`/`outYs` must have room for `count` entries (count == the
+  // WayHeader.pointCount just read). A `count` above kMaxWayPoints is
+  // rejected here, before a single byte is read: mapbuilder splits longer
+  // ways at build time, so a larger count means a corrupt file, and the cap
+  // belongs in the reader rather than in every caller's hands. On false the
+  // stream cursor has not moved past the record, so the caller must abandon
+  // the layer rather than continue.
   bool readWayPoints(int16_t* outXs, int16_t* outYs, uint16_t count);
 
   bool readPlaceHeader(PlaceHeader& out);
@@ -88,10 +93,12 @@ class MapTileReader {
 
   bool readJunctionRecord(JunctionRecord& out);
 
-  // The stream buffer's fixed capacity -- constant regardless of tile or
-  // layer size, which is the O(1) claim. Report this alongside on-disk tile
-  // sizes to show it does not move.
-  static constexpr size_t peakBufferBytes() { return kStreamBufferSize; }
+  // There is deliberately no peakBufferBytes() accessor here. It used to
+  // return kStreamBufferSize, and the test asserting it equalled
+  // kStreamBufferSize proved nothing -- it would have passed with a
+  // whole-file vector bolted on. The O(1) claim is measured instead, as a
+  // real heap high-water mark across tiles of very different sizes, in
+  // test/map_tile_reader/MapTileReaderGoldenTest.cpp.
 
  private:
   struct LayerEntry {

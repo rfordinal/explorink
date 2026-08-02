@@ -95,7 +95,8 @@ void MapActivity::renderDebugReadout(bool haveUpdate, int32_t lat, int32_t lon, 
     state.heading = static_cast<MapHeading>((heading % 8) * 2);
   }
 
-  MapRenderer::render(canvas, state);
+  MockMapSource source(renderer.getScreenWidth(), renderer.getScreenHeight());
+  MapRenderer::render(canvas, source, state);
 
   // Debug line -- proves the raw values driving the marker above, kept
   // alongside it (not just before it) since it's still useful to confirm

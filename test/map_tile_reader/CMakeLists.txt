@@ -1,11 +1,13 @@
 add_executable(MapTileReaderGoldenTest
   MapTileReaderGoldenTest.cpp
   ${REPO_ROOT}/test/map_preview/MapPreviewPipeline.cpp
+  ${REPO_ROOT}/test/map_preview/HeapProbe.cpp
   ${REPO_ROOT}/test/map_preview/PpmCanvas.cpp
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp
   ${REPO_ROOT}/src/activities/map/MapProjection.cpp
   ${REPO_ROOT}/src/activities/map/MapTileGrid.cpp
   ${REPO_ROOT}/src/activities/map/MapTileReader.cpp
+  ${REPO_ROOT}/src/activities/map/MapTileSource.cpp
 )
 
 target_include_directories(MapTileReaderGoldenTest PRIVATE

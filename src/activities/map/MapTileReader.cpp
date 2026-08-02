@@ -194,6 +194,10 @@ bool MapTileReader::readWayHeader(WayHeader& out) {
 }
 
 bool MapTileReader::readWayPoints(int16_t* outXs, int16_t* outYs, uint16_t count) {
+  // Enforced here, not by the caller. A corrupt point_count on the card
+  // would otherwise be a stack buffer overflow in whichever caller forgot to
+  // check -- and P4 adds a second caller.
+  if (count > kMaxWayPoints) return false;
   for (uint16_t i = 0; i < count; ++i) {
     uint8_t buf[4];
     if (!readRaw(buf, sizeof(buf))) return false;

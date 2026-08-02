@@ -1,29 +1,19 @@
 #pragma once
 
 #include <cstdint>
-#include <utility>
-#include <vector>
 
 #include "IMapCanvas.h"
+#include "IMapSource.h"
 #include "MapHeading.h"
 
-// One roads-layer way, already projected to screen space. class_id/
-// roughness/flags are carried straight from the .tib record (see
-// docs/map-data-spec.md, "Way record") for future per-class styling; P2
-// draws every way the same way regardless of them.
-struct MapWay {
-  uint8_t classId = 0;
-  uint8_t roughness = 0;
-  uint16_t flags = 0;
-  std::vector<std::pair<int16_t, int16_t>> points;
-};
-
-// Screen-space (pixels), not geo-coordinates -- whatever loads the base
-// map/route (mapbuilder format) is responsible for projecting into this
-// space (MapProjection) before handing it to MapRenderer.
+// Everything the renderer needs that is not geometry. Small and resident by
+// definition -- the marker is one point and the heading is one byte. All
+// map geometry arrives through IMapSource, one record at a time, and is
+// never held (see IMapSource.h for why).
+//
+// Screen-space (pixels), not geo-coordinates -- MapProjection does that
+// conversion inside the source.
 struct MapViewState {
-  std::vector<MapWay> ways;
-  std::vector<std::pair<int16_t, int16_t>> placeDots;
   int16_t markerX = 0;
   int16_t markerY = 0;
   MapHeading heading = MapHeading::N;
@@ -32,9 +22,12 @@ struct MapViewState {
 // Draws base map (roads, place dots) then the position marker, in that
 // order, onto whatever IMapCanvas it's given. No hardware/HAL dependency --
 // this is what both the native preview and MapActivity call.
+//
+// render() pulls: it holds no geometry of its own, so its RAM cost does not
+// move with how much map is on screen.
 class MapRenderer {
  public:
-  static void render(IMapCanvas& canvas, const MapViewState& state);
+  static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state);
 
  private:
   static void drawMarker(IMapCanvas& canvas, int16_t x, int16_t y, MapHeading heading);

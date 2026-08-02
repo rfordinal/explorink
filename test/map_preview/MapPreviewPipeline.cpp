@@ -5,11 +5,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <utility>
+#include <memory>
 
-#include "IFileSource.h"
+#include "HeapProbe.h"
+#include "MapProjection.h"
+#include "MapRenderer.h"
 #include "MapTileGrid.h"
-#include "MapTileReader.h"
+#include "MapTileSource.h"
 #include "StdioFileSource.h"
 
 namespace {
@@ -89,98 +91,75 @@ void tileRangeForViewport(const MapProjection& proj, uint8_t z, uint32_t& col0, 
   row1 = std::max(rA, rB);
 }
 
-// Reads the roads and places layers of one tile into `state`, projecting
-// every point through `proj`. Water, buildings and junctions are never
-// opened -- the layer directory lets us seek past them for free
-// (docs/prototype-plan.md, P2: "Read only what you draw").
-bool loadTileRoadsAndPlaces(const std::string& path, const MapProjection& proj, MapViewState& state) {
-  StdioFileSource file;
-  MapTileReader reader;
-  if (!reader.open(file, path.c_str())) {
-    std::fprintf(stderr, "skip %s: failed to open or crc32 mismatch\n", path.c_str());
-    return false;
-  }
-
-  if (reader.hasLayer(MapTileReader::Layer::Roads) && reader.beginLayer(MapTileReader::Layer::Roads)) {
-    MapTileReader::WayHeader wh;
-    int16_t xs[MapTileReader::kMaxWayPoints];
-    int16_t ys[MapTileReader::kMaxWayPoints];
-    while (reader.readWayHeader(wh)) {
-      if (wh.pointCount > MapTileReader::kMaxWayPoints || !reader.readWayPoints(xs, ys, wh.pointCount)) {
-        std::fprintf(stderr, "abort %s: malformed roads layer\n", path.c_str());
-        break;
-      }
-      MapWay way;
-      way.classId = wh.classId;
-      way.roughness = wh.roughness;
-      way.flags = wh.flags;
-      way.points.reserve(wh.pointCount);
-      for (uint16_t i = 0; i < wh.pointCount; ++i) {
-        int16_t sx, sy;
-        proj.projectTileLocal(reader.originX(), reader.originY(), xs[i], ys[i], sx, sy);
-        way.points.emplace_back(sx, sy);
-      }
-      state.ways.push_back(std::move(way));
-    }
-  }
-
-  if (reader.hasLayer(MapTileReader::Layer::Places) && reader.beginLayer(MapTileReader::Layer::Places)) {
-    MapTileReader::PlaceHeader ph;
-    char name[64];
-    while (reader.readPlaceHeader(ph)) {
-      if (!reader.readPlaceName(ph, name, sizeof(name))) {
-        std::fprintf(stderr, "abort %s: malformed places layer\n", path.c_str());
-        break;
-      }
-      int16_t sx, sy;
-      proj.projectTileLocal(reader.originX(), reader.originY(), ph.x, ph.y, sx, sy);
-      state.placeDots.emplace_back(sx, sy);
-    }
-  }
-
-  reader.close();
-  return true;
-}
-
 }  // namespace
 
-MapPreviewResult buildMapPreview(const std::string& tilesDir, double lat, double lon, uint8_t heading, int zoom) {
+MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& canvas) {
   MapPreviewResult result;
-  const LodStep& lod = kZoomLadder[zoom];
+  const LodStep& lod = kZoomLadder[request.zoom];
   result.lodZoom = lod.z;
 
-  const double mppMerc = lod.mpp / std::cos(lat * 3.14159265358979323846 / 180.0);
+  const double mppMerc = lod.mpp / std::cos(request.lat * 3.14159265358979323846 / 180.0);
 
   MapProjection proj;
-  proj.reset(lat, lon, kAnchorScreenX, kAnchorScreenY, heading, mppMerc);
+  proj.reset(request.lat, request.lon, kAnchorScreenX, kAnchorScreenY, request.heading, mppMerc);
 
-  uint32_t col0, row0, col1, row1;
-  tileRangeForViewport(proj, lod.z, col0, row0, col1, row1);
-  const uint32_t tileCount = (col1 - col0 + 1) * (row1 - row0 + 1);
-  if (tileCount > 9) {
-    std::fprintf(stderr, "warning: %u tiles needed (col %u..%u, row %u..%u) -- more than the 3x3 worst case\n",
-                 tileCount, col0, col1, row0, row1);
-  }
-
-  result.state.markerX = kAnchorScreenX;
-  result.state.markerY = kAnchorScreenY;
-  result.state.heading = static_cast<MapHeading>(heading);
-
-  for (uint32_t col = col0; col <= col1; ++col) {
-    for (uint32_t row = row0; row <= row1; ++row) {
-      const std::string path = tilePath(tilesDir, lod.z, col, row);
-      const long sz = fileSizeBytes(path);
-      if (sz < 0) {
-        ++result.tilesMissing;
-        continue;
-      }
-      if (loadTileRoadsAndPlaces(path, proj, result.state)) {
-        ++result.tilesLoaded;
-        if (result.smallestTileBytes < 0 || sz < result.smallestTileBytes) result.smallestTileBytes = sz;
-        if (sz > result.largestTileBytes) result.largestTileBytes = sz;
-      }
+  if (request.singleTile) {
+    result.col0 = result.col1 = request.tileCol;
+    result.row0 = result.row1 = request.tileRow;
+  } else {
+    tileRangeForViewport(proj, lod.z, result.col0, result.row0, result.col1, result.row1);
+    const uint32_t tileCount = (result.col1 - result.col0 + 1) * (result.row1 - result.row0 + 1);
+    if (tileCount > 9) {
+      std::fprintf(stderr, "warning: %u tiles needed (col %u..%u, row %u..%u) -- more than the 3x3 worst case\n",
+                   tileCount, result.col0, result.col1, result.row0, result.row1);
     }
   }
+
+  // On-disk sizes, so the O(1) claim can be read against how much the tiles
+  // themselves vary. Pure reporting -- the renderer never sees this.
+  for (uint32_t col = result.col0; col <= result.col1; ++col) {
+    for (uint32_t row = result.row0; row <= result.row1; ++row) {
+      const long size = fileSizeBytes(tilePath(request.tilesDir, lod.z, col, row));
+      if (size < 0) continue;
+      if (result.smallestTileBytes < 0 || size < result.smallestTileBytes) result.smallestTileBytes = size;
+      if (size > result.largestTileBytes) result.largestTileBytes = size;
+    }
+  }
+
+  MapViewState view;
+  view.markerX = kAnchorScreenX;
+  view.markerY = kAnchorScreenY;
+  view.heading = static_cast<MapHeading>(request.heading);
+
+  StdioFileSource file;
+  // Heap, not a local: MapTileSource is ~5 KB and CLAUDE.md caps stack
+  // locals at 256 bytes. On the device this is makeUniqueNoThrow in the
+  // activity's onEnter(); here std::make_unique is the same shape.
+  auto source = std::make_unique<MapTileSource>(file, proj);
+
+  MapTileSource::Config config;
+  config.rootDir = request.tilesDir.c_str();
+  config.z = lod.z;
+  config.col0 = result.col0;
+  config.row0 = result.row0;
+  config.col1 = result.col1;
+  config.row1 = result.row1;
+  source->begin(config);
+
+  result.sourceBytes = sizeof(MapTileSource);
+
+  // Everything resident is already allocated. What the render itself costs
+  // on top of that is what the reset..read window measures, and the answer
+  // should be nothing.
+  HeapProbe::reset();
+  MapRenderer::render(canvas, *source, view);
+  result.peakHeapDuringRender = HeapProbe::peakBytes();
+  result.allocsDuringRender = HeapProbe::allocCount();
+
+  result.waysDrawn = source->waysEmitted();
+  result.placesDrawn = source->placesEmitted();
+  result.tilesLoaded = static_cast<int>(source->tilesOpened());
+  result.tilesMissing = static_cast<int>(source->tilesUnavailable());
 
   return result;
 }

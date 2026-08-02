@@ -35,17 +35,26 @@ constexpr Vec2 kHeadingDir[16] = {
 
 }  // namespace
 
-void MapRenderer::render(IMapCanvas& canvas, const MapViewState& state) {
-  for (const auto& way : state.ways) {
-    const auto& pts = way.points;
-    for (size_t i = 1; i < pts.size(); ++i) {
-      canvas.drawLine(pts[i - 1].first, pts[i - 1].second, pts[i].first, pts[i].second, ROAD_LINE_WIDTH);
+void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state) {
+  // One pass per layer, each pass pulled straight from the source and
+  // forgotten. Nothing is collected first -- see IMapSource.h. The road
+  // casing pass is a second beginWays() walk and lands with the casings
+  // themselves; today there is one road pass and it draws fills.
+  if (source.beginWays()) {
+    MapWayRef way;
+    while (source.nextWay(way)) {
+      for (uint16_t i = 1; i < way.pointCount; ++i) {
+        canvas.drawLine(way.xs[i - 1], way.ys[i - 1], way.xs[i], way.ys[i], ROAD_LINE_WIDTH);
+      }
     }
   }
 
-  for (const auto& dot : state.placeDots) {
-    canvas.fillRoundedRect(dot.first - VILLAGE_DOT_DIAMETER / 2, dot.second - VILLAGE_DOT_DIAMETER / 2,
-                           VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER / 2);
+  if (source.beginPlaces()) {
+    MapPlaceRef place;
+    while (source.nextPlace(place)) {
+      canvas.fillRoundedRect(place.x - VILLAGE_DOT_DIAMETER / 2, place.y - VILLAGE_DOT_DIAMETER / 2,
+                             VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER / 2);
+    }
   }
 
   drawMarker(canvas, state.markerX, state.markerY, state.heading);

@@ -28,4 +28,9 @@ class PpmCanvas : public IMapCanvas {
   int width_;
   int height_;
   std::vector<uint8_t> pixels_;  // width_ * height_, 0 = white, 1 = black
+
+  // Scanline scratch for fillPolygon, reserved once in the constructor.
+  // A local vector here would allocate on every polygon and show up in the
+  // HeapProbe measurement as if the map path had done it (HeapProbe.h).
+  std::vector<int> crossings_;
 };

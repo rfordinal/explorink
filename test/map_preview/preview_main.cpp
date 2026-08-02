@@ -1,22 +1,27 @@
-// Native preview for MapRenderer: loads real .tib tiles around a coordinate,
-// projects roads and places to screen space, and dumps a PPM image. No
-// PlatformIO/ESP32 toolchain involved -- see docs/prototype-plan.md, P2.
+// Native preview for MapRenderer: streams real .tib tiles around a
+// coordinate through the renderer and dumps a PPM image. No PlatformIO/ESP32
+// toolchain involved -- see docs/prototype-plan.md, P2 and P2.5.
 //
 // Usage:
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
-//               [--zoom 0-4] [--out <file>]
+//               [--zoom 0-4] [--tile <col>/<row>] [--out <file>]
 //
 // <dir> is a mapbuilder-produced SD root (mapbuilder/build_tiles.py), i.e.
 // it contains base/<z>/<col>/<row>.tib. Loading/projection logic lives in
 // MapPreviewPipeline, shared with the golden-file test in
 // test/map_tile_reader/ so both render through the identical path.
+//
+// --tile pins the render to exactly one tile at the zoom step's LOD instead
+// of the whole range the viewport touches. It exists to quote a per-tile RAM
+// number against the pre-P2.5 pipeline's per-tile cost, not for real
+// previews.
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "MapPreviewPipeline.h"
-#include "MapTileReader.h"
 #include "PpmCanvas.h"
 
 namespace {
@@ -24,16 +29,7 @@ namespace {
 constexpr int SCREEN_WIDTH = 480;
 constexpr int SCREEN_HEIGHT = 800;
 
-struct Args {
-  std::string tilesDir;
-  double lat = 0.0;
-  double lon = 0.0;
-  uint8_t heading = 0;
-  int zoom = 0;
-  std::string out = "map_preview.ppm";
-};
-
-bool parseArgs(int argc, char** argv, Args& out) {
+bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& outPath) {
   bool haveLat = false, haveLon = false, haveTiles = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -41,30 +37,41 @@ bool parseArgs(int argc, char** argv, Args& out) {
     if (arg == "--tiles") {
       const char* v = next();
       if (!v) return false;
-      out.tilesDir = v;
+      request.tilesDir = v;
       haveTiles = true;
     } else if (arg == "--lat") {
       const char* v = next();
       if (!v) return false;
-      out.lat = std::atof(v);
+      request.lat = std::atof(v);
       haveLat = true;
     } else if (arg == "--lon") {
       const char* v = next();
       if (!v) return false;
-      out.lon = std::atof(v);
+      request.lon = std::atof(v);
       haveLon = true;
     } else if (arg == "--heading") {
       const char* v = next();
       if (!v) return false;
-      out.heading = static_cast<uint8_t>(std::atoi(v) % 16);
+      request.heading = static_cast<uint8_t>(std::atoi(v) % 16);
     } else if (arg == "--zoom") {
       const char* v = next();
       if (!v) return false;
-      out.zoom = std::atoi(v);
+      request.zoom = std::atoi(v);
+    } else if (arg == "--tile") {
+      const char* v = next();
+      if (!v) return false;
+      unsigned col = 0, row = 0;
+      if (std::sscanf(v, "%u/%u", &col, &row) != 2) {
+        std::fprintf(stderr, "--tile wants <col>/<row>\n");
+        return false;
+      }
+      request.singleTile = true;
+      request.tileCol = col;
+      request.tileRow = row;
     } else if (arg == "--out") {
       const char* v = next();
       if (!v) return false;
-      out.out = v;
+      outPath = v;
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
       return false;
@@ -76,39 +83,33 @@ bool parseArgs(int argc, char** argv, Args& out) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  Args args;
-  if (!parseArgs(argc, argv, args)) {
+  MapPreviewRequest request;
+  std::string outPath = "map_preview.ppm";
+  if (!parseArgs(argc, argv, request, outPath)) {
     std::fprintf(stderr,
                  "usage: map_preview --tiles <dir> --lat <d> --lon <d> "
-                 "[--heading 0-15] [--zoom 0-4] [--out <file>]\n");
+                 "[--heading 0-15] [--zoom 0-4] [--tile <col>/<row>] [--out <file>]\n");
     return 1;
   }
-  if (args.zoom < 0 || args.zoom > 4) {
+  if (request.zoom < 0 || request.zoom > 4) {
     std::fprintf(stderr, "zoom must be 0-4\n");
     return 1;
   }
 
-  const MapPreviewResult preview = buildMapPreview(args.tilesDir, args.lat, args.lon, args.heading, args.zoom);
-
-  std::printf("loaded %d tiles (%d missing) at z%u, %zu ways, %zu places\n", preview.tilesLoaded,
-              preview.tilesMissing, preview.lodZoom, preview.state.ways.size(), preview.state.placeDots.size());
-  if (preview.tilesLoaded > 0) {
-    // The O(1) claim: MapTileReader::peakBufferBytes() is a compile-time
-    // constant, so it is identical here whether the smallest or the largest
-    // tile in this run was read.
-    std::printf(
-        "tile size on disk: %ld..%ld bytes -- reader stream buffer stayed at %zu bytes regardless (O(1) in tile "
-        "size)\n",
-        preview.smallestTileBytes, preview.largestTileBytes, MapTileReader::peakBufferBytes());
-  }
-
   PpmCanvas canvas(SCREEN_WIDTH, SCREEN_HEIGHT);
-  MapRenderer::render(canvas, preview.state);
+  const MapPreviewResult preview = renderMapPreview(request, canvas);
 
-  if (!canvas.writePpm(args.out)) {
-    std::fprintf(stderr, "Failed to write %s\n", args.out.c_str());
+  std::printf("loaded %d tiles (%d missing) at z%u, %u ways, %u places\n", preview.tilesLoaded, preview.tilesMissing,
+              preview.lodZoom, preview.waysDrawn, preview.placesDrawn);
+  std::printf("tile size on disk: %ld..%ld bytes\n", preview.smallestTileBytes, preview.largestTileBytes);
+  std::printf("peak RAM: %zu B resident source + %zu B heap during render (%zu allocations) = %zu B total\n",
+              preview.sourceBytes, preview.peakHeapDuringRender, preview.allocsDuringRender,
+              preview.sourceBytes + preview.peakHeapDuringRender);
+
+  if (!canvas.writePpm(outPath)) {
+    std::fprintf(stderr, "Failed to write %s\n", outPath.c_str());
     return 1;
   }
-  std::printf("Wrote %s (%dx%d)\n", args.out.c_str(), SCREEN_WIDTH, SCREEN_HEIGHT);
+  std::printf("Wrote %s (%dx%d)\n", outPath.c_str(), SCREEN_WIDTH, SCREEN_HEIGHT);
   return 0;
 }
