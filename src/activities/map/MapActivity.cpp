@@ -54,6 +54,11 @@ void MapActivity::onEnter() {
   hasReceivedAny_ = false;
   lastDrawnSeq_ = 0;
 
+  // Fixed until P5 puts the ladder on the buttons -- there is exactly one
+  // rung, so `info` can report it as a real number now instead of
+  // `unimplemented`. The `zoom` command itself (changing it) still can't.
+  console_.state().setZoomInfo(kZoomStep, MapViewport::kZoomLadder[kZoomStep].z, MapViewport::kZoomLadder[kZoomStep].mpp);
+
   // The whole streaming path's RAM cost, paid once here rather than per tile
   // or per way. Logged as a before/after pair so the resident half of the
   // O(1) claim is a measured number and not an assertion about sizeof.
@@ -96,7 +101,24 @@ void MapActivity::loop() {
     if (!hasReceivedAny_ || update.seq != lastDrawnSeq_) {
       hasReceivedAny_ = true;
       lastDrawnSeq_ = update.seq;
-      renderViewport(update.lat, update.lon, update.heading, update.seq);
+      // BlePositionServer's 12-byte wire format still carries the old 8-step
+      // heading -- *2 lands it on the same compass directions in the 16-step
+      // enum instead of on the new intermediate steps. The packet widens in
+      // P5.
+      renderViewport(update.lat, update.lon, static_cast<uint8_t>((update.heading % 8) * 2), update.seq);
+    }
+  }
+
+  // P3 serial command console -- see MapSerialConsole.h. Non-blocking.
+  // poll() only returns true for a command that actually changed state
+  // (pos, heading, redraw), so every true here is a real redraw request,
+  // driven through the same projection and tile load the BLE path uses.
+  // zoom/marker/mode still answer ERR unimplemented -- P5.
+  if (console_.poll()) {
+    const MapConsoleState& cs = console_.state();
+    if (cs.hasPosition()) {
+      hasReceivedAny_ = true;
+      renderViewport(cs.latE7(), cs.lonE7(), cs.heading(), static_cast<uint8_t>(cs.seq()));
     }
   }
 
@@ -113,7 +135,7 @@ void MapActivity::renderWaiting() {
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
-void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t heading, uint8_t seq) {
+void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   if (!source_) {
     renderWaiting();
     return;
@@ -124,11 +146,6 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t heading, 
 
   const double lat = static_cast<double>(latE7) / 1e7;
   const double lon = static_cast<double>(lonE7) / 1e7;
-
-  // BlePositionServer's 12-byte wire format still carries the old 8-step
-  // heading -- *2 lands it on the same compass directions in the 16-step
-  // enum instead of on the new intermediate steps. The packet widens in P5.
-  const uint8_t headingStep = static_cast<uint8_t>((heading % 8) * 2);
 
   const uint8_t tileZ = MapViewport::kZoomLadder[kZoomStep].z;
   proj_.reset(lat, lon, MapViewport::kAnchorScreenX, MapViewport::kAnchorScreenY, headingStep,
@@ -181,7 +198,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t heading, 
   // Debug readout, kept from the BLE checkpoint: the raw values driving the
   // marker, plus what the viewport reset actually cost.
   char line[80];
-  snprintf(line, sizeof(line), "%.5f %.5f h%u #%u", lat, lon, heading, seq);
+  snprintf(line, sizeof(line), "%.5f %.5f h%u #%u", lat, lon, headingStep, seq);
   drawDebugLine(kTextLine1Y, line);
   snprintf(line, sizeof(line), "z%u %lut %luw %lums", range.z, static_cast<unsigned long>(source_->tilesOpened()),
            static_cast<unsigned long>(source_->waysEmitted()), static_cast<unsigned long>(elapsedMs));
@@ -195,6 +212,21 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t heading, 
   LOG_DBG(kLogTag, "heap: %lu before tile load, %lu after, delta %ld; framebuffer ready in %lu ms",
           static_cast<unsigned long>(heapBefore), static_cast<unsigned long>(heapAfter),
           static_cast<long>(heapBefore) - static_cast<long>(heapAfter), static_cast<unsigned long>(elapsedMs));
+
+  // Pushed so the console's `info` and `tiles` commands report this reset's
+  // real numbers instead of `unimplemented` -- see MapCommandConsole.h.
+  // Nothing polls MapTileSource for this; it is only ever pushed here,
+  // right after a reset, which is the only moment the numbers are current.
+  MapTileRangeSnapshot rangeSnapshot;
+  rangeSnapshot.valid = true;
+  rangeSnapshot.z = range.z;
+  rangeSnapshot.col0 = range.col0;
+  rangeSnapshot.row0 = range.row0;
+  rangeSnapshot.col1 = range.col1;
+  rangeSnapshot.row1 = range.row1;
+  rangeSnapshot.unavailableMask = missing;
+  console_.state().setTileRange(rangeSnapshot);
+  console_.state().setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted());
 
   // Timed above, deliberately: the gate is how long the framebuffer takes to
   // be ready, not how long the panel takes to show it.
