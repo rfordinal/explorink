@@ -39,6 +39,11 @@ NimBLEServer* g_server = nullptr;
 NimBLECharacteristic* g_positionChar = nullptr;
 NimBLECharacteristic* g_commandChar = nullptr;
 
+// Signaled from CommandCharCallbacks::onStatus when the peer actually
+// confirms an indication -- see sendCommandReply for why this matters more
+// than indicate()'s own return value.
+SemaphoreHandle_t g_indicateAckSem = nullptr;
+
 BlePositionServer& self() { return BlePositionServer::getInstance(); }
 
 class PositionCharCallbacks : public NimBLECharacteristicCallbacks {
@@ -52,6 +57,13 @@ class CommandCharCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
     const NimBLEAttValue value = characteristic->getValue();
     self().onCommandIngest(value.data(), value.size());
+  }
+
+  // Fires once per indicate() call when the peer's ATT-level confirm
+  // arrives (or the indication times out) -- `code` is BLE_HS_EDONE on
+  // success. Either way the one-indication-in-flight slot is free again.
+  void onStatus(NimBLECharacteristic*, NimBLEConnInfo&, int) override {
+    if (g_indicateAckSem) xSemaphoreGive(g_indicateAckSem);
   }
 };
 
@@ -81,6 +93,10 @@ bool BlePositionServer::begin(const char* deviceName) {
     return false;
   }
 
+  if (!g_indicateAckSem) {
+    g_indicateAckSem = xSemaphoreCreateBinary();
+  }
+
   // No pairing/bonding -- short range (~0.5-1m, see architecture-plan.md),
   // low-stakes write-only channel. Keeping the phone-side BLE code to
   // "connect + write" (no pairing UI/passkey flow) is worth more here than
@@ -100,10 +116,23 @@ bool BlePositionServer::begin(const char* deviceName) {
   g_positionChar = service->createCharacteristic(kPositionCharUuid, NIMBLE_PROPERTY::WRITE);
   g_positionChar->setCallbacks(&g_charCallbacks);
 
-  // WRITE carries a command line in, NOTIFY carries each reply line out. The
-  // sender subscribes once and reads replies the same way it would read them
-  // off the UART, one line per notification.
-  g_commandChar = service->createCharacteristic(kCommandCharUuid, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+  // WRITE carries a command line in, INDICATE carries each reply line out.
+  // NOTIFY was tried first and doesn't work for this: a GATT notification is
+  // unacknowledged by spec, so a back-to-back burst (info's 17 lines + OK)
+  // can queue faster than the connection interval drains it, and the
+  // controller is allowed to silently drop the overflow -- notify() still
+  // returns true because that return value only means "accepted into the
+  // host's send queue", not "the peer got it". Confirmed on real hardware:
+  // the host-side retry-on-false loop below saw every single one of 18
+  // notify() calls succeed on the first attempt, OK included, while the
+  // central still never received it. INDICATE requires the peer to confirm
+  // each one before NimBLE will send the next, so the host naturally
+  // serializes them and a busy/still-pending indicate() actually returns
+  // false for the retry loop to catch. The sender subscribes once and reads
+  // replies the same way it would read them off the UART, one line per
+  // indication.
+  g_commandChar = service->createCharacteristic(
+      kCommandCharUuid, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE);
   g_commandChar->setCallbacks(&g_commandCallbacks);
 
   // Explicit, though NimBLEAdvertising::start() would call it: the GATT table
@@ -230,7 +259,7 @@ size_t BlePositionServer::readCommandBytes(char* out, size_t max) {
 bool BlePositionServer::sendCommandReply(const char* line) {
   if (!begun_ || g_commandChar == nullptr || line == nullptr) return false;
 
-  // One notification per line, newline included so a receiver that
+  // One indication per line, newline included so a receiver that
   // concatenates them gets the same stream the UART produces.
   char buf[128];
   const int written = snprintf(buf, sizeof(buf), "%s\n", line);
@@ -238,8 +267,33 @@ bool BlePositionServer::sendCommandReply(const char* line) {
   const size_t length = static_cast<size_t>(written) < sizeof(buf) ? static_cast<size_t>(written) : sizeof(buf) - 1;
 
   g_commandChar->setValue(reinterpret_cast<const uint8_t*>(buf), length);
-  g_commandChar->notify();
-  return true;
+
+  // Confirmed on real hardware: indicate() returning true only means this
+  // indication was accepted into NimBLE's single-slot pending queue, not
+  // that the peer received it -- a burst of 18 back-to-back indicate()
+  // calls (info's 17 lines + OK) all returned true within about 3ms, yet
+  // the phone-equivalent client only ever saw the first and the last one.
+  // Each new call overwrites whatever the previous one queued before it
+  // could even be sent. The actual per-indication confirm comes later, out
+  // of band, via CommandCharCallbacks::onStatus -- so wait for that
+  // signal before returning, which serializes replies at the pace the
+  // link can really deliver them instead of the pace we can call indicate().
+  constexpr int kMaxAttempts = 40;
+  constexpr uint32_t kRetryDelayMs = 25;
+  constexpr uint32_t kConfirmTimeoutMs = 500;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    // Drain any stale give() (e.g. a previous reply's confirm landing after
+    // its own wait already timed out) so this wait can't return instantly
+    // on a signal that isn't for this indication.
+    xSemaphoreTake(g_indicateAckSem, 0);
+    if (g_commandChar->indicate()) {
+      xSemaphoreTake(g_indicateAckSem, pdMS_TO_TICKS(kConfirmTimeoutMs));
+      return true;
+    }
+    vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+  }
+  LOG_ERR("BLEPOS", "reply indicate failed after %d attempts: %.*s", kMaxAttempts, static_cast<int>(length), buf);
+  return false;
 }
 
 }  // namespace freeink
