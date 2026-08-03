@@ -319,5 +319,66 @@
     }
    ]
   }
+ },
+ "modes": {
+  "cycle": {
+   "classes": [
+    "unknown",
+    "motorway",
+    "trunk",
+    "primary",
+    "secondary",
+    "tertiary",
+    "unclassified",
+    "residential",
+    "living_street",
+    "service",
+    "track",
+    "cycleway",
+    "path",
+    "ferry",
+    "railway"
+   ]
+  },
+  "hike": {
+   "classes": [
+    "unknown",
+    "motorway",
+    "trunk",
+    "primary",
+    "secondary",
+    "tertiary",
+    "unclassified",
+    "residential",
+    "living_street",
+    "service",
+    "pedestrian",
+    "track",
+    "bridleway",
+    "cycleway",
+    "footway",
+    "path",
+    "steps",
+    "ferry",
+    "railway",
+    "aerialway"
+   ]
+  },
+  "ride": {
+   "classes": [
+    "unknown",
+    "motorway",
+    "trunk",
+    "primary",
+    "secondary",
+    "tertiary",
+    "unclassified",
+    "residential",
+    "living_street",
+    "service",
+    "track",
+    "ferry"
+   ]
+  }
  }
 }
