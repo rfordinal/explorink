@@ -858,7 +858,23 @@ build_flags =
 
 **Port Detection**: Windows: `mode` | Linux: `ls /dev/ttyUSB* /dev/ttyACM*` or `dmesg | grep tty`
 
----
+### `CMD:SCREENSHOT` cannot be pulled reliably over the serial link
+
+`main.cpp`'s `CMD:SCREENSHOT` handler dumps the raw framebuffer (48,000
+bytes) with one `logSerial.write(buf, bufferSize)` call, tempting as a way to
+grab a device shot without pulling the SD card. Tried it (2026-08-03): the
+transfer truncates after a few hundred bytes almost every time. Cause is
+below the application layer — ESP32-C3's `HWCDC` (USB CDC) has a small TX
+ring buffer and a short `xRingbufferSend` timeout per `write()` call
+(`framework-arduinoespressif32/cores/esp32/HWCDC.cpp`); if the host isn't
+draining fast enough the call gives up and returns a short count, and
+`ScreenshotUtil`'s caller doesn't retry or check for that. This is an
+Arduino-core/USB-CDC limitation, not something this fork's code got wrong.
+
+**Don't spend more time on this without fixing the underlying write.** The
+POWER+DOWN combo writing a BMP to the SD card, then physically pulling the
+card, is still the only reliable way to get a real device shot into
+`docs/device-shots/`.
 
 ## Cache Management and Invalidation
 
