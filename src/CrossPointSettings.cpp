@@ -87,6 +87,16 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["frontButtonConfirm"] = frontButtonConfirm;
   doc["frontButtonLeft"] = frontButtonLeft;
   doc["frontButtonRight"] = frontButtonRight;
+  // Map ladder state — owned by MapActivity's buttons, not by SettingsList.
+  // One array element per MapRideMode, in enum order, so a mode added later
+  // appends rather than renumbers.
+  doc["mapMode"] = mapMode;
+  JsonArray mapZoomSteps = doc["mapZoomStep"].to<JsonArray>();
+  JsonArray mapMarkerSteps = doc["mapMarkerStep"].to<JsonArray>();
+  for (uint8_t mode = 0; mode < kMapRideModeCount; ++mode) {
+    mapZoomSteps.add(mapZoomStep[mode]);
+    mapMarkerSteps.add(mapMarkerStep[mode]);
+  }
   // Font family and size — both use dynamic getter/setters in SettingsList (the
   // option lists depend on the SD font registry), so the generic loop skips them.
   doc["fontFamily"] = fontFamily;
@@ -180,6 +190,26 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   frontButtonRight =
       clamp(doc["frontButtonRight"] | (uint8_t)FRONT_HW_RIGHT, FRONT_BUTTON_HARDWARE_COUNT, FRONT_HW_RIGHT);
   validateFrontButtonMapping(s);
+
+  // Map ladder state — not in SettingsList, load manually. Everything is
+  // clamped: these are three plain bytes in a file a user can open in a text
+  // editor, and an out-of-range step would index off the end of a ladder
+  // table on the render path.
+  mapMode = clamp(doc["mapMode"] | (uint8_t)MapRideMode::Ride, kMapRideModeCount, (uint8_t)MapRideMode::Ride);
+  JsonArrayConst storedZoomSteps = doc["mapZoomStep"].as<JsonArrayConst>();
+  JsonArrayConst storedMarkerSteps = doc["mapMarkerStep"].as<JsonArrayConst>();
+  for (uint8_t mode = 0; mode < kMapRideModeCount; ++mode) {
+    // A missing array (a settings file written before this existed) leaves
+    // each mode on its own starting rung rather than on ride's.
+    if (mode < storedZoomSteps.size()) {
+      mapZoomStep[mode] =
+          clamp(storedZoomSteps[mode] | kDefaultZoomStepForMode[mode], kMapLadderStepCount, kDefaultZoomStepForMode[mode]);
+    }
+    if (mode < storedMarkerSteps.size()) {
+      mapMarkerStep[mode] = clamp(storedMarkerSteps[mode] | kDefaultMarkerStepForMode[mode], kMapLadderStepCount,
+                                  kDefaultMarkerStepForMode[mode]);
+    }
+  }
 
   // Reader font size — an actual point size since 1.5. Files written by 1.4 and
   // earlier hold the old SMALL/MEDIUM/LARGE/EXTRA_LARGE slot in 0..3; no font is

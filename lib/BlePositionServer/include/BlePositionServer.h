@@ -16,17 +16,43 @@
 
 namespace freeink {
 
-// Fixed 12-byte wire format written to the position characteristic:
-// [0..3] lat (int32, degrees * 1e7), [4..7] lon (int32, degrees * 1e7),
-// [8] heading (0-7, MapHeading value), [9] seq (rolling counter),
-// [10] flags (bit0 = off-route warning), [11] reserved.
+// Fixed 19-byte wire format written to the position characteristic, little
+// endian, no padding -- docs/architecture-plan.md, "Revised packet":
+//
+//   [0..3]   lat        int32,  degrees * 1e7
+//   [4..7]   lon        int32,  degrees * 1e7
+//   [8..11]  utc        uint32, unix seconds (0 = sender has no clock)
+//   [12..13] tz_offset  int16,  minutes east of UTC
+//   [14]     heading    0-15, a MapHeading value
+//   [15]     seq        rolling counter; the device redraws when it changes
+//   [16]     flags      bit0 = off-route warning
+//   [17]     accuracy   metres, saturating
+//   [18]     speed      km/h, saturating
+//
+// This replaced a 12-byte format that had no time, no accuracy and no speed,
+// and carried heading as 0-7. It is not accepted any more: a 12-byte write
+// is dropped rather than read as a truncated 19. The phone app does not
+// exist yet, so there is nothing in the field to be compatible with, and
+// silently reading old bytes into new fields is how a wire format rots.
+//
+// `utc`, `tz_offset` and `accuracy` are wired and stored; nothing draws them
+// yet -- see docs/architecture-plan.md, "Time is mandatory in the payload".
+// `speed` is auto zoom's input and auto zoom is a later phase. All of them
+// are here now so the packet stops changing.
 struct PositionUpdate {
   int32_t lat = 0;
   int32_t lon = 0;
-  uint8_t heading = 0;
+  uint32_t utc = 0;
+  int16_t tzOffsetMin = 0;
+  uint8_t heading = 0;  // 0-15
   uint8_t seq = 0;
   uint8_t flags = 0;
+  uint8_t accuracyM = 0;
+  uint8_t speedKmh = 0;
 };
+
+// Exact size of the packet above. A write of any other length is ignored.
+inline constexpr size_t kPositionPacketBytes = 19;
 
 class BlePositionServer {
  public:
@@ -50,11 +76,44 @@ class BlePositionServer {
   // been received yet since begin().
   bool getLatest(PositionUpdate& out) const;
 
+  // --- Command channel (P5) -------------------------------------------
+  //
+  // A second characteristic carrying the same ASCII command lines the USB
+  // serial console takes -- `pos`, `zoom`, `mode`, `info` and the rest. The
+  // grammar is not repeated anywhere: MapBleConsole feeds these bytes to the
+  // same MapCommandParser the serial console uses (docs/prototype-plan.md,
+  // P5). **This is the channel that ships**; USB never leaves the desk.
+  //
+  // Writes are queued in a small ring rather than parsed in the callback,
+  // because the callback runs on the NimBLE host task and parsing a command
+  // can end in a full-screen redraw. Draining happens on the activity's own
+  // loop().
+
+  // Copies out up to `max` queued bytes. Returns how many. Never blocks.
+  size_t readCommandBytes(char* out, size_t max);
+
+  // Sends one reply line as a notification, newline included. Returns false
+  // if BLE is down, nobody has subscribed, or the line does not fit. No '<'
+  // marker: one notification is one line and nothing else writes here, so
+  // the marker the UART needs has no job on this channel.
+  bool sendCommandReply(const char* line);
+
   // Internal: called by the NimBLE backend (not for app use). Keeps the
   // public header free of NimBLE types.
   void onWriteIngest(const uint8_t* data, size_t len);
+  void onCommandIngest(const uint8_t* data, size_t len);
 
  private:
+  // Bytes of command text buffered between the BLE callback and the next
+  // loop(). One line is at most 96 bytes (MapLineAssembler::kMaxLine), so
+  // this holds a couple of commands even if loop() is busy in a redraw. A
+  // write that would overflow it is dropped whole, not truncated: half a
+  // command can still parse, which is worse than none.
+  static constexpr size_t kCommandRingBytes = 256;
+  char commandRing_[kCommandRingBytes] = {};
+  volatile size_t commandHead_ = 0;  // write index, BLE task
+  volatile size_t commandTail_ = 0;  // read index, activity task
+
   BlePositionServer() = default;
   BlePositionServer(const BlePositionServer&) = delete;
   BlePositionServer& operator=(const BlePositionServer&) = delete;

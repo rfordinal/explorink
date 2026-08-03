@@ -4,7 +4,9 @@
 #include <cmath>
 #include <cstdio>
 
-PpmCanvas::PpmCanvas(int width, int height) : width_(width), height_(height), pixels_(width * height, 0) {}
+PpmCanvas::PpmCanvas(int width, int height) : width_(width), height_(height), pixels_(width * height, 0) {
+  crossings_.reserve(64);
+}
 
 void PpmCanvas::setPixel(int x, int y) {
   if (x < 0 || y < 0 || x >= width_ || y >= height_) return;
@@ -70,7 +72,7 @@ void PpmCanvas::fillPolygon(const int* xPoints, const int* yPoints, int numPoint
 
   // Standard scanline polygon fill: for each row, collect x where edges
   // cross it, sort, fill between pairs.
-  std::vector<int> crossings;
+  std::vector<int>& crossings = crossings_;
   for (int y = minY; y <= maxY; ++y) {
     crossings.clear();
     for (int i = 0; i < numPoints; ++i) {

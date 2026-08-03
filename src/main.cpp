@@ -475,7 +475,16 @@ void loop() {
 
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
+  //
+  // Peek before consuming: this used to read a whole line unconditionally
+  // and discard it whenever it wasn't "CMD:...", which silently ate the
+  // first line of anything else sharing the UART -- found the hard way by
+  // MapSerialConsole (src/activities/map/MapSerialConsole.cpp), whose
+  // MapActivity::loop() call runs after this one and never saw a command's
+  // first line. "CMD:" is a deliberate namespace prefix for exactly this
+  // reason (compare MapSerialConsole's '<' reply prefix); peeking the first
+  // byte is what actually respects it instead of just picking the name.
+  if (logSerial.available() > 0 && logSerial.peek() == 'C') {
     String line = logSerial.readStringUntil('\n');
     if (line.startsWith("CMD:")) {
       String cmd = line.substring(4);

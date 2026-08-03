@@ -19,14 +19,17 @@ BUILD_DIR = os.path.join(PROJECT_DIR, "build", "test")
 TEST_SRC_DIR = os.path.join(PROJECT_DIR, "test")
 OUTPUT_PPM = os.path.join(BUILD_DIR, "map_preview", "map_preview.ppm")
 
+FIXTURE_TILES = os.path.join(TEST_SRC_DIR, "map_tile_reader", "fixtures", "tiny-sd")
+
 env.AddCustomTarget(  # noqa: F821
     name="map-preview",
     dependencies=None,
     actions=[
         f'cmake -S "{TEST_SRC_DIR}" -B "{BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release',
         f'cmake --build "{BUILD_DIR}" --target map_preview',
-        f'"{BUILD_DIR}/map_preview/map_preview" "{OUTPUT_PPM}"',
+        f'"{BUILD_DIR}/map_preview/map_preview" --tiles "{FIXTURE_TILES}" '
+        f'--lat 48.531158410819025 --lon 17.072751469276742 --heading 0 --zoom 0 --out "{OUTPUT_PPM}"',
     ],
     title="Map preview (native)",
-    description="Render MapRenderer's mock view to a PPM image, no flashing/ESP32 toolchain",
+    description="Render a real .tib tile fixture to a PPM image, no flashing/ESP32 toolchain",
 )

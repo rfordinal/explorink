@@ -7,34 +7,54 @@ constexpr int VILLAGE_DOT_DIAMETER = 10;
 constexpr int MARKER_TIP_LEN = 14;      // center to tip, pixels
 constexpr int MARKER_BASE_HALF_W = 7;   // center to each base corner, pixels
 
-// Unit-ish direction vectors for the 8 snapped headings, scaled by 8 (so the
-// diagonal 0.7071 factor becomes the integer 6/8) -- avoids any sin/cos call,
-// matching the "no per-frame trig" design decision. Index = MapHeading value.
+// Unit-ish direction vectors for the 16 snapped headings, scaled by 8 (so a
+// 22.5 degree component like sin(22.5) becomes the integer 3/8, and the
+// diagonal 0.7071 factor becomes 6/8) -- avoids any sin/cos call, matching
+// the "no per-frame trig" design decision. Index = MapHeading value.
 struct Vec2 {
   int dx, dy;
 };
-constexpr Vec2 kHeadingDir[8] = {
+constexpr Vec2 kHeadingDir[16] = {
     {0, -8},   // N
+    {3, -7},   // NNE
     {6, -6},   // NE
+    {7, -3},   // ENE
     {8, 0},    // E
+    {7, 3},    // ESE
     {6, 6},    // SE
+    {3, 7},    // SSE
     {0, 8},    // S
+    {-3, 7},   // SSW
     {-6, 6},   // SW
+    {-7, 3},   // WSW
     {-8, 0},   // W
+    {-7, -3},  // WNW
     {-6, -6},  // NW
+    {-3, -7},  // NNW
 };
 
 }  // namespace
 
-void MapRenderer::render(IMapCanvas& canvas, const MapViewState& state) {
-  const auto& road = state.roadPolyline;
-  for (size_t i = 1; i < road.size(); ++i) {
-    canvas.drawLine(road[i - 1].first, road[i - 1].second, road[i].first, road[i].second, ROAD_LINE_WIDTH);
+void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state) {
+  // One pass per layer, each pass pulled straight from the source and
+  // forgotten. Nothing is collected first -- see IMapSource.h. The road
+  // casing pass is a second beginWays() walk and lands with the casings
+  // themselves; today there is one road pass and it draws fills.
+  if (source.beginWays()) {
+    MapWayRef way;
+    while (source.nextWay(way)) {
+      for (uint16_t i = 1; i < way.pointCount; ++i) {
+        canvas.drawLine(way.xs[i - 1], way.ys[i - 1], way.xs[i], way.ys[i], ROAD_LINE_WIDTH);
+      }
+    }
   }
 
-  for (const auto& dot : state.villageDots) {
-    canvas.fillRoundedRect(dot.first - VILLAGE_DOT_DIAMETER / 2, dot.second - VILLAGE_DOT_DIAMETER / 2,
-                           VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER / 2);
+  if (source.beginPlaces()) {
+    MapPlaceRef place;
+    while (source.nextPlace(place)) {
+      canvas.fillRoundedRect(place.x - VILLAGE_DOT_DIAMETER / 2, place.y - VILLAGE_DOT_DIAMETER / 2,
+                             VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER, VILLAGE_DOT_DIAMETER / 2);
+    }
   }
 
   drawMarker(canvas, state.markerX, state.markerY, state.heading);
