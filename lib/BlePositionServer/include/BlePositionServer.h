@@ -92,9 +92,14 @@ class BlePositionServer {
   // Copies out up to `max` queued bytes. Returns how many. Never blocks.
   size_t readCommandBytes(char* out, size_t max);
 
-  // Sends one reply line as a notification, newline included. Returns false
-  // if BLE is down, nobody has subscribed, or the line does not fit. No '<'
-  // marker: one notification is one line and nothing else writes here, so
+  // Sends one reply line as an indication, newline included. Returns false
+  // if BLE is down, nobody has subscribed, the line does not fit, or the
+  // peer never confirmed it within the retry budget. Indication over
+  // notification is deliberate: a GATT notification is unacknowledged, so a
+  // multi-line reply sent faster than the connection interval drains it can
+  // have its tail silently dropped by the controller with no error --
+  // confirmed on real hardware sending BlePositionServer.cpp's history. No
+  // '<' marker: one indication is one line and nothing else writes here, so
   // the marker the UART needs has no job on this channel.
   bool sendCommandReply(const char* line);
 

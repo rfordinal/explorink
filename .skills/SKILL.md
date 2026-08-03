@@ -858,23 +858,26 @@ build_flags =
 
 **Port Detection**: Windows: `mode` | Linux: `ls /dev/ttyUSB* /dev/ttyACM*` or `dmesg | grep tty`
 
-### `CMD:SCREENSHOT` cannot be pulled reliably over the serial link
+### `CMD:SCREENSHOT` over serial -- fixed, 100/100 grabs clean
 
 `main.cpp`'s `CMD:SCREENSHOT` handler dumps the raw framebuffer (48,000
-bytes) with one `logSerial.write(buf, bufferSize)` call, tempting as a way to
-grab a device shot without pulling the SD card. Tried it (2026-08-03): the
-transfer truncates after a few hundred bytes almost every time. Cause is
-below the application layer — ESP32-C3's `HWCDC` (USB CDC) has a small TX
-ring buffer and a short `xRingbufferSend` timeout per `write()` call
-(`framework-arduinoespressif32/cores/esp32/HWCDC.cpp`); if the host isn't
-draining fast enough the call gives up and returns a short count, and
-`ScreenshotUtil`'s caller doesn't retry or check for that. This is an
-Arduino-core/USB-CDC limitation, not something this fork's code got wrong.
+bytes). It used to do this with one `logSerial.write(buf, bufferSize)` call,
+which truncated after a few hundred bytes almost every time (2026-08-03).
+Confirmed on real hardware: `write()`'s own return value ranged from ~300 to
+the full 48,000, unpredictably. Cause was two of this fork's own choices
+stacking, not an Arduino-core limitation: `logSerial.setTxTimeoutMs(1)` (see
+`setup()`, load-bearing, still 1) gives a single `write()` call almost no
+budget to ride out a host stall, against `HWCDC`'s default 256-byte TX ring
+buffer.
 
-**Don't spend more time on this without fixing the underlying write.** The
-POWER+DOWN combo writing a BMP to the SD card, then physically pulling the
-card, is still the only reliable way to get a real device shot into
-`docs/device-shots/`.
+Fixed by `writeAllChunked()`: retries the remainder against
+`availableForWrite()` with its own 3-second total budget, independent of the
+1ms per-call timeout. TX ring buffer bumped to 4096 bytes alongside it. Gate:
+`tools/screenshot_gate.py --runs 100` in the parent repo, 100/100 clean.
+
+This is now a real way to get a device shot without pulling the SD card --
+see `docs/device-shots/` in the parent repo. The POWER+DOWN combo is still
+useful as an independent reference to compare against.
 
 ## Cache Management and Invalidation
 
