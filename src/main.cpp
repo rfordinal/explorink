@@ -160,6 +160,36 @@ void silentRestartToReader() {
   ESP.restart();
 }
 
+// Chunked, retrying write for a bulk buffer over logSerial. A single
+// logSerial.write() call gives up as soon as HWCDC's TX ring buffer (256
+// bytes by default) fills and the host doesn't drain it inside the ~1ms
+// window set by setTxTimeoutMs(1) in setup() -- confirmed on real hardware
+// (docs/debug-screenshot-channel-plan.md): a 48,000-byte write() returned
+// anywhere from ~300 bytes to the full count, unpredictably. That per-call
+// timeout is load-bearing elsewhere and stays as-is; this loop just retries
+// the remainder across many short calls instead of trusting one to finish,
+// bounded by a total timeout so a genuinely dead link still returns.
+size_t writeAllChunked(uint8_t* data, size_t len, uint32_t totalTimeoutMs) {
+  size_t sent = 0;
+  const unsigned long deadline = millis() + totalTimeoutMs;
+  while (sent < len) {
+    const int avail = logSerial.availableForWrite();
+    if (avail <= 0) {
+      if (static_cast<long>(millis() - deadline) >= 0) break;
+      delay(2);
+      continue;
+    }
+    const size_t want = static_cast<size_t>(avail) < (len - sent) ? static_cast<size_t>(avail) : (len - sent);
+    const size_t written = logSerial.write(data + sent, want);
+    sent += written;
+    if (written == 0) {
+      if (static_cast<long>(millis() - deadline) >= 0) break;
+      delay(2);
+    }
+  }
+  return sent;
+}
+
 void waitForPowerRelease() {
   gpio.update();
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
@@ -275,6 +305,13 @@ void setup() {
   Serial.begin(115200);
 #if LOG_SERIAL_HAS_TX_TIMEOUT
   logSerial.setTxTimeoutMs(1);  // This is a load-bearing 1. Do not modify.
+  // Default TX ring buffer is 256 bytes (HWCDC::begin()). CMD:SCREENSHOT
+  // dumps the 48,000-byte framebuffer through writeAllChunked(), which
+  // retries around the 1ms timeout above rather than needing a bigger
+  // buffer to work at all -- but 256 bytes means ~190 chunks minimum even
+  // when the host keeps up. 4096 cuts that to ~12 and costs 3,840 bytes of
+  // heap, negligible next to the ~118KB free heap this build reports.
+  logSerial.setTxBufferSize(4096);
 #endif
 #endif
 
@@ -493,7 +530,10 @@ void loop() {
         const uint32_t bufferSize = display.getBufferSize();
         logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
         uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, bufferSize);
+        const size_t written = writeAllChunked(buf, bufferSize, /*totalTimeoutMs=*/3000);
+        if (written != bufferSize) {
+          LOG_ERR("SCR", "screenshot write incomplete: %u of %u bytes", (unsigned)written, (unsigned)bufferSize);
+        }
         logSerial.printf("SCREENSHOT_END\n");
       }
     }
