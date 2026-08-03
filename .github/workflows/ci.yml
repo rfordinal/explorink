@@ -90,7 +90,7 @@ jobs:
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: pio-${{ runner.os }}-
 
-      - name: Build CrossPoint
+      - name: Build TrailInk
         # Both envs in ONE pio invocation: a second `pio run` can wipe the whole
         # .pio/build tree (project-checksum mismatch after the S3 toolchain
         # installs into the restored cache), deleting the default firmware.bin
