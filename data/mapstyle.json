@@ -1,323 +1,417 @@
 {
- "device": {
-  "marker_x_px": 230,
-  "marker_y_px": 620,
-  "max_zoom_mpp": 15,
-  "min_zoom_mpp": 3,
-  "screen_px": [
-   480,
-   800
-  ]
- },
- "layers": {
-  "buildings": {
-   "enabled": true,
-   "rule": {
-    "fill": "hatch",
-    "hatch": "XXXX",
-    "hatch_spacing_px": 4,
-    "outline_width": 0
-   }
+  "_comment": "Rendering style config, shared between mapbuilder's webapp preview and (eventually) the xteink firmware renderer. Kept as flat tag->rule matching so a future C++ loader stays simple. Not the final on-device binary tile format (see roadmap item 13) -- this is the authoring/spec format. The device is strictly 1-bit e-ink (no anti-aliasing, no grayscale) -- every 'color' field is #000000; differentiate features by width/pattern/hatch only, never color. This file is the one and only style file -- there is no separate mapbuilder/style.json. It lives here, not in mapbuilder, because this repo builds from it and is the one that gets pushed (see xteink CLAUDE.md, 'This repo is never pushed anywhere').",
+  "device": {
+    "_comment": "480x800 = PORTRAIT logical coords (CrossPointSettings.h ORIENTATION::PORTRAIT, the firmware default) -- NOT the raw 800x480 SSD1677 panel silicon, which is landscape-native but rotated by the renderer. marker_x_px/marker_y_px are the position puck's place on screen, in device pixels from the top-left; the viewport is whatever falls around it, asymmetric in both axes. This replaces marker_y_from_bottom_frac, which could only express a vertical offset -- on the device the marker slides across a stationary map to avoid a full e-ink refresh per GPS update, so it is free in both axes. See docs/map-render-spec.md.",
+    "marker_x_px": 230,
+    "marker_y_px": 620,
+    "max_zoom_mpp": 15,
+    "min_zoom_mpp": 3,
+    "screen_px": [
+      480,
+      800
+    ]
   },
-  "junctions": {
-   "enabled": true,
-   "halo_px": 2,
-   "max_dist_px": 6,
-   "min_spacing_px": 40,
-   "radius_px": 4,
-   "require_major": true
-  },
-  "offscreen_places": {
-   "arrow_len_px": 18,
-   "arrow_width_px": 15,
-   "edge_inset_px": 24,
-   "enabled": true,
-   "label_bg": true,
-   "label_bg_border_px": 1,
-   "label_bg_pad_px": 3,
-   "label_bold": true,
-   "label_gap_px": 6,
-   "label_px": 15,
-   "max_count": 4,
-   "min_gap_px": 70,
-   "show_distance": true
-  },
-  "places": {
-   "dot_radius_px": 5,
-   "enabled": true,
-   "label_bg": true,
-   "label_bg_border_px": 1,
-   "label_bg_pad_px": 3,
-   "label_bold": true,
-   "label_char_width_frac": 0.62,
-   "label_offset_px": 8,
-   "label_px": 17
-  },
-  "position": {
-   "arrow_px": 28,
-   "enabled": true,
-   "puck_radius_px": 26,
-   "ring_px": 3
-  },
-  "roads": {
-   "default": {
-    "pattern": "solid",
-    "width": 0.83
-   },
-   "enabled": true,
-   "rules": [
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "construction"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
+  "layers": {
+    "buildings": {
+      "enabled": true,
+      "rule": {
+        "color": "#000000",
+        "fill": "hatch",
+        "hatch": "XXXX",
+        "hatch_spacing_px": 4,
+        "outline_width": 0
+      }
     },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "cycleway"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
+    "junctions": {
+      "_comment": "Junction dots, drawn ONLY along the route. Three filters: within max_dist_px of the route; significant, i.e. require_major means at least one road there is flagged major in the roads layer and not hidden (otherwise every side street and footpath in a village beads the whole route); and no two closer than min_spacing_px along the route. Keyed on the roads layer's `major` flag, NOT on rule width -- width is cosmetic, so thinning the major roads must not silently delete the dots. halo_px is a white ring around each dot, without which they are invisible where they sit on the black route. Sizes in device pixels.",
+      "enabled": true,
+      "halo_px": 2,
+      "max_dist_px": 6,
+      "min_spacing_px": 40,
+      "radius_px": 4,
+      "require_major": true
     },
-    {
-     "casing_px": 0,
-     "hidden": true,
-     "major": false,
-     "match": {
-      "highway": [
-       "footway"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
+    "offscreen_places": {
+      "_comment": "Edge indicators for villages OUTSIDE the viewport. A clipped-away village tells you nothing, but 'which way is the next village' is exactly what a glance needs -- so each gets a chevron on the screen edge where the ray from the position marker exits, pointing outward, with the name pulled back inside so it cannot be clipped too. Nearest first: if two want the same piece of edge (closer than min_gap_px) the further one is dropped rather than overlapped, and at most max_count are shown. Sizes in device pixels.",
+      "arrow_len_px": 18,
+      "arrow_width_px": 15,
+      "edge_inset_px": 24,
+      "enabled": true,
+      "label_bg": true,
+      "label_bg_border_px": 1,
+      "label_bg_pad_px": 3,
+      "label_bold": true,
+      "label_gap_px": 6,
+      "label_px": 15,
+      "max_count": 4,
+      "min_gap_px": 70,
+      "show_distance": true
     },
-    {
-     "casing_px": 0,
-     "hidden": true,
-     "major": false,
-     "match": {
-      "highway": [
-       "living_street"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
+    "places": {
+      "_comment": "Village/town dot + label, all sizes in DEVICE PIXELS. The label sits on an opaque white box because the point of it is glanceability: read at arm's length in motion, a bold name crossing a road network is unreadable without a background to knock the lines out. label_bg_border_px 0 disables the border, label_bg false disables the box. Labels flip to whichever side of the dot has room, using label_char_width_frac to estimate the text width from the name length -- a fixed margin clips exactly the long names that overflow.",
+      "dot_radius_px": 5,
+      "enabled": true,
+      "label_bg": true,
+      "label_bg_border_px": 1,
+      "label_bg_pad_px": 3,
+      "label_bold": true,
+      "label_char_width_frac": 0.62,
+      "label_offset_px": 8,
+      "label_px": 17
     },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "path"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
+    "position": {
+      "_comment": "The 'you are here' puck at the viewport origin: white disc, black ring, black heading arrow. Sizes in device pixels.",
+      "arrow_px": 28,
+      "enabled": true,
+      "puck_radius_px": 26,
+      "ring_px": 3
     },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "pedestrian"
+    "roads": {
+      "_comment": "Widths in DEVICE PIXELS (as is every length in this file). casing_px > 0 draws the road as two parallel black edges of that thickness with the road left white between them -- how a wide main road is distinguished from a thin one on 1-bit e-ink. `major` marks roads you would turn onto (the junctions layer keys off it, NOT off width, which is cosmetic). `hidden` means matched-but-not-drawn.",
+      "default": {
+        "color": "#000000",
+        "pattern": "solid",
+        "width": 0.83
+      },
+      "enabled": true,
+      "rules": [
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "construction"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "cycleway"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "highway": [
+              "footway"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "highway": [
+              "living_street"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "path"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "pedestrian"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "platform"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "proposed"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "raceway"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "residential"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 1,
+          "color": "#000000",
+          "hidden": false,
+          "major": true,
+          "match": {
+            "highway": [
+              "secondary"
+            ]
+          },
+          "pattern": "solid",
+          "width": 7
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "service"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "highway": [
+              "steps"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 1,
+          "color": "#000000",
+          "hidden": false,
+          "major": true,
+          "match": {
+            "highway": [
+              "tertiary"
+            ]
+          },
+          "pattern": "solid",
+          "width": 7
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "tertiary_link"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "highway": [
+              "track"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "highway": [
+              "unclassified"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        }
       ]
-     },
-     "pattern": "solid",
-     "width": 1
     },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "platform"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
+    "route": {
+      "_comment": "distinguished from roads by width alone -- there is no color on 1-bit e-ink. width/arrow_* are DEVICE PIXELS: screen decorations must stay legible at any map zoom, so they do not scale with mpp.",
+      "arrow_len_px": 30,
+      "arrow_width_px": 22,
+      "color": "#000000",
+      "pattern": "solid",
+      "width": 8
     },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "proposed"
+    "water": {
+      "default": {
+        "color": "#000000",
+        "pattern": "solid",
+        "width": 1
+      },
+      "enabled": false,
+      "rules": [
+        {
+          "color": "#000000",
+          "match": {
+            "waterway": [
+              "river"
+            ]
+          },
+          "pattern": "solid",
+          "width": 2.78
+        },
+        {
+          "color": "#000000",
+          "match": {
+            "waterway": [
+              "stream",
+              "canal",
+              "drain"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1.39
+        },
+        {
+          "color": "#000000",
+          "fill": "hatch",
+          "hatch": "----",
+          "hatch_spacing_px": 5,
+          "match": {
+            "natural": [
+              "water"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1.39
+        }
       ]
-     },
-     "pattern": "solid",
-     "width": 1
-    },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "raceway"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
-    },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "residential"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
-    },
-    {
-     "casing_px": 1,
-     "hidden": false,
-     "major": true,
-     "match": {
-      "highway": [
-       "secondary"
-      ]
-     },
-     "pattern": "solid",
-     "width": 7
-    },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "service"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
-    },
-    {
-     "casing_px": 0,
-     "hidden": true,
-     "major": false,
-     "match": {
-      "highway": [
-       "steps"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
-    },
-    {
-     "casing_px": 1,
-     "hidden": false,
-     "major": true,
-     "match": {
-      "highway": [
-       "tertiary"
-      ]
-     },
-     "pattern": "solid",
-     "width": 7
-    },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "tertiary_link"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
-    },
-    {
-     "casing_px": 0,
-     "hidden": true,
-     "major": false,
-     "match": {
-      "highway": [
-       "track"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
-    },
-    {
-     "casing_px": 0,
-     "hidden": false,
-     "major": false,
-     "match": {
-      "highway": [
-       "unclassified"
-      ]
-     },
-     "pattern": "solid",
-     "width": 1
     }
-   ]
   },
-  "route": {
-   "arrow_len_px": 30,
-   "arrow_width_px": 22,
-   "pattern": "solid",
-   "width": 8
-  },
-  "water": {
-   "default": {
-    "pattern": "solid",
-    "width": 1
-   },
-   "enabled": false,
-   "rules": [
-    {
-     "match": {
-      "waterway": [
-       "river"
+  "modes": {
+    "_comment": "Render-time class filter, one entry per travel mode. scripts/gen_mode_masks.py compiles `classes` into a 32-bit mask at firmware build time (a pre: build step); the device tests mask & (1 << class_id) against the compiled constant -- there is no style file on the device and no load-time parsing. A way whose class is not listed is not drawn. One tile set serves all three modes -- never filter by mode at build time (docs/map-data-spec.md, 'Mode is a render-time filter'). Names are the tile format's own class enum (mapbuilder/class_spec.py), not style rule names, so editing the style never forces a tile rebuild. An unknown name, or an empty list, fails the build.",
+    "cycle": {
+      "classes": [
+        "unknown",
+        "motorway",
+        "trunk",
+        "primary",
+        "secondary",
+        "tertiary",
+        "unclassified",
+        "residential",
+        "living_street",
+        "service",
+        "track",
+        "cycleway",
+        "path",
+        "ferry",
+        "railway"
       ]
-     },
-     "pattern": "solid",
-     "width": 2.78
     },
-    {
-     "match": {
-      "waterway": [
-       "stream",
-       "canal",
-       "drain"
+    "hike": {
+      "classes": [
+        "unknown",
+        "motorway",
+        "trunk",
+        "primary",
+        "secondary",
+        "tertiary",
+        "unclassified",
+        "residential",
+        "living_street",
+        "service",
+        "pedestrian",
+        "track",
+        "bridleway",
+        "cycleway",
+        "footway",
+        "path",
+        "steps",
+        "ferry",
+        "railway",
+        "aerialway"
       ]
-     },
-     "pattern": "solid",
-     "width": 1.39
     },
-    {
-     "fill": "hatch",
-     "hatch": "----",
-     "hatch_spacing_px": 5,
-     "match": {
-      "natural": [
-       "water"
+    "ride": {
+      "classes": [
+        "unknown",
+        "motorway",
+        "trunk",
+        "primary",
+        "secondary",
+        "tertiary",
+        "unclassified",
+        "residential",
+        "living_street",
+        "service",
+        "track",
+        "ferry"
       ]
-     },
-     "pattern": "solid",
-     "width": 1.39
     }
-   ]
   }
- }
 }
