@@ -34,7 +34,7 @@ void logLine(std::string_view line) {
 
 }  // namespace
 
-MapSerialConsole::MapSerialConsole() {
+MapSerialConsole::MapSerialConsole(MapConsoleState& state) : console_(state) {
   console_.state().setFreeHeapProvider(&freeHeap);
   console_.setLineObserver(&logLine);
 }

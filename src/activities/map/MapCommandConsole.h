@@ -70,14 +70,19 @@ struct MapTileRangeSnapshot {
 };
 
 // What the commands actually do, and the only thing that knows it. Holds no
-// channel and no hardware, so both P3's serial console and P5's BLE
+// channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
 // same behaviour by construction.
 //
-// Implements pos, heading, redraw, info and (after the P3/P4 merge) tiles.
-// zoom, marker and mode parse correctly and answer `ERR unimplemented` --
-// their behaviour is P5, the zoom/marker ladders and the mode class mask;
-// the grammar is fixed here so it is fixed once.
+// **One instance per map screen, shared by every channel.** MapActivity owns
+// it and hands a reference to each transport. Two states would mean the map
+// had two zooms, and which one you got would depend on which cable was
+// plugged in.
+//
+// Implements the whole grammar: pos, heading, zoom, marker, mode, redraw,
+// tiles, info. zoom/marker/mode only move the numbers here -- applying them
+// to the projection, the class mask and the settings file is MapActivity's
+// job, which is what keeps this half free of hardware.
 class MapConsoleState {
  public:
   // Runs one command, writes exactly the reply lines it produces, and
@@ -89,6 +94,13 @@ class MapConsoleState {
   int32_t lonE7() const { return lonE7_; }
   uint8_t heading() const { return heading_; }  // 0-15, see MapHeading.h
   uint16_t speedKmh() const { return speedKmh_; }
+
+  // Ladder steps and travel mode, as last set by a command or pushed back by
+  // MapActivity. MapActivity reads these after a command lands and applies
+  // them; nothing here knows what a step means in pixels or metres.
+  uint8_t zoomStep() const { return zoomStep_; }
+  uint8_t markerStep() const { return markerStep_; }
+  MapRideMode mode() const { return mode_; }
   // Bumped by every command that changes what is on screen. A caller that
   // only redraws on change can compare it; poll() returning true is the
   // simpler way.
@@ -98,25 +110,35 @@ class MapConsoleState {
   // line is simply omitted, which is what the native tests want.
   void setFreeHeapProvider(uint32_t (*provider)()) { freeHeapProvider_ = provider; }
 
-  // Called once from MapActivity::onEnter() with the fixed viewport
-  // constants -- there is exactly one zoom rung until P5 puts the ladder on
-  // the buttons. `info`'s zoom/lod/mpp lines read this; the `zoom` command
-  // (changing the rung) still answers ERR unimplemented regardless.
+  // Pushed by MapActivity after every viewport reset: what the zoom step it
+  // actually rendered at resolves to. `info`'s zoom/lod/mpp lines read this.
   void setZoomInfo(uint8_t zoomStep, uint8_t lod, double mpp) {
     zoomStep_ = zoomStep;
     lod_ = lod;
     mpp_ = mpp;
   }
 
+  // Pushed by MapActivity whenever it changes a ladder itself -- a button
+  // press, or a `mode` command restoring that mode's stored steps. Without
+  // this the console would report the last value *typed* rather than the one
+  // on screen, and the two diverge the moment a button is pressed.
+  void setLadders(uint8_t zoomStep, uint8_t markerStep, MapRideMode mode) {
+    zoomStep_ = zoomStep;
+    markerStep_ = markerStep;
+    mode_ = mode;
+  }
+
   // Pushed by MapActivity after every viewport reset -- pos, heading and
   // redraw all end in one. `info`'s tiles_ok/tiles_missing/ways/bytes lines
   // read this. Zero before the first reset, which reads correctly: nothing
   // has been drawn yet.
-  void setRenderStats(uint32_t tilesOk, uint32_t tilesMissing, uint32_t ways, uint32_t bytesRead) {
+  void setRenderStats(uint32_t tilesOk, uint32_t tilesMissing, uint32_t ways, uint32_t bytesRead,
+                      uint32_t waysFiltered = 0) {
     tilesOk_ = tilesOk;
     tilesMissing_ = tilesMissing;
     ways_ = ways;
     bytesRead_ = bytesRead;
+    waysFiltered_ = waysFiltered;
   }
 
   // Pushed alongside setRenderStats() by the same reset. `tiles` reads this.
@@ -135,18 +157,30 @@ class MapConsoleState {
   uint32_t (*freeHeapProvider_)() = nullptr;
 
   uint8_t zoomStep_ = 0;
+  uint8_t markerStep_ = 0;
+  MapRideMode mode_ = MapRideMode::Ride;
   uint8_t lod_ = 0;
   double mpp_ = 0.0;
   uint32_t tilesOk_ = 0;
   uint32_t tilesMissing_ = 0;
   uint32_t ways_ = 0;
+  uint32_t waysFiltered_ = 0;
   uint32_t bytesRead_ = 0;
   MapTileRangeSnapshot tileRange_;
 };
 
-// Line assembler + parser + state, wired together. Feed it bytes.
+// Line assembler + parser + a reference to the shared state. One of these
+// per channel.
+//
+// **The assembler is per channel and the state is not.** A UART's half-typed
+// line and a BLE write's half-typed line are two different half-typed lines
+// and must not interleave into one buffer; the map's zoom, on the other hand,
+// is one number whichever channel set it. That split is the whole reason this
+// object and MapConsoleState are separate types.
 class MapCommandConsole {
  public:
+  explicit MapCommandConsole(MapConsoleState& state) : state_(state) {}
+
   // One received byte. Returns true if a line completed and the screen
   // needs redrawing.
   bool feed(char c, IMapReplyWriter& out);
@@ -168,6 +202,6 @@ class MapCommandConsole {
 
  private:
   MapLineAssembler assembler_;
-  MapConsoleState state_;
+  MapConsoleState& state_;
   void (*lineObserver_)(std::string_view) = nullptr;
 };

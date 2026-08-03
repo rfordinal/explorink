@@ -12,10 +12,9 @@ constexpr size_t kReplyBuf = 48;
 // and a chunk of flash nothing else here needs.
 void formatE7(int32_t value, char* buf, size_t bufLen) {
   const bool negative = value < 0;
-  const uint32_t magnitude = negative ? static_cast<uint32_t>(-static_cast<int64_t>(value))
-                                      : static_cast<uint32_t>(value);
-  snprintf(buf, bufLen, "%s%lu.%07lu", negative ? "-" : "",
-           static_cast<unsigned long>(magnitude / 10000000u),
+  const uint32_t magnitude =
+      negative ? static_cast<uint32_t>(-static_cast<int64_t>(value)) : static_cast<uint32_t>(value);
+  snprintf(buf, bufLen, "%s%lu.%07lu", negative ? "-" : "", static_cast<unsigned long>(magnitude / 10000000u),
            static_cast<unsigned long>(magnitude % 10000000u));
 }
 
@@ -103,13 +102,27 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
 
     case MapCommandType::Zoom:
+      // The parser already rejected anything outside 0-4, so the ladder is
+      // never indexed off its end from here.
+      zoomStep_ = cmd.zoom;
+      ++seq_;
+      out.reply("OK");
+      return true;
+
     case MapCommandType::Marker:
+      markerStep_ = cmd.marker;
+      ++seq_;
+      out.reply("OK");
+      return true;
+
     case MapCommandType::Mode:
-      // Parsed, understood, and deliberately not acted on: zoom and marker
-      // are the P5 hardware ladders, mode is P5's class mask. The grammar is
-      // fixed now so it is fixed once (docs/prototype-plan.md).
-      out.reply("ERR unimplemented");
-      return false;
+      mode_ = cmd.mode;
+      ++seq_;
+      out.reply("OK");
+      // The caller is expected to push the new mode's *stored* ladder steps
+      // back through setLadders() before reporting anything -- switching mode
+      // restores that mode's steps, it does not carry the old ones across.
+      return true;
   }
 
   return false;
@@ -152,10 +165,14 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   snprintf(line, sizeof(line), "INFO mpp=%.1f", mpp_);
   out.reply(line);
 
-  // marker and mode are still P5 -- the marker-height ladder and the class
-  // mask don't exist yet.
-  out.reply("INFO marker=unimplemented");
-  out.reply("INFO mode=unimplemented");
+  // marker and mode were the last two `unimplemented` values. Same keys, real
+  // values now: the marker-height ladder step and the travel mode whose class
+  // mask is filtering the drawing.
+  snprintf(line, sizeof(line), "INFO marker=%u", static_cast<unsigned>(markerStep_));
+  out.reply(line);
+
+  snprintf(line, sizeof(line), "INFO mode=%s", mapRideModeName(mode_));
+  out.reply(line);
 
   // New keys, not previously in the grammar's `unimplemented` set: what the
   // last viewport reset actually loaded. Zero before the first reset.
@@ -166,6 +183,11 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   out.reply(line);
 
   snprintf(line, sizeof(line), "INFO ways=%lu", static_cast<unsigned long>(ways_));
+  out.reply(line);
+
+  // The mode filter's own evidence: the same coordinate in two modes reads
+  // the same tiles and drops a different number of ways here.
+  snprintf(line, sizeof(line), "INFO ways_filtered=%lu", static_cast<unsigned long>(waysFiltered_));
   out.reply(line);
 
   snprintf(line, sizeof(line), "INFO bytes=%lu", static_cast<unsigned long>(bytesRead_));

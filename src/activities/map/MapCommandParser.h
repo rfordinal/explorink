@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "MapRideMode.h"
+
 // Line-based ASCII command grammar for the map/nav console.
 //
 // Pure: no I/O, no Arduino, no activity, no serial. One grammar, two
@@ -57,8 +59,6 @@ enum class MapCommandError : uint8_t {
   BadMode,
   LineTooLong,  // not produced by the parser; the line assembler raises it
 };
-
-enum class MapRideMode : uint8_t { Ride, Hike, Cycle };
 
 struct MapCommand {
   MapCommandType type = MapCommandType::Empty;

@@ -282,7 +282,8 @@ TEST(MapLineAssembler, ExactlyMaxLineIsAccepted) {
 // ---------------------------------------------------------------- console
 
 TEST(MapCommandConsole, PosRepliesOkAndRedraws) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
 
   EXPECT_TRUE(feedLine(console, out, "pos 48.4372 17.0186 heading 4"));
@@ -297,7 +298,8 @@ TEST(MapCommandConsole, PosRepliesOkAndRedraws) {
 }
 
 TEST(MapCommandConsole, EmptyLineIsSilent) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   EXPECT_FALSE(feedLine(console, out, ""));
   EXPECT_FALSE(feedLine(console, out, "   "));
@@ -305,7 +307,8 @@ TEST(MapCommandConsole, EmptyLineIsSilent) {
 }
 
 TEST(MapCommandConsole, ErrorLinesCarryTheReason) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   EXPECT_FALSE(feedLine(console, out, "fly"));
   EXPECT_FALSE(feedLine(console, out, "heading 99"));
@@ -315,7 +318,8 @@ TEST(MapCommandConsole, ErrorLinesCarryTheReason) {
 }
 
 TEST(MapCommandConsole, OverLongLineRepliesErrAndKeepsGoing) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
 
   EXPECT_FALSE(feedLine(console, out, std::string(MapLineAssembler::kMaxLine + 10, 'x')));
@@ -327,22 +331,67 @@ TEST(MapCommandConsole, OverLongLineRepliesErrAndKeepsGoing) {
   EXPECT_EQ(out.lines[1], "OK");
 }
 
-TEST(MapCommandConsole, UnimplementedCommandsParseThenRefuse) {
-  MapCommandConsole console;
+TEST(MapCommandConsole, LadderAndModeCommandsTakeEffect) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
-  // tiles left the unimplemented set at the P3/P4 merge -- P4's tile range
-  // is real now, see the Tiles* tests below. zoom/marker are the P5
-  // ladders, mode is P5's class mask; none of the three exist yet.
+  // The last three `ERR unimplemented` commands. All of them now move a
+  // number and ask for a redraw; nothing in the grammar changed.
   for (const char* line : {"zoom 3", "marker 2", "mode hike"}) {
-    EXPECT_FALSE(feedLine(console, out, line)) << line;
+    EXPECT_TRUE(feedLine(console, out, line)) << line;
   }
   ASSERT_EQ(out.lines.size(), 3u);
-  for (const std::string& reply : out.lines) EXPECT_EQ(reply, "ERR unimplemented");
-  EXPECT_EQ(console.state().seq(), 0u);
+  for (const std::string& reply : out.lines) EXPECT_EQ(reply, "OK");
+  EXPECT_EQ(console.state().zoomStep(), 3);
+  EXPECT_EQ(console.state().markerStep(), 2);
+  EXPECT_EQ(console.state().mode(), MapRideMode::Hike);
+  EXPECT_EQ(console.state().seq(), 3u);
+}
+
+TEST(MapCommandConsole, TwoChannelsShareOneState) {
+  // What MapActivity builds: one state, one assembler per transport. A
+  // command over either channel lands on the same numbers, and a line split
+  // across the two does not interleave into one buffer.
+  MapConsoleState state;
+  MapCommandConsole serial(state);
+  MapCommandConsole ble(state);
+  CollectingWriter out;
+
+  EXPECT_TRUE(feedLine(serial, out, "zoom 4"));
+  EXPECT_EQ(ble.state().zoomStep(), 4);
+
+  EXPECT_TRUE(feedLine(ble, out, "mode cycle"));
+  EXPECT_EQ(serial.state().mode(), MapRideMode::Cycle);
+
+  // Half a line on each channel. Neither completes, so neither runs, and
+  // the halves never form one command.
+  CollectingWriter halves;
+  EXPECT_FALSE(serial.feed('z', halves));
+  EXPECT_FALSE(ble.feed('m', halves));
+  EXPECT_TRUE(halves.lines.empty());
+  EXPECT_EQ(state.zoomStep(), 4);
+}
+
+TEST(MapCommandConsole, LaddersPushedBackByTheActivityAreWhatInfoReports) {
+  // MapActivity owns the ladders; a button press changes them without any
+  // command being typed, and `info` must report the screen, not the last
+  // thing typed.
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  EXPECT_TRUE(feedLine(console, out, "zoom 1"));
+  state.setLadders(/*zoomStep=*/4, /*markerStep=*/0, MapRideMode::Cycle);
+
+  out.lines.clear();
+  EXPECT_FALSE(feedLine(console, out, "info"));
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO zoom=4"), out.lines.end());
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO marker=0"), out.lines.end());
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO mode=cycle"), out.lines.end());
 }
 
 TEST(MapCommandConsole, TilesCommandBeforeAnyResetReportsNone) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   EXPECT_FALSE(feedLine(console, out, "tiles"));
   ASSERT_EQ(out.lines.size(), 2u);
@@ -352,7 +401,8 @@ TEST(MapCommandConsole, TilesCommandBeforeAnyResetReportsNone) {
 }
 
 TEST(MapCommandConsole, TilesCommandListsTheLastSnapshot) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
 
   // What MapActivity::renderViewport() pushes after a reset: a 2x1 range,
@@ -375,23 +425,27 @@ TEST(MapCommandConsole, TilesCommandListsTheLastSnapshot) {
 }
 
 TEST(MapCommandConsole, InfoReportsRealZoomLodMppAndTileStats) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   console.state().setZoomInfo(/*zoomStep=*/0, /*lod=*/13, /*mpp=*/3.0);
-  console.state().setRenderStats(/*tilesOk=*/3, /*tilesMissing=*/1, /*ways=*/2065, /*bytesRead=*/61234);
+  console.state().setRenderStats(/*tilesOk=*/3, /*tilesMissing=*/1, /*ways=*/2065, /*bytesRead=*/61234,
+                                 /*waysFiltered=*/412);
 
   EXPECT_FALSE(feedLine(console, out, "info"));
   const std::vector<std::string> expected = {
-      "INFO zoom=0",       "INFO lod=13",          "INFO mpp=3.0",
-      "INFO tiles_ok=3",   "INFO tiles_missing=1", "INFO ways=2065",
-      "INFO bytes=61234",
+      "INFO zoom=0",          "INFO lod=13",    "INFO mpp=3.0",     "INFO tiles_ok=3",
+      "INFO tiles_missing=1", "INFO ways=2065", "INFO bytes=61234", "INFO ways_filtered=412",
   };
   for (const std::string& want : expected) {
     EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), want), out.lines.end()) << want;
   }
-  // marker and mode are still P5 -- the key stays, the value doesn't.
-  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO marker=unimplemented"), out.lines.end());
-  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO mode=unimplemented"), out.lines.end());
+  // marker and mode were the last two unimplemented values; same keys,
+  // real values now.
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO marker=0"), out.lines.end());
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO mode=ride"), out.lines.end());
+  EXPECT_EQ(std::find(out.lines.begin(), out.lines.end(), "INFO marker=unimplemented"), out.lines.end());
+  EXPECT_EQ(std::find(out.lines.begin(), out.lines.end(), "INFO mode=unimplemented"), out.lines.end());
   // zoom/lod/mpp must not still claim to be unimplemented.
   EXPECT_EQ(std::find(out.lines.begin(), out.lines.end(), "INFO zoom=unimplemented"), out.lines.end());
   EXPECT_EQ(std::find(out.lines.begin(), out.lines.end(), "INFO lod=unimplemented"), out.lines.end());
@@ -399,7 +453,8 @@ TEST(MapCommandConsole, InfoReportsRealZoomLodMppAndTileStats) {
 }
 
 TEST(MapCommandConsole, RedrawBumpsSeqWithoutMoving) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   feedLine(console, out, "pos 1 2");
   const int32_t lat = console.state().latE7();
@@ -409,7 +464,8 @@ TEST(MapCommandConsole, RedrawBumpsSeqWithoutMoving) {
 }
 
 TEST(MapCommandConsole, HeadingOnlyKeepsPosition) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   feedLine(console, out, "pos 48.4372 17.0186");
   EXPECT_TRUE(feedLine(console, out, "heading 9"));
@@ -418,7 +474,8 @@ TEST(MapCommandConsole, HeadingOnlyKeepsPosition) {
 }
 
 TEST(MapCommandConsole, InfoReportsStateAndEndsWithOk) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   feedLine(console, out, "pos -0.5 17.0186 heading 3 speed 42");
   out.lines.clear();
@@ -428,8 +485,7 @@ TEST(MapCommandConsole, InfoReportsStateAndEndsWithOk) {
   EXPECT_EQ(out.lines.back(), "OK");
 
   const std::vector<std::string> expected = {
-      "INFO pos=1",        "INFO lat=-0.5000000", "INFO lon=17.0186000",
-      "INFO heading=3",    "INFO speed_kmh=42",   "INFO seq=1",
+      "INFO pos=1", "INFO lat=-0.5000000", "INFO lon=17.0186000", "INFO heading=3", "INFO speed_kmh=42", "INFO seq=1",
   };
   for (const std::string& want : expected) {
     EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), want), out.lines.end()) << want;
@@ -439,7 +495,8 @@ TEST(MapCommandConsole, InfoReportsStateAndEndsWithOk) {
 }
 
 TEST(MapCommandConsole, InfoUsesTheHeapProviderWhenSet) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   console.state().setFreeHeapProvider([]() -> uint32_t { return 123456; });
   feedLine(console, out, "info");
@@ -453,7 +510,8 @@ TEST(MapCommandConsole, InfoUsesTheHeapProviderWhenSet) {
 // and it is what this asserts. Interleaving both into one vector is what
 // makes the order observable at all; two containers would pass either way.
 TEST(MapCommandConsole, LineObserverFiresBeforeTheReply) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   g_events.clear();
   console.setLineObserver([](std::string_view line) { g_events.emplace_back("observe:" + std::string(line)); });
@@ -472,7 +530,8 @@ TEST(MapCommandConsole, LineObserverFiresBeforeTheReply) {
 }
 
 TEST(MapCommandConsole, TwoCommandsInOneBurst) {
-  MapCommandConsole console;
+  MapConsoleState state;
+  MapCommandConsole console(state);
   CollectingWriter out;
   const std::string burst = "pos 48.4372 17.0186\r\nheading 8\n";
   for (const char c : burst) console.feed(c, out);
