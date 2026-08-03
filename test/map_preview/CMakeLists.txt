@@ -10,6 +10,7 @@ add_executable(map_preview
   ${REPO_ROOT}/src/activities/map/MapTileSource.cpp
   ${REPO_ROOT}/src/activities/map/MapViewport.cpp
   ${REPO_ROOT}/src/activities/map/MapHatch.cpp
+  ${REPO_ROOT}/src/activities/map/MapModeMask.cpp
 )
 
 target_include_directories(map_preview PRIVATE

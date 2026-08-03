@@ -22,6 +22,10 @@ class PpmCanvas : public IMapCanvas {
 
   bool writePpm(const std::string& path) const;
 
+  // Raw 1 byte/pixel buffer, for tests that compare two renders against each
+  // other rather than against the committed PPM.
+  const std::vector<uint8_t>& pixels() const { return pixels_; }
+
  private:
   void setPixel(int x, int y);
 

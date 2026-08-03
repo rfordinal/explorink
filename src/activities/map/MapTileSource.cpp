@@ -20,6 +20,7 @@ void MapTileSource::begin(const Config& config) {
   tilesUnavailable_ = 0;
   unavailableMask_ = 0;
   waysEmitted_ = 0;
+  waysFiltered_ = 0;
   placesEmitted_ = 0;
   bytesRead_ = 0;
 }
@@ -122,6 +123,15 @@ bool MapTileSource::nextWay(MapWayRef& out) {
       // corrupt file cannot overrun xs_/ys_. The stream cursor is now
       // untrustworthy, so drop the rest of this tile rather than guess.
       closeCurrentTile();
+      continue;
+    }
+
+    // The mode filter, applied after the points are read and before they are
+    // projected. Reading them is not optional -- they are what advances the
+    // stream to the next record -- but projecting them is, and that is the
+    // per-point cost. docs/map-data-spec.md, "Mode is a render-time filter".
+    if ((config_.classMask & (1u << (header.classId & 31))) == 0) {
+      ++waysFiltered_;
       continue;
     }
 

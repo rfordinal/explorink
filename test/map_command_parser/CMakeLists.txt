@@ -2,6 +2,7 @@ add_executable(MapCommandParserTest
   MapCommandParserTest.cpp
   ${REPO_ROOT}/src/activities/map/MapCommandParser.cpp
   ${REPO_ROOT}/src/activities/map/MapCommandConsole.cpp
+  ${REPO_ROOT}/src/activities/map/MapModeMask.cpp
 )
 
 target_include_directories(MapCommandParserTest PRIVATE

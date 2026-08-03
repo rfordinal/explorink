@@ -21,6 +21,18 @@ struct MapPreviewRequest {
   uint8_t heading = 0;  // 0-15
   int zoom = 0;         // 0-4, docs/map-data-spec.md zoom ladder
 
+  // Marker's screen row, i.e. the vertical anchor. Defaults to
+  // MapViewport::kAnchorScreenY -- the style file's value, and what the
+  // committed golden PPM was rendered at. The device instead takes this off
+  // the marker-height ladder (MapViewport::kMarkerLadder), which is why it is
+  // a free parameter here rather than the constant it used to be.
+  int16_t markerY = 620;
+
+  // Render-time mode filter, `mask & (1 << class_id)`. All ones is every
+  // class, which is what the golden test renders and what the CLI does
+  // unless --mode is given.
+  uint32_t classMask = 0xFFFFFFFFu;
+
   // Render exactly one named tile instead of the whole tile range the
   // viewport touches. Only useful for quoting a per-tile RAM figure against
   // a per-tile figure from the old pipeline; leave it off for real previews.
@@ -40,6 +52,7 @@ struct MapPreviewResult {
   // Bit per tile of the range, column-major -- what MapActivity hatches.
   uint32_t missingMask = 0;
   uint32_t waysDrawn = 0;
+  uint32_t waysFiltered = 0;  // read off the card, dropped by classMask
   uint32_t placesDrawn = 0;
   uint8_t lodZoom = 0;
   uint32_t col0 = 0, row0 = 0, col1 = 0, row1 = 0;

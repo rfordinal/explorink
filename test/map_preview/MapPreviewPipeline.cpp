@@ -41,7 +41,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.lodZoom = lod.z;
 
   MapProjection proj;
-  proj.reset(request.lat, request.lon, MapViewport::kAnchorScreenX, MapViewport::kAnchorScreenY, request.heading,
+  proj.reset(request.lat, request.lon, MapViewport::kAnchorScreenX, request.markerY, request.heading,
              MapViewport::mppMercFor(request.zoom, request.lat));
 
   MapViewport::TileRange range;
@@ -74,7 +74,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
 
   MapViewState view;
   view.markerX = MapViewport::kAnchorScreenX;
-  view.markerY = MapViewport::kAnchorScreenY;
+  view.markerY = request.markerY;
   view.heading = static_cast<MapHeading>(request.heading);
 
   StdioFileSource file;
@@ -90,6 +90,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   config.row0 = result.row0;
   config.col1 = result.col1;
   config.row1 = result.row1;
+  config.classMask = request.classMask;
   source->begin(config);
 
   result.sourceBytes = sizeof(MapTileSource);
@@ -103,6 +104,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.allocsDuringRender = HeapProbe::allocCount();
 
   result.waysDrawn = source->waysEmitted();
+  result.waysFiltered = source->waysFiltered();
   result.placesDrawn = source->placesEmitted();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());

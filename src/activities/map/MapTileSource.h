@@ -37,6 +37,13 @@ class MapTileSource : public IMapSource {
     uint32_t row0 = 0;
     uint32_t col1 = 0;
     uint32_t row1 = 0;
+
+    // Render-time mode filter: a way is emitted when
+    // `classMask & (1u << class_id)`. All ones means "draw everything",
+    // which is what the golden test and every pre-P5 caller want.
+    // docs/map-data-spec.md, "Mode is a render-time filter" -- the tile set
+    // is the same for every mode and is never filtered at build time.
+    uint32_t classMask = 0xFFFFFFFFu;
   };
 
   // `file` is reused for every tile: opened, streamed, closed, reopened for
@@ -76,6 +83,11 @@ class MapTileSource : public IMapSource {
   uint32_t waysEmitted() const { return waysEmitted_; }
   uint32_t placesEmitted() const { return placesEmitted_; }
 
+  // Ways read off the card and dropped by Config::classMask. This is the
+  // mode filter's own evidence: the same coordinate in two modes reads the
+  // same tiles and the same way count, and differs only here.
+  uint32_t waysFiltered() const { return waysFiltered_; }
+
   // Real bytes read from the card across every tile and every pass since
   // begin(), summed from each tile's MapTileReader::bytesRead() as it
   // closes. This is the number the per-layer crc32 split (docs/PROGRESS.md
@@ -106,6 +118,7 @@ class MapTileSource : public IMapSource {
   uint32_t tilesUnavailable_ = 0;
   uint32_t unavailableMask_ = 0;
   uint32_t waysEmitted_ = 0;
+  uint32_t waysFiltered_ = 0;
   uint32_t placesEmitted_ = 0;
   uint32_t bytesRead_ = 0;
 
