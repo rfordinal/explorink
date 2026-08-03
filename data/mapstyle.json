@@ -67,7 +67,7 @@
       "ring_px": 3
     },
     "roads": {
-      "_comment": "Widths in DEVICE PIXELS (as is every length in this file). casing_px > 0 draws the road as two parallel black edges of that thickness with the road left white between them -- how a wide main road is distinguished from a thin one on 1-bit e-ink. `major` marks roads you would turn onto (the junctions layer keys off it, NOT off width, which is cosmetic). `hidden` means matched-but-not-drawn.",
+      "_comment": "Widths in DEVICE PIXELS (as is every length in this file). Rules match on `class`, the tile format's own class enum (mapbuilder/class_spec.py) -- the same vocabulary `modes` uses -- not raw OSM `highway` tags; the tag-to-class mapping lives in mapbuilder/tag_to_class.py. casing_px > 0 draws the road as two parallel black edges of that thickness with the road left white between them -- how a wide main road is distinguished from a thin one on 1-bit e-ink. `major` marks roads you would turn onto (the junctions layer keys off it, NOT off width, which is cosmetic). `hidden` means matched-but-not-drawn. Every class in the enum except `unknown` has a rule here -- `unknown` is deliberately unstyled and falls to `default` below; mapbuilder/mapstyle_check.py warns if any other class is left without one.",
       "default": {
         "color": "#000000",
         "pattern": "solid",
@@ -76,134 +76,43 @@
       "enabled": true,
       "rules": [
         {
-          "casing_px": 0,
-          "color": "#888888",
+          "casing_px": 2,
+          "color": "#000000",
           "hidden": false,
-          "major": false,
+          "major": true,
           "match": {
-            "highway": [
-              "construction"
+            "class": [
+              "motorway"
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 10
         },
         {
-          "casing_px": 0,
-          "color": "#888888",
+          "casing_px": 1.5,
+          "color": "#000000",
           "hidden": false,
-          "major": false,
+          "major": true,
           "match": {
-            "highway": [
-              "cycleway"
+            "class": [
+              "trunk"
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 9
         },
         {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": true,
-          "major": false,
-          "match": {
-            "highway": [
-              "footway"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": true,
-          "major": false,
-          "match": {
-            "highway": [
-              "living_street"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
+          "casing_px": 1.5,
+          "color": "#000000",
           "hidden": false,
-          "major": false,
+          "major": true,
           "match": {
-            "highway": [
-              "path"
+            "class": [
+              "primary"
             ]
           },
           "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": false,
-          "major": false,
-          "match": {
-            "highway": [
-              "pedestrian"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": false,
-          "major": false,
-          "match": {
-            "highway": [
-              "platform"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": false,
-          "major": false,
-          "match": {
-            "highway": [
-              "proposed"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": false,
-          "major": false,
-          "match": {
-            "highway": [
-              "raceway"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": false,
-          "major": false,
-          "match": {
-            "highway": [
-              "residential"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
+          "width": 8
         },
         {
           "casing_px": 1,
@@ -211,7 +120,7 @@
           "hidden": false,
           "major": true,
           "match": {
-            "highway": [
+            "class": [
               "secondary"
             ]
           },
@@ -219,38 +128,12 @@
           "width": 7
         },
         {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": false,
-          "major": false,
-          "match": {
-            "highway": [
-              "service"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": true,
-          "major": false,
-          "match": {
-            "highway": [
-              "steps"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
           "casing_px": 1,
           "color": "#000000",
           "hidden": false,
           "major": true,
           "match": {
-            "highway": [
+            "class": [
               "tertiary"
             ]
           },
@@ -263,8 +146,21 @@
           "hidden": false,
           "major": false,
           "match": {
-            "highway": [
-              "tertiary_link"
+            "class": [
+              "unclassified"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "residential"
             ]
           },
           "pattern": "solid",
@@ -276,7 +172,46 @@
           "hidden": true,
           "major": false,
           "match": {
-            "highway": [
+            "class": [
+              "living_street"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "service"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "pedestrian"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "class": [
               "track"
             ]
           },
@@ -289,11 +224,115 @@
           "hidden": false,
           "major": false,
           "match": {
-            "highway": [
-              "unclassified"
+            "class": [
+              "bridleway"
             ]
           },
           "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "cycleway"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "class": [
+              "footway"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "path"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "class": [
+              "steps"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "construction"
+            ]
+          },
+          "pattern": "solid",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#000000",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "ferry"
+            ]
+          },
+          "pattern": "dashed",
+          "width": 1.5
+        },
+        {
+          "casing_px": 0,
+          "color": "#000000",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "railway"
+            ]
+          },
+          "pattern": "dotted",
+          "width": 1
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": false,
+          "major": false,
+          "match": {
+            "class": [
+              "aerialway"
+            ]
+          },
+          "pattern": "dashed",
           "width": 1
         }
       ]
