@@ -132,8 +132,8 @@ class MapActivity final : public Activity {
   // The current mode's rungs. Everything on the render path reads these.
   uint8_t zoomStep() const { return zoomStep_[static_cast<uint8_t>(mode_)]; }
   uint8_t markerStep() const { return markerStep_[static_cast<uint8_t>(mode_)]; }
-  // Class mask per mode, from mapstyle.json when the card carries one and
-  // from the built-in defaults otherwise (MapStyleModes.h).
+  // Class mask per mode, compiled in from style.json's `modes` block
+  // (MapModeMaskDefaults.h, MapModeMask.h). No runtime source overrides it.
   MapModeMasks modeMasks_;
 
   // millis() deadlines; 0 means nothing armed. See the coalescing note above.

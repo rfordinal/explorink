@@ -11,7 +11,6 @@
 #include "GfxRendererCanvas.h"
 #include "MapHatch.h"
 #include "MapRenderer.h"
-#include "MapStyleModes.h"
 #include "MapViewport.h"
 #include "fontIds.h"
 
@@ -71,12 +70,6 @@ void MapActivity::onEnter() {
     markerStep_[mode] = SETTINGS.mapMarkerStep[mode] < MapViewport::kMarkerStepCount ? SETTINGS.mapMarkerStep[mode]
                                                                                      : kDefaultMarkerStepForMode[mode];
   }
-
-  // The mode filter. mapstyle.json wins when the card carries one; without
-  // it the built-in masks stand, because a map that draws nothing is a worse
-  // failure than a map drawing a slightly wrong class set.
-  modeMasks_ = MapModeMasks{};
-  loadMapModeMasks(kMapStyleDefaultPath, modeMasks_);
 
   publishLadders();
   // So `info` answers with real numbers before the first fix arrives rather
