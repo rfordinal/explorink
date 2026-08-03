@@ -5,6 +5,8 @@
 
 #include <cstdint>
 
+#include "activities/map/MapRideMode.h"
+
 class CrossPointSettings : public PersistableStore<CrossPointSettings> {
  private:
   // Private constructor for singleton
@@ -214,6 +216,25 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t frontButtonConfirm = FRONT_HW_CONFIRM;
   uint8_t frontButtonLeft = FRONT_HW_LEFT;
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
+  // Map screen ladder state, one entry per travel mode (MapRideMode: 0 ride,
+  // 1 hike, 2 cycle) plus the mode itself. Stored per mode on purpose --
+  // switching ride to hike and back returns each ladder to what it was
+  // (docs/architecture-plan.md, "Marker height is on the bottom buttons").
+  //
+  // Owned by MapActivity's buttons, not by the Settings screen, so these are
+  // out of SettingsList and saved by hand in toJson/fromJson, the same way
+  // the front-button remap is.
+  //
+  // **Every save here is an SD write** -- CrossPointSettings persists to
+  // /.crosspoint/settings.json, not to NVS. CLAUDE.md rule 8 is explicit that
+  // settings must not be written on every interaction, so MapActivity
+  // coalesces presses and saves once when they settle. Do not call
+  // saveToFile() per press.
+  uint8_t mapZoomStep[kMapRideModeCount] = {kDefaultZoomStepForMode[0], kDefaultZoomStepForMode[1],
+                                            kDefaultZoomStepForMode[2]};
+  uint8_t mapMarkerStep[kMapRideModeCount] = {kDefaultMarkerStepForMode[0], kDefaultMarkerStepForMode[1],
+                                              kDefaultMarkerStepForMode[2]};
+  uint8_t mapMode = static_cast<uint8_t>(MapRideMode::Ride);
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships

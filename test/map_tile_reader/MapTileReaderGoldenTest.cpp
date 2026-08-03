@@ -17,9 +17,11 @@
 #include <vector>
 
 #include "HeapProbe.h"
+#include "MapModeMask.h"
 #include "MapPreviewPipeline.h"
 #include "MapTileReader.h"
 #include "MapTileSource.h"
+#include "MapViewport.h"
 #include "PpmCanvas.h"
 #include "StdioFileSource.h"
 
@@ -193,4 +195,142 @@ TEST(MapTileReader, RejectsLayerCrcCorruptionWithoutBreakingOtherLayers) {
   ASSERT_TRUE(reader.open(file, tmpPath.c_str())) << "header crc32 must still be valid";
   EXPECT_FALSE(reader.beginLayer(static_cast<MapTileReader::Layer>(corruptedLayerId)));
   EXPECT_TRUE(reader.beginLayer(MapTileReader::Layer::Roads)) << "an intact layer must still open fine";
+}
+
+// --- P5: the mode filter and the marker-height ladder -------------------
+//
+// Both are render-time parameters over the same tiles. The fixture is one
+// real tile, so "same bytes read, different ways drawn" is checkable here
+// rather than only on the device.
+
+TEST(MapModeFilter, HikeDrawsEverythingRideDoesAndMore) {
+  // A property of the masks themselves, not of any one tile: hike is a
+  // strict superset of ride, and cycle sits between them. This is what makes
+  // "switch to hike and see more" true everywhere rather than only where
+  // the test fixture happens to have a footpath.
+  const MapModeMasks masks;
+  const uint32_t ride = masks.forMode(MapRideMode::Ride);
+  const uint32_t hike = masks.forMode(MapRideMode::Hike);
+  const uint32_t cycle = masks.forMode(MapRideMode::Cycle);
+
+  EXPECT_EQ(ride & hike, ride) << "hike must draw everything ride does";
+  EXPECT_NE(ride, hike) << "and strictly more, or the mode switch is invisible";
+  EXPECT_EQ(ride & cycle, ride);
+
+  // The classes the phase is actually about: paths and footways are hike's,
+  // and tracks are everyone's -- a forest track is the point of a trail
+  // device, and what it is closed to is the no_motor flag's job, not the
+  // class list's (docs/map-data-spec.md, "The class enum").
+  EXPECT_FALSE(ride & mapClassBit(MapClassId::Path));
+  EXPECT_FALSE(ride & mapClassBit(MapClassId::Footway));
+  EXPECT_TRUE(hike & mapClassBit(MapClassId::Path));
+  EXPECT_TRUE(hike & mapClassBit(MapClassId::Footway));
+  EXPECT_TRUE(ride & mapClassBit(MapClassId::Track));
+  EXPECT_TRUE(hike & mapClassBit(MapClassId::Track));
+}
+
+TEST(MapModeFilter, SameTilesSameBytesDifferentWaysDrawn) {
+  // The committed fixture is one rural tile carrying only `service` and
+  // `track`, so no two *modes* differ over it -- that difference is a device
+  // gate. What is checkable here is the mechanism: drop one class from the
+  // mask and the same tile reads identically and draws less.
+  MapPreviewRequest withTracks = fixtureRequest();
+  withTracks.classMask = MapModeMasks{}.forMode(MapRideMode::Ride);
+  PpmCanvas withCanvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult with = renderMapPreview(withTracks, withCanvas);
+
+  MapPreviewRequest withoutTracks = withTracks;
+  withoutTracks.classMask &= ~mapClassBit(MapClassId::Track);
+  PpmCanvas withoutCanvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult without = renderMapPreview(withoutTracks, withoutCanvas);
+
+  EXPECT_GT(with.waysDrawn, without.waysDrawn);
+  EXPECT_LT(with.waysFiltered, without.waysFiltered);
+  EXPECT_NE(withCanvas.pixels(), withoutCanvas.pixels()) << "the filter must change the picture";
+
+  // Nothing about the tile set changed -- same tiles, same records read off
+  // the card, only a different subset drawn. This is the property that lets
+  // one card serve all three modes (docs/map-data-spec.md).
+  EXPECT_EQ(with.tilesLoaded, without.tilesLoaded);
+  EXPECT_EQ(with.waysDrawn + with.waysFiltered, without.waysDrawn + without.waysFiltered);
+}
+
+TEST(MapModeFilter, AnEmptyMaskDrawsNoWaysButStillReadsTheTiles) {
+  MapPreviewRequest request = fixtureRequest();
+  request.classMask = 0;
+  PpmCanvas canvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult result = renderMapPreview(request, canvas);
+
+  EXPECT_EQ(result.waysDrawn, 0u);
+  EXPECT_GT(result.waysFiltered, 0u);
+  EXPECT_GT(result.tilesLoaded, 0);
+}
+
+TEST(MapModeFilter, ClassNamesResolveToTheEnumTheTilesCarry) {
+  uint8_t id = 0;
+  ASSERT_TRUE(mapClassIdFromName("motorway", id));
+  EXPECT_EQ(id, static_cast<uint8_t>(MapClassId::Motorway));
+  ASSERT_TRUE(mapClassIdFromName("living_street", id));
+  EXPECT_EQ(id, static_cast<uint8_t>(MapClassId::LivingStreet));
+  ASSERT_TRUE(mapClassIdFromName("unknown", id));
+  EXPECT_EQ(id, static_cast<uint8_t>(MapClassId::Unknown));
+
+  // A reserved slot has no name, so it can never be switched on by one.
+  EXPECT_FALSE(mapClassIdFromName("", id));
+  EXPECT_FALSE(mapClassIdFromName("motorway_link", id));
+  EXPECT_FALSE(mapClassIdFromName("21", id));
+}
+
+TEST(MapModeFilter, ModeNamesRoundTrip) {
+  for (const MapRideMode mode : {MapRideMode::Ride, MapRideMode::Hike, MapRideMode::Cycle}) {
+    MapRideMode parsed = MapRideMode::Ride;
+    ASSERT_TRUE(mapRideModeFromName(mapRideModeName(mode), parsed)) << mapRideModeName(mode);
+    EXPECT_EQ(parsed, mode);
+  }
+  MapRideMode unused = MapRideMode::Ride;
+  EXPECT_FALSE(mapRideModeFromName("drive", unused));
+}
+
+TEST(MapMarkerLadder, EveryRungIsOnScreenAndMovesThePicture) {
+  std::vector<uint8_t> previous;
+  for (int step = 0; step < MapViewport::kMarkerStepCount; ++step) {
+    const int16_t y = MapViewport::markerYForStep(step);
+    // A rung that hides the puck is not a usable navigation state, whatever
+    // the style file is allowed to express (docs/architecture-plan.md).
+    EXPECT_GE(y, 0);
+    EXPECT_LT(y, kScreenHeight);
+    if (step > 0) EXPECT_GT(y, MapViewport::markerYForStep(step - 1)) << "the ladder must be monotonic";
+
+    MapPreviewRequest request = fixtureRequest();
+    request.markerY = y;
+    PpmCanvas canvas(kScreenWidth, kScreenHeight);
+    renderMapPreview(request, canvas);
+    EXPECT_NE(canvas.pixels(), previous) << "step " << step << " drew the same picture as the one below it";
+    previous = canvas.pixels();
+  }
+
+  // Out of range clamps rather than indexing off the end -- the step is a
+  // byte out of a settings file a user can edit.
+  EXPECT_EQ(MapViewport::markerYForStep(-1), MapViewport::kMarkerLadder[0]);
+  EXPECT_EQ(MapViewport::markerYForStep(99), MapViewport::kMarkerLadder[MapViewport::kMarkerStepCount - 1]);
+}
+
+TEST(MapZoomLadder, EveryStepIsReachableAndMapsToOneLod) {
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    const MapViewport::ZoomStep& rung = MapViewport::kZoomLadder[step];
+    EXPECT_GT(rung.mpp, 0.0);
+    EXPECT_GE(rung.z, 11);
+    EXPECT_LE(rung.z, 13);
+    if (step > 0) {
+      EXPECT_GT(rung.mpp, MapViewport::kZoomLadder[step - 1].mpp) << "the ladder must be monotonic";
+      // A step must never sit on an LOD boundary in a way that would make
+      // two adjacent steps thrash between tile sets.
+      EXPECT_GE(MapViewport::kZoomLadder[step - 1].z, rung.z);
+    }
+  }
+  // Every mode starts on a rung that exists.
+  for (uint8_t mode = 0; mode < kMapRideModeCount; ++mode) {
+    EXPECT_LT(kDefaultZoomStepForMode[mode], MapViewport::kZoomStepCount);
+    EXPECT_LT(kDefaultMarkerStepForMode[mode], MapViewport::kMarkerStepCount);
+  }
 }
