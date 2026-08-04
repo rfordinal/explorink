@@ -22,14 +22,14 @@ struct ZoomStep {
 
 inline constexpr int kZoomStepCount = kMapLadderStepCount;
 
-// Five rungs, roughly 1.4x apart. A step maps to exactly one LOD, so no zoom
+// Five rungs, 1 to 20 m/px. A step maps to exactly one LOD, so no zoom
 // value can sit on an LOD boundary and thrash SD reads.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
-    {3.0, 13},   // step 0, detail
-    {5.0, 13},   // step 1, detail
-    {7.5, 12},   // step 2, regional
-    {11.0, 11},  // step 3, overview
-    {15.0, 11},  // step 4, overview
+    {1.0, 13},   // step 0, detail
+    {3.0, 13},   // step 1, detail
+    {6.0, 12},   // step 2, regional
+    {12.0, 11},  // step 3, overview
+    {20.0, 11},  // step 4, overview
 };
 
 // Label overhang, added to the geometry bbox before it is mapped to tiles.

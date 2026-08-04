@@ -4,8 +4,8 @@
     "_comment": "480x800 = PORTRAIT logical coords (CrossPointSettings.h ORIENTATION::PORTRAIT, the firmware default) -- NOT the raw 800x480 SSD1677 panel silicon, which is landscape-native but rotated by the renderer. marker_x_px/marker_y_px are the position puck's place on screen, in device pixels from the top-left; the viewport is whatever falls around it, asymmetric in both axes. This replaces marker_y_from_bottom_frac, which could only express a vertical offset -- on the device the marker slides across a stationary map to avoid a full e-ink refresh per GPS update, so it is free in both axes. See docs/map-render-spec.md.",
     "marker_x_px": 230,
     "marker_y_px": 620,
-    "max_zoom_mpp": 15,
-    "min_zoom_mpp": 3,
+    "max_zoom_mpp": 20,
+    "min_zoom_mpp": 1,
     "screen_px": [
       480,
       800
