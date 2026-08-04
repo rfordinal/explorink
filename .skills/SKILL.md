@@ -954,6 +954,40 @@ struct PageLine {
 
 ---
 
+## Documenting Findings
+
+When you work out **how something actually works** in this firmware -- panel
+behaviour, a driver mechanism, a waveform, a format quirk, why the obvious
+approach fails -- write it into a topic file under `docs/`. One topic per file.
+Chat logs and commit messages are not where the next agent looks.
+
+Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
+`docs/activity-manager.md`, `docs/webserver-endpoints.md`. Extend one before
+adding another.
+
+Style: short, plain, direct declarative sentences. No flowery prose, no hedging,
+no filler. English, even though the maintainer's conversation is in Slovak.
+
+Two hard rules, both about trust:
+
+* **Cite `file:line` for every claim.** This matches the Evidence-Based
+  Reasoning rule above. A finding with no citation rots into folklore and cannot
+  be re-checked when the code moves.
+* **Separate verified from unverified.** Read-off-the-code, measured-on-hardware
+  and assumed are three different confidence levels. Label them. For anything
+  open, say what measurement would settle it. A guess dressed as a fact costs
+  more than no doc at all -- especially for panel behaviour, where much of it is
+  empirical and two hardware-observed comments in this tree already contradict
+  each other.
+
+Write it in the same pass as the work. If the work proves an existing doc or
+comment wrong, fixing it is part of the same change, not a follow-up.
+
+If a directory's use changes, its `README.md` gets a pointer line to the topic
+doc. Pointer only -- content lives in one place.
+
+---
+
 Philosophy: we are building a dedicated navigation device, not a Swiss Army
 knife. If a feature adds RAM pressure without helping someone find their way on
 a trail or a road, it is out of scope.
