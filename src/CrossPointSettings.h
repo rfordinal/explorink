@@ -235,6 +235,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t mapMarkerStep[kMapRideModeCount] = {kDefaultMarkerStepForMode[0], kDefaultMarkerStepForMode[1],
                                               kDefaultMarkerStepForMode[2]};
   uint8_t mapMode = static_cast<uint8_t>(MapRideMode::Ride);
+  // The last position a BLE/console fix actually landed on, so re-entering
+  // Map (or a reboot) has something to show before the next fix arrives
+  // instead of a blank "waiting" screen. Same coalesced-write rule as the
+  // ladder steps above -- MapActivity debounces this, never writes per fix.
+  bool mapHasLastFix = false;
+  int32_t mapLastLatE7 = 0;
+  int32_t mapLastLonE7 = 0;
+  uint8_t mapLastHeading = 0;
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships

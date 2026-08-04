@@ -81,17 +81,23 @@ ServerCallbacks g_serverCallbacks;
 }  // namespace
 
 bool BlePositionServer::begin(const char* deviceName) {
+  LOG_DBG("BLEPOS", "begin: start, begun_=%d, isInitialized=%d", (int)begun_, (int)NimBLEDevice::isInitialized());
   if (begun_) return true;
 
   // Self-heal a partial teardown, same reasoning as BleKeyboardHost::begin().
   if (NimBLEDevice::isInitialized()) {
+    LOG_DBG("BLEPOS", "begin: self-heal deinit");
     NimBLEDevice::deinit(true);
     vTaskDelay(pdMS_TO_TICKS(20));
+    LOG_DBG("BLEPOS", "begin: self-heal deinit done");
   }
 
+  LOG_DBG("BLEPOS", "begin: calling NimBLEDevice::init");
   if (!NimBLEDevice::init(deviceName ? deviceName : "XteinkX4Map")) {
+    LOG_DBG("BLEPOS", "begin: NimBLEDevice::init failed");
     return false;
   }
+  LOG_DBG("BLEPOS", "begin: NimBLEDevice::init done");
 
   if (!g_indicateAckSem) {
     g_indicateAckSem = xSemaphoreCreateBinary();
