@@ -77,6 +77,18 @@ class CommandCharCallbacks : public NimBLECharacteristicCallbacks {
 // The file transfer data channel. No onStatus here on purpose: this
 // characteristic never indicates, so it must not touch the command channel's
 // one-in-flight semaphore.
+//
+// This callback runs synchronously inside NimBLE's GATT access handler and the
+// ATT write response is sent only once it returns (NimBLEServer.cpp,
+// BLE_GATT_ACCESS_OP_WRITE_CHR -> writeEvent). That is what makes the write
+// response mean "the bytes are on the card", so a slow SD write here is the
+// flow control working, not a stall.
+//
+// getValue() returns by value, so every chunk costs one malloc/memcpy/free of
+// the payload. Known and accepted: the copy is freed before the next one is
+// made, so it reuses the same block rather than fragmenting the heap, and it
+// is microseconds against a millisecond SD write. NimBLE's protected
+// getAttVal() is the no-copy version and is not reachable from here.
 class TransferCharCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
     const NimBLEAttValue value = characteristic->getValue();

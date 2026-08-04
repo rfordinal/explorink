@@ -171,11 +171,17 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
 
   // `base/13/4482/2789.tib` needs /trailink/base/13/4482 to exist first.
   // ensureDirectoryExists creates parents (SdFat's mkdir defaults to pFlag).
-  char dir[sizeof(finalPath_)];
-  snprintf(dir, sizeof(dir), "%s", finalPath_);
-  if (char* lastSlash = strrchr(dir, '/'); lastSlash != nullptr && lastSlash != dir) {
+  //
+  // Truncated in place and put back rather than copied into a second buffer:
+  // this runs on the NimBLE host task, whose stack is 4 KB and which already
+  // has a 512-byte VLA of NimBLE's own below this frame (NimBLEServer.cpp's
+  // BLE_GATT_ACCESS_OP_WRITE_CHR case) before SdFat's write path is entered
+  // on top.
+  if (char* lastSlash = strrchr(finalPath_, '/'); lastSlash != nullptr && lastSlash != finalPath_) {
     *lastSlash = '\0';
-    if (!Storage.ensureDirectoryExists(dir)) {
+    const bool dirReady = Storage.ensureDirectoryExists(finalPath_);
+    *lastSlash = '/';
+    if (!dirReady) {
       refuse("mkdir failed");
       return;
     }
