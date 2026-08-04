@@ -535,6 +535,21 @@ void loop() {
           LOG_ERR("SCR", "screenshot write incomplete: %u of %u bytes", (unsigned)written, (unsigned)bufferSize);
         }
         logSerial.printf("SCREENSHOT_END\n");
+      } else if (cmd == "GOTO_MAP") {
+        // A button press restores full CPU speed before Home ever routes to
+        // Map (the gpio.wasAnyPressed() check further down); this command
+        // has no button behind it, so it must do that itself. Found the hard
+        // way: NimBLEDevice::init() (MapActivity::onEnter() -> BlePositionServer
+        // ::begin()) hangs solid if entered while still in power-saving mode
+        // after idle -- confirmed on real hardware, see docs/power-management.md.
+        powerManager.setPowerSaving(false);
+        // Same call HomeActivity::onMapOpen() makes on manual selection --
+        // arms replaceActivity(), resolved by activityManager.loop() later
+        // in this same iteration.
+        LOG_DBG("MAIN", "CMD:GOTO_MAP received, calling goToMap()");
+        activityManager.goToMap();
+        LOG_DBG("MAIN", "goToMap() returned");
+        logSerial.printf("GOTO_MAP_OK\n");
       }
     }
   }
