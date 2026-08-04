@@ -247,7 +247,7 @@
         {
           "casing_px": 0,
           "color": "#888888",
-          "hidden": true,
+          "hidden": false,
           "major": false,
           "match": {
             "class": [
