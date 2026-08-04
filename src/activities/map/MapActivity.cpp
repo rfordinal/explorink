@@ -36,6 +36,7 @@ constexpr uint32_t kSaveSettleMs = 4000;
 constexpr int kTextX = 8;
 constexpr int kTextLine1Y = 8;
 constexpr int kTextLine2Y = 26;
+constexpr int kTextLine3Y = 44;
 
 }  // namespace
 
@@ -55,12 +56,15 @@ MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
 
 void MapActivity::onEnter() {
   Activity::onEnter();
+  LOG_DBG(kLogTag, "onEnter start");
 
   freeink::BlePositionServer::getInstance().begin();
+  LOG_DBG(kLogTag, "BlePositionServer.begin() returned");
   hasReceivedAny_ = false;
   lastDrawnSeq_ = 0;
   redrawDueMs_ = 0;
   saveDueMs_ = 0;
+  showingPersistedFix_ = false;
 
   // Ladder state comes back off the card exactly as it was left, per mode.
   mode_ = static_cast<MapRideMode>(SETTINGS.mapMode < kMapRideModeCount ? SETTINGS.mapMode : 0);
@@ -94,7 +98,22 @@ void MapActivity::onEnter() {
           static_cast<long>(heapBeforeAlloc) - static_cast<long>(heapAfterAlloc),
           static_cast<unsigned>(sizeof(MapTileSource)));
 
-  renderWaiting();
+  // Show where the rider was last seen instead of a blank screen, if the
+  // card has one -- a real fix still latches in over the next loop() and
+  // clears the banner (see the BLE/console branches in loop()).
+  LOG_DBG(kLogTag, "onEnter: mapHasLastFix=%d", (int)SETTINGS.mapHasLastFix);
+  if (SETTINGS.mapHasLastFix) {
+    hasReceivedAny_ = true;
+    showingPersistedFix_ = true;
+    lastLatE7_ = SETTINGS.mapLastLatE7;
+    lastLonE7_ = SETTINGS.mapLastLonE7;
+    lastHeading_ = SETTINGS.mapLastHeading;
+    LOG_DBG(kLogTag, "onEnter: rendering persisted fix %d,%d", (int)lastLatE7_, (int)lastLonE7_);
+    renderViewport(lastLatE7_, lastLonE7_, lastHeading_, lastDrawnSeq_);
+  } else {
+    renderWaiting();
+  }
+  LOG_DBG(kLogTag, "onEnter done");
 }
 
 void MapActivity::onExit() {
@@ -125,6 +144,7 @@ void MapActivity::loop() {
   if (freeink::BlePositionServer::getInstance().getLatest(update)) {
     if (!hasReceivedAny_ || update.seq != lastDrawnSeq_) {
       hasReceivedAny_ = true;
+      showingPersistedFix_ = false;
       lastDrawnSeq_ = update.seq;
       // heading is 0-15 straight off the wire now: the 19-byte packet
       // carries a MapHeading value, so the *2 fudge the old 8-step packet
@@ -138,6 +158,10 @@ void MapActivity::loop() {
               static_cast<unsigned>(update.speedKmh), static_cast<unsigned long>(update.utc),
               static_cast<unsigned>(update.accuracyM));
       renderViewport(update.lat, update.lon, update.heading, update.seq);
+      // Debounced into the same save this fires for zoom/marker/mode --
+      // CLAUDE.md rule 8 rules out a per-fix SD write just as much as a
+      // per-press one.
+      armSave();
     }
   }
 
@@ -156,10 +180,12 @@ void MapActivity::loop() {
     redrawDueMs_ = 0;
     if (consoleState_.hasPosition()) {
       hasReceivedAny_ = true;
+      showingPersistedFix_ = false;
       lastLatE7_ = consoleState_.latE7();
       lastLonE7_ = consoleState_.lonE7();
       lastHeading_ = consoleState_.heading();
       renderViewport(lastLatE7_, lastLonE7_, lastHeading_, static_cast<uint8_t>(consoleState_.seq()));
+      armSave();
     } else {
       // `zoom`/`marker`/`mode` before any fix: the step is taken and stored,
       // there is simply nothing to draw it around yet.
@@ -269,15 +295,30 @@ void MapActivity::saveLaddersIfChanged() {
   for (uint8_t mode = 0; mode < kMapRideModeCount && !changed; ++mode) {
     changed = SETTINGS.mapZoomStep[mode] != zoomStep_[mode] || SETTINGS.mapMarkerStep[mode] != markerStep_[mode];
   }
+  // Only a fix this *session* actually produced, never the one onEnter()
+  // just bootstrapped off the card -- otherwise every re-entry would write
+  // the same fix straight back at itself. showingPersistedFix_ is exactly
+  // that distinction (cleared the moment a real fix lands, see loop()).
+  const bool fixChanged =
+      hasReceivedAny_ && !showingPersistedFix_ &&
+      (!SETTINGS.mapHasLastFix || SETTINGS.mapLastLatE7 != lastLatE7_ || SETTINGS.mapLastLonE7 != lastLonE7_ ||
+       SETTINGS.mapLastHeading != lastHeading_);
   // CLAUDE.md rule 8: never write the settings file on every interaction.
-  // The presses already coalesced into one deadline; this is the second
-  // guard, and the one that makes leaving and re-entering the map free.
-  if (!changed) return;
+  // The presses (and now fixes) already coalesced into one deadline; this is
+  // the second guard, and the one that makes leaving and re-entering the map
+  // free when nothing actually moved.
+  if (!changed && !fixChanged) return;
 
   SETTINGS.mapMode = static_cast<uint8_t>(mode_);
   for (uint8_t mode = 0; mode < kMapRideModeCount; ++mode) {
     SETTINGS.mapZoomStep[mode] = zoomStep_[mode];
     SETTINGS.mapMarkerStep[mode] = markerStep_[mode];
+  }
+  if (fixChanged) {
+    SETTINGS.mapHasLastFix = true;
+    SETTINGS.mapLastLatE7 = lastLatE7_;
+    SETTINGS.mapLastLonE7 = lastLonE7_;
+    SETTINGS.mapLastHeading = lastHeading_;
   }
   if (!SETTINGS.saveToFile()) {
     LOG_ERR(kLogTag, "failed to persist map ladder state");
@@ -304,6 +345,8 @@ void MapActivity::renderCurrent() {
 }
 
 void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  LOG_DBG(kLogTag, "renderViewport start: lat=%d lon=%d heading=%u seq=%u", (int)latE7, (int)lonE7,
+          (unsigned)headingStep, (unsigned)seq);
   if (!source_) {
     renderWaiting();
     return;
@@ -326,7 +369,16 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
 
   const uint8_t tileZ = MapViewport::kZoomLadder[zoomStep()].z;
   const int16_t markerY = MapViewport::markerYForStep(markerStep());
-  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, headingStep, MapViewport::mppMercFor(zoomStep(), lat));
+  // North-up, not track-up: there is no route feature on the device yet
+  // (roadmap items 13/15), so there is nothing to rotate *toward* -- turning
+  // the map to face the BLE heading with no route drawn just spins it for no
+  // navigational benefit. headingStep itself is untouched (debug line, LOG_DBG,
+  // lastHeading_ still show the real incoming value); only rotation ignores it.
+  // Revisit once a route is actually drawn (docs/roadmap.md, "Map rotation
+  // model").
+  constexpr uint8_t kNoRouteDisplayHeading = static_cast<uint8_t>(MapHeading::N);
+  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, kNoRouteDisplayHeading,
+              MapViewport::mppMercFor(zoomStep(), lat));
 
   const MapViewport::TileRange range =
       MapViewport::tileRangeFor(proj_, tileZ, renderer.getScreenWidth(), renderer.getScreenHeight());
@@ -355,7 +407,11 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   MapViewState view;
   view.markerX = MapViewport::kAnchorScreenX;
   view.markerY = markerY;
-  view.heading = static_cast<MapHeading>(headingStep);
+  // Same north-up call as proj_.reset() above -- the marker's own triangle
+  // is drawn in raw screen direction (MapRenderer.cpp's kHeadingDir, not
+  // rotation-aware), so it must agree with proj_'s rotation or the two
+  // disagree about which way is "up" the moment heading isn't N.
+  view.heading = static_cast<MapHeading>(kNoRouteDisplayHeading);
 
   MapRenderer::render(canvas, *source_, view);
 
@@ -385,6 +441,13 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
            static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->waysEmitted()),
            static_cast<unsigned long>(elapsedMs));
   drawDebugLine(kTextLine2Y, line);
+  if (showingPersistedFix_) {
+    // Still the fix loaded off the card in onEnter() -- nothing from BLE or
+    // the console has landed yet this session. Cleared the moment one does
+    // (see loop()'s BLE/console branches).
+    snprintf(line, sizeof(line), "%s", tr(STR_MAP_LAST_KNOWN_WAITING_BLE));
+    drawDebugLine(kTextLine3Y, line);
+  }
 
   LOG_DBG(kLogTag,
           "reset z%u col %u..%u row %u..%u: %lu tiles ok, %lu missing (mask 0x%lx), %lu ways, %lu filtered, "

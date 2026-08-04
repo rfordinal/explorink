@@ -116,6 +116,11 @@ class MapActivity final : public Activity {
   int32_t lastLatE7_ = 0;
   int32_t lastLonE7_ = 0;
   uint8_t lastHeading_ = 0;
+  // True from onEnter() bootstrapping the last-saved fix off the card until
+  // the first real fix of this session lands -- distinguishes "showing
+  // where the rider was last seen" from "showing where they actually are
+  // right now", so renderViewport() knows to keep the waiting banner up.
+  bool showingPersistedFix_ = false;
 
   // Ladder state, per mode, held in memory and seeded from settings once in
   // onEnter(). **In memory, not read back out of settings on a mode

@@ -97,6 +97,10 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     mapZoomSteps.add(mapZoomStep[mode]);
     mapMarkerSteps.add(mapMarkerStep[mode]);
   }
+  doc["mapHasLastFix"] = mapHasLastFix;
+  doc["mapLastLatE7"] = mapLastLatE7;
+  doc["mapLastLonE7"] = mapLastLonE7;
+  doc["mapLastHeading"] = mapLastHeading;
   // Font family and size — both use dynamic getter/setters in SettingsList (the
   // option lists depend on the SD font registry), so the generic loop skips them.
   doc["fontFamily"] = fontFamily;
@@ -210,6 +214,13 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
                                   kDefaultMarkerStepForMode[mode]);
     }
   }
+  mapHasLastFix = doc["mapHasLastFix"] | false;
+  mapLastLatE7 = doc["mapLastLatE7"] | 0;
+  mapLastLonE7 = doc["mapLastLonE7"] | 0;
+  // Masked, not clamped: a MapHeading is 0-15 and any bit pattern already
+  // fits once the top nibble is dropped, same mask BlePositionServer applies
+  // to the wire value.
+  mapLastHeading = (doc["mapLastHeading"] | (uint8_t)0) & 0x0F;
 
   // Reader font size — an actual point size since 1.5. Files written by 1.4 and
   // earlier hold the old SMALL/MEDIUM/LARGE/EXTRA_LARGE slot in 0..3; no font is
