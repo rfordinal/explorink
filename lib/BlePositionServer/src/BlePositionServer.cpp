@@ -32,12 +32,19 @@ constexpr const char* kPositionCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0002"
 // The command channel (P5). Same service, second characteristic -- a phone
 // that already found the position service finds this one with it.
 constexpr const char* kCommandCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0003";
+// The map file transfer channel. Same service again -- a phone that already
+// found the position service has both of these with it, and the connection
+// it is already holding for position updates is the one the file rides on.
+constexpr const char* kTransferCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0004";
+constexpr const char* kTransferStatusCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0005";
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
 NimBLEServer* g_server = nullptr;
 NimBLECharacteristic* g_positionChar = nullptr;
 NimBLECharacteristic* g_commandChar = nullptr;
+NimBLECharacteristic* g_transferChar = nullptr;
+NimBLECharacteristic* g_transferStatusChar = nullptr;
 
 // Signaled from CommandCharCallbacks::onStatus when the peer actually
 // confirms an indication -- see sendCommandReply for why this matters more
@@ -67,15 +74,45 @@ class CommandCharCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+// The file transfer data channel. No onStatus here on purpose: this
+// characteristic never indicates, so it must not touch the command channel's
+// one-in-flight semaphore.
+class TransferCharCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+    const NimBLEAttValue value = characteristic->getValue();
+    self().onTransferIngest(value.data(), value.size());
+  }
+};
+
+// The file transfer status channel. Only job is remembering whether anybody
+// is listening -- there is no getSubscribedCount() in NimBLE-Arduino, and a
+// transfer must not start with its verdict going nowhere.
+class TransferStatusCharCallbacks : public NimBLECharacteristicCallbacks {
+  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
+    // bit1 is indications, bit0 notifications. Only indications count here.
+    self().onTransferSubscribe((subValue & 0x0002) != 0);
+  }
+};
+
 class ServerCallbacks : public NimBLEServerCallbacks {
   // NimBLE-Arduino stops advertising once a central connects and does not
   // resume automatically -- restart it on disconnect so a dropped link
   // (out of range, phone Bluetooth toggled) can reconnect without a reboot.
-  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override { NimBLEDevice::getAdvertising()->start(); }
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
+    // Before advertising again: a file transfer in flight is dead the moment
+    // the link drops. Resuming across a reconnect is deliberately not built
+    // (docs/ble-map-transfer-brief.md, non-goals), so the half-written file
+    // has to go now rather than sit on the card looking complete.
+    self().onCentralDisconnect();
+    self().onTransferSubscribe(false);
+    NimBLEDevice::getAdvertising()->start();
+  }
 };
 
 PositionCharCallbacks g_charCallbacks;
 CommandCharCallbacks g_commandCallbacks;
+TransferCharCallbacks g_transferCallbacks;
+TransferStatusCharCallbacks g_transferStatusCallbacks;
 ServerCallbacks g_serverCallbacks;
 
 }  // namespace
@@ -141,6 +178,14 @@ bool BlePositionServer::begin(const char* deviceName) {
       kCommandCharUuid, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE);
   g_commandChar->setCallbacks(&g_commandCallbacks);
 
+  // The transfer pair. WRITE (with response) in, INDICATE out -- see the
+  // TransferHooks comment in BlePositionServer.h for why the write response
+  // is the only flow control this needs.
+  g_transferChar = service->createCharacteristic(kTransferCharUuid, NIMBLE_PROPERTY::WRITE);
+  g_transferChar->setCallbacks(&g_transferCallbacks);
+  g_transferStatusChar = service->createCharacteristic(kTransferStatusCharUuid, NIMBLE_PROPERTY::INDICATE);
+  g_transferStatusChar->setCallbacks(&g_transferStatusCallbacks);
+
   // Explicit, though NimBLEAdvertising::start() would call it: the GATT table
   // is built here, and building it before advertising is announced is the
   // difference between a central seeing both characteristics and seeing
@@ -161,6 +206,7 @@ bool BlePositionServer::begin(const char* deviceName) {
   commandHead_ = 0;
   commandTail_ = 0;
   portEXIT_CRITICAL(&g_mux);
+  transferSubscribed_ = false;
 
   begun_ = true;
   return true;
@@ -173,7 +219,17 @@ void BlePositionServer::end() {
   NimBLEDevice::getAdvertising()->stop();
   g_positionChar = nullptr;
   g_commandChar = nullptr;
+  g_transferChar = nullptr;
+  g_transferStatusChar = nullptr;
   g_server = nullptr;  // owned by the NimBLE stack; freed by deinit() below
+
+  // Nothing can call a hook once the stack is down, and leaving a pointer to
+  // an activity that is about to be deleted registered is how a callback
+  // outlives its owner.
+  portENTER_CRITICAL(&g_mux);
+  transferHooks_ = TransferHooks{};
+  portEXIT_CRITICAL(&g_mux);
+  transferSubscribed_ = false;
 
   // Return the NimBLE host + BT controller RAM to the heap. Retry once if
   // the stack didn't fully tear down, same pattern as BleKeyboardHost::end().
@@ -302,6 +358,64 @@ bool BlePositionServer::sendCommandReply(const char* line) {
   return false;
 }
 
+void BlePositionServer::setTransferHooks(const TransferHooks& hooks) {
+  portENTER_CRITICAL(&g_mux);
+  transferHooks_ = hooks;
+  portEXIT_CRITICAL(&g_mux);
+}
+
+void BlePositionServer::onTransferSubscribe(bool subscribed) {
+  transferSubscribed_ = subscribed;
+  LOG_DBG("BLEPOS", "transfer status %s", subscribed ? "subscribed" : "unsubscribed");
+}
+
+void BlePositionServer::onTransferIngest(const uint8_t* data, size_t len) {
+  if (!data || len == 0) return;
+
+  // Copied out under the lock, called outside it: the hook writes to the SD
+  // card, which takes a mutex, and taking a mutex inside a critical section
+  // is a crash.
+  portENTER_CRITICAL(&g_mux);
+  const TransferHooks hooks = transferHooks_;
+  portEXIT_CRITICAL(&g_mux);
+
+  if (hooks.onFrame) hooks.onFrame(hooks.ctx, data, len);
+}
+
+void BlePositionServer::onCentralDisconnect() {
+  portENTER_CRITICAL(&g_mux);
+  const TransferHooks hooks = transferHooks_;
+  portEXIT_CRITICAL(&g_mux);
+
+  if (hooks.onDisconnect) hooks.onDisconnect(hooks.ctx);
+}
+
+bool BlePositionServer::sendTransferStatus(const char* line) {
+  if (!begun_ || g_transferStatusChar == nullptr || line == nullptr) return false;
+
+  // Status lines are short by design (a verdict and two numbers), so this
+  // buffer is generous. Same newline as the command channel so a receiver
+  // that concatenates indications reads a normal line stream.
+  char buf[64];
+  const int written = snprintf(buf, sizeof(buf), "%s\n", line);
+  if (written <= 0) return false;
+  const size_t length = static_cast<size_t>(written) < sizeof(buf) ? static_cast<size_t>(written) : sizeof(buf) - 1;
+
+  // No confirm wait -- see the header. A retry still helps: indicate()
+  // returns false while some other indication is pending, and the only other
+  // indicating characteristic is the command channel, which a script that is
+  // pushing a file is not using at that moment.
+  constexpr int kMaxAttempts = 8;
+  constexpr uint32_t kRetryDelayMs = 25;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    if (g_transferStatusChar->indicate(reinterpret_cast<const uint8_t*>(buf), length)) return true;
+    vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+  }
+  LOG_ERR("BLEPOS", "transfer status indicate failed after %d attempts: %.*s", kMaxAttempts, static_cast<int>(length),
+          buf);
+  return false;
+}
+
 }  // namespace freeink
 
 #else  // !FREEINK_CAP_BLE_PERIPHERAL -- stub bodies, no BLE code linked.
@@ -315,6 +429,11 @@ void BlePositionServer::onWriteIngest(const uint8_t*, size_t) {}
 void BlePositionServer::onCommandIngest(const uint8_t*, size_t) {}
 size_t BlePositionServer::readCommandBytes(char*, size_t) { return 0; }
 bool BlePositionServer::sendCommandReply(const char*) { return false; }
+void BlePositionServer::setTransferHooks(const TransferHooks&) {}
+bool BlePositionServer::sendTransferStatus(const char*) { return false; }
+void BlePositionServer::onTransferIngest(const uint8_t*, size_t) {}
+void BlePositionServer::onTransferSubscribe(bool) {}
+void BlePositionServer::onCentralDisconnect() {}
 
 }  // namespace freeink
 

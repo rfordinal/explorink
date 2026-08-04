@@ -103,10 +103,61 @@ class BlePositionServer {
   // the marker the UART needs has no job on this channel.
   bool sendCommandReply(const char* line);
 
+  // --- Map file transfer channel --------------------------------------
+  //
+  // Two more characteristics on the same service: `...0004` takes binary
+  // transfer frames, `...0005` carries ASCII status lines back.
+  //
+  // `...0004` is a plain WRITE, i.e. write-with-response. That response is
+  // the whole flow control: the central cannot send the next chunk until the
+  // device has answered the previous one, and the device answers only after
+  // the bytes are on the card. So there is no per-chunk ack of our own to
+  // design, and no chunk queue to size -- the ATT layer already guarantees
+  // delivery and order on one link.
+  //
+  // The wire format and the file writing live in MapTransferReceiver. This
+  // class only carries bytes: no HalStorage, no SD, no map knowledge in the
+  // BLE library.
+  struct TransferHooks {
+    void* ctx = nullptr;
+    // One BLE write, one call. Runs on the NimBLE host task.
+    void (*onFrame)(void* ctx, const uint8_t* data, size_t len) = nullptr;
+    // The central went away, so any transfer in flight is dead. Also the
+    // NimBLE host task.
+    void (*onDisconnect)(void* ctx) = nullptr;
+  };
+
+  // Registered by MapActivity while the map screen is up. Passing a default
+  // TransferHooks{} unregisters, and end() does that too. Plain function
+  // pointers, not std::function -- firmware CLAUDE.md, "Template and
+  // std::function Bloat".
+  void setTransferHooks(const TransferHooks& hooks);
+
+  // Sends one status line as an indication, newline included -- same
+  // reasoning as sendCommandReply's indication-over-notification.
+  //
+  // Unlike sendCommandReply this does **not** wait for the peer's confirm:
+  // it is called from inside the transfer write callback, i.e. on the NimBLE
+  // host task, and that same task is the one that delivers the confirm.
+  // Waiting for it there would deadlock. Safe because the protocol never
+  // sends two status lines back to back -- one "ready", then one verdict,
+  // seconds of file transfer apart. That is the opposite of the 18-lines-in-
+  // 3ms burst that made the command channel need the confirm wait.
+  bool sendTransferStatus(const char* line);
+
+  // True once the central has subscribed to the status characteristic. A
+  // transfer started before this has nowhere to report its verdict to, so
+  // MapTransferReceiver refuses one -- same check sendCommandReply's channel
+  // relies on, made explicit because here it decides whether to begin.
+  bool isTransferSubscribed() const { return transferSubscribed_; }
+
   // Internal: called by the NimBLE backend (not for app use). Keeps the
   // public header free of NimBLE types.
   void onWriteIngest(const uint8_t* data, size_t len);
   void onCommandIngest(const uint8_t* data, size_t len);
+  void onTransferIngest(const uint8_t* data, size_t len);
+  void onTransferSubscribe(bool subscribed);
+  void onCentralDisconnect();
 
  private:
   // Bytes of command text buffered between the BLE callback and the next
@@ -122,6 +173,12 @@ class BlePositionServer {
   BlePositionServer() = default;
   BlePositionServer(const BlePositionServer&) = delete;
   BlePositionServer& operator=(const BlePositionServer&) = delete;
+
+  // Written by the activity task, read by the NimBLE host task. Copied out
+  // under the same critical section the ring uses before being called, so a
+  // hook can't be swapped out between the null check and the call.
+  TransferHooks transferHooks_;
+  volatile bool transferSubscribed_ = false;
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;

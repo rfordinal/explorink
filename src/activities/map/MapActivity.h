@@ -9,6 +9,7 @@
 #include "MapProjection.h"
 #include "MapSerialConsole.h"
 #include "MapTileSource.h"
+#include "MapTransferReceiver.h"
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 
@@ -218,4 +219,10 @@ class MapActivity final : public Activity {
   // Back release it is meant to swallow (also loop()) -- see the comment
   // there for why the release needs swallowing at all.
   bool suppressBackRelease_ = false;
+
+  // Map files pushed over the same BLE connection the position packets use.
+  // Attached while this screen is up and only while it is up: the receiver
+  // writes to the card from a BLE callback, and the card is the map's own
+  // (MapTransferReceiver.h).
+  MapTransferReceiver transfer_;
 };

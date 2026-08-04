@@ -48,6 +48,10 @@ constexpr int kTextX = 8;
 constexpr int kTextLine1Y = 8;
 constexpr int kTextLine2Y = 26;
 constexpr int kTextLine3Y = 44;
+// Only drawn when a BLE map transfer has actually happened -- an idle screen
+// keeps the lines it had before that channel existed. Its own line rather than
+// sharing line 3, which the last-known-fix notice already owns.
+constexpr int kTextLine4Y = 62;
 
 // Busy badge geometry: an hourglass just above the button hints, right-aligned.
 // Out of the way of the debug readout (top-left) and the compass (top-right),
@@ -317,7 +321,7 @@ void MapActivity::drawDebugLine(int y, char* text) {
 }
 
 MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : Activity("Map", renderer, mappedInput) {}
+    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot) {}
 
 void MapActivity::onEnter() {
   Activity::onEnter();
@@ -325,6 +329,9 @@ void MapActivity::onEnter() {
 
   freeink::BlePositionServer::getInstance().begin();
   LOG_DBG(kLogTag, "BlePositionServer.begin() returned");
+  // After begin(), so the characteristics exist before anything can be
+  // written to them.
+  transfer_.attach();
   hasReceivedAny_ = false;
   lastDrawnSeq_ = 0;
   redrawDueMs_ = 0;
@@ -391,6 +398,11 @@ void MapActivity::onExit() {
   saveLaddersIfChanged();
   MISSING_TILES.flushIfDirty();
 
+  // Before end(): the hooks point at a member of this activity, and this
+  // activity is about to be deleted (main.cpp's exitActivity). A transfer
+  // still in flight loses its .part file here rather than surviving into a
+  // screen that has no BLE link.
+  transfer_.detach();
   freeink::BlePositionServer::getInstance().end();
 
   // Release order is the reverse of onEnter(): the source holds a reference
@@ -815,6 +827,13 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     snprintf(line, sizeof(line), "%s", tr(STR_MAP_LAST_KNOWN_WAITING_BLE));
     drawDebugLine(kTextLine3Y, line);
   }
+
+  // Enough to see that a file push happened and whether it landed. No new
+  // screen and no refresh of its own: this rides whatever redraw the map was
+  // going to do anyway, because an e-ink refresh costs the better part of two
+  // seconds and a byte counter is not worth one.
+  transfer_.formatStatus(line, sizeof(line));
+  if (line[0] != '\0') drawDebugLine(kTextLine4Y, line);
 
   LOG_DBG(kLogTag,
           "reset z%u col %u..%u row %u..%u: %lu tiles ok, %lu missing (mask 0x%lx), %lu ways, %lu filtered, "
