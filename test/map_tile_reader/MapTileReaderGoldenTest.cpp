@@ -41,7 +41,10 @@ MapPreviewRequest fixtureRequest() {
   request.lat = kAnchorLat;
   request.lon = kAnchorLon;
   request.heading = 0;
-  request.zoom = 0;
+  // Step 1, not 0: the fixture's tile-boundary-crossing viewport (one tile
+  // present, its neighbour deliberately missing) was built around 3.0 m/px.
+  // That value still lives on the ladder, just at a different index now.
+  request.zoom = 1;
   return request;
 }
 
