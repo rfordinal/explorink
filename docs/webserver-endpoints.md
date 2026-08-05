@@ -1,15 +1,17 @@
 # Webserver Endpoints
 
 This document describes the HTTP, WebSocket, WebDAV, and discovery endpoints
-available while CrossPoint Reader is in File Transfer or Calibre Wireless mode.
+available while TrailInk is in File Transfer or Calibre Wireless mode.
 
 - HTTP server: port 80
 - WebSocket upload server: port 81
 - UDP discovery listener: port 8134
 - WebDAV: port 80, handled by the same HTTP server
 
-Examples use `crosspoint.local`. If mDNS does not resolve on your network, use
-the IP address shown on the device screen.
+Examples use `crosspoint.local`. That is the literal mDNS hostname in the code
+(`src/activities/network/CrossPointWebServerActivity.cpp:25`), not a stale
+name. If mDNS does not resolve on your network, use the IP address shown on the
+device screen.
 
 ## HTTP Pages
 
@@ -18,8 +20,47 @@ the IP address shown on the device screen.
 | `GET` | `/` | Home/status page |
 | `GET` | `/files` | File manager page |
 | `GET` | `/settings` | Web settings page |
-| `GET` | `/fonts` | SD-card font manager page |
-| `GET` | `/js/jszip.min.js` | JavaScript asset used by the file manager |
+
+## What this server is not
+
+The HTTP server is a config and file-transfer surface, nothing more. It is not
+a reader shell, and it is not where reader features get a second UI.
+
+On `develop` it is still the only way to get files onto the SD card over the
+air. A BLE map-tile push exists on the `ble-map-transfer` branch and is not
+merged here yet; when it lands, HTTP stops being the tile path.
+
+Routes are registered in one place, `src/network/CrossPointWebServer.cpp:138-168`.
+Read that list before trusting this document.
+
+Endpoints removed from the fork (2026-08-05), and why:
+
+| Removed | Reason |
+|---|---|
+| `GET /fonts`, `GET/POST /api/fonts*` | SD-font manager is a reader feature. SD fonts still load at boot; only the web UI for installing them is gone. |
+| `GET/POST /api/opds*` | OPDS is an ebook catalog. The device-side OPDS subsystem still exists (`src/OpdsServerStore.cpp` and 19 other files) and is a separate removal. |
+| `GET /js/jszip.min.js` | Only fed the in-browser EPUB converter that lived in `FilesPage.html`. |
+
+`FilesPage.html` was also rewritten as a plain file manager (list, upload,
+download, mkdir, rename, move, delete). The EPUB-to-image conversion, cover
+extraction and OPF parsing it used to do in the browser are gone. The file
+JSON API it talks to is unchanged.
+
+Flash cost before and after, measured from the `*CompressedSize` constants in
+the generated headers:
+
+| Blob | Before | After |
+|---|---|---|
+| `FilesPageHtml` | 48 985 B | 4 251 B |
+| `jszip_minJs` | 28 379 B | removed |
+| `SettingsPageHtml` | 5 647 B | 5 157 B |
+| `FontsPageHtml` | 3 285 B | removed |
+| `HomePageHtml` | 1 446 B | 1 429 B |
+| **total** | **87 742 B** | **10 837 B** |
+
+Whole-image delta was about 84 KB (`firmware.bin` 3 909 616 B to 3 825 456 B).
+Approximate: the baseline build predated one unrelated commit. The 76 905 B
+blob figure above is exact.
 
 ## Device Status
 
@@ -251,117 +292,6 @@ Successful response:
 
 ```text
 Applied 2 setting(s)
-```
-
-## Font Management API
-
-### `GET /api/fonts`
-
-Lists installed SD-card font families.
-
-```bash
-curl http://crosspoint.local/api/fonts
-```
-
-Response:
-
-```json
-{
-  "maxFamilies": 128,
-  "families": [
-    {
-      "name": "Literata",
-      "sizes": [12, 14, 16, 18],
-      "files": [
-        {"name": "Literata_12.cpfont", "size": 123456}
-      ]
-    }
-  ]
-}
-```
-
-### `POST /api/fonts/upload`
-
-Uploads one `.cpfont` file into a family folder.
-
-```bash
-curl -X POST \
-  -F "family=Literata" \
-  -F "file=@Literata_12.cpfont" \
-  http://crosspoint.local/api/fonts/upload
-```
-
-The handler validates the family name, `.cpfont` filename, and `CPFONT` magic
-bytes before accepting the file.
-
-Successful response:
-
-```json
-{"ok":true}
-```
-
-### `POST /api/fonts/delete`
-
-Deletes an installed font family.
-
-```bash
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"family":"Literata"}' \
-  http://crosspoint.local/api/fonts/delete
-```
-
-Successful response:
-
-```json
-{"ok":true}
-```
-
-## OPDS Server API
-
-### `GET /api/opds`
-
-Lists saved OPDS servers. Passwords are never returned.
-
-```bash
-curl http://crosspoint.local/api/opds
-```
-
-Response:
-
-```json
-[
-  {
-    "index": 0,
-    "name": "My Catalog",
-    "url": "http://calibre.local:8080/opds",
-    "username": "reader",
-    "hasPassword": true
-  }
-]
-```
-
-### `POST /api/opds`
-
-Adds or updates an OPDS server. Include `index` to update an existing entry.
-If `password` is omitted during an update, the existing password is preserved.
-
-```bash
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"name":"My Catalog","url":"http://calibre.local:8080/opds","username":"reader","password":"secret"}' \
-  http://crosspoint.local/api/opds
-```
-
-### `POST /api/opds/delete`
-
-Deletes an OPDS server by index.
-
-```bash
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"index":0}' \
-  http://crosspoint.local/api/opds/delete
 ```
 
 ## Wi-Fi Credential API
