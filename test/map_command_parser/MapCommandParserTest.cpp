@@ -424,6 +424,173 @@ TEST(MapCommandConsole, TilesCommandListsTheLastSnapshot) {
   EXPECT_EQ(out.lines[2], "OK");
 }
 
+// ---------------------------------------------------------------- missing
+
+namespace {
+
+// Stands in for MapActivity's MissingTilesStore adapter. A vector rather than
+// the real store, which needs ArduinoJson and an SD card.
+class FakeMissingTiles final : public IMissingTilesSource {
+ public:
+  // The real source sorts by fetch priority here (MissingTilePriority.h has
+  // its own suite for the policy). This one only counts the calls, which is
+  // what this suite is about: *when* the console asks for an ordering. It
+  // leaves `tiles` alone so the paging tests below can still name entries by
+  // the order they were inserted in.
+  void orderForFetch() override { ++orderCalls; }
+  size_t missingTileCount() const override { return tiles.size(); }
+  MapMissingTile missingTileAt(size_t index) const override { return tiles[index]; }
+  std::vector<MapMissingTile> tiles;
+  int orderCalls = 0;
+};
+
+// n entries, each distinguishable by its column so a page boundary is visible.
+FakeMissingTiles fakeList(size_t n) {
+  FakeMissingTiles list;
+  list.tiles.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    list.tiles.push_back(MapMissingTile{13, static_cast<uint32_t>(4000 + i), 2832, static_cast<uint32_t>(i + 1)});
+  }
+  return list;
+}
+
+}  // namespace
+
+TEST(MapCommandParser, MissingBareAndWithOffset) {
+  const MapCommand bare = parseMapCommand("missing");
+  ASSERT_EQ(bare.type, MapCommandType::Missing);
+  EXPECT_EQ(bare.missingOffset, 0);
+
+  const MapCommand paged = parseMapCommand("missing 40");
+  ASSERT_EQ(paged.type, MapCommandType::Missing);
+  EXPECT_EQ(paged.missingOffset, 40);
+}
+
+TEST(MapCommandParser, MissingRejectsJunk) {
+  EXPECT_EQ(errorOf("missing 0 0"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("missing x"), MapCommandError::BadNumber);
+  EXPECT_EQ(errorOf("missing 65536"), MapCommandError::OutOfRange);
+}
+
+TEST(MapCommandConsole, MissingWithNoSourceWiredSaysUnavailable) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  EXPECT_FALSE(feedLine(console, out, "missing"));
+  ASSERT_EQ(out.lines.size(), 2u);
+  // Not "total=0": a build that never wired the store must not read as a
+  // device that needs no tiles.
+  EXPECT_EQ(out.lines[0], "INFO missing=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+  EXPECT_EQ(console.state().seq(), 0u);  // missing never redraws
+}
+
+TEST(MapCommandConsole, MissingEmptyListIsTotalZeroAndDone) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeMissingTiles list;
+  state.setMissingTilesSource(&list);
+
+  EXPECT_FALSE(feedLine(console, out, "missing"));
+  ASSERT_EQ(out.lines.size(), 4u);
+  EXPECT_EQ(out.lines[0], "INFO missing_total=0");
+  EXPECT_EQ(out.lines[1], "INFO missing_offset=0");
+  EXPECT_EQ(out.lines[2], "INFO missing_next=done");
+  EXPECT_EQ(out.lines[3], "OK");
+}
+
+TEST(MapCommandConsole, MissingPrintsEveryFieldOfAnEntry) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeMissingTiles list;
+  list.tiles.push_back(MapMissingTile{13, 4483, 2832, 7});
+  state.setMissingTilesSource(&list);
+
+  EXPECT_FALSE(feedLine(console, out, "missing"));
+  ASSERT_EQ(out.lines.size(), 5u);
+  EXPECT_EQ(out.lines[0], "INFO missing_total=1");
+  EXPECT_EQ(out.lines[2], "INFO missing_13_4483_2832=7");
+  EXPECT_EQ(out.lines[3], "INFO missing_next=done");
+}
+
+TEST(MapCommandConsole, MissingWidestPossibleEntryIsNotTruncated) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeMissingTiles list;
+  list.tiles.push_back(MapMissingTile{255, 4294967295u, 4294967295u, 4294967295u});
+  state.setMissingTilesSource(&list);
+
+  feedLine(console, out, "missing");
+  // The whole point of kReplyBuf being 64: a clipped coordinate would send
+  // the laptop tool after a tile the device never asked for.
+  EXPECT_EQ(out.lines[2], "INFO missing_255_4294967295_4294967295=4294967295");
+}
+
+TEST(MapCommandConsole, MissingPagesAtTwentyAndSaysWhereToResume) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeMissingTiles list = fakeList(25);
+  state.setMissingTilesSource(&list);
+
+  feedLine(console, out, "missing");
+  // total, offset, 20 entries, next, OK
+  ASSERT_EQ(out.lines.size(), 24u);
+  EXPECT_EQ(out.lines[0], "INFO missing_total=25");
+  EXPECT_EQ(out.lines[1], "INFO missing_offset=0");
+  EXPECT_EQ(out.lines[2], "INFO missing_13_4000_2832=1");
+  EXPECT_EQ(out.lines[21], "INFO missing_13_4019_2832=20");
+  EXPECT_EQ(out.lines[22], "INFO missing_next=20");
+
+  out.lines.clear();
+  feedLine(console, out, "missing 20");
+  // total, offset, 5 entries, next, OK
+  ASSERT_EQ(out.lines.size(), 9u);
+  EXPECT_EQ(out.lines[1], "INFO missing_offset=20");
+  EXPECT_EQ(out.lines[2], "INFO missing_13_4020_2832=21");
+  EXPECT_EQ(out.lines[6], "INFO missing_13_4024_2832=25");
+  EXPECT_EQ(out.lines[7], "INFO missing_next=done");
+}
+
+TEST(MapCommandConsole, MissingOrdersTheListOnPageZeroOnly) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeMissingTiles list = fakeList(25);
+  state.setMissingTilesSource(&list);
+
+  feedLine(console, out, "missing");
+  EXPECT_EQ(list.orderCalls, 1);
+
+  // A re-sort here would move entries across the page boundary page 0 already
+  // reported, and the reader would miss some and see others twice.
+  feedLine(console, out, "missing 20");
+  EXPECT_EQ(list.orderCalls, 1);
+
+  // A fresh listing is a fresh ordering -- counts may have moved since.
+  feedLine(console, out, "missing");
+  EXPECT_EQ(list.orderCalls, 2);
+}
+
+TEST(MapCommandConsole, MissingOffsetPastTheEndIsAnEmptyPageNotAnError) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeMissingTiles list = fakeList(3);
+  state.setMissingTilesSource(&list);
+
+  // The last request of a paging loop can legitimately land here.
+  EXPECT_FALSE(feedLine(console, out, "missing 900"));
+  ASSERT_EQ(out.lines.size(), 4u);
+  EXPECT_EQ(out.lines[0], "INFO missing_total=3");
+  EXPECT_EQ(out.lines[1], "INFO missing_offset=900");
+  EXPECT_EQ(out.lines[2], "INFO missing_next=done");
+  EXPECT_EQ(out.lines[3], "OK");
+}
+
 TEST(MapCommandConsole, InfoReportsRealZoomLodMppAndTileStats) {
   MapConsoleState state;
   MapCommandConsole console(state);

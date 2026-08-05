@@ -66,6 +66,16 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   bool flushIfDirty();
 
   const std::vector<MissingTileHit>& hits() const { return hits_; }
+
+  // Reorders the list into fetch priority (MissingTilePriority.h): the tiles
+  // worth transferring first come first, so a fetch cut short has already
+  // delivered the useful part. Called when a listing starts, not on every
+  // record() -- the order matters only to a reader.
+  //
+  // Does not mark the store dirty. Entry order in the JSON carries no
+  // meaning (fromJson() reads it back positionally into the same list), so a
+  // reorder is not new information and does not earn an SD write.
+  void sortByFetchPriority();
 };
 
 #define MISSING_TILES MissingTilesStore::getInstance()

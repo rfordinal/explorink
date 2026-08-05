@@ -69,6 +69,42 @@ struct MapTileRangeSnapshot {
   uint32_t unavailableMask = 0;
 };
 
+// One entry of the persisted missing-tile list, as the `missing` command
+// prints it. A field-for-field copy of MissingTileHit on purpose:
+// MapConsoleState must not include MissingTilesStore.h, which pulls in
+// ArduinoJson and the SD-backed PersistableStore -- neither of which the
+// native console tests link, and neither of which this half is allowed to
+// depend on.
+struct MapMissingTile {
+  uint8_t z = 0;
+  uint32_t col = 0;
+  uint32_t row = 0;
+  uint32_t count = 0;
+};
+
+// Read-only window onto that list. MapActivity implements it over
+// MissingTilesStore; the native tests implement it over a fixed array.
+//
+// Pull, not push -- the opposite of setTileRange() above, and for a reason:
+// the viewport snapshot is 7 words, while this list is up to 200 entries
+// (MissingTilesStore::kMaxEntries). Pushing it would put a second copy of
+// the same table in DRAM and would go stale the moment another tile hatched.
+class IMissingTilesSource {
+ public:
+  virtual ~IMissingTilesSource() = default;
+  // A listing is starting: put the list in fetch-priority order. Called once
+  // per listing, on the page-0 request only -- later pages must not reshuffle
+  // under a reader that is halfway through paging, and re-sorting per page
+  // would cost the sort again for nothing.
+  //
+  // The policy lives with the data (MissingTilesStore::sortByFetchPriority,
+  // src/MissingTilePriority.h); this half only knows when to ask for it.
+  virtual void orderForFetch() = 0;
+  virtual size_t missingTileCount() const = 0;
+  // Only ever called with index < missingTileCount().
+  virtual MapMissingTile missingTileAt(size_t index) const = 0;
+};
+
 // What the commands actually do, and the only thing that knows it. Holds no
 // channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
@@ -80,7 +116,7 @@ struct MapTileRangeSnapshot {
 // plugged in.
 //
 // Implements the whole grammar: pos, heading, zoom, marker, mode, redraw,
-// tiles, info. zoom/marker/mode only move the numbers here -- applying them
+// tiles, missing, info. zoom/marker/mode only move the numbers here -- applying them
 // to the projection, the class mask and the settings file is MapActivity's
 // job, which is what keeps this half free of hardware.
 class MapConsoleState {
@@ -144,9 +180,25 @@ class MapConsoleState {
   // Pushed alongside setRenderStats() by the same reset. `tiles` reads this.
   void setTileRange(const MapTileRangeSnapshot& range) { tileRange_ = range; }
 
+  // Where `missing` reads its list from. Not owned; must outlive this state.
+  // Left unset (the default) `missing` answers `INFO missing=unavailable`,
+  // which is what a native test with no SD card behind it should see.
+  //
+  // Non-const because a listing reorders the source (orderForFetch above).
+  void setMissingTilesSource(IMissingTilesSource* source) { missingTiles_ = source; }
+
+  // Entries one `missing` command will print. Bounded because every reply
+  // line is one BLE indication and each one waits for the peer's ATT confirm
+  // before the next goes out (BlePositionServer::sendCommandReply) -- 200
+  // lines in one command would hold the activity's loop() for minutes.
+  // 20 keeps a page in the same order as `info`'s 18 lines, which is already
+  // proven on hardware.
+  static constexpr uint16_t kMissingPageSize = 20;
+
  private:
   void writeInfo(IMapReplyWriter& out) const;
   void writeTiles(IMapReplyWriter& out) const;
+  void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
 
   bool hasPosition_ = false;
   int32_t latE7_ = 0;
@@ -167,6 +219,7 @@ class MapConsoleState {
   uint32_t waysFiltered_ = 0;
   uint32_t bytesRead_ = 0;
   MapTileRangeSnapshot tileRange_;
+  IMissingTilesSource* missingTiles_ = nullptr;
 };
 
 // Line assembler + parser + a reference to the shared state. One of these

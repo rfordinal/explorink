@@ -23,7 +23,14 @@
 //   mode ride|hike|cycle
 //   redraw
 //   tiles
+//   missing [<offset>]
 //   info
+//
+// `tiles` reports the current viewport. `missing` reports the persisted
+// list of every tile the device has ever hatched, which is a different and
+// much longer thing -- so it is paged: one command answers at most
+// kMissingPageSize entries starting at <offset> (default 0) and says where
+// the next page starts. See MapConsoleState::writeMissing().
 //
 // The optional tail of `pos` takes the value bare (`pos 48.4 17.0 4 30`) or
 // behind its own keyword (`pos 48.4 17.0 heading 4 speed 30`). Both spell
@@ -46,6 +53,7 @@ enum class MapCommandType : uint8_t {
   Mode,
   Redraw,
   Tiles,
+  Missing,
   Info,
   Error,  // see MapCommand::error
 };
@@ -70,6 +78,11 @@ struct MapCommand {
   uint8_t heading = 0;  // 0-15, Heading and optional on Pos
   uint8_t zoom = 0;     // 0-4
   uint8_t marker = 0;   // 0-4
+  // Missing: first entry of the page to print. uint16 because the store is
+  // capped at 200 entries (MissingTilesStore::kMaxEntries); an offset past
+  // the end is legal and answers an empty page rather than an error, which
+  // is what makes a paging loop's last request harmless.
+  uint16_t missingOffset = 0;
   MapRideMode mode = MapRideMode::Ride;
   bool hasHeading = false;  // Pos carried a heading
   bool hasSpeed = false;    // Pos carried a speed

@@ -43,6 +43,24 @@ constexpr uint32_t kSaveSettleMs = 4000;
 // counted from the first new tile since the last flush (renderViewport()).
 constexpr uint32_t kMissingTilesSaveIntervalMs = 10 * 60 * 1000;
 
+// Lets the `missing` command read MissingTilesStore without MapCommandConsole
+// including it: that header pulls in ArduinoJson and the SD-backed
+// PersistableStore, and the console half is deliberately free of both (its
+// native tests link neither). This adapter is the only place the two meet.
+//
+// Stateless, so one file-scope instance rather than a member: no heap, and
+// nothing to keep in sync with the store it forwards to.
+class MissingTilesConsoleSource final : public IMissingTilesSource {
+ public:
+  void orderForFetch() override { MISSING_TILES.sortByFetchPriority(); }
+  size_t missingTileCount() const override { return MISSING_TILES.hits().size(); }
+  MapMissingTile missingTileAt(size_t index) const override {
+    const MissingTileHit& hit = MISSING_TILES.hits()[index];
+    return MapMissingTile{hit.z, hit.col, hit.row, hit.count};
+  }
+};
+MissingTilesConsoleSource g_missingTilesConsoleSource;
+
 // Debug readout geometry.
 constexpr int kTextX = 8;
 constexpr int kTextLine1Y = 8;
@@ -348,6 +366,10 @@ void MapActivity::onEnter() {
   }
 
   publishLadders();
+  // The `missing` command's list, read straight out of the store rather than
+  // copied in -- MISSING_TILES was loaded from the card in setup() and keeps
+  // growing while this screen is open, so a copy would go stale mid-session.
+  consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   // So `info` answers with real numbers before the first fix arrives rather
   // than reporting a 0 m/px viewport that has simply never been drawn.
   consoleState_.setZoomInfo(zoomStep(), MapViewport::kZoomLadder[zoomStep()].z,

@@ -12,6 +12,7 @@ constexpr uint32_t kMaxHeading = 15;
 constexpr uint32_t kMaxZoom = 4;
 constexpr uint32_t kMaxMarker = 4;
 constexpr uint32_t kMaxSpeedKmh = 65535;
+constexpr uint32_t kMaxMissingOffset = 65535;
 
 struct Tokens {
   std::string_view t[kMaxTokens];
@@ -106,7 +107,7 @@ MapCommand fail(MapCommandError error) {
 }
 
 // `<name> <0..max>` -- the shape shared by heading, zoom and marker.
-MapCommand parseSingleUint(const Tokens& tokens, MapCommandType type, uint32_t max, uint8_t MapCommand::*field) {
+MapCommand parseSingleUint(const Tokens& tokens, MapCommandType type, uint32_t max, uint8_t MapCommand::* field) {
   if (tokens.n != 2) return fail(MapCommandError::BadArity);
   uint32_t value = 0;
   if (!parseUint(tokens.t[1], value)) return fail(MapCommandError::BadNumber);
@@ -153,7 +154,7 @@ MapCommand parsePos(const Tokens& tokens) {
       return fail(MapCommandError::BadArity);
     }
 
-    if (i >= tokens.n) return fail(MapCommandError::BadArity);                 // keyword with no value
+    if (i >= tokens.n) return fail(MapCommandError::BadArity);                  // keyword with no value
     if (wantHeading && cmd.hasHeading) return fail(MapCommandError::BadArity);  // given twice
     if (wantSpeed && cmd.hasSpeed) return fail(MapCommandError::BadArity);
 
@@ -171,6 +172,21 @@ MapCommand parsePos(const Tokens& tokens) {
     ++i;
   }
 
+  return cmd;
+}
+
+// `missing` or `missing <offset>`. The bare form is page 0, so a human can
+// type it and a paging loop can keep the same command name.
+MapCommand parseMissing(const Tokens& tokens) {
+  if (tokens.n > 2) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Missing;
+  if (tokens.n == 2) {
+    uint32_t value = 0;
+    if (!parseUint(tokens.t[1], value)) return fail(MapCommandError::BadNumber);
+    if (value > kMaxMissingOffset) return fail(MapCommandError::OutOfRange);
+    cmd.missingOffset = static_cast<uint16_t>(value);
+  }
   return cmd;
 }
 
@@ -212,6 +228,7 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "mode") return parseMode(tokens);
   if (name == "redraw") return parseBare(tokens, MapCommandType::Redraw);
   if (name == "tiles") return parseBare(tokens, MapCommandType::Tiles);
+  if (name == "missing") return parseMissing(tokens);
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   return fail(MapCommandError::UnknownCommand);
 }

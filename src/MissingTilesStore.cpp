@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "MissingTilePriority.h"
+
 namespace {
 constexpr const char* kLogTag = "MTS";
 }
@@ -64,6 +66,15 @@ void MissingTilesStore::record(uint8_t z, uint32_t col, uint32_t row) {
 
   hits_.push_back(MissingTileHit{z, col, row, 1});
   dirty_ = true;
+}
+
+void MissingTilesStore::sortByFetchPriority() {
+  // std::sort, not stable_sort: the comparator is a total order (it falls
+  // through to col/row), so stability buys nothing -- and stable_sort would
+  // allocate a scratch buffer on a heap this firmware guards closely.
+  // At most kMaxEntries = 200 elements, and only when a listing starts.
+  std::sort(hits_.begin(), hits_.end(),
+            [](const MissingTileHit& a, const MissingTileHit& b) { return missingTileFetchBefore(a, b); });
 }
 
 bool MissingTilesStore::flushIfDirty() {

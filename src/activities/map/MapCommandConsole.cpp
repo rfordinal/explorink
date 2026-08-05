@@ -4,8 +4,12 @@
 
 namespace {
 
-// Widest reply is an INFO line carrying a full coordinate.
-constexpr size_t kReplyBuf = 48;
+// Widest reply is a `missing` entry with every field at its type's maximum:
+// "INFO missing_255_4294967295_4294967295=4294967295" is 49 characters plus
+// the terminator. Real values are far shorter (z <= 13, col/row < 2^13), but
+// a silently truncated tile coordinate would send the laptop tool after the
+// wrong tile, so the buffer is sized for the type and not for the data.
+constexpr size_t kReplyBuf = 64;
 
 // int32 scaled by 1e7 back to plain decimal degrees. Integer only -- the
 // device has no FPU, and a printf("%f") on a soft-float double is both slow
@@ -98,6 +102,11 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
 
     case MapCommandType::Tiles:
       writeTiles(out);
+      out.reply("OK");
+      return false;
+
+    case MapCommandType::Missing:
+      writeMissing(cmd.missingOffset, out);
       out.reply("OK");
       return false;
 
@@ -219,6 +228,56 @@ void MapConsoleState::writeTiles(IMapReplyWriter& out) const {
     snprintf(line, sizeof(line), "INFO tile_%u_%u_%u=%s", static_cast<unsigned>(tileRange_.z),
              static_cast<unsigned>(col), static_cast<unsigned>(row), missing ? "missing" : "ok");
     out.reply(line);
+  }
+}
+
+void MapConsoleState::writeMissing(uint16_t offset, IMapReplyWriter& out) const {
+  if (missingTiles_ == nullptr) {
+    // No store wired in. Distinct from an empty list on purpose: a laptop
+    // tool must not read "the device needs no tiles" out of a build that
+    // simply never connected the two.
+    out.reply("INFO missing=unavailable");
+    return;
+  }
+
+  // Page 0 is the start of a listing, so this is where the list goes into
+  // fetch-priority order. Later pages walk the order page 0 fixed -- a
+  // re-sort mid-listing would move entries across a page boundary and the
+  // reader would miss some and see others twice. `missing 20` with no
+  // `missing` before it therefore pages whatever order the store already
+  // holds, which is a debugging convenience, not a contract.
+  //
+  // const method, non-const call: the console keeps no state of its own, and
+  // the ordering happens in the source, which is not ours to be const about.
+  if (offset == 0) missingTiles_->orderForFetch();
+
+  char line[kReplyBuf];
+  const size_t total = missingTiles_->missingTileCount();
+
+  snprintf(line, sizeof(line), "INFO missing_total=%lu", static_cast<unsigned long>(total));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO missing_offset=%u", static_cast<unsigned>(offset));
+  out.reply(line);
+
+  size_t index = offset;
+  const size_t pageEnd = static_cast<size_t>(offset) + kMissingPageSize;
+  const size_t end = pageEnd < total ? pageEnd : total;
+  for (; index < end; ++index) {
+    const MapMissingTile tile = missingTiles_->missingTileAt(index);
+    snprintf(line, sizeof(line), "INFO missing_%u_%lu_%lu=%lu", static_cast<unsigned>(tile.z),
+             static_cast<unsigned long>(tile.col), static_cast<unsigned long>(tile.row),
+             static_cast<unsigned long>(tile.count));
+    out.reply(line);
+  }
+
+  // Where the next command should start, or `done`. The reader never has to
+  // do the arithmetic, so it cannot get it wrong -- and an offset past the
+  // end simply lands here with nothing printed.
+  if (index < total) {
+    snprintf(line, sizeof(line), "INFO missing_next=%lu", static_cast<unsigned long>(index));
+    out.reply(line);
+  } else {
+    out.reply("INFO missing_next=done");
   }
 }
 
