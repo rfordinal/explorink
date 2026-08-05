@@ -564,6 +564,11 @@ void loop() {
         // also uses -- hold the lock for the whole dump so the BW frame and the
         // planes come from the same picture.
         RenderLock lock;
+        // Nothing else may write to this wire until the last plane byte is out:
+        // one log line in the middle of the payload corrupts it (see
+        // SerialLogMute). Errors still reach the RTC ring buffer and the next
+        // unmuted line.
+        SerialLogMute quiet;
         const bool withPlanes = GrayscaleFrame::supported(renderer) && GrayscaleFrame::hasSource();
         const uint32_t total = withPlanes ? bufferSize * 3 : bufferSize;
         logSerial.printf("SCREENSHOT_GRAY_START:%u:%u:%d\n", (unsigned)total, (unsigned)(withPlanes ? bufferSize : 0),
@@ -587,6 +592,7 @@ void loop() {
         logSerial.printf("SCREENSHOT_GRAY_END\n");
       } else if (cmd == "SCREENSHOT") {
         const uint32_t bufferSize = display.getBufferSize();
+        SerialLogMute quiet;  // same reason as CMD:SCREENSHOT_GRAY above
         logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
         uint8_t* buf = display.getFrameBuffer();
         const size_t written = writeAllChunked(buf, bufferSize, /*totalTimeoutMs=*/3000);

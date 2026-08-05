@@ -120,6 +120,9 @@ void PreviewActivity::render(RenderLock&&) {
       LOG_DBG("PRV", "page %d full: base=%ums planes=%ums gray=%ums clean=%ums total=%ums grey=%d",
               static_cast<int>(page_), timings_.baseDrawMs + timings_.baseDisplayMs, timings_.planesMs,
               timings_.grayDisplayMs, timings_.cleanupMs, timings_.totalMs, timings_.grayscale ? 1 : 0);
+      // The chrome above was drawn before these numbers existed. One windowed
+      // update puts the real ones on the panel without repainting the page.
+      drawStatsLine();
       break;
 
     case Update::MarkerWindow: {
@@ -159,6 +162,7 @@ void PreviewActivity::render(RenderLock&&) {
       // press behind. A windowed BW update of the counter strip fixes it
       // without repainting -- and without disturbing the patches being judged.
       if (page_ == Page::Drift) drawCounterLine();
+      drawStatsLine();
       break;
     }
 
@@ -206,11 +210,16 @@ void PreviewActivity::drawChrome(const GrayPainter& painter) const {
   const int pageIndex = static_cast<int>(page_);
   snprintf(line, sizeof(line), tr(STR_PREVIEW_PAGE_FORMAT), I18N.get(kPageTitles[pageIndex]), pageIndex + 1,
            static_cast<int>(Page::Count));
-  renderer.drawText(UI_12_FONT_ID, kMargin, 8, tr(STR_PREVIEW), true);
-  renderer.drawText(UI_12_FONT_ID, kMargin, 30, line, true);
+  // Two lines, spaced by the font's own line height: 22 px overlapped them on
+  // hardware (UI_12 is taller than that).
+  const int titleHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  renderer.drawText(UI_12_FONT_ID, kMargin, 6, tr(STR_PREVIEW), true);
+  renderer.drawText(UI_12_FONT_ID, kMargin, 6 + titleHeight, line, true);
   renderer.drawLine(kMargin, contentTop() - 8, renderer.getScreenWidth() - kMargin, contentTop() - 8, true);
 
-  const int statsY = contentBottom() + 8;
+  int statsX, statsY, statsW, statsH;
+  statsRect(statsX, statsY, statsW, statsH);
+  statsY += 6;  // same baselines drawStatsLine() uses
   if (!GrayscaleFrame::supported(renderer)) {
     renderer.drawText(UI_10_FONT_ID, kMargin, statsY, tr(STR_PREVIEW_NO_GRAY), true);
   } else {
@@ -262,7 +271,7 @@ void PreviewActivity::drawScalePage(const GrayPainter& painter) const {
 
   // Line widths 1..4 px at each level: the map renderer's whole vocabulary.
   y += 8;
-  painter.text(UI_10_FONT_ID, kMargin, y, tr(STR_PREVIEW_WIDTHS), GrayShade::Black);
+  note(painter, kMargin, y, tr(STR_PREVIEW_WIDTHS), GrayShade::Black);
   y += 20;
   for (const GrayShade shade : textShades) {
     for (int lineWidth = 1; lineWidth <= 4; ++lineWidth) {
@@ -271,6 +280,42 @@ void PreviewActivity::drawScalePage(const GrayPainter& painter) const {
     }
     y += 6;
   }
+}
+
+void PreviewActivity::note(const GrayPainter& painter, const int x, const int y, const char* text,
+                           const GrayShade shade) const {
+  const int maxWidth = renderer.getScreenWidth() - x - kMargin;
+  painter.text(UI_10_FONT_ID, x, y, renderer.truncatedText(UI_10_FONT_ID, text, maxWidth).c_str(), shade);
+}
+
+void PreviewActivity::statsRect(int& x, int& y, int& w, int& h) const {
+  x = kMargin;
+  y = contentBottom() + 2;
+  w = renderer.getScreenWidth() - 2 * kMargin;
+  h = 40;  // both stats lines
+}
+
+void PreviewActivity::drawStatsLine() {
+  int x, y, w, h;
+  statsRect(x, y, w, h);
+
+  renderer.setRenderMode(GfxRenderer::BW);
+  renderer.fillRect(x, y, w, h, false);  // white: no grey lives in this strip
+
+  char line[80];
+  if (!GrayscaleFrame::supported(renderer)) {
+    renderer.drawText(UI_10_FONT_ID, x, y + 6, tr(STR_PREVIEW_NO_GRAY), true);
+  } else {
+    snprintf(line, sizeof(line), tr(STR_PREVIEW_TIMES_FORMAT), static_cast<unsigned>(timings_.baseDisplayMs),
+             static_cast<unsigned>(timings_.planesMs), static_cast<unsigned>(timings_.grayDisplayMs),
+             static_cast<unsigned>(timings_.cleanupMs));
+    renderer.drawText(UI_10_FONT_ID, x, y + 6, line, true);
+  }
+  snprintf(line, sizeof(line), tr(STR_PREVIEW_STATE_FORMAT), static_cast<unsigned>(windowMs_),
+           static_cast<unsigned>(ESP.getFreeHeap() / 1024));
+  renderer.drawText(UI_10_FONT_ID, x, y + 24, line, true);
+
+  renderer.displayBufferWindow(x, y, w, h);
 }
 
 void PreviewActivity::markerRect(const int step, int& x, int& y, int& w, int& h) const {
@@ -323,8 +368,8 @@ void PreviewActivity::drawMarkerPage(const GrayPainter& painter) const {
 
   char line[64];
   snprintf(line, sizeof(line), tr(STR_PREVIEW_MARKER_STEP_FORMAT), markerStep_ + 1, kMarkerSteps);
-  painter.text(UI_10_FONT_ID, kMargin, bottom + 6, line, GrayShade::Black);
-  painter.text(UI_10_FONT_ID, kMargin, bottom + 24, tr(STR_PREVIEW_MARKER_HINT), GrayShade::Black);
+  note(painter, kMargin, bottom + 6, line, GrayShade::Black);
+  note(painter, kMargin, bottom + 24, tr(STR_PREVIEW_MARKER_HINT), GrayShade::Black);
 }
 
 void PreviewActivity::counterRect(int& x, int& y, int& w, int& h) const {
@@ -365,7 +410,7 @@ void PreviewActivity::drawDriftPage(const GrayPainter& painter) const {
     return;
   }
 
-  painter.text(UI_10_FONT_ID, kMargin, top - 22, tr(STR_PREVIEW_DRIFT_ONCE), GrayShade::Black);
+  note(painter, kMargin, top - 22, tr(STR_PREVIEW_DRIFT_ONCE), GrayShade::Black);
   painter.fillRect(kMargin, top, patch, patch, GrayShade::DarkGray);
   painter.fillRect(rightX, top, patch, patch, GrayShade::DarkGray);
   painter.rect(kMargin, top, patch, patch, 1, GrayShade::Black);
@@ -376,7 +421,7 @@ void PreviewActivity::drawDriftPage(const GrayPainter& painter) const {
   char line[64];
   snprintf(line, sizeof(line), tr(STR_PREVIEW_DRIFT_AGAIN_FORMAT), nudgeCount_);
   painter.text(UI_12_FONT_ID, cx, cy + 4, line, GrayShade::Black);
-  painter.text(UI_10_FONT_ID, kMargin, cy + 32, tr(STR_PREVIEW_DRIFT_HINT), GrayShade::Black);
+  note(painter, kMargin, cy + 32, tr(STR_PREVIEW_DRIFT_HINT), GrayShade::Black);
 }
 
 // A nudge that marks one region only. Plane bit 0 selects a LUT slot that is
@@ -408,7 +453,7 @@ void PreviewActivity::drawRegionPage(const GrayPainter& painter) const {
   char line[64];
   snprintf(line, sizeof(line), tr(STR_PREVIEW_REGION_STEP_FORMAT), regionStep_, kRegionNudges);
   painter.text(UI_12_FONT_ID, kMargin + 8, top + 8, line, GrayShade::White);
-  painter.text(UI_10_FONT_ID, kMargin, top + fieldHeight + 12, tr(STR_PREVIEW_REGION_HINT), GrayShade::Black);
+  note(painter, kMargin, top + fieldHeight + 12, tr(STR_PREVIEW_REGION_HINT), GrayShade::Black);
 }
 
 // Real four-level grey against the 2x2 checkerboard that already exists. Same
@@ -421,8 +466,8 @@ void PreviewActivity::drawDitherPage(const GrayPainter& painter) const {
   int y = contentTop() + 24;
 
   if (painter.pass() == GrayPainter::Pass::Base) {
-    painter.text(UI_10_FONT_ID, leftX, y - 20, tr(STR_PREVIEW_REAL_GREY), GrayShade::Black);
-    painter.text(UI_10_FONT_ID, rightX, y - 20, tr(STR_PREVIEW_DITHER_2X2), GrayShade::Black);
+    note(painter, leftX, y - 20, tr(STR_PREVIEW_REAL_GREY), GrayShade::Black);
+    note(painter, rightX, y - 20, tr(STR_PREVIEW_DITHER_2X2), GrayShade::Black);
   }
 
   const GrayShade shades[] = {GrayShade::LightGray, GrayShade::DarkGray};
@@ -444,7 +489,7 @@ void PreviewActivity::drawDitherPage(const GrayPainter& painter) const {
   // The 1 px case. Real grey holds the line; a checkerboard turns it into
   // dashes, which is why dither cannot carry thin map features.
   if (painter.pass() == GrayPainter::Pass::Base) {
-    painter.text(UI_10_FONT_ID, leftX, y, tr(STR_PREVIEW_HAIRLINE), GrayShade::Black);
+    note(painter, leftX, y, tr(STR_PREVIEW_HAIRLINE), GrayShade::Black);
   }
   y += 24;
   for (int i = 0; i < 2; ++i) {

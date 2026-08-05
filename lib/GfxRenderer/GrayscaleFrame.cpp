@@ -87,8 +87,10 @@ bool GrayscaleFrame::writePlanes(GfxRenderer& renderer, const GrayDrawCallback& 
 
   // The strip writes below talk to the controller directly, so nothing may be
   // in flight (no-op on blocking panels). A replay into a sink touches no
-  // hardware, but waiting costs nothing there either.
-  renderer.waitRefreshComplete();
+  // hardware at all, and must not touch it: waitRefreshComplete() can make the
+  // SDK print straight to Serial (EpdBus.cpp:220, "Wait complete"), which is
+  // exactly what corrupts a binary dump.
+  if (sink == nullptr) renderer.waitRefreshComplete();
 
   for (int plane = 0; plane < 2; ++plane) {
     const bool lsbPlane = (plane == 0);

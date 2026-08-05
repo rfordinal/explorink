@@ -56,9 +56,22 @@ class PreviewActivity final : public Activity {
   void drawRegionPage(const GrayPainter& painter) const;
   void drawDitherPage(const GrayPainter& painter) const;
 
+  // Draws one line of page text, trimmed to the screen width. A hint that runs
+  // off the right edge is not just ugly: every clipped pixel logs an "Outside
+  // range" error, and during CMD:SCREENSHOT_GRAY those errors land inside the
+  // binary payload (found on hardware 2026-08-05, before SerialLogMute existed).
+  void note(const GrayPainter& painter, int x, int y, const char* text, GrayShade shade) const;
+
+  // Repaints the stats strip with the timings of the render that just finished,
+  // through a windowed BW update. Needed because chrome is drawn *during* the
+  // render it reports on, so the numbers are only known once it is too late to
+  // draw them -- the page showed zeroes on hardware until this existed.
+  void drawStatsLine();
+
   void drawMarker(const GrayPainter& painter, int step) const;
   void markerRect(int step, int& x, int& y, int& w, int& h) const;
   void counterRect(int& x, int& y, int& w, int& h) const;
+  void statsRect(int& x, int& y, int& w, int& h) const;
   void drawCounterLine();
 
   GrayDrawCallback callback() { return GrayDrawCallback{this, &drawTrampoline}; }

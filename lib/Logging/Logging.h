@@ -65,6 +65,26 @@ void logPrintf(const char* level, const char* origin, const char* format, ...);
 #define LOG_INF(origin, format, ...)
 #endif
 
+// Serial mute for binary payloads. CMD:SCREENSHOT and CMD:SCREENSHOT_GRAY push
+// tens of kilobytes down the same wire the log uses, and one LOG_ERR landing
+// mid-payload corrupts the dump -- found the hard way 2026-08-05: a stray
+// "Outside range" error put 1,116 bytes into the middle of a 144,000-byte
+// grayscale screenshot, deterministically. Muted lines still reach the RTC ring
+// buffer, so crash reports keep them.
+//
+// Prefer the RAII form:
+//     SerialLogMute quiet;   // logs stay off the wire until scope exit
+void setSerialLogMuted(bool muted);
+bool isSerialLogMuted();
+
+class SerialLogMute {
+ public:
+  SerialLogMute() { setSerialLogMuted(true); }
+  ~SerialLogMute() { setSerialLogMuted(false); }
+  SerialLogMute(const SerialLogMute&) = delete;
+  SerialLogMute& operator=(const SerialLogMute&) = delete;
+};
+
 std::string getLastLogs();
 void clearLastLogs();
 // Validates the RTC log state (magic word + logHead range). Returns true if

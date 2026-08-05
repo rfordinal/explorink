@@ -36,6 +36,15 @@ void addToLogRingBuffer(const char* message) {
 // Since logging can take a large amount of flash, we want to make the format string as short as possible.
 // This logPrintf prepend the timestamp, level and origin to the user-provided message, so that the user only needs to
 // provide the format string for the message itself.
+// Not a mutex: the flag is set and cleared by the one task that dumps binary
+// payloads, and a log line from another task racing the last byte of a dump is
+// the exact thing being prevented, not a case to be fair about.
+static volatile bool serialLogMuted = false;
+
+void setSerialLogMuted(const bool muted) { serialLogMuted = muted; }
+
+bool isSerialLogMuted() { return serialLogMuted; }
+
 void logPrintf(const char* level, const char* origin, const char* format, ...) {
   va_list args;
   va_start(args, format);
@@ -62,16 +71,20 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
     }
   }
   va_end(args);
+  // The ring buffer always gets the line; only the wire is muted, and only
+  // while a binary payload owns it (see SerialLogMute).
+  if (!serialLogMuted) {
 #if FREEINK_LOG_TRANSPORT == FREEINK_LOG_TRANSPORT_ROM_PRINTF
-  // IDF/ROM console path for boards monitored over USB-Serial-JTAG, where the
-  // HWCDC `operator bool` reads false under `pio device monitor` and logs would
-  // otherwise be silently dropped (e.g. Sticky).
-  esp_rom_printf("%s", buf);
+    // IDF/ROM console path for boards monitored over USB-Serial-JTAG, where the
+    // HWCDC `operator bool` reads false under `pio device monitor` and logs would
+    // otherwise be silently dropped (e.g. Sticky).
+    esp_rom_printf("%s", buf);
 #else
-  if (logSerial) {
-    logSerial.print(buf);
-  }
+    if (logSerial) {
+      logSerial.print(buf);
+    }
 #endif
+  }
   addToLogRingBuffer(buf);
 }
 
