@@ -120,9 +120,12 @@ void PreviewActivity::render(RenderLock&&) {
       LOG_DBG("PRV", "page %d full: base=%ums planes=%ums gray=%ums clean=%ums total=%ums grey=%d",
               static_cast<int>(page_), timings_.baseDrawMs + timings_.baseDisplayMs, timings_.planesMs,
               timings_.grayDisplayMs, timings_.cleanupMs, timings_.totalMs, timings_.grayscale ? 1 : 0);
-      // The chrome above was drawn before these numbers existed. One windowed
-      // update puts the real ones on the panel without repainting the page.
-      drawStatsLine();
+      // No windowed update to put these numbers on the panel: measured
+      // 2026-08-05, ANY refresh after a grey frame drives every pixel to its RAM
+      // value, and a grey pixel's RAM value is ink -- the whole page went black
+      // where it should have been grey. The chrome shows the previous frame's
+      // numbers (STR_PREVIEW_TIMES_FORMAT says so) and the serial log has this
+      // one's.
       break;
 
     case Update::MarkerWindow: {
@@ -158,17 +161,11 @@ void PreviewActivity::render(RenderLock&&) {
       LOG_DBG("PRV", "page %d nudge %d: planes=%ums gray=%ums clean=%ums", static_cast<int>(page_),
               page_ == Page::Drift ? nudgeCount_ : regionStep_, timings_.planesMs, timings_.grayDisplayMs,
               timings_.cleanupMs);
-      // The nudge left the framebuffer alone, so the counter on screen is one
-      // press behind. A windowed BW update of the counter strip fixes it
-      // without repainting -- and without disturbing the patches being judged.
-      if (page_ == Page::Drift) drawCounterLine();
-      drawStatsLine();
+      // Same reason as above, and it matters more here: a refresh would wipe
+      // the very greys this page exists to compare. The counter on screen stays
+      // one repaint behind; the log line above is the live count.
       break;
     }
-
-    case Update::Counter:
-      drawCounterLine();
-      break;
   }
 }
 
@@ -217,9 +214,7 @@ void PreviewActivity::drawChrome(const GrayPainter& painter) const {
   renderer.drawText(UI_12_FONT_ID, kMargin, 6 + titleHeight, line, true);
   renderer.drawLine(kMargin, contentTop() - 8, renderer.getScreenWidth() - kMargin, contentTop() - 8, true);
 
-  int statsX, statsY, statsW, statsH;
-  statsRect(statsX, statsY, statsW, statsH);
-  statsY += 6;  // same baselines drawStatsLine() uses
+  const int statsY = contentBottom() + 8;
   if (!GrayscaleFrame::supported(renderer)) {
     renderer.drawText(UI_10_FONT_ID, kMargin, statsY, tr(STR_PREVIEW_NO_GRAY), true);
   } else {
@@ -288,36 +283,6 @@ void PreviewActivity::note(const GrayPainter& painter, const int x, const int y,
   painter.text(UI_10_FONT_ID, x, y, renderer.truncatedText(UI_10_FONT_ID, text, maxWidth).c_str(), shade);
 }
 
-void PreviewActivity::statsRect(int& x, int& y, int& w, int& h) const {
-  x = kMargin;
-  y = contentBottom() + 2;
-  w = renderer.getScreenWidth() - 2 * kMargin;
-  h = 40;  // both stats lines
-}
-
-void PreviewActivity::drawStatsLine() {
-  int x, y, w, h;
-  statsRect(x, y, w, h);
-
-  renderer.setRenderMode(GfxRenderer::BW);
-  renderer.fillRect(x, y, w, h, false);  // white: no grey lives in this strip
-
-  char line[80];
-  if (!GrayscaleFrame::supported(renderer)) {
-    renderer.drawText(UI_10_FONT_ID, x, y + 6, tr(STR_PREVIEW_NO_GRAY), true);
-  } else {
-    snprintf(line, sizeof(line), tr(STR_PREVIEW_TIMES_FORMAT), static_cast<unsigned>(timings_.baseDisplayMs),
-             static_cast<unsigned>(timings_.planesMs), static_cast<unsigned>(timings_.grayDisplayMs),
-             static_cast<unsigned>(timings_.cleanupMs));
-    renderer.drawText(UI_10_FONT_ID, x, y + 6, line, true);
-  }
-  snprintf(line, sizeof(line), tr(STR_PREVIEW_STATE_FORMAT), static_cast<unsigned>(windowMs_),
-           static_cast<unsigned>(ESP.getFreeHeap() / 1024));
-  renderer.drawText(UI_10_FONT_ID, x, y + 24, line, true);
-
-  renderer.displayBufferWindow(x, y, w, h);
-}
-
 void PreviewActivity::markerRect(const int step, int& x, int& y, int& w, int& h) const {
   const int span = renderer.getScreenWidth() - 2 * kMargin - kMarkerSize;
   const int centreX = kMargin + kMarkerSize / 2 + (span * step) / (kMarkerSteps - 1);
@@ -377,22 +342,6 @@ void PreviewActivity::counterRect(int& x, int& y, int& w, int& h) const {
   y = contentBottom() - 60;
   w = renderer.getScreenWidth() - 2 * kMargin;
   h = 24;
-}
-
-void PreviewActivity::drawCounterLine() {
-  int x, y, w, h;
-  counterRect(x, y, w, h);
-
-  char line[64];
-  snprintf(line, sizeof(line), tr(STR_PREVIEW_DRIFT_AGAIN_FORMAT), nudgeCount_);
-
-  renderer.setRenderMode(GfxRenderer::BW);
-  renderer.fillRect(x, y, w, h, false);  // white: this strip carries no grey
-  renderer.drawText(UI_12_FONT_ID, x, y + 4, line, true);
-
-  const uint32_t start = millis();
-  renderer.displayBufferWindow(x, y, w, h);
-  windowMs_ = static_cast<uint16_t>(millis() - start);
 }
 
 // Left patch is nudged once and never again. Right patch is nudged again on

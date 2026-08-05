@@ -15,6 +15,12 @@
 // | Region | a nudge that marks one region only, leaving the rest untouched   |
 // | Dither | real grey next to the existing 2x2 checkerboard, same sizes     |
 //
+// Marker's answer came out negative and the page is kept for it: a windowed BW
+// update over grey does NOT preserve the grey. Measured 2026-08-05 -- any refresh
+// after a grey frame drives every pixel to its RAM value, and a grey pixel's RAM
+// value is ink, so the whole backdrop goes black. Moving something over a grey
+// base costs a full grey re-render, ~2.1 s.
+//
 // Marker, Drift and Region are the three open questions in that doc. What each
 // page proves, and how to read it, is written on the page itself. Two records
 // per page: CMD:SCREENSHOT_GRAY (tools/greyshot.py in the parent repo) for the
@@ -39,8 +45,7 @@ class PreviewActivity final : public Activity {
   enum class Update : uint8_t {
     Full,          // BW base + both planes + nudge + cleanup
     MarkerWindow,  // redraw the frame, refresh only the marker's window
-    Nudge,         // planes only, no new base frame
-    Counter        // windowed BW update of the counter line
+    Nudge          // planes only, no new base frame
   };
   // Which pass of which drawing the callback is serving. Nudge passes draw only
   // the region being nudged, so the rest of the panel keeps what it has.
@@ -62,17 +67,9 @@ class PreviewActivity final : public Activity {
   // binary payload (found on hardware 2026-08-05, before SerialLogMute existed).
   void note(const GrayPainter& painter, int x, int y, const char* text, GrayShade shade) const;
 
-  // Repaints the stats strip with the timings of the render that just finished,
-  // through a windowed BW update. Needed because chrome is drawn *during* the
-  // render it reports on, so the numbers are only known once it is too late to
-  // draw them -- the page showed zeroes on hardware until this existed.
-  void drawStatsLine();
-
   void drawMarker(const GrayPainter& painter, int step) const;
   void markerRect(int step, int& x, int& y, int& w, int& h) const;
   void counterRect(int& x, int& y, int& w, int& h) const;
-  void statsRect(int& x, int& y, int& w, int& h) const;
-  void drawCounterLine();
 
   GrayDrawCallback callback() { return GrayDrawCallback{this, &drawTrampoline}; }
 

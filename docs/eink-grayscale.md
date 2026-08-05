@@ -115,6 +115,45 @@ the same reason.
 differential baseline and clears the flag. That is the whole cleanup — stock
 parity, the OEM firmware has no revert waveform at all (`Ssd1677Luts.h:44-46`).
 
+## Any refresh after a grey frame wipes the grey
+
+**Measured on hardware 2026-08-05. This is the single most important fact on this
+page, and this doc previously claimed the opposite.**
+
+One Fast refresh after a grey render destroyed every grey on the panel. Not the
+greys inside the refreshed rectangle -- all of them. Twice, with two different
+symptoms that together give the mechanism:
+
+| state of BW RAM | what the panel became |
+|---|---|
+| plane bits (no resync) | black almost everywhere, only nudged pixels light |
+| the frame (after resync) | correct black and white, **every grey gone to black** |
+
+So a Fast refresh **drives every pixel to its RAM value**. "Differential" in
+`Ssd1677Driver.cpp:356-358` means only that the fast waveform cannot do a clean
+sweep -- it does not mean pixels with a zero diff are skipped. A grey pixel's RAM
+value is ink, so it lands on full black. Exactly the collapse the "a grey pixel
+is a black pixel" section predicts, arriving from an unexpected direction.
+
+Consequences, and they are structural:
+
+- **Grey survives only until the next refresh of any kind.** There is no partial
+  BW update that leaves grey standing.
+- **A marker moving over a grey base is not possible on X4.** Each move costs a
+  full grey re-render: base HALF + planes + nudge + cleanup, measured 1773 + 190
+  + 144 + 22 ms, about 2.1 s. Not a per-move budget any moving map can pay.
+- **Dither does not have this problem.** It is ordinary BW pixels; a refresh
+  reproduces it exactly. For anything that has to survive partial updates, dither
+  is not a compromise, it is the only option.
+- Anything that greys the screen must own the whole screen until it is done with
+  it. The Preview activity's own stats line had to stop refreshing for this
+  reason -- it was wiping the page it was reporting on.
+
+What this does **not** change: grey itself works, all four levels are
+distinguishable on the panel (confirmed by eye), and a still, rarely-redrawn
+image is exactly the case grey is good for. It is the *partial update* half of
+the story that is dead.
+
 ## The window is the diff, not the RAM area
 
 **Measured on hardware 2026-08-05.** This section used to say a windowed update
@@ -155,22 +194,13 @@ pixels where BW RAM differs from RED RAM. `Ssd1677Driver.cpp:356-358` states it
 plainly: *"a partial only drives pixels that differ from the RED 'old' plane, so
 it can't clear what is physically on the panel at boot"*.
 
-So:
+That reasoning was wrong, and the section above records what the panel actually
+does: **every** pixel is driven to its RAM value, so every grey goes black, not
+just the ones under the moved object. Kept here only so the plausible-looking
+derivation is not repeated.
 
-- outside the window — not addressed, grey untouched
-- inside the window, pixel unchanged in the BW frame — diff 0, not driven, grey
-  survives
-- inside the window, pixel changed — driven to pure black or white, grey lost at
-  exactly those pixels
-
-Grey does not vanish when you move something. It degrades to black only on the
-pixels the BW frame actually changed.
-
-Bench: **Marker move** page, via `GfxRenderer::displayBufferWindow`. Grey
-backdrop, BW marker, one refresh per step. Note what "outside the window" now
-means: not unaddressed, but zero-diff. A grey pixel outside survives because BW
-RAM and RED RAM agree there -- which is only true once
-`resyncControllerBwRam()` has run.
+Bench: **Marker move** page. Answer measured and negative -- the page now exists
+to show the wipe rather than to prove survival.
 
 Window constraint: `x` and `w` must be multiples of 8 (`Ssd1677Driver.cpp:427`).
 
