@@ -19,8 +19,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     DARK = 0,
     LIGHT = 1,
     CUSTOM = 2,
-    COVER = 3,
-    COVER_CUSTOM = 4,
+    // Was COVER (book cover) upstream. TrailInk has no book open most of the
+    // time, so this slot now shows the last known map fix instead.
+    LOCATION = 3,
+    LOCATION_CUSTOM = 4,
     BLANK = 5,
     QUICK_RESUME = 6,
     SLEEP_SCREEN_MODE_COUNT
