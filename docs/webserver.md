@@ -1,7 +1,8 @@
 # Web Server Guide
 
-This guide explains how to use TrailInk's built-in web server for file
-transfer, device settings, and Wi-Fi management.
+This guide explains how to use TrailInk's built-in web server. It moves files
+on and off the SD card. That is all it does -- device settings and Wi-Fi are
+configured on the device itself, not in a browser.
 
 ## Overview
 
@@ -10,9 +11,12 @@ The web server is available while the device is in **File Transfer** or
 
 - Upload, download, rename, move, and delete files on the SD card
 - Create folders
-- Edit many device settings from a browser
-- Manage saved Wi-Fi networks
 - Accept WebDAV clients and Calibre wireless uploads
+- Report device status (firmware, IP, free heap, uptime)
+
+It cannot change device settings or Wi-Fi credentials. Those pages were removed
+(2026-08-05) so there is one settings surface, not two that can disagree. Use
+**Settings** on the device.
 
 The server does not require authentication. Use it only on trusted private
 networks or in hotspot mode when you control who is connected.
@@ -78,7 +82,7 @@ card for them.
 
 ## Web Interface
 
-The browser UI has three primary pages.
+The browser UI has two pages.
 
 ### Home
 
@@ -106,14 +110,6 @@ Existing files with the same name are overwritten by uploads. When EPUB files
 are overwritten, moved, renamed, or deleted through the web server, the matching
 book cache is cleared so stale metadata is not reused.
 
-### Settings
-
-The Settings page exposes many firmware settings in the browser. It also has
-a card for saved Wi-Fi networks.
-
-Passwords are accepted when adding or editing entries, but saved passwords are
-not returned by the API.
-
 ## Command Line Use
 
 Power users can use `curl`, WebDAV clients, or WebSocket clients while the web
@@ -134,6 +130,7 @@ Endpoint details are documented in [webserver-endpoints.md](./webserver-endpoint
 
 1. Use **Create Hotspot** when no trusted network is available.
 2. Prefer `crosspoint.local` when available, but keep the displayed IP address as a fallback.
+   That hostname is the literal value in the code, not a stale name.
 3. Move closer to the router if upload progress stalls in Join Network mode.
 4. Copy custom `.cpfont` families to `/.fonts/` or `/fonts/` on the SD card. The
    web font manager was removed; the device still loads SD fonts at boot.
