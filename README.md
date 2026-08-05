@@ -82,6 +82,8 @@ not a pull request.
 | Loading a real map from the SD card | exists |
 | Buttons on the map screen (zoom, marker height) | exists, per mode, saved across power cycles |
 | Command console (serial and BLE), zoom/mode filter | exists — same grammar over USB and BLE |
+| Marker follows the fix without redrawing the map | exists, host-tested, **not measured on hardware** — a fix moves the marker and refreshes one 64x64 rectangle; the map is redrawn only when the marker nears an edge, the rider turns 90°, or the ghosting budget runs out. See [`docs/map-follow.md`](./docs/map-follow.md) |
+| Track-up map | exists — the fix's heading is up on screen and the north indicator rotates to match |
 | Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots, marker anchor. Confirmed on the panel, not only in the preview. Labels, route and junction dots: **not implemented** |
 | Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
 | Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |

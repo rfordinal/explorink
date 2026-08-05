@@ -20,12 +20,23 @@
 // with P3's console per that doc's "Merge" section, and P5's buttons, mode
 // filter and BLE command channel on top.
 //
-// A received fix -- a BLE packet, a `pos`/`heading`/`redraw` command, or a
-// ladder step from the buttons -- is a viewport reset: re-anchor on the
-// marker, rebuild the MapProjection, work out which .tib tiles the rotated
-// screen rect touches (docs/map-data-spec.md, "Which tiles to load"), and
-// stream them through MapTileSource into MapRenderer. Nothing about the map
-// is held between resets, and nothing scales with how much map is on screen.
+// A viewport reset -- a ladder step, a mode switch, a Refresh, or a fix the
+// frame on screen cannot hold -- re-anchors on the marker, rebuilds the
+// MapProjection, works out which .tib tiles the rotated screen rect touches
+// (docs/map-data-spec.md, "Which tiles to load"), and streams them through
+// MapTileSource into MapRenderer. Nothing about the map is held between resets,
+// and nothing scales with how much map is on screen.
+//
+// ## Most fixes do not reset the viewport
+//
+// A fix that has moved the rider 20 metres does not invalidate the map on the
+// panel -- only the 64x64 patch the marker sits in. So a fix is projected
+// through the projection the frame was drawn with, and if the marker stays
+// clear of the screen edges the marker alone moves: restore the pixels it
+// covered, draw it at the new spot, refresh those rectangles and nothing else
+// (moveMarker()). No SD read, no MapRenderer pass, no whole-panel waveform.
+// MapFollow.h owns that decision and is unit-tested on the host; see
+// docs/map-follow.md for the mechanism and its costs.
 //
 // The tile source is ~5.5 KB of fixed buffers and is heap-allocated in
 // onEnter(), never a local: a task stack here is 2-4 KB and CLAUDE.md caps
@@ -94,6 +105,24 @@ class MapActivity final : public Activity {
 
  private:
   void renderWaiting();
+  // Routes one incoming fix (BLE packet or console `pos`) through MapFollow's
+  // decision: nothing, a marker move inside the current frame, or a full
+  // viewport reset. Every fix channel goes through here -- the decision must not
+  // be duplicated per channel.
+  void applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq);
+  // Erases the marker from the frame on the panel (writing back the pixels
+  // saved when it was drawn), redraws it at sx/sy, and refreshes only the
+  // rectangles involved. Leaves the map, the compass, the readout and the
+  // button hints exactly as they were -- including where the marker overlapped
+  // them, which is why the saved patch is taken after all of them are drawn.
+  void moveMarker(int16_t sx, int16_t sy, uint8_t headingStep);
+  // The marker's halo box, the unit of everything partial: what is saved, what
+  // is restored, what is refreshed. Fixed size, so one buffer fits any position.
+  void markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const;
+  // Saves the framebuffer under the marker's box at cx/cy into markerPatch_.
+  // False when the read did not fit or the box is off-panel, which is what
+  // forces the next fix to re-anchor instead of leaving a marker behind.
+  bool saveMarkerPatch(int cx, int cy);
   // headingStep is always 0-15 (MapHeading's domain) -- callers do any
   // channel-specific conversion before calling this, so the projection and
   // the debug readout only ever see one heading representation.
@@ -106,10 +135,12 @@ class MapActivity final : public Activity {
   // Draws one line of the debug readout, trimmed to the screen width.
   // Mutates `text` in place.
   void drawDebugLine(int y, char* text);
-  // Fixed top-right "N" indicator. The map is always drawn north-up today
-  // (see renderViewport()'s kNoRouteDisplayHeading), so this is static
-  // furniture, not derived from any heading.
-  void drawCompass();
+  // Top-right north indicator. The map is drawn track-up, so this rotates: the
+  // whole glyph turns about its own centre by the frame's heading, which is
+  // what makes it point at true north instead of up the screen. Not static
+  // furniture -- it is only correct for the heading the frame was drawn with
+  // (anchorHeading_), never for the newest fix.
+  void drawCompass(uint8_t headingStep);
   // Immediate "working on it" feedback, above the button hints. A ladder step
   // or a Refresh does not reach the panel for the better part of two seconds
   // (settle, tile reads, then the refresh itself), which is long enough that a
@@ -128,9 +159,11 @@ class MapActivity final : public Activity {
   void busyRect(int& x, int& y, int& w, int& h) const;
 
   // Ring plus a mode-specific center glyph -- dot (hike), small arrow
-  // (cycle) or large arrow (ride). headingStep is the real incoming
-  // heading, independent of the forced-north heading the map itself is
-  // drawn with.
+  // (cycle) or large arrow (ride). headingStep here is **relative to the
+  // frame's own orientation** (MapFollow::relativeHeadingStep), not the raw
+  // incoming heading: the map is track-up, so a fix matching the frame's
+  // heading points straight up, and a rider who has turned since the frame was
+  // drawn gets an arrow that shows exactly that turn.
   void drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRideMode mode);
 
   // Buttons, and the two timers they arm.
@@ -218,6 +251,38 @@ class MapActivity final : public Activity {
   // where the rider was last seen" from "showing where they actually are
   // right now", so renderViewport() knows to keep the waiting banner up.
   bool showingPersistedFix_ = false;
+
+  // ## Follow state: what the frame currently on the panel is
+  //
+  // Every one of these describes the picture the panel is holding, not the
+  // newest fix. A marker move reads them to work out what to erase and how to
+  // orient the arrow; a viewport reset is the only thing that rewrites them.
+  //
+  // True once a real map frame is up. The waiting banner and the persisted-fix
+  // frame are not followable: one has no map under it at all, the other carries
+  // a banner that only a full redraw can clear.
+  bool viewportDrawn_ = false;
+  // The heading the frame was drawn track-up with. proj_ is rotated by it, so
+  // it is also the frame's "up".
+  uint8_t anchorHeading_ = 0;
+  // Where the marker is drawn, in screen pixels. Starts at the ladder anchor
+  // after a reset and walks from there.
+  int16_t markerDrawnX_ = 0;
+  int16_t markerDrawnY_ = 0;
+  // The framebuffer under the marker's halo box, as it was before the marker
+  // was drawn over it. Restoring this is the only way to erase the marker
+  // without re-reading tiles: the map pixels it covered exist nowhere else
+  // (single-buffer mode, no shadow copy). One fixed-size box, allocated once in
+  // onEnter() next to the tile source -- 720 bytes, against a full frame's
+  // 48,000, which is the whole point.
+  std::unique_ptr<uint8_t[]> markerPatch_;
+  size_t markerPatchCapacity_ = 0;
+  // False when nothing valid is saved, which forces the next fix to re-anchor
+  // rather than leave a stale marker on the panel.
+  bool markerPatchValid_ = false;
+  // Marker moves since the last full frame. Windowed refreshes are
+  // differential and ghost, so this is a budget (MapFollow::kMaxPartialMoves).
+  uint8_t partialMoves_ = 0;
 
   // Ladder state, per mode, held in memory and seeded from settings once in
   // onEnter(). **In memory, not read back out of settings on a mode

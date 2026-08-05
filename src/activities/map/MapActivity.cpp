@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "GfxRendererCanvas.h"
+#include "MapFollow.h"
 #include "MapHatch.h"
 #include "MapRenderer.h"
 #include "MapStyleDefaults.h"
@@ -80,18 +81,25 @@ constexpr int kBusyMarginBottom = 50;  // clears GUI.drawButtonHints' band
 constexpr int kBusyBorder = 2;
 constexpr int kBusyGlassInset = 8;  // hourglass inset inside the badge box
 
-// North indicator geometry, fixed top-right corner. Ported 1:1 (scale 1
+// North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
 // 100x100 normalized canvas with "N" label, two open arcs (real angles, not
 // GfxRenderer::drawArc's axis-aligned quadrants -- those can only start/end
 // on 90 degree boundaries and a naive mirrored pair of half-circles meets
 // into a closed ring, which is not this glyph), a plain solid center
 // triangle (no concave cutout -- this spec dropped that from an earlier
-// draft) and a small separate accent triangle. Drawn straight up because
-// the map is always north-up today (see kNoRouteDisplayHeading below); it
-// stops being static furniture the day track-up rotation lands.
-constexpr int kCompassMarginRight = 40;  // design x=50 (arc/label/triangle center), in from the right edge
-constexpr int kCompassTopOffset = 6;     // design y=2 lands here on screen
+// draft) and a small separate accent triangle.
+//
+// The map is drawn track-up, so the glyph rotates: the whole thing turns about
+// the arc centre by the frame's heading, which puts its point at true north
+// instead of up the screen. That makes the arc centre the anchor -- the glyph
+// sweeps a circle around it, not a fixed bounding box -- and the halo a disc.
+constexpr int kCompassCenterMarginRight = 56;  // arc centre, in from the right edge
+constexpr int kCompassCenterTop = 56;          // arc centre, down from the top edge
+// Design-space distance from the arc centre to the furthest thing drawn: the
+// label sits 33 above it and is about 16 tall, so 46 clears it with slack. The
+// accent triangle's tip (28) and the arcs (24) are well inside.
+constexpr int kCompassGlyphRadius = 46;
 constexpr int kCompassLabelCenterX = 50, kCompassLabelCenterY = 14;
 constexpr int kCompassArcCx = 50, kCompassArcCy = 47;
 constexpr int kCompassArcRadius = 24;
@@ -105,12 +113,7 @@ constexpr int kCompassTriRightX = 58, kCompassTriRightY = 66;
 constexpr int kCompassAccentX1 = 71, kCompassAccentY1 = 44;
 constexpr int kCompassAccentX2 = 71, kCompassAccentY2 = 52;
 constexpr int kCompassAccentX3 = 78, kCompassAccentY3 = 48;
-// Halo bounding box in the same design space: left arc's leftmost point (its
-// sweep crosses 180 degrees) to the accent triangle's tip, label top to the
-// main triangle's base.
-constexpr int kCompassDesignMinX = 26, kCompassDesignMaxX = 78;
-constexpr int kCompassDesignMinY = 2, kCompassDesignMaxY = 66;
-constexpr int kCompassHaloMargin = 5;  // white backing, past the glyph's own bounding box
+constexpr int kCompassHaloMargin = 5;  // white backing, past the glyph's own sweep
 
 // Position marker: one family, three modes, "the higher the speed, the more
 // directional" -- hike is a plain dot (position over direction), cycle is a
@@ -124,6 +127,19 @@ constexpr int kMarkerCycleBaseHalfW = 9;  // center to each base corner, pixels
 constexpr int kMarkerRideTipLen = 25;
 constexpr int kMarkerRideBaseHalfW = 18;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
+
+// The marker's halo box: the unit of every partial operation. Everything the
+// marker can draw is inside it (the halo is the outermost thing
+// drawPositionMarker() paints), so saving this box before the marker goes down
+// and writing it back afterwards erases the marker exactly.
+constexpr int kMarkerBoxSize = kMarkerRingDiameter + 2 * kMarkerHaloMargin;  // 64
+// Worst-case bytes for that box in panel memory. readFramebufferRegion snaps
+// the x extent outward to a multiple of 8, so a 64 px wide box can need 72 px
+// (9 bytes) of columns; the +8 rows are slack against the same rounding after
+// an orientation rotate. 720 bytes, allocated once -- a full frame is 48,000,
+// and re-reading the tiles under the marker instead would cost an SD read and a
+// MapRenderer pass, which is the cost this whole path exists to avoid.
+constexpr size_t kMarkerPatchBytes = ((kMarkerBoxSize + 16) / 8) * (kMarkerBoxSize + 8);
 
 // Same 16-step direction table as MapRenderer.cpp's kHeadingDir (dx/dy unit
 // vectors scaled by 8, avoiding any per-frame trig) -- duplicated rather than
@@ -202,11 +218,21 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
 
 namespace {
 
-// design x=50 is kCompassMarginRight in from the screen's right edge;
-// design y=2 lands at kCompassTopOffset. Every other design coordinate is
-// an offset from those two anchors, so the whole glyph moves as one unit.
-int compassScreenX(int centerX, int designX) { return centerX + (designX - kCompassLabelCenterX); }
-int compassScreenY(int topScreenY, int designY) { return topScreenY + (designY - kCompassDesignMinY); }
+// One design-space point, rotated about the arc centre and dropped on screen.
+//
+// The map is track-up, so a bearing b appears on screen at (b - heading) from
+// straight up: north (b = 0) sits at -heading, and the glyph -- drawn pointing
+// north in design space -- has to turn by that much. Screen y is down, so a
+// visually clockwise turn by angle a maps (dx, dy) to (dx cos a - dy sin a,
+// dx sin a + dy cos a); with a = -theta that is the pair below. Callers pass
+// cos/sin of theta so the trig is paid once per frame, not per point.
+void compassPoint(int centreX, int centreY, int designX, int designY, float cosTheta, float sinTheta, int& outX,
+                  int& outY) {
+  const float dx = static_cast<float>(designX - kCompassArcCx);
+  const float dy = static_cast<float>(designY - kCompassArcCy);
+  outX = centreX + static_cast<int>(std::lround(dx * cosTheta + dy * sinTheta));
+  outY = centreY + static_cast<int>(std::lround(-dx * sinTheta + dy * cosTheta));
+}
 
 // One open arc, start to end degrees, drawn as kCompassArcSegments straight
 // chords -- GfxRenderer::drawArc only draws axis-aligned quarter-circles, and
@@ -282,18 +308,22 @@ void MapActivity::showBusy() {
   busyShown_ = true;
 }
 
-void MapActivity::drawCompass() {
-  const int centerX = renderer.getScreenWidth() - kCompassMarginRight;
-  const int topScreenY = kCompassTopOffset;
-  auto sx = [&](int designX) { return compassScreenX(centerX, designX); };
-  auto sy = [&](int designY) { return compassScreenY(topScreenY, designY); };
+void MapActivity::drawCompass(uint8_t headingStep) {
+  const int centreX = renderer.getScreenWidth() - kCompassCenterMarginRight;
+  const int centreY = kCompassCenterTop;
+  // One sin/cos pair per frame, same rule as MapProjection::reset() -- the
+  // per-point maths below is plain arithmetic on these two.
+  constexpr float kDegToRad = 3.14159265f / 180.0f;
+  const float thetaDeg = static_cast<float>(headingStep & 0x0F) * 22.5f;
+  const float cosTheta = std::cos(thetaDeg * kDegToRad);
+  const float sinTheta = std::sin(thetaDeg * kDegToRad);
 
-  // White halo first, sized to the glyph's design-space bounding box, for
-  // the same reason the marker gets one: this sits over live map lines, not
-  // blank margin.
-  renderer.fillRoundedRect(sx(kCompassDesignMinX) - kCompassHaloMargin, sy(kCompassDesignMinY) - kCompassHaloMargin,
-                           (kCompassDesignMaxX - kCompassDesignMinX) + 2 * kCompassHaloMargin,
-                           (kCompassDesignMaxY - kCompassDesignMinY) + 2 * kCompassHaloMargin, kCompassHaloMargin,
+  // White halo first, for the same reason the marker gets one: this sits over
+  // live map lines, not blank margin. A disc, not a box -- the glyph rotates
+  // inside it, so the clearance has to be the same in every direction or the
+  // backing would clip the label at some headings and not others.
+  const int haloRadius = kCompassGlyphRadius + kCompassHaloMargin;
+  renderer.fillRoundedRect(centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius,
                            Color::White);
 
   // 1. "N", centered on the label's own point -- UI_12, not a NotoSans/Serif
@@ -301,29 +331,45 @@ void MapActivity::drawCompass() {
   // slim-build flag) and silently draw nothing (confirmed on hardware --
   // GfxRenderer logs "Font not found" and skips). UI_10/UI_12/SMALL are the
   // only sizes guaranteed present in every build.
+  //
+  // The letter's *position* rotates with the glyph; the letter itself stays
+  // upright. Rotated text is not available at arbitrary angles (GfxRenderer
+  // only has drawTextRotated90CW), and an upright letter on a turning bezel is
+  // how a real compass rose reads anyway.
   const char* label = "N";
   const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, label);
   const int labelHeight = renderer.getTextHeight(UI_12_FONT_ID);
-  renderer.drawText(UI_12_FONT_ID, sx(kCompassLabelCenterX) - labelWidth / 2,
-                    sy(kCompassLabelCenterY) - labelHeight / 2, label, true);
+  int labelX = 0, labelY = 0;
+  compassPoint(centreX, centreY, kCompassLabelCenterX, kCompassLabelCenterY, cosTheta, sinTheta, labelX, labelY);
+  renderer.drawText(UI_12_FONT_ID, labelX - labelWidth / 2, labelY - labelHeight / 2, label, true);
 
   // 2. Left arc, 3. right arc -- both open, not a closed ring: each spans
   // 100 degrees, leaving a gap at the top (under "N") and at the bottom
   // (below the triangle) instead of meeting its mirror.
-  drawCompassArc(renderer, sx(kCompassArcCx), sy(kCompassArcCy), kCompassArcRadius, kCompassLeftArcStartDeg,
-                 kCompassLeftArcEndDeg, kCompassArcLineWidth);
-  drawCompassArc(renderer, sx(kCompassArcCx), sy(kCompassArcCy), kCompassArcRadius, kCompassRightArcStartDeg,
-                 kCompassRightArcEndDeg, kCompassArcLineWidth);
+  //
+  // Rotating an arc about its own centre only shifts its angles, and the design
+  // angle convention (0 = +x, growing toward +y, which is down) turns clockwise
+  // exactly like compassPoint()'s -- so a point at design angle phi lands at
+  // phi - theta, and the arcs get the same subtraction.
+  drawCompassArc(renderer, centreX, centreY, kCompassArcRadius, kCompassLeftArcStartDeg - thetaDeg,
+                 kCompassLeftArcEndDeg - thetaDeg, kCompassArcLineWidth);
+  drawCompassArc(renderer, centreX, centreY, kCompassArcRadius, kCompassRightArcStartDeg - thetaDeg,
+                 kCompassRightArcEndDeg - thetaDeg, kCompassArcLineWidth);
 
   // 4. Main center pointer -- a plain solid triangle, drawn after the arcs
-  // so it stays the dominant shape on top.
-  const int mainXs[3] = {sx(kCompassTriTopX), sx(kCompassTriLeftX), sx(kCompassTriRightX)};
-  const int mainYs[3] = {sy(kCompassTriTopY), sy(kCompassTriLeftY), sy(kCompassTriRightY)};
+  // so it stays the dominant shape on top. This is the part that carries the
+  // whole indicator's meaning once the map turns: it points at north.
+  int mainXs[3], mainYs[3];
+  compassPoint(centreX, centreY, kCompassTriTopX, kCompassTriTopY, cosTheta, sinTheta, mainXs[0], mainYs[0]);
+  compassPoint(centreX, centreY, kCompassTriLeftX, kCompassTriLeftY, cosTheta, sinTheta, mainXs[1], mainYs[1]);
+  compassPoint(centreX, centreY, kCompassTriRightX, kCompassTriRightY, cosTheta, sinTheta, mainXs[2], mainYs[2]);
   renderer.fillPolygon(mainXs, mainYs, 3, true);
 
   // 5. Small accent triangle on the right arc.
-  const int accentXs[3] = {sx(kCompassAccentX1), sx(kCompassAccentX2), sx(kCompassAccentX3)};
-  const int accentYs[3] = {sy(kCompassAccentY1), sy(kCompassAccentY2), sy(kCompassAccentY3)};
+  int accentXs[3], accentYs[3];
+  compassPoint(centreX, centreY, kCompassAccentX1, kCompassAccentY1, cosTheta, sinTheta, accentXs[0], accentYs[0]);
+  compassPoint(centreX, centreY, kCompassAccentX2, kCompassAccentY2, cosTheta, sinTheta, accentXs[1], accentYs[1]);
+  compassPoint(centreX, centreY, kCompassAccentX3, kCompassAccentY3, cosTheta, sinTheta, accentXs[2], accentYs[2]);
   renderer.fillPolygon(accentXs, accentYs, 3, true);
 }
 
@@ -355,6 +401,9 @@ void MapActivity::onEnter() {
   redrawDueMs_ = 0;
   saveDueMs_ = 0;
   showingPersistedFix_ = false;
+  viewportDrawn_ = false;
+  markerPatchValid_ = false;
+  partialMoves_ = 0;
 
   // Ladder state comes back off the card exactly as it was left, per mode.
   mode_ = static_cast<MapRideMode>(SETTINGS.mapMode < kMapRideModeCount ? SETTINGS.mapMode : 0);
@@ -386,6 +435,14 @@ void MapActivity::onEnter() {
     source_ = makeUniqueNoThrow<MapTileSource>(*file_, proj_);
     if (!source_) LOG_ERR(kLogTag, "OOM: MapTileSource (%u bytes)", static_cast<unsigned>(sizeof(MapTileSource)));
   }
+  // The marker's background patch, in the same one-allocation-per-session
+  // bracket as the tile source: a marker move must not allocate (CLAUDE.md's
+  // heap-fragmentation rule), and this is far too big for a stack local. On OOM
+  // follow is simply off and every fix redraws in full -- correct picture, slow
+  // picture, no crash.
+  markerPatch_ = makeUniqueNoThrow<uint8_t[]>(kMarkerPatchBytes);
+  markerPatchCapacity_ = markerPatch_ ? kMarkerPatchBytes : 0;
+  if (!markerPatch_) LOG_ERR(kLogTag, "OOM: marker patch (%u bytes)", static_cast<unsigned>(kMarkerPatchBytes));
   const uint32_t heapAfterAlloc = ESP.getFreeHeap();
   LOG_DBG(kLogTag, "heap: %lu before source alloc, %lu after, delta %ld (sizeof MapTileSource = %u)",
           static_cast<unsigned long>(heapBeforeAlloc), static_cast<unsigned long>(heapAfterAlloc),
@@ -432,6 +489,9 @@ void MapActivity::onExit() {
   // the member HalFile -- DESTRUCTOR_CLOSES_FILE only covers locals.
   source_.reset();
   file_.reset();
+  markerPatch_.reset();
+  markerPatchCapacity_ = 0;
+  markerPatchValid_ = false;
 
   renderer.clearScreen();
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -505,7 +565,7 @@ void MapActivity::loop() {
               static_cast<unsigned>(update.seq), static_cast<unsigned>(update.heading),
               static_cast<unsigned>(update.speedKmh), static_cast<unsigned long>(update.utc),
               static_cast<unsigned>(update.accuracyM));
-      renderViewport(update.lat, update.lon, update.heading, update.seq);
+      applyFix(update.lat, update.lon, update.heading, update.seq);
       // Debounced into the same save this fires for zoom/marker/mode --
       // CLAUDE.md rule 8 rules out a per-fix SD write just as much as a
       // per-press one.
@@ -527,12 +587,25 @@ void MapActivity::loop() {
     // `mapcmd.py pos ...` feel broken.
     redrawDueMs_ = 0;
     if (consoleState_.hasPosition()) {
+      const bool moved = consoleState_.latE7() != lastLatE7_ || consoleState_.lonE7() != lastLonE7_;
       hasReceivedAny_ = true;
       showingPersistedFix_ = false;
-      lastLatE7_ = consoleState_.latE7();
-      lastLonE7_ = consoleState_.lonE7();
-      lastHeading_ = consoleState_.heading();
-      renderViewport(lastLatE7_, lastLonE7_, lastHeading_, static_cast<uint8_t>(consoleState_.seq()));
+      if (moved) {
+        // A `pos` goes through the same follow decision as a BLE fix: a metre
+        // away must cost what a real fix a metre away costs, or the console
+        // stops being a way to exercise this path. A `pos` that is skipped as
+        // too small says so in the log and leaves the panel alone -- that is
+        // the behaviour under test, not a dropped command.
+        applyFix(consoleState_.latE7(), consoleState_.lonE7(), consoleState_.heading(),
+                 static_cast<uint8_t>(consoleState_.seq()));
+      } else {
+        // `zoom`/`marker`/`mode`/`heading`/`redraw` with the position unchanged.
+        // Every one of them is an explicit instruction to change the picture, so
+        // none of them goes through the follow decision -- a `heading` command
+        // that only nudged the marker's arrow would look like a dead console.
+        lastHeading_ = consoleState_.heading();
+        renderCurrent();
+      }
       armSave();
     } else {
       // `zoom`/`marker`/`mode` before any fix: the step is taken and stored,
@@ -919,6 +992,10 @@ void MapActivity::renderWaiting() {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   busyShown_ = false;  // this frame painted over the badge
+  // No map and no marker on this frame: there is nothing for a fix to move
+  // inside, so the next one draws a real viewport (applyFix()).
+  viewportDrawn_ = false;
+  markerPatchValid_ = false;
 }
 
 void MapActivity::renderCurrent() {
@@ -927,6 +1004,132 @@ void MapActivity::renderCurrent() {
     return;
   }
   renderViewport(lastLatE7_, lastLonE7_, lastHeading_, lastDrawnSeq_);
+}
+
+void MapActivity::markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const {
+  w = kMarkerBoxSize;
+  h = kMarkerBoxSize;
+  x = cx - kMarkerBoxSize / 2;
+  y = cy - kMarkerBoxSize / 2;
+}
+
+bool MapActivity::saveMarkerPatch(int cx, int cy) {
+  if (!markerPatch_) return false;
+  int x, y, w, h;
+  markerRect(cx, cy, x, y, w, h);
+  return renderer.readFramebufferRegion(x, y, w, h, markerPatch_.get(), markerPatchCapacity_) != 0;
+}
+
+void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
+  int oldX, oldY, oldW, oldH;
+  markerRect(markerDrawnX_, markerDrawnY_, oldX, oldY, oldW, oldH);
+  // Erase: the map, compass, readout and hints under the marker exist nowhere
+  // but this patch (single-buffer mode has no shadow copy of the frame), which
+  // is why applyFix() re-anchors instead of coming here when it is not valid.
+  renderer.writeFramebufferRegion(oldX, oldY, oldW, oldH, markerPatch_.get());
+
+  // Save the new spot *after* the restore, so an overlapping move saves real
+  // background rather than the marker it is about to erase.
+  markerPatchValid_ = saveMarkerPatch(sx, sy);
+  if (!markerPatchValid_) {
+    // The frame now has no marker on it at all. Draw a full one rather than
+    // refresh a marker-less picture.
+    LOG_ERR(kLogTag, "marker patch save failed at %d,%d -- falling back to a full redraw", (int)sx, (int)sy);
+    renderCurrent();
+    return;
+  }
+
+  // Relative to the frame's heading, not the raw fix: the map is track-up, so
+  // "up" on this frame means anchorHeading_ (MapActivity.h).
+  drawPositionMarker(sx, sy, MapFollow::relativeHeadingStep(headingStep, anchorHeading_), mode_);
+
+  int newX, newY, newW, newH;
+  markerRect(sx, sy, newX, newY, newW, newH);
+
+  // **One window over both boxes, always.** Measured on the X4 2026-08-05: a
+  // windowed refresh takes the same 500 ms as a whole-panel one, whatever its
+  // area -- the waveform is a fixed cost and the window only narrows what it
+  // touches (62 moves over a replayed ride, every refresh 500 ms, identical to
+  // the 26 full-frame refreshes in the same run; docs/map-follow.md). So the
+  // thing to minimise is the *number* of refreshes, not their area: splitting a
+  // far-apart pair into two windows would double both the latency and the panel
+  // current for no gain.
+  const int unionX = newX < oldX ? newX : oldX;
+  const int unionY = newY < oldY ? newY : oldY;
+  const int unionW = (newX > oldX ? newX - oldX : oldX - newX) + kMarkerBoxSize;
+  const int unionH = (newY > oldY ? newY - oldY : oldY - newY) + kMarkerBoxSize;
+  const bool shown = renderer.displayBufferWindow(unionX, unionY, unionW, unionH);
+  if (!shown) {
+    // The framebuffer is already correct, so a full refresh shows the right
+    // picture; only the cheap path was unavailable.
+    LOG_ERR(kLogTag, "marker window rejected (%d,%d -> %d,%d) -- full refresh", (int)markerDrawnX_, (int)markerDrawnY_,
+            (int)sx, (int)sy);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    partialMoves_ = 0;
+  } else {
+    ++partialMoves_;
+  }
+
+  markerDrawnX_ = sx;
+  markerDrawnY_ = sy;
+  // busyShown_ is deliberately left alone. It latches "the badge is on the
+  // panel", and it still is -- a marker move repaints nothing else. Clearing it
+  // would only make the next press redraw and re-refresh a badge that is already
+  // there. Whatever redraw the badge was announcing clears it (renderViewport()).
+  LOG_DBG(kLogTag, "marker move to %d,%d (h%u rel %u), %u/%u before a clean frame", (int)sx, (int)sy,
+          (unsigned)headingStep, (unsigned)MapFollow::relativeHeadingStep(headingStep, anchorHeading_),
+          (unsigned)partialMoves_, (unsigned)MapFollow::kMaxPartialMoves);
+}
+
+void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  // No followable frame: the waiting banner, the persisted-fix banner, or a
+  // patch that never got saved. All three need the whole picture rebuilt.
+  if (!viewportDrawn_ || !markerPatchValid_ || !source_) {
+    renderViewport(latE7, lonE7, headingStep, seq);
+    return;
+  }
+
+  double mercX = 0.0, mercY = 0.0;
+  MapProjection::lonLatToMerc(static_cast<double>(latE7) / 1e7, static_cast<double>(lonE7) / 1e7, mercX, mercY);
+  int16_t fixX = 0, fixY = 0;
+  // Through the projection the frame on the panel was drawn with -- deliberately
+  // not a fresh one. The question being asked is "where does this fix fall in
+  // the picture already on screen".
+  proj_.projectMerc(mercX, mercY, fixX, fixY);
+
+  MapFollow::Request request;
+  request.fixX = fixX;
+  request.fixY = fixY;
+  request.drawnX = markerDrawnX_;
+  request.drawnY = markerDrawnY_;
+  request.screenWidth = static_cast<int16_t>(renderer.getScreenWidth());
+  request.screenHeight = static_cast<int16_t>(renderer.getScreenHeight());
+  request.anchorHeadingStep = anchorHeading_;
+  request.fixHeadingStep = headingStep;
+  request.partialMoves = partialMoves_;
+
+  switch (MapFollow::decide(request)) {
+    case MapFollow::Action::Skip:
+      // The panel is not touched. The fix is still the newest one, so a later
+      // ladder step re-anchors around it and not around the stale one.
+      lastLatE7_ = latE7;
+      lastLonE7_ = lonE7;
+      lastHeading_ = headingStep;
+      LOG_DBG(kLogTag, "fix #%u skipped: %d,%d is under %d px from the marker", (unsigned)seq, (int)fixX, (int)fixY,
+              (int)MapFollow::kMinMovePx);
+      return;
+    case MapFollow::Action::MoveMarker:
+      lastLatE7_ = latE7;
+      lastLonE7_ = lonE7;
+      lastHeading_ = headingStep;
+      moveMarker(fixX, fixY, headingStep);
+      return;
+    case MapFollow::Action::ReAnchor:
+      LOG_DBG(kLogTag, "fix #%u re-anchors: at %d,%d, heading %u vs frame's %u, %u moves in", (unsigned)seq, (int)fixX,
+              (int)fixY, (unsigned)headingStep, (unsigned)anchorHeading_, (unsigned)partialMoves_);
+      renderViewport(latE7, lonE7, headingStep, seq);
+      return;
+  }
 }
 
 void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
@@ -954,16 +1157,18 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
 
   const uint8_t tileZ = MapViewport::kZoomLadder[zoomStep()].z;
   const int16_t markerY = MapViewport::markerYForStep(markerStep());
-  // North-up, not track-up: there is no route feature on the device yet
-  // (roadmap items 13/15), so there is nothing to rotate *toward* -- turning
-  // the map to face the BLE heading with no route drawn just spins it for no
-  // navigational benefit. headingStep itself is untouched (debug line, LOG_DBG,
-  // lastHeading_ still show the real incoming value); only rotation ignores it.
-  // Revisit once a route is actually drawn (docs/roadmap.md, "Map rotation
-  // model").
-  constexpr uint8_t kNoRouteDisplayHeading = static_cast<uint8_t>(MapHeading::N);
-  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, kNoRouteDisplayHeading,
-              MapViewport::mppMercFor(zoomStep(), lat));
+  // Track-up: the fix's heading is "up" on this frame. That is what makes the
+  // marker ladder mean look-ahead at all -- with the map pinned north-up, the
+  // road ahead only lands in the space above the marker when the rider happens
+  // to be heading north. It is also what decides which way the map looks for
+  // the whole life of this frame: nothing rotates it again until the next
+  // viewport reset, and the marker's own arrow is drawn relative to it
+  // (docs/map-follow.md, "The heading decides the frame, once").
+  //
+  // Assumed track-up throughout the design (docs/roadmap.md's "Map rotation
+  // model", firmware-implementation-plan.md's follow-up list) and confirmed
+  // with the user 2026-08-05.
+  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, headingStep, MapViewport::mppMercFor(zoomStep(), lat));
 
   const MapViewport::TileRange range =
       MapViewport::tileRangeFor(proj_, tileZ, renderer.getScreenWidth(), renderer.getScreenHeight());
@@ -992,11 +1197,11 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   MapViewState view;
   view.markerX = MapViewport::kAnchorScreenX;
   view.markerY = markerY;
-  // Same north-up call as proj_.reset() above -- the marker's own triangle
-  // is drawn in raw screen direction (MapRenderer.cpp's kHeadingDir, not
-  // rotation-aware), so it must agree with proj_'s rotation or the two
-  // disagree about which way is "up" the moment heading isn't N.
-  view.heading = static_cast<MapHeading>(kNoRouteDisplayHeading);
+  // The same heading proj_ was rotated by. MapRenderer draws direction glyphs
+  // in raw screen direction (MapRenderer.cpp's kHeadingDir, not
+  // rotation-aware), so anything but agreement here has the two disagreeing
+  // about which way is up.
+  view.heading = static_cast<MapHeading>(headingStep & 0x0F);
 
   // kDefaultMapStyle is the compiled data/mapstyle.json (MapStyleDefaults.h,
   // generated by scripts/gen_mapstyle.py). Nothing overrides it at runtime;
@@ -1029,15 +1234,14 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     }
   }
 
-  // Drawn last and outside IMapCanvas: this is the marker on the device, and
-  // it needs the real heading rather than the forced-north one view.heading
-  // carries.
-  drawPositionMarker(view.markerX, view.markerY, headingStep, mode_);
+  // Outside IMapCanvas: screen furniture, not map data, so it lands on top
+  // regardless of what the hatch above covered. Rotated to this frame's
+  // heading, which is the only heading it is ever correct for.
+  drawCompass(headingStep);
 
-  // Drawn last and outside IMapCanvas: fixed screen furniture, not map data,
-  // so it always lands on top regardless of what the hatch above covered.
-  drawCompass();
-
+  // Does not count the marker or its patch save, both of which happen after the
+  // readout is composed -- this is the tile-and-geometry cost, which is the one
+  // worth watching.
   const uint32_t elapsedMs = millis() - startMs;
   const uint32_t heapAfter = ESP.getFreeHeap();
 
@@ -1100,6 +1304,30 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // were there.
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  // The marker goes on **last**, and its patch is taken immediately before it.
+  // Everything the marker can sit over -- map, hatch, compass, readout, button
+  // hints -- is already in the framebuffer, so the patch holds the real
+  // background and restoring it later erases the marker with nothing left
+  // behind. Draw it any earlier and a marker low on the screen would come back
+  // with the hints painted through it.
+  anchorHeading_ = headingStep;
+  markerDrawnX_ = view.markerX;
+  markerDrawnY_ = markerY;
+  partialMoves_ = 0;
+  markerPatchValid_ = saveMarkerPatch(markerDrawnX_, markerDrawnY_);
+  if (!markerPatchValid_) {
+    // Follow is off until the next reset gets one; every fix redraws in full.
+    // Correct picture, expensive picture.
+    LOG_ERR(kLogTag, "marker patch unavailable -- fixes will redraw in full");
+  }
+  // Relative heading 0: this frame is drawn track-up for this very fix, so the
+  // arrow points straight up by construction.
+  drawPositionMarker(markerDrawnX_, markerDrawnY_, 0, mode_);
+
+  // The persisted-fix frame carries a banner only a full redraw can clear, so it
+  // is deliberately not followable (applyFix()).
+  viewportDrawn_ = !showingPersistedFix_;
 
   // Timed above, deliberately: the gate is how long the framebuffer takes to
   // be ready, not how long the panel takes to show it.
