@@ -100,6 +100,10 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // should be nothing.
   HeapProbe::reset();
   MapRenderer::render(canvas, *source, view);
+  // render() no longer draws the marker itself (MapActivity now draws its
+  // own mode-specific one straight through GfxRenderer); this preview has no
+  // mode concept, so it keeps drawing the plain triangle explicitly.
+  MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading);
   result.peakHeapDuringRender = HeapProbe::peakBytes();
   result.allocsDuringRender = HeapProbe::allocCount();
 

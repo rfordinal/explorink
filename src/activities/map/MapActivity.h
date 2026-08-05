@@ -82,6 +82,15 @@ class MapActivity final : public Activity {
   // Draws one line of the debug readout, trimmed to the screen width.
   // Mutates `text` in place.
   void drawDebugLine(int y, char* text);
+  // Fixed top-right "N" indicator. The map is always drawn north-up today
+  // (see renderViewport()'s kNoRouteDisplayHeading), so this is static
+  // furniture, not derived from any heading.
+  void drawCompass();
+  // Ring plus a mode-specific center glyph -- dot (hike), small arrow
+  // (cycle) or large arrow (ride). headingStep is the real incoming
+  // heading, independent of the forced-north heading the map itself is
+  // drawn with.
+  void drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRideMode mode);
 
   // Buttons, and the two timers they arm.
   void handleButtons();

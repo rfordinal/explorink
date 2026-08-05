@@ -19,9 +19,13 @@ struct MapViewState {
   MapHeading heading = MapHeading::N;
 };
 
-// Draws base map (roads, place dots) then the position marker, in that
-// order, onto whatever IMapCanvas it's given. No hardware/HAL dependency --
-// this is what both the native preview and MapActivity call.
+// Draws the base map (roads, place dots) onto whatever IMapCanvas it's
+// given. No hardware/HAL dependency -- this is what both the native preview
+// and MapActivity call.
+//
+// Does NOT draw the position marker (see drawMarker() below) -- MapActivity
+// draws its own mode-specific one straight through GfxRenderer instead,
+// because it needs a white halo fill IMapCanvas cannot express.
 //
 // render() pulls: it holds no geometry of its own, so its RAM cost does not
 // move with how much map is on screen.
@@ -29,11 +33,9 @@ class MapRenderer {
  public:
   static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state);
 
-  // Public because the missing-tile hatch is drawn after render() returns:
-  // the set of missing tiles is only known once the source has walked them,
-  // and asking for it up front would cost a third read of every tile. A
-  // missing tile's own area holds no geometry (tiles do not overlap), so
-  // hatching late is invisible -- except over the marker, which the caller
-  // puts back with this.
+  // The plain triangle marker, kept for callers with no mode concept of
+  // their own -- test/map_preview draws it explicitly since it has no
+  // hike/cycle/ride distinction to render differently. MapActivity does not
+  // call this; see MapActivity::drawPositionMarker().
   static void drawMarker(IMapCanvas& canvas, int16_t x, int16_t y, MapHeading heading);
 };
