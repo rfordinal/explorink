@@ -165,6 +165,11 @@ GrayscaleFrame::Timings GrayscaleFrame::render(GfxRenderer& renderer, const Gray
   // (Ssd1677Driver.cpp:434-437). The BW framebuffer is intact, so it is the
   // correct new baseline.
   renderer.cleanupGrayscaleWithFrameBuffer();
+  // RED RAM is the frame again after the call above, but BW RAM still holds the
+  // LSB plane -- and the next refresh diffs the two. Without this the panel
+  // repaints from plane bits: black everywhere except the nudged pixels
+  // (measured 2026-08-05).
+  renderer.resyncControllerBwRam();
   timings.cleanupMs = static_cast<uint16_t>(millis() - tGray);
 
   // Remember what drew this frame, so the screenshot channel can re-render its
@@ -196,6 +201,7 @@ GrayscaleFrame::Timings GrayscaleFrame::nudge(GfxRenderer& renderer, const GrayD
   timings.grayDisplayMs = static_cast<uint16_t>(tGray - tPlanes);
 
   renderer.cleanupGrayscaleWithFrameBuffer();
+  renderer.resyncControllerBwRam();  // same reason as in render()
   timings.cleanupMs = static_cast<uint16_t>(millis() - tGray);
 
   // A nudge adds grey on top of the frame the remembered callback draws, so a

@@ -2176,6 +2176,14 @@ void GfxRenderer::restoreBwBuffer() {
  * Cleanup grayscale buffers using the current frame buffer.
  * Use this when BW buffer was re-rendered instead of stored/restored.
  */
+void GfxRenderer::resyncControllerBwRam() const {
+  // Same command the normal display path uses for BW RAM, reached through the
+  // plane API because that is the only route that writes RAM without
+  // refreshing. One call: 480 rows x 100 bytes fits the driver's uint16_t
+  // length.
+  display.writeGrayscalePlaneStrip(/*lsbPlane=*/true, frameBuffer, 0, panelHeight);
+}
+
 void GfxRenderer::cleanupGrayscaleWithFrameBuffer() const {
   if (frameBuffer) {
     display.cleanupGrayscaleBuffers(frameBuffer);

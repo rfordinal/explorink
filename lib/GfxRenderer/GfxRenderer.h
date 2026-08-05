@@ -311,6 +311,18 @@ class GfxRenderer {
   bool storeBwBuffer();    // Returns true if buffer was stored successfully
   void restoreBwBuffer();  // Restore and free the stored buffer
   void cleanupGrayscaleWithFrameBuffer() const;
+  // Restores the controller's BW RAM from the framebuffer, with no refresh.
+  //
+  // Load-bearing after any grayscale render, and not what
+  // cleanupGrayscaleWithFrameBuffer() does: that one only rewrites RED RAM. The
+  // LSB plane *is* BW RAM (Ssd1677Driver.cpp:498 maps GrayPlane::Lsb to
+  // CMD_WRITE_RAM_BW), so a gray render leaves BW RAM holding plane bits, not
+  // the frame. The next differential refresh then diffs plane bits against the
+  // frame in RED and drives nearly every pixel -- measured on hardware
+  // 2026-08-05: the panel went black everywhere except the pixels that had been
+  // nudged grey. See docs/eink-grayscale.md, "The window is the diff, not the
+  // RAM area".
+  void resyncControllerBwRam() const;
 
   // Font helpers
   const uint8_t* getGlyphBitmap(const EpdFontData* fontData, const EpdGlyph* glyph) const;

@@ -115,9 +115,39 @@ the same reason.
 differential baseline and clears the flag. That is the whole cleanup — stock
 parity, the OEM firmware has no revert waveform at all (`Ssd1677Luts.h:44-46`).
 
-## Windowed BW updates preserve grey
+## The window is the diff, not the RAM area
 
-**Verified from the differential model, not yet measured on glass.**
+**Measured on hardware 2026-08-05.** This section used to say a windowed update
+is bounded by the RAM area. It is not. Two independent observations on the X4:
+
+- A banded grayscale render leaves the RAM area set to its **last band**, and the
+  whole screen still greys. (Preview activity, Grey scale page.)
+- A `displayWindow()` call right after a grayscale frame repainted the **whole
+  panel**, black everywhere except the pixels that had been nudged grey.
+
+So `setRamArea` does not bound `refresh()` on this panel. `displayWindow()` is a
+full-frame Fast refresh that only wrote part of RAM. What makes it *behave* as a
+window is that the Fast waveform is **differential**: it drives only pixels where
+BW RAM differs from RED RAM. Keep both RAMs equal to the framebuffer and the diff
+is zero everywhere except the rectangle just written -- that, and nothing about
+addressing, is the "window".
+
+The consequence, and the trap that cost a hardware round trip:
+
+**The LSB plane IS BW RAM** (`Ssd1677Driver.cpp:498` maps `GrayPlane::Lsb` to
+`CMD_WRITE_RAM_BW`). After a grayscale render, BW RAM holds plane bits, and
+`cleanupGrayscaleBuffers()` only rewrites **RED**. The two RAMs then disagree
+almost everywhere, so the next refresh -- windowed or not -- drives almost every
+pixel to the plane bits. Observed exactly that: black screen, surviving greys.
+
+`GfxRenderer::resyncControllerBwRam()` is the missing half. It pushes the
+framebuffer back into BW RAM with no refresh (through the plane API, the only
+route that writes RAM without driving the panel).
+`GrayscaleFrame::render()`/`nudge()` call it right after the cleanup, so both
+RAMs leave a grey frame equal to the framebuffer and the next update behaves.
+
+Everything below still holds, but read it as being about the differential, not
+about the addressed region.
 
 After cleanup, a windowed update takes the normal path
 (`Ssd1677Driver.cpp:439-470`). `refresh(Fast)` is differential — it drives only
@@ -137,7 +167,10 @@ Grey does not vanish when you move something. It degrades to black only on the
 pixels the BW frame actually changed.
 
 Bench: **Marker move** page, via `GfxRenderer::displayBufferWindow`. Grey
-backdrop, BW marker, one window refresh per step.
+backdrop, BW marker, one refresh per step. Note what "outside the window" now
+means: not unaddressed, but zero-diff. A grey pixel outside survives because BW
+RAM and RED RAM agree there -- which is only true once
+`resyncControllerBwRam()` has run.
 
 Window constraint: `x` and `w` must be multiples of 8 (`Ssd1677Driver.cpp:427`).
 
@@ -279,15 +312,12 @@ evidence on open question 1 below, before any button is pressed.
 
 ## Open questions — measure before building
 
-**Does the RAM window bound the grey refresh?** `setRamArea` writes `0x44`/`0x45`
-(`Ssd1677Driver.cpp:217-227`). `refresh()` never touches them
-(`Ssd1677Driver.cpp:243-324`), and `displayGray` does not reset the area
-(`FreeInkDisplay.cpp:705-716`). So the window from the last `setRamArea`
-survives into the grey refresh — *if* SSD1677 honours it in this mode. Unmeasured.
-
-Bench: **Grey scale** page of the Preview activity. Whole-page grey means the
-window does not bound the refresh; grey in one vertical band only (a physical
-band is a vertical stripe in portrait) means it does.
+**ANSWERED 2026-08-05: no, the RAM window does not bound the refresh.** Measured
+on the Preview activity's Grey scale page: the banded plane writes leave the RAM
+area on the last band, and the whole screen greyed anyway. Confirmed a second
+time by a windowed update repainting the whole panel. See "The window is the
+diff, not the RAM area" above; region-limited drive comes from LUT slot 00 and
+from the zero-diff, never from addressing.
 
 Reason to doubt it: the reader's tiled path writes all bands then calls
 `displayGrayBuffer()`, leaving the area set to the last band. If the window bound
@@ -295,9 +325,9 @@ the refresh, the reader would only refresh its last band, which it visibly does
 not. Either the window does not bound the refresh, or something else resets it.
 Resolve this before relying on either.
 
-It only affects cost, not correctness — LUT slot 00 already gives region-limited
-drive. But it decides whether restoring grey in a small region needs 2 × 48 KB of
-plane zeroing per update.
+Cost consequence, now settled: a "windowed" update pays a full Fast refresh
+(~500 ms) no matter how small the rectangle. Small windows buy correctness and
+leave the rest of the picture alone; they do not buy panel time.
 
 **Does a repeated nudge drift?** The grey LUT is differential and calibrated
 against a specific base state. `SleepActivity.cpp:227-231` says a HALF base is
