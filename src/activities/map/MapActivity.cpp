@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "GfxRendererCanvas.h"
@@ -111,6 +113,11 @@ constexpr HeadingVec kMarkerHeadingDir[16] = {
     {-6, -6},  // NW
     {-3, -7},  // NNW
 };
+
+// Display strings for MapRideMode, indexed the same way as the enum itself
+// (MapRideMode.h) -- mapRideModeName() gives the wire name for the console,
+// this gives the translated label for the Mode popup.
+constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HIKE, StrId::STR_CYCLE};
 
 }  // namespace
 
@@ -332,6 +339,31 @@ void MapActivity::onExit() {
 void MapActivity::loop() {
   Activity::loop();
 
+  // Menu owns input while open, same idiom as every other OptionPopup
+  // consumer (TextSettingsActivity.cpp:179) -- the callback draws the popup
+  // directly rather than going through requestUpdate(), because MapActivity
+  // never uses the render task (see optionPopup_'s comment in MapActivity.h).
+  //
+  // OptionPopup closes on Back's *press* edge (OptionPopup.h), but the exit
+  // check below fires on Back's *release* edge -- two different frames for
+  // the same physical press. Left alone, the press closes the menu and the
+  // release that follows it a frame or two later then also leaves the map.
+  // Latch that one release so it is swallowed once, not treated as a second,
+  // independent Back.
+  const bool popupWasActive = optionPopup_.isActive();
+  if (optionPopup_.handleInput(mappedInput, [this] { optionPopup_.processRender(renderer, mappedInput); })) {
+    if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      suppressBackRelease_ = true;
+      // handleInput() already set active=false and fired the redraw callback
+      // above, but that callback is optionPopup_.processRender(), which is a
+      // no-op once inactive -- nothing repaints the map underneath, and the
+      // panel just keeps showing the popup's last pixels. Redraw for real.
+      redrawDueMs_ = 0;
+      renderCurrent();
+    }
+    return;
+  }
+
   freeink::PositionUpdate update;
   if (freeink::BlePositionServer::getInstance().getLatest(update)) {
     if (!hasReceivedAny_ || update.seq != lastDrawnSeq_) {
@@ -400,7 +432,11 @@ void MapActivity::loop() {
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    onGoHome(HomeMenuItem::MAP);
+    if (suppressBackRelease_) {
+      suppressBackRelease_ = false;
+    } else {
+      onGoHome(HomeMenuItem::MAP);
+    }
   }
 }
 
@@ -419,13 +455,44 @@ void MapActivity::handleButtons() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Left)) stepMarker(-1);
   if (mappedInput.wasPressed(MappedInputManager::Button::Right)) stepMarker(+1);
 
-  // On-demand refresh: the whole reason the 10-minute hike cadence is
-  // acceptable is that a rider standing at a junction can force a fresh
-  // picture now. Not coalesced -- it is an explicit "now".
+  // Opens the map menu: Refresh (the whole reason the 10-minute hike cadence
+  // is acceptable is that a rider standing at a junction can still force a
+  // fresh picture) and Mode (switch ride/hike/cycle without leaving the map).
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    redrawDueMs_ = 0;
-    renderCurrent();
+    openMapMenu();
   }
+}
+
+void MapActivity::openMapMenu(int initialIndex) {
+  std::vector<std::string> options;
+  options.reserve(2);
+  options.push_back(tr(STR_REFRESH));
+  options.push_back(std::string(tr(STR_MAP_MODE)) + ": " + I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
+  optionPopup_.show(StrId::STR_MAP, options, initialIndex, [this](int idx) {
+    if (idx == 0) {
+      redrawDueMs_ = 0;
+      renderCurrent();
+    } else {
+      // Cycle, don't open a second popup -- repeated Select on this row
+      // steps ride->hike->cycle->ride. mapRideModeName()'s array order.
+      const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
+      switchMode(static_cast<MapRideMode>(next));
+      openMapMenu(1);  // reopen with the label refreshed, Mode still highlighted
+    }
+  });
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::switchMode(MapRideMode newMode) {
+  if (newMode == mode_) return;
+  mode_ = newMode;
+  LOG_DBG(kLogTag, "menu: mode -> %s", mapRideModeName(mode_));
+  publishLadders();
+  // A deliberate menu pick, not a ladder step -- redraw now, same as the
+  // console's `mode` command (syncLaddersFromConsole()), not coalesced.
+  redrawDueMs_ = 0;
+  renderCurrent();
+  armSave();
 }
 
 void MapActivity::stepZoom(int delta) {
@@ -525,6 +592,8 @@ bool MapActivity::preventAutoSleep() { return freeink::BlePositionServer::getIns
 void MapActivity::renderWaiting() {
   renderer.clearScreen();
   renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_WAITING_BLE), true);
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
@@ -678,6 +747,14 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   consoleState_.setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted(),
                                source_->bytesRead(), source_->waysFiltered());
   consoleState_.setZoomInfo(zoomStep(), range.z, MapViewport::kZoomLadder[zoomStep()].mpp);
+
+  // Composited last, over the map's own bottom-edge pixels rather than into
+  // reserved space -- same idea as the debug readout at the top of the
+  // screen (drawDebugLine() above): the map fills the whole viewport, there
+  // is no margin set aside for chrome, so UI text overlays whatever tiles
+  // were there.
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // Timed above, deliberately: the gate is how long the framebuffer takes to
   // be ready, not how long the panel takes to show it.

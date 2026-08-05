@@ -10,6 +10,7 @@
 #include "MapSerialConsole.h"
 #include "MapTileSource.h"
 #include "activities/Activity.h"
+#include "components/OptionPopup.h"
 
 // Draws real OSM map data from the SD card around the position received over
 // BLE or typed into a command console -- P4 of docs/prototype-plan.md, merged
@@ -34,12 +35,13 @@
 //
 // | UP / DOWN      | zoom ladder, 5 rungs, 3..15 m/px                     |
 // | LEFT / RIGHT   | marker-height ladder, 5 rungs, look-ahead 50..95 %   |
-// | CONFIRM        | on-demand refresh                                    |
-// | BACK           | leave                                                |
+// | CONFIRM        | open the map menu: Refresh, Mode (ride/hike/cycle)   |
+// | BACK           | leave (or close the menu, if it is open)             |
 //
 // **There is no spare button** (docs/architecture-plan.md, "The map screen's
-// button budget is exactly full"). Anything else this screen ever wants goes
-// behind a long press, not onto CONFIRM.
+// button budget is exactly full"). CONFIRM stays the only entry point for
+// anything new -- it opens a menu (OptionPopup) rather than acting directly,
+// so Refresh and Mode share the one button the budget allows.
 //
 // Every one of them goes through MappedInputManager's logical buttons. The
 // front four are user-remappable in settings and the mapping is
@@ -110,6 +112,22 @@ class MapActivity final : public Activity {
   // from what is already stored.
   void saveLaddersIfChanged();
 
+  // CONFIRM's menu: Refresh and Mode, both in one flat list -- no second
+  // popup. Picking Mode cycles ride->hike->cycle->ride and reopens the same
+  // list with the row's label updated and the highlight still on Mode, so
+  // repeated Select presses step through modes without leaving the menu.
+  // initialIndex lets the Mode-cycle path reopen onto row 1 instead of
+  // resetting to row 0. Draws the popup itself via
+  // optionPopup_.processRender() right after show() -- MapActivity never
+  // calls requestUpdate() (it always has drawn straight to the buffer, on
+  // the main task, not through Activity's render(RenderLock&&)/render-task
+  // path), so nothing else would ever paint the popup's first frame or its
+  // label updating.
+  void openMapMenu(int initialIndex = 0);
+  // No-op if newMode is already current -- picking the mode already on
+  // screen must cost nothing, same rule as stepZoom/stepMarker's ladder ends.
+  void switchMode(MapRideMode newMode);
+
   // Allocated once in onEnter(), released in onExit(). MapTileSource holds
   // references to both, so neither may move or die while it is alive.
   std::unique_ptr<HalFileSource> file_;
@@ -160,4 +178,13 @@ class MapActivity final : public Activity {
   MapConsoleState consoleState_;
   MapSerialConsole serial_{consoleState_};
   MapBleConsole ble_{consoleState_};
+
+  // CONFIRM's menu (Refresh / Mode). Mode's own onSelect re-shows this same
+  // instance (openMapMenu(1)) to cycle in place, so there is only ever the
+  // one popup, never a second one stacked on top.
+  OptionPopup optionPopup_;
+  // Set when a Back press closes optionPopup_ (loop()), cleared by the one
+  // Back release it is meant to swallow (also loop()) -- see the comment
+  // there for why the release needs swallowing at all.
+  bool suppressBackRelease_ = false;
 };
