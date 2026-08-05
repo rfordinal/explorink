@@ -79,15 +79,19 @@ not a pull request.
 |---|---|
 | Map activity and screen | exists |
 | BLE position receiver (phone sends GPS) | exists |
-| Loading a real map from the SD card | exists — this is the current state |
+| Loading a real map from the SD card | exists |
 | Buttons on the map screen (zoom, marker height) | exists, per mode, saved across power cycles |
 | Command console (serial and BLE), zoom/mode filter | exists — same grammar over USB and BLE |
-| Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots, marker anchor. Labels, route and junction dots: **not implemented** |
-| Companion phone app | **not started** |
+| Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots, marker anchor. Confirmed on the panel, not only in the preview. Labels, route and junction dots: **not implemented** |
+| Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
+| Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |
+| Route following, off-route warning | **not started** |
+| Companion phone app | exists — an Android BLE position sender and ride recorder, in the same unpublished workspace as the map tooling |
 
 `data/mapstyle.json` holds the styling the renderer is meant to follow — road
-widths and casings, junction dots, place labels, the position marker. It is
-written by the mapbuilder webapp rather than edited by hand. It is a
+widths and casings per class, building, forest, built-up and water area fills,
+junction dots, place labels, the position marker. It is written by the mapbuilder
+webapp rather than edited by hand. It is a
 build-time input, not a runtime one: `scripts/gen_mode_masks.py` compiles its
 `modes` block into the ride/hike/cycle class masks and `scripts/gen_mapstyle.py`
 compiles the drawing numbers into a `MapStyle` constant, both as `pre:` build
