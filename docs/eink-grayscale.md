@@ -325,6 +325,11 @@ The SDK entry point was always there; the renderer's wrapper was commented out
 (`GfxRenderer.h`, "EXPERIMENTAL"). It is live now and the Marker page below is
 what exercises it over grey.
 
+Its first non-test user is the map's busy badge (`MapActivity::showBusy()`):
+paint a small hourglass into the current frame, refresh its rectangle only, keep
+the map on the panel. Nothing to do with grey -- it is just what a windowed
+update is for.
+
 ## The Preview activity — the bench for the open questions
 
 `src/activities/preview/PreviewActivity.{h,cpp}`, reached from **Home →

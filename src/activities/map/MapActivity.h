@@ -38,6 +38,12 @@
 // | CONFIRM        | open the map menu: Refresh, Mode (ride/hike/cycle)   |
 // | BACK           | leave (or close the menu, if it is open)             |
 //
+// Any of those that triggers a redraw first paints an hourglass badge above the
+// button hints and refreshes only its rectangle (showBusy()). A ladder step
+// waits out the settle timer and then spends the better part of two seconds on
+// tiles and the refresh, which is long enough to read as a dead button. One
+// badge per burst, cleared by the frame that replaces it.
+//
 // **There is no spare button** (docs/architecture-plan.md, "The map screen's
 // button budget is exactly full"). CONFIRM stays the only entry point for
 // anything new -- it opens a menu (OptionPopup) rather than acting directly,
@@ -88,6 +94,23 @@ class MapActivity final : public Activity {
   // (see renderViewport()'s kNoRouteDisplayHeading), so this is static
   // furniture, not derived from any heading.
   void drawCompass();
+  // Immediate "working on it" feedback, above the button hints. A ladder step
+  // or a Refresh does not reach the panel for the better part of two seconds
+  // (settle, tile reads, then the refresh itself), which is long enough that a
+  // rider cannot tell a slow redraw from a dead button. This paints an
+  // hourglass into the current frame and refreshes ONLY its rectangle, so it
+  // costs one fast windowed refresh and leaves the map on screen.
+  //
+  // One badge per burst: repeated presses coalesce into a single redraw
+  // (armRedraw()), and the badge is already on screen, so they must not each
+  // pay a refresh. busyShown_ is that latch, cleared by whatever repaints the
+  // whole screen.
+  void showBusy();
+  void drawBusyBadge();
+  // Badge rectangle in logical screen coordinates. displayBufferWindow()
+  // handles the controller's multiple-of-8 alignment itself.
+  void busyRect(int& x, int& y, int& w, int& h) const;
+
   // Ring plus a mode-specific center glyph -- dot (hike), small arrow
   // (cycle) or large arrow (ride). headingStep is the real incoming
   // heading, independent of the forced-north heading the map itself is
@@ -171,6 +194,9 @@ class MapActivity final : public Activity {
   // millis() deadlines; 0 means nothing armed. See the coalescing note above.
   uint32_t redrawDueMs_ = 0;
   uint32_t saveDueMs_ = 0;
+
+  // True while the busy badge is on the panel. See showBusy().
+  bool busyShown_ = false;
 
   // One state, two channels. A `zoom 3` over USB and a `zoom 3` over BLE
   // land on the same number because they share this object, not because two

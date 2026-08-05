@@ -42,6 +42,15 @@ constexpr int kTextLine1Y = 8;
 constexpr int kTextLine2Y = 26;
 constexpr int kTextLine3Y = 44;
 
+// Busy badge geometry: an hourglass just above the button hints, right-aligned.
+// Out of the way of the debug readout (top-left) and the compass (top-right),
+// and small enough that its windowed refresh is cheap to look at.
+constexpr int kBusySize = 34;
+constexpr int kBusyMarginRight = 10;
+constexpr int kBusyMarginBottom = 50;  // clears GUI.drawButtonHints' band
+constexpr int kBusyBorder = 2;
+constexpr int kBusyGlassInset = 8;  // hourglass inset inside the badge box
+
 // North indicator geometry, fixed top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
 // 100x100 normalized canvas with "N" label, two open arcs (real angles, not
@@ -192,6 +201,57 @@ void drawCompassArc(GfxRenderer& renderer, int cx, int cy, int radius, float sta
 }
 
 }  // namespace
+
+void MapActivity::busyRect(int& x, int& y, int& w, int& h) const {
+  w = kBusySize;
+  h = kBusySize;
+  x = renderer.getScreenWidth() - kBusyMarginRight - w;
+  y = renderer.getScreenHeight() - kBusyMarginBottom - h;
+}
+
+// White box, black border, black hourglass: two triangles meeting at a waist.
+// Deliberately not text -- it needs no translation and stays legible at 34 px.
+void MapActivity::drawBusyBadge() {
+  int x, y, w, h;
+  busyRect(x, y, w, h);
+
+  // Opaque, like the compass halo: this lands on live map lines, not margin.
+  renderer.fillRect(x, y, w, h, false);
+  renderer.drawRect(x, y, w, h, kBusyBorder, true);
+
+  const int left = x + kBusyGlassInset;
+  const int right = x + w - kBusyGlassInset;
+  const int top = y + kBusyGlassInset;
+  const int bottom = y + h - kBusyGlassInset;
+  const int midX = (left + right) / 2;
+  const int midY = (top + bottom) / 2;
+
+  const int upperX[3] = {left, right, midX};
+  const int upperY[3] = {top, top, midY};
+  renderer.fillPolygon(upperX, upperY, 3, true);
+  const int lowerX[3] = {left, right, midX};
+  const int lowerY[3] = {bottom, bottom, midY};
+  renderer.fillPolygon(lowerX, lowerY, 3, true);
+}
+
+void MapActivity::showBusy() {
+  // One badge per burst. Three quick zoom presses are one redraw, so they must
+  // also be one refresh -- the badge from the first press is still on screen
+  // and says the same thing.
+  if (busyShown_) return;
+
+  int x, y, w, h;
+  busyRect(x, y, w, h);
+  drawBusyBadge();
+  // Windowed: the rest of the panel keeps the map that is already on it. A
+  // full refresh here would cost the same waveform time and throw the picture
+  // away twice.
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "busy badge window rejected: %d,%d %dx%d", x, y, w, h);
+    return;
+  }
+  busyShown_ = true;
+}
 
 void MapActivity::drawCompass() {
   const int centerX = renderer.getScreenWidth() - kCompassMarginRight;
@@ -358,6 +418,7 @@ void MapActivity::loop() {
       // no-op once inactive -- nothing repaints the map underneath, and the
       // panel just keeps showing the popup's last pixels. Redraw for real.
       redrawDueMs_ = 0;
+      showBusy();  // the popup's pixels are still up; say the redraw started
       renderCurrent();
     }
     return;
@@ -470,6 +531,7 @@ void MapActivity::openMapMenu(int initialIndex) {
   optionPopup_.show(StrId::STR_MAP, options, initialIndex, [this](int idx) {
     if (idx == 0) {
       redrawDueMs_ = 0;
+      showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
       renderCurrent();
     } else {
       // Cycle, don't open a second popup -- repeated Select on this row
@@ -490,6 +552,7 @@ void MapActivity::switchMode(MapRideMode newMode) {
   // A deliberate menu pick, not a ladder step -- redraw now, same as the
   // console's `mode` command (syncLaddersFromConsole()), not coalesced.
   redrawDueMs_ = 0;
+  showBusy();
   renderCurrent();
   armSave();
 }
@@ -518,7 +581,12 @@ void MapActivity::stepMarker(int delta) {
   armSave();
 }
 
-void MapActivity::armRedraw() { redrawDueMs_ = millis() + kButtonSettleMs; }
+void MapActivity::armRedraw() {
+  redrawDueMs_ = millis() + kButtonSettleMs;
+  // Before the settle, not after: the whole point is that the press is
+  // acknowledged now rather than when the map is ready.
+  showBusy();
+}
 
 void MapActivity::armSave() { saveDueMs_ = millis() + kSaveSettleMs; }
 
@@ -593,6 +661,7 @@ void MapActivity::renderWaiting() {
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  busyShown_ = false;  // this frame painted over the badge
 }
 
 void MapActivity::renderCurrent() {
@@ -761,4 +830,5 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // Timed above, deliberately: the gate is how long the framebuffer takes to
   // be ready, not how long the panel takes to show it.
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  busyShown_ = false;  // this frame painted over the badge
 }
