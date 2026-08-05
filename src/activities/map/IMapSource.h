@@ -58,26 +58,34 @@ class IMapSource {
   // exhausted. A malformed record ends that tile, not the whole pass.
   virtual bool nextWay(MapWayRef& out) = 0;
 
-  // Buildings and water, both stored as way records like roads
-  // (docs/map-data-spec.md, "Layer ids") -- so they arrive as MapWayRef too.
-  // Two things differ from a road:
+  // The area layers -- buildings, water, landuse -- are stored as way records
+  // like roads (docs/map-data-spec.md, "Layer ids"), so they arrive as
+  // MapWayRef too. Three things differ from a road:
   //
-  // - `classId` is always 0. The tile format carries no building or water
-  //   class, so a style cannot width a river differently from a stream on the
-  //   device however much mapstyle.json's rules say so.
+  // - `classId` belongs to that layer's own small enum (MapAreaClass.h), not to
+  //   the road enum. Water is river/stream/lake, landuse is forest/built-up,
+  //   buildings have one class and leave the byte 0.
   // - An **area** is a closed ring: the first point is repeated as the last.
-  //   A water record that is not closed is a waterway line. Buildings are
-  //   always areas.
+  //   A water record that is not closed is a waterway line. Buildings and
+  //   landuse are always areas.
+  // - None of them is touched by the mode mask. A lake is not a road class.
   //
-  // Neither layer is touched by the mode mask -- a lake is not a road class.
-  // Both are also expensive: buildings were 277 KB of the 364 KB a four-tile
-  // viewport read (docs/map-data-spec.md, "RAM budget"), so a renderer that
-  // does not want them must not call these at all rather than filter later.
+  // They are also the expensive layers: buildings alone were 277 KB of the
+  // 364 KB a four-tile viewport read (docs/map-data-spec.md, "RAM budget"), so a
+  // renderer that does not want one must not call its pass at all rather than
+  // read and filter.
+  //
+  // Landuse carries both forest and built-up areas in one layer, and they are
+  // drawn at different depths, so the renderer walks it twice and filters on
+  // `classId` -- the same shape as the two road passes.
   virtual bool beginBuildings() = 0;
   virtual bool nextBuilding(MapWayRef& out) = 0;
 
   virtual bool beginWater() = 0;
   virtual bool nextWater(MapWayRef& out) = 0;
+
+  virtual bool beginLanduse() = 0;
+  virtual bool nextLanduse(MapWayRef& out) = 0;
 
   virtual bool beginPlaces() = 0;
   virtual bool nextPlace(MapPlaceRef& out) = 0;

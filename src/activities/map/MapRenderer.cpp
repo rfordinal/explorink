@@ -1,5 +1,6 @@
 #include "MapRenderer.h"
 
+#include "MapAreaClass.h"
 #include "MapAreaFill.h"
 
 namespace {
@@ -46,17 +47,46 @@ int roadWidthFor(const MapStyle& style, const MapWayRef& way) {
   return style.roadWidthPx[way.classId];
 }
 
+// One landuse class, drawn as tone then hatch then outline. Called once per
+// class rather than once per record because forest and built-up sit at
+// different depths in the draw order and share a single tile layer.
+void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style, const MapLanduseClass wanted) {
+  const uint8_t index = static_cast<uint8_t>(wanted);
+  if (style.landuseTone[index] == MapAreaTone::None && style.landuseHatch[index] == MapAreaFill::Pattern::None &&
+      style.landuseOutlinePx[index] == 0) {
+    return;  // nothing to draw for this class, so do not walk the layer for it
+  }
+  if (!source.beginLanduse()) return;
+  MapWayRef ring;
+  while (source.nextLanduse(ring)) {
+    if (ring.classId != index) continue;
+    MapAreaFill::toneRing(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseTone[index]);
+    MapAreaFill::hatchRing(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseHatch[index],
+                           style.landuseHatchSpacingPx[index], MapInk::Black);
+    MapAreaFill::outlineRing(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseOutlinePx[index], MapInk::Black);
+  }
+}
+
 }  // namespace
 
 void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style) {
-  // Draw order is fixed by docs/map-render-spec.md, "What must be drawn":
-  // buildings, then water, then roads, then places. Buildings and water go
-  // under the road network on purpose -- they are context, and a road crossing
-  // them has to stay readable.
+  // Draw order is fixed and not arbitrary (docs/map-data-spec.md, "A tile is a
+  // storage unit, not a render unit"): built-up area, green area, water,
+  // buildings, road casings, road fills, then places. Landuse tones are
+  // background; everything above has to stay readable over them, which is why a
+  // tone is a sparse pattern and not a grey block.
   //
-  // Both layers are skipped entirely when the style has them off, not read and
-  // then not drawn: buildings alone were 277 KB of the 364 KB a four-tile
-  // viewport read (docs/map-data-spec.md, "RAM budget").
+  // A layer the style has off is never read, not read and skipped: buildings
+  // alone were 277 KB of the 364 KB a four-tile viewport read
+  // (docs/map-data-spec.md, "RAM budget").
+  if (style.landuseEnabled) {
+    // Two walks over one layer, built-up first: a park inside a housing estate
+    // has to land on top of it, and a single walk would draw them in whatever
+    // order the tile happens to store.
+    drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
+    drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
+  }
+
   if (style.buildingsEnabled && source.beginBuildings()) {
     MapWayRef ring;
     while (source.nextBuilding(ring)) {
@@ -75,13 +105,18 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // A closed ring is a lake, an open one a waterway. Same layer, same
       // record shape -- the ring is the only thing that tells them apart
       // (IMapSource.h, mapWayIsClosedRing).
+      // Width per water class now that tiles carry one: a river is not a
+      // ditch. A class byte past the table can only come from a corrupt
+      // record.
+      const uint8_t waterClass = way.classId < kWaterClassSlots ? way.classId : 0;
+      const int lineWidth = style.waterLinePx[waterClass];
       if (mapWayIsClosedRing(way)) {
         MapAreaFill::toneRing(canvas, way.xs, way.ys, way.pointCount, style.waterTone);
         MapAreaFill::hatchRing(canvas, way.xs, way.ys, way.pointCount, style.waterHatch, style.waterHatchSpacingPx,
                                MapInk::Black);
-        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterLinePx, MapInk::Black);
+        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
       } else {
-        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterLinePx, MapInk::Black);
+        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
       }
     }
   }

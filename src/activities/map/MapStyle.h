@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "MapAreaClass.h"
 #include "MapAreaFill.h"
 #include "MapClassEnum.h"
 
@@ -56,15 +57,31 @@ struct MapStyle {
   // layers.water. Lines (waterways) and areas (lakes) come from the same layer;
   // an area is a closed ring (IMapSource.h).
   //
-  // One width for every waterway, because the tile format carries no water
-  // class -- mapstyle.json's river/stream/canal rules cannot reach the device
-  // and the layer default is what applies. Same reason `waterEnabled` gates the
-  // read rather than the draw.
+  // Width per water class (MapWaterClass: unknown, river, stream, lake), so a
+  // river can be wider than a ditch. That became possible on 2026-08-05, when
+  // the builder started writing a water class byte; before that every water
+  // record was class 0 and mapstyle.json's river/stream rules could not reach
+  // the device at all. 0 means that class is not drawn.
+  //
+  // `waterEnabled` gates the read, not the draw -- see buildings above.
   bool waterEnabled;
-  uint8_t waterLinePx;
+  uint8_t waterLinePx[kWaterClassSlots];
   MapAreaTone waterTone;
   MapAreaFill::Pattern waterHatch;
   uint8_t waterHatchSpacingPx;
+
+  // layers.landuse. Forest and built-up areas share one tile layer and are
+  // drawn at different depths -- built-up under everything, forest above it --
+  // so the renderer walks the layer once per class (docs/map-data-spec.md,
+  // "A tile is a storage unit, not a render unit").
+  //
+  // Indexed by MapLanduseClass. Class 0 is unused: the builder only writes a
+  // record whose tags mapped to a real class.
+  bool landuseEnabled;
+  uint8_t landuseOutlinePx[kLanduseClassSlots];
+  MapAreaTone landuseTone[kLanduseClassSlots];
+  MapAreaFill::Pattern landuseHatch[kLanduseClassSlots];
+  uint8_t landuseHatchSpacingPx[kLanduseClassSlots];
 
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.

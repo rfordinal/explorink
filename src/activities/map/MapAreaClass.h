@@ -1,0 +1,44 @@
+#pragma once
+
+#include <cstdint>
+
+// Class bytes for the area layers. One small enum per layer, deliberately not
+// slots in the 32-entry road enum (MapClassEnum.h): a record's layer id already
+// says which vocabulary its class byte belongs to, and the road enum's reserved
+// slots are a one-way door -- a 33rd entry breaks every card
+// (docs/map-data-spec.md, "Every area layer needs its own class byte").
+//
+// These mirror mapbuilder's `landuse_class.py` and `water_class.py`. They are
+// hand-written rather than generated for the same reason gen_mapstyle.py carries
+// its own copy of the road class ids: nothing outside this repo may be read to
+// build this repo. **If those files change, change these with them** -- a
+// mismatch here draws a forest as built-up rather than failing.
+//
+// Verified against mapbuilder at parent-repo commit ab6d43a, 2026-08-05.
+
+// Landuse layer (MapTileReader::Layer::Landuse). No `unknown`: the builder only
+// writes a record when a tag maps to one of these, so a 0 here means a corrupt
+// byte, and both passes skip it.
+enum class MapLanduseClass : uint8_t {
+  Forest = 1,   // natural=wood or landuse=forest
+  BuiltUp = 2,  // landuse=residential/commercial/industrial/retail, merged
+};
+
+// Water layer (MapTileReader::Layer::Water). `Unknown` is a real value here,
+// unlike landuse: a ditch or a weir still gets written, just undifferentiated,
+// the same way an unrecognised `highway` lands on the road enum's `unknown`.
+//
+// Stream covers canal and drain too, matching how mapstyle.json already grouped
+// them. Lake is the only one that arrives as a closed ring.
+enum class MapWaterClass : uint8_t {
+  Unknown = 0,
+  River = 1,
+  Stream = 2,
+  Lake = 3,
+};
+
+// Slots to size a per-class style table with. Small on purpose -- these are not
+// the road enum's 32, and a table indexed by one of these costs a handful of
+// bytes of flash.
+inline constexpr uint8_t kLanduseClassSlots = 4;
+inline constexpr uint8_t kWaterClassSlots = 4;

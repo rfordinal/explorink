@@ -254,41 +254,73 @@ Open: what those extra 600 KB cost in wall-clock on real hardware, per viewport
 reset. The preview cannot answer it -- the laptop's disk is not an SD card over
 SPI. Needs the on-device timing that `MapActivity` already logs.
 
-## Green areas and built-up areas, when they arrive
+## Landuse: forest and built-up areas
 
-A second branch is adding two more area layers -- green (forest, park, grass) and
-built-up (landuse). They fit this code without redesigning it, and this section
-is what the two branches need to agree on.
+Landed 2026-08-05, both sides. The tile layer is `layer_id 6`, way records like
+buildings and water, and it carries **two classes in one layer**:
+`MapLanduseClass::Forest = 1`, `BuiltUp = 2` (`MapAreaClass.h`, mirroring
+mapbuilder's `landuse_class.py`).
 
-**They are area layers, so they are already handled.** Each needs, in the
-firmware:
+**The renderer walks that layer twice, once per class**, because the two are
+drawn at different depths and a single walk would emit them in whatever order
+the tile stored them. A park inside a housing estate has to land on top of it.
+Same shape as the two road passes, and the same rewindable `begin*()` makes it
+cost a second seek rather than a buffer.
 
-- a `MapTileReader::Layer` id and reader support;
-- a pass pair on `IMapSource` -- `beginGreen()`/`nextGreen()`, the same shape as
-  `beginBuildings()`/`nextBuilding()`, about ten lines each in `MapTileSource`;
-- a `MapStyle` block (enabled, outline, tone, hatch) and the matching
-  `gen_mapstyle.py` mapping;
-- a call in `MapRenderer::render`, in draw order.
+Full draw order, fixed (`docs/map-data-spec.md`, "A tile is a storage unit, not a
+render unit"):
 
-**Draw order**: built-up area, green area, water, buildings, roads, then the rest.
-Landuse is background; everything above it has to stay readable over it, which is
-the whole reason a tone is a sparse pattern and not a grey block.
+```
+built-up area -> forest -> water -> buildings -> road casings -> road fills -> places
+```
 
-**Tones, as a starting point**: built-up `Stipple`, green `Light` or a diagonal
-hatch (a forest is one big area and large enough for lines to read as a pattern),
-water `Dark`. Two adjacent layers must not share a tone, or their boundary
-disappears -- that boundary is often the thing being navigated by.
+Landuse is background. Everything above it has to stay readable over it, which is
+why a tone is a sparse pattern rather than a grey block.
 
-**Ask the builder for a class byte.** The record already has one and every area
-layer currently writes 0 into it. Water proves the cost of leaving it that way:
-`mapstyle.json` has river/stream/canal rules the device can never honour. Without
-a class, forest and park get one tone forever. Argued in the parent repo's
-`docs/map-data-spec.md`, "Every area layer needs its own class byte".
+`MapStyle` carries per-class outline, tone, hatch and hatch spacing indexed by
+`MapLanduseClass`, so the two classes are independent. **Two adjacent layers must
+not share a tone** -- their boundary disappears, and that boundary is often the
+thing being navigated by. The committed style uses stipple for built-up and a
+diagonal hatch for forest, which is large enough to carry lines.
 
-**Grey changes nothing above `MapAreaTone`.** When the panel's real grey levels
-land, a tone maps to a grey instead of a dither pattern, inside the two
-`IMapCanvas` implementations. The style vocabulary, the draw order and every
-caller stay as they are.
+A class whose rule draws nothing at all is a build error, not a silent skip:
+an enabled layer is read off the card in full, so a rule with no fill and no
+outline is pure I/O cost. Drop the rule or disable the layer.
+
+## Water has classes now, so a river is not a ditch
+
+Also 2026-08-05. Every water record used to carry `class_id 0`, which made
+`mapstyle.json`'s river/stream/canal rules undeliverable -- documented here as a
+dead end for exactly one day. The builder now writes `MapWaterClass`:
+`Unknown = 0`, `River = 1`, `Stream = 2` (canal and drain too), `Lake = 3`.
+
+`MapStyle::waterLinePx` is a table indexed by that class. `Unknown` is a real
+value with a real width -- a ditch or a weir still gets drawn, undifferentiated,
+the same way an unrecognised `highway` lands on the road enum's `unknown`.
+
+Only `Lake` arrives as a closed ring, so it is the only class whose rule needs a
+fill. The style's water rules key on **class names**, not OSM tags: the tile
+carries the class, and matching tags in the style would be a second vocabulary
+nothing can check (`docs/map-data-spec.md`, "One vocabulary, not two"). The
+laptop sketch resolves through the same class table, so both panels style a
+river the same way.
+
+## Adding the next area layer
+
+The path is now well worn. For each new layer:
+
+1. A `MapTileReader::Layer` id, and **`kMaxLayers` bumped to match**. That one is
+   easy to miss and fails invisibly: `open()` rejects the tile, the source counts
+   it unavailable, and the screen fills with hatch that looks exactly like "no
+   map data here". It happened with landuse.
+2. A class enum in `MapAreaClass.h` if the layer has more than one kind of thing,
+   mirroring the builder's module.
+3. A pass pair on `IMapSource` and `MapTileSource` -- about ten lines, the shape
+   of `beginBuildings()`/`nextBuilding()`.
+4. A `MapStyle` block, per class where it matters, plus the `gen_mapstyle.py`
+   mapping and a `mapstyle.json` block whose rules match on class names.
+5. One call in `MapRenderer::render`, in draw order, guarded by the style's
+   enable flag so a layer nobody draws is never read.
 
 ## Two marker paths, and they disagree
 

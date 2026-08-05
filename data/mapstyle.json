@@ -16,10 +16,11 @@
       "enabled": true,
       "rule": {
         "color": "#000000",
-        "fill": "hatch",
-        "hatch": "XXXX",
-        "hatch_spacing_px": 4,
-        "outline_width": 0
+        "fill": "tone",
+        "tone": "light",
+        "outline_width": 1,
+        "hatch": "////",
+        "hatch_spacing_px": 6
       }
     },
     "junctions": {
@@ -351,42 +352,69 @@
         "pattern": "solid",
         "width": 1
       },
-      "enabled": false,
+      "enabled": true,
       "rules": [
         {
-          "color": "#000000",
           "match": {
-            "waterway": [
+            "class": [
               "river"
             ]
           },
-          "pattern": "solid",
-          "width": 2.78
+          "width": 3,
+          "color": "#000000",
+          "pattern": "solid"
         },
         {
-          "color": "#000000",
           "match": {
-            "waterway": [
-              "stream",
-              "canal",
-              "drain"
+            "class": [
+              "stream"
             ]
           },
-          "pattern": "solid",
-          "width": 1.39
+          "width": 1.5,
+          "color": "#000000",
+          "pattern": "solid"
         },
         {
+          "match": {
+            "class": [
+              "lake"
+            ]
+          },
+          "width": 1,
+          "fill": "tone",
+          "tone": "dark",
           "color": "#000000",
+          "pattern": "solid"
+        }
+      ],
+      "_comment": "Water lines and lake areas. Rules key on `class`, the water layer's own class byte (unknown/river/stream/lake, mapbuilder/water_class.py) -- NOT on OSM tags. The tile carries the class; matching tags here would be a second vocabulary nothing can check (docs/map-data-spec.md, 'One vocabulary, not two'). stream covers canal and drain. Only lake arrives as a ring, so only its rule needs a fill."
+    },
+    "landuse": {
+      "_comment": "Forest and built-up areas, one tile layer (layer_id 6), two classes. Drawn under everything else: built-up first, then forest, then water, buildings and roads on top. Each class gets its own fill because they are background tones and two adjacent tones that match make their boundary vanish.",
+      "enabled": true,
+      "rules": [
+        {
+          "match": {
+            "class": [
+              "built_up"
+            ]
+          },
+          "fill": "tone",
+          "tone": "stipple",
+          "outline_width": 0,
+          "color": "#000000"
+        },
+        {
+          "match": {
+            "class": [
+              "forest"
+            ]
+          },
           "fill": "hatch",
-          "hatch": "----",
-          "hatch_spacing_px": 5,
-          "match": {
-            "natural": [
-              "water"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1.39
+          "hatch": "////",
+          "hatch_spacing_px": 6,
+          "outline_width": 1,
+          "color": "#000000"
         }
       ]
     }

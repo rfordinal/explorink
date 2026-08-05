@@ -25,9 +25,20 @@ class MapTileReader {
  public:
   static constexpr size_t kStreamBufferSize = 4096;
   static constexpr uint16_t kMaxWayPoints = 256;
-  static constexpr size_t kMaxLayers = 5;
+  // A tile carrying more layers than this is rejected outright by open(), so
+  // this is the number that has to move first when the builder gains a layer.
+  // It did on 2026-08-05 (landuse), and until this was 6 every new tile read as
+  // an unavailable one -- a whole card of hatch.
+  static constexpr size_t kMaxLayers = 6;
 
-  enum class Layer : uint8_t { Water = 1, Buildings = 2, Roads = 3, Places = 4, Junctions = 5 };
+  enum class Layer : uint8_t {
+    Water = 1,
+    Buildings = 2,
+    Roads = 3,
+    Places = 4,
+    Junctions = 5,
+    Landuse = 6,
+  };
 
   struct WayHeader {
     uint8_t classId = 0;

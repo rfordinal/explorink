@@ -118,6 +118,10 @@ bool MapTileSource::beginWater() { return startPass(MapTileReader::Layer::Water)
 
 bool MapTileSource::nextWater(MapWayRef& out) { return nextWayRecord(out, false); }
 
+bool MapTileSource::beginLanduse() { return startPass(MapTileReader::Layer::Landuse); }
+
+bool MapTileSource::nextLanduse(MapWayRef& out) { return nextWayRecord(out, false); }
+
 bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
   for (;;) {
     if (!tileOpen_ && !advanceToNextTile()) return false;

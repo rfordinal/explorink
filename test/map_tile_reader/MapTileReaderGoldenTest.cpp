@@ -56,10 +56,16 @@ constexpr MapStyle kGoldenStyle = {
     .buildingHatch = MapAreaFill::Pattern::None,
     .buildingHatchSpacingPx = 0,
     .waterEnabled = false,
-    .waterLinePx = 0,
+    .waterLinePx = {0, 0, 0, 0},
     .waterTone = MapAreaTone::None,
     .waterHatch = MapAreaFill::Pattern::None,
     .waterHatchSpacingPx = 0,
+    .landuseEnabled = false,
+    .landuseOutlinePx = {0, 0, 0, 0},
+    .landuseTone = {MapAreaTone::None, MapAreaTone::None, MapAreaTone::None, MapAreaTone::None},
+    .landuseHatch = {MapAreaFill::Pattern::None, MapAreaFill::Pattern::None, MapAreaFill::Pattern::None,
+                     MapAreaFill::Pattern::None},
+    .landuseHatchSpacingPx = {0, 0, 0, 0},
     .placeDotDiameterPx = 10,
     .markerXPx = 230,
     .markerYPx = 620,
@@ -159,6 +165,29 @@ TEST(MapTileReaderGolden, PeakRamDoesNotMoveWithTileContent) {
 
   EXPECT_EQ(oneTile.sourceBytes, viewport.sourceBytes);
   EXPECT_EQ(oneTile.peakHeapDuringRender, viewport.peakHeapDuringRender);
+}
+
+// The layer limit is the first thing that has to move when the builder gains a
+// layer, and getting it wrong is invisible in the nicest possible way: open()
+// rejects the tile, the source counts it unavailable, and the screen fills with
+// hatch that looks exactly like "no map data here". That is what happened when
+// landuse landed on 2026-08-05 against a reader still capped at 5.
+TEST(MapTileReader, AcceptsEveryLayerTheBuilderWrites) {
+  // Six layers today: water, buildings, roads, places, junctions, landuse
+  // (docs/map-data-spec.md, "Layer ids").
+  EXPECT_GE(MapTileReader::kMaxLayers, 6u);
+  EXPECT_EQ(static_cast<int>(MapTileReader::Layer::Landuse), 6);
+}
+
+// The fixture tile predates the landuse layer, so asking for it must be an
+// empty pass rather than a failure: hasLayer() says no and the tile still counts
+// as read. A tile without a layer is not a broken tile.
+TEST(MapTileReaderGolden, AnAbsentLayerIsAnEmptyPassNotAFailure) {
+  StdioFileSource file;
+  MapTileReader reader;
+  ASSERT_TRUE(reader.open(file, (fixturesDir() + "/tiny-sd/base/13/4484/2829.tib").c_str()));
+  EXPECT_TRUE(reader.hasLayer(MapTileReader::Layer::Roads));
+  EXPECT_FALSE(reader.hasLayer(MapTileReader::Layer::Landuse));
 }
 
 // A corrupt point_count must not reach a caller's buffer. The cap lives in

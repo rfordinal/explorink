@@ -61,6 +61,8 @@ class MapTileSource : public IMapSource {
   bool nextBuilding(MapWayRef& out) override;
   bool beginWater() override;
   bool nextWater(MapWayRef& out) override;
+  bool beginLanduse() override;
+  bool nextLanduse(MapWayRef& out) override;
   bool beginPlaces() override;
   bool nextPlace(MapPlaceRef& out) override;
 
