@@ -7,12 +7,28 @@ i18n string tables.
 Verified by reading this tree on 2026-08-05 (branch `feat/mapstyle-to-renderer`,
 merged to `develop` the same day).
 
-**Seen on the panel, 2026-08-05.** The maintainer flashed it and reports the map
-reads well on the e-ink at detail zoom, with individual buildings drawn — so
-dither tones and per-class road widths do work on real hardware, not only in the
-laptop preview. What that run did *not* cover: forest and built-up areas (he was
-not in an area carrying them on the card) and the coarser zoom rungs. Those stay
-unconfirmed on the panel.
+**Confirmed on the panel, 2026-08-05**, with framebuffers pulled off the device
+over `CMD:SCREENSHOT` (`docs/device-shots/malacky-landuse-z*.png` in the parent
+repo, captured by `tools/device_map_shot.py`). Buildings with outlines and a
+stipple interior, forest as a diagonal hatch, built-up areas as a tone, per-class
+road widths, the marker and the compass — all drawn on the glass, at zoom steps
+0, 1 and 2. Nothing about the tones or the widths needed changing after seeing
+them.
+
+**And the on-device timings, which the laptop could not answer**, read off the
+map screen's own debug line:
+
+| zoom step | LOD | m/px | bytes read | viewport reset |
+|---|---|---|---|---|
+| 0 | z13 | 1.0 | 484 KB | 3240 ms |
+| 1 | z13 | 3.0 | 484 KB | 2506 ms |
+| 2 | z12 | 6.0 | 198 KB | 1088 ms |
+
+Two things fall out of that. Buildings at the detail LOD cost roughly 1.4 s more
+per viewport reset than the regional view without them — real but affordable for
+a screen that redraws on demand. And z0 and z1 read **the same bytes** yet differ
+by 700 ms, so the extra time is drawing, not I/O: at 1 m/px the same geometry
+covers far more pixels.
 
 ## The path
 
@@ -256,11 +272,11 @@ parent repo), 2026-08-05:
 disabled layer is never opened. Render time barely moves (11-17 ms on the
 laptop), so on the device this is an SD I/O decision, not a drawing one.
 
-Open: what those extra 600 KB cost in wall-clock on real hardware, per viewport
-reset. The preview cannot answer it — the laptop's disk is not an SD card over
-SPI. Needs the on-device timing `MapActivity` already logs. Less pressing than it
-was: buildings are no longer written at the coarse LODs at all
-(`mapbuilder/build_config.json`), so that case only arises at detail zoom.
+**Answered on hardware 2026-08-05**, see the timing table at the top of this
+document: 484 KB with buildings at the detail LOD is a 2.5-3.2 s viewport reset
+against 1.1 s for the 198 KB regional view. Buildings are also no longer written
+at the coarse LODs at all (`mapbuilder/build_config.json`), so the expensive case
+only arises at detail zoom, where the wait is expected anyway.
 
 ## Landuse: forest and built-up areas
 

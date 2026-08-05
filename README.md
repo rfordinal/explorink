@@ -16,28 +16,29 @@ which is where nearly everything that makes this device work came from — see
 > **Heavy development. Not usable yet.**
 > The map screen draws real OSM data off the SD card, zoom and marker height
 > respond to the hardware buttons, and a phone can drive it all over BLE. The
-> renderer now follows most of the map style: per-class road widths and casings,
-> hatched or dithered buildings, forest, built-up and water areas. No place names
-> and no route yet — those are the next two pieces. Formats and the BLE protocol
+> renderer now follows most of the map style on the real panel: per-class road
+> widths and casings, hatched or dithered buildings, forest, built-up and water
+> areas. No place names and no route yet — those are the next two pieces. Formats and the BLE protocol
 > change without notice. If you want a working device today, use
 > [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) — this
 > fork trades its features away for a different purpose.
 
 <p align="center">
-  <img src="./docs/images/map-landuse-full.png" alt="480x800 one-bit map of Kostolište: hatched forest, stippled built-up area, dithered buildings with outlines, a dark pond, thin roads and the position marker" width="300">
-  <img src="./docs/images/map-landuse-calm.png" alt="The same map with the built-up wash dropped and the forest as a light stipple, so the village body comes from the buildings themselves" width="300">
+  <img src="./docs/images/device-map-landuse-detail.png" alt="Real 480x800 framebuffer off the device: Malacky at 3 metres per pixel, individual buildings with outlines and a dithered interior, forest as a diagonal hatch, the position marker and a compass" width="300">
+  <img src="./docs/images/device-map-landuse-regional.png" alt="The same place at 6 metres per pixel: the village as one stippled built-up area, forest hatch, no individual buildings" width="300">
 </p>
 
 <p align="center">
-  <sub><b>What the renderer draws.</b> Kostolište at 3 m/px, both frames 480x800
-  one-bit, straight out of this firmware's own <code>MapRenderer</code> — the
-  same source files the device compiles, built for a laptop so a style change
-  takes seconds instead of a flash (<code>pio run -t map-preview</code>). Areas
-  are dithered or hatched, never filled solid: a black building swallows the
-  roads around it on a one-bit panel. <b>Left</b> has every layer on; <b>right</b>
-  drops the built-up wash and lightens the forest, so the village reads through
-  its buildings. Not photographed off the panel — these are the renderer's
-  pixels, and the panel has not been checked against them yet.</sub>
+  <sub><b>The real panel, not a render.</b> Both frames are the device's own
+  framebuffer, pulled over USB serial with <code>CMD:SCREENSHOT</code>. Malacky at
+  3 m/px on the left and 6 m/px on the right, off SD-card tiles. Areas are
+  dithered or hatched, never filled solid: a solid black building swallows the
+  roads around it on a one-bit panel. Buildings are drawn individually up close
+  and replaced by a built-up area further out — that switch happens when the
+  tiles are built, so the device never reads what it would not draw. The debug
+  line and the button hints are development furniture. Viewport reset measured on
+  the device: 2506 ms at 3 m/px reading 484 KB, 1088 ms at 6 m/px reading
+  198 KB.</sub>
 </p>
 
 <p align="center">
@@ -47,12 +48,10 @@ which is where nearly everything that makes this device work came from — see
 
 <p align="center">
   <sub><b>Left: where it is going.</b> The map tooling's own sketch of the render
-  spec, at the device's exact resolution — place labels, a thick route with
-  junction dots and the position puck, none of which the firmware draws yet.
-  <b>Right: a real framebuffer off the hardware</b>, dumped with the POWER+DOWN
-  screenshot combo, at 3 m/px around Malacky. It predates the style work above:
-  every road is one width there because nothing of the style reached the renderer
-  when it was taken.</sub>
+  spec — place labels, a thick route with junction dots and the position puck,
+  none of which the firmware draws yet. <b>Right: the same device eight days
+  earlier</b>, before any of the style reached the renderer: every road one
+  width, no areas at all. Kept as the before picture.</sub>
 </p>
 
 ## Why a separate fork
