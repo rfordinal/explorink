@@ -15,12 +15,30 @@ which is where nearly everything that makes this device work came from — see
 
 > **Heavy development. Not usable yet.**
 > The map screen draws real OSM data off the SD card, zoom and marker height
-> respond to the hardware buttons, and a phone can drive it all over BLE — but
-> every road comes out the same plain line, since the renderer does not follow
-> the map style the tooling produces yet. Formats and the BLE protocol change
-> without notice. If you want a working device today, use
+> respond to the hardware buttons, and a phone can drive it all over BLE. The
+> renderer now follows most of the map style: per-class road widths and casings,
+> hatched or dithered buildings, forest, built-up and water areas. No place names
+> and no route yet — those are the next two pieces. Formats and the BLE protocol
+> change without notice. If you want a working device today, use
 > [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) — this
 > fork trades its features away for a different purpose.
+
+<p align="center">
+  <img src="./docs/images/map-landuse-full.png" alt="480x800 one-bit map of Kostolište: hatched forest, stippled built-up area, dithered buildings with outlines, a dark pond, thin roads and the position marker" width="300">
+  <img src="./docs/images/map-landuse-calm.png" alt="The same map with the built-up wash dropped and the forest as a light stipple, so the village body comes from the buildings themselves" width="300">
+</p>
+
+<p align="center">
+  <sub><b>What the renderer draws.</b> Kostolište at 3 m/px, both frames 480x800
+  one-bit, straight out of this firmware's own <code>MapRenderer</code> — the
+  same source files the device compiles, built for a laptop so a style change
+  takes seconds instead of a flash (<code>pio run -t map-preview</code>). Areas
+  are dithered or hatched, never filled solid: a black building swallows the
+  roads around it on a one-bit panel. <b>Left</b> has every layer on; <b>right</b>
+  drops the built-up wash and lightens the forest, so the village reads through
+  its buildings. Not photographed off the panel — these are the renderer's
+  pixels, and the panel has not been checked against them yet.</sub>
+</p>
 
 <p align="center">
   <img src="./docs/images/map-preview.png" alt="480x800 one-bit map: a thick route through Kostolište with junction dots, a place label and the position puck" width="300">
@@ -28,12 +46,13 @@ which is where nearly everything that makes this device work came from — see
 </p>
 
 <p align="center">
-  <sub><b>Left: what it should look like.</b> Produced by the map tooling on a
-  laptop at the device's exact 480x800 one-bit resolution.
-  <b>Right: what the device draws today.</b> The real framebuffer, dumped from
-  the hardware with the POWER+DOWN screenshot combo — real map data off the SD
-  card at 3 m/px around Malacky. Every road is one width because the style is
-  not wired up yet.</sub>
+  <sub><b>Left: where it is going.</b> The map tooling's own sketch of the render
+  spec, at the device's exact resolution — place labels, a thick route with
+  junction dots and the position puck, none of which the firmware draws yet.
+  <b>Right: a real framebuffer off the hardware</b>, dumped with the POWER+DOWN
+  screenshot combo, at 3 m/px around Malacky. It predates the style work above:
+  every road is one width there because nothing of the style reached the renderer
+  when it was taken.</sub>
 </p>
 
 ## Why a separate fork
@@ -63,7 +82,7 @@ not a pull request.
 | Loading a real map from the SD card | exists — this is the current state |
 | Buttons on the map screen (zoom, marker height) | exists, per mode, saved across power cycles |
 | Command console (serial and BLE), zoom/mode filter | exists — same grammar over USB and BLE |
-| Renderer following the map style spec | partly — per-class road widths, hidden classes, place dot size, marker anchor. Casings, labels, route, junction dots: **not implemented** |
+| Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots, marker anchor. Labels, route and junction dots: **not implemented** |
 | Companion phone app | **not started** |
 
 `data/mapstyle.json` holds the styling the renderer is meant to follow — road
