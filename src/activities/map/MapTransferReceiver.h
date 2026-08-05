@@ -100,6 +100,14 @@ class MapTransferReceiver {
     // task publishes a coordinate and the activity task does the removal.
     bool lastTileValid = false;
     MapTileCoord lastTile;
+    // The tile currently on the wire, when the transfer in flight is one.
+    // `received`/`total` above are its byte counts, so a screen can draw a
+    // progress bar for this specific tile rather than for the batch.
+    //
+    // Parsed from the begin frame's path, which is the only place this class
+    // learns what a transfer is. A route or style push leaves this false.
+    bool activeTileValid = false;
+    MapTileCoord activeTile;
     // Bumped once per landed tile. The activity task keeps its own copy and
     // acts when the two differ; that is what makes the handoff a signal
     // rather than a repeated instruction.
@@ -177,6 +185,10 @@ class MapTransferReceiver {
   bool lastTileValid_ = false;
   MapTileCoord lastTile_;
   uint32_t tileSeq_ = 0;
+  // Host task's side of Status::activeTile. Set when a begin frame's path parses
+  // as a tile, cleared whenever the transfer ends, either way.
+  bool activeTileValid_ = false;
+  MapTileCoord activeTile_;
 
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;

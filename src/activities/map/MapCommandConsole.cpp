@@ -121,6 +121,9 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       // memcpy of a fixed field, not strncpy: both sides are the same array
       // size and the parser already nul-terminated it.
       memcpy(skips_.reason, cmd.skipReason, sizeof(skips_.reason));
+      // Before the reply, so a screen that redraws on this has the tally and
+      // the row state agreeing by the time the phone hears `OK`.
+      if (skipObserver_ != nullptr) skipObserver_->onTileSkipped(cmd.skipZ, cmd.skipCol, cmd.skipRow);
 
       char line[kReplyBuf];
       snprintf(line, sizeof(line), "INFO skipped=%lu", static_cast<unsigned long>(skips_.count));

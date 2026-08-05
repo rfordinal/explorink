@@ -198,6 +198,10 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   declaredTotal_ = total;
   declaredCrc_ = crc;
   received_ = 0;
+  // Which tile this is, so a screen can put the byte counts above against one
+  // row instead of a batch total. A non-tile push (route, style) parses false
+  // and simply has no row to be about.
+  activeTileValid_ = parseMapTilePath(finalPath_, activeTile_);
 
   char reply[48];
   snprintf(reply, sizeof(reply), "RDY %lu", static_cast<unsigned long>(total));
@@ -281,6 +285,7 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   active_ = false;
   received_ = 0;
   declaredTotal_ = 0;
+  activeTileValid_ = false;
   ++completed_;
 
   // The path is the only place this class learns what the file *is*. A tile
@@ -317,6 +322,7 @@ void MapTransferReceiver::abandon(const char* reason) {
   active_ = false;
   received_ = 0;
   declaredTotal_ = 0;
+  activeTileValid_ = false;
 
   if (reason == nullptr) return;
 
@@ -407,6 +413,8 @@ void MapTransferReceiver::publish() {
   next.lastTileValid = lastTileValid_;
   next.lastTile = lastTile_;
   next.tileSeq = tileSeq_;
+  next.activeTileValid = activeTileValid_;
+  next.activeTile = activeTile_;
 
   portENTER_CRITICAL(&g_mux);
   snapshot_ = next;

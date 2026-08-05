@@ -149,9 +149,8 @@ information and does not earn an SD write.
 
 ## Asking the phone to fill the gaps
 
-Third item in the map screen's CONFIRM menu: **Fetch missing tiles**
-(`src/activities/map/MapActivity.cpp`, `openMapMenu()` and `startFetch()`).
-What happens, in order:
+**Sync map tiles** in the home menu, which opens `TileSyncActivity`
+(`src/activities/map/TileSyncActivity.{h,cpp}`). What happens, in order:
 
 1. The store is sorted into fetch priority and its size is the fetch's total.
 2. The skip tally is cleared, so the failure count on screen belongs to this
@@ -228,25 +227,65 @@ Unlike a reorder, a removal **does** mark the store dirty. A list that still
 asks for tiles already on the card would have the phone send them all again
 after a restart.
 
-### The progress screen is a state of the map activity
+### Its own screen, off the home menu -- not a map-menu item
 
-Not its own activity, which looks wrong next to `FontDownloadActivity`'s
-dedicated screen. The reason is ownership: `MapActivity::onExit()` calls
-`transfer_.detach()` and `BlePositionServer::end()`
-(`src/activities/map/MapActivity.cpp`), because the BLE peripheral and the
-transfer hooks live exactly as long as the map screen does (`onEnter()`:
-`begin()` then `attach()`). A pushed activity would run that `onExit()` and
-tear down the link the fetch needs before drawing its first frame.
+It started as a third item in the map screen's CONFIRM menu, because the map
+screen owns the BLE peripheral (`onEnter()`: `begin()` then `attach()`;
+`onExit()`: `detach()` then `end()`) and that was the only place with a live
+link to build on. That was the wrong reason to put it there. Filling coverage
+gaps is preparation -- it happens at home, over a phone that has the tiles on
+it, before a ride. Nobody stops mid-trail to sync map data.
 
-While the screen is up it owns the panel and the buttons -- a position packet
-redrawing the map underneath would wipe the progress bar. Both consoles are
-still drained, because `skip` has to be able to arrive and be answered exactly
-then; any redraw a command asks for waits for the screen to close.
+So `TileSyncActivity` starts its own BLE, attaches its own
+`MapTransferReceiver`, and carries its own `MapConsoleState` plus a BLE console
+over it (the phone answers in the same ASCII: `missing` to read the list, `skip`
+to give up on a tile). The map screen went back to being a map. Recording still
+happens there -- `renderViewport()` calls `record()` on every hatched tile --
+so it is record on the trail, fetch at home, and the two are never on screen
+together.
 
-The panel repaints **per tile, not per chunk**, through a windowed refresh
-(`renderer.displayBufferWindow()`, the same mechanism as the busy badge). A
-byte counter ticking a hundred times per file would spend the transfer
-refreshing instead of receiving.
+The console state is deliberately **not** shared with the map's. Two screens are
+never up at once, and sharing would put this screen's skip tally and the map's
+zoom in one object for no reason.
+
+### One bar per tile
+
+A single bar for the batch hides what matters: which tile is moving, which is
+stuck, which ones the phone refused. So the screen is a list, one row per tile,
+each with its own progress bar, in the fetch-priority order the device sent. It
+is also the shape parallel transfers would want -- more than one row simply
+shows movement at once.
+
+**Row state is derived, not accounted for.** A second ledger kept in step with
+the store is how the two drift apart, so each row asks:
+
+- the receiver's `Status::activeTile` says this row is on the wire, and
+  `received` over `total` is its bar
+- the skip observer (`IMapSkipObserver`, called synchronously from
+  `MapConsoleState::execute()`) says the phone gave up on it
+- otherwise, gone from `MissingTilesStore` means it arrived -- `forget()` is the
+  only thing that removes an entry, and only an arrival calls it
+- still in the store means still waiting
+
+The one thing that has to be remembered is the **order**, because the store
+shrinks as tiles land. `rows_` is a snapshot of the priority order taken when
+the sync starts, so a row never moves under the rider's eyes. Heap-allocated
+(~2.4 KB at the 200-entry cap) and freed in `onExit()`; this screen allocates no
+`MapTileSource`, so it is still the cheaper of the two map-side screens.
+
+`skip` needs a per-tile callback rather than the `MapSkipTally` snapshot: two
+skips between two polls would leave a row stuck on "waiting" forever.
+
+### Refresh cadence
+
+A tile settling -- landed or skipped -- repaints the whole frame: the summary
+line, one row's state and possibly the window all change.
+
+The bytes of the transfer in flight climb continuously, and every repaint is a
+real waveform pass. So the moving bar is rate-capped at
+`kActiveRowRefreshMs` (2 s) and repaints **only its own row's rectangle**
+through `renderer.displayBufferWindow()`, the same mechanism as the map's busy
+badge. Per chunk would spend the transfer refreshing instead of receiving.
 
 BACK cancels. The device cannot stop the phone from its end -- the transfer
 protocol's abort opcode (`0x03`) is a frame the *central* writes -- so the
@@ -283,7 +322,7 @@ used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
     `missing_offset=20`, `missing_next=done`, `OK` -- an empty page, not an
     error, which is what makes a paging loop's last request harmless.
 - **Verified on the host**: the `unavailable` case, page-0-only ordering, the
-  `skip` verb and its tally, the priority policy in isolation and the tile-path
+  `skip` verb, its tally and its per-tile observer, the priority policy in isolation and the tile-path
   parse (`test/map_command_parser/MapCommandParserTest.cpp`,
   `test/missing_tile_priority/MissingTilePriorityTest.cpp`,
   `test/map_tile_path/MapTilePathTest.cpp`; 247 tests green across the whole
@@ -302,11 +341,12 @@ used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
     map activity's `loop()`. If a page stalls it long enough to matter,
     `kMissingPageSize` is the knob. `tools/blereplay.py` in the parent repo
     against a card with this 29-entry list settles it.
-  - **The fetch screen has never been on the panel.** It needs a CONFIRM press
-    on the device; there is no serial command that opens the map menu.
-    `fetchPanelRect()`'s geometry comes from theme metrics rather than
-    measurement, and a rectangle that clips a descender leaves a smear only a
-    full refresh clears.
+  - **The sync screen has never been on the panel.** It needs a home-menu
+    selection; no serial command opens it (`CMD:GOTO_MAP` reaches the map, and
+    that is all). Its row geometry comes from theme metrics rather than
+    measurement, so the open questions are how many rows actually fit and
+    whether a row's windowed refresh rectangle clips a descender -- which leaves
+    a smear only a full refresh clears.
   - **`NEED_TILES` reaching a real central.** The mechanism is the one
     `sendCommandReply()` already uses on hardware, but nothing has subscribed
     to the command characteristic from a phone yet.

@@ -17,7 +17,17 @@
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
 
-enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, MAP, PREVIEW, SETTINGS_MENU };
+enum class HomeMenuItem {
+  NONE,
+  FILE_BROWSER,
+  RECENTS,
+  OPDS_BROWSER,
+  FILE_TRANSFER,
+  MAP,
+  TILE_SYNC,
+  PREVIEW,
+  SETTINGS_MENU
+};
 
 /**
  * ActivityManager
@@ -88,6 +98,10 @@ class ActivityManager {
   void goToBrowser();
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
   void goToMap();
+  // Asks the phone for the tiles the map had to hatch. Its own screen rather
+  // than a map-menu item: it is preparation done at home, not something a rider
+  // stops mid-trail for, and it starts its own BLE (TileSyncActivity.h).
+  void goToTileSync();
   void goToPreview();
   void goToSleep(bool fromTimeout = false);
   void goToBoot();

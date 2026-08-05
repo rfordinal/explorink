@@ -17,6 +17,7 @@
 #include "MapRenderer.h"
 #include "MapStyleDefaults.h"
 #include "MapViewport.h"
+#include "MissingTilesConsoleSource.h"
 #include "MissingTilesStore.h"
 #include "fontIds.h"
 
@@ -44,22 +45,8 @@ constexpr uint32_t kSaveSettleMs = 4000;
 // counted from the first new tile since the last flush (renderViewport()).
 constexpr uint32_t kMissingTilesSaveIntervalMs = 10 * 60 * 1000;
 
-// Lets the `missing` command read MissingTilesStore without MapCommandConsole
-// including it: that header pulls in ArduinoJson and the SD-backed
-// PersistableStore, and the console half is deliberately free of both (its
-// native tests link neither). This adapter is the only place the two meet.
-//
-// Stateless, so one file-scope instance rather than a member: no heap, and
-// nothing to keep in sync with the store it forwards to.
-class MissingTilesConsoleSource final : public IMissingTilesSource {
- public:
-  void orderForFetch() override { MISSING_TILES.sortByFetchPriority(); }
-  size_t missingTileCount() const override { return MISSING_TILES.hits().size(); }
-  MapMissingTile missingTileAt(size_t index) const override {
-    const MissingTileHit& hit = MISSING_TILES.hits()[index];
-    return MapMissingTile{hit.z, hit.col, hit.row, hit.count};
-  }
-};
+// Stateless view onto MISSING_TILES for the `missing` command, shared with the
+// tile sync screen (MissingTilesConsoleSource.h).
 MissingTilesConsoleSource g_missingTilesConsoleSource;
 
 // Debug readout geometry.
@@ -420,7 +407,7 @@ void MapActivity::onEnter() {
   // growing while this screen is open, so a copy would go stale mid-session.
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   // Constant for the build, so once here rather than per reset. `info` reports
-  // it and startFetch() quotes it in NEED_TILES.
+  // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
   // So `info` answers with real numbers before the first fix arrives rather
   // than reporting a 0 m/px viewport that has simply never been drawn.
@@ -526,28 +513,6 @@ void MapActivity::loop() {
       showBusy();  // the popup's pixels are still up; say the redraw started
       renderCurrent();
     }
-    return;
-  }
-
-  // Before the fetch branch below: a tile can land at any time, fetch screen
-  // up or not -- a phone is free to push a corridor update while the rider is
-  // just looking at the map.
-  drainTransferredTiles();
-
-  if (fetchPhase_ != FetchPhase::Off) {
-    // The fetch screen owns the panel and the buttons while it is up. A
-    // position packet or a console command redrawing the map underneath would
-    // wipe the progress bar, and there is nowhere else to put it -- the
-    // progress screen cannot be its own activity (MapActivity.h).
-    //
-    // The consoles are still drained: `skip` is how the phone reports a tile
-    // it cannot supply, and it has to be able to arrive and be answered
-    // exactly while this screen is the one on the panel. Whatever redraw a
-    // command asks for is deferred to endFetch()'s renderCurrent().
-    serial_.poll();
-    ble_.poll();
-    updateFetchProgress();
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) endFetch();
     return;
   }
 
@@ -672,17 +637,14 @@ void MapActivity::handleButtons() {
 
 void MapActivity::openMapMenu(int initialIndex) {
   std::vector<std::string> options;
-  options.reserve(3);
+  options.reserve(2);
   options.push_back(tr(STR_REFRESH));
   options.push_back(std::string(tr(STR_MAP_MODE)) + ": " + I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
-  options.push_back(tr(STR_MAP_FETCH_TILES));
   optionPopup_.show(StrId::STR_MAP, options, initialIndex, [this](int idx) {
     if (idx == 0) {
       redrawDueMs_ = 0;
       showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
       renderCurrent();
-    } else if (idx == 2) {
-      startFetch();
     } else {
       // Cycle, don't open a second popup -- repeated Select on this row
       // steps ride->hike->cycle->ride. mapRideModeName()'s array order.
@@ -692,202 +654,6 @@ void MapActivity::openMapMenu(int initialIndex) {
     }
   });
   optionPopup_.processRender(renderer, mappedInput);
-}
-
-void MapActivity::startFetch() {
-  // Priority order first, so the list the phone is about to read is already
-  // sorted -- the `missing` command's page 0 would do it too, but the count
-  // below and the phone's listing must be talking about the same list.
-  MISSING_TILES.sortByFetchPriority();
-  fetchTotal_ = static_cast<uint32_t>(MISSING_TILES.hits().size());
-
-  consoleState_.clearSkips();
-  fetchBaseCompleted_ = transfer_.status().completed;
-  fetchDrawnDone_ = 0;
-  fetchDrawnFailed_ = 0;
-
-  if (fetchTotal_ == 0) {
-    // Worth its own screen rather than a silent no-op: the rider pressed a
-    // button and is owed an answer, and "nothing is missing" is good news.
-    fetchPhase_ = FetchPhase::Finished;
-    fetchVerdict_ = StrId::STR_MAP_FETCH_NOTHING;
-    renderFetchScreen();
-    return;
-  }
-
-  // Unsolicited indication on the command channel -- the one place the device
-  // starts a conversation instead of answering one. Fails if BLE is down or
-  // nobody has subscribed, which is exactly the case the rider needs told:
-  // without a phone listening, no tile is ever going to arrive.
-  //
-  // The format version is part of the ask, not a detail: a tile built to
-  // another version transfers fine and passes CRC, then MapTileReader refuses
-  // it on open and the map hatches the same square again
-  // (MapTileReader::kFormatVersion). Saying which version this build reads lets
-  // the supplier skip what it cannot satisfy instead of spending the transfer.
-  char line[48];
-  snprintf(line, sizeof(line), "NEED_TILES %lu fmt %u", static_cast<unsigned long>(fetchTotal_),
-           static_cast<unsigned>(MapTileReader::kFormatVersion));
-  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
-    LOG_ERR(kLogTag, "fetch: NEED_TILES not delivered, nobody subscribed");
-    fetchPhase_ = FetchPhase::Finished;
-    fetchVerdict_ = StrId::STR_MAP_FETCH_NO_PHONE;
-    renderFetchScreen();
-    return;
-  }
-
-  LOG_INF(kLogTag, "fetch: asked for %lu tiles", static_cast<unsigned long>(fetchTotal_));
-  fetchPhase_ = FetchPhase::Running;
-  fetchVerdict_ = StrId::STR_MAP_FETCH_DONE;
-  renderFetchScreen();
-}
-
-void MapActivity::endFetch() {
-  if (fetchPhase_ == FetchPhase::Running) {
-    // The phone is mid-push and has to be told, because the device cannot stop
-    // it from this end: the transfer channel's abort opcode (0x03) is a frame
-    // the *central* writes, so the only cancel the peripheral has is a word on
-    // the command channel.
-    if (!freeink::BlePositionServer::getInstance().sendCommandReply("FETCH_CANCEL")) {
-      LOG_ERR(kLogTag, "fetch: FETCH_CANCEL not delivered");
-    }
-    LOG_INF(kLogTag, "fetch: cancelled by rider");
-  }
-
-  fetchPhase_ = FetchPhase::Off;
-  // A `zoom`/`mode` command that arrived while the panel was up moved the
-  // console's numbers and nothing else; this is where they reach the map.
-  syncLaddersFromConsole();
-  redrawDueMs_ = 0;
-  showBusy();  // full-screen redraw ahead, same as leaving the menu
-  renderCurrent();
-}
-
-void MapActivity::fetchPanelRect(int& x, int& y, int& w, int& h) const {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-
-  // Three text lines and the bar, centred. Generous rather than tight: this
-  // rectangle is what the windowed refresh repaints, and clipping a descender
-  // would leave a smear that only a full refresh clears.
-  x = metrics.contentSidePadding;
-  w = pageWidth - metrics.contentSidePadding * 2;
-  h = lineHeight * 3 + metrics.progressBarHeight + metrics.verticalSpacing * 3;
-  y = (pageHeight - h) / 2;
-}
-
-void MapActivity::drawFetchPanel() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-
-  int px, py, pw, ph;
-  fetchPanelRect(px, py, pw, ph);
-  // Opaque: this repaints over its own last contents, and stale pixels under
-  // new text read as corruption.
-  renderer.fillRect(px, py, pw, ph, false);
-
-  const MapTransferReceiver::Status transfer = transfer_.status();
-  const uint32_t done = transfer.completed - fetchBaseCompleted_;
-  const uint32_t failed = consoleState_.skips().count;
-
-  int lineY = py + metrics.verticalSpacing;
-  renderer.drawCenteredText(UI_10_FONT_ID, lineY,
-                            fetchPhase_ == FetchPhase::Running ? tr(STR_MAP_FETCHING) : I18N.get(fetchVerdict_));
-  lineY += lineHeight + metrics.verticalSpacing;
-
-  char line[64];
-  snprintf(line, sizeof(line), "%lu / %lu   fail %lu", static_cast<unsigned long>(done),
-           static_cast<unsigned long>(fetchTotal_), static_cast<unsigned long>(failed));
-  renderer.drawCenteredText(UI_10_FONT_ID, lineY, line);
-  lineY += lineHeight + metrics.verticalSpacing;
-
-  GUI.drawProgressBar(renderer, Rect{px, lineY, pw, metrics.progressBarHeight}, done + failed, fetchTotal_);
-  lineY += metrics.progressBarHeight + metrics.verticalSpacing;
-
-  // Which tile is on the wire, or the last one that landed. Bytes as well as
-  // the coordinate: a stalled transfer looks identical to a slow one without
-  // them, and this line is the only place to tell.
-  if (transfer.active) {
-    snprintf(line, sizeof(line), "%lu / %lu bytes", static_cast<unsigned long>(transfer.received),
-             static_cast<unsigned long>(transfer.total));
-    renderer.drawCenteredText(UI_10_FONT_ID, lineY, line);
-  } else if (transfer.lastTileValid) {
-    snprintf(line, sizeof(line), "z%u %lu/%lu", static_cast<unsigned>(transfer.lastTile.z),
-             static_cast<unsigned long>(transfer.lastTile.col), static_cast<unsigned long>(transfer.lastTile.row));
-    renderer.drawCenteredText(UI_10_FONT_ID, lineY, line);
-  }
-}
-
-void MapActivity::renderFetchScreen() {
-  renderer.clearScreen();
-  drawFetchPanel();
-  const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-  busyShown_ = false;  // this frame painted over the badge
-  // Same reason as renderWaiting(): this frame holds no map and no marker, so
-  // there is nothing for a fix to move inside. loop() ignores fixes while the
-  // fetch screen is up, but leaving these true would arm a marker restore
-  // against a frame the marker was never drawn on.
-  viewportDrawn_ = false;
-  markerPatchValid_ = false;
-
-  const MapTransferReceiver::Status transfer = transfer_.status();
-  fetchDrawnDone_ = transfer.completed - fetchBaseCompleted_;
-  fetchDrawnFailed_ = consoleState_.skips().count;
-}
-
-void MapActivity::updateFetchProgress() {
-  const MapTransferReceiver::Status transfer = transfer_.status();
-  const uint32_t done = transfer.completed - fetchBaseCompleted_;
-  const uint32_t failed = consoleState_.skips().count;
-
-  // Per tile, not per chunk. A windowed refresh costs a real waveform pass,
-  // and a byte counter ticking a hundred times a file would spend the whole
-  // transfer refreshing instead of receiving.
-  if (done == fetchDrawnDone_ && failed == fetchDrawnFailed_) return;
-  fetchDrawnDone_ = done;
-  fetchDrawnFailed_ = failed;
-
-  if (done + failed >= fetchTotal_) {
-    fetchPhase_ = FetchPhase::Finished;
-    fetchVerdict_ = StrId::STR_MAP_FETCH_DONE;
-    LOG_INF(kLogTag, "fetch: done, %lu landed, %lu skipped", static_cast<unsigned long>(done),
-            static_cast<unsigned long>(failed));
-    // Full frame: the button hint changes from Cancel to Back, and that is
-    // outside the panel rectangle.
-    renderFetchScreen();
-    return;
-  }
-
-  drawFetchPanel();
-  int px, py, pw, ph;
-  fetchPanelRect(px, py, pw, ph);
-  if (!renderer.displayBufferWindow(px, py, pw, ph)) {
-    LOG_ERR(kLogTag, "fetch panel window rejected: %d,%d %dx%d", px, py, pw, ph);
-  }
-}
-
-void MapActivity::drainTransferredTiles() {
-  const MapTransferReceiver::Status transfer = transfer_.status();
-  if (!transfer.lastTileValid || transfer.tileSeq == lastClearedTileSeq_) return;
-  lastClearedTileSeq_ = transfer.tileSeq;
-
-  if (!MISSING_TILES.forget(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row)) {
-    // A tile pushed that the device never hatched -- a corridor update ahead
-    // of the ride, say. Nothing to clear, and not an error.
-    return;
-  }
-  LOG_INF(kLogTag, "missing list: z%u %lu/%lu arrived, dropped from the list",
-          static_cast<unsigned>(transfer.lastTile.z), static_cast<unsigned long>(transfer.lastTile.col),
-          static_cast<unsigned long>(transfer.lastTile.row));
-  // Same 10-minute cap the hatch path arms (renderViewport()): a list that
-  // still asks for tiles already on the card would have the phone send them
-  // again after a restart, so this must reach the card -- but not once per
-  // arriving file.
-  if (missingTilesSaveDueMs_ == 0) missingTilesSaveDueMs_ = millis() + kMissingTilesSaveIntervalMs;
 }
 
 void MapActivity::switchMode(MapRideMode newMode) {

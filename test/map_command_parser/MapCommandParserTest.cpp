@@ -651,6 +651,43 @@ TEST(MapCommandConsole, SkipCountsAndNeverRedraws) {
   EXPECT_STREQ(state.skips().reason, "");
 }
 
+TEST(MapCommandConsole, SkipObserverHearsEveryTileNotJustTheLast) {
+  // The tile sync screen shows a row per tile, so it needs each skip, not a
+  // "last one plus a counter" snapshot -- two skips between two polls would
+  // otherwise leave a row stuck on "waiting" forever.
+  struct Recorder final : IMapSkipObserver {
+    std::vector<std::string> seen;
+    void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) override {
+      seen.push_back(std::to_string(z) + "/" + std::to_string(col) + "/" + std::to_string(row));
+    }
+  } recorder;
+
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  state.setSkipObserver(&recorder);
+
+  feedLine(console, out, "skip 12 2199 1416 nosource");
+  feedLine(console, out, "skip 11 1099 708 fmt3");
+  feedLine(console, out, "skip 13 4482 2789");
+
+  ASSERT_EQ(recorder.seen.size(), 3u);
+  EXPECT_EQ(recorder.seen[0], "12/2199/1416");
+  EXPECT_EQ(recorder.seen[1], "11/1099/708");
+  EXPECT_EQ(recorder.seen[2], "13/4482/2789");
+  // The tally still counts, for the summary line.
+  EXPECT_EQ(state.skips().count, 3u);
+}
+
+TEST(MapCommandConsole, SkipWithNoObserverStillCounts) {
+  // The map screen wires no observer -- it has no rows to mark.
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  feedLine(console, out, "skip 12 1 1");
+  EXPECT_EQ(state.skips().count, 1u);
+}
+
 TEST(MapCommandConsole, SkipTallyIsClearedForANewFetch) {
   MapConsoleState state;
   MapCommandConsole console(state);

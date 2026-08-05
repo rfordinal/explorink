@@ -120,6 +120,19 @@ struct MapSkipTally {
   char reason[MapCommand::kSkipReasonBytes] = {};
 };
 
+// Told about each `skip` as it lands, so a screen showing one row per tile can
+// mark the right row rather than a count.
+//
+// A synchronous callback, not a queue: `execute()` runs on the activity task
+// while it drains its console, so the observer is on the same task and cannot
+// miss an event -- which a "last skip plus a counter" snapshot can, if two skips
+// arrive between two polls.
+class IMapSkipObserver {
+ public:
+  virtual ~IMapSkipObserver() = default;
+  virtual void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) = 0;
+};
+
 // What the commands actually do, and the only thing that knows it. Holds no
 // channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
@@ -214,6 +227,10 @@ class MapConsoleState {
   const MapSkipTally& skips() const { return skips_; }
   void clearSkips() { skips_ = MapSkipTally{}; }
 
+  // Per-skip callback for a screen that shows one row per tile. Not owned; must
+  // outlive this state. Left unset, only the tally above is kept.
+  void setSkipObserver(IMapSkipObserver* observer) { skipObserver_ = observer; }
+
   // Entries one `missing` command will print. Bounded because every reply
   // line is one BLE indication and each one waits for the peer's ATT confirm
   // before the next goes out (BlePositionServer::sendCommandReply) -- 200
@@ -248,6 +265,7 @@ class MapConsoleState {
   MapTileRangeSnapshot tileRange_;
   IMissingTilesSource* missingTiles_ = nullptr;
   MapSkipTally skips_;
+  IMapSkipObserver* skipObserver_ = nullptr;
   // 0 until MapActivity pushes the real one -- `info` then omits the line
   // rather than claiming version 0, which is not a version that ever existed.
   uint16_t tileFormatVersion_ = 0;

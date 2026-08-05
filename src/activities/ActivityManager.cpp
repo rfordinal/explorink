@@ -15,6 +15,7 @@
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "map/MapActivity.h"
+#include "map/TileSyncActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "preview/PreviewActivity.h"
 #include "reader/ReaderActivity.h"
@@ -202,6 +203,8 @@ void ActivityManager::goToFileBrowser(std::string path) {
 }
 
 void ActivityManager::goToMap() { replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput)); }
+
+void ActivityManager::goToTileSync() { replaceActivity(std::make_unique<TileSyncActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToPreview() {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
