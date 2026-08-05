@@ -68,21 +68,25 @@ void PreviewActivity::loop() {
     requestUpdate();
   };
 
-  // Logical buttons only -- the front four are remappable and the mapping is
-  // orientation-aware.
-  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+  // Paging is on Up/Down because that is where mapLabels() puts the
+  // previous/next labels, and the button hints therefore advertise "<< Page" /
+  // "Page >>" under those two. Having it on Left/Right instead made the hints a
+  // lie: the labelled button repainted the page instead of changing it, seen on
+  // hardware 2026-08-05.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     stepPage(-1);
     return;
   }
-  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
     stepPage(+1);
     return;
   }
 
-  // Either side button repaints the page from scratch. After a page has been
-  // nudged a few times this is the way back to a known base state.
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-      mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+  // Either unlabelled front button repaints the page from scratch. After a page
+  // has been nudged a few times this is the way back to a known base state --
+  // there are only four hint slots and Exit/Select/Page/Page use them all.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left) ||
+      mappedInput.wasPressed(MappedInputManager::Button::Right)) {
     markerStep_ = 0;
     markerDrawnStep_ = 0;
     nudgeCount_ = 1;

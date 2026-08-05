@@ -531,6 +531,20 @@ void loop() {
   // first line. "CMD:" is a deliberate namespace prefix for exactly this
   // reason (compare MapSerialConsole's '<' reply prefix); peeking the first
   // byte is what actually respects it instead of just picking the name.
+  // Whitespace at the head of the buffer would sit there forever: nothing below
+  // consumes a byte unless it is a 'C', and MapSerialConsole (the other reader on
+  // this port) only ever gets a look once this branch declines. So one stray
+  // newline from a host script blocks every command behind it until reboot.
+  // Read off the code, NOT measured -- a suspected case on 2026-08-05 turned out
+  // to be a different firmware on the device. Blank bytes mean nothing to either
+  // consumer, so they can be dropped; anything else is still left strictly
+  // alone.
+  while (logSerial.available() > 0) {
+    const int head = logSerial.peek();
+    if (head != '\n' && head != '\r' && head != ' ' && head != '\t') break;
+    logSerial.read();
+  }
+
   if (logSerial.available() > 0 && logSerial.peek() == 'C') {
     String line = logSerial.readStringUntil('\n');
     if (line.startsWith("CMD:")) {

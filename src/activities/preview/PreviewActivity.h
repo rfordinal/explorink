@@ -28,8 +28,9 @@
 // exact levels the firmware asked for, and a photograph for what the panel did
 // with them -- drift in particular is physical and cannot show up in a dump.
 //
-// Buttons: LEFT/RIGHT page, CONFIRM the page's action, UP/DOWN re-render the
-// page from scratch, BACK home.
+// Buttons: UP/DOWN page (that is where the hint labels sit), CONFIRM the page's
+// action, LEFT/RIGHT re-render the page from scratch (unlabelled -- four hint
+// slots, all taken), BACK home.
 class PreviewActivity final : public Activity {
  public:
   explicit PreviewActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
