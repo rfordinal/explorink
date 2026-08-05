@@ -15,11 +15,11 @@
 // | Region | a nudge that marks one region only, leaving the rest untouched   |
 // | Dither | real grey next to the existing 2x2 checkerboard, same sizes     |
 //
-// Marker's answer came out negative and the page is kept for it: a windowed BW
-// update over grey does NOT preserve the grey. Measured 2026-08-05 -- any refresh
-// after a grey frame drives every pixel to its RAM value, and a grey pixel's RAM
-// value is ink, so the whole backdrop goes black. Moving something over a grey
-// base costs a full grey re-render, ~2.1 s.
+// Marker moved cleanly over an intact grey backdrop on hardware (2026-08-05). A
+// windowed BW update a button press later is fine; one issued inside the same
+// render as the grey frame is not, and that is why nothing on these pages
+// refreshes after the frame is done -- see docs/eink-grayscale.md, "An IMMEDIATE
+// refresh after a grey frame breaks the panel".
 //
 // Marker, Drift and Region are the three open questions in that doc. What each
 // page proves, and how to read it, is written on the page itself. Two records

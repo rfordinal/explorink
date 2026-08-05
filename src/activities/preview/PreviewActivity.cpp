@@ -120,12 +120,13 @@ void PreviewActivity::render(RenderLock&&) {
       LOG_DBG("PRV", "page %d full: base=%ums planes=%ums gray=%ums clean=%ums total=%ums grey=%d",
               static_cast<int>(page_), timings_.baseDrawMs + timings_.baseDisplayMs, timings_.planesMs,
               timings_.grayDisplayMs, timings_.cleanupMs, timings_.totalMs, timings_.grayscale ? 1 : 0);
-      // No windowed update to put these numbers on the panel: measured
-      // 2026-08-05, ANY refresh after a grey frame drives every pixel to its RAM
-      // value, and a grey pixel's RAM value is ink -- the whole page went black
-      // where it should have been grey. The chrome shows the previous frame's
-      // numbers (STR_PREVIEW_TIMES_FORMAT says so) and the serial log has this
-      // one's.
+      // No windowed update to put these numbers on the panel. A refresh issued
+      // inside the same render as the grey frame breaks the picture (measured
+      // 2026-08-05, twice, two different symptoms) -- the panel needs the grey
+      // sequence to be the last thing that touches it. The chrome shows the
+      // previous frame's numbers (STR_PREVIEW_TIMES_FORMAT says so) and the
+      // serial log has this one's. A windowed update on a later button press is
+      // fine, which is what the Marker page does.
       break;
 
     case Update::MarkerWindow: {
@@ -161,9 +162,9 @@ void PreviewActivity::render(RenderLock&&) {
       LOG_DBG("PRV", "page %d nudge %d: planes=%ums gray=%ums clean=%ums", static_cast<int>(page_),
               page_ == Page::Drift ? nudgeCount_ : regionStep_, timings_.planesMs, timings_.grayDisplayMs,
               timings_.cleanupMs);
-      // Same reason as above, and it matters more here: a refresh would wipe
-      // the very greys this page exists to compare. The counter on screen stays
-      // one repaint behind; the log line above is the live count.
+      // Same reason as above, and it matters more here: an immediate refresh
+      // would break the very greys this page exists to compare. The counter on
+      // screen stays one repaint behind; the log line above is the live count.
       break;
     }
   }

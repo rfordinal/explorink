@@ -115,44 +115,48 @@ the same reason.
 differential baseline and clears the flag. That is the whole cleanup — stock
 parity, the OEM firmware has no revert waveform at all (`Ssd1677Luts.h:44-46`).
 
-## Any refresh after a grey frame wipes the grey
+## An IMMEDIATE refresh after a grey frame breaks the panel
 
-**Measured on hardware 2026-08-05. This is the single most important fact on this
-page, and this doc previously claimed the opposite.**
-
-One Fast refresh after a grey render destroyed every grey on the panel. Not the
-greys inside the refreshed rectangle -- all of them. Twice, with two different
-symptoms that together give the mechanism:
+**Measured on hardware 2026-08-05.** Two builds put a windowed BW update right
+after the grey sequence, inside the same render, to repaint a stats line. Both
+destroyed the picture, in two different ways depending on what BW RAM held:
 
 | state of BW RAM | what the panel became |
 |---|---|
-| plane bits (no resync) | black almost everywhere, only nudged pixels light |
-| the frame (after resync) | correct black and white, **every grey gone to black** |
+| plane bits (no resync) | black almost everywhere, only some nudged pixels light |
+| the frame (after `resyncControllerBwRam()`) | correct black and white, **every grey gone to black** |
 
-So a Fast refresh **drives every pixel to its RAM value**. "Differential" in
-`Ssd1677Driver.cpp:356-358` means only that the fast waveform cannot do a clean
-sweep -- it does not mean pixels with a zero diff are skipped. A grey pixel's RAM
-value is ink, so it lands on full black. Exactly the collapse the "a grey pixel
-is a black pixel" section predicts, arriving from an unexpected direction.
+**A windowed update seconds later is fine.** Confirmed on the same firmware: the
+Preview activity's Marker page moves a BW marker over a grey backdrop on a button
+press, and it moved cleanly, repeatedly, with the backdrop intact. The difference
+is not windowed-versus-full. It is *how soon after the grey nudge*.
 
-Consequences, and they are structural:
+This is the hazard the reader already worked around and this doc already
+recorded, one section down: **grey residue ghosts the next frame, and a plain
+fast diff cannot clear it** (`EpubReaderActivity.cpp:1560-1567`, upstream
+issue #2190). The reader forces the following page onto the HALF cleanup path for
+exactly this reason. An immediate FAST after a grey frame is a known mine; it was
+stepped on twice here.
 
-- **Grey survives only until the next refresh of any kind.** There is no partial
-  BW update that leaves grey standing.
-- **A marker moving over a grey base is not possible on X4.** Each move costs a
-  full grey re-render: base HALF + planes + nudge + cleanup, measured 1773 + 190
-  + 144 + 22 ms, about 2.1 s. Not a per-move budget any moving map can pay.
-- **Dither does not have this problem.** It is ordinary BW pixels; a refresh
-  reproduces it exactly. For anything that has to survive partial updates, dither
-  is not a compromise, it is the only option.
-- Anything that greys the screen must own the whole screen until it is done with
-  it. The Preview activity's own stats line had to stop refreshing for this
-  reason -- it was wiping the page it was reporting on.
+Rules that follow, and they are enough to work with:
 
-What this does **not** change: grey itself works, all four levels are
-distinguishable on the panel (confirmed by eye), and a still, rarely-redrawn
-image is exactly the case grey is good for. It is the *partial update* half of
-the story that is dead.
+- **Do not refresh in the same breath as a grey render.** Finish the grey frame,
+  return, let the panel settle. Anything the frame needs to say must be in the
+  frame.
+- A windowed BW update **later** is legitimate, and the Marker page is the
+  evidence. What it costs at the pixels it changes is still the collapse to pure
+  black or white described below.
+- Dither has none of this. Ordinary BW pixels, reproduced by any refresh, no
+  settle rule.
+
+**Open, and worth measuring before relying on either:** how long "later" has to
+be, and whether the safe path is a delay, the HALF cleanup the reader uses, or
+both. Nothing here establishes a number. What is established is that zero delay
+inside the render is wrong and a button press later is right.
+
+An earlier version of this section claimed *any* refresh wipes all grey. That was
+one measurement over-generalised, and the Marker page contradicts it. Kept in the
+git history rather than the doc.
 
 ## The window is the diff, not the RAM area
 
