@@ -206,6 +206,11 @@ The docs under [`docs/`](./docs) are inherited and still accurate for the parts
 this fork has not touched — firmware internals, the activity manager, file
 formats, i18n and the contributing guide all came from CrossPoint.
 
+[`docs/optimization/`](./docs/optimization) is this fork's own: a full code
+review of the map, BLE and tile paths (2026-08-06), one plan per area, with a
+measurement gate for each. Start at its
+[`README.md`](./docs/optimization/README.md).
+
 ## Credits
 
 **This project exists because of
