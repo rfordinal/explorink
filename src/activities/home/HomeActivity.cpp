@@ -11,7 +11,14 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-int HomeActivity::getMenuItemCount() const { return 4; }  // File transfer, Map, Preview, Settings
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
+// File transfer, Map, Preview, Settings
+int HomeActivity::getMenuItemCount() const { return 4; }
+#else
+// File transfer, Map, Settings -- the grayscale bench is a build-flag lab
+// instrument and stays out of a rider's menu (platformio.ini).
+int HomeActivity::getMenuItemCount() const { return 3; }
+#endif
 
 void HomeActivity::onEnter() {
   Activity::onEnter();
@@ -34,9 +41,11 @@ void HomeActivity::loop() {
       case HomeMenuItem::MAP:
         onMapOpen();
         break;
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
       case HomeMenuItem::PREVIEW:
         onPreviewOpen();
         break;
+#endif
       case HomeMenuItem::SETTINGS_MENU:
         onSettingsOpen();
         break;
@@ -101,9 +110,14 @@ void HomeActivity::render(RenderLock&&) {
   // STR_MAP/Bookmark are placeholders -- Map has no dedicated icon asset yet
   // (see docs/firmware-implementation-plan.md Phase 2), swap for a real one
   // once the icon pipeline work happens.
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_PREVIEW),
                                               tr(STR_SETTINGS_TITLE)};
   const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Image, Settings};
+#else
+  const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_SETTINGS_TITLE)};
+  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Settings};
+#endif
 
   GUI.drawButtonMenu(
       renderer,
@@ -126,4 +140,6 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onMapOpen() { activityManager.goToMap(); }
 
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
 void HomeActivity::onPreviewOpen() { activityManager.goToPreview(); }
+#endif

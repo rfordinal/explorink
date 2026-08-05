@@ -328,7 +328,11 @@ what exercises it over grey.
 ## The Preview activity — the bench for the open questions
 
 `src/activities/preview/PreviewActivity.{h,cpp}`, reached from **Home →
-Preview**. Five pages, `LEFT`/`RIGHT` to page, `CONFIRM` for the page's action,
+Preview** — **only in a build with `-DENABLE_PREVIEW_BENCH=1`**. It is off in
+every environment by default (see `platformio.ini`): this is a lab instrument,
+and a menu row one press away on a handlebar is something to open by mistake at
+speed. Turn it on in `platformio.local.ini` when there is a panel question to
+answer; it costs ~5.7 KB of flash and no RAM. Six pages, `LEFT`/`RIGHT` to page, `CONFIRM` for the page's action,
 either side button to repaint from a clean base, `BACK` to leave. Each page
 prints its own instruction and the measured stage timings.
 
@@ -340,6 +344,9 @@ prints its own instruction and the measured stage timings.
 | Region nudge | black field, then a nudge marking one region, then a smaller one inside it | is the grey overlay really region-limited (LUT slot 00 = no drive) |
 | Grey vs dither | real grey next to the 2x2 checkerboard at the same sizes, fills and 1 px lines | which one the map style should use, per feature |
 | Grey ladder | six patches off one black base, patch *i* nudged *i* times | how many levels repeated nudging really buys, and how fast it grains |
+
+Buttons: UP/DOWN page (that is where the hint labels sit), CONFIRM runs the
+page's action, LEFT/RIGHT repaint the page from a clean base, BACK leaves.
 
 Two records worth keeping per page: `tools/greyshot.py` for the exact levels the
 firmware asked for, and a photograph for what the panel actually did with them.
@@ -463,6 +470,14 @@ Two rules the mechanism imposes:
 Host side, in the parent repo: `tools/greyshot.py` grabs and decodes to a 4-level
 PGM and prints the per-level pixel counts; `tools/test_greyshot.py` round-trips
 the decoder against synthetic planes with no device attached.
+
+**What it can and cannot see.** The replay re-renders the last `GrayscaleFrame`
+callback, so it only ever shows grey that went through *this* layer. The sleep
+screen and the reader's images draw their planes themselves and register nothing,
+so on a stock build -- bench off, nothing else using the layer -- the command
+answers `planeBytes == 0` and the dump is 1-bit. That is honest, not broken. It
+becomes useful the moment anything renders through `GrayscaleFrame`: the bench
+today, a still overlay later, or those two paths if they are ever moved onto it.
 
 A photograph is still worth taking. The dump proves what the firmware *asked*
 for; only the panel shows whether dark grey and light grey are actually far

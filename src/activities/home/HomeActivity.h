@@ -17,8 +17,10 @@ class HomeActivity final : public Activity {
     ++i;
     if (item == HomeMenuItem::MAP) return i;
     ++i;
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     if (item == HomeMenuItem::PREVIEW) return i;
     ++i;
+#endif
     if (item == HomeMenuItem::SETTINGS_MENU) return i;
     return 0;
   }
@@ -28,14 +30,18 @@ class HomeActivity final : public Activity {
     int i = 0;
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
     if (idx == i++) return HomeMenuItem::MAP;
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     if (idx == i++) return HomeMenuItem::PREVIEW;
+#endif
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;
     return HomeMenuItem::NONE;
   }
   void onSettingsOpen();
   void onFileTransferOpen();
   void onMapOpen();
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   void onPreviewOpen();
+#endif
 
   int getMenuItemCount() const;
 

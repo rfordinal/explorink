@@ -1,5 +1,11 @@
 #pragma once
 
+// Build-flag gated: OFF unless -DENABLE_PREVIEW_BENCH=1 (platformio.ini explains
+// where to turn it on). Without it this header declares nothing, the .cpp
+// compiles to nothing, and Home has no Preview row -- a lab instrument has no
+// business being one button press away on a handlebar.
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
+
 #include <GrayscaleFrame.h>
 
 #include <cstdint>
@@ -102,3 +108,5 @@ class PreviewActivity final : public Activity {
   uint16_t windowMs_ = 0;  // last windowed update, measured
   GrayscaleFrame::Timings timings_{};
 };
+
+#endif  // ENABLE_PREVIEW_BENCH

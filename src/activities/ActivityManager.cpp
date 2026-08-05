@@ -203,7 +203,15 @@ void ActivityManager::goToFileBrowser(std::string path) {
 
 void ActivityManager::goToMap() { replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput)); }
 
-void ActivityManager::goToPreview() { replaceActivity(std::make_unique<PreviewActivity>(renderer, mappedInput)); }
+void ActivityManager::goToPreview() {
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
+  replaceActivity(std::make_unique<PreviewActivity>(renderer, mappedInput));
+#else
+  // No bench in this build; the menu has no row for it either, so this is only
+  // reachable through a stale HomeMenuItem::PREVIEW (e.g. a saved return target).
+  goHome();
+#endif
+}
 
 void ActivityManager::goToRecentBooks() {
   replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput));

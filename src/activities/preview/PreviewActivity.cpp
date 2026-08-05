@@ -1,5 +1,7 @@
 #include "PreviewActivity.h"
 
+#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
+
 #include <I18n.h>
 #include <Logging.h>
 
@@ -521,3 +523,5 @@ void PreviewActivity::drawLevelsPage(const GrayPainter& painter) const {
   note(painter, kMargin, top + fieldHeight + 10, label, GrayShade::Black);
   note(painter, kMargin, top + fieldHeight + 28, tr(STR_PREVIEW_LEVELS_HINT), GrayShade::Black);
 }
+
+#endif  // ENABLE_PREVIEW_BENCH
