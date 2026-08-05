@@ -190,6 +190,34 @@ MapCommand parseMissing(const Tokens& tokens) {
   return cmd;
 }
 
+// `skip <z> <col> <row> [<reason>]`. The phone saying it cannot supply a tile.
+MapCommand parseSkip(const Tokens& tokens) {
+  if (tokens.n < 4 || tokens.n > 5) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Skip;
+
+  uint32_t z = 0;
+  uint32_t col = 0;
+  uint32_t row = 0;
+  if (!parseUint(tokens.t[1], z) || !parseUint(tokens.t[2], col) || !parseUint(tokens.t[3], row)) {
+    return fail(MapCommandError::BadNumber);
+  }
+  // z is a uint8_t everywhere else it lives (MissingTileHit, MapTileCoord).
+  if (z > 255) return fail(MapCommandError::OutOfRange);
+  cmd.skipZ = static_cast<uint8_t>(z);
+  cmd.skipCol = col;
+  cmd.skipRow = row;
+
+  if (tokens.n == 5) {
+    const std::string_view reason = tokens.t[4];
+    const size_t copy =
+        reason.size() < MapCommand::kSkipReasonBytes - 1 ? reason.size() : MapCommand::kSkipReasonBytes - 1;
+    for (size_t i = 0; i < copy; ++i) cmd.skipReason[i] = reason[i];
+    cmd.skipReason[copy] = '\0';
+  }
+  return cmd;
+}
+
 MapCommand parseMode(const Tokens& tokens) {
   if (tokens.n != 2) return fail(MapCommandError::BadArity);
   MapCommand cmd;
@@ -229,6 +257,7 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "redraw") return parseBare(tokens, MapCommandType::Redraw);
   if (name == "tiles") return parseBare(tokens, MapCommandType::Tiles);
   if (name == "missing") return parseMissing(tokens);
+  if (name == "skip") return parseSkip(tokens);
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   return fail(MapCommandError::UnknownCommand);
 }

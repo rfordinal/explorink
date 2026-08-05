@@ -56,6 +56,16 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // debounce but on its own, much longer schedule (renderViewport()).
   void record(uint8_t z, uint32_t col, uint32_t row);
 
+  // Drops one tile from the list. Returns true if it was on it.
+  //
+  // This is what a tile arriving over BLE does: the gap is filled, so the
+  // record of it is stale and must not be handed out to the next fetch.
+  // A membership change, so it marks the store dirty -- unlike a count bump,
+  // this one is worth an SD write on its own account, because a list that
+  // still asks for tiles the device already has would have the phone send
+  // them again after a restart.
+  bool forget(uint8_t z, uint32_t col, uint32_t row);
+
   // True once a tile has been added or evicted since the last flush. A tile
   // already on the list simply getting hit again does not set this -- see
   // the dirty_ comment above.

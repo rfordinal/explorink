@@ -68,6 +68,27 @@ void MissingTilesStore::record(uint8_t z, uint32_t col, uint32_t row) {
   dirty_ = true;
 }
 
+bool MissingTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {
+  auto it = std::find_if(hits_.begin(), hits_.end(),
+                         [&](const MissingTileHit& hit) { return hit.z == z && hit.col == col && hit.row == row; });
+  if (it == hits_.end()) return false;
+
+  // erase(), not swap-and-pop: the list is handed out in fetch-priority order
+  // (sortByFetchPriority()) and swapping the last entry into this hole would
+  // break that order outright. Shifting costs a memmove of at most 200 small
+  // structs, on the arrival of a whole file.
+  //
+  // Either way a removal during an active listing shifts one entry back across
+  // a page boundary the reader has already passed, so that entry is missed
+  // from this listing. Harmless in the flow this is built for: the phone pages
+  // the whole list first and only then starts pushing tiles, so nothing is
+  // removed while it is still reading. A missed entry is re-listed by the next
+  // fetch anyway -- the tile is still absent and the map still hatches it.
+  hits_.erase(it);
+  dirty_ = true;
+  return true;
+}
+
 void MissingTilesStore::sortByFetchPriority() {
   // std::sort, not stable_sort: the comparator is a total order (it falls
   // through to col/row), so stability buys nothing -- and stable_sort would

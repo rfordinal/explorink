@@ -1,5 +1,7 @@
 #pragma once
 
+#include <I18n.h>
+
 #include <cstdint>
 #include <memory>
 
@@ -36,7 +38,7 @@
 //
 // | UP / DOWN      | zoom ladder, 5 rungs, 3..15 m/px                     |
 // | LEFT / RIGHT   | marker-height ladder, 5 rungs, look-ahead 50..95 %   |
-// | CONFIRM        | open the map menu: Refresh, Mode (ride/hike/cycle)   |
+// | CONFIRM        | map menu: Refresh, Mode, Fetch missing tiles          |
 // | BACK           | leave (or close the menu, if it is open)             |
 //
 // Any of those that triggers a redraw first paints an hourglass badge above the
@@ -53,6 +55,19 @@
 // Every one of them goes through MappedInputManager's logical buttons. The
 // front four are user-remappable in settings and the mapping is
 // orientation-aware; reading HalGPIO::BTN_* directly breaks both.
+//
+// ## Coalescing is required, not a nicety
+//
+// ## Fetching missing tiles is a state of this screen, not its own activity
+//
+// The rider asks for the gaps to be filled from CONFIRM's menu, and a progress
+// screen replaces the map until the phone is done. That progress screen lives
+// **inside this activity**, which looks like the wrong shape next to
+// FontDownloadActivity's dedicated screen -- but a pushed activity would run
+// MapActivity::onExit(), and onExit() calls transfer_.detach() and
+// BlePositionServer::end(). The transfer channel the fetch depends on is owned
+// by this screen's lifetime (onEnter(): begin() then attach()), so a second
+// activity would tear down the link it needs before drawing its first frame.
 //
 // ## Coalescing is required, not a nicety
 //
@@ -152,6 +167,37 @@ class MapActivity final : public Activity {
   // screen must cost nothing, same rule as stepZoom/stepMarker's ladder ends.
   void switchMode(MapRideMode newMode);
 
+  // --- Fetching missing tiles (see the header comment above) -----------
+
+  // Menu action. Orders the store by fetch priority, tells the phone how many
+  // tiles it is being asked for (`NEED_TILES <n>` on the command channel) and
+  // puts the progress screen up. Ends immediately in Finished, with a reason
+  // on screen, when there is nothing to fetch or nobody is listening.
+  void startFetch();
+  // Leaves the progress screen and paints the map back. Sends `FETCH_CANCEL`
+  // only when a fetch was still running -- the phone must stop pushing, but a
+  // fetch that already finished has nothing to cancel.
+  void endFetch();
+  // Full-screen first frame of the progress screen.
+  void renderFetchScreen();
+  // Repaints only the progress panel, and only when a tile has landed or been
+  // skipped since the last repaint. Deliberately not per chunk: the panel is a
+  // windowed e-ink refresh, and a byte counter is not worth one.
+  void updateFetchProgress();
+  // Panel rectangle in logical screen coordinates -- the region
+  // updateFetchProgress() repaints.
+  void fetchPanelRect(int& x, int& y, int& w, int& h) const;
+  // Draws the panel's contents into the current frame. No refresh of its own,
+  // so both the full first frame and the windowed update can use it.
+  void drawFetchPanel();
+  // Clears MissingTilesStore entries for tiles that have landed over BLE.
+  //
+  // On the activity task on purpose: renderViewport()'s record() calls make
+  // this task the store's only writer, and a second writer on the NimBLE host
+  // task would corrupt the vector. The receiver publishes a coordinate
+  // (MapTransferReceiver::Status::lastTile) and this reads it.
+  void drainTransferredTiles();
+
   // Allocated once in onEnter(), released in onExit(). MapTileSource holds
   // references to both, so neither may move or die while it is alive.
   std::unique_ptr<HalFileSource> file_;
@@ -219,6 +265,31 @@ class MapActivity final : public Activity {
   // Back release it is meant to swallow (also loop()) -- see the comment
   // there for why the release needs swallowing at all.
   bool suppressBackRelease_ = false;
+
+  // Where the fetch progress screen is. Off means the map owns the panel.
+  // Finished keeps the screen up with its verdict until the rider presses
+  // Back -- a fetch that ends on its own must not silently vanish.
+  enum class FetchPhase : uint8_t { Off, Running, Finished };
+  FetchPhase fetchPhase_ = FetchPhase::Off;
+  // Tiles this fetch asked for: the store's size at the moment it started.
+  // Fixed for the run, so entries the arrivals remove do not shrink the
+  // denominator under the progress bar.
+  uint32_t fetchTotal_ = 0;
+  // transfer_'s completed counter when this fetch started. The receiver counts
+  // every file since the screen opened, including earlier pushes, so progress
+  // is the difference rather than the raw count.
+  uint32_t fetchBaseCompleted_ = 0;
+  // What the panel currently shows, so updateFetchProgress() can tell a real
+  // change from a poll. Bytes deliberately not among them -- see that function.
+  uint32_t fetchDrawnDone_ = 0;
+  uint32_t fetchDrawnFailed_ = 0;
+  // Which end state Finished is showing: a completed run, an empty list, or
+  // nobody on the other end. Only read while fetchPhase_ == Finished.
+  StrId fetchVerdict_ = StrId::STR_MAP_FETCH_DONE;
+
+  // Last MapTransferReceiver::Status::tileSeq this task has already cleared out
+  // of MissingTilesStore. See drainTransferredTiles().
+  uint32_t lastClearedTileSeq_ = 0;
 
   // Map files pushed over the same BLE connection the position packets use.
   // Attached while this screen is up and only while it is up: the receiver

@@ -1,6 +1,7 @@
 #include "MapCommandConsole.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -109,6 +110,24 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       writeMissing(cmd.missingOffset, out);
       out.reply("OK");
       return false;
+
+    case MapCommandType::Skip: {
+      // Counted, not acted on: the tile is still missing, so it stays on the
+      // store's list. This only stops the fetch screen waiting for it.
+      ++skips_.count;
+      skips_.z = cmd.skipZ;
+      skips_.col = cmd.skipCol;
+      skips_.row = cmd.skipRow;
+      // memcpy of a fixed field, not strncpy: both sides are the same array
+      // size and the parser already nul-terminated it.
+      memcpy(skips_.reason, cmd.skipReason, sizeof(skips_.reason));
+
+      char line[kReplyBuf];
+      snprintf(line, sizeof(line), "INFO skipped=%lu", static_cast<unsigned long>(skips_.count));
+      out.reply(line);
+      out.reply("OK");
+      return false;
+    }
 
     case MapCommandType::Zoom:
       // The parser already rejected anything outside 0-4, so the ladder is

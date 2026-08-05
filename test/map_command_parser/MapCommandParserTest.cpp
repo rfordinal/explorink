@@ -591,6 +591,97 @@ TEST(MapCommandConsole, MissingOffsetPastTheEndIsAnEmptyPageNotAnError) {
   EXPECT_EQ(out.lines[3], "OK");
 }
 
+// ------------------------------------------------------------------- skip
+
+TEST(MapCommandParser, SkipTakesATileAndAnOptionalReason) {
+  const MapCommand bare = parseMapCommand("skip 12 2199 1416");
+  ASSERT_EQ(bare.type, MapCommandType::Skip);
+  EXPECT_EQ(bare.skipZ, 12);
+  EXPECT_EQ(bare.skipCol, 2199u);
+  EXPECT_EQ(bare.skipRow, 1416u);
+  EXPECT_STREQ(bare.skipReason, "");
+
+  const MapCommand withReason = parseMapCommand("skip 12 2199 1416 nocdn");
+  ASSERT_EQ(withReason.type, MapCommandType::Skip);
+  EXPECT_STREQ(withReason.skipReason, "nocdn");
+}
+
+TEST(MapCommandParser, SkipReasonIsTruncatedNotRejected) {
+  // A long reason word is still a legitimate skip -- the tile is genuinely
+  // unavailable either way, and the device shows a count, not the word.
+  const MapCommand cmd = parseMapCommand("skip 12 2199 1416 aaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  ASSERT_EQ(cmd.type, MapCommandType::Skip);
+  EXPECT_EQ(strlen(cmd.skipReason), MapCommand::kSkipReasonBytes - 1);
+}
+
+TEST(MapCommandParser, SkipRejectsJunk) {
+  EXPECT_EQ(errorOf("skip"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("skip 12 2199"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("skip 12 2199 1416 why extra"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("skip 12 x 1416"), MapCommandError::BadNumber);
+  // z lives in a uint8_t everywhere else (MissingTileHit, MapTileCoord).
+  EXPECT_EQ(errorOf("skip 256 1 1"), MapCommandError::OutOfRange);
+}
+
+TEST(MapCommandConsole, SkipCountsAndNeverRedraws) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  EXPECT_FALSE(feedLine(console, out, "skip 12 2199 1416 nocdn"));
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO skipped=1");
+  EXPECT_EQ(out.lines[1], "OK");
+  // A tile the phone cannot supply changes nothing on the panel -- refreshing
+  // e-ink for it would cost two seconds to display the same map.
+  EXPECT_EQ(console.state().seq(), 0u);
+
+  EXPECT_EQ(state.skips().count, 1u);
+  EXPECT_EQ(state.skips().z, 12);
+  EXPECT_EQ(state.skips().col, 2199u);
+  EXPECT_EQ(state.skips().row, 1416u);
+  EXPECT_STREQ(state.skips().reason, "nocdn");
+
+  out.lines.clear();
+  feedLine(console, out, "skip 11 1099 708");
+  EXPECT_EQ(out.lines[0], "INFO skipped=2");
+  EXPECT_EQ(state.skips().count, 2u);
+  // The tally holds the latest, not a list -- the screen shows a number.
+  EXPECT_EQ(state.skips().z, 11);
+  EXPECT_STREQ(state.skips().reason, "");
+}
+
+TEST(MapCommandConsole, SkipTallyIsClearedForANewFetch) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "skip 12 2199 1416");
+  feedLine(console, out, "skip 12 2200 1416");
+  ASSERT_EQ(state.skips().count, 2u);
+
+  // What MapActivity::startFetch() does, so the count on screen belongs to
+  // this fetch and not to the last one.
+  state.clearSkips();
+  EXPECT_EQ(state.skips().count, 0u);
+  EXPECT_STREQ(state.skips().reason, "");
+}
+
+TEST(MapCommandConsole, SkipDoesNotTouchTheMissingList) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeMissingTiles list = fakeList(3);
+  state.setMissingTilesSource(&list);
+
+  feedLine(console, out, "skip 13 4000 2832");
+  // The tile is still absent, so it stays on the list. Only an arrival clears
+  // an entry (MissingTilesStore::forget()).
+  out.lines.clear();
+  feedLine(console, out, "missing");
+  EXPECT_EQ(out.lines[0], "INFO missing_total=3");
+}
+
 TEST(MapCommandConsole, InfoReportsRealZoomLodMppAndTileStats) {
   MapConsoleState state;
   MapCommandConsole console(state);

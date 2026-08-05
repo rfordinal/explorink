@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "HalStorage.h"
+#include "MapTilePath.h"
 
 // Receives one map data file over the BLE transfer channel and writes it to
 // the SD card -- docs/ble-map-transfer-brief.md in the parent xteink repo.
@@ -88,6 +89,26 @@ class MapTransferReceiver {
     uint32_t total = 0;      // its declared length
     uint32_t completed = 0;  // files that landed since the screen opened
     uint32_t failed = 0;     // transfers refused or failed since then
+    // The last file that landed, if its path was a tile
+    // (MapTilePath.h). `completed` counts every landed file including
+    // non-tiles, so it is not the same signal.
+    //
+    // Here rather than in MapActivity because only this class sees the path.
+    // Read on the activity task, which is the only task allowed to touch
+    // MissingTilesStore -- record() runs from renderViewport(), and a second
+    // writer from the NimBLE host task would corrupt the vector. So the host
+    // task publishes a coordinate and the activity task does the removal.
+    bool lastTileValid = false;
+    MapTileCoord lastTile;
+    // Bumped once per landed tile. The activity task keeps its own copy and
+    // acts when the two differ; that is what makes the handoff a signal
+    // rather than a repeated instruction.
+    //
+    // Two tiles landing between two loop() iterations would collapse into one
+    // removal here. A whole file takes seconds and loop() runs continuously,
+    // so this is a theoretical race, and its cost is one stale entry that the
+    // next fetch asks for again -- not corruption.
+    uint32_t tileSeq = 0;
   };
   Status status() const;
 
@@ -152,6 +173,10 @@ class MapTransferReceiver {
 
   uint32_t completed_ = 0;
   uint32_t failed_ = 0;
+  // Host task's side of Status::lastTile / tileSeq above.
+  bool lastTileValid_ = false;
+  MapTileCoord lastTile_;
+  uint32_t tileSeq_ = 0;
 
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;

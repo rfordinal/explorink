@@ -105,6 +105,21 @@ class IMissingTilesSource {
   virtual MapMissingTile missingTileAt(size_t index) const = 0;
 };
 
+// What the supplier of tiles has given up on, as counted by the `skip`
+// command. The fetch progress screen reads this so it can show "N failed"
+// instead of sitting on a tile that will never arrive.
+//
+// A count plus the last one, not a list: the screen shows a number, and
+// keeping 200 skipped coordinates would be a second copy of the store's list
+// for no reader. The last one is here for the log line MapActivity writes.
+struct MapSkipTally {
+  uint32_t count = 0;
+  uint8_t z = 0;
+  uint32_t col = 0;
+  uint32_t row = 0;
+  char reason[MapCommand::kSkipReasonBytes] = {};
+};
+
 // What the commands actually do, and the only thing that knows it. Holds no
 // channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
@@ -187,6 +202,11 @@ class MapConsoleState {
   // Non-const because a listing reorders the source (orderForFetch above).
   void setMissingTilesSource(IMissingTilesSource* source) { missingTiles_ = source; }
 
+  // Tiles the phone has given up on. Reset by the screen that starts a fetch,
+  // so the count it shows belongs to this fetch and not to the last one.
+  const MapSkipTally& skips() const { return skips_; }
+  void clearSkips() { skips_ = MapSkipTally{}; }
+
   // Entries one `missing` command will print. Bounded because every reply
   // line is one BLE indication and each one waits for the peer's ATT confirm
   // before the next goes out (BlePositionServer::sendCommandReply) -- 200
@@ -220,6 +240,7 @@ class MapConsoleState {
   uint32_t bytesRead_ = 0;
   MapTileRangeSnapshot tileRange_;
   IMissingTilesSource* missingTiles_ = nullptr;
+  MapSkipTally skips_;
 };
 
 // Line assembler + parser + a reference to the shared state. One of these

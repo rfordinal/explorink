@@ -24,6 +24,7 @@
 //   redraw
 //   tiles
 //   missing [<offset>]
+//   skip <z> <col> <row> [<reason>]
 //   info
 //
 // `tiles` reports the current viewport. `missing` reports the persisted
@@ -31,6 +32,12 @@
 // much longer thing -- so it is paged: one command answers at most
 // kMissingPageSize entries starting at <offset> (default 0) and says where
 // the next page starts. See MapConsoleState::writeMissing().
+//
+// `skip` is the one command that exists for the phone rather than for a human
+// at a terminal: it is how the supplier of tiles says "I cannot get you this
+// one", so the device's fetch progress can count it as failed instead of
+// waiting for a file that will never arrive. `<reason>` is one free-form word
+// (no spaces), for the log -- the device shows a count, not a reason.
 //
 // The optional tail of `pos` takes the value bare (`pos 48.4 17.0 4 30`) or
 // behind its own keyword (`pos 48.4 17.0 heading 4 speed 30`). Both spell
@@ -54,6 +61,7 @@ enum class MapCommandType : uint8_t {
   Redraw,
   Tiles,
   Missing,
+  Skip,
   Info,
   Error,  // see MapCommand::error
 };
@@ -83,6 +91,16 @@ struct MapCommand {
   // the end is legal and answers an empty page rather than an error, which
   // is what makes a paging loop's last request harmless.
   uint16_t missingOffset = 0;
+  // Skip: which tile the sender is giving up on, and why.
+  uint8_t skipZ = 0;
+  uint32_t skipCol = 0;
+  uint32_t skipRow = 0;
+  // Copied out of the line, not a view into it: a MapCommand outliving the
+  // buffer it was parsed from is a use-after-free waiting to happen, and a
+  // string_view here would invite exactly that. Truncated rather than
+  // rejected -- a long reason word is still a legitimate skip.
+  static constexpr size_t kSkipReasonBytes = 16;
+  char skipReason[kSkipReasonBytes] = {};
   MapRideMode mode = MapRideMode::Ride;
   bool hasHeading = false;  // Pos carried a heading
   bool hasSpeed = false;    // Pos carried a speed

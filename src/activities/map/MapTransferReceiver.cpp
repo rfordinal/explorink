@@ -283,6 +283,18 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   declaredTotal_ = 0;
   ++completed_;
 
+  // The path is the only place this class learns what the file *is*. A tile
+  // path means a MissingTilesStore entry just became stale; the activity task
+  // reads this and does the removal, because the store has exactly one writer
+  // task (MapTransferReceiver.h, Status::lastTile). A non-tile push -- a route,
+  // a style -- simply parses false and clears nothing.
+  MapTileCoord landed;
+  if (parseMapTilePath(finalPath_, landed)) {
+    lastTile_ = landed;
+    lastTileValid_ = true;
+    ++tileSeq_;
+  }
+
   char reply[48];
   snprintf(reply, sizeof(reply), "OK %lu %08lx", static_cast<unsigned long>(bytes),
            static_cast<unsigned long>(actualCrc));
@@ -392,6 +404,9 @@ void MapTransferReceiver::publish() {
   next.total = declaredTotal_;
   next.completed = completed_;
   next.failed = failed_;
+  next.lastTileValid = lastTileValid_;
+  next.lastTile = lastTile_;
+  next.tileSeq = tileSeq_;
 
   portENTER_CRITICAL(&g_mux);
   snapshot_ = next;

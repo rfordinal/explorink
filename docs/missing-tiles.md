@@ -147,6 +147,86 @@ The sort does not mark the store dirty. Entry order in the JSON carries no
 meaning -- `fromJson()` reads it back positionally -- so a reorder is not new
 information and does not earn an SD write.
 
+## Asking the phone to fill the gaps
+
+Third item in the map screen's CONFIRM menu: **Fetch missing tiles**
+(`src/activities/map/MapActivity.cpp`, `openMapMenu()` and `startFetch()`).
+What happens, in order:
+
+1. The store is sorted into fetch priority and its size is the fetch's total.
+2. The skip tally is cleared, so the failure count on screen belongs to this
+   fetch (`MapConsoleState::clearSkips()`).
+3. The device sends `NEED_TILES <count>` as an **unsolicited indication** on
+   the command characteristic. This is the one place the device starts a
+   conversation instead of answering one; the mechanism is the same
+   `BlePositionServer::sendCommandReply()` every other reply uses, which needs
+   only a prior subscribe, not a poll.
+4. The phone pages the list with `missing` and pushes tiles back over the
+   transfer channel (`docs/ble-map-transfer-protocol.md` in the parent repo).
+5. The progress screen counts arrivals and skips until they add up to the
+   total.
+
+If `NEED_TILES` cannot be delivered -- BLE down, or nobody subscribed to the
+command characteristic -- the screen says so instead of counting to zero
+forever. An empty list says "no missing tiles" and stops there: the rider
+pressed a button and is owed an answer.
+
+### `skip <z> <col> <row> [<reason>]`
+
+The phone saying it cannot supply a tile
+(`src/activities/map/MapCommandParser.cpp`, `parseSkip()`). Without it the
+progress screen would wait for a file that is never coming.
+
+A skip is **counted, not acted on**: the tile is still missing, so it stays on
+the list. Only an arrival removes an entry. `<reason>` is one free-form word
+for the log -- the screen shows a count.
+
+### An arriving tile clears its entry
+
+`MissingTilesStore::forget()`, driven from
+`MapActivity::drainTransferredTiles()`. A landed file's path is the only place
+the transfer knows which entry it answered, so `MapTransferReceiver` parses it
+(`src/activities/map/MapTilePath.h`) and publishes the coordinate; a non-tile
+push -- a route, a style -- parses false and clears nothing.
+
+**The removal happens on the activity task, not where the file lands.** The
+store's other writer is `record()` from `renderViewport()`, i.e. the activity
+task, and `std::vector` with a second writer on the NimBLE host task is
+corruption waiting for a coincidence. So the host task publishes
+`Status::lastTile` plus a `tileSeq` counter and the activity task acts on the
+change (`src/activities/map/MapTransferReceiver.h`). Two tiles landing between
+two `loop()` iterations would collapse into one removal; a file takes seconds
+and `loop()` runs continuously, and the cost would be one stale entry the next
+fetch asks for again.
+
+Unlike a reorder, a removal **does** mark the store dirty. A list that still
+asks for tiles already on the card would have the phone send them all again
+after a restart.
+
+### The progress screen is a state of the map activity
+
+Not its own activity, which looks wrong next to `FontDownloadActivity`'s
+dedicated screen. The reason is ownership: `MapActivity::onExit()` calls
+`transfer_.detach()` and `BlePositionServer::end()`
+(`src/activities/map/MapActivity.cpp`), because the BLE peripheral and the
+transfer hooks live exactly as long as the map screen does (`onEnter()`:
+`begin()` then `attach()`). A pushed activity would run that `onExit()` and
+tear down the link the fetch needs before drawing its first frame.
+
+While the screen is up it owns the panel and the buttons -- a position packet
+redrawing the map underneath would wipe the progress bar. Both consoles are
+still drained, because `skip` has to be able to arrive and be answered exactly
+then; any redraw a command asks for waits for the screen to close.
+
+The panel repaints **per tile, not per chunk**, through a windowed refresh
+(`renderer.displayBufferWindow()`, the same mechanism as the busy badge). A
+byte counter ticking a hundred times per file would spend the transfer
+refreshing instead of receiving.
+
+BACK cancels. The device cannot stop the phone from its end -- the transfer
+protocol's abort opcode (`0x03`) is a frame the *central* writes -- so the
+cancel is `FETCH_CANCEL` on the command channel.
+
 ## Getting the file itself off the device
 
 **Not reachable via WebDAV / the WiFi file manager.** `WebDAVHandler::isProtectedPath()`
@@ -160,21 +240,31 @@ used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
 ## Verified vs assumed
 
 - **Verified**: the `missing` command's grammar, paging, `unavailable` case and
-  page-0-only ordering, plus the priority policy itself, are covered by native
-  tests (`test/map_command_parser/MapCommandParserTest.cpp`,
-  `test/missing_tile_priority/MissingTilePriorityTest.cpp`, 52 tests green
-  2026-08-05). Those run on the host, so they prove the logic, not the
-  channel.
+  page-0-only ordering, the `skip` verb and its tally, the priority policy and
+  the tile-path parse are all covered by native tests
+  (`test/map_command_parser/MapCommandParserTest.cpp`,
+  `test/missing_tile_priority/MissingTilePriorityTest.cpp`,
+  `test/map_tile_path/MapTilePathTest.cpp`, 65 tests green 2026-08-05). Those
+  run on the host, so they prove the logic, not the channel.
 - **Verified**: compiles clean (`pio run`, default env, 2026-08-05); RAM cost
   is 200 x `sizeof(MissingTileHit)` (~16 bytes with padding) plus
   `std::vector` overhead, well inside headroom (build reported 17.6% DRAM
   used overall). Read off the code, not measured on hardware: the
   `isProtectedPath` block above, and the throttle's actual behaviour on a
   real ride.
-- **Not verified**: never run on the device. No SD card has an actual
-  `missing_tiles.json` to inspect yet, and no `missing` command has been sent
-  over either real channel. The open question is the BLE one: 20 indications
-  back to back, each waiting for its ATT confirm, has not been timed -- if a
-  page takes long enough to stall the map's `loop()`, `kMissingPageSize` is the
-  knob. Sending `missing` over USB serial and over BLE (`tools/blereplay.py`
-  in the parent repo) against a card with a real list would settle both.
+- **Not verified**: none of this has run on the device. No SD card has an
+  actual `missing_tiles.json` to inspect yet, no `missing` command has been
+  sent over either real channel, and the fetch screen has never been on the
+  panel. Open questions, in the order they would bite:
+  - **20 indications back to back**, each waiting for its ATT confirm, has not
+    been timed. If one page stalls the map's `loop()` long enough to matter,
+    `kMissingPageSize` is the knob. Sending `missing` over USB serial and over
+    BLE (`tools/blereplay.py` in the parent repo) against a card with a real
+    list settles it.
+  - **The windowed refresh of the progress panel.** `fetchPanelRect()`'s
+    geometry is derived from theme metrics, not measured; a rectangle that
+    clips a descender leaves a smear only a full refresh clears.
+  - **`NEED_TILES` reaching a real central.** The mechanism is the one
+    `sendCommandReply()` already uses on hardware, but nothing has yet
+    subscribed to the command characteristic from the phone side (the Android
+    app does not subscribe at all today).
