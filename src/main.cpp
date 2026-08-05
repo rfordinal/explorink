@@ -536,6 +536,15 @@ void loop() {
     if (line.startsWith("CMD:")) {
       String cmd = line.substring(4);
       cmd.trim();
+      // A host command means a host is waiting on the other end of the wire, so
+      // come out of low-power mode first. Serial traffic is not "user activity"
+      // (see the gpio/touch/tilt check below), so after IDLE_POWER_SAVING_MS the
+      // CPU sits at LOW_POWER_FREQ -- 10 MHz on X4 -- and a 48,000-byte CDC dump
+      // starves there: writeAllChunked() spends its whole 3-second budget on the
+      // first ~4 KB and reports a truncated screenshot. Measured 2026-08-05 on
+      // hardware, on both screenshot commands. Same reason CMD:GOTO_MAP does
+      // this before touching NimBLE.
+      powerManager.setPowerSaving(false);
       if (cmd == "SCREENSHOT_GRAY") {
         // Grey is not in any buffer to dump: the planes are streamed to the
         // controller band by band and the scratch is freed, and in the
@@ -586,13 +595,11 @@ void loop() {
         }
         logSerial.printf("SCREENSHOT_END\n");
       } else if (cmd == "GOTO_MAP") {
-        // A button press restores full CPU speed before Home ever routes to
-        // Map (the gpio.wasAnyPressed() check further down); this command
-        // has no button behind it, so it must do that itself. Found the hard
-        // way: NimBLEDevice::init() (MapActivity::onEnter() -> BlePositionServer
-        // ::begin()) hangs solid if entered while still in power-saving mode
-        // after idle -- confirmed on real hardware, see docs/power-management.md.
-        powerManager.setPowerSaving(false);
+        // Power saving is already off for every CMD: above -- load-bearing here
+        // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->
+        // BlePositionServer::begin()) hangs solid if entered while still in
+        // power-saving mode after idle -- confirmed on real hardware, see
+        // docs/power-management.md.
         // Same call HomeActivity::onMapOpen() makes on manual selection --
         // arms replaceActivity(), resolved by activityManager.loop() later
         // in this same iteration.

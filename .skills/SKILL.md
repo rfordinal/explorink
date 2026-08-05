@@ -876,6 +876,13 @@ Fixed by `writeAllChunked()`: retries the remainder against
 1ms per-call timeout. TX ring buffer bumped to 4096 bytes alongside it. Gate:
 `tools/screenshot_gate.py --runs 100` in the parent repo, 100/100 clean.
 
+**That budget is not enough at 10 MHz.** Both screenshot commands truncated at
+~4 KB when the device was in low-power mode (measured 2026-08-05); serial
+traffic does not count as user activity, so after 3 seconds of no button press
+the host is talking to a 10 MHz CPU. Every `CMD:` handler now calls
+`powerManager.setPowerSaving(false)` before dispatch -- see
+`docs/power-management.md`, "10 MHz starves a 48 KB serial dump".
+
 This is now a real way to get a device shot without pulling the SD card --
 see `docs/device-shots/` in the parent repo. The POWER+DOWN combo is still
 useful as an independent reference to compare against.

@@ -8,8 +8,11 @@ without going through a button press.
 `main.cpp:638` calls `powerManager.setPowerSaving(true)` after the device has
 been idle for a while (no button press, no touch, no tilt, nothing holding
 `activityManager.preventAutoSleep()` true). This lowers CPU frequency to save
-battery. Confirmed on real hardware via `LOG_DBG` output: `[PWR] Going to
-low-power mode` at ~20 seconds of idle.
+battery: `HalPowerManager::LOW_POWER_FREQ` is **10 MHz** on X4 (80 MHz only
+where `BOARD_HAS_PSRAM`), and the threshold is
+`HalPowerManager::IDLE_POWER_SAVING_MS`, **3 seconds**
+(`lib/hal/HalPowerManager.h:29-33`). Confirmed on real hardware via `LOG_DBG`
+output: `[PWR] Going to low-power mode`, ~3 s after the last input.
 
 `main.cpp:555` restores full speed (`setPowerSaving(false)`) whenever
 `gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() ||
@@ -47,12 +50,40 @@ deadlock. Would need scope-probing the radio init sequence at reduced
 frequency to pin down further -- not done, the fix below sidesteps the
 question rather than answering it.
 
+## 10 MHz starves a 48 KB serial dump
+
+**Measured on hardware 2026-08-05.** `CMD:SCREENSHOT` and
+`CMD:SCREENSHOT_GRAY` both truncated at ~4 KB of 48,000 -- 4288 and 4096 bytes
+in two consecutive attempts. Not a `writeAllChunked()` regression: the device was
+simply in low-power mode.
+
+At 10 MHz the CDC drain is slow enough that `writeAllChunked()` burns its whole
+3-second budget on roughly the first TX-buffer-full (4096 bytes) and gives up.
+Serial traffic is **not** "user activity" -- the wake check reads gpio, touch and
+tilt only -- so a host that just sends a command talks to a 10 MHz CPU, and the
+3-second idle threshold means that is the normal case, not an edge case.
+
+The 100/100 clean result in `docs/debug-screenshot-channel-plan.md`'s gate 2 was
+taken on a device being poked by hand, which is why this never showed up there.
+
 ## The fix
 
-Any code that can switch to an activity that touches BLE/radio hardware
-without a button press behind it must call `powerManager.setPowerSaving(false)`
-itself, first. `CMD:GOTO_MAP`'s handler does this (`main.cpp`, right before
-`activityManager.goToMap()`). If a future programmatic activity switch is
-added anywhere else (another `CMD:` command, an automation hook, a BLE
-command that itself switches screens), it needs the same call for the same
-reason -- this is a class of bug, not a one-off in `CMD:GOTO_MAP`.
+**Every `CMD:` handler runs at full CPU.** `main.cpp` calls
+`powerManager.setPowerSaving(false)` once, right after a line is recognised as a
+command, before dispatch. That covers screenshots, `GOTO_MAP` and anything added
+later.
+
+Two separate reasons it has to be there, both hardware-confirmed:
+
+- a 48 KB dump starves at 10 MHz (above);
+- `NimBLEDevice::init()` (`MapActivity::onEnter()` ->
+  `BlePositionServer::begin()`) hangs solid if entered while still in
+  power-saving mode after idle (the section above).
+
+The device drops back to low power on its own after the handler returns and the
+idle window passes again -- nothing to restore.
+
+Same rule for any *other* programmatic path that switches activities or talks to
+the radio without a button press behind it (an automation hook, a BLE command
+that switches screens): it needs the same call. This is a class of bug, not a
+one-off.
