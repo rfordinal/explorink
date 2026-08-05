@@ -880,6 +880,34 @@ This is now a real way to get a device shot without pulling the SD card --
 see `docs/device-shots/` in the parent repo. The POWER+DOWN combo is still
 useful as an independent reference to compare against.
 
+### `CMD:SCREENSHOT_GRAY` -- the same channel, with the grey
+
+`CMD:SCREENSHOT` dumps the framebuffer, and in the framebuffer a grey pixel is
+**black** (`docs/eink-grayscale.md`). A screenshot of a grey page therefore
+reads as a solid black page, which is not a rendering bug.
+
+`CMD:SCREENSHOT_GRAY` sends the BW frame plus both grey planes:
+
+```
+SCREENSHOT_GRAY_START:<totalBytes>:<planeBytes>:<exact 0|1>\n
+<BW frame><LSB plane><MSB plane>      planes omitted when planeBytes == 0
+SCREENSHOT_GRAY_END\n
+```
+
+Three 48,000-byte blobs, physical row order, same layout as `CMD:SCREENSHOT`.
+Nothing shadows the planes in DRAM: the handler re-renders them from the last
+grey frame's own draw callback through `GrayscaleFrame::replayPlanes()`, so they
+are bit-identical to what the panel got and cost 8 KB of band scratch, not
+96 KB. `planeBytes == 0` means nothing has greyed since boot; `exact == 0` means
+a region nudge ran afterwards, so the panel holds grey the replay cannot
+reproduce.
+
+The handler holds a `RenderLock` for the whole dump -- the replay drives the
+renderer's strip target, which the render task also uses.
+
+Decode it with `tools/greyshot.py` in the parent repo (writes a 4-level PGM);
+`tools/test_greyshot.py` round-trips that decoder with no device attached.
+
 ## Cache Management and Invalidation
 
 ### Cache Structure on SD Card

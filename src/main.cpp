@@ -4,6 +4,7 @@
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
 #include <GfxRenderer.h>
+#include <GrayscaleFrame.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
@@ -188,6 +189,15 @@ size_t writeAllChunked(uint8_t* data, size_t len, uint32_t totalTimeoutMs) {
     }
   }
   return sent;
+}
+
+// Plane bands from GrayscaleFrame::replayPlanes, straight onto the wire in the
+// order they arrive (LSB plane first, then MSB, each band in y order). Counts
+// what actually went out so the handler can report a truncated dump.
+static size_t screenshotPlaneBytes = 0;
+static void screenshotPlaneSink(void*, bool, const uint8_t* rows, int, int numRows) {
+  const size_t len = static_cast<size_t>(display.getDisplayWidthBytes()) * static_cast<size_t>(numRows);
+  screenshotPlaneBytes += writeAllChunked(const_cast<uint8_t*>(rows), len, /*totalTimeoutMs=*/3000);
 }
 
 void waitForPowerRelease() {
@@ -526,7 +536,47 @@ void loop() {
     if (line.startsWith("CMD:")) {
       String cmd = line.substring(4);
       cmd.trim();
-      if (cmd == "SCREENSHOT") {
+      if (cmd == "SCREENSHOT_GRAY") {
+        // Grey is not in any buffer to dump: the planes are streamed to the
+        // controller band by band and the scratch is freed, and in the
+        // framebuffer a grey pixel is *black*. So the planes are re-rendered
+        // here from the last grey frame's own draw callback -- bit-identical to
+        // what the panel got, 8 KB of scratch, no 96 KB shadow.
+        //
+        // Wire format:
+        //   SCREENSHOT_GRAY_START:<totalBytes>:<planeBytes>:<exact 0|1>\n
+        //   <BW frame><LSB plane><MSB plane>      (planes omitted when planeBytes == 0)
+        //   SCREENSHOT_GRAY_END\n
+        // Each blob is bufferSize bytes in physical row order, same layout as
+        // CMD:SCREENSHOT. exact=0 means a region nudge has run since the last
+        // full frame, so the panel carries grey the replay cannot reproduce.
+        const uint32_t bufferSize = display.getBufferSize();
+        // The replay drives the renderer's strip target, which the render task
+        // also uses -- hold the lock for the whole dump so the BW frame and the
+        // planes come from the same picture.
+        RenderLock lock;
+        const bool withPlanes = GrayscaleFrame::supported(renderer) && GrayscaleFrame::hasSource();
+        const uint32_t total = withPlanes ? bufferSize * 3 : bufferSize;
+        logSerial.printf("SCREENSHOT_GRAY_START:%u:%u:%d\n", (unsigned)total, (unsigned)(withPlanes ? bufferSize : 0),
+                         GrayscaleFrame::sourceIsExact() ? 1 : 0);
+
+        screenshotPlaneBytes = 0;
+        const size_t bwWritten = writeAllChunked(display.getFrameBuffer(), bufferSize, /*totalTimeoutMs=*/3000);
+        if (bwWritten != bufferSize) {
+          LOG_ERR("SCR", "grey screenshot BW write incomplete: %u of %u bytes", (unsigned)bwWritten,
+                  (unsigned)bufferSize);
+        }
+        if (withPlanes) {
+          const GrayPlaneSink sink{nullptr, &screenshotPlaneSink};
+          if (!GrayscaleFrame::replayPlanes(renderer, sink)) {
+            LOG_ERR("SCR", "grey screenshot plane replay failed");
+          } else if (screenshotPlaneBytes != bufferSize * 2) {
+            LOG_ERR("SCR", "grey screenshot plane write incomplete: %u of %u bytes", (unsigned)screenshotPlaneBytes,
+                    (unsigned)(bufferSize * 2));
+          }
+        }
+        logSerial.printf("SCREENSHOT_GRAY_END\n");
+      } else if (cmd == "SCREENSHOT") {
         const uint32_t bufferSize = display.getBufferSize();
         logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
         uint8_t* buf = display.getFrameBuffer();

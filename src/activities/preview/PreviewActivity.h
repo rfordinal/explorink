@@ -6,8 +6,7 @@
 
 #include "activities/Activity.h"
 
-// Hardware test bench for the four-level grey path -- the "grey cannot be
-// captured by CMD:SCREENSHOT, so verification is visual" activity that
+// Hardware test bench for the four-level grey path, the test activity
 // docs/eink-grayscale.md asks for. Five pages, each one measurement:
 //
 // | Scale  | all four levels, as fills, text and lines of every width       |
@@ -17,8 +16,10 @@
 // | Dither | real grey next to the existing 2x2 checkerboard, same sizes     |
 //
 // Marker, Drift and Region are the three open questions in that doc. What each
-// page proves, and how to read it, is written on the page itself: the panel is
-// the output device, and a photograph of it is the record.
+// page proves, and how to read it, is written on the page itself. Two records
+// per page: CMD:SCREENSHOT_GRAY (tools/greyshot.py in the parent repo) for the
+// exact levels the firmware asked for, and a photograph for what the panel did
+// with them -- drift in particular is physical and cannot show up in a dump.
 //
 // Buttons: LEFT/RIGHT page, CONFIRM the page's action, UP/DOWN re-render the
 // page from scratch, BACK home.

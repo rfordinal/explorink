@@ -51,7 +51,30 @@ void GrayPainter::centeredText(const int fontId, const int y, const char* text, 
   if (previousMode != GfxRenderer::BW) renderer_.setRenderMode(previousMode);
 }
 
-bool GrayscaleFrame::writePlanes(GfxRenderer& renderer, const GrayDrawCallback& draw) {
+namespace {
+// The last full grey frame's draw callback, so its planes can be re-rendered on
+// demand (screenshot channel) instead of shadowed in 96,000 bytes of DRAM.
+// Eight bytes of state, and a stale ctx pointer here would be a use-after-free
+// -- hence clearSource() on every activity exit.
+GrayDrawCallback lastSource;
+bool lastSourceExact = false;
+}  // namespace
+
+bool GrayscaleFrame::hasSource() { return lastSource.fn != nullptr; }
+
+bool GrayscaleFrame::sourceIsExact() { return lastSourceExact; }
+
+void GrayscaleFrame::clearSource() {
+  lastSource = GrayDrawCallback{};
+  lastSourceExact = false;
+}
+
+bool GrayscaleFrame::replayPlanes(GfxRenderer& renderer, const GrayPlaneSink& sink) {
+  if (lastSource.fn == nullptr || sink.fn == nullptr) return false;
+  return writePlanes(renderer, lastSource, &sink);
+}
+
+bool GrayscaleFrame::writePlanes(GfxRenderer& renderer, const GrayDrawCallback& draw, const GrayPlaneSink* sink) {
   const int panelRows = renderer.getDisplayHeight();
   const int rowBytes = renderer.getDisplayWidthBytes();
   const size_t scratchBytes = static_cast<size_t>(rowBytes) * STRIP_ROWS;
@@ -63,7 +86,8 @@ bool GrayscaleFrame::writePlanes(GfxRenderer& renderer, const GrayDrawCallback& 
   }
 
   // The strip writes below talk to the controller directly, so nothing may be
-  // in flight (no-op on blocking panels).
+  // in flight (no-op on blocking panels). A replay into a sink touches no
+  // hardware, but waiting costs nothing there either.
   renderer.waitRefreshComplete();
 
   for (int plane = 0; plane < 2; ++plane) {
@@ -77,7 +101,11 @@ bool GrayscaleFrame::writePlanes(GfxRenderer& renderer, const GrayDrawCallback& 
       renderer.clearScreen(0x00);  // 0 = leave this pixel alone
       draw.fn(draw.ctx, painter);
       renderer.endStripTarget();
-      renderer.writeGrayscalePlaneStrip(lsbPlane, scratch.get(), y, bandRows);
+      if (sink != nullptr) {
+        sink->fn(sink->ctx, lsbPlane, scratch.get(), y, bandRows);
+      } else {
+        renderer.writeGrayscalePlaneStrip(lsbPlane, scratch.get(), y, bandRows);
+      }
     }
   }
 
@@ -137,6 +165,11 @@ GrayscaleFrame::Timings GrayscaleFrame::render(GfxRenderer& renderer, const Gray
   renderer.cleanupGrayscaleWithFrameBuffer();
   timings.cleanupMs = static_cast<uint16_t>(millis() - tGray);
 
+  // Remember what drew this frame, so the screenshot channel can re-render its
+  // planes instead of the firmware shadowing them.
+  lastSource = draw;
+  lastSourceExact = true;
+
   timings.grayscale = true;
   timings.totalMs = static_cast<uint16_t>(millis() - tStart);
   return timings;
@@ -162,6 +195,11 @@ GrayscaleFrame::Timings GrayscaleFrame::nudge(GfxRenderer& renderer, const GrayD
 
   renderer.cleanupGrayscaleWithFrameBuffer();
   timings.cleanupMs = static_cast<uint16_t>(millis() - tGray);
+
+  // A nudge adds grey on top of the frame the remembered callback draws, so a
+  // replay is now a subset of what is on the glass. Keep the source -- it is
+  // still the best available -- but stop calling it exact.
+  lastSourceExact = false;
 
   timings.grayscale = true;
   timings.totalMs = static_cast<uint16_t>(millis() - tStart);

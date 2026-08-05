@@ -1,6 +1,7 @@
 #include "ActivityManager.h"
 
 #include <FontCacheManager.h>
+#include <GrayscaleFrame.h>
 #include <HalPowerManager.h>
 
 #include <algorithm>
@@ -168,6 +169,10 @@ void ActivityManager::exitActivity(const RenderLock& lock) {
   // Note: lock must be held by the caller
   if (currentActivity) {
     currentActivity->onExit();
+    // The remembered grayscale draw callback points at the activity being
+    // deleted. Anything replaying it afterwards (CMD:SCREENSHOT_GRAY) would be
+    // a use-after-free, so it dies with the activity.
+    GrayscaleFrame::clearSource();
     currentActivity.reset();
   }
 }

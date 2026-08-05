@@ -266,9 +266,10 @@ prints its own instruction and the measured stage timings.
 | Region nudge | black field, then a nudge marking one region, then a smaller one inside it | is the grey overlay really region-limited (LUT slot 00 = no drive) |
 | Grey vs dither | real grey next to the 2x2 checkerboard at the same sizes, fills and 1 px lines | which one the map style should use, per feature |
 
-Grey cannot be captured over the screenshot channel (next section), so the
-record is a photograph of the panel. Note the page name and the timings line
-when you take one.
+Two records worth keeping per page: `tools/greyshot.py` for the exact levels the
+firmware asked for, and a photograph for what the panel actually did with them.
+The Drift page needs the photograph — drift is a physical effect the dump cannot
+show, because the planes it replays are identical either way.
 
 A detail worth knowing when reading the Marker page: the plane writes window
 each band via `setRamArea`, so the RAM area is left at the *last band* before
@@ -318,19 +319,63 @@ reader forces the following page onto the HALF cleanup path —
 `EpubReaderActivity.cpp:1560-1567`, upstream issue #2190. Any activity that greys
 a region needs the same cadence trick.
 
-## Measuring grey needs eyes, not the screenshot channel
+## Getting grey off the device
 
 `CMD:SCREENSHOT` dumps the 48,000-byte framebuffer. That is the **BW frame**, not
-what is on the glass. Grey levels are invisible to it. Verify grey visually or
-photographically.
+what is on the glass, and in it a grey pixel is **black** — so a plain screenshot
+of a grey page reads as a solid black page. Do not file that as a rendering bug.
 
-Worse than invisible: in the framebuffer a grey pixel is **black**, so a
-screenshot of a grey page reads as a solid black page. Do not file that as a
-rendering bug — check the panel.
+**`CMD:SCREENSHOT_GRAY` sends the grey.** Same serial channel, three blobs:
 
-The Preview activity is the way to get something worth photographing. Its
-timings line is the only part of a grey render that *is* machine-readable, and it
-goes to the serial log too (`LOG_DBG("PRV", ...)`).
+```
+SCREENSHOT_GRAY_START:<totalBytes>:<planeBytes>:<exact 0|1>\n
+<BW frame><LSB plane><MSB plane>      planes omitted when planeBytes == 0
+SCREENSHOT_GRAY_END\n
+```
+
+Each blob is `bufferSize` bytes in physical row order, MSB-first bits, same
+layout as `CMD:SCREENSHOT`. Decode per pixel with the table from "A grey pixel is
+a black pixel that got nudged lighter":
+
+| framebuffer bit | MSB plane | LSB plane | level |
+|---|---|---|---|
+| 1 | 0 | 0 | white |
+| 0 | 0 | 0 | black |
+| 0 | 1 | 0 | light grey |
+| 0 | 1 | 1 | dark grey |
+
+The interesting part is where the planes come from. **Nothing shadows them.** The
+planes are streamed to the controller band by band and the scratch is freed, so
+by the time a host asks, the only copies are in controller RAM and in the
+particles. Keeping a shadow would cost 96,000 bytes of DRAM. Instead
+`GrayscaleFrame` remembers the last full frame's **draw callback** — 8 bytes —
+and `replayPlanes()` re-renders both planes into a sink through the same banded
+loop that fed the panel (`GrayscaleFrame.cpp`). Bit-identical output, 8 KB of
+scratch, no persistent cost.
+
+Two consequences of that design, both reported in the header:
+
+- `planeBytes == 0` — nothing has rendered a grey frame since boot, or the panel
+  cannot do grey. The dump is 1-bit and every grey would read black anyway.
+- `exact == 0` — `nudge()` ran after the last full frame, so the panel carries
+  grey that no single callback reproduces. The replay is a subset of the glass.
+
+Two rules the mechanism imposes:
+
+- The handler **holds a `RenderLock`** for the whole dump. The replay drives the
+  renderer's strip target, which the render task also uses; without the lock the
+  BW frame and the planes could come from different pictures, or worse.
+- The remembered callback points into an activity. `ActivityManager::exitActivity`
+  calls `GrayscaleFrame::clearSource()` for exactly that reason — replaying a
+  dead activity's callback is a use-after-free.
+
+Host side, in the parent repo: `tools/greyshot.py` grabs and decodes to a 4-level
+PGM and prints the per-level pixel counts; `tools/test_greyshot.py` round-trips
+the decoder against synthetic planes with no device attached.
+
+A photograph is still worth taking. The dump proves what the firmware *asked*
+for; only the panel shows whether dark grey and light grey are actually far
+enough apart, and whether a repeated nudge drifted.
 
 ## Gotchas
 

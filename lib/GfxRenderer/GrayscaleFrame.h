@@ -86,6 +86,16 @@ struct GrayDrawCallback {
   void (*fn)(void* ctx, const GrayPainter& painter) = nullptr;
 };
 
+// Where a plane band goes instead of the controller. `rows` holds
+// panelWidthBytes * numRows bytes for physical rows [yStart, yStart + numRows),
+// same layout as the framebuffer, valid only for the duration of the call.
+// Bands arrive in y order, LSB plane first, then MSB. Used by the screenshot
+// channel to get grey off the device; see GrayscaleFrame::replayPlanes.
+struct GrayPlaneSink {
+  void* ctx = nullptr;
+  void (*fn)(void* ctx, bool lsbPlane, const uint8_t* rows, int yStart, int numRows) = nullptr;
+};
+
 class GrayscaleFrame {
  public:
   // One band of physical rows at a time: 100 bytes/row * 80 = 8,000 bytes.
@@ -130,8 +140,41 @@ class GrayscaleFrame {
   // the same pixel as unknown.
   static Timings nudge(GfxRenderer& renderer, const GrayDrawCallback& draw);
 
+  // --- Getting grey off the device ---------------------------------------
+  //
+  // The panel's grey lives in controller RAM and in the physical particles, not
+  // in any buffer the firmware keeps: the planes are streamed out band by band
+  // and the scratch is freed. `CMD:SCREENSHOT` therefore only ever saw the BW
+  // frame, where a grey pixel is black.
+  //
+  // Rather than keep a 96,000 byte shadow of two planes, the last full frame's
+  // draw callback is remembered (8 bytes) and its planes are re-rendered on
+  // demand into whatever sink asks for them. Same 8 KB band scratch, same
+  // callback, so the planes are bit-identical to what was sent to the panel.
+
+  // True when a full grey frame has been rendered and its source is still
+  // valid, i.e. replayPlanes() has something to replay.
+  static bool hasSource();
+  // False when nudge() has run since the last full frame: the panel then carries
+  // grey that no single callback reproduces, so a replay is a subset of what is
+  // on the glass. Meaningless unless hasSource().
+  static bool sourceIsExact();
+  // Forget the remembered callback. MUST be called when the object behind its
+  // ctx pointer dies -- ActivityManager::exitActivity does this for activities.
+  static void clearSource();
+
+  // Re-render the last full frame's planes into `sink` instead of the
+  // controller. Does not touch the framebuffer, the panel, or controller RAM.
+  // Returns false when there is no source or the band scratch cannot be
+  // allocated.
+  //
+  // The caller must hold the render lock: this drives the renderer's strip
+  // target, which the render task also uses.
+  static bool replayPlanes(GfxRenderer& renderer, const GrayPlaneSink& sink);
+
  private:
-  // Shared plane loop: renders both planes band by band and streams each band
-  // straight to controller RAM. Returns false on scratch OOM.
-  static bool writePlanes(GfxRenderer& renderer, const GrayDrawCallback& draw);
+  // Shared plane loop: renders both planes band by band. Each band goes to the
+  // controller, or to `sink` when one is given (nothing reaches the panel
+  // then). Returns false on scratch OOM.
+  static bool writePlanes(GfxRenderer& renderer, const GrayDrawCallback& draw, const GrayPlaneSink* sink = nullptr);
 };
