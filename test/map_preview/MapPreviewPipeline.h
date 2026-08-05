@@ -69,6 +69,12 @@ struct MapPreviewResult {
   long smallestTileBytes = -1;
   long largestTileBytes = -1;
 
+  // Real bytes read off the "card" across every layer and every pass. This is
+  // the number that makes turning the buildings layer on an informed decision
+  // rather than a cosmetic one -- buildings were 277 KB of the 364 KB a
+  // four-tile viewport read (docs/map-data-spec.md, "RAM budget").
+  uint32_t bytesRead = 0;
+
   // The streaming path's whole RAM cost, split into its two honest halves.
   // `sourceBytes` is sizeof(MapTileSource) -- reader buffer, one way's point
   // scratch, one place name, one path -- allocated once before rendering.

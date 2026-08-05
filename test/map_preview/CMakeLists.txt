@@ -4,6 +4,7 @@ add_executable(map_preview
   HeapProbe.cpp
   PpmCanvas.cpp
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp
+  ${REPO_ROOT}/src/activities/map/MapAreaFill.cpp
   ${REPO_ROOT}/src/activities/map/MapProjection.cpp
   ${REPO_ROOT}/src/activities/map/MapTileGrid.cpp
   ${REPO_ROOT}/src/activities/map/MapTileReader.cpp

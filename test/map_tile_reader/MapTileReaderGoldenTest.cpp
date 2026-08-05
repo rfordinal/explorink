@@ -44,15 +44,26 @@ constexpr double kAnchorLon = 17.072751469276742;
 // shape -- so changing how a wide line is built (MapStroke.h) cannot move a
 // pixel here. No casings and no puck disc for the same reason: the PPM then
 // depends only on the tile pipeline, the projection, and three primitives.
+// Buildings and water are off here as well, for the same stability reason and
+// one more: the fixture tile has no such layers, so drawing them would be
+// exercising the empty-layer path, not a render.
 constexpr MapStyle kGoldenStyle = {
-    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-    10,   // placeDotDiameterPx
-    230,  // markerXPx
-    620,  // markerYPx
-    0,    // puckRadiusPx -- arrow only, no disc
-    0,    // puckRingPx
-    28,   // puckArrowPx
+    .roadWidthPx = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+    .roadCasingPx = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    .buildingsEnabled = false,
+    .buildingOutlinePx = 0,
+    .buildingHatch = MapAreaFill::Pattern::None,
+    .buildingHatchSpacingPx = 0,
+    .waterEnabled = false,
+    .waterLinePx = 0,
+    .waterHatch = MapAreaFill::Pattern::None,
+    .waterHatchSpacingPx = 0,
+    .placeDotDiameterPx = 10,
+    .markerXPx = 230,
+    .markerYPx = 620,
+    .puckRadiusPx = 0,  // arrow only, no disc
+    .puckRingPx = 0,
+    .puckArrowPx = 28,
 };
 
 std::string fixturesDir() { return std::string(MAP_TILE_READER_FIXTURES_DIR); }

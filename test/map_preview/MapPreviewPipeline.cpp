@@ -118,6 +118,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.waysDrawn = source->waysEmitted() / MapRenderer::kRoadPasses;
   result.waysFiltered = source->waysFiltered() / MapRenderer::kRoadPasses;
   result.placesDrawn = source->placesEmitted();
+  result.bytesRead = source->bytesRead();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());
   result.missingMask = source->unavailableMask();

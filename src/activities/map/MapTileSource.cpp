@@ -108,7 +108,17 @@ bool MapTileSource::advanceToNextTile() {
 
 bool MapTileSource::beginWays() { return startPass(MapTileReader::Layer::Roads); }
 
-bool MapTileSource::nextWay(MapWayRef& out) {
+bool MapTileSource::nextWay(MapWayRef& out) { return nextWayRecord(out, true); }
+
+bool MapTileSource::beginBuildings() { return startPass(MapTileReader::Layer::Buildings); }
+
+bool MapTileSource::nextBuilding(MapWayRef& out) { return nextWayRecord(out, false); }
+
+bool MapTileSource::beginWater() { return startPass(MapTileReader::Layer::Water); }
+
+bool MapTileSource::nextWater(MapWayRef& out) { return nextWayRecord(out, false); }
+
+bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
   for (;;) {
     if (!tileOpen_ && !advanceToNextTile()) return false;
 
@@ -130,7 +140,7 @@ bool MapTileSource::nextWay(MapWayRef& out) {
     // projected. Reading them is not optional -- they are what advances the
     // stream to the next record -- but projecting them is, and that is the
     // per-point cost. docs/map-data-spec.md, "Mode is a render-time filter".
-    if ((config_.classMask & (1u << (header.classId & 31))) == 0) {
+    if (applyClassMask && (config_.classMask & (1u << (header.classId & 31))) == 0) {
       ++waysFiltered_;
       continue;
     }

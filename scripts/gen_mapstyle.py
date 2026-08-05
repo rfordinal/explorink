@@ -147,6 +147,82 @@ def puck(style):
     return radius, ring, arrow
 
 
+# mapstyle.json's hatch strings are matplotlib's. Only the character matters
+# here; the repeat count ("XXXX") is a matplotlib density knob, and density on
+# the device comes from hatch_spacing_px, in device pixels like every other
+# length. Maps to MapAreaFill::Pattern.
+_HATCH_PATTERN = {
+    "/": "Diagonal",
+    "\\": "AntiDiagonal",
+    "-": "Horizontal",
+    "|": "Vertical",
+    "X": "Cross",
+    "x": "Cross",
+    "+": "Cross",
+}
+
+
+def _hatch(rule, what):
+    """(pattern enum name, spacing px) for a layer rule's fill.
+
+    A rule with no `fill: hatch` draws no fill at all -- outline only, or
+    nothing if the outline is 0 too. That is a legitimate style, so it is not
+    an error.
+    """
+    if rule.get("fill") != "hatch":
+        return "None", 0
+    text = str(rule.get("hatch", "")).strip()
+    if not text:
+        sys.exit(f"gen_mapstyle.py: {what}: fill is hatch but no hatch pattern given")
+    pattern = _HATCH_PATTERN.get(text[0])
+    if pattern is None:
+        sys.exit(f"gen_mapstyle.py: {what}: hatch '{text}' starts with a character this renderer "
+                 f"has no pattern for (use one of {''.join(sorted(_HATCH_PATTERN))})")
+    spacing = _round_px(rule.get("hatch_spacing_px", 0), f"{what}.hatch_spacing_px")
+    if spacing <= 0:
+        sys.exit(f"gen_mapstyle.py: {what}: hatch needs a hatch_spacing_px above 0 "
+                 f"-- spacing 0 would be a solid fill, which 1-bit cannot afford")
+    if spacing > 255:
+        sys.exit(f"gen_mapstyle.py: {what}: hatch_spacing_px {spacing} does not fit a uint8_t")
+    return pattern, spacing
+
+
+def buildings(style):
+    """(enabled, outline px, hatch pattern, hatch spacing)."""
+    layer = style.get("layers", {}).get("buildings", {})
+    if not layer.get("enabled", False):
+        return False, 0, "None", 0
+    rule = layer.get("rule", {})
+    outline = _round_px(rule.get("outline_width", 0), "layers.buildings.rule.outline_width")
+    pattern, spacing = _hatch(rule, "layers.buildings.rule")
+    if outline == 0 and pattern == "None":
+        sys.exit("gen_mapstyle.py: layers.buildings is enabled but draws neither an outline nor a hatch "
+                 "-- that reads every building off the card to draw nothing. Disable the layer instead.")
+    return True, outline, pattern, spacing
+
+
+def water(style):
+    """(enabled, line px, hatch pattern, hatch spacing).
+
+    One line width for every waterway: the tile format gives water no class, so
+    the river/stream/canal rules cannot be told apart on the device and the
+    layer default is what applies. The area hatch is taken from whichever rule
+    carries a `fill`, since only areas have one.
+    """
+    layer = style.get("layers", {}).get("water", {})
+    if not layer.get("enabled", False):
+        return False, 0, "None", 0
+    line = max(_round_px(layer.get("default", {}).get("width", 1), "layers.water.default.width"), 1)
+    if line > 255:
+        sys.exit(f"gen_mapstyle.py: water line width {line}px does not fit a uint8_t")
+    pattern, spacing = "None", 0
+    for index, rule in enumerate(layer.get("rules", [])):
+        if rule.get("fill") == "hatch":
+            pattern, spacing = _hatch(rule, f"layers.water.rules[{index}]")
+            break
+    return True, line, pattern, spacing
+
+
 def place_dot_diameter(style):
     places = style.get("layers", {}).get("places")
     if places is None:
@@ -173,7 +249,7 @@ def marker_anchor(style):
     return x, y
 
 
-def gen_cpp(widths, casings, dot_diameter, marker_x, marker_y, puck_px):
+def gen_cpp(widths, casings, buildings_px, water_px, dot_diameter, marker_x, marker_y, puck_px):
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
         "#pragma once",
@@ -182,8 +258,12 @@ def gen_cpp(widths, casings, dot_diameter, marker_x, marker_y, puck_px):
         "",
         '#include "MapStyle.h"',
         "",
+        "// Designated initialisers on purpose: this file is generated, and a field",
+        "// reordered in MapStyle.h must break the build rather than silently shift a",
+        "// number into the wrong member (it did once, 2026-08-05).",
         "inline constexpr MapStyle kDefaultMapStyle = {",
-        "    // roadWidthPx, indexed by MapClassId. 0 = not drawn.",
+        "    // Road width per MapClassId. 0 = not drawn.",
+        "    .roadWidthPx =",
         "    {",
     ]
     for class_id in range(_CLASS_SLOTS):
@@ -191,21 +271,32 @@ def gen_cpp(widths, casings, dot_diameter, marker_x, marker_y, puck_px):
         lines.append(f"        {widths[class_id]},  // {class_id} {name}")
     lines += [
         "    },",
-        "    // roadCasingPx, same indexing. 0 = solid black line.",
+        "    // Casing per class, same indexing. 0 = solid black line.",
+        "    .roadCasingPx =",
         "    {",
     ]
     for class_id in range(_CLASS_SLOTS):
         name = id_to_name.get(class_id, "(reserved)")
         lines.append(f"        {casings[class_id]},  // {class_id} {name}")
     radius, ring, arrow = puck_px
+    b_enabled, b_outline, b_pattern, b_spacing = buildings_px
+    w_enabled, w_line, w_pattern, w_spacing = water_px
     lines += [
         "    },",
-        f"    {dot_diameter},  // placeDotDiameterPx",
-        f"    {marker_x},  // markerXPx",
-        f"    {marker_y},  // markerYPx",
-        f"    {radius},  // puckRadiusPx",
-        f"    {ring},  // puckRingPx",
-        f"    {arrow},  // puckArrowPx",
+        f"    .buildingsEnabled = {'true' if b_enabled else 'false'},",
+        f"    .buildingOutlinePx = {b_outline},",
+        f"    .buildingHatch = MapAreaFill::Pattern::{b_pattern},",
+        f"    .buildingHatchSpacingPx = {b_spacing},",
+        f"    .waterEnabled = {'true' if w_enabled else 'false'},",
+        f"    .waterLinePx = {w_line},",
+        f"    .waterHatch = MapAreaFill::Pattern::{w_pattern},",
+        f"    .waterHatchSpacingPx = {w_spacing},",
+        f"    .placeDotDiameterPx = {dot_diameter},",
+        f"    .markerXPx = {marker_x},",
+        f"    .markerYPx = {marker_y},",
+        f"    .puckRadiusPx = {radius},",
+        f"    .puckRingPx = {ring},",
+        f"    .puckArrowPx = {arrow},",
         "};",
         "",
     ]
@@ -225,6 +316,8 @@ def main(repo_root, style_path=None, output_path=None):
         style = json.load(f)
 
     widths, casings = road_widths(style)
+    buildings_px = buildings(style)
+    water_px = water(style)
     dot_diameter = place_dot_diameter(style)
     marker_x, marker_y = marker_anchor(style)
     puck_px = puck(style)
@@ -234,9 +327,13 @@ def main(repo_root, style_path=None, output_path=None):
     print(f"gen_mapstyle.py: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
           f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
           f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
+    print(f"gen_mapstyle.py: buildings {'on' if buildings_px[0] else 'off'} "
+          f"(outline {buildings_px[1]}px, hatch {buildings_px[2]}/{buildings_px[3]}px), "
+          f"water {'on' if water_px[0] else 'off'} "
+          f"(line {water_px[1]}px, hatch {water_px[2]}/{water_px[3]}px)")
 
     with open(output_path, "w") as f:
-        f.write(gen_cpp(widths, casings, dot_diameter, marker_x, marker_y, puck_px))
+        f.write(gen_cpp(widths, casings, buildings_px, water_px, dot_diameter, marker_x, marker_y, puck_px))
     print(f"gen_mapstyle.py: wrote {output_path}")
 
 

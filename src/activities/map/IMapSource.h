@@ -58,6 +58,34 @@ class IMapSource {
   // exhausted. A malformed record ends that tile, not the whole pass.
   virtual bool nextWay(MapWayRef& out) = 0;
 
+  // Buildings and water, both stored as way records like roads
+  // (docs/map-data-spec.md, "Layer ids") -- so they arrive as MapWayRef too.
+  // Two things differ from a road:
+  //
+  // - `classId` is always 0. The tile format carries no building or water
+  //   class, so a style cannot width a river differently from a stream on the
+  //   device however much mapstyle.json's rules say so.
+  // - An **area** is a closed ring: the first point is repeated as the last.
+  //   A water record that is not closed is a waterway line. Buildings are
+  //   always areas.
+  //
+  // Neither layer is touched by the mode mask -- a lake is not a road class.
+  // Both are also expensive: buildings were 277 KB of the 364 KB a four-tile
+  // viewport read (docs/map-data-spec.md, "RAM budget"), so a renderer that
+  // does not want them must not call these at all rather than filter later.
+  virtual bool beginBuildings() = 0;
+  virtual bool nextBuilding(MapWayRef& out) = 0;
+
+  virtual bool beginWater() = 0;
+  virtual bool nextWater(MapWayRef& out) = 0;
+
   virtual bool beginPlaces() = 0;
   virtual bool nextPlace(MapPlaceRef& out) = 0;
 };
+
+// True when a way record is a closed ring, i.e. an area rather than a line.
+// The builder repeats the first point as the last for areas
+// (mapbuilder/tiles.py, buildings and water area branches).
+inline bool mapWayIsClosedRing(const MapWayRef& way) {
+  return way.pointCount >= 4 && way.xs[0] == way.xs[way.pointCount - 1] && way.ys[0] == way.ys[way.pointCount - 1];
+}

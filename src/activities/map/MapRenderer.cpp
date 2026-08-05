@@ -1,5 +1,7 @@
 #include "MapRenderer.h"
 
+#include "MapAreaFill.h"
+
 namespace {
 
 // Unit-ish direction vectors for the 16 snapped headings, scaled by 8 (so a
@@ -47,6 +49,39 @@ int roadWidthFor(const MapStyle& style, const MapWayRef& way) {
 }  // namespace
 
 void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style) {
+  // Draw order is fixed by docs/map-render-spec.md, "What must be drawn":
+  // buildings, then water, then roads, then places. Buildings and water go
+  // under the road network on purpose -- they are context, and a road crossing
+  // them has to stay readable.
+  //
+  // Both layers are skipped entirely when the style has them off, not read and
+  // then not drawn: buildings alone were 277 KB of the 364 KB a four-tile
+  // viewport read (docs/map-data-spec.md, "RAM budget").
+  if (style.buildingsEnabled && source.beginBuildings()) {
+    MapWayRef ring;
+    while (source.nextBuilding(ring)) {
+      MapAreaFill::hatchRing(canvas, ring.xs, ring.ys, ring.pointCount, style.buildingHatch,
+                             style.buildingHatchSpacingPx, MapInk::Black);
+      MapAreaFill::outlineRing(canvas, ring.xs, ring.ys, ring.pointCount, style.buildingOutlinePx, MapInk::Black);
+    }
+  }
+
+  if (style.waterEnabled && source.beginWater()) {
+    MapWayRef way;
+    while (source.nextWater(way)) {
+      // A closed ring is a lake, an open one a waterway. Same layer, same
+      // record shape -- the ring is the only thing that tells them apart
+      // (IMapSource.h, mapWayIsClosedRing).
+      if (mapWayIsClosedRing(way)) {
+        MapAreaFill::hatchRing(canvas, way.xs, way.ys, way.pointCount, style.waterHatch, style.waterHatchSpacingPx,
+                               MapInk::Black);
+        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterLinePx, MapInk::Black);
+      } else {
+        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterLinePx, MapInk::Black);
+      }
+    }
+  }
+
   // One pass per layer, each pass pulled straight from the source and
   // forgotten. Nothing is collected first -- see IMapSource.h.
   //

@@ -57,6 +57,10 @@ class MapTileSource : public IMapSource {
 
   bool beginWays() override;
   bool nextWay(MapWayRef& out) override;
+  bool beginBuildings() override;
+  bool nextBuilding(MapWayRef& out) override;
+  bool beginWater() override;
+  bool nextWater(MapWayRef& out) override;
   bool beginPlaces() override;
   bool nextPlace(MapPlaceRef& out) override;
 
@@ -98,6 +102,10 @@ class MapTileSource : public IMapSource {
 
  private:
   bool startPass(MapTileReader::Layer layer);
+  // The shared way-record walk. `applyClassMask` is false for buildings and
+  // water: their class_id is always 0, so filtering them against a road mode
+  // mask would be filtering on a field that carries nothing.
+  bool nextWayRecord(MapWayRef& out, bool applyClassMask);
   // Opens the next tile in the range that actually has the current layer.
   // Returns false when the range is exhausted.
   bool advanceToNextTile();

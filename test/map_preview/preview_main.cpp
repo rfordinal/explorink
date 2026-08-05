@@ -160,7 +160,8 @@ int main(int argc, char** argv) {
               preview.tilesMissing, preview.missingMask, preview.waysDrawn, preview.placesDrawn);
   std::printf("marker y=%d, class mask 0x%08x, %u ways dropped by it\n", preview.markerY, request.classMask,
               preview.waysFiltered);
-  std::printf("tile size on disk: %ld..%ld bytes\n", preview.smallestTileBytes, preview.largestTileBytes);
+  std::printf("tile size on disk: %ld..%ld bytes, %u bytes actually read\n", preview.smallestTileBytes,
+              preview.largestTileBytes, preview.bytesRead);
   std::printf("peak RAM: %zu B resident source + %zu B heap during render (%zu allocations) = %zu B total\n",
               preview.sourceBytes, preview.peakHeapDuringRender, preview.allocsDuringRender,
               preview.sourceBytes + preview.peakHeapDuringRender);

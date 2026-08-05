@@ -27,6 +27,8 @@ with:
 | `placeDotDiameterPx` | `layers.places.dot_radius_px`, doubled | `MapRenderer.cpp`, places pass |
 | `markerXPx`, `markerYPx` | `device.marker_x_px` / `marker_y_px` | `MapViewport.h:51-52` |
 | `puckRadiusPx`, `puckRingPx`, `puckArrowPx` | `layers.position` | `MapRenderer::drawMarker` |
+| `buildingsEnabled`, `buildingOutlinePx`, `buildingHatch`, `buildingHatchSpacingPx` | `layers.buildings` | `MapRenderer.cpp`, buildings pass |
+| `waterEnabled`, `waterLinePx`, `waterHatch`, `waterHatchSpacingPx` | `layers.water` | `MapRenderer.cpp`, water pass |
 
 `arrow_px` is the arrow's tip-to-tail length. The tail sits a quarter of it
 behind the anchor and the base is half of it wide, so the style's 28 px draws the
@@ -141,6 +143,74 @@ Three style zeros disable rather than shrink: road width 0 (`hidden`),
 `placeDotDiameterPx` 0 (places layer off), `puckRadiusPx` 0 (arrow with no disc).
 The last is the golden fixture's setting, not a shape the spec asks for.
 
+## Buildings and water
+
+Both layers live in the tile as **way records**, the same shape as roads
+(`docs/map-data-spec.md`, "Layer ids": `1` water, `2` buildings). `IMapSource`
+hands them out as `MapWayRef` through `beginBuildings()`/`nextBuilding()` and
+`beginWater()`/`nextWater()`. Two differences from a road matter:
+
+- **`classId` is always 0.** The tile format carries no building or water class.
+  So `mapstyle.json`'s river/stream/canal rules cannot be told apart on the
+  device, and `layers.water.default.width` is the one width every waterway gets.
+  Widening rivers alone needs a tile format change, not a style change.
+- **An area is a closed ring** -- first point repeated as last
+  (`mapWayIsClosedRing`, `IMapSource.h`). Buildings are always areas; a water
+  record that is not closed is a waterway line.
+
+Neither layer sees the mode mask. A lake is not a road class.
+
+### Hatch, never a solid fill
+
+A solid black building on 1-bit swallows the roads around it and reads as a hole
+in the map, so an area is drawn as an optional outline plus a hatch
+(`docs/map-render-spec.md`).
+
+`MapAreaFill` (`src/activities/map/MapAreaFill.{h,cpp}`) draws that hatch as
+**hatch lines clipped to the ring**, using `IMapCanvas::drawLine` only. No new
+canvas primitive: the device gets it without the scanline-fill callback
+`GfxRenderer` does not have, and the laptop preview gets the same pixels because
+both run this code.
+
+The pattern comes from `mapstyle.json`'s matplotlib hatch string, first character
+only: `/` diagonal, `\` antidiagonal, `-` horizontal, `|` vertical, `X`/`x`/`+`
+cross. The repeat count in `"XXXX"` is a matplotlib density knob and means
+nothing here -- density is `hatch_spacing_px`, in device pixels like every other
+length. So that field, which used to be read by nothing, is now the one that
+matters and the string's length is the one that does not.
+
+Two implementation notes worth not undoing:
+
+- Hatch lines are anchored to a multiple of the spacing **in screen space**, not
+  to each ring's own bounding box. A row of houses then shares one hatch grid and
+  reads as a block instead of as noise.
+- Crossings are paired, so a concave (L-shaped) building leaves its notch white.
+  `test/map_area_fill/` checks that no ink lands outside the ring for every
+  pattern, against an independent even-odd point-in-polygon oracle. A leaked
+  hatch line looks like a stray road, not like a fill bug, which is why that test
+  measures ink position rather than ink existence.
+
+### Turning buildings on costs SD reads, not pixels
+
+Measured on the laptop preview at the reference view
+(48.446967, 16.988511, W, zoom step 2, ride -- `docs/visual-refs.json` in the
+parent repo), 2026-08-05:
+
+| style | ways drawn | bytes read |
+|---|---|---|
+| buildings off | 2249 | 181 KB |
+| buildings on | 6571 | 789 KB |
+| buildings + water on | 6760 | 822 KB |
+
+4.4x the bytes off the card for one viewport reset. That is why
+`buildingsEnabled` and `waterEnabled` gate the **read**, not the draw: a
+disabled layer is never opened. Render time barely moves (11-17 ms on the
+laptop), so on the device this is an SD I/O decision, not a drawing one.
+
+Open: what those extra 600 KB cost in wall-clock on real hardware, per viewport
+reset. The preview cannot answer it -- the laptop's disk is not an SD card over
+SPI. Needs the on-device timing that `MapActivity` already logs.
+
 ## Two marker paths, and they disagree
 
 **Open, 2026-08-05.** The position marker is drawn twice over, by two different
@@ -159,10 +229,14 @@ The reason `drawPositionMarker` bypasses `IMapCanvas` is gone: it needed a white
 halo fill, and the canvas paints white now (`MapInk`). Moving it behind the canvas
 would put the device's marker in the preview.
 
-It needs a decision first. `mapstyle.json` has one `layers.position` block and no
-per-mode marker sizes, so either the style grows them (a `modes.<name>.marker`
-block) or one set of numbers is scaled per mode. Until that is settled, do not
-read the preview's puck as the marker the device draws.
+**Deliberately not being fixed right now** (maintainer, 2026-08-05: the marker in
+the preview is not what he is looking at). Do not treat this as urgent work. Until
+it is unified, the one rule that matters: do not read the preview's puck as the
+marker the device draws.
+
+Whenever it is picked up, it needs a style decision first. `mapstyle.json` has one
+`layers.position` block and no per-mode marker sizes, so either the style grows
+them (a `modes.<name>.marker` block) or one set of numbers is scaled per mode.
 
 ## Both generated headers are gitignored
 

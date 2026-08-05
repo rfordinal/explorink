@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "MapAreaFill.h"
 #include "MapClassEnum.h"
 
 // The style numbers MapRenderer draws with. Every length is in device pixels
@@ -34,6 +35,31 @@ struct MapStyle {
   // with no colour to spend (docs/map-render-spec.md, "What must be drawn").
   // 0 means a solid black line of the full width.
   uint8_t roadCasingPx[kClassEnumSlots];
+
+  // layers.buildings. A ring is drawn as an optional outline plus a hatch --
+  // never a solid fill, which on 1-bit swallows the roads around it
+  // (docs/map-render-spec.md).
+  //
+  // `buildingsEnabled` false means the layer is never even read. That is a
+  // performance decision, not a cosmetic one: buildings were 277 KB of the
+  // 364 KB a four-tile viewport read (docs/map-data-spec.md, "RAM budget"), so
+  // "read it and skip drawing" would pay the whole SD cost for nothing.
+  bool buildingsEnabled;
+  uint8_t buildingOutlinePx;
+  MapAreaFill::Pattern buildingHatch;
+  uint8_t buildingHatchSpacingPx;
+
+  // layers.water. Lines (waterways) and areas (lakes) come from the same layer;
+  // an area is a closed ring (IMapSource.h).
+  //
+  // One width for every waterway, because the tile format carries no water
+  // class -- mapstyle.json's river/stream/canal rules cannot reach the device
+  // and the layer default is what applies. Same reason `waterEnabled` gates the
+  // read rather than the draw.
+  bool waterEnabled;
+  uint8_t waterLinePx;
+  MapAreaFill::Pattern waterHatch;
+  uint8_t waterHatchSpacingPx;
 
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.
