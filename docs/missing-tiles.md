@@ -264,32 +264,54 @@ used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
 
 ## Verified vs assumed
 
-- **Verified**: the `missing` command's grammar, paging, `unavailable` case and
-  page-0-only ordering, the `skip` verb and its tally, the priority policy and
-  the tile-path parse are all covered by native tests
-  (`test/map_command_parser/MapCommandParserTest.cpp`,
+- **Verified on hardware, over USB serial (2026-08-06, build
+  `develop-41e1a6e3`).** Gaps were made on purpose by sending `pos` to empty
+  country at three zoom steps, then reading the list back:
+  - `INFO tile_fmt=2` in `info`.
+  - Recording works across viewport resets and across LODs: 7 entries after
+    three resets, 29 after thirteen.
+  - **Priority order is what it claims.** With 7 entries the reply was 4x z12
+    (regional) first, then z11 (overview), then 2x z13 (detail) -- and inside
+    z12, all at count 1, ascending by col then row, which is the total-order
+    tiebreak doing its job.
+  - **Count-descending inside a tier**: after a tile was hatched twice,
+    `missing_13_4496_2826=2` sorted ahead of every count-1 z13 entry.
+  - **Paging**: at 29 entries, page 0 printed exactly 20 and answered
+    `missing_next=20`; `missing 20` printed the remaining 9 and
+    `missing_next=done`. Order held across the page boundary.
+  - **An offset past the end** answers `missing_total=29`,
+    `missing_offset=20`, `missing_next=done`, `OK` -- an empty page, not an
+    error, which is what makes a paging loop's last request harmless.
+- **Verified on the host**: the `unavailable` case, page-0-only ordering, the
+  `skip` verb and its tally, the priority policy in isolation and the tile-path
+  parse (`test/map_command_parser/MapCommandParserTest.cpp`,
   `test/missing_tile_priority/MissingTilePriorityTest.cpp`,
-  `test/map_tile_path/MapTilePathTest.cpp`, 65 tests green 2026-08-05). Those
-  run on the host, so they prove the logic, not the channel.
+  `test/map_tile_path/MapTilePathTest.cpp`; 247 tests green across the whole
+  suite, 2026-08-06).
 - **Verified**: compiles clean (`pio run`, default env, 2026-08-05); RAM cost
   is 200 x `sizeof(MissingTileHit)` (~16 bytes with padding) plus
   `std::vector` overhead, well inside headroom (build reported 17.6% DRAM
   used overall). Read off the code, not measured on hardware: the
   `isProtectedPath` block above, and the throttle's actual behaviour on a
   real ride.
-- **Not verified**: none of this has run on the device. No SD card has an
-  actual `missing_tiles.json` to inspect yet, no `missing` command has been
-  sent over either real channel, and the fetch screen has never been on the
-  panel. Open questions, in the order they would bite:
-  - **20 indications back to back**, each waiting for its ATT confirm, has not
-    been timed. If one page stalls the map's `loop()` long enough to matter,
-    `kMissingPageSize` is the knob. Sending `missing` over USB serial and over
-    BLE (`tools/blereplay.py` in the parent repo) against a card with a real
-    list settles it.
-  - **The windowed refresh of the progress panel.** `fetchPanelRect()`'s
-    geometry is derived from theme metrics, not measured; a rectangle that
-    clips a descender leaves a smear only a full refresh clears.
+- **Not verified.** Everything above went over USB serial. The BLE half and the
+  whole fetch flow have not run, in the order the open questions would bite:
+  - **20 indications back to back on BLE**, each waiting for its ATT confirm,
+    has not been timed. Serial proves the arithmetic, not the channel: on
+    serial a page is one cheap burst, on BLE it is 20 round trips inside the
+    map activity's `loop()`. If a page stalls it long enough to matter,
+    `kMissingPageSize` is the knob. `tools/blereplay.py` in the parent repo
+    against a card with this 29-entry list settles it.
+  - **The fetch screen has never been on the panel.** It needs a CONFIRM press
+    on the device; there is no serial command that opens the map menu.
+    `fetchPanelRect()`'s geometry comes from theme metrics rather than
+    measurement, and a rectangle that clips a descender leaves a smear only a
+    full refresh clears.
   - **`NEED_TILES` reaching a real central.** The mechanism is the one
-    `sendCommandReply()` already uses on hardware, but nothing has yet
-    subscribed to the command characteristic from the phone side (the Android
-    app does not subscribe at all today).
+    `sendCommandReply()` already uses on hardware, but nothing has subscribed
+    to the command characteristic from a phone yet.
+  - **`forget()` on a real arrival**, and with it the whole clear-on-OK path.
+    No tile has been pushed to this build.
+  - **The SD write.** `flushIfDirty()` is on a 10-minute timer or the screen's
+    exit, and the test above never left the map screen, so no
+    `missing_tiles.json` has been read back off a card yet.
