@@ -177,8 +177,21 @@ class GfxRenderer {
   // fadingFix isn't forcing the blocking path. Callers can skip overlap
   // scaffolding (e.g. whole-plane grayscale buffers) when false.
   bool supportsAsyncRefresh() const;
-  // EXPERIMENTAL: Windowed update - display only a rectangular region
-  // void displayWindow(int x, int y, int width, int height) const;
+  // Windowed differential update. Takes a LOGICAL screen rectangle, rotates it
+  // into panel memory and snaps the memory x extent outward to a multiple of 8
+  // (the controller's window constraint), so callers never deal with alignment.
+  // Only the rectangle is addressed: everything outside keeps what is
+  // physically on the glass, including grayscale. Inside, only pixels that
+  // differ from the last frame are driven, and those land on pure black or
+  // white — grayscale under a moved marker degrades to black at exactly the
+  // pixels the marker changed. Returns false when the rect is empty or fully
+  // offscreen (nothing displayed).
+  //
+  // Precondition: no grayscale plane may still be in the controller's RED RAM.
+  // The driver promotes a window in that state to a full-frame HALF refresh
+  // (~1720 ms) which wipes every grey on the panel — always let
+  // GrayscaleFrame finish its cleanup first. See docs/eink-grayscale.md.
+  bool displayBufferWindow(int x, int y, int width, int height) const;
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;

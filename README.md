@@ -62,10 +62,11 @@ day of riding. E-ink has the opposite properties: readable in full sunlight,
 free to hold an image on screen, and tens of hours of runtime because power is
 only spent when the picture changes.
 
-What it gives up is refresh rate, colour and grey. That rules out the moving map
-a phone gives you and forces a different design: a still image showing where you
-are, where the route goes and what is around you, redrawn rarely and readable at
-a glance at speed. No rerouting, no voice, no live traffic — the route is
+What it gives up is refresh rate and colour. Grey it does have -- four levels,
+one extra waveform pass each (`docs/eink-grayscale.md`) -- but the refresh rate
+is the binding constraint. That rules out the moving map a phone gives you and
+forces a different design: a still image showing where you are, where the route
+goes and what is around you, redrawn rarely and readable at a glance at speed. No rerouting, no voice, no live traffic — the route is
 planned before you leave.
 
 That is a different product from an e-reader rather than an extra feature on

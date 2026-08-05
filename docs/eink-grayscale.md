@@ -136,6 +136,9 @@ So:
 Grey does not vanish when you move something. It degrades to black only on the
 pixels the BW frame actually changed.
 
+Bench: **Marker move** page, via `GfxRenderer::displayBufferWindow`. Grey
+backdrop, BW marker, one window refresh per step.
+
 Window constraint: `x` and `w` must be multiples of 8 (`Ssd1677Driver.cpp:427`).
 
 ## Call sequences
@@ -181,6 +184,98 @@ Whole-plane tiers exist only to overlap plane rendering with an async BW refresh
 and are gated on free heap (`EpubReaderActivity.cpp:1611-1621`). **Grey on X4
 costs 8 KB if you band it.** Prefer banding.
 
+## The support layer — draw a shade, not a plane
+
+**Verified by construction; the encoding is unit-tested on the host
+(`test/grayscale_shades/GrayShadeTest.cpp`), the panel behaviour is not.**
+
+Nothing above needs to be in a caller's head any more. Three files:
+
+| file | what it is |
+|---|---|
+| `lib/GfxRenderer/GrayShade.h` | `GrayShade`, `GrayPass`, the encoding as `constexpr`. No renderer, no panel, host-testable. |
+| `lib/GfxRenderer/GrayscaleFrame.h` | `GrayPainter` (shade-aware drawing) and `GrayscaleFrame` (the call sequence). |
+| `lib/GfxRenderer/GrayscaleFrame.cpp` | the banded plane loop, the cleanup, the timings. |
+
+`GrayShade` is `White`, `LightGray`, `DarkGray`, `Black`. Draw with it:
+
+```cpp
+static void drawFn(void* ctx, const GrayPainter& g) {
+  g.fillRect(20, 20, 200, 80, GrayShade::DarkGray);
+  g.line(0, 120, 480, 120, 2, GrayShade::LightGray);
+  g.text(UI_12_FONT_ID, 20, 140, "label", GrayShade::Black);
+}
+GrayscaleFrame::render(renderer, GrayDrawCallback{ctx, &drawFn});
+```
+
+The callback runs once for the base frame and once per band per plane — 13 times
+on a 480-row panel — and `GrayPainter` maps the shade to the right pixel state
+each time (`GrayShade.h`, `grayPixelState`). It must draw the same picture every
+call and it must be cheap.
+
+What the layer guarantees:
+
+- **Banded.** 8,000 bytes of scratch, allocated and freed inside the call
+  (`GrayscaleFrame.cpp`, `STRIP_ROWS = 80`). Never 96,000.
+- **Cleanup is not optional and not the caller's job.**
+  `cleanupGrayscaleWithFrameBuffer()` runs before `render()`/`nudge()` return, so
+  the next windowed or fast update is not silently promoted to a full HALF.
+- **Shades paint opaquely.** A later shape overwrites an earlier one in every
+  pass, `White` included — it clears both plane bits and the base ink. A white
+  halo under a marker works exactly as it does in BW code.
+- **Text works.** In a plane pass the glyph is decoded as BW on purpose
+  (`GrayscaleFrame.cpp`, `GrayPainter::text`), because the grayscale decode path
+  drops everything but its own AA levels and a 1-bit font would put nothing in
+  the plane at all. An AA font's edge pixels take the body's shade.
+- **Timings come back measured**, per stage, in `GrayscaleFrame::Timings`.
+
+`GrayscaleFrame::nudge()` is the planes-only form: no new base frame, no
+framebuffer touch. It adds grey to whatever is already on the glass and leaves
+everything outside the marked pixels alone, which is what LUT slot 00 buys.
+Repeat nudges of the *same* pixel are still unmeasured — see below.
+
+Fallback: when `supportsStripGrayscale()` is false (X3 inverted, other panels),
+`render()` displays the base frame and `Timings.grayscale` comes back false.
+Every grey then reads **black**, because grey shares the base frame's ink.
+
+### Windowed BW updates are now reachable from the renderer
+
+`GfxRenderer::displayBufferWindow(x, y, w, h)` (`GfxRenderer.cpp`) takes a
+**logical** rect, rotates it to panel memory and snaps the memory x extent to a
+multiple of 8 via the existing `screenRectToAlignedMemRect`, then calls
+`HalDisplay::displayWindow` → `FreeInkDisplay::displayWindow`
+(`FreeInkDisplay.cpp:685`). Callers no longer deal with alignment or
+orientation. Returns false when the rect is empty or fully offscreen.
+
+The SDK entry point was always there; the renderer's wrapper was commented out
+(`GfxRenderer.h`, "EXPERIMENTAL"). It is live now and the Marker page below is
+what exercises it over grey.
+
+## The Preview activity — the bench for the open questions
+
+`src/activities/preview/PreviewActivity.{h,cpp}`, reached from **Home →
+Preview**. Five pages, `LEFT`/`RIGHT` to page, `CONFIRM` for the page's action,
+either side button to repaint from a clean base, `BACK` to leave. Each page
+prints its own instruction and the measured stage timings.
+
+| page | what it puts on the glass | what it settles |
+|---|---|---|
+| Grey scale | all four levels as fills, as text, as 1–4 px lines, plus light/dark adjacent with no white between | are four levels actually distinguishable, and at what stroke width |
+| Marker move | grey backdrop, BW marker stepped along a black route by `displayBufferWindow` | does grey survive outside the window, and what exactly the window destroys inside |
+| Nudge drift | two identical dark grey patches; the right one re-nudged on every press | does a repeated nudge drift (the main risk for partial grey) |
+| Region nudge | black field, then a nudge marking one region, then a smaller one inside it | is the grey overlay really region-limited (LUT slot 00 = no drive) |
+| Grey vs dither | real grey next to the 2x2 checkerboard at the same sizes, fills and 1 px lines | which one the map style should use, per feature |
+
+Grey cannot be captured over the screenshot channel (next section), so the
+record is a photograph of the panel. Note the page name and the timings line
+when you take one.
+
+A detail worth knowing when reading the Marker page: the plane writes window
+each band via `setRamArea`, so the RAM area is left at the *last band* before
+`displayGrayBuffer()`. If the window bound the grey refresh, only that band
+would grey — the whole-page grey on the Grey scale page is therefore already
+evidence on open question 1 below, before any button is pressed.
+
 ## Open questions — measure before building
 
 **Does the RAM window bound the grey refresh?** `setRamArea` writes `0x44`/`0x45`
@@ -188,6 +283,10 @@ costs 8 KB if you band it.** Prefer banding.
 (`Ssd1677Driver.cpp:243-324`), and `displayGray` does not reset the area
 (`FreeInkDisplay.cpp:705-716`). So the window from the last `setRamArea`
 survives into the grey refresh — *if* SSD1677 honours it in this mode. Unmeasured.
+
+Bench: **Grey scale** page of the Preview activity. Whole-page grey means the
+window does not bound the refresh; grey in one vertical band only (a physical
+band is a vertical stripe in portrait) means it does.
 
 Reason to doubt it: the reader's tiled path writes all bands then calls
 `displayGrayBuffer()`, leaving the area set to the last band. If the window bound
@@ -210,6 +309,10 @@ returning to base. If it drifts darker, any scheme that re-applies grey to a
 region must first drive that region back to BW base. Unmeasured, and it is the
 main risk for partial grey updates.
 
+Bench: **Nudge drift** page. Two identical dark grey patches, the right one
+nudged again on every `CONFIRM`. They match or they do not, and the counter says
+how many nudges it took to tell.
+
 **Grey residue ghosts the next frame.** A plain fast diff cannot clear it. The
 reader forces the following page onto the HALF cleanup path —
 `EpubReaderActivity.cpp:1560-1567`, upstream issue #2190. Any activity that greys
@@ -220,6 +323,14 @@ a region needs the same cadence trick.
 `CMD:SCREENSHOT` dumps the 48,000-byte framebuffer. That is the **BW frame**, not
 what is on the glass. Grey levels are invisible to it. Verify grey visually or
 photographically.
+
+Worse than invisible: in the framebuffer a grey pixel is **black**, so a
+screenshot of a grey page reads as a solid black page. Do not file that as a
+rendering bug — check the panel.
+
+The Preview activity is the way to get something worth photographing. Its
+timings line is the only part of a grey render that *is* machine-readable, and it
+goes to the serial log too (`LOG_DBG("PRV", ...)`).
 
 ## Gotchas
 

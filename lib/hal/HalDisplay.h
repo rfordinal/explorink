@@ -52,6 +52,16 @@ class HalDisplay {
   bool supportsAsyncRefresh() const;
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
+  // Windowed differential update: refresh only the rectangle (physical panel
+  // coordinates, x and w multiples of 8) from the framebuffer. Everything
+  // outside is never addressed, so grayscale that is physically on the glass
+  // survives the update; inside, only pixels that changed are driven, and
+  // those land on pure black or white. The SDK silently drops a misaligned or
+  // out-of-bounds rect and promotes the call to a full HALF frame while a
+  // grayscale plane is still in RED RAM -- always cleanupGrayscaleBuffers()
+  // after a gray render first. See docs/eink-grayscale.md.
+  void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+
   // Power management
   void deepSleep();
 

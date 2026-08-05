@@ -15,6 +15,7 @@
 #include "home/RecentBooksActivity.h"
 #include "map/MapActivity.h"
 #include "network/CrossPointWebServerActivity.h"
+#include "preview/PreviewActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
@@ -196,6 +197,8 @@ void ActivityManager::goToFileBrowser(std::string path) {
 }
 
 void ActivityManager::goToMap() { replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput)); }
+
+void ActivityManager::goToPreview() { replaceActivity(std::make_unique<PreviewActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToRecentBooks() {
   replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput));

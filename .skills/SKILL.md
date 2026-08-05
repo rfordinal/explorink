@@ -7,9 +7,9 @@ Mission: show a rider or hiker where they are, where the route goes and what is
 around them, on a screen that is readable in direct sunlight and redraws rarely.
 
 The e-ink panel is the constraint that shapes everything: it costs nothing to
-hold an image and a lot to change one, and it has no colour and no grey. So the
-target is a still, high-contrast image redrawn as seldom as possible -- not a
-moving map. No rerouting, no voice, no live traffic; the route is planned before
+hold an image and a lot to change one, it has no colour, and its four grey levels
+cost a second waveform pass (`docs/eink-grayscale.md`). So the target is a still,
+high-contrast image redrawn as seldom as possible -- not a moving map. No rerouting, no voice, no live traffic; the route is planned before
 the trip.
 
 Nearly all of this codebase is CrossPoint's and still is: the e-ink driver, the
