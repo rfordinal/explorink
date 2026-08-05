@@ -57,7 +57,14 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     }
   }
 
-  drawMarker(canvas, state.markerX, state.markerY, state.heading);
+  // No marker draw here anymore -- MapActivity draws its own mode-specific
+  // marker (ring + dot/arrow, sized per hike/cycle/ride) straight through
+  // GfxRenderer after this call returns, since that needs a white halo fill
+  // IMapCanvas cannot express (its fillRoundedRect is hardcoded black -- see
+  // GfxRendererCanvas.h). Drawing this generic triangle here too left it
+  // peeking out from under the real marker whenever the real one was
+  // smaller (hike's dot, cycle's small arrow). Callers that still want the
+  // plain triangle (test/map_preview) call drawMarker() directly.
 }
 
 void MapRenderer::drawMarker(IMapCanvas& canvas, int16_t cx, int16_t cy, MapHeading heading) {

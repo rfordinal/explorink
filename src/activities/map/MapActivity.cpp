@@ -4,6 +4,7 @@
 #include <I18n.h>
 #include <Memory.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -38,7 +39,198 @@ constexpr int kTextLine1Y = 8;
 constexpr int kTextLine2Y = 26;
 constexpr int kTextLine3Y = 44;
 
+// North indicator geometry, fixed top-right corner. Ported 1:1 (scale 1
+// design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
+// 100x100 normalized canvas with "N" label, two open arcs (real angles, not
+// GfxRenderer::drawArc's axis-aligned quadrants -- those can only start/end
+// on 90 degree boundaries and a naive mirrored pair of half-circles meets
+// into a closed ring, which is not this glyph), a plain solid center
+// triangle (no concave cutout -- this spec dropped that from an earlier
+// draft) and a small separate accent triangle. Drawn straight up because
+// the map is always north-up today (see kNoRouteDisplayHeading below); it
+// stops being static furniture the day track-up rotation lands.
+constexpr int kCompassMarginRight = 40;  // design x=50 (arc/label/triangle center), in from the right edge
+constexpr int kCompassTopOffset = 6;     // design y=2 lands here on screen
+constexpr int kCompassLabelCenterX = 50, kCompassLabelCenterY = 14;
+constexpr int kCompassArcCx = 50, kCompassArcCy = 47;
+constexpr int kCompassArcRadius = 24;
+constexpr float kCompassLeftArcStartDeg = 130.0f, kCompassLeftArcEndDeg = 230.0f;
+constexpr float kCompassRightArcStartDeg = 310.0f, kCompassRightArcEndDeg = 360.0f + 50.0f;
+constexpr int kCompassArcSegments = 12;  // straight segments approximating each curve
+constexpr int kCompassArcLineWidth = 2;
+constexpr int kCompassTriTopX = 50, kCompassTriTopY = 28;
+constexpr int kCompassTriLeftX = 42, kCompassTriLeftY = 66;
+constexpr int kCompassTriRightX = 58, kCompassTriRightY = 66;
+constexpr int kCompassAccentX1 = 71, kCompassAccentY1 = 44;
+constexpr int kCompassAccentX2 = 71, kCompassAccentY2 = 52;
+constexpr int kCompassAccentX3 = 78, kCompassAccentY3 = 48;
+// Halo bounding box in the same design space: left arc's leftmost point (its
+// sweep crosses 180 degrees) to the accent triangle's tip, label top to the
+// main triangle's base.
+constexpr int kCompassDesignMinX = 26, kCompassDesignMaxX = 78;
+constexpr int kCompassDesignMinY = 2, kCompassDesignMaxY = 66;
+constexpr int kCompassHaloMargin = 5;  // white backing, past the glyph's own bounding box
+
+// Position marker: one family, three modes, "the higher the speed, the more
+// directional" -- hike is a plain dot (position over direction), cycle is a
+// small arrow (both matter), ride is a large arrow that fills the ring
+// (direction over position). All three share the same outline ring.
+constexpr int kMarkerRingDiameter = 54;
+constexpr int kMarkerRingWidth = 3;
+constexpr int kMarkerHikeDotDiameter = 18;
+constexpr int kMarkerCycleTipLen = 16;      // center to tip, pixels
+constexpr int kMarkerCycleBaseHalfW = 9;    // center to each base corner, pixels
+constexpr int kMarkerRideTipLen = 25;
+constexpr int kMarkerRideBaseHalfW = 18;
+constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
+
+// Same 16-step direction table as MapRenderer.cpp's kHeadingDir (dx/dy unit
+// vectors scaled by 8, avoiding any per-frame trig) -- duplicated rather than
+// shared because this marker is drawn straight through GfxRenderer, not
+// IMapCanvas (see drawCompass() above: it needs no map data, so it does not
+// belong in MapRenderer's pull-from-IMapSource pipeline). Keep the two in
+// step if either changes; MapHeading's ordering is what pins the index.
+struct HeadingVec {
+  int dx, dy;
+};
+constexpr HeadingVec kMarkerHeadingDir[16] = {
+    {0, -8},   // N
+    {3, -7},   // NNE
+    {6, -6},   // NE
+    {7, -3},   // ENE
+    {8, 0},    // E
+    {7, 3},    // ESE
+    {6, 6},    // SE
+    {3, 7},    // SSE
+    {0, 8},    // S
+    {-3, 7},   // SSW
+    {-6, 6},   // SW
+    {-7, 3},   // WSW
+    {-8, 0},   // W
+    {-7, -3},  // WNW
+    {-6, -6},  // NW
+    {-3, -7},  // NNW
+};
+
 }  // namespace
+
+void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRideMode mode) {
+  const int radius = kMarkerRingDiameter / 2;
+  // White halo first: the ring is only a 2px stroke, so without this the
+  // map lines it sits over would show straight through its interior, and a
+  // busy junction under the ring reads as clutter, not a marker.
+  const int haloRadius = radius + kMarkerHaloMargin;
+  renderer.fillRoundedRect(cx - haloRadius, cy - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius,
+                            Color::White);
+  renderer.drawRoundedRect(cx - radius, cy - radius, kMarkerRingDiameter, kMarkerRingDiameter, kMarkerRingWidth,
+                            radius, true);
+
+  if (mode == MapRideMode::Hike) {
+    // Position over direction: a plain dot, no heading arrow at all.
+    renderer.fillRoundedRect(cx - kMarkerHikeDotDiameter / 2, cy - kMarkerHikeDotDiameter / 2,
+                              kMarkerHikeDotDiameter, kMarkerHikeDotDiameter, kMarkerHikeDotDiameter / 2,
+                              Color::Black);
+    return;
+  }
+
+  // Cycle and ride both point at the real incoming heading, never the
+  // forced-north display heading renderViewport() uses for map rotation
+  // (kNoRouteDisplayHeading) -- direction of travel matters at riding speed
+  // even though the map underneath stays north-up.
+  const int tipLen = mode == MapRideMode::Ride ? kMarkerRideTipLen : kMarkerCycleTipLen;
+  const int baseHalfW = mode == MapRideMode::Ride ? kMarkerRideBaseHalfW : kMarkerCycleBaseHalfW;
+  const HeadingVec& dir = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
+  const HeadingVec perp{-dir.dy, dir.dx};
+
+  const int tipX = cx + dir.dx * tipLen / 8;
+  const int tipY = cy + dir.dy * tipLen / 8;
+  const int baseCx = cx - dir.dx * (tipLen / 2) / 8;
+  const int baseCy = cy - dir.dy * (tipLen / 2) / 8;
+  const int baseLeftX = baseCx + perp.dx * baseHalfW / 8;
+  const int baseLeftY = baseCy + perp.dy * baseHalfW / 8;
+  const int baseRightX = baseCx - perp.dx * baseHalfW / 8;
+  const int baseRightY = baseCy - perp.dy * baseHalfW / 8;
+
+  const int xs[3] = {tipX, baseLeftX, baseRightX};
+  const int ys[3] = {tipY, baseLeftY, baseRightY};
+  renderer.fillPolygon(xs, ys, 3, true);
+}
+
+namespace {
+
+// design x=50 is kCompassMarginRight in from the screen's right edge;
+// design y=2 lands at kCompassTopOffset. Every other design coordinate is
+// an offset from those two anchors, so the whole glyph moves as one unit.
+int compassScreenX(int centerX, int designX) { return centerX + (designX - kCompassLabelCenterX); }
+int compassScreenY(int topScreenY, int designY) { return topScreenY + (designY - kCompassDesignMinY); }
+
+// One open arc, start to end degrees, drawn as kCompassArcSegments straight
+// chords -- GfxRenderer::drawArc only draws axis-aligned quarter-circles, and
+// this glyph's arcs start/end at arbitrary angles (130/230, 310/50), so they
+// have to be sampled by hand. Canvas angle convention: 0 = +x (right), 90 =
+// +y (down), matching plain cos/sin with no axis flip since screen y is
+// already down.
+void drawCompassArc(GfxRenderer& renderer, int cx, int cy, int radius, float startDeg, float endDeg, int lineWidth) {
+  constexpr float kDegToRad = 3.14159265f / 180.0f;
+  int prevX = cx + static_cast<int>(std::lround(radius * std::cos(startDeg * kDegToRad)));
+  int prevY = cy + static_cast<int>(std::lround(radius * std::sin(startDeg * kDegToRad)));
+  for (int i = 1; i <= kCompassArcSegments; ++i) {
+    const float t = static_cast<float>(i) / static_cast<float>(kCompassArcSegments);
+    const float deg = startDeg + (endDeg - startDeg) * t;
+    const int x = cx + static_cast<int>(std::lround(radius * std::cos(deg * kDegToRad)));
+    const int y = cy + static_cast<int>(std::lround(radius * std::sin(deg * kDegToRad)));
+    renderer.drawLine(prevX, prevY, x, y, lineWidth, true);
+    prevX = x;
+    prevY = y;
+  }
+}
+
+}  // namespace
+
+void MapActivity::drawCompass() {
+  const int centerX = renderer.getScreenWidth() - kCompassMarginRight;
+  const int topScreenY = kCompassTopOffset;
+  auto sx = [&](int designX) { return compassScreenX(centerX, designX); };
+  auto sy = [&](int designY) { return compassScreenY(topScreenY, designY); };
+
+  // White halo first, sized to the glyph's design-space bounding box, for
+  // the same reason the marker gets one: this sits over live map lines, not
+  // blank margin.
+  renderer.fillRoundedRect(sx(kCompassDesignMinX) - kCompassHaloMargin, sy(kCompassDesignMinY) - kCompassHaloMargin,
+                            (kCompassDesignMaxX - kCompassDesignMinX) + 2 * kCompassHaloMargin,
+                            (kCompassDesignMaxY - kCompassDesignMinY) + 2 * kCompassHaloMargin, kCompassHaloMargin,
+                            Color::White);
+
+  // 1. "N", centered on the label's own point -- UI_12, not a NotoSans/Serif
+  // size: those are compiled out under OMIT_FONTS (platformio.ini's
+  // slim-build flag) and silently draw nothing (confirmed on hardware --
+  // GfxRenderer logs "Font not found" and skips). UI_10/UI_12/SMALL are the
+  // only sizes guaranteed present in every build.
+  const char* label = "N";
+  const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, label);
+  const int labelHeight = renderer.getTextHeight(UI_12_FONT_ID);
+  renderer.drawText(UI_12_FONT_ID, sx(kCompassLabelCenterX) - labelWidth / 2,
+                     sy(kCompassLabelCenterY) - labelHeight / 2, label, true);
+
+  // 2. Left arc, 3. right arc -- both open, not a closed ring: each spans
+  // 100 degrees, leaving a gap at the top (under "N") and at the bottom
+  // (below the triangle) instead of meeting its mirror.
+  drawCompassArc(renderer, sx(kCompassArcCx), sy(kCompassArcCy), kCompassArcRadius, kCompassLeftArcStartDeg,
+                 kCompassLeftArcEndDeg, kCompassArcLineWidth);
+  drawCompassArc(renderer, sx(kCompassArcCx), sy(kCompassArcCy), kCompassArcRadius, kCompassRightArcStartDeg,
+                 kCompassRightArcEndDeg, kCompassArcLineWidth);
+
+  // 4. Main center pointer -- a plain solid triangle, drawn after the arcs
+  // so it stays the dominant shape on top.
+  const int mainXs[3] = {sx(kCompassTriTopX), sx(kCompassTriLeftX), sx(kCompassTriRightX)};
+  const int mainYs[3] = {sy(kCompassTriTopY), sy(kCompassTriLeftY), sy(kCompassTriRightY)};
+  renderer.fillPolygon(mainXs, mainYs, 3, true);
+
+  // 5. Small accent triangle on the right arc.
+  const int accentXs[3] = {sx(kCompassAccentX1), sx(kCompassAccentX2), sx(kCompassAccentX3)};
+  const int accentYs[3] = {sy(kCompassAccentY1), sy(kCompassAccentY2), sy(kCompassAccentY3)};
+  renderer.fillPolygon(accentXs, accentYs, 3, true);
+}
 
 void MapActivity::drawDebugLine(int y, char* text) {
   // GfxRenderer::drawText does not clip, and GfxRenderer::drawPixel answers
@@ -428,6 +620,16 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     }
     MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading);
   }
+
+  // Drawn last and outside IMapCanvas, on top of (and fully covering) the
+  // bare triangle MapRenderer::render()/drawMarker() just drew: the ring is
+  // bigger than that triangle's extent, and this is the one that needs the
+  // real heading, not the forced-north one view.heading carries.
+  drawPositionMarker(view.markerX, view.markerY, headingStep, mode_);
+
+  // Drawn last and outside IMapCanvas: fixed screen furniture, not map data,
+  // so it always lands on top regardless of what the hatch above covered.
+  drawCompass();
 
   const uint32_t elapsedMs = millis() - startMs;
   const uint32_t heapAfter = ESP.getFreeHeap();
