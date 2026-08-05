@@ -4,9 +4,15 @@
 build-time input, compiled into the firmware by a generator, exactly like the
 i18n string tables.
 
-Verified by reading this tree on 2026-08-05 (branch `feat/mapstyle-to-renderer`).
-Not measured on hardware — the firmware builds clean and the host build renders,
-but nobody has flashed this and looked at the panel yet.
+Verified by reading this tree on 2026-08-05 (branch `feat/mapstyle-to-renderer`,
+merged to `develop` the same day).
+
+**Seen on the panel, 2026-08-05.** The maintainer flashed it and reports the map
+reads well on the e-ink at detail zoom, with individual buildings drawn — so
+dither tones and per-class road widths do work on real hardware, not only in the
+laptop preview. What that run did *not* cover: forest and built-up areas (he was
+not in an area carrying them on the card) and the coarser zoom rungs. Those stay
+unconfirmed on the panel.
 
 ## The path
 
@@ -111,8 +117,8 @@ Nothing else in the map path calls its thick-line overload.
 
 Open: how a wide road's outer corner looks on the panel at a sharp polyline
 bend. The preview shows no gap at the widths this style uses (up to 10 px), and
-the joint is not mitred, so a very sharp bend may show a notch. Needs a look at
-real hardware.
+the joint is not mitred, so a very sharp bend may show a notch. The 2026-08-05
+hardware run did not look for it specifically, so it stays open.
 
 ## Rounding and the two zeros
 
@@ -251,8 +257,10 @@ disabled layer is never opened. Render time barely moves (11-17 ms on the
 laptop), so on the device this is an SD I/O decision, not a drawing one.
 
 Open: what those extra 600 KB cost in wall-clock on real hardware, per viewport
-reset. The preview cannot answer it -- the laptop's disk is not an SD card over
-SPI. Needs the on-device timing that `MapActivity` already logs.
+reset. The preview cannot answer it — the laptop's disk is not an SD card over
+SPI. Needs the on-device timing `MapActivity` already logs. Less pressing than it
+was: buildings are no longer written at the coarse LODs at all
+(`mapbuilder/build_config.json`), so that case only arises at detail zoom.
 
 ## Landuse: forest and built-up areas
 
