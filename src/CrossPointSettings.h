@@ -173,8 +173,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     QUICK_RESUME_SLEEP_SCREEN_COUNT
   };
 
-  // Sleep screen settings
-  uint8_t sleepScreen = DARK;
+  // Sleep screen settings. LIGHT, not upstream's DARK: this fork's screens are
+  // black-on-white throughout (map, splash), and a dark sleep image also stays
+  // in the controller as the baseline the next boot paints over.
+  uint8_t sleepScreen = LIGHT;
   // Sleep screen cover mode settings
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
