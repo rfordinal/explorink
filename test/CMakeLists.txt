@@ -24,6 +24,36 @@ FetchContent_MakeAvailable(googletest)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
+# The map headers generated from data/mapstyle.json. PlatformIO runs these two
+# scripts as pre: steps, so a firmware build always has them; a host build had
+# been reusing whatever a previous firmware build left in the source tree,
+# which meant a style edit did not reach the native preview at all. Generating
+# them here closes that gap and keeps one copy -- same paths PlatformIO writes,
+# both gitignored.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(MAPSTYLE_JSON "${REPO_ROOT}/data/mapstyle.json")
+set(MAP_MODE_MASK_DEFAULTS "${REPO_ROOT}/src/activities/map/MapModeMaskDefaults.h")
+set(MAP_STYLE_DEFAULTS "${REPO_ROOT}/src/activities/map/MapStyleDefaults.h")
+
+add_custom_command(
+  OUTPUT "${MAP_MODE_MASK_DEFAULTS}"
+  COMMAND ${Python3_EXECUTABLE} "${REPO_ROOT}/scripts/gen_mode_masks.py" "${MAPSTYLE_JSON}" "${MAP_MODE_MASK_DEFAULTS}"
+  DEPENDS "${MAPSTYLE_JSON}" "${REPO_ROOT}/scripts/gen_mode_masks.py"
+  COMMENT "gen_mode_masks.py: mode class masks from mapstyle.json"
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT "${MAP_STYLE_DEFAULTS}"
+  COMMAND ${Python3_EXECUTABLE} "${REPO_ROOT}/scripts/gen_mapstyle.py" "${MAPSTYLE_JSON}" "${MAP_STYLE_DEFAULTS}"
+  DEPENDS "${MAPSTYLE_JSON}" "${REPO_ROOT}/scripts/gen_mapstyle.py"
+  COMMENT "gen_mapstyle.py: MapStyle from mapstyle.json"
+  VERBATIM
+)
+
+add_custom_target(map_generated_headers DEPENDS "${MAP_MODE_MASK_DEFAULTS}" "${MAP_STYLE_DEFAULTS}")
+
 add_library(crosspoint_test_common INTERFACE)
 target_include_directories(crosspoint_test_common INTERFACE
   ${REPO_ROOT}
@@ -47,5 +77,6 @@ add_subdirectory(opds_filename)
 add_subdirectory(minibidi_arabic)
 add_subdirectory(combining_marks)
 add_subdirectory(map_preview)
+add_subdirectory(map_stroke)
 add_subdirectory(map_tile_reader)
 add_subdirectory(map_command_parser)

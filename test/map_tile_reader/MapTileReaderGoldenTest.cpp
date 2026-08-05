@@ -33,6 +33,28 @@ constexpr int kScreenHeight = 800;
 constexpr double kAnchorLat = 48.531158410819025;
 constexpr double kAnchorLon = 17.072751469276742;
 
+// The style the golden PPM was rendered with, frozen here rather than read
+// from the compiled data/mapstyle.json. The fixture guards the tile pipeline,
+// so an author widening a road class in the style file must not turn it red:
+// that edit changes the picture on purpose, and this test is not what should
+// notice.
+//
+// Every width is 1 px on purpose, and that is what keeps this fixture stable.
+// A one-pixel line is just Bresenham -- no thick-line decomposition, no brush
+// shape -- so changing how a wide line is built (MapStroke.h) cannot move a
+// pixel here. No casings and no puck disc for the same reason: the PPM then
+// depends only on the tile pipeline, the projection, and three primitives.
+constexpr MapStyle kGoldenStyle = {
+    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    10,   // placeDotDiameterPx
+    230,  // markerXPx
+    620,  // markerYPx
+    0,    // puckRadiusPx -- arrow only, no disc
+    0,    // puckRingPx
+    28,   // puckArrowPx
+};
+
 std::string fixturesDir() { return std::string(MAP_TILE_READER_FIXTURES_DIR); }
 
 MapPreviewRequest fixtureRequest() {
@@ -41,6 +63,8 @@ MapPreviewRequest fixtureRequest() {
   request.lat = kAnchorLat;
   request.lon = kAnchorLon;
   request.heading = 0;
+  request.style = &kGoldenStyle;
+  request.markerY = kGoldenStyle.markerYPx;
   // Step 1, not 0: the fixture's tile-boundary-crossing viewport (one tile
   // present, its neighbour deliberately missing) was built around 3.0 m/px.
   // That value still lives on the ladder, just at a different index now.

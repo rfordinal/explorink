@@ -6,6 +6,7 @@
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
 //               [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle]
 //               [--tile <col>/<row>] [--hatch] [--out <file>]
+//   map_preview --zoom-ladder
 //
 // <dir> is a mapbuilder-produced SD root (mapbuilder/build_tiles.py), i.e.
 // it contains base/<z>/<col>/<row>.tib. Loading/projection logic lives in
@@ -21,8 +22,8 @@
 // opt-in here so the committed golden PPM stays byte-identical.
 //
 // --marker moves the marker down the marker-height ladder (P5); left off, the
-// marker sits at the style file's marker_y_px, which is what the golden PPM
-// was rendered at. --mode applies the built-in class mask for that travel
+// marker sits at the compiled style's device.marker_y_px. --mode applies the
+// built-in class mask for that travel
 // mode, so the same coordinate can be diffed between ride and hike on the
 // laptop before anything is flashed.
 
@@ -43,9 +44,8 @@ constexpr int SCREEN_HEIGHT = 800;
 
 bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& outPath) {
   bool haveLat = false, haveLon = false, haveTiles = false;
-  // -1 means "not given", which keeps the style file's marker_y_px rather
-  // than snapping to the nearest ladder rung. The golden PPM depends on that
-  // distinction.
+  // -1 means "not given", which keeps the compiled style's marker_y_px rather
+  // than snapping to the nearest ladder rung.
   int markerStep = -1;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -99,6 +99,10 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
       request.classMask = MapModeMasks{}.forMode(mode);
     } else if (arg == "--hatch") {
       request.drawHatch = true;
+    } else if (arg == "--zoom-ladder") {
+      // Handled in main() before anything else; accepted here so it does not
+      // trip the unknown-argument branch.
+      continue;
     } else if (arg == "--out") {
       const char* v = next();
       if (!v) return false;
@@ -121,13 +125,26 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
 }  // namespace
 
 int main(int argc, char** argv) {
+  // --zoom-ladder: print the compiled zoom ladder and exit. A caller that has
+  // an m/px figure (mapbuilder's webapp) has to pick a rung, and the ladder
+  // lives in MapViewport.h. Printing it from the binary that compiled it beats
+  // a second copy of the numbers on the laptop side, which would drift.
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--zoom-ladder") != 0) continue;
+    for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+      std::printf("%d %.1f %u\n", step, MapViewport::kZoomLadder[step].mpp, MapViewport::kZoomLadder[step].z);
+    }
+    return 0;
+  }
+
   MapPreviewRequest request;
   std::string outPath = "map_preview.ppm";
   if (!parseArgs(argc, argv, request, outPath)) {
     std::fprintf(stderr,
                  "usage: map_preview --tiles <dir> --lat <d> --lon <d> "
                  "[--heading 0-15] [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle] "
-                 "[--tile <col>/<row>] [--hatch] [--out <file>]\n");
+                 "[--tile <col>/<row>] [--hatch] [--out <file>]\n"
+                 "       map_preview --zoom-ladder\n");
     return 1;
   }
   if (request.zoom < 0 || request.zoom > 4) {
@@ -141,7 +158,7 @@ int main(int argc, char** argv) {
   std::printf("z%u col %u..%u row %u..%u: loaded %d tiles (%d missing, mask 0x%x), %u ways, %u places\n",
               preview.lodZoom, preview.col0, preview.col1, preview.row0, preview.row1, preview.tilesLoaded,
               preview.tilesMissing, preview.missingMask, preview.waysDrawn, preview.placesDrawn);
-  std::printf("marker y=%d, class mask 0x%08x, %u ways dropped by it\n", request.markerY, request.classMask,
+  std::printf("marker y=%d, class mask 0x%08x, %u ways dropped by it\n", preview.markerY, request.classMask,
               preview.waysFiltered);
   std::printf("tile size on disk: %ld..%ld bytes\n", preview.smallestTileBytes, preview.largestTileBytes);
   std::printf("peak RAM: %zu B resident source + %zu B heap during render (%zu allocations) = %zu B total\n",

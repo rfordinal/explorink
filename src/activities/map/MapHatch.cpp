@@ -55,7 +55,7 @@ void drawTile(IMapCanvas& canvas, const MapProjection& proj, uint8_t z, uint32_t
     int16_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     projectLocal(proj, west, north, sizeM, u0, v0, x0, y0);
     projectLocal(proj, west, north, sizeM, u1, v1, x1, y1);
-    canvas.drawLine(x0, y0, x1, y1, 1);
+    canvas.drawLine(x0, y0, x1, y1, 1, MapInk::Black);
   }
 }
 

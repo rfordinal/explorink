@@ -5,12 +5,17 @@
 
 #include "GfxRenderer.h"
 #include "IMapCanvas.h"
+#include "MapStroke.h"
 
 // Real-firmware IMapCanvas implementation: forwards each call to the real
 // GfxRenderer, after clipping it to the screen. Counterpart to
 // test/map_preview/PpmCanvas (the native preview implementation) --
 // MapRenderer's drawing logic is identical in both, only this adapter
 // differs.
+//
+// Thick lines are decomposed here into one-pixel lines rather than handed to
+// GfxRenderer::drawLine(lineWidth), which offsets its copies downward in y and
+// would leave every north-south road one pixel wide -- see MapStroke.h.
 //
 // Clipping lives here rather than in MapRenderer because it is a property of
 // this output surface, and because GfxRenderer::drawPixel answers an
@@ -24,30 +29,38 @@ class GfxRendererCanvas : public IMapCanvas {
  public:
   explicit GfxRendererCanvas(GfxRenderer& renderer) : renderer_(renderer) {}
 
-  void drawLine(int x1, int y1, int x2, int y2, int lineWidth) override {
-    // drawLine(lineWidth) stacks `lineWidth` one-pixel lines downward in y,
-    // so the lowest of them must still land on screen.
-    const int maxY = renderer_.getScreenHeight() - lineWidth;
-    if (maxY < 0) return;
-    if (!clipToRect(x1, y1, x2, y2, renderer_.getScreenWidth() - 1, maxY)) return;
-    renderer_.drawLine(x1, y1, x2, y2, lineWidth, true);
+  void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) override {
+    const int maxX = renderer_.getScreenWidth() - 1;
+    const int maxY = renderer_.getScreenHeight() - 1;
+    const MapStroke::Stack stack = MapStroke::stackFor(x1, y1, x2, y2, lineWidth);
+    // Clipped per copy, not once for the bundle: each copy is its own segment,
+    // and a wide road along a screen edge has some copies on screen and some
+    // off it.
+    for (int i = 0; i < stack.count; ++i) {
+      const int k = stack.first + i;
+      const int offsetX = stack.alongY ? 0 : k;
+      const int offsetY = stack.alongY ? k : 0;
+      int cx1 = x1 + offsetX, cy1 = y1 + offsetY, cx2 = x2 + offsetX, cy2 = y2 + offsetY;
+      if (!clipToRect(cx1, cy1, cx2, cy2, maxX, maxY)) continue;
+      renderer_.drawLine(cx1, cy1, cx2, cy2, ink == MapInk::Black);
+    }
   }
 
-  void fillRoundedRect(int x, int y, int width, int height, int cornerRadius) override {
+  void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, MapInk ink) override {
     // Place dots come from a tile range wider than the viewport, so most of
     // them fall off screen. Rounded-rect fill has no clipped form here, so a
     // dot is drawn only when it fits whole. A place near the screen edge is
     // a label-layout question (docs/map-render-spec.md, off-screen place
     // chevrons), not something to half-draw.
     if (!fullyOnScreen(x, y, width, height)) return;
-    renderer_.fillRoundedRect(x, y, width, height, cornerRadius, Color::Black);
+    renderer_.fillRoundedRect(x, y, width, height, cornerRadius, ink == MapInk::Black ? Color::Black : Color::White);
   }
 
-  void fillPolygon(const int* xPoints, const int* yPoints, int numPoints) override {
+  void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, MapInk ink) override {
     for (int i = 0; i < numPoints; ++i) {
       if (!onScreen(xPoints[i], yPoints[i])) return;
     }
-    renderer_.fillPolygon(xPoints, yPoints, numPoints, true);
+    renderer_.fillPolygon(xPoints, yPoints, numPoints, ink == MapInk::Black);
   }
 
  private:

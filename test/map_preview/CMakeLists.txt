@@ -19,3 +19,9 @@ target_include_directories(map_preview PRIVATE
 )
 
 target_link_libraries(map_preview PRIVATE crosspoint_test_common)
+
+# MapStyleDefaults.h / MapModeMaskDefaults.h are generated from
+# data/mapstyle.json (test/CMakeLists.txt), so a style edit reaches this
+# preview on the next build without a firmware build in between.
+add_dependencies(map_preview map_generated_headers)
+

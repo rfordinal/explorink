@@ -963,8 +963,8 @@ approach fails -- write it into a topic file under `docs/`. One topic per file.
 Chat logs and commit messages are not where the next agent looks.
 
 Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
-`docs/activity-manager.md`, `docs/webserver-endpoints.md`. Extend one before
-adding another.
+`docs/activity-manager.md`, `docs/webserver-endpoints.md`, `docs/map-style.md`.
+Extend one before adding another.
 
 Style: short, plain, direct declarative sentences. No flowery prose, no hedging,
 no filler. English, even though the maintainer's conversation is in Slovak.

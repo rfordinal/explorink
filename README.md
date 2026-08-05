@@ -63,15 +63,21 @@ not a pull request.
 | Loading a real map from the SD card | exists — this is the current state |
 | Buttons on the map screen (zoom, marker height) | exists, per mode, saved across power cycles |
 | Command console (serial and BLE), zoom/mode filter | exists — same grammar over USB and BLE |
-| Renderer following the map style spec | **not implemented** |
+| Renderer following the map style spec | partly — per-class road widths, hidden classes, place dot size, marker anchor. Casings, labels, route, junction dots: **not implemented** |
 | Companion phone app | **not started** |
 
 `data/mapstyle.json` holds the styling the renderer is meant to follow — road
 widths and casings, junction dots, place labels, the position marker. It is
 written by the mapbuilder webapp rather than edited by hand. It is a
 build-time input, not a runtime one: `scripts/gen_mode_masks.py` compiles its
-`modes` block into the ride/hike/cycle class masks as a `pre:` build step; the
-device reads no style file at runtime.
+`modes` block into the ride/hike/cycle class masks and `scripts/gen_mapstyle.py`
+compiles the drawing numbers into a `MapStyle` constant, both as `pre:` build
+steps; the device reads no style file at runtime. See
+[`docs/map-style.md`](./docs/map-style.md).
+
+The same renderer builds as a host binary — `pio run -t map-preview` renders real
+tiles to a PPM with no ESP32 toolchain and no flashing, which is how a style
+change gets checked in seconds.
 
 The map tooling itself — OpenStreetMap fetch, projection, routing along real
 roads, and a browser tuner with a pixel-exact 480x800 preview — lives in a

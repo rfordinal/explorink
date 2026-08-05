@@ -4,6 +4,7 @@
 
 #include "MapProjection.h"
 #include "MapRideMode.h"
+#include "MapStyleDefaults.h"
 
 // The viewport arithmetic that turns "a coordinate, a heading and a zoom
 // step" into "these tiles" -- docs/map-data-spec.md, "Zoom is a hardware
@@ -38,15 +39,17 @@ inline constexpr double kMarginPx = 64.0;
 // Worst case is 3x3. A computed count above this is a bug, not a state.
 inline constexpr uint32_t kMaxTiles = 9;
 
-// style.device.marker_x_px / marker_y_px. The viewport re-anchors on the
-// marker at this screen pixel on every reset, so the requested fix is both
-// the anchor and the marker's own position.
+// style.device.marker_x_px / marker_y_px, read from the compiled style
+// (MapStyleDefaults.h) rather than repeated here -- editing the style file
+// and rebuilding moves the anchor. The viewport re-anchors on the marker at
+// this screen pixel on every reset, so the requested fix is both the anchor
+// and the marker's own position.
 //
 // kAnchorScreenY is the style file's value and the default the native
-// preview and the golden test render at. On the device the vertical anchor
-// comes off the marker-height ladder below instead, which the buttons drive.
-inline constexpr int16_t kAnchorScreenX = 230;
-inline constexpr int16_t kAnchorScreenY = 620;
+// preview renders at. On the device the vertical anchor comes off the
+// marker-height ladder below instead, which the buttons drive.
+inline constexpr int16_t kAnchorScreenX = kDefaultMapStyle.markerXPx;
+inline constexpr int16_t kAnchorScreenY = kDefaultMapStyle.markerYPx;
 
 inline constexpr int kMarkerStepCount = kMapLadderStepCount;
 

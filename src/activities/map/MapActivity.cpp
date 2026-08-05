@@ -14,6 +14,7 @@
 #include "GfxRendererCanvas.h"
 #include "MapHatch.h"
 #include "MapRenderer.h"
+#include "MapStyleDefaults.h"
 #include "MapViewport.h"
 #include "fontIds.h"
 
@@ -80,8 +81,8 @@ constexpr int kCompassHaloMargin = 5;  // white backing, past the glyph's own bo
 constexpr int kMarkerRingDiameter = 54;
 constexpr int kMarkerRingWidth = 3;
 constexpr int kMarkerHikeDotDiameter = 18;
-constexpr int kMarkerCycleTipLen = 16;      // center to tip, pixels
-constexpr int kMarkerCycleBaseHalfW = 9;    // center to each base corner, pixels
+constexpr int kMarkerCycleTipLen = 16;    // center to tip, pixels
+constexpr int kMarkerCycleBaseHalfW = 9;  // center to each base corner, pixels
 constexpr int kMarkerRideTipLen = 25;
 constexpr int kMarkerRideBaseHalfW = 18;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
@@ -127,16 +128,14 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
   // map lines it sits over would show straight through its interior, and a
   // busy junction under the ring reads as clutter, not a marker.
   const int haloRadius = radius + kMarkerHaloMargin;
-  renderer.fillRoundedRect(cx - haloRadius, cy - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius,
-                            Color::White);
-  renderer.drawRoundedRect(cx - radius, cy - radius, kMarkerRingDiameter, kMarkerRingDiameter, kMarkerRingWidth,
-                            radius, true);
+  renderer.fillRoundedRect(cx - haloRadius, cy - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius, Color::White);
+  renderer.drawRoundedRect(cx - radius, cy - radius, kMarkerRingDiameter, kMarkerRingDiameter, kMarkerRingWidth, radius,
+                           true);
 
   if (mode == MapRideMode::Hike) {
     // Position over direction: a plain dot, no heading arrow at all.
-    renderer.fillRoundedRect(cx - kMarkerHikeDotDiameter / 2, cy - kMarkerHikeDotDiameter / 2,
-                              kMarkerHikeDotDiameter, kMarkerHikeDotDiameter, kMarkerHikeDotDiameter / 2,
-                              Color::Black);
+    renderer.fillRoundedRect(cx - kMarkerHikeDotDiameter / 2, cy - kMarkerHikeDotDiameter / 2, kMarkerHikeDotDiameter,
+                             kMarkerHikeDotDiameter, kMarkerHikeDotDiameter / 2, Color::Black);
     return;
   }
 
@@ -204,9 +203,9 @@ void MapActivity::drawCompass() {
   // the same reason the marker gets one: this sits over live map lines, not
   // blank margin.
   renderer.fillRoundedRect(sx(kCompassDesignMinX) - kCompassHaloMargin, sy(kCompassDesignMinY) - kCompassHaloMargin,
-                            (kCompassDesignMaxX - kCompassDesignMinX) + 2 * kCompassHaloMargin,
-                            (kCompassDesignMaxY - kCompassDesignMinY) + 2 * kCompassHaloMargin, kCompassHaloMargin,
-                            Color::White);
+                           (kCompassDesignMaxX - kCompassDesignMinX) + 2 * kCompassHaloMargin,
+                           (kCompassDesignMaxY - kCompassDesignMinY) + 2 * kCompassHaloMargin, kCompassHaloMargin,
+                           Color::White);
 
   // 1. "N", centered on the label's own point -- UI_12, not a NotoSans/Serif
   // size: those are compiled out under OMIT_FONTS (platformio.ini's
@@ -217,7 +216,7 @@ void MapActivity::drawCompass() {
   const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, label);
   const int labelHeight = renderer.getTextHeight(UI_12_FONT_ID);
   renderer.drawText(UI_12_FONT_ID, sx(kCompassLabelCenterX) - labelWidth / 2,
-                     sy(kCompassLabelCenterY) - labelHeight / 2, label, true);
+                    sy(kCompassLabelCenterY) - labelHeight / 2, label, true);
 
   // 2. Left arc, 3. right arc -- both open, not a closed ring: each spans
   // 100 degrees, leaving a gap at the top (under "N") and at the bottom
@@ -558,10 +557,9 @@ void MapActivity::saveLaddersIfChanged() {
   // just bootstrapped off the card -- otherwise every re-entry would write
   // the same fix straight back at itself. showingPersistedFix_ is exactly
   // that distinction (cleared the moment a real fix lands, see loop()).
-  const bool fixChanged =
-      hasReceivedAny_ && !showingPersistedFix_ &&
-      (!SETTINGS.mapHasLastFix || SETTINGS.mapLastLatE7 != lastLatE7_ || SETTINGS.mapLastLonE7 != lastLonE7_ ||
-       SETTINGS.mapLastHeading != lastHeading_);
+  const bool fixChanged = hasReceivedAny_ && !showingPersistedFix_ &&
+                          (!SETTINGS.mapHasLastFix || SETTINGS.mapLastLatE7 != lastLatE7_ ||
+                           SETTINGS.mapLastLonE7 != lastLonE7_ || SETTINGS.mapLastHeading != lastHeading_);
   // CLAUDE.md rule 8: never write the settings file on every interaction.
   // The presses (and now fixes) already coalesced into one deadline; this is
   // the second guard, and the one that makes leaving and re-entering the map
@@ -674,7 +672,10 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // disagree about which way is "up" the moment heading isn't N.
   view.heading = static_cast<MapHeading>(kNoRouteDisplayHeading);
 
-  MapRenderer::render(canvas, *source_, view);
+  // kDefaultMapStyle is the compiled data/mapstyle.json (MapStyleDefaults.h,
+  // generated by scripts/gen_mapstyle.py). Nothing overrides it at runtime;
+  // the device reads no style file off the card.
+  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle);
 
   // Hatch after the geometry, because which tiles are missing is only known
   // once the source has tried to open them, and asking up front would cost a
@@ -687,13 +688,14 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
       if ((missing & (1u << index)) == 0) continue;
       MapHatch::drawTile(canvas, proj_, range.z, range.colAt(index), range.rowAt(index));
     }
-    MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading);
+    // No marker restore here: drawPositionMarker() below is the marker on this
+    // screen and it runs after the hatch anyway. Drawing the style's puck
+    // first would only leave it peeking out from under a smaller mode marker.
   }
 
-  // Drawn last and outside IMapCanvas, on top of (and fully covering) the
-  // bare triangle MapRenderer::render()/drawMarker() just drew: the ring is
-  // bigger than that triangle's extent, and this is the one that needs the
-  // real heading, not the forced-north one view.heading carries.
+  // Drawn last and outside IMapCanvas: this is the marker on the device, and
+  // it needs the real heading rather than the forced-north one view.heading
+  // carries.
   drawPositionMarker(view.markerX, view.markerY, headingStep, mode_);
 
   // Drawn last and outside IMapCanvas: fixed screen furniture, not map data,

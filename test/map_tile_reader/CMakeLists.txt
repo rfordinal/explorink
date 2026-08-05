@@ -27,4 +27,6 @@ target_link_libraries(MapTileReaderGoldenTest PRIVATE
   GTest::gtest_main
 )
 
+add_dependencies(MapTileReaderGoldenTest map_generated_headers)
+
 gtest_discover_tests(MapTileReaderGoldenTest)

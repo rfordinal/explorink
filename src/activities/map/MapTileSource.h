@@ -77,9 +77,10 @@ class MapTileSource : public IMapSource {
   // render itself, so nothing pays a third read of every tile just to ask.
   uint32_t unavailableMask() const { return unavailableMask_; }
 
-  // Records handed out since begin(), summed across passes. Two road passes
-  // will report twice the way count -- that is the streaming design working,
-  // not a bug.
+  // Records handed out since begin(), summed across passes. The renderer walks
+  // the road layer MapRenderer::kRoadPasses times, so that many times the way
+  // count lands here -- that is the streaming design working, not a bug. A
+  // caller after "how much map is in the picture" divides by that constant.
   uint32_t waysEmitted() const { return waysEmitted_; }
   uint32_t placesEmitted() const { return placesEmitted_; }
 

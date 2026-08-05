@@ -9,6 +9,7 @@ lib/I18n/I18nKeys.h
 lib/I18n/I18nStrings.h
 lib/I18n/I18nStrings.cpp
 src/activities/map/MapModeMaskDefaults.h
+src/activities/map/MapStyleDefaults.h
 *.generated.h
 .vs
 build

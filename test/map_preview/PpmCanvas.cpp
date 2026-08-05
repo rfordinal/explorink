@@ -4,17 +4,30 @@
 #include <cmath>
 #include <cstdio>
 
+#include "MapStroke.h"
+
 PpmCanvas::PpmCanvas(int width, int height) : width_(width), height_(height), pixels_(width * height, 0) {
   crossings_.reserve(64);
 }
 
-void PpmCanvas::setPixel(int x, int y) {
+void PpmCanvas::setPixel(int x, int y, MapInk ink) {
   if (x < 0 || y < 0 || x >= width_ || y >= height_) return;
-  pixels_[static_cast<size_t>(y) * width_ + x] = 1;
+  pixels_[static_cast<size_t>(y) * width_ + x] = (ink == MapInk::Black) ? 1 : 0;
 }
 
-void PpmCanvas::drawLine(int x1, int y1, int x2, int y2, int lineWidth) {
-  const int halfWidth = std::max(0, lineWidth / 2);
+// A thick line is a stack of these -- MapStroke.h, shared with the device
+// adapter so both surfaces draw a wide road the same width in the same place.
+void PpmCanvas::drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) {
+  const MapStroke::Stack stack = MapStroke::stackFor(x1, y1, x2, y2, lineWidth);
+  for (int i = 0; i < stack.count; ++i) {
+    const int k = stack.first + i;
+    const int offsetX = stack.alongY ? 0 : k;
+    const int offsetY = stack.alongY ? k : 0;
+    drawThinLine(x1 + offsetX, y1 + offsetY, x2 + offsetX, y2 + offsetY, ink);
+  }
+}
+
+void PpmCanvas::drawThinLine(int x1, int y1, int x2, int y2, MapInk ink) {
   const int dx = std::abs(x2 - x1);
   const int dy = -std::abs(y2 - y1);
   const int sx = x1 < x2 ? 1 : -1;
@@ -24,11 +37,7 @@ void PpmCanvas::drawLine(int x1, int y1, int x2, int y2, int lineWidth) {
   int y = y1;
 
   while (true) {
-    for (int oy = -halfWidth; oy <= halfWidth; ++oy) {
-      for (int ox = -halfWidth; ox <= halfWidth; ++ox) {
-        setPixel(x + ox, y + oy);
-      }
-    }
+    setPixel(x, y, ink);
     if (x == x2 && y == y2) break;
     const int e2 = 2 * err;
     if (e2 >= dy) {
@@ -42,7 +51,7 @@ void PpmCanvas::drawLine(int x1, int y1, int x2, int y2, int lineWidth) {
   }
 }
 
-void PpmCanvas::fillRoundedRect(int x, int y, int width, int height, int cornerRadius) {
+void PpmCanvas::fillRoundedRect(int x, int y, int width, int height, int cornerRadius, MapInk ink) {
   const int r = std::clamp(cornerRadius, 0, std::min(width, height) / 2);
   for (int py = y; py < y + height; ++py) {
     for (int px = x; px < x + width; ++px) {
@@ -56,12 +65,12 @@ void PpmCanvas::fillRoundedRect(int x, int y, int width, int height, int cornerR
         const int ddy = py - cornerY;
         if (ddx * ddx + ddy * ddy > r * r) continue;
       }
-      setPixel(px, py);
+      setPixel(px, py, ink);
     }
   }
 }
 
-void PpmCanvas::fillPolygon(const int* xPoints, const int* yPoints, int numPoints) {
+void PpmCanvas::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, MapInk ink) {
   if (numPoints < 3) return;
   int minY = yPoints[0];
   int maxY = yPoints[0];
@@ -88,7 +97,7 @@ void PpmCanvas::fillPolygon(const int* xPoints, const int* yPoints, int numPoint
     std::sort(crossings.begin(), crossings.end());
     for (size_t i = 0; i + 1 < crossings.size(); i += 2) {
       for (int x = crossings[i]; x <= crossings[i + 1]; ++x) {
-        setPixel(x, y);
+        setPixel(x, y, ink);
       }
     }
   }

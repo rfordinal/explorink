@@ -11,6 +11,7 @@
 #include "MapHatch.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
+#include "MapStyleDefaults.h"
 #include "MapTileGrid.h"
 #include "MapTileSource.h"
 #include "MapViewport.h"
@@ -40,8 +41,12 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   const MapViewport::ZoomStep& lod = MapViewport::kZoomLadder[request.zoom];
   result.lodZoom = lod.z;
 
+  const MapStyle& style = request.style ? *request.style : kDefaultMapStyle;
+  const int16_t markerY = request.markerY != 0 ? request.markerY : style.markerYPx;
+  result.markerY = markerY;
+
   MapProjection proj;
-  proj.reset(request.lat, request.lon, MapViewport::kAnchorScreenX, request.markerY, request.heading,
+  proj.reset(request.lat, request.lon, style.markerXPx, markerY, request.heading,
              MapViewport::mppMercFor(request.zoom, request.lat));
 
   MapViewport::TileRange range;
@@ -73,8 +78,8 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   }
 
   MapViewState view;
-  view.markerX = MapViewport::kAnchorScreenX;
-  view.markerY = request.markerY;
+  view.markerX = style.markerXPx;
+  view.markerY = markerY;
   view.heading = static_cast<MapHeading>(request.heading);
 
   StdioFileSource file;
@@ -99,16 +104,19 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // on top of that is what the reset..read window measures, and the answer
   // should be nothing.
   HeapProbe::reset();
-  MapRenderer::render(canvas, *source, view);
-  // render() no longer draws the marker itself (MapActivity now draws its
-  // own mode-specific one straight through GfxRenderer); this preview has no
-  // mode concept, so it keeps drawing the plain triangle explicitly.
-  MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading);
+  MapRenderer::render(canvas, *source, view, style);
+  // render() does not draw the marker (MapActivity draws its own mode-specific
+  // one). This preview has no travel mode, so it draws the style's puck
+  // explicitly.
+  MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
   result.peakHeapDuringRender = HeapProbe::peakBytes();
   result.allocsDuringRender = HeapProbe::allocCount();
 
-  result.waysDrawn = source->waysEmitted();
-  result.waysFiltered = source->waysFiltered();
+  // The source counts every record it hands out, and the renderer asks for the
+  // road layer MapRenderer::kRoadPasses times. What a reader of these numbers
+  // wants is ways in the picture, i.e. one walk's worth.
+  result.waysDrawn = source->waysEmitted() / MapRenderer::kRoadPasses;
+  result.waysFiltered = source->waysFiltered() / MapRenderer::kRoadPasses;
   result.placesDrawn = source->placesEmitted();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());
@@ -123,7 +131,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
       if ((result.missingMask & (1u << index)) == 0) continue;
       MapHatch::drawTile(canvas, proj, range.z, range.colAt(index), range.rowAt(index));
     }
-    MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading);
+    MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
   }
 
   return result;

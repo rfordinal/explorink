@@ -14,4 +14,6 @@ target_link_libraries(MapCommandParserTest PRIVATE
   GTest::gtest_main
 )
 
+add_dependencies(MapCommandParserTest map_generated_headers)
+
 gtest_discover_tests(MapCommandParserTest)

@@ -9,16 +9,21 @@
 // Native-only IMapCanvas implementation: rasterizes into an in-memory 1
 // byte/pixel buffer (0 = white, 1 = black) and dumps it as a binary PPM
 // (P6) image -- no image library, no dependency on the real GfxRenderer/HAL
-// stack. Not bit-for-bit identical to the real device's output (that's
-// GfxRendererCanvas's job, on real hardware); this is for validating layout
-// and marker orientation before ever touching the device.
+// stack.
+//
+// Close to the device's output, not provably byte-identical to it. Same
+// coordinates, same widths, and the same thick-line decomposition
+// (MapStroke.h, shared with GfxRendererCanvas), but the one-pixel line
+// underneath is this file's Bresenham rather than GfxRenderer's, so a diagonal
+// can differ by a pixel here and there. Good enough to judge a style by; not a
+// substitute for looking at the panel once.
 class PpmCanvas : public IMapCanvas {
  public:
   PpmCanvas(int width, int height);
 
-  void drawLine(int x1, int y1, int x2, int y2, int lineWidth) override;
-  void fillRoundedRect(int x, int y, int width, int height, int cornerRadius) override;
-  void fillPolygon(const int* xPoints, const int* yPoints, int numPoints) override;
+  void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) override;
+  void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, MapInk ink) override;
+  void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, MapInk ink) override;
 
   bool writePpm(const std::string& path) const;
 
@@ -27,7 +32,8 @@ class PpmCanvas : public IMapCanvas {
   const std::vector<uint8_t>& pixels() const { return pixels_; }
 
  private:
-  void setPixel(int x, int y);
+  void setPixel(int x, int y, MapInk ink);
+  void drawThinLine(int x1, int y1, int x2, int y2, MapInk ink);
 
   int width_;
   int height_;

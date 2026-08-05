@@ -1,0 +1,151 @@
+# Map style — how mapstyle.json reaches the renderer
+
+`data/mapstyle.json` is the map's style. The device never reads it. It is a
+build-time input, compiled into the firmware by a generator, exactly like the
+i18n string tables.
+
+Verified by reading this tree on 2026-08-05 (branch `feat/mapstyle-to-renderer`).
+Not measured on hardware — the firmware builds clean and the host build renders,
+but nobody has flashed this and looked at the panel yet.
+
+## The path
+
+```
+data/mapstyle.json
+  -> scripts/gen_mapstyle.py            (pre: build step, platformio.ini)
+  -> src/activities/map/MapStyleDefaults.h   (gitignored, constexpr MapStyle)
+  -> MapRenderer::render(canvas, source, state, style)
+```
+
+`MapStyle` (`src/activities/map/MapStyle.h`) carries what the renderer draws
+with:
+
+| field | from | used at |
+|---|---|---|
+| `roadWidthPx[32]` | `layers.roads.rules[].width`, per `class_id` | `MapRenderer.cpp`, first road pass |
+| `roadCasingPx[32]` | `layers.roads.rules[].casing_px` | `MapRenderer.cpp`, second road pass |
+| `placeDotDiameterPx` | `layers.places.dot_radius_px`, doubled | `MapRenderer.cpp`, places pass |
+| `markerXPx`, `markerYPx` | `device.marker_x_px` / `marker_y_px` | `MapViewport.h:51-52` |
+| `puckRadiusPx`, `puckRingPx`, `puckArrowPx` | `layers.position` | `MapRenderer::drawMarker` |
+
+`arrow_px` is the arrow's tip-to-tail length. The tail sits a quarter of it
+behind the anchor and the base is half of it wide, so the style's 28 px draws the
+same triangle this renderer drew before the puck existed.
+
+`MapActivity.cpp:419` passes `kDefaultMapStyle`. Nothing overrides it at
+runtime; there is no style file on the card and no setting for any of this.
+
+## Why a struct and not free constants
+
+`MapRenderer` is also compiled into the laptop-side preview
+(`test/map_preview/`, and `pio run -t map-preview`). Passing the style as an
+argument is what lets that preview render with the same numbers the firmware
+compiled, and lets the golden fixture pin its own frozen style so a style edit
+cannot break it (`test/map_tile_reader/MapTileReaderGoldenTest.cpp`).
+
+The laptop preview is the point of all this: editing the style in mapbuilder's
+webapp and looking at the result takes about two seconds, against a firmware
+build plus a flash. The mechanism is documented in the parent `xteink` repo,
+`docs/device-preview.md`.
+
+## Two road passes, and why the order is not a preference
+
+A cased road is a black stroke at the full width with a white stroke
+`2 * casing_px` narrower inside it: two black edges, road left white between
+them. That is how a main road reads as bigger than a side street with no colour
+to spend.
+
+**Every black stroke is drawn before any white fill.** `MapRenderer::render`
+walks the road layer twice for this (`MapRenderer::kRoadPasses`). Finishing one
+road completely before starting the next would let the later road's white fill
+punch a hole in the earlier road's black edge, leaving a broken casing at every
+junction. `IMapSource::beginWays()` is rewindable precisely so this costs a
+second seek over a ~20 KB layer instead of a buffer holding the whole layer
+(`IMapSource.h:22-27`).
+
+The second walk means `MapTileSource::waysEmitted()` reports the way count
+`kRoadPasses` times over. That is the counter working as documented; a caller
+that wants "ways in the picture" divides by it.
+
+## GfxRenderer's thick line is not usable for a map
+
+**Found 2026-08-05, read off the code, not yet confirmed on the panel.**
+`GfxRenderer::drawLine(x1, y1, x2, y2, lineWidth, state)` draws `lineWidth`
+copies of the line offset **downward in y only** (`GfxRenderer.cpp:713-717`).
+
+For the UI's horizontal rules that is fine. For roads it is not: a north-south
+road's copies land on top of each other, so it stays one pixel wide however wide
+the style says it is, while an east-west road of the same class comes out full
+width. Per-class widths would have been visible on half the compass and
+invisible on the other half.
+
+`MapStroke::stackFor` (`src/activities/map/MapStroke.h`) decomposes a thick map
+line into one-pixel lines instead. Both `IMapCanvas` implementations use it,
+`GfxRendererCanvas` on the device and `PpmCanvas` in the laptop preview, so a
+wide road comes out the same width in the same place on both.
+
+**It stacks along the dominant axis, not along the perpendicular, and that is
+the whole trick.** Offsetting along the true perpendicular is the obvious
+approach and it stripes: on a diagonal the perpendicular is diagonal too, so
+consecutive copies land 1.41 px apart and the road draws as parallel hairlines
+with white between them. Seen on a rendered map, 2026-08-05, before the fix.
+Stacking along the axis the line moves fastest in cannot leave a gap, because
+consecutive copies are exactly one pixel apart there and Bresenham fills every
+step of the other axis. The copy count is scaled by `len / major` so the
+perpendicular thickness still comes out at the style's width -- a 45-degree road
+needs 12 copies to look as wide as a horizontal one does with 8.
+
+A 1 px line is one Bresenham line at every angle, no scaling. "1 px" in a style
+file means one pixel, and the golden fixture depends on it.
+
+`test/map_stroke/MapStrokeTest.cpp` guards both failure modes directly: ink area
+per bearing (catches the thin-road one) and longest interior white run per row
+and column (catches the striping one). Neither is visible to a test that only
+asserts something got drawn.
+
+`GfxRenderer` itself is untouched. It is inherited code and the UI depends on its
+current behaviour (this repo's CLAUDE.md, "Treat inherited code as upstream's").
+Nothing else in the map path calls its thick-line overload.
+
+Open: how a wide road's outer corner looks on the panel at a sharp polyline
+bend. The preview shows no gap at the widths this style uses (up to 10 px), and
+the joint is not mitred, so a very sharp bend may show a notch. Needs a look at
+real hardware.
+
+## Rounding and the two zeros
+
+Style lengths are floats; `IMapCanvas::drawLine` takes an `int` width. The
+generator rounds half up, and **floors a visible class at 1 px** — a width typo
+must not silently delete a road class. `layers.roads.rules[].hidden: true`
+compiles to width 0 instead, and `MapRenderer::strokeWay` skips those.
+
+Two separate zeros, worth not confusing:
+
+- **width 0** — this class is never drawn, in any travel mode. From `hidden`.
+- **not in the mode mask** — dropped earlier, in `MapTileSource`, and only for
+  the current travel mode. From `modes` and `MapModeMaskDefaults.h`.
+
+## What is still not from the style
+
+The missing-tile hatch spacing (`MapHatch.h`) is `constexpr`. It is a
+diagnostic, not part of the map's look.
+
+Labels, the route, junction dots, water and buildings are specified in the style
+file and drawn by nothing. Labels are blocked on a canvas primitive: `IMapCanvas`
+has three drawing calls and none of them is text, and the label layout rule needs
+a measured text width rather than an estimate. The route and its junction dots
+are blocked on data, since no route reaches the device yet. The parent repo's
+`docs/mapstyle.json.md` marks every field implemented or not.
+
+Three style zeros disable rather than shrink: road width 0 (`hidden`),
+`placeDotDiameterPx` 0 (places layer off), `puckRadiusPx` 0 (arrow with no disc).
+The last is the golden fixture's setting, not a shape the spec asks for.
+
+## Both generated headers are gitignored
+
+`MapStyleDefaults.h` and `MapModeMaskDefaults.h` are build products, never
+committed (`.gitignore`). PlatformIO regenerates them on every build; for the
+host build, `test/CMakeLists.txt` runs the same two generators as CMake custom
+commands. That second wiring is not cosmetic — before it existed a host build
+reused whatever a previous firmware build had left in the source tree, so a
+style edit did not reach the native preview at all.

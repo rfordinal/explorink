@@ -5,6 +5,7 @@
 #include <string>
 
 #include "IMapCanvas.h"
+#include "MapStyle.h"
 
 // Shared by test/map_preview (the CLI tool) and the golden-file test
 // (test/map_tile_reader) -- one place that turns "a coordinate plus a tiles
@@ -21,12 +22,18 @@ struct MapPreviewRequest {
   uint8_t heading = 0;  // 0-15
   int zoom = 0;         // 0-4, docs/map-data-spec.md zoom ladder
 
-  // Marker's screen row, i.e. the vertical anchor. Defaults to
-  // MapViewport::kAnchorScreenY -- the style file's value, and what the
-  // committed golden PPM was rendered at. The device instead takes this off
-  // the marker-height ladder (MapViewport::kMarkerLadder), which is why it is
-  // a free parameter here rather than the constant it used to be.
-  int16_t markerY = 620;
+  // Marker's screen row, i.e. the vertical anchor. 0 means "take the style's
+  // device.marker_y_px", which is what the CLI renders at. The device instead
+  // takes this off the marker-height ladder (MapViewport::kMarkerLadder),
+  // which is why it is a free parameter here rather than a constant.
+  int16_t markerY = 0;
+
+  // Style to draw with. nullptr means kDefaultMapStyle, i.e. the compiled
+  // data/mapstyle.json -- the same numbers the firmware build gets, which is
+  // the point of previewing here at all. The golden test pins its own frozen
+  // style instead, so a style edit cannot break a fixture that exists to
+  // guard the tile pipeline.
+  const MapStyle* style = nullptr;
 
   // Render-time mode filter, `mask & (1 << class_id)`. All ones is every
   // class, which is what the golden test renders and what the CLI does
@@ -47,6 +54,9 @@ struct MapPreviewRequest {
 };
 
 struct MapPreviewResult {
+  // The marker row actually rendered at -- the request's value, or the
+  // style's when the request left it at 0.
+  int16_t markerY = 0;
   int tilesLoaded = 0;
   int tilesMissing = 0;
   // Bit per tile of the range, column-major -- what MapActivity hatches.
