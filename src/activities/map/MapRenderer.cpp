@@ -60,6 +60,9 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   if (style.buildingsEnabled && source.beginBuildings()) {
     MapWayRef ring;
     while (source.nextBuilding(ring)) {
+      // Tone or hatch, whichever the style chose, then the outline on top so a
+      // building keeps a crisp edge over its own texture.
+      MapAreaFill::toneRing(canvas, ring.xs, ring.ys, ring.pointCount, style.buildingTone);
       MapAreaFill::hatchRing(canvas, ring.xs, ring.ys, ring.pointCount, style.buildingHatch,
                              style.buildingHatchSpacingPx, MapInk::Black);
       MapAreaFill::outlineRing(canvas, ring.xs, ring.ys, ring.pointCount, style.buildingOutlinePx, MapInk::Black);
@@ -73,6 +76,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // record shape -- the ring is the only thing that tells them apart
       // (IMapSource.h, mapWayIsClosedRing).
       if (mapWayIsClosedRing(way)) {
+        MapAreaFill::toneRing(canvas, way.xs, way.ys, way.pointCount, style.waterTone);
         MapAreaFill::hatchRing(canvas, way.xs, way.ys, way.pointCount, style.waterHatch, style.waterHatchSpacingPx,
                                MapInk::Black);
         MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterLinePx, MapInk::Black);

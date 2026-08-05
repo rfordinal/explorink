@@ -56,6 +56,33 @@ class GfxRendererCanvas : public IMapCanvas {
     renderer_.fillRoundedRect(x, y, width, height, cornerRadius, ink == MapInk::Black ? Color::Black : Color::White);
   }
 
+  void fillSpan(int x1, int x2, int y, MapAreaTone tone) override {
+    if (tone == MapAreaTone::None) return;
+    if (y < 0 || y >= renderer_.getScreenHeight()) return;
+    if (x2 < x1) {
+      const int swap = x1;
+      x1 = x2;
+      x2 = swap;
+    }
+    x1 = std::max(x1, 0);
+    x2 = std::min(x2, renderer_.getScreenWidth() - 1);
+    if (x2 < x1) return;
+
+    // GfxRenderer's own dithered fill for the tones it already has: one call
+    // for the whole run, and the pattern is the same screen-space one
+    // MapTone::inkAt mirrors. Its phase comes from the absolute coordinates, so
+    // splitting a fill into spans cannot shift it.
+    if (MapTone::hasNativeDither(tone)) {
+      renderer_.fillRectDither(x1, y, x2 - x1 + 1, 1, colorFor(tone));
+      return;
+    }
+    // Stipple has no GfxRenderer equivalent, so it is painted pixel by pixel.
+    // Only every third pixel is touched, which is what makes that affordable.
+    for (int x = x1; x <= x2; ++x) {
+      if (MapTone::inkAt(x, y, tone)) renderer_.drawPixel(x, y, true);
+    }
+  }
+
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, MapInk ink) override {
     for (int i = 0; i < numPoints; ++i) {
       if (!onScreen(xPoints[i], yPoints[i])) return;
@@ -64,6 +91,25 @@ class GfxRendererCanvas : public IMapCanvas {
   }
 
  private:
+  // Grey is coming: a second branch is adding the panel's real grey levels, and
+  // when it lands a tone should map to one of those instead of to a dither
+  // pattern. That swap belongs here and in PpmCanvas, behind MapAreaTone --
+  // nothing above this line needs to know which it got.
+  static Color colorFor(const MapAreaTone tone) {
+    switch (tone) {
+      case MapAreaTone::Solid:
+        return Color::Black;
+      case MapAreaTone::Dark:
+        return Color::DarkGray;
+      case MapAreaTone::Light:
+        return Color::LightGray;
+      case MapAreaTone::Stipple:
+      case MapAreaTone::None:
+        break;
+    }
+    return Color::Clear;
+  }
+
   bool onScreen(int x, int y) const {
     return x >= 0 && y >= 0 && x < renderer_.getScreenWidth() && y < renderer_.getScreenHeight();
   }

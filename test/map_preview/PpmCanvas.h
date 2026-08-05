@@ -24,6 +24,7 @@ class PpmCanvas : public IMapCanvas {
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) override;
   void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, MapInk ink) override;
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, MapInk ink) override;
+  void fillSpan(int x1, int x2, int y, MapAreaTone tone) override;
 
   bool writePpm(const std::string& path) const;
 

@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "IMapCanvas.h"
+#include "MapAreaTone.h"
 
 // Hatch fill for a closed ring: buildings and water areas.
 //
@@ -23,6 +24,13 @@ namespace MapAreaFill {
 // "XXXX" is a matplotlib density knob and has no meaning here -- spacing comes
 // from hatch_spacing_px, in device pixels like every other length.
 enum class Pattern : uint8_t { None = 0, Diagonal, AntiDiagonal, Horizontal, Vertical, Cross };
+
+// Fills the ring with a flat tone (MapAreaTone.h): scan lines paired the same
+// way the hatch is, but painted as spans rather than as lines. This is what a
+// built-up area should use -- a period-2 or period-3 pixel pattern reads as grey
+// at arm's length, while hatch lines read as scratches, and at map zooms a
+// building is a few pixels across and far too small to carry a line pattern.
+void toneRing(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, uint16_t pointCount, MapAreaTone tone);
 
 // Points are the ring as stored in a tile: closed, first point repeated last.
 // `spacingPx` is the gap between hatch lines. `maxPoints` bounds the scratch

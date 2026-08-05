@@ -103,6 +103,18 @@ void PpmCanvas::fillPolygon(const int* xPoints, const int* yPoints, int numPoint
   }
 }
 
+void PpmCanvas::fillSpan(int x1, int x2, const int y, const MapAreaTone tone) {
+  if (tone == MapAreaTone::None) return;
+  if (x2 < x1) std::swap(x1, x2);
+  // Pixel by pixel against the shared rule (MapAreaTone.h). The device hands
+  // the tones GfxRenderer knows to fillRectDither instead, which paints the
+  // same pattern -- the phase comes from the absolute coordinates on both
+  // sides, so a fill split into different spans still lands identically.
+  for (int x = x1; x <= x2; ++x) {
+    if (MapTone::inkAt(x, y, tone)) setPixel(x, y, MapInk::Black);
+  }
+}
+
 bool PpmCanvas::writePpm(const std::string& path) const {
   FILE* f = std::fopen(path.c_str(), "wb");
   if (!f) return false;

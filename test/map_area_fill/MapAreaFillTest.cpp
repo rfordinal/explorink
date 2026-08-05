@@ -163,6 +163,105 @@ TEST(MapAreaFill, WiderSpacingDrawsLessInk) {
   }
 }
 
+// --- tones ---------------------------------------------------------------
+//
+// A tone is what a built-up area actually uses; the hatch above is for shapes
+// big enough to carry lines. Three properties matter and each has bitten
+// something: it must stay inside the ring, it must land at the density the name
+// promises, and its phase must come from the screen rather than from the shape.
+
+TEST(MapAreaFill, ToneStaysInsideEveryRing) {
+  const Ring rings[] = {square(20, 20, 60), lShape(), triangle()};
+  for (const Ring& ring : rings) {
+    for (auto tone : {MapAreaTone::Stipple, MapAreaTone::Light, MapAreaTone::Dark, MapAreaTone::Solid}) {
+      PpmCanvas canvas(kSize, kSize);
+      MapAreaFill::toneRing(canvas, ring.xs.data(), ring.ys.data(), static_cast<uint16_t>(ring.xs.size()), tone);
+      ASSERT_GT(blackCount(canvas), 0);
+      for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize; ++x) {
+          if (!blackAt(canvas, x, y)) continue;
+          if (insideRing(ring.xs, ring.ys, x, y)) continue;
+          bool onBoundary = false;
+          for (int dy = -1; dy <= 1 && !onBoundary; ++dy) {
+            for (int dx = -1; dx <= 1 && !onBoundary; ++dx) {
+              if (dx == 0 && dy == 0) continue;
+              if (insideRing(ring.xs, ring.ys, x + dx, y + dy)) onBoundary = true;
+            }
+          }
+          ASSERT_TRUE(onBoundary) << "tone leaked at " << x << "," << y;
+        }
+      }
+    }
+  }
+}
+
+// The names are a promise about density: 1 in 9, 1 in 4, 1 in 2, all of it.
+// A style author picking "stipple" over "dark" is picking a weight.
+TEST(MapAreaFill, ToneDensityMatchesItsName) {
+  const Ring ring = square(10, 10, 90);  // 90x90 interior, big enough to average
+  const uint16_t count = static_cast<uint16_t>(ring.xs.size());
+  const double area = 90.0 * 90.0;
+
+  struct Expectation {
+    MapAreaTone tone;
+    double fraction;
+  };
+  const Expectation expectations[] = {{MapAreaTone::Stipple, 1.0 / 9.0},
+                                       {MapAreaTone::Light, 1.0 / 4.0},
+                                       {MapAreaTone::Dark, 1.0 / 2.0},
+                                       {MapAreaTone::Solid, 1.0}};
+  for (const Expectation& expected : expectations) {
+    PpmCanvas canvas(kSize, kSize);
+    MapAreaFill::toneRing(canvas, ring.xs.data(), ring.ys.data(), count, expected.tone);
+    const double got = blackCount(canvas) / area;
+    EXPECT_NEAR(got, expected.fraction, 0.06) << "tone " << static_cast<int>(expected.tone);
+  }
+}
+
+// Two rings side by side must share one texture, which only holds if the
+// pattern is anchored in screen space. Anchor it to each shape instead and a row
+// of houses turns into noise -- the whole reason buildings looked bad.
+TEST(MapAreaFill, ToneIsAnchoredToTheScreenNotTheShape) {
+  const Ring left = square(20, 20, 21);
+  const Ring right = square(41, 20, 21);  // shares the edge at x = 41
+
+  PpmCanvas separate(kSize, kSize);
+  MapAreaFill::toneRing(separate, left.xs.data(), left.ys.data(), 5, MapAreaTone::Light);
+  MapAreaFill::toneRing(separate, right.xs.data(), right.ys.data(), 5, MapAreaTone::Light);
+
+  // One ring covering both, drawn in one go. If the phase came from the shape,
+  // the two-ring version would differ from this.
+  const Ring both = square(20, 20, 42);
+  PpmCanvas together(kSize, kSize);
+  MapAreaFill::toneRing(together, both.xs.data(), both.ys.data(), 5, MapAreaTone::Light);
+
+  int mismatches = 0;
+  for (int y = 21; y < 40; ++y) {
+    for (int x = 21; x < 40; ++x) {
+      if (blackAt(separate, x, y) != blackAt(together, x, y)) ++mismatches;
+    }
+  }
+  EXPECT_EQ(mismatches, 0);
+}
+
+TEST(MapAreaFill, ToneNoneDrawsNothing) {
+  const Ring ring = square(20, 20, 60);
+  PpmCanvas canvas(kSize, kSize);
+  MapAreaFill::toneRing(canvas, ring.xs.data(), ring.ys.data(), 5, MapAreaTone::None);
+  EXPECT_EQ(blackCount(canvas), 0);
+}
+
+// The device paints Light and Dark through GfxRenderer::fillRectDither and the
+// others pixel by pixel. That split must stay in sync with which tones
+// GfxRenderer actually has, or the preview and the panel diverge silently.
+TEST(MapAreaFill, NativeDitherClaimMatchesTheToneList) {
+  EXPECT_TRUE(MapTone::hasNativeDither(MapAreaTone::Light));
+  EXPECT_TRUE(MapTone::hasNativeDither(MapAreaTone::Dark));
+  EXPECT_TRUE(MapTone::hasNativeDither(MapAreaTone::Solid));
+  EXPECT_FALSE(MapTone::hasNativeDither(MapAreaTone::Stipple));
+  EXPECT_FALSE(MapTone::hasNativeDither(MapAreaTone::None));
+}
+
 TEST(MapAreaFill, OutlineFollowsTheRingAndZeroWidthDrawsNothing) {
   const Ring ring = square(20, 20, 60);
   const uint16_t count = static_cast<uint16_t>(ring.xs.size());

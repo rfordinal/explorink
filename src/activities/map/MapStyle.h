@@ -46,6 +46,10 @@ struct MapStyle {
   // "read it and skip drawing" would pay the whole SD cost for nothing.
   bool buildingsEnabled;
   uint8_t buildingOutlinePx;
+  // A tone and a hatch are alternatives, not a stack: the style picks one by
+  // its `fill`. A tone is what a built-up area wants (MapAreaTone.h); the hatch
+  // is kept because a big single area -- a lake, a forest -- can carry lines.
+  MapAreaTone buildingTone;
   MapAreaFill::Pattern buildingHatch;
   uint8_t buildingHatchSpacingPx;
 
@@ -58,6 +62,7 @@ struct MapStyle {
   // read rather than the draw.
   bool waterEnabled;
   uint8_t waterLinePx;
+  MapAreaTone waterTone;
   MapAreaFill::Pattern waterHatch;
   uint8_t waterHatchSpacingPx;
 

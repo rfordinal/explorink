@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "MapAreaTone.h"
+
 // Which of the panel's two values to write. There is no third: the map is drawn
 // on 1-bit e-ink, and any "grey" here would be a dither pattern, which costs
 // exactly the contrast this screen exists to keep (docs/map-render-spec.md,
@@ -29,4 +31,13 @@ class IMapCanvas {
   virtual void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) = 0;
   virtual void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, MapInk ink) = 0;
   virtual void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, MapInk ink) = 0;
+
+  // One horizontal run of an area fill, x1..x2 inclusive, painted with `tone`
+  // (MapAreaTone.h). A span rather than a rectangle because the shapes being
+  // filled are arbitrary rings, and a span rather than a pixel because the
+  // device can hand a whole run to GfxRenderer's dithered fill in one call.
+  //
+  // The tone's pattern is anchored to screen coordinates, never to the span, so
+  // two shapes side by side share one texture.
+  virtual void fillSpan(int x1, int x2, int y, MapAreaTone tone) = 0;
 };

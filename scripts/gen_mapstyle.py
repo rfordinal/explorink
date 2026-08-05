@@ -162,6 +162,23 @@ _HATCH_PATTERN = {
 }
 
 
+# mapstyle.json's `tone` names, mapped to MapAreaTone. A tone is a screen-space
+# pixel pattern that reads as grey from arm's length -- what a built-up area
+# wants. See the firmware's docs/map-style.md.
+_TONES = {"stipple": "Stipple", "light": "Light", "dark": "Dark", "solid": "Solid"}
+
+
+def _tone(rule, what):
+    """MapAreaTone name for a rule with `fill: tone`, else "None"."""
+    if rule.get("fill") != "tone":
+        return "None"
+    name = str(rule.get("tone", "")).strip().lower()
+    if name not in _TONES:
+        sys.exit(f"gen_mapstyle.py: {what}: fill is tone but tone '{name}' is not one of "
+                 f"{sorted(_TONES)}")
+    return _TONES[name]
+
+
 def _hatch(rule, what):
     """(pattern enum name, spacing px) for a layer rule's fill.
 
@@ -188,21 +205,22 @@ def _hatch(rule, what):
 
 
 def buildings(style):
-    """(enabled, outline px, hatch pattern, hatch spacing)."""
+    """(enabled, outline px, tone, hatch pattern, hatch spacing)."""
     layer = style.get("layers", {}).get("buildings", {})
     if not layer.get("enabled", False):
-        return False, 0, "None", 0
+        return False, 0, "None", "None", 0
     rule = layer.get("rule", {})
     outline = _round_px(rule.get("outline_width", 0), "layers.buildings.rule.outline_width")
+    tone = _tone(rule, "layers.buildings.rule")
     pattern, spacing = _hatch(rule, "layers.buildings.rule")
-    if outline == 0 and pattern == "None":
-        sys.exit("gen_mapstyle.py: layers.buildings is enabled but draws neither an outline nor a hatch "
-                 "-- that reads every building off the card to draw nothing. Disable the layer instead.")
-    return True, outline, pattern, spacing
+    if outline == 0 and pattern == "None" and tone == "None":
+        sys.exit("gen_mapstyle.py: layers.buildings is enabled but draws neither an outline, a tone nor a "
+                 "hatch -- that reads every building off the card to draw nothing. Disable the layer instead.")
+    return True, outline, tone, pattern, spacing
 
 
 def water(style):
-    """(enabled, line px, hatch pattern, hatch spacing).
+    """(enabled, line px, tone, hatch pattern, hatch spacing).
 
     One line width for every waterway: the tile format gives water no class, so
     the river/stream/canal rules cannot be told apart on the device and the
@@ -211,16 +229,20 @@ def water(style):
     """
     layer = style.get("layers", {}).get("water", {})
     if not layer.get("enabled", False):
-        return False, 0, "None", 0
+        return False, 0, "None", "None", 0
     line = max(_round_px(layer.get("default", {}).get("width", 1), "layers.water.default.width"), 1)
     if line > 255:
         sys.exit(f"gen_mapstyle.py: water line width {line}px does not fit a uint8_t")
-    pattern, spacing = "None", 0
+    tone, pattern, spacing = "None", "None", 0
     for index, rule in enumerate(layer.get("rules", [])):
-        if rule.get("fill") == "hatch":
+        fill = rule.get("fill")
+        if fill == "hatch":
             pattern, spacing = _hatch(rule, f"layers.water.rules[{index}]")
             break
-    return True, line, pattern, spacing
+        if fill == "tone":
+            tone = _tone(rule, f"layers.water.rules[{index}]")
+            break
+    return True, line, tone, pattern, spacing
 
 
 def place_dot_diameter(style):
@@ -279,16 +301,18 @@ def gen_cpp(widths, casings, buildings_px, water_px, dot_diameter, marker_x, mar
         name = id_to_name.get(class_id, "(reserved)")
         lines.append(f"        {casings[class_id]},  // {class_id} {name}")
     radius, ring, arrow = puck_px
-    b_enabled, b_outline, b_pattern, b_spacing = buildings_px
-    w_enabled, w_line, w_pattern, w_spacing = water_px
+    b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
+    w_enabled, w_line, w_tone, w_pattern, w_spacing = water_px
     lines += [
         "    },",
         f"    .buildingsEnabled = {'true' if b_enabled else 'false'},",
         f"    .buildingOutlinePx = {b_outline},",
+        f"    .buildingTone = MapAreaTone::{b_tone},",
         f"    .buildingHatch = MapAreaFill::Pattern::{b_pattern},",
         f"    .buildingHatchSpacingPx = {b_spacing},",
         f"    .waterEnabled = {'true' if w_enabled else 'false'},",
         f"    .waterLinePx = {w_line},",
+        f"    .waterTone = MapAreaTone::{w_tone},",
         f"    .waterHatch = MapAreaFill::Pattern::{w_pattern},",
         f"    .waterHatchSpacingPx = {w_spacing},",
         f"    .placeDotDiameterPx = {dot_diameter},",
@@ -328,9 +352,9 @@ def main(repo_root, style_path=None, output_path=None):
           f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
           f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
     print(f"gen_mapstyle.py: buildings {'on' if buildings_px[0] else 'off'} "
-          f"(outline {buildings_px[1]}px, hatch {buildings_px[2]}/{buildings_px[3]}px), "
+          f"(outline {buildings_px[1]}px, tone {buildings_px[2]}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "
-          f"(line {water_px[1]}px, hatch {water_px[2]}/{water_px[3]}px)")
+          f"(line {water_px[1]}px, tone {water_px[2]}, hatch {water_px[3]}/{water_px[4]}px)")
 
     with open(output_path, "w") as f:
         f.write(gen_cpp(widths, casings, buildings_px, water_px, dot_diameter, marker_x, marker_y, puck_px))

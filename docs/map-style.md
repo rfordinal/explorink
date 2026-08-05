@@ -160,11 +160,54 @@ hands them out as `MapWayRef` through `beginBuildings()`/`nextBuilding()` and
 
 Neither layer sees the mode mask. A lake is not a road class.
 
-### Hatch, never a solid fill
+### Tone is what a built-up area wants, not hatch
+
+A building at map zoom is five to ten pixels across. That is far too small to
+carry a line pattern: a cross hatch at 4 px leaves a couple of ticks per house
+and a village reads as dirt on the screen. Judged on rendered output 2026-08-05,
+against a reference map the maintainer supplied.
+
+The answer on 1-bit is a **tone**: a screen-space pixel pattern with a period of
+two or three, which reads as flat grey from arm's length. `MapAreaTone`
+(`src/activities/map/MapAreaTone.h`) has four:
+
+| tone | pattern | reads as |
+|---|---|---|
+| `Stipple` | 1 px in 9 (`x % 3 == 0 && y % 3 == 0`) | a fine dotted texture |
+| `Light` | 1 px in 4 | light grey |
+| `Dark` | 1 px in 2, checkerboard | mid grey |
+| `Solid` | every pixel | black, for shapes too small to texture |
+
+`Light` and `Dark` are **GfxRenderer's own dither patterns**, not new ones
+(`GfxRenderer.cpp`, `drawPixelDither<Color::LightGray>` and `<Color::DarkGray>`).
+That is deliberate twice over: the device paints those with `fillRectDither`, one
+call per span instead of one per pixel, and the two canvases cannot disagree
+about the pattern's phase. `MapTone::inkAt` mirrors the same formulas for the
+laptop preview -- if those specialisations ever change, change it with them.
+
+**The pattern is anchored to screen coordinates, never to the shape.** That is
+what makes two buildings a metre apart share one texture instead of each starting
+its own, which is the difference between a village reading as built-up and as
+noise. It also means a fill split into different spans cannot shift.
+
+Drawn through one new canvas primitive, `IMapCanvas::fillSpan(x1, x2, y, tone)` --
+a span rather than a pixel so the device can hand a whole run to its dithered
+fill, and a span rather than a rectangle because the shapes are arbitrary rings.
+`MapAreaFill::toneRing` pairs scan-line crossings exactly as the hatch does, so a
+courtyard stays white.
+
+**Grey is coming.** A separate branch is adding the panel's real grey levels. When
+it lands, a tone should map to one of those instead of to a dither pattern; the
+swap belongs in the two `IMapCanvas` implementations, behind `MapAreaTone`, and
+nothing above that line needs to know which it got.
+
+### Hatch, kept for large areas
 
 A solid black building on 1-bit swallows the roads around it and reads as a hole
-in the map, so an area is drawn as an optional outline plus a hatch
-(`docs/map-render-spec.md`).
+in the map, so an area is drawn as an outline plus a tone or a hatch
+(`docs/map-render-spec.md`). The hatch is still there because one big area -- a
+lake, a forest -- is large enough for lines to read as a pattern rather than as
+scratches. `fill` in the style picks which: `tone` or `hatch`.
 
 `MapAreaFill` (`src/activities/map/MapAreaFill.{h,cpp}`) draws that hatch as
 **hatch lines clipped to the ring**, using `IMapCanvas::drawLine` only. No new

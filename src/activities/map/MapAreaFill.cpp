@@ -152,6 +152,26 @@ void MapAreaFill::hatchRing(IMapCanvas& canvas, const int16_t* xs, const int16_t
   }
 }
 
+void MapAreaFill::toneRing(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, const uint16_t pointCount,
+                           const MapAreaTone tone) {
+  if (tone == MapAreaTone::None || pointCount < 4) return;
+
+  int minX, minY, maxX, maxY;
+  ringBounds(xs, ys, pointCount, minX, minY, maxX, maxY);
+
+  int crossings[MapAreaFill::kMaxCrossings];
+  for (int y = minY; y <= maxY; ++y) {
+    const int count = collectCrossings(xs, ys, pointCount, true, y, crossings, MapAreaFill::kMaxCrossings);
+    if (count < 2) continue;
+    std::sort(crossings, crossings + count);
+    // Pairs, so a concave ring leaves its notch unfilled -- same rule as the
+    // hatch, and the reason a courtyard stays white.
+    for (int i = 0; i + 1 < count; i += 2) {
+      canvas.fillSpan(crossings[i], crossings[i + 1], y, tone);
+    }
+  }
+}
+
 void MapAreaFill::outlineRing(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, const uint16_t pointCount,
                               const int lineWidth, const MapInk ink) {
   if (lineWidth <= 0 || pointCount < 2) return;
