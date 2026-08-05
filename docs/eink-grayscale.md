@@ -126,10 +126,17 @@ destroyed the picture, in two different ways depending on what BW RAM held:
 | plane bits (no resync) | black almost everywhere, only some nudged pixels light |
 | the frame (after `resyncControllerBwRam()`) | correct black and white, **every grey gone to black** |
 
-**A windowed update seconds later is fine.** Confirmed on the same firmware: the
-Preview activity's Marker page moves a BW marker over a grey backdrop on a button
-press, and it moved cleanly, repeatedly, with the backdrop intact. The difference
-is not windowed-versus-full. It is *how soon after the grey nudge*.
+**A windowed update on a later button press is fine — measured, twice, on two
+builds.** The Preview activity's Marker page moves a BW marker over a grey
+backdrop and the backdrop survives: the grid and the dark grey blocks stay grey,
+repeatedly, press after press. The difference is not windowed-versus-full. It is
+*how soon after the grey nudge*.
+
+One caveat that is the caller's problem, not the panel's: presses can outrun the
+refresh. The window has to span from where the marker actually **is on the
+panel** to where it is going, not from the previous logical position -- track the
+drawn position or fast presses leave the old markers standing (seen on hardware,
+fixed in `PreviewActivity::markerDrawnStep_`).
 
 This is the hazard the reader already worked around and this doc already
 recorded, one section down: **grey residue ghosts the next frame, and a plain
@@ -203,8 +210,8 @@ does: **every** pixel is driven to its RAM value, so every grey goes black, not
 just the ones under the moved object. Kept here only so the plausible-looking
 derivation is not repeated.
 
-Bench: **Marker move** page. Answer measured and negative -- the page now exists
-to show the wipe rather than to prove survival.
+Bench: **Marker move** page. Answer measured and positive: the marker moves and
+the grey backdrop stays grey.
 
 Window constraint: `x` and `w` must be multiples of 8 (`Ssd1677Driver.cpp:427`).
 
@@ -332,6 +339,7 @@ prints its own instruction and the measured stage timings.
 | Nudge drift | two identical dark grey patches; the right one re-nudged on every press | does a repeated nudge drift (the main risk for partial grey) |
 | Region nudge | black field, then a nudge marking one region, then a smaller one inside it | is the grey overlay really region-limited (LUT slot 00 = no drive) |
 | Grey vs dither | real grey next to the 2x2 checkerboard at the same sizes, fills and 1 px lines | which one the map style should use, per feature |
+| Grey ladder | six patches off one black base, patch *i* nudged *i* times | how many levels repeated nudging really buys, and how fast it grains |
 
 Two records worth keeping per page: `tools/greyshot.py` for the exact levels the
 firmware asked for, and a photograph for what the panel actually did with them.
@@ -363,20 +371,39 @@ Cost consequence, now settled: a "windowed" update pays a full Fast refresh
 (~500 ms) no matter how small the rectangle. Small windows buy correctness and
 leave the rest of the picture alone; they do not buy panel time.
 
-**Does a repeated nudge drift?** The grey LUT is differential and calibrated
-against a specific base state. `SleepActivity.cpp:227-231` says a HALF base is
-required and a FULL base gives blotchy greys. The reader's image path says the
-opposite for its case (`EpubReaderActivity.cpp:1539-1546`) — both are
-hardware-observed, so this is empirical, not derivable.
+**ANSWERED 2026-08-05: yes, it drifts — lighter, and it grains.** Measured on the
+Preview activity's Drift page: two identical dark grey patches, the right one
+re-nudged on each press. The right patch got progressively **lighter** with every
+nudge, and past the first few it went visibly **blotchy — grain that builds up**.
 
-Nothing states what happens when the same pixel is nudged twice without
-returning to base. If it drifts darker, any scheme that re-applies grey to a
-region must first drive that region back to BW base. Unmeasured, and it is the
-main risk for partial grey updates.
+So the nudge is cumulative, not idempotent. Two consequences, and the second one
+is more interesting than the first:
 
-Bench: **Nudge drift** page. Two identical dark grey patches, the right one
-nudged again on every `CONFIRM`. They match or they do not, and the counter says
-how many nudges it took to tell.
+- **Re-applying grey to a region that already has grey is not safe.** The region
+  must be driven back to a black base first, or every touch bleaches it a step
+  and adds noise. Any partial-grey scheme on the map has to carry that cost.
+- **Four levels is the ceiling of one batch of masks, not of the panel.** k
+  nudges put a pixel k steps off black, which is a home-made scale the OEM LUT
+  does not offer, at ~350 ms per step (planes 190 + nudge 144 + cleanup 22).
+  The grain is what it costs.
+
+The **Grey ladder** page exists to price that: six patches off one black base,
+patch *i* nudged *i* times, judged side by side in a single frame. What it has to
+settle before anything is built on it — whether the steps are even, where they
+saturate, how fast the grain becomes unacceptable, and whether a different panel
+history or temperature reproduces the same ladder at all. First look says grain
+arrives early, which likely leaves the four OEM levels as the usable set for map
+fills.
+
+Related, and now consistent rather than contradictory: `SleepActivity.cpp:227-231`
+says a HALF base is required and a FULL base gives blotchy greys; the reader's
+image path says the opposite for its case
+(`EpubReaderActivity.cpp:1539-1546`). Both are about *which base state the nudge
+lands on*, which is exactly what this measurement shows the panel is sensitive
+to.
+
+Bench: **Nudge drift** page (answered) and **Grey ladder** page (open: how many
+extra levels the accumulation is actually worth).
 
 **Grey residue ghosts the next frame.** A plain fast diff cannot clear it. The
 reader forces the following page onto the HALF cleanup path —

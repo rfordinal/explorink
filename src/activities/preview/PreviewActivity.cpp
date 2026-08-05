@@ -15,8 +15,11 @@ constexpr int kMarkerSize = 28;  // white halo box; the black core is half of it
 constexpr int kRegionNudges = 2;
 
 // Page order and titles. Index order must match PreviewActivity::Page.
-constexpr StrId kPageTitles[] = {StrId::STR_PREVIEW_SCALE, StrId::STR_PREVIEW_MARKER, StrId::STR_PREVIEW_DRIFT,
-                                 StrId::STR_PREVIEW_REGION, StrId::STR_PREVIEW_DITHER};
+constexpr StrId kPageTitles[] = {StrId::STR_PREVIEW_SCALE,  StrId::STR_PREVIEW_MARKER, StrId::STR_PREVIEW_DRIFT,
+                                 StrId::STR_PREVIEW_REGION, StrId::STR_PREVIEW_DITHER, StrId::STR_PREVIEW_LEVELS};
+
+// Levels page: six patches, so five nudges build the full ladder.
+constexpr int kLevelsPatches = 6;
 
 constexpr GrayShade kBars[] = {GrayShade::White, GrayShade::LightGray, GrayShade::DarkGray, GrayShade::Black};
 constexpr StrId kBarLabels[] = {StrId::STR_PREVIEW_WHITE, StrId::STR_PREVIEW_LIGHT_GREY, StrId::STR_PREVIEW_DARK_GREY,
@@ -56,9 +59,10 @@ void PreviewActivity::loop() {
     // many times it has been nudged, so carrying a count across pages would
     // mislabel what is on the glass.
     markerStep_ = 0;
-    markerPrevStep_ = 0;
+    markerDrawnStep_ = 0;
     nudgeCount_ = 1;
     regionStep_ = 0;
+    levelsStep_ = 0;
     windowMs_ = 0;
     update_ = Update::Full;
     requestUpdate();
@@ -80,9 +84,10 @@ void PreviewActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
       mappedInput.wasPressed(MappedInputManager::Button::Down)) {
     markerStep_ = 0;
-    markerPrevStep_ = 0;
+    markerDrawnStep_ = 0;
     nudgeCount_ = 1;
     regionStep_ = 0;
+    levelsStep_ = 0;
     update_ = Update::Full;
     requestUpdate();
     return;
@@ -92,7 +97,9 @@ void PreviewActivity::loop() {
 
   switch (page_) {
     case Page::Marker:
-      markerPrevStep_ = markerStep_;
+      // markerDrawnStep_ is deliberately NOT touched here: it moves only when a
+      // frame actually reaches the panel, so a burst of presses still produces a
+      // window that covers the marker being erased.
       markerStep_ = (markerStep_ + 1) % kMarkerSteps;
       update_ = Update::MarkerWindow;
       break;
@@ -105,6 +112,18 @@ void PreviewActivity::loop() {
       regionStep_ = (regionStep_ + 1) % (kRegionNudges + 1);
       update_ = regionStep_ == 0 ? Update::Full : Update::Nudge;
       break;
+    case Page::Levels:
+      // Each press adds one nudge to every patch from levelsStep_ on, so patch i
+      // ends up nudged i times. One press past the full ladder starts over from
+      // a clean black base.
+      if (levelsStep_ >= kLevelsPatches - 1) {
+        levelsStep_ = 0;
+        update_ = Update::Full;
+      } else {
+        ++levelsStep_;
+        update_ = Update::Nudge;
+      }
+      break;
     default:
       update_ = Update::Full;
       break;
@@ -116,6 +135,7 @@ void PreviewActivity::render(RenderLock&&) {
   switch (update_) {
     case Update::Full:
       timings_ = GrayscaleFrame::render(renderer, callback());
+      markerDrawnStep_ = markerStep_;  // the whole frame just went to the panel
       windowMs_ = 0;
       LOG_DBG("PRV", "page %d full: base=%ums planes=%ums gray=%ums clean=%ums total=%ums grey=%d",
               static_cast<int>(page_), timings_.baseDrawMs + timings_.baseDisplayMs, timings_.planesMs,
@@ -140,7 +160,7 @@ void PreviewActivity::render(RenderLock&&) {
       draw(GrayPainter(renderer, GrayPainter::Pass::Base));
 
       int ax, ay, aw, ah, bx, by, bw, bh;
-      markerRect(markerPrevStep_, ax, ay, aw, ah);
+      markerRect(markerDrawnStep_, ax, ay, aw, ah);
       markerRect(markerStep_, bx, by, bw, bh);
       const int x0 = ax < bx ? ax : bx;
       const int y0 = ay < by ? ay : by;
@@ -150,6 +170,7 @@ void PreviewActivity::render(RenderLock&&) {
       const uint32_t start = millis();
       const bool shown = renderer.displayBufferWindow(x0, y0, x1 - x0, y1 - y0);
       windowMs_ = static_cast<uint16_t>(millis() - start);
+      if (shown) markerDrawnStep_ = markerStep_;
       LOG_DBG("PRV", "marker step %d: window %d,%d %dx%d in %ums (shown=%d)", markerStep_, x0, y0, x1 - x0, y1 - y0,
               windowMs_, shown ? 1 : 0);
       break;
@@ -160,8 +181,8 @@ void PreviewActivity::render(RenderLock&&) {
       timings_ = GrayscaleFrame::nudge(renderer, callback());
       drawKind_ = DrawKind::Frame;
       LOG_DBG("PRV", "page %d nudge %d: planes=%ums gray=%ums clean=%ums", static_cast<int>(page_),
-              page_ == Page::Drift ? nudgeCount_ : regionStep_, timings_.planesMs, timings_.grayDisplayMs,
-              timings_.cleanupMs);
+              page_ == Page::Drift ? nudgeCount_ : (page_ == Page::Levels ? levelsStep_ : regionStep_),
+              timings_.planesMs, timings_.grayDisplayMs, timings_.cleanupMs);
       // Same reason as above, and it matters more here: an immediate refresh
       // would break the very greys this page exists to compare. The counter on
       // screen stays one repaint behind; the log line above is the live count.
@@ -192,6 +213,9 @@ void PreviewActivity::draw(const GrayPainter& painter) const {
       break;
     case Page::Dither:
       drawDitherPage(painter);
+      break;
+    case Page::Levels:
+      drawLevelsPage(painter);
       break;
     default:
       break;
@@ -449,4 +473,47 @@ void PreviewActivity::drawDitherPage(const GrayPainter& painter) const {
     }
     y += 24;
   }
+}
+
+// Six patches off ONE black base. Press k nudges every patch from index k on, so
+// patch i finishes with i nudges: a ladder of whatever levels repeated nudging
+// actually produces. The Drift page proved the nudge accumulates; this is what
+// that is worth.
+//
+// Open, and this page is the measurement: whether the steps are even, where they
+// saturate, whether the late ones go blotchy, and whether any of it survives a
+// different panel history or temperature. Do not build a fifth or sixth level
+// into the map style on the strength of one screen.
+void PreviewActivity::drawLevelsPage(const GrayPainter& painter) const {
+  const int width = renderer.getScreenWidth() - 2 * kMargin;
+  const int top = contentTop() + 40;
+  const int fieldHeight = 420;
+  const int patchHeight = fieldHeight / kLevelsPatches;
+
+  if (drawKind_ == DrawKind::NudgeRegion) {
+    // Every patch from levelsStep_ on gets this nudge. Patch 0 is never marked,
+    // so it stays the black base the whole ladder is measured against.
+    for (int i = levelsStep_; i < kLevelsPatches; ++i) {
+      painter.fillRect(kMargin, top + i * patchHeight, width, patchHeight, GrayShade::DarkGray);
+    }
+    return;
+  }
+
+  // Base frame: one black field, no grey at all. Every level on this page is
+  // built by nudges, which is the whole point.
+  painter.fillRect(kMargin, top, width, fieldHeight, GrayShade::Black);
+  char label[16];
+  for (int i = 0; i < kLevelsPatches; ++i) {
+    const int y = top + i * patchHeight;
+    painter.line(kMargin, y, kMargin + width, y, 1, GrayShade::White);
+    snprintf(label, sizeof(label), "%d", i);
+    // White, and outside the nudged area is not an option here -- it sits on the
+    // patch, so it takes the patch's nudges too. That is fine: a label that
+    // lightens with its patch is a second read on the same effect.
+    painter.text(UI_12_FONT_ID, kMargin + 6, y + 6, label, GrayShade::White);
+  }
+
+  snprintf(label, sizeof(label), tr(STR_PREVIEW_LEVELS_STEP_FORMAT), levelsStep_, kLevelsPatches - 1);
+  note(painter, kMargin, top + fieldHeight + 10, label, GrayShade::Black);
+  note(painter, kMargin, top + fieldHeight + 28, tr(STR_PREVIEW_LEVELS_HINT), GrayShade::Black);
 }
