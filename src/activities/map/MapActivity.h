@@ -194,6 +194,11 @@ class MapActivity final : public Activity {
   // millis() deadlines; 0 means nothing armed. See the coalescing note above.
   uint32_t redrawDueMs_ = 0;
   uint32_t saveDueMs_ = 0;
+  // Own, much longer deadline: MissingTilesStore's list changes far less
+  // often than a ladder step, and a rider crossing a coverage gap for
+  // minutes must not turn into an SD write every kSaveSettleMs. Armed only
+  // once, by the first new tile since the last flush -- see renderViewport().
+  uint32_t missingTilesSaveDueMs_ = 0;
 
   // True while the busy badge is on the panel. See showBusy().
   bool busyShown_ = false;

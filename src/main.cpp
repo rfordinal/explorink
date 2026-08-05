@@ -24,6 +24,7 @@
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
+#include "MissingTilesStore.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
@@ -359,6 +360,7 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  MISSING_TILES.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 

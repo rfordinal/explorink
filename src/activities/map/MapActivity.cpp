@@ -16,6 +16,7 @@
 #include "MapRenderer.h"
 #include "MapStyleDefaults.h"
 #include "MapViewport.h"
+#include "MissingTilesStore.h"
 #include "fontIds.h"
 
 namespace {
@@ -35,6 +36,12 @@ constexpr uint32_t kButtonSettleMs = 500;
 // past the redraw, which itself takes the better part of two seconds: the
 // save must never be the thing standing between a press and the picture.
 constexpr uint32_t kSaveSettleMs = 4000;
+
+// MissingTilesStore's own, much longer interval -- a coverage gap can keep
+// producing new missing tiles for minutes at a stretch, and this is a rate
+// cap, not a settle delay: at most one SD write per this many milliseconds,
+// counted from the first new tile since the last flush (renderViewport()).
+constexpr uint32_t kMissingTilesSaveIntervalMs = 10 * 60 * 1000;
 
 // Debug readout geometry.
 constexpr int kTextX = 8;
@@ -382,6 +389,7 @@ void MapActivity::onExit() {
   // loop() to debounce into -- and it is still guarded by the value check,
   // so leaving the map without touching a button writes nothing.
   saveLaddersIfChanged();
+  MISSING_TILES.flushIfDirty();
 
   freeink::BlePositionServer::getInstance().end();
 
@@ -483,6 +491,13 @@ void MapActivity::loop() {
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
     redrawDueMs_ = 0;
     renderCurrent();
+  }
+  // Reuses `now` above -- this is one more integer compare per loop() tick,
+  // same cost class as the redraw/save checks either side of it, not a new
+  // per-tick expense.
+  if (missingTilesSaveDueMs_ != 0 && now >= missingTilesSaveDueMs_) {
+    missingTilesSaveDueMs_ = 0;
+    MISSING_TILES.flushIfDirty();
   }
   // Checked after the redraw, never before it: the redraw is what the rider
   // is waiting for, and this is an SD write.
@@ -756,10 +771,20 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     for (uint32_t index = 0; index < range.count() && index < 32; ++index) {
       if ((missing & (1u << index)) == 0) continue;
       MapHatch::drawTile(canvas, proj_, range.z, range.colAt(index), range.rowAt(index));
+      MISSING_TILES.record(range.z, range.colAt(index), range.rowAt(index));
     }
     // No marker restore here: drawPositionMarker() below is the marker on this
     // screen and it runs after the hatch anyway. Drawing the style's puck
     // first would only leave it peeking out from under a smaller mode marker.
+
+    // Arm only once: a re-hatch of tiles already on the list leaves isDirty()
+    // false (MissingTilesStore's own account of a count-only change), and
+    // re-arming on every one of those would mean a coverage gap the rider
+    // sits in for ten minutes never actually saves. The first genuinely new
+    // tile starts the clock; it is not pushed out further after that.
+    if (MISSING_TILES.isDirty() && missingTilesSaveDueMs_ == 0) {
+      missingTilesSaveDueMs_ = millis() + kMissingTilesSaveIntervalMs;
+    }
   }
 
   // Drawn last and outside IMapCanvas: this is the marker on the device, and
