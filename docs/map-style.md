@@ -141,6 +141,29 @@ Three style zeros disable rather than shrink: road width 0 (`hidden`),
 `placeDotDiameterPx` 0 (places layer off), `puckRadiusPx` 0 (arrow with no disc).
 The last is the golden fixture's setting, not a shape the spec asks for.
 
+## Two marker paths, and they disagree
+
+**Open, 2026-08-05.** The position marker is drawn twice over, by two different
+pieces of code:
+
+- **On the device:** `MapActivity::drawPositionMarker` — mode-aware (hike a dot,
+  cycle a small arrow, ride a bigger one), drawn straight onto `GfxRenderer`,
+  using `kMarker*` constants and none of the style.
+- **In the laptop preview:** `MapRenderer::drawMarker` — the style's
+  `layers.position` puck. `MapRenderer::render` draws no marker at all, so a
+  caller picks one.
+
+So the marker is the one thing on screen the preview cannot vouch for.
+
+The reason `drawPositionMarker` bypasses `IMapCanvas` is gone: it needed a white
+halo fill, and the canvas paints white now (`MapInk`). Moving it behind the canvas
+would put the device's marker in the preview.
+
+It needs a decision first. `mapstyle.json` has one `layers.position` block and no
+per-mode marker sizes, so either the style grows them (a `modes.<name>.marker`
+block) or one set of numbers is scaled per mode. Until that is settled, do not
+read the preview's puck as the marker the device draws.
+
 ## Both generated headers are gitignored
 
 `MapStyleDefaults.h` and `MapModeMaskDefaults.h` are build products, never
