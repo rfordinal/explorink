@@ -1,7 +1,8 @@
 # Web Server Guide
 
-This guide explains how to use CrossPoint Reader's built-in web server for file
-transfer, device settings, Wi-Fi/OPDS management, and SD-card font management.
+This guide explains how to use TrailInk's built-in web server. It moves files
+on and off the SD card. That is all it does -- device settings and Wi-Fi are
+configured on the device itself, not in a browser.
 
 ## Overview
 
@@ -10,10 +11,12 @@ The web server is available while the device is in **File Transfer** or
 
 - Upload, download, rename, move, and delete files on the SD card
 - Create folders
-- Edit many device settings from a browser
-- Manage saved Wi-Fi networks and OPDS servers
-- Upload and delete `.cpfont` SD-card font families
 - Accept WebDAV clients and Calibre wireless uploads
+- Report device status (firmware, IP, free heap, uptime)
+
+It cannot change device settings or Wi-Fi credentials. Those pages were removed
+(2026-08-05) so there is one settings surface, not two that can disagree. Use
+**Settings** on the device.
 
 The server does not require authentication. Use it only on trusted private
 networks or in hotspot mode when you control who is connected.
@@ -72,12 +75,14 @@ instructions and upload progress on the reader. Use this mode with the
 CrossPoint Calibre plugin or other clients that speak the documented WebSocket
 upload protocol.
 
-For Calibre OPDS browsing, add `/opds` to the catalog URL when configuring an
-OPDS server.
+For Calibre OPDS browsing, add `/opds` to the catalog URL. OPDS servers are
+configured on the device (**Settings > System > OPDS Servers**,
+`src/activities/settings/SettingsActivity.cpp:75`); the browser no longer has a
+card for them.
 
 ## Web Interface
 
-The browser UI has four primary pages.
+The browser UI has two pages.
 
 ### Home
 
@@ -89,37 +94,21 @@ uptime, and free heap.
 The File Manager page can:
 
 - Browse SD-card folders
-- Upload files, using WebSocket upload when available and HTTP upload as a fallback
+- Upload files over HTTP multipart POST
 - Create folders
 - Download files
 - Rename files
 - Move files into existing folders
 - Delete one or more selected files or empty folders
 
+Uploads go over HTTP only. The rewritten page dropped the WebSocket upload
+path; the port-81 WebSocket server still runs, because Calibre clients use it.
+Whether that costs upload speed is unmeasured -- comparing the two on a large
+file would settle it.
+
 Existing files with the same name are overwritten by uploads. When EPUB files
 are overwritten, moved, renamed, or deleted through the web server, the matching
 book cache is cleared so stale metadata is not reused.
-
-### Settings
-
-The Settings page exposes many firmware settings in the browser. It also has
-cards for:
-
-- Saved Wi-Fi networks
-- OPDS servers
-
-Passwords are accepted when adding or editing entries, but saved passwords are
-not returned by the API.
-
-### Fonts
-
-The Fonts page lists installed SD-card font families and lets you upload
-`.cpfont` files. Upload files from one font family at a time. The server validates
-the font family name, filename, and `.cpfont` magic bytes before accepting the
-upload.
-
-Installed fonts appear in **Settings > Reader > Font Family** after the font
-registry refreshes.
 
 ## Command Line Use
 
@@ -141,8 +130,10 @@ Endpoint details are documented in [webserver-endpoints.md](./webserver-endpoint
 
 1. Use **Create Hotspot** when no trusted network is available.
 2. Prefer `crosspoint.local` when available, but keep the displayed IP address as a fallback.
+   That hostname is the literal value in the code, not a stale name.
 3. Move closer to the router if upload progress stalls in Join Network mode.
-4. Upload custom fonts through the Fonts page or copy them to `/.fonts/` or `/fonts/` on the SD card.
+4. Copy custom `.cpfont` families to `/.fonts/` or `/fonts/` on the SD card. The
+   web font manager was removed; the device still loads SD fonts at boot.
 5. Exit File Transfer mode when finished to conserve battery.
 
 ## Related Documentation
