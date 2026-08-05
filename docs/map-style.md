@@ -254,6 +254,42 @@ Open: what those extra 600 KB cost in wall-clock on real hardware, per viewport
 reset. The preview cannot answer it -- the laptop's disk is not an SD card over
 SPI. Needs the on-device timing that `MapActivity` already logs.
 
+## Green areas and built-up areas, when they arrive
+
+A second branch is adding two more area layers -- green (forest, park, grass) and
+built-up (landuse). They fit this code without redesigning it, and this section
+is what the two branches need to agree on.
+
+**They are area layers, so they are already handled.** Each needs, in the
+firmware:
+
+- a `MapTileReader::Layer` id and reader support;
+- a pass pair on `IMapSource` -- `beginGreen()`/`nextGreen()`, the same shape as
+  `beginBuildings()`/`nextBuilding()`, about ten lines each in `MapTileSource`;
+- a `MapStyle` block (enabled, outline, tone, hatch) and the matching
+  `gen_mapstyle.py` mapping;
+- a call in `MapRenderer::render`, in draw order.
+
+**Draw order**: built-up area, green area, water, buildings, roads, then the rest.
+Landuse is background; everything above it has to stay readable over it, which is
+the whole reason a tone is a sparse pattern and not a grey block.
+
+**Tones, as a starting point**: built-up `Stipple`, green `Light` or a diagonal
+hatch (a forest is one big area and large enough for lines to read as a pattern),
+water `Dark`. Two adjacent layers must not share a tone, or their boundary
+disappears -- that boundary is often the thing being navigated by.
+
+**Ask the builder for a class byte.** The record already has one and every area
+layer currently writes 0 into it. Water proves the cost of leaving it that way:
+`mapstyle.json` has river/stream/canal rules the device can never honour. Without
+a class, forest and park get one tone forever. Argued in the parent repo's
+`docs/map-data-spec.md`, "Every area layer needs its own class byte".
+
+**Grey changes nothing above `MapAreaTone`.** When the panel's real grey levels
+land, a tone maps to a grey instead of a dither pattern, inside the two
+`IMapCanvas` implementations. The style vocabulary, the draw order and every
+caller stay as they are.
+
 ## Two marker paths, and they disagree
 
 **Open, 2026-08-05.** The position marker is drawn twice over, by two different
