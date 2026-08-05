@@ -195,6 +195,13 @@ class MapConsoleState {
   // Pushed alongside setRenderStats() by the same reset. `tiles` reads this.
   void setTileRange(const MapTileRangeSnapshot& range) { tileRange_ = range; }
 
+  // The .tib format version this build reads (MapTileReader::kFormatVersion),
+  // pushed once in onEnter(). Reported by `info` so a tile supplier can ask
+  // what to build without starting a fetch to find out; the fetch itself quotes
+  // the same number in `NEED_TILES`. Pushed rather than included, for the same
+  // reason as the missing list: this half stays free of the map's headers.
+  void setTileFormatVersion(uint16_t version) { tileFormatVersion_ = version; }
+
   // Where `missing` reads its list from. Not owned; must outlive this state.
   // Left unset (the default) `missing` answers `INFO missing=unavailable`,
   // which is what a native test with no SD card behind it should see.
@@ -241,6 +248,9 @@ class MapConsoleState {
   MapTileRangeSnapshot tileRange_;
   IMissingTilesSource* missingTiles_ = nullptr;
   MapSkipTally skips_;
+  // 0 until MapActivity pushes the real one -- `info` then omits the line
+  // rather than claiming version 0, which is not a version that ever existed.
+  uint16_t tileFormatVersion_ = 0;
 };
 
 // Line assembler + parser + a reference to the shared state. One of these

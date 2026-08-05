@@ -67,8 +67,6 @@
 // front four are user-remappable in settings and the mapping is
 // orientation-aware; reading HalGPIO::BTN_* directly breaks both.
 //
-// ## Coalescing is required, not a nicety
-//
 // ## Fetching missing tiles is a state of this screen, not its own activity
 //
 // The rider asks for the gaps to be filled from CONFIRM's menu, and a progress

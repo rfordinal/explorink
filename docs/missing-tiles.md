@@ -156,9 +156,9 @@ What happens, in order:
 1. The store is sorted into fetch priority and its size is the fetch's total.
 2. The skip tally is cleared, so the failure count on screen belongs to this
    fetch (`MapConsoleState::clearSkips()`).
-3. The device sends `NEED_TILES <count>` as an **unsolicited indication** on
-   the command characteristic. This is the one place the device starts a
-   conversation instead of answering one; the mechanism is the same
+3. The device sends `NEED_TILES <count> fmt <version>` as an **unsolicited
+   indication** on the command characteristic. This is the one place the device
+   starts a conversation instead of answering one; the mechanism is the same
    `BlePositionServer::sendCommandReply()` every other reply uses, which needs
    only a prior subscribe, not a poll.
 4. The phone pages the list with `missing` and pushes tiles back over the
@@ -170,6 +170,31 @@ If `NEED_TILES` cannot be delivered -- BLE down, or nobody subscribed to the
 command characteristic -- the screen says so instead of counting to zero
 forever. An empty list says "no missing tiles" and stops there: the rider
 pressed a button and is owed an answer.
+
+### The format version is part of the ask
+
+`fmt <version>` in `NEED_TILES` is `MapTileReader::kFormatVersion`
+(`src/activities/map/MapTileReader.h`) -- the one `.tib` version this build
+reads, checked for exact equality in `parseHeader()`
+(`src/activities/map/MapTileReader.cpp:85`). `info` reports the same number as
+`INFO tile_fmt=<version>`, so a builder can ask without starting a fetch.
+
+Without it the feature quietly defeats itself. A tile built to another version
+transfers fine, passes CRC32 and gets renamed into place; the transfer reports
+`OK`, so `drainTransferredTiles()` drops the entry from the list. Then the next
+render opens the file, the reader refuses it on the version, the map hatches the
+same square, and `record()` puts it straight back on the list. The next fetch
+asks for the same tile again. **The waste repeats every fetch, not once.**
+
+The device does not verify the header of an arriving tile before clearing its
+entry, and deliberately so: the receiver deals in bytes and paths, not tiles
+(the same channel carries route and style pushes), and re-opening every arrival
+to parse a header would put an SD read on the arrival path for a case the
+`fmt` handshake already covers. The system is self-correcting either way -- an
+unreadable tile is re-hatched and re-recorded on the next render, so the list
+never keeps a lie for long. If `fmt` ever has to be *enforced* device-side
+rather than trusted, validating the header in `drainTransferredTiles()` before
+`forget()` is the place.
 
 ### `skip <z> <col> <row> [<reason>]`
 

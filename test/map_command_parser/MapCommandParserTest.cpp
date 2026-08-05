@@ -752,6 +752,26 @@ TEST(MapCommandConsole, InfoReportsStateAndEndsWithOk) {
   for (const std::string& line : out.lines) EXPECT_EQ(line.rfind("INFO heap=", 0), std::string::npos);
 }
 
+TEST(MapCommandConsole, InfoReportsTheTileFormatVersionOnlyWhenPushed) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  // Nothing pushed: the line is omitted rather than claiming version 0, which
+  // is not a version any tile was ever built to.
+  feedLine(console, out, "info");
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO tile_fmt=", 0) == 0; }),
+            0);
+
+  out.lines.clear();
+  state.setTileFormatVersion(2);
+  feedLine(console, out, "info");
+  // A supplier of tiles reads this before it pushes anything: a tile built to
+  // another version passes CRC and is then refused on open.
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO tile_fmt=2"), out.lines.end());
+}
+
 TEST(MapCommandConsole, InfoUsesTheHeapProviderWhenSet) {
   MapConsoleState state;
   MapCommandConsole console(state);

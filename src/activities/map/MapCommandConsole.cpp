@@ -221,6 +221,14 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   snprintf(line, sizeof(line), "INFO bytes=%lu", static_cast<unsigned long>(bytesRead_));
   out.reply(line);
 
+  // Which .tib version this build reads. A supplier of tiles needs it before it
+  // pushes anything -- a tile built to another version passes CRC and is then
+  // refused on open (MapTileReader::kFormatVersion).
+  if (tileFormatVersion_ != 0) {
+    snprintf(line, sizeof(line), "INFO tile_fmt=%u", static_cast<unsigned>(tileFormatVersion_));
+    out.reply(line);
+  }
+
   if (freeHeapProvider_ != nullptr) {
     snprintf(line, sizeof(line), "INFO heap=%lu", static_cast<unsigned long>(freeHeapProvider_()));
     out.reply(line);

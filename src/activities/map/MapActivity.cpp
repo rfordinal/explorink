@@ -419,6 +419,9 @@ void MapActivity::onEnter() {
   // copied in -- MISSING_TILES was loaded from the card in setup() and keeps
   // growing while this screen is open, so a copy would go stale mid-session.
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
+  // Constant for the build, so once here rather than per reset. `info` reports
+  // it and startFetch() quotes it in NEED_TILES.
+  consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
   // So `info` answers with real numbers before the first fix arrives rather
   // than reporting a 0 m/px viewport that has simply never been drawn.
   consoleState_.setZoomInfo(zoomStep(), MapViewport::kZoomLadder[zoomStep()].z,
@@ -716,8 +719,15 @@ void MapActivity::startFetch() {
   // starts a conversation instead of answering one. Fails if BLE is down or
   // nobody has subscribed, which is exactly the case the rider needs told:
   // without a phone listening, no tile is ever going to arrive.
-  char line[32];
-  snprintf(line, sizeof(line), "NEED_TILES %lu", static_cast<unsigned long>(fetchTotal_));
+  //
+  // The format version is part of the ask, not a detail: a tile built to
+  // another version transfers fine and passes CRC, then MapTileReader refuses
+  // it on open and the map hatches the same square again
+  // (MapTileReader::kFormatVersion). Saying which version this build reads lets
+  // the supplier skip what it cannot satisfy instead of spending the transfer.
+  char line[48];
+  snprintf(line, sizeof(line), "NEED_TILES %lu fmt %u", static_cast<unsigned long>(fetchTotal_),
+           static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "fetch: NEED_TILES not delivered, nobody subscribed");
     fetchPhase_ = FetchPhase::Finished;
@@ -817,6 +827,12 @@ void MapActivity::renderFetchScreen() {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   busyShown_ = false;  // this frame painted over the badge
+  // Same reason as renderWaiting(): this frame holds no map and no marker, so
+  // there is nothing for a fix to move inside. loop() ignores fixes while the
+  // fetch screen is up, but leaving these true would arm a marker restore
+  // against a frame the marker was never drawn on.
+  viewportDrawn_ = false;
+  markerPatchValid_ = false;
 
   const MapTransferReceiver::Status transfer = transfer_.status();
   fetchDrawnDone_ = transfer.completed - fetchBaseCompleted_;

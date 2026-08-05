@@ -142,9 +142,22 @@ class MapTileReader {
   // real heap high-water mark across tiles of very different sizes, in
   // test/map_tile_reader/MapTileReaderGoldenTest.cpp.
 
- private:
+  // The one .tib format version this build reads. Checked for exact equality
+  // in parseHeader(), never a range: a version-1 file's directory entries are
+  // 9 bytes where this version's are 13, so parsing an older file would yield
+  // plausible-looking garbage offsets instead of a clean refusal.
+  //
+  // **Public because it is on the wire.** The device quotes it when it asks a
+  // phone for missing tiles (`NEED_TILES <count> fmt <version>`,
+  // MapActivity::startFetch()) and reports it in `info`, so a supplier can
+  // refuse to push a tile this build would reject on open. Without that, a
+  // wrong-version tile transfers fine, passes CRC, is renamed into place, gets
+  // dropped from the missing list -- and is then rejected by the reader on the
+  // next render and recorded as missing all over again. The transfer is not
+  // wasted once; it is wasted on every fetch.
   static constexpr uint16_t kFormatVersion = 2;
 
+ private:
   struct LayerEntry {
     uint8_t id = 0;
     uint32_t offset = 0;
