@@ -197,8 +197,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     sleepScreenValues[CrossPointSettings::DARK] = StrId::STR_DARK;
     sleepScreenValues[CrossPointSettings::LIGHT] = StrId::STR_LIGHT;
     sleepScreenValues[CrossPointSettings::CUSTOM] = StrId::STR_CUSTOM;
-    sleepScreenValues[CrossPointSettings::COVER] = StrId::STR_COVER;
-    sleepScreenValues[CrossPointSettings::COVER_CUSTOM] = StrId::STR_COVER_CUSTOM;
+    sleepScreenValues[CrossPointSettings::LOCATION] = StrId::STR_LOCATION;
+    sleepScreenValues[CrossPointSettings::LOCATION_CUSTOM] = StrId::STR_LOCATION_CUSTOM;
     sleepScreenValues[CrossPointSettings::BLANK] = StrId::STR_NONE_OPT;
     sleepScreenValues[CrossPointSettings::QUICK_RESUME] = StrId::STR_QUICK_RESUME;
 

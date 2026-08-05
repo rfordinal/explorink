@@ -1,13 +1,10 @@
 #include "SleepActivity.h"
 
-#include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
-#include <Txt.h>
-#include <Xtc.h>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -43,11 +40,15 @@ void SleepActivity::onEnter() {
       return renderBlankSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM):
       return renderCustomSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
-      return renderCoverSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
-      if (APP_STATE.lastSleepFromReader) {
-        return renderCoverSleepScreen();
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::LOCATION):
+      return renderLocationSleepScreen();
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::LOCATION_CUSTOM):
+      // Gate on whether we have a fix to show, not on lastSleepFromReader --
+      // TrailInk has no book open almost all the time, so a reader-only gate
+      // never fires and this mode always fell through to the custom-wallpaper
+      // fallback (and further to the dark default screen if that's empty too).
+      if (SETTINGS.mapHasLastFix) {
+        return renderLocationSleepScreen();
       } else {
         return renderCustomSleepScreen();
       }
@@ -251,83 +252,30 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   }
 }
 
-void SleepActivity::renderCoverSleepScreen() const {
-  void (SleepActivity::*renderNoCoverSleepScreen)() const;
-  switch (SETTINGS.sleepScreen) {
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
-      renderNoCoverSleepScreen = &SleepActivity::renderCustomSleepScreen;
-      break;
-    default:
-      renderNoCoverSleepScreen = &SleepActivity::renderDefaultSleepScreen;
-      break;
-  }
+void SleepActivity::renderLocationSleepScreen() const {
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
 
-  if (APP_STATE.openEpubPath.empty()) {
-    return (this->*renderNoCoverSleepScreen)();
-  }
+  renderer.clearScreen();
+  renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
 
-  std::string coverBmpPath;
-  bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
-
-  // Check if the current book is XTC, TXT, or EPUB
-  if (FsHelpers::hasXtcExtension(APP_STATE.openEpubPath)) {
-    // Handle XTC file
-    Xtc lastXtc(APP_STATE.openEpubPath, "/.crosspoint");
-    if (!lastXtc.load()) {
-      LOG_ERR("SLP", "Failed to load last XTC");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    if (!lastXtc.generateCoverBmp()) {
-      LOG_ERR("SLP", "Failed to generate XTC cover bmp");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    coverBmpPath = lastXtc.getCoverBmpPath();
-  } else if (FsHelpers::hasTxtExtension(APP_STATE.openEpubPath)) {
-    // Handle TXT file - looks for cover image in the same folder
-    Txt lastTxt(APP_STATE.openEpubPath, "/.crosspoint");
-    if (!lastTxt.load()) {
-      LOG_ERR("SLP", "Failed to load last TXT");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    if (!lastTxt.generateCoverBmp()) {
-      LOG_ERR("SLP", "No cover image found for TXT file");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    coverBmpPath = lastTxt.getCoverBmpPath();
-  } else if (FsHelpers::hasEpubExtension(APP_STATE.openEpubPath)) {
-    // Handle EPUB file
-    Epub lastEpub(APP_STATE.openEpubPath, "/.crosspoint");
-    // Skip loading css since we only need metadata here
-    if (!lastEpub.load(true, true)) {
-      LOG_ERR("SLP", "Failed to load last epub");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    if (!lastEpub.generateCoverBmp(cropped)) {
-      LOG_ERR("SLP", "Failed to generate cover bmp");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    coverBmpPath = lastEpub.getCoverBmpPath(cropped);
+  if (SETTINGS.mapHasLastFix) {
+    // Order matches MapHeading.h's 16-step enum. Abbreviations, like the
+    // coordinates themselves, aren't run through tr() -- they're compass
+    // shorthand, not language.
+    static constexpr const char* kHeadingAbbrev[16] = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                                                       "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"};
+    char buf[48];
+    const float lat = static_cast<float>(SETTINGS.mapLastLatE7) / 1e7f;
+    const float lon = static_cast<float>(SETTINGS.mapLastLonE7) / 1e7f;
+    snprintf(buf, sizeof(buf), "%.4f, %.4f  %s", lat, lon, kHeadingAbbrev[SETTINGS.mapLastHeading & 0x0F]);
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, buf);
   } else {
-    return (this->*renderNoCoverSleepScreen)();
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
   }
 
-  HalFile file;
-  if (Storage.openFileForRead("SLP", coverBmpPath, file)) {
-    Bitmap bitmap(file);
-    if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-      LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
-      renderBitmapSleepScreen(bitmap);
-      return;
-    }
-  }
-
-  return (this->*renderNoCoverSleepScreen)();
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {
