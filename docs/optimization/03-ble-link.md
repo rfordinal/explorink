@@ -33,10 +33,17 @@ the 5-byte chunk header (`0x02` + `u32 offset`, `MapTransferReceiver.h:23`)
 means a 248-byte payload per frame.
 
 But **the central initiates the MTU exchange, and nothing on the device
-requests or logs it.** `begin()` never calls `NimBLEDevice::setMTU()`
-(`BlePositionServer.cpp:132-225`), and `ServerCallbacks` implements only
-`onDisconnect` (`:109-122`) — no `onConnect`, no `onMTUChange`, so the
+requests or logs it.** `begin()` never calls `NimBLEDevice::setMTU()`, and
+`ServerCallbacks` implements only `onDisconnect`
+(`BlePositionServer.cpp:118-131`) — no `onConnect`, no `onMTUChange`, so the
 negotiated MTU never reaches the log.
+
+`70da0b86` added `isCommandSubscribed()` and an `onSubscribe` on the command
+characteristic (`BlePositionServer.h:148-155`, `.cpp:112`), for a related reason
+worth repeating here: `indicate()` accepts a line into NimBLE's one-slot queue
+whether or not a peer is subscribed, so a reply "succeeding" is not evidence that
+anything heard it. The same applies to every number in this plan — ask the stack
+what the link actually is, do not infer it from a return value.
 
 Consequences, all **read**:
 

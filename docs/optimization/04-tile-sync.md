@@ -1,10 +1,11 @@
 # Plan 04 — missing tiles and the sync flow
 
-Reviewed against `412e0ed9` ("refactor: tile sync is its own screen, with a bar
-per tile"), which landed on `develop` **while this review was being written**.
-An earlier draft of this plan argued the fetch code should leave `MapActivity`;
-that has now happened, and it was done better than the draft proposed. What is
-below is against the new shape.
+Reviewed against `70da0b86`. Two commits landed on `develop` **while this review
+was being written**: `412e0ed9` moved the fetch out of `MapActivity` into
+`TileSyncActivity`, and `70da0b86` gave that screen a Waiting phase that tracks
+whether a phone is subscribed at all. An earlier draft of this plan asked for the
+first and part of the second; both were done better than the draft proposed. What
+is below is against the shape after both.
 
 ## How it works now
 
@@ -21,11 +22,11 @@ fails, sets a bit in `unavailableMask_` (`MapTileSource.cpp:76`, `:96`).
 menu (`HomeActivity.cpp:118`, `HomeMenuItem::TILE_SYNC`). It starts its own BLE
 peripheral, attaches its own receiver, keeps its own `MapConsoleState`, sorts the
 store into fetch priority, snapshots that order into `rows_`, and sends
-`NEED_TILES <count> fmt <version>` (`TileSyncActivity.cpp:36-110`).
+`NEED_TILES <count> fmt <version>` (`TileSyncActivity.cpp:36-100`).
 
 **Row state is derived, not accounted for** (`TileSyncActivity.h:41-53`):
 active from `Status::activeTile`, skipped from the `IMapSkipObserver` callback,
-done from "gone from the store", waiting otherwise (`stateOf`, `:193-209`).
+done from "gone from the store", waiting otherwise (`stateOf`, `:228-244`).
 
 That design decision is the right one and it is the reason two of the items below
 are small rather than large. Deriving state from the store means there is no
@@ -50,7 +51,7 @@ is up — which `MapActivity.h:290-293` says is the point of it being attached
 there.
 
 But `drainTransferredTiles()` was removed from `MapActivity` in that refactor and
-now exists only in `TileSyncActivity` (`:172-184`). `MapActivity`'s only
+now exists only in `TileSyncActivity` (`:207-219`). `MapActivity`'s only
 `MISSING_TILES` calls are `record()` (`:1003`), `isDirty()` (`:1014`) and
 `flushIfDirty()` (`:468`, `:597`). Nothing calls `forget()`.
 
@@ -89,7 +90,7 @@ whose results it half-processes.
 
 `Status` carries one `lastTile` plus a `tileSeq` counter
 (`MapTransferReceiver.h:98-115`). The consumer compares its own copy and acts
-when they differ (`TileSyncActivity.cpp:172-184`). Two tiles landing between two
+when they differ (`TileSyncActivity.cpp:207-219`). Two tiles landing between two
 `loop()` iterations collapse into one — documented as theoretical on the grounds
 that a whole file takes seconds (`MapTransferReceiver.h:106-111`).
 
@@ -99,11 +100,11 @@ race more likely.
 - **Worse consequence.** Row state is derived from the store. A missed
   `forget()` leaves that row reading **Waiting forever**, while the summary line
   counts it done, because the summary comes from `transfer.completed`
-  (`TileSyncActivity.cpp:353`, `:371`). So a missed arrival ends the sync with a
+  (`TileSyncActivity.cpp:407`, `:437`). So a missed arrival ends the sync with a
   row still saying it is waiting. Before the refactor the same miss cost one
   stale list entry and nothing visible.
 - **More likely.** `loop()` on this screen does a full-frame e-ink refresh on
-  every settle (`:375-383`) — hundreds of milliseconds during which no drain
+  every settle (`:439-448`) — hundreds of milliseconds during which no drain
   runs. With plan 03's MTU and interval work, a small tile is a couple of
   seconds. The window for two arrivals inside one iteration stops being
   theoretical.
@@ -115,7 +116,7 @@ now (`MapTransferReceiver.cpp:400-414`). 8 × 9 bytes plus two indices.
 ## Item 3 — the completion test can finish early
 
 **read.** Completion is `done + skipped_ >= rowCount_` where
-`done = transfer.completed` (`TileSyncActivity.cpp:371`, `:376`).
+`done = transfer.completed` (`TileSyncActivity.cpp:437`, `:442`).
 
 `completed` counts **every** file that landed since the screen opened, including
 files that are not tiles and tiles that are not on this run's snapshot
@@ -124,7 +125,7 @@ the list advances the completion counter, and a sync can declare itself done wit
 rows still Waiting.
 
 Fix: count settled **rows**, not landed files. The screen already computes each
-row's state (`stateOf`, `:193-209`); completion is "no row is Waiting or
+row's state (`stateOf`, `:228-244`); completion is "no row is Waiting or
 Active". That is one loop over `rows_`, and it uses the same derived state the
 list draws, so the summary line and the verdict can no longer disagree with the
 rows.
@@ -132,36 +133,47 @@ rows.
 Same change makes the summary line honest: `%lu / %lu` should be settled rows
 over total rows, not `completed` over `rowCount_`.
 
-## Item 4 — a sync that goes quiet never ends
+## Item 4 — a phone that stays but stops answering
 
-**read.** Nothing in `updateProgress()` (`:369-412`) has a timeout. If the phone
-stops answering — app killed, screen locked, out of range without a BLE
-disconnect — the screen sits on Running forever and the only exit is Back.
+**Mostly fixed by `70da0b86`.** That commit added `Phase::Waiting` and
+`trackPhone()` (`TileSyncActivity.cpp:126-144`), watching
+`BlePositionServer::isCommandSubscribed()` — a new accessor that answers the
+question `sendCommandReply()` could not, because NimBLE accepts an indication
+into its queue whether or not anybody is subscribed
+(`BlePositionServer.h:148-155`). A phone that walks out of range now puts the
+screen back to Waiting instead of leaving a bar that will never move, and
+re-subscribing re-sends `NEED_TILES` (`:59-63` of that diff, `askForTiles()` at
+`.cpp:106`). That is a better answer than the timeout this plan originally asked
+for: it says which of two different things went wrong, and it recovers on its own.
 
-The receiver already has the right constant: `kStaleTransferMs = 30000`
-(`MapTransferReceiver.h:126`), used to reclaim a stale transfer when the next
-begin arrives.
+What is left is narrower: **a phone that stays subscribed and simply stops
+sending.** An app bug, or a tile it cannot supply and does not `skip`. Then there
+is no arrival, no skip, no unsubscribe — `phase_` stays Running and
+`updateProgress()` (`:435-473`) has no deadline.
 
-Fix: one `millis()` deadline in `TileSyncActivity`, refreshed by any arrival, any
-skip, and any change in `transfer.received`. On expiry, `Phase::Finished` with a
-new verdict string ("phone stopped answering"). ~15 lines and it turns an
-indefinite wait into an answer.
+Fix, if it is worth it: one `millis()` deadline refreshed by any arrival, any
+skip and any change in `transfer.received`, expiring to Finished with its own
+verdict. `MapTransferReceiver::kStaleTransferMs` = 30000 is the existing constant
+to reuse (`MapTransferReceiver.h:126`).
 
-This is the highest-value item in this plan for the rider, and the cheapest.
+Lower priority than it was. The common failure — no phone, or the phone left — is
+now handled and visible.
 
 ## Item 5 — `firstVisibleRow()` is O(n²), and it takes 200 critical sections
 
 **read.** `firstVisibleRow()` calls `stateOf()` for every row until it finds an
-unsettled one (`:238-247`). `stateOf()` calls `transfer_.status()`, which takes a
+unsettled one (`TileSyncActivity.cpp:270-293`). `stateOf()` calls
+`transfer_.status()`, which takes a
 `portENTER_CRITICAL` (`MapTransferReceiver.cpp:416-421`), and `stillMissing()`,
-which is a linear scan of the store (`:186-191`).
+which is a linear scan of the store (`TileSyncActivity.cpp:221-226`).
 
 At the 200-entry cap that is up to 200 critical sections and ~20,000 comparisons
-per call. `drawList()` calls it once per repaint (`:335`) and `rowRect()` calls
-it again per single-row update (`:263`, from `:405`).
+per call. `drawList()` calls it once per repaint (`:374`) and `rowRect()` calls it again
+per single-row update (`:302`, from `:466`).
 
 Not a visible problem — a repaint happens at most every 2 s
-(`kActiveRowRefreshMs`, `:155`) against a refresh that costs hundreds of
+(`kActiveRowRefreshMs`, `TileSyncActivity.h:177`) against a refresh that costs
+hundreds of
 milliseconds. But taking a critical section 200 times in a loop disables
 interrupts 200 times while the NimBLE host task is trying to service a transfer,
 and that is the one cost here that is not just wasted cycles.
@@ -211,9 +223,9 @@ written against that doc.
   (`MapActivity.cpp:1010-1016`). The comment explains why re-arming would mean a
   long coverage gap never saves. `onExit()` also flushes (`:468`). Leave it.
 - **`rows_` is heap, not a member array** — 200 entries is ~2.4 KB and the
-  activity would carry it whether or not a sync ran (`TileSyncActivity.h:129-140`).
+  activity would carry it whether or not a sync ran (`TileSyncActivity.h:155-162`).
   Correct call, `makeUniqueNoThrow` with an OOM path that ends the screen with a
-  verdict rather than crashing (`:51-62`).
+  verdict rather than crashing (`:51-62` of `onEnter()`).
 - **Eviction picks the lowest count** (`MissingTilesStore.cpp:55-65`), which can
   evict a regional tile seen once in favour of a detail tile seen twice — the
   eviction policy and the tier-first fetch policy disagree. Unreachable at 200
@@ -222,9 +234,10 @@ written against that doc.
 
 ## Commit sequence
 
-1. `fix(tilesync): end a sync that has gone quiet` — item 4.
-2. `fix(tilesync): finish on settled rows, not landed files` — item 3.
+1. `fix(tilesync): finish on settled rows, not landed files` — item 3.
+2. `fix(map): decide what a push to the map screen does` — item 1, whichever way.
 3. `perf(tilesync): one transfer snapshot per repaint` — item 5.
-4. `fix(map): decide what a push to the map screen does` — item 1, whichever way.
-5. `feat(ble): drain a ring of landed tiles` — item 2.
+4. `feat(ble): drain a ring of landed tiles` — item 2.
+5. `fix(tilesync): time out a phone that stays but stops sending` — item 4's
+   remainder, if wanted.
 6. Resume (item 6) on its own branch.

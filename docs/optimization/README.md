@@ -8,9 +8,10 @@ Scope: the code TrailInk added (`src/activities/map/`, `lib/BlePositionServer/`,
 (`lib/GfxRenderer/`, `lib/hal/`, `src/main.cpp`). Inherited code is only touched
 where the map needs it, per the fork rule in `CLAUDE.md`.
 
-Reviewed against `develop` at `412e0ed9`. `1eabf58a` was HEAD when the read
-started and `412e0ed9` landed part-way through, so plans 04 and 05 were rewritten
-against the new shape and every `MapActivity.cpp` citation was re-checked. If a
+Reviewed against `develop` at `70da0b86`. `1eabf58a` was HEAD when the read
+started; `412e0ed9` (tile sync becomes its own screen) and `70da0b86` (that screen
+waits for a phone) both landed part-way through. Plans 04 and 05 were rewritten
+against the new shape and every citation was re-checked against `70da0b86`. If a
 line number is off by a few, the surrounding function name is the anchor.
 
 ## The plans
@@ -20,7 +21,7 @@ line number is off by a few, the surrounding function name is the anchor.
 | [01-render-pipeline.md](01-render-pipeline.md) | projection, area fill, stroke, canvas | ESP32-C3 has no FPU; the per-point projection is software `double` |
 | [02-tile-io.md](02-tile-io.md) | `.tib` reading, CRC, pass structure | every drawn layer is read off the card twice per pass |
 | [03-ble-link.md](03-ble-link.md) | `BlePositionServer`, transfer channel | the negotiated MTU is never requested and never logged |
-| [04-tile-sync.md](04-tile-sync.md) | missing list, `TileSyncActivity` | a sync that goes quiet never ends; arrivals on the map screen no longer clear the list |
+| [04-tile-sync.md](04-tile-sync.md) | missing list, `TileSyncActivity` | arrivals on the map screen no longer clear the list; completion counts landed files, not settled rows |
 | [05-map-activity-structure.md](05-map-activity-structure.md) | `MapActivity` shape | 1118 + 295 lines, four responsibilities in one class |
 | [06-memory-and-flash.md](06-memory-and-flash.md) | RAM and flash budget | measured: flash 58% used, static DRAM 58 KB — the constraint is elsewhere |
 | [07-power-and-lifecycle.md](07-power-and-lifecycle.md) | CPU scaling, sleep, BLE lifetime | the map screen pins the CPU at 160 MHz forever |
@@ -51,7 +52,7 @@ Dependency order, not importance order.
 4. **03 BLE link** — independent of the render path, and it decides whether the
    fetch feature is usable at all once a real phone is on the other end.
 5. **04 tile sync** — three short fixes, one of which is a regression from
-   `412e0ed9`.
+   `412e0ed9`. `70da0b86` already closed the biggest item on its own.
 6. **05 structure** — after 01/02 land, so the refactor moves settled code.
 7. **06 memory** and **07 power** — both start with a measurement, and 07's is a
    hardware measurement that needs the user.
