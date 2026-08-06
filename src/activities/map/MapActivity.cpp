@@ -15,6 +15,7 @@
 #include "MapFollow.h"
 #include "MapHatch.h"
 #include "MapRenderer.h"
+#include "MapRouteFit.h"
 #include "MapStyleDefaults.h"
 #include "MapViewport.h"
 #include "MissingTilesConsoleSource.h"
@@ -371,8 +372,19 @@ void MapActivity::drawDebugLine(int y, char* text) {
   renderer.drawText(UI_10_FONT_ID, kTextX, y, text, true);
 }
 
-MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot) {}
+MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath)
+    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot) {
+  if (routePath != nullptr && routePath[0] != '\0') {
+    // Truncation would open the wrong file or none, so a path that does not fit
+    // is refused outright rather than shortened.
+    const size_t len = std::strlen(routePath);
+    if (len < sizeof(routePath_)) {
+      std::memcpy(routePath_, routePath, len + 1);
+    } else {
+      LOG_ERR(kLogTag, "route path too long, ignored: %s", routePath);
+    }
+  }
+}
 
 void MapActivity::onEnter() {
   Activity::onEnter();
@@ -441,6 +453,51 @@ void MapActivity::onEnter() {
           static_cast<long>(heapBeforeAlloc) - static_cast<long>(heapAfterAlloc),
           static_cast<unsigned>(sizeof(MapTileSource)));
 
+  // The route the rider picked, if any. Its own file handle next to the tile
+  // source's: both stream during a render (MapRouteSource.h). About 1.2 KB, and
+  // only when a route was actually chosen -- a skipped picker allocates neither.
+  overviewShown_ = false;
+  if (routePath_[0] != '\0') {
+    routeFile_ = makeUniqueNoThrow<HalFileSource>();
+    if (!routeFile_) {
+      LOG_ERR(kLogTag, "OOM: HalFileSource for the route");
+    } else {
+      route_ = makeUniqueNoThrow<MapRouteSource>(*routeFile_, proj_);
+      if (!route_) {
+        LOG_ERR(kLogTag, "OOM: MapRouteSource (%u bytes)", static_cast<unsigned>(sizeof(MapRouteSource)));
+      } else if (!route_->load(routePath_)) {
+        // Header or point crc failed. Nothing is drawn rather than part of a
+        // route: half a route ends somewhere it does not, which is the same class
+        // of lie as drawing a missing tile white.
+        LOG_ERR(kLogTag, "route refused: %s", routePath_);
+        route_.reset();
+        routeFile_.reset();
+      } else {
+        LOG_INF(kLogTag, "route \"%s\" loaded: %lu points, %lu bytes", route_->name(),
+                static_cast<unsigned long>(route_->pointCount()), static_cast<unsigned long>(route_->bytesRead()));
+      }
+    }
+  }
+
+  // A route that loaded gets the overview as its first frame, whether or not
+  // there is a fix: the rider just chose it and the whole point is seeing where
+  // it goes. Without a route this is unchanged -- last known fix, or the waiting
+  // banner.
+  if (route_) {
+    // Remembered so a later button press can re-render around it, exactly as the
+    // no-route path does.
+    if (SETTINGS.mapHasLastFix) {
+      hasReceivedAny_ = true;
+      showingPersistedFix_ = true;
+      lastLatE7_ = SETTINGS.mapLastLatE7;
+      lastLonE7_ = SETTINGS.mapLastLonE7;
+      lastHeading_ = SETTINGS.mapLastHeading;
+    }
+    renderRouteOverview();
+    LOG_DBG(kLogTag, "onEnter done");
+    return;
+  }
+
   // Show where the rider was last seen instead of a blank screen, if the
   // card has one -- a real fix still latches in over the next loop() and
   // clears the banner (see the BLE/console branches in loop()).
@@ -481,6 +538,9 @@ void MapActivity::onExit() {
   // the member HalFile -- DESTRUCTOR_CLOSES_FILE only covers locals.
   source_.reset();
   file_.reset();
+  // Same order for the route: the source holds a reference to its file source.
+  route_.reset();
+  routeFile_.reset();
   markerPatch_.reset();
   markerPatchCapacity_ = 0;
   markerPatchValid_ = false;
@@ -639,20 +699,31 @@ void MapActivity::handleButtons() {
 
 void MapActivity::openMapMenu(int initialIndex) {
   std::vector<std::string> options;
-  options.reserve(2);
+  options.reserve(3);
   options.push_back(tr(STR_REFRESH));
   options.push_back(std::string(tr(STR_MAP_MODE)) + ": " + I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
-  optionPopup_.show(StrId::STR_MAP, options, initialIndex, [this](int idx) {
+  // Only with a route loaded. A row that cannot do anything is worse than no
+  // row: it reads as a feature that is broken rather than one that needs a route
+  // picked at the door.
+  const bool hasRoute = route_ != nullptr;
+  if (hasRoute) options.push_back(tr(STR_MAP_WHOLE_ROUTE));
+  optionPopup_.show(StrId::STR_MAP, options, initialIndex, [this, hasRoute](int idx) {
     if (idx == 0) {
       redrawDueMs_ = 0;
       showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
       renderCurrent();
-    } else {
+    } else if (idx == 1) {
       // Cycle, don't open a second popup -- repeated Select on this row
       // steps ride->hike->cycle->ride. mapRideModeName()'s array order.
       const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
       switchMode(static_cast<MapRideMode>(next));
       openMapMenu(1);  // reopen with the label refreshed, Mode still highlighted
+    } else if (hasRoute) {
+      // Back to the whole route, at any point in a ride. Costs one full refresh
+      // and one pass over the route file, the same as the frame the picker drew.
+      redrawDueMs_ = 0;
+      showBusy();
+      renderRouteOverview();
     }
   });
   optionPopup_.processRender(renderer, mappedInput);
@@ -770,6 +841,9 @@ void MapActivity::saveLaddersIfChanged() {
 bool MapActivity::preventAutoSleep() { return freeink::BlePositionServer::getInstance().isRunning(); }
 
 void MapActivity::renderWaiting() {
+  // Same reason as renderViewport(): whatever asked for this frame asked for the
+  // ordinary map, not the overview.
+  overviewShown_ = false;
   renderer.clearScreen();
   renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_WAITING_BLE), true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
@@ -866,6 +940,19 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
 }
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  if (overviewShown_) {
+    // The rider asked for the whole route and is still looking at it. A fix
+    // arrives every five seconds, so redrawing here would snatch the overview
+    // away before it could be read -- and cost a full refresh to do it. Record
+    // it; the button that leaves the overview renders around this.
+    lastLatE7_ = latE7;
+    lastLonE7_ = lonE7;
+    lastHeading_ = headingStep;
+    lastDrawnSeq_ = seq;
+    LOG_DBG(kLogTag, "fix held: route overview is up");
+    return;
+  }
+
   // No followable frame: the waiting banner, the persisted-fix banner, or a
   // patch that never got saved. All three need the whole picture rebuilt.
   if (!viewportDrawn_ || !markerPatchValid_ || !source_) {
@@ -916,9 +1003,155 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
   }
 }
 
+void MapActivity::renderRouteOverview() {
+  if (!source_ || !route_) {
+    renderWaiting();
+    return;
+  }
+
+  const uint32_t startMs = millis();
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+
+  MapRouteFit::Result fit;
+  if (!route_->computeFit(screenWidth, screenHeight, fit)) {
+    // The point array read short, so there is no honest frame to draw around a
+    // fragment of a route. Fall back to the ordinary map rather than showing an
+    // overview of half a route.
+    LOG_ERR(kLogTag, "route fit failed, falling back to the follow map");
+    overviewShown_ = false;
+    if (hasReceivedAny_) {
+      renderCurrent();
+    } else {
+      renderWaiting();
+    }
+    return;
+  }
+
+  // The anchor is the screen centre, not the marker ladder's rung: an overview
+  // has no rider position in it, so there is no look-ahead to reserve
+  // (MapRouteFit.h).
+  const int16_t anchorX = static_cast<int16_t>(screenWidth / 2);
+  const int16_t anchorY = static_cast<int16_t>(screenHeight / 2);
+  proj_.reset(fit.anchorLat, fit.anchorLon, anchorX, anchorY, fit.heading,
+              MapViewport::mppMercFor(fit.zoomStep, fit.anchorLat));
+
+  const uint8_t tileZ = MapViewport::kZoomLadder[fit.zoomStep].z;
+  const MapViewport::TileRange range = MapViewport::tileRangeFor(proj_, tileZ, screenWidth, screenHeight);
+  if (range.count() > MapViewport::kMaxTiles) {
+    LOG_ERR(kLogTag, "overview tile range %u..%u x %u..%u = %u tiles, over the 3x3 worst case", range.col0, range.col1,
+            range.row0, range.row1, range.count());
+  }
+
+  renderer.clearScreen();
+  GfxRendererCanvas canvas(renderer);
+
+  MapViewState view;
+  view.markerX = anchorX;
+  view.markerY = anchorY;
+  view.heading = static_cast<MapHeading>(fit.heading & 0x0F);
+
+  const uint32_t missing = drawMapLayers(range, canvas, view);
+  // North still rotates with the frame -- the overview is drawn at the fit's
+  // heading, not north-up, so the compass is the only thing that says which way
+  // the picture is turned.
+  drawCompass(fit.heading);
+
+  char line[80];
+  snprintf(line, sizeof(line), "%s", route_->name());
+  drawDebugLine(kTextLine1Y, line);
+  // Says out loud when the ladder could not hold the whole route, because a
+  // frame showing the middle of a route looks exactly like one showing all of a
+  // shorter route.
+  if (fit.fits) {
+    snprintf(line, sizeof(line), "%lu pts  z%u %.0fm/px  h%u", static_cast<unsigned long>(route_->pointCount()),
+             static_cast<unsigned>(fit.zoomStep), MapViewport::kZoomLadder[fit.zoomStep].mpp,
+             static_cast<unsigned>(fit.heading));
+  } else {
+    snprintf(line, sizeof(line), "%lu pts  z%u  %s", static_cast<unsigned long>(route_->pointCount()),
+             static_cast<unsigned>(fit.zoomStep), tr(STR_MAP_ROUTE_PARTIAL));
+  }
+  drawDebugLine(kTextLine2Y, line);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  // No marker and no follow state. There is no fix in this frame, and a marker
+  // at the screen centre would claim the rider is standing in the middle of
+  // their own route. viewportDrawn_ stays false, so the next fix that arrives
+  // after the rider leaves the overview does a full reset rather than trying to
+  // move a marker that was never drawn.
+  viewportDrawn_ = false;
+  markerPatchValid_ = false;
+  overviewShown_ = true;
+
+  LOG_INF(kLogTag, "route overview: heading %u, zoom step %u, %lu tiles, %lu missing, %lu ms, %s",
+          static_cast<unsigned>(fit.heading), static_cast<unsigned>(fit.zoomStep),
+          static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->tilesUnavailable()),
+          static_cast<unsigned long>(millis() - startMs), fit.fits ? "whole route" : "too long for the ladder");
+  (void)missing;
+
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  busyShown_ = false;
+}
+
+uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view) {
+  MapTileSource::Config config;
+  config.rootDir = kTileRoot;
+  config.z = range.z;
+  config.col0 = range.col0;
+  config.row0 = range.row0;
+  config.col1 = range.col1;
+  config.row1 = range.row1;
+  // The mode filter. Same tiles, same bytes off the card, different classes
+  // drawn -- never a different tile set (docs/map-data-spec.md, "Mode is a
+  // render-time filter").
+  config.classMask = modeMasks_.forMode(mode_);
+  source_->begin(config);
+
+  // kDefaultMapStyle is the compiled data/mapstyle.json (MapStyleDefaults.h,
+  // generated by scripts/gen_mapstyle.py). Nothing overrides it at runtime;
+  // the device reads no style file off the card.
+  //
+  // The route rides along as a second source, re-read from the card on every
+  // reset and never held in RAM (IMapRouteSource.h). nullptr when the rider
+  // skipped the picker, and then the route pass costs nothing at all.
+  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get());
+
+  // Hatch after the geometry, because which tiles are missing is only known
+  // once the source has tried to open them, and asking up front would cost a
+  // third read of every tile in the range. A missing tile's own area carries
+  // no geometry -- tiles do not overlap -- so the only thing hatch can cover
+  // is the marker, which goes back on top afterwards.
+  const uint32_t missing = source_->unavailableMask();
+  if (missing != 0) {
+    for (uint32_t index = 0; index < range.count() && index < 32; ++index) {
+      if ((missing & (1u << index)) == 0) continue;
+      MapHatch::drawTile(canvas, proj_, range.z, range.colAt(index), range.rowAt(index));
+      MISSING_TILES.record(range.z, range.colAt(index), range.rowAt(index));
+    }
+    // No marker restore here: the caller draws the marker after this returns, so
+    // the hatch cannot bury it. Drawing the style's puck here as well would only
+    // leave it peeking out from under a smaller mode marker.
+
+    // Arm only once: a re-hatch of tiles already on the list leaves isDirty()
+    // false (MissingTilesStore's own account of a count-only change), and
+    // re-arming on every one of those would mean a coverage gap the rider
+    // sits in for ten minutes never actually saves. The first genuinely new
+    // tile starts the clock; it is not pushed out further after that.
+    if (MISSING_TILES.isDirty() && missingTilesSaveDueMs_ == 0) {
+      missingTilesSaveDueMs_ = millis() + kMissingTilesSaveIntervalMs;
+    }
+  }
+  return missing;
+}
+
 void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   LOG_DBG(kLogTag, "renderViewport start: lat=%d lon=%d heading=%u seq=%u", (int)latE7, (int)lonE7,
           (unsigned)headingStep, (unsigned)seq);
+  // Whatever got here -- a button, a console command, the menu's Refresh -- asked
+  // for the ordinary map, so the overview is over.
+  overviewShown_ = false;
   if (!source_) {
     renderWaiting();
     return;
@@ -962,19 +1195,6 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
             range.row0, range.row1, range.count());
   }
 
-  MapTileSource::Config config;
-  config.rootDir = kTileRoot;
-  config.z = range.z;
-  config.col0 = range.col0;
-  config.row0 = range.row0;
-  config.col1 = range.col1;
-  config.row1 = range.row1;
-  // The mode filter. Same tiles, same bytes off the card, different classes
-  // drawn -- never a different tile set (docs/map-data-spec.md, "Mode is a
-  // render-time filter").
-  config.classMask = modeMasks_.forMode(mode_);
-  source_->begin(config);
-
   renderer.clearScreen();
   GfxRendererCanvas canvas(renderer);
 
@@ -987,36 +1207,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // about which way is up.
   view.heading = static_cast<MapHeading>(headingStep & 0x0F);
 
-  // kDefaultMapStyle is the compiled data/mapstyle.json (MapStyleDefaults.h,
-  // generated by scripts/gen_mapstyle.py). Nothing overrides it at runtime;
-  // the device reads no style file off the card.
-  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle);
-
-  // Hatch after the geometry, because which tiles are missing is only known
-  // once the source has tried to open them, and asking up front would cost a
-  // third read of every tile in the range. A missing tile's own area carries
-  // no geometry -- tiles do not overlap -- so the only thing hatch can cover
-  // is the marker, which goes back on top below.
-  const uint32_t missing = source_->unavailableMask();
-  if (missing != 0) {
-    for (uint32_t index = 0; index < range.count() && index < 32; ++index) {
-      if ((missing & (1u << index)) == 0) continue;
-      MapHatch::drawTile(canvas, proj_, range.z, range.colAt(index), range.rowAt(index));
-      MISSING_TILES.record(range.z, range.colAt(index), range.rowAt(index));
-    }
-    // No marker restore here: drawPositionMarker() below is the marker on this
-    // screen and it runs after the hatch anyway. Drawing the style's puck
-    // first would only leave it peeking out from under a smaller mode marker.
-
-    // Arm only once: a re-hatch of tiles already on the list leaves isDirty()
-    // false (MissingTilesStore's own account of a count-only change), and
-    // re-arming on every one of those would mean a coverage gap the rider
-    // sits in for ten minutes never actually saves. The first genuinely new
-    // tile starts the clock; it is not pushed out further after that.
-    if (MISSING_TILES.isDirty() && missingTilesSaveDueMs_ == 0) {
-      missingTilesSaveDueMs_ = millis() + kMissingTilesSaveIntervalMs;
-    }
-  }
+  const uint32_t missing = drawMapLayers(range, canvas, view);
 
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's
@@ -1043,6 +1234,15 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     // the console has landed yet this session. Cleared the moment one does
     // (see loop()'s BLE/console branches).
     snprintf(line, sizeof(line), "%s", tr(STR_MAP_LAST_KNOWN_WAITING_BLE));
+    drawDebugLine(kTextLine3Y, line);
+  } else if (routePath_[0] != '\0' && !route_) {
+    // The rider picked a route and there is none on screen. The picker only
+    // checks each file's header, so a route whose point array fails its own crc
+    // gets this far -- and an empty map with no explanation reads as a bug in
+    // the route feature rather than as a broken file. Shares line 3 with the
+    // notice above, which is about a different session state and cannot be up
+    // at the same time.
+    snprintf(line, sizeof(line), "%s", tr(STR_MAP_ROUTE_REFUSED));
     drawDebugLine(kTextLine3Y, line);
   }
 
