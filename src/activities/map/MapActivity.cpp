@@ -103,6 +103,10 @@ constexpr int kHeaderBtToBarsGap = 4;
 // that text's actual width to avoid overlapping it.
 constexpr int kHeaderBatteryTextAllowance = 32;
 constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to bars
+// GUI.drawHeader() only clears its own 80px-wide battery box (BaseTheme.cpp:366);
+// the BLE logo+bars sit further left, over live map lines like the compass and
+// marker do, so they need the same opaque backing those give themselves.
+constexpr int kHeaderBackingPad = 2;
 
 // North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
@@ -437,6 +441,12 @@ void MapActivity::drawHeaderStatus() {
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
   const int iconTop = kHeaderMarginTop + 5 + BaseMetrics::values.batteryHeight - kHeaderIconHeight;
   const int iconBottom = iconTop + kHeaderIconHeight;
+
+  // White backing first, like the compass halo and the busy badge: this can
+  // land on live map lines, not blank margin.
+  const int backingWidth = (barsRight - logoLeft) + kHeaderBackingPad * 2;
+  renderer.fillRect(logoLeft - kHeaderBackingPad, iconTop - kHeaderBackingPad, backingWidth,
+                    kHeaderIconHeight + kHeaderBackingPad * 2, false);
 
   // Logo: a small hand-drawn Bluetooth rune -- spine-to-chevron zigzag, same
   // "vector glyph via GfxRenderer primitives" approach as the compass. No
