@@ -516,6 +516,10 @@ void MapActivity::onEnter() {
     lastLonE7_ = SETTINGS.mapLastLonE7;
     lastHeading_ = SETTINGS.mapLastHeading;
     LOG_DBG(kLogTag, "onEnter: rendering persisted fix %d,%d", (int)lastLatE7_, (int)lastLonE7_);
+    // Before the read, not after: this is the only viewport reset with no
+    // feedback of any kind in front of it (a zoom or menu redraw gets the busy
+    // badge through showBusy()). See renderLoadingTiles().
+    renderLoadingTiles();
     renderViewport(lastLatE7_, lastLonE7_, lastHeading_, lastDrawnSeq_);
   } else {
     renderWaiting();
@@ -861,6 +865,25 @@ void MapActivity::renderWaiting() {
   // inside, so the next one draws a real viewport (applyFix()).
   viewportDrawn_ = false;
   markerPatchValid_ = false;
+}
+
+void MapActivity::renderLoadingTiles() {
+  renderer.clearScreen();
+  renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_LOADING_TILES), true);
+  // The rung, because "reading tiles" alone does not say how long this will
+  // take and the rung is what decides it (docs/optimization/01-render-pipeline.md
+  // has the per-rung times).
+  char line[48];
+  snprintf(line, sizeof(line), "z%u  %.0f m/px", MapViewport::kZoomLadder[zoomStep()].z,
+           MapViewport::kZoomLadder[zoomStep()].mpp);
+  renderer.drawText(UI_10_FONT_ID, 8, kTextLine2Y, line, true);
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  // Deliberately does not touch viewportDrawn_ or markerPatchValid_: the
+  // viewport reset that follows sets both from its own frame, and claiming a
+  // marker patch for this text screen would let a fix restore it over the map.
+  busyShown_ = false;  // this frame painted over the badge
 }
 
 void MapActivity::renderCurrent() {

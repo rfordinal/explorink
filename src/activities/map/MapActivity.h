@@ -99,6 +99,14 @@ class MapActivity final : public Activity {
 
  private:
   void renderWaiting();
+  // A frame that says the tiles are being read, refreshed before the read
+  // starts. Entering this screen with a stored fix goes straight into
+  // renderViewport(), and nothing reaches the panel until its displayBuffer()
+  // at the end -- 10.9 s at rung 0 and 15.3 s at rung 1, measured 2026-08-06,
+  // during which e-ink holds whatever screen the rider came from. This costs
+  // one 500 ms refresh and replaces that with an answer.
+  // docs/optimization/09-progressive-render.md, step 0.
+  void renderLoadingTiles();
   // Routes one incoming fix (BLE packet or console `pos`) through MapFollow's
   // decision: nothing, a marker move inside the current frame, or a full
   // viewport reset. Every fix channel goes through here -- the decision must not
