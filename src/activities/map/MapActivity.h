@@ -167,6 +167,11 @@ class MapActivity final : public Activity {
   // furniture -- it is only correct for the heading the frame was drawn with
   // (anchorHeading_), never for the newest fix.
   void drawCompass(uint8_t headingStep);
+  // Battery and BLE status row, top-right, above the compass. Battery mirrors
+  // the block GUI.drawHeader() draws on every other screen (BaseTheme.cpp:363)
+  // so this reads the same; the BLE logo and signal bars are this screen's
+  // own -- no other activity has a wireless link to show.
+  void drawHeaderStatus();
   // Immediate "working on it" feedback, above the button hints. A ladder step
   // or a Refresh does not reach the panel for the better part of two seconds
   // (settle, tile reads, then the refresh itself), which is long enough that a

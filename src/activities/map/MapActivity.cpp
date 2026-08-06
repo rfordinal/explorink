@@ -20,6 +20,7 @@
 #include "MapViewport.h"
 #include "MissingTilesConsoleSource.h"
 #include "MissingTilesStore.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
@@ -79,6 +80,30 @@ constexpr int kBusyMarginBottom = 50;  // clears GUI.drawButtonHints' band
 constexpr int kBusyBorder = 2;
 constexpr int kBusyGlassInset = 8;  // hourglass inset inside the badge box
 
+// Header status row: battery, BLE signal bars, a small Bluetooth logo, top
+// right, above the compass. Battery is drawn through GUI.drawHeader() --
+// BaseTheme.cpp:363 -- the same call every other screen makes, so its icon
+// position (screenWidth - kHeaderMarginRight - batteryWidth) and text-left
+// layout match this device's info-list screens exactly. The BLE half is this
+// screen's own: no other activity has a wireless link worth showing, and no
+// wifi radio exists on this device for the bars to ever mean anything else.
+constexpr int kHeaderMarginTop = 6;
+constexpr int kHeaderMarginRight = 12;  // matches BaseTheme::drawHeader's own literal
+constexpr int kHeaderIconHeight = 14;
+constexpr int kHeaderBleBarCount = 4;
+constexpr int kHeaderBleBarWidth = 4;
+constexpr int kHeaderBleBarGap = 2;
+constexpr int kHeaderBleBarsWidth =
+    kHeaderBleBarCount * kHeaderBleBarWidth + (kHeaderBleBarCount - 1) * kHeaderBleBarGap;
+constexpr int kHeaderBtLogoWidth = 6;
+constexpr int kHeaderBtToBarsGap = 4;
+// Upper bound on drawBatteryRight's own percentage text + its
+// batteryPercentSpacing (BaseTheme.h:241, BaseTheme.cpp:120) -- "100%" at
+// SMALL_FONT_ID plus the 4px gap never exceeds this, so the bars never need
+// that text's actual width to avoid overlapping it.
+constexpr int kHeaderBatteryTextAllowance = 32;
+constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to bars
+
 // North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
 // 100x100 normalized canvas with "N" label, two open arcs (real angles, not
@@ -92,26 +117,35 @@ constexpr int kBusyGlassInset = 8;  // hourglass inset inside the badge box
 // the arc centre by the frame's heading, which puts its point at true north
 // instead of up the screen. That makes the arc centre the anchor -- the glyph
 // sweeps a circle around it, not a fixed bounding box -- and the halo a disc.
+//
+// Shrunk to 0.75x and moved down on 2026-08-06: the original 46+5 halo (102px
+// across) left too much white margin once the header row above needed room.
+// Every design-space point below is the original scaled by 0.75 around the
+// arc centre (50,47), which stays fixed -- it is the rotation pivot, not a
+// point being scaled. kCompassCenterTop is pushed down far enough that the
+// halo (radius 40) clears the header row (bottom at kHeaderMarginTop + 17)
+// plus an 8px gap: 6 + 17 + 8 + 40 = 71.
 constexpr int kCompassCenterMarginRight = 56;  // arc centre, in from the right edge
-constexpr int kCompassCenterTop = 56;          // arc centre, down from the top edge
+constexpr int kCompassCenterTop = 71;          // arc centre, down from the top edge
 // Design-space distance from the arc centre to the furthest thing drawn: the
-// label sits 33 above it and is about 16 tall, so 46 clears it with slack. The
-// accent triangle's tip (28) and the arcs (24) are well inside.
-constexpr int kCompassGlyphRadius = 46;
-constexpr int kCompassLabelCenterX = 50, kCompassLabelCenterY = 14;
+// scaled label sits ~24.75 above it and is about 16 tall, so 36 clears it
+// with a few px of slack. The accent triangle's tip (~21) and the arcs (18)
+// are well inside.
+constexpr int kCompassGlyphRadius = 36;
+constexpr int kCompassLabelCenterX = 50, kCompassLabelCenterY = 22;
 constexpr int kCompassArcCx = 50, kCompassArcCy = 47;
-constexpr int kCompassArcRadius = 24;
+constexpr int kCompassArcRadius = 18;
 constexpr float kCompassLeftArcStartDeg = 130.0f, kCompassLeftArcEndDeg = 230.0f;
 constexpr float kCompassRightArcStartDeg = 310.0f, kCompassRightArcEndDeg = 360.0f + 50.0f;
 constexpr int kCompassArcSegments = 12;  // straight segments approximating each curve
 constexpr int kCompassArcLineWidth = 2;
-constexpr int kCompassTriTopX = 50, kCompassTriTopY = 28;
-constexpr int kCompassTriLeftX = 42, kCompassTriLeftY = 66;
-constexpr int kCompassTriRightX = 58, kCompassTriRightY = 66;
-constexpr int kCompassAccentX1 = 71, kCompassAccentY1 = 44;
-constexpr int kCompassAccentX2 = 71, kCompassAccentY2 = 52;
-constexpr int kCompassAccentX3 = 78, kCompassAccentY3 = 48;
-constexpr int kCompassHaloMargin = 5;  // white backing, past the glyph's own sweep
+constexpr int kCompassTriTopX = 50, kCompassTriTopY = 33;
+constexpr int kCompassTriLeftX = 44, kCompassTriLeftY = 61;
+constexpr int kCompassTriRightX = 56, kCompassTriRightY = 61;
+constexpr int kCompassAccentX1 = 66, kCompassAccentY1 = 45;
+constexpr int kCompassAccentX2 = 66, kCompassAccentY2 = 51;
+constexpr int kCompassAccentX3 = 71, kCompassAccentY3 = 48;
+constexpr int kCompassHaloMargin = 4;  // white backing, past the glyph's own sweep
 
 // Position marker: one family, three modes, "the higher the speed, the more
 // directional" -- hike is a plain dot (position over direction), cycle is a
@@ -253,6 +287,21 @@ void drawCompassArc(GfxRenderer& renderer, int cx, int cy, int radius, float sta
   }
 }
 
+// Static thresholds, no hysteresis: unlike the WiFi indicator's
+// barsForRssi() (CrossPointWebServerActivity.cpp:53), this header redraws
+// only on a map redraw (not continuously), so there is no per-frame flicker
+// for hysteresis to guard against. Same dBm bands as that WiFi indicator --
+// BLE and WiFi share the 2.4 GHz band, so the same signal-to-bars mapping
+// reads right for both.
+int bleBarsForRssi(int8_t rssi) {
+  static constexpr int kThresholdsDbm[] = {-85, -75, -65, -55};
+  int bars = 0;
+  for (int threshold : kThresholdsDbm) {
+    if (rssi >= threshold) ++bars;
+  }
+  return bars;
+}
+
 }  // namespace
 
 void MapActivity::busyRect(int& x, int& y, int& w, int& h) const {
@@ -369,6 +418,63 @@ void MapActivity::drawCompass(uint8_t headingStep) {
   compassPoint(centreX, centreY, kCompassAccentX2, kCompassAccentY2, cosTheta, sinTheta, accentXs[1], accentYs[1]);
   compassPoint(centreX, centreY, kCompassAccentX3, kCompassAccentY3, cosTheta, sinTheta, accentXs[2], accentYs[2]);
   renderer.fillPolygon(accentXs, accentYs, 3, true);
+}
+
+void MapActivity::drawHeaderStatus() {
+  const int screenWidth = renderer.getScreenWidth();
+
+  // Battery: same call every other screen makes (BaseTheme.cpp:363), with no
+  // title/subtitle -- those draw nothing when null, leaving just the icon and
+  // (setting-permitting) the percentage text this screen never had before.
+  GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, BaseMetrics::values.batteryHeight + 10}, nullptr,
+                 nullptr);
+
+  // BLE: bars right-anchored clear of the battery block (icon plus its own
+  // worst-case text), then a small Bluetooth logo to their left.
+  const int batteryX = screenWidth - kHeaderMarginRight - BaseMetrics::values.batteryWidth;
+  const int barsRight = batteryX - kHeaderBatteryTextAllowance - kHeaderGroupGap;
+  const int barsLeft = barsRight - kHeaderBleBarsWidth;
+  const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+  const int iconTop = kHeaderMarginTop + 5 + BaseMetrics::values.batteryHeight - kHeaderIconHeight;
+  const int iconBottom = iconTop + kHeaderIconHeight;
+
+  // Logo: a small hand-drawn Bluetooth rune -- spine-to-chevron zigzag, same
+  // "vector glyph via GfxRenderer primitives" approach as the compass. No
+  // bitmap asset exists at this size; the 32x32 menu icon
+  // (components/icons/bluetooth.h) is for the home-screen launcher, not a
+  // 14px status row.
+  const int logoQuarter = iconTop + kHeaderIconHeight / 4;
+  const int logoMid = iconTop + kHeaderIconHeight / 2;
+  const int logoThreeQuarter = iconTop + (kHeaderIconHeight * 3) / 4;
+  renderer.drawLine(logoLeft, iconTop, logoLeft + kHeaderBtLogoWidth, logoQuarter, 1, true);
+  renderer.drawLine(logoLeft + kHeaderBtLogoWidth, logoQuarter, logoLeft, logoMid, 1, true);
+  renderer.drawLine(logoLeft, logoMid, logoLeft + kHeaderBtLogoWidth, logoThreeQuarter, 1, true);
+  renderer.drawLine(logoLeft + kHeaderBtLogoWidth, logoThreeQuarter, logoLeft, iconBottom, 1, true);
+
+  auto& ble = freeink::BlePositionServer::getInstance();
+  // A negotiated MTU only exists once a central has connected and completed
+  // the ATT exchange (BlePositionServer.h:158) -- the same signal MapCommandConsole
+  // already reports as link state (MapCommandConsole.cpp:233).
+  const bool connected = ble.negotiatedMtu() != 0;
+  if (!connected) {
+    // X across the bar slot, same "not present" convention as the WiFi
+    // indicator (CrossPointWebServerActivity.cpp:483-486).
+    renderer.drawLine(barsLeft, iconTop, barsLeft + kHeaderBleBarsWidth, iconBottom, 2, true);
+    renderer.drawLine(barsLeft, iconBottom, barsLeft + kHeaderBleBarsWidth, iconTop, 2, true);
+    return;
+  }
+
+  const int bars = bleBarsForRssi(ble.rssi());
+  for (int i = 0; i < kHeaderBleBarCount; ++i) {
+    const int barHeight = (i + 1) * kHeaderIconHeight / kHeaderBleBarCount;
+    const int x = barsLeft + i * (kHeaderBleBarWidth + kHeaderBleBarGap);
+    const int y = iconBottom - barHeight;
+    if (i < bars) {
+      renderer.fillRect(x, y, kHeaderBleBarWidth, barHeight, true);
+    } else {
+      renderer.drawRect(x, y, kHeaderBleBarWidth, barHeight, true);
+    }
+  }
 }
 
 void MapActivity::drawDebugLine(int y, char* text) {
@@ -1094,6 +1200,7 @@ void MapActivity::renderRouteOverview() {
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
   drawCompass(fit.heading);
+  drawHeaderStatus();
 
   char line[80];
   snprintf(line, sizeof(line), "%s", route_->name());
@@ -1292,6 +1399,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // regardless of what the hatch above covered. Rotated to this frame's
   // heading, which is the only heading it is ever correct for.
   drawCompass(headingStep);
+  drawHeaderStatus();
 
   // Does not count the marker or its patch save, both of which happen after the
   // readout is composed -- this is the tile-and-geometry cost, which is the one
