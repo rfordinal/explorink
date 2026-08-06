@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "IMapCanvas.h"
+#include "IMapRouteSource.h"
 #include "IMapSource.h"
 #include "MapHeading.h"
 #include "MapStyle.h"
@@ -42,7 +43,16 @@ class MapRenderer {
   // rather than a compiled-in constant so the laptop preview and the device
   // can be pointed at the same numbers and be checked against each other --
   // both pass kDefaultMapStyle (MapStyleDefaults.h) in normal use.
-  static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style);
+  // `route` is the loaded trip, or nullptr when the rider skipped the picker.
+  // Drawn between the road fills and the place dots, which is the draw order
+  // docs/map-data-spec.md fixes -- the route has to sit over the roads it
+  // follows, and the place dots over the route.
+  //
+  // A second source rather than a layer of the first, because a route is one
+  // file that outlives any viewport while IMapSource is a range of tiles
+  // (IMapRouteSource.h).
+  static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
+                     IMapRouteSource* route = nullptr);
 
   // The style's position puck: white disc, black ring, heading arrow. Drawn
   // by callers with no travel mode of their own -- test/map_preview, which has

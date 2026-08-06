@@ -67,6 +67,12 @@ constexpr MapStyle kGoldenStyle = {
                      MapAreaFill::Pattern::None},
     .landuseHatchSpacingPx = {0, 0, 0, 0},
     .placeDotDiameterPx = 10,
+    // No route. This fixture guards the tile pipeline, and the golden PPM must
+    // stay byte-identical -- a route drawn over it would change every frame it
+    // crosses. The route layer has its own test (test/map_route).
+    .routeWidthPx = 0,
+    .routeArrowLenPx = 0,
+    .routeArrowWidthPx = 0,
     .markerXPx = 230,
     .markerYPx = 620,
     .puckRadiusPx = 0,  // arrow only, no disc

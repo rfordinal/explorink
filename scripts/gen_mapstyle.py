@@ -321,6 +321,30 @@ def place_dot_diameter(style):
     return diameter
 
 
+def route(style):
+    """(width, arrow_len, arrow_width) for layers.route, in device pixels.
+
+    The route is told apart from the roads by width alone -- there is no colour
+    on 1-bit e-ink -- so a width at or below the widest road is a style that
+    hides the route inside the map. Warned about, not rejected: it is a legible
+    thing to want while tuning, and the renderer honours whatever is here.
+    """
+    cfg = style.get("layers", {}).get("route")
+    if cfg is None:
+        sys.exit("gen_mapstyle.py: layers.route missing")
+    if not cfg.get("enabled", True):
+        print("gen_mapstyle.py: layers.route.enabled is false -- no route will be drawn")
+        return 0, 0, 0
+    width = _round_px(cfg.get("width", 0), "layers.route.width")
+    arrow_len = _round_px(cfg.get("arrow_len_px", 0), "layers.route.arrow_len_px")
+    arrow_width = _round_px(cfg.get("arrow_width_px", 0), "layers.route.arrow_width_px")
+    for name, value in (("width", width), ("arrow_len_px", arrow_len),
+                        ("arrow_width_px", arrow_width)):
+        if value > 255:
+            sys.exit(f"gen_mapstyle.py: layers.route.{name} {value}px does not fit a uint8_t")
+    return width, arrow_len, arrow_width
+
+
 def marker_anchor(style):
     device = style.get("device")
     if device is None:
@@ -343,7 +367,8 @@ def _array(values, comments):
     return lines
 
 
-def gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, marker_x, marker_y, puck_px):
+def gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x, marker_y,
+            puck_px):
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
         "#pragma once",
@@ -401,6 +426,9 @@ def gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, m
         "    .landuseHatchSpacingPx =",
         *_array(l_spacings, landuse_names),
         f"    .placeDotDiameterPx = {dot_diameter},",
+        f"    .routeWidthPx = {route_px[0]},",
+        f"    .routeArrowLenPx = {route_px[1]},",
+        f"    .routeArrowWidthPx = {route_px[2]},",
         f"    .markerXPx = {marker_x},",
         f"    .markerYPx = {marker_y},",
         f"    .puckRadiusPx = {radius},",
@@ -429,6 +457,7 @@ def main(repo_root, style_path=None, output_path=None):
     water_px = water(style)
     landuse_px = landuse(style)
     dot_diameter = place_dot_diameter(style)
+    route_px = route(style)
     marker_x, marker_y = marker_anchor(style)
     puck_px = puck(style)
 
@@ -441,6 +470,11 @@ def main(repo_root, style_path=None, output_path=None):
           f"(outline {buildings_px[1]}px, tone {buildings_px[2]}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "
           f"(widths {water_px[1]}, tone {water_px[2]}, hatch {water_px[3]}/{water_px[4]}px)")
+    widest_road = max(widths)
+    if route_px[0] and route_px[0] <= widest_road:
+        print(f"gen_mapstyle.py: warning -- route width {route_px[0]}px is not wider than the widest road "
+              f"({widest_road}px); width is the only thing telling them apart on 1-bit e-ink")
+    print(f"gen_mapstyle.py: route {route_px[0]}px wide, arrow {route_px[1]}x{route_px[2]}px")
     if landuse_px[0]:
         print(f"gen_mapstyle.py: landuse on -- forest tone {landuse_px[2][1]}/hatch {landuse_px[3][1]}, "
               f"built_up tone {landuse_px[2][2]}/hatch {landuse_px[3][2]}")
@@ -448,8 +482,8 @@ def main(repo_root, style_path=None, output_path=None):
         print("gen_mapstyle.py: landuse off")
 
     with open(output_path, "w") as f:
-        f.write(gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, marker_x, marker_y,
-                        puck_px))
+        f.write(gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x,
+                        marker_y, puck_px))
     print(f"gen_mapstyle.py: wrote {output_path}")
 
 
