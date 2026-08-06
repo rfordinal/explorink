@@ -1,5 +1,6 @@
 #include "MapTileSource.h"
 
+#include <cmath>
 #include <cstdio>
 
 MapTileSource::MapTileSource(IFileSource& file, const MapProjection& proj) : file_(file), proj_(proj) {
@@ -49,6 +50,9 @@ void MapTileSource::closeCurrentTile() {
     reader_.close();
     tileOpen_ = false;
   }
+  // The box belongs to the tile that just closed. Leaving it set would test the
+  // next tile's records against the previous tile's frame.
+  screenBoxValid_ = false;
 }
 
 bool MapTileSource::startPass(MapTileReader::Layer layer) {
@@ -125,6 +129,9 @@ bool MapTileSource::advanceToNextTile() {
 
     ++tilesOpened_;
     tileOpen_ = true;
+    // The tile's origin is known now, so the screen can be brought into its
+    // coordinates. Once here rather than once per record is the whole point.
+    computeScreenBoxForTile();
     return true;
   }
   return false;
@@ -146,12 +153,67 @@ bool MapTileSource::beginLanduse() { return startPass(MapTileReader::Layer::Land
 
 bool MapTileSource::nextLanduse(MapWayRef& out) { return nextWayRecord(out, false); }
 
+void MapTileSource::computeScreenBoxForTile() {
+  screenBoxValid_ = false;
+  if (config_.screenWidth <= 0 || config_.screenHeight <= 0) return;
+
+  // The screen rectangle, inverse-projected into Mercator and then into this
+  // tile's local frame. Four corners, because the projection rotates: at any
+  // heading other than a multiple of 90 degrees the screen is a tilted rectangle
+  // over the tile, and there is no single row or column that separates visible
+  // from not.
+  //
+  // The axis-aligned box around those four corners is a **superset** of the
+  // tilted rectangle, so this keeps slightly more than strictly necessary --
+  // about 2x the area at 45 degrees. That is the price of the test being four
+  // integer compares per record instead of four software `double` projections.
+  // Measured 2026-08-06: paying it per record made roads 300-1,200 ms per rung
+  // *slower*, because a long road's box reaches the screen almost every time and
+  // the projections were spent to learn nothing.
+  const int16_t margin = config_.rejectMarginPx > 0 ? config_.rejectMarginPx : 0;
+  const int16_t corners[4][2] = {
+      {static_cast<int16_t>(-margin), static_cast<int16_t>(-margin)},
+      {static_cast<int16_t>(config_.screenWidth + margin), static_cast<int16_t>(-margin)},
+      {static_cast<int16_t>(-margin), static_cast<int16_t>(config_.screenHeight + margin)},
+      {static_cast<int16_t>(config_.screenWidth + margin), static_cast<int16_t>(config_.screenHeight + margin)},
+  };
+
+  for (int i = 0; i < 4; ++i) {
+    double mercX = 0.0, mercY = 0.0;
+    proj_.screenToMerc(corners[i][0], corners[i][1], mercX, mercY);
+    // Inverse of MapProjection::projectTileLocal: localX = mercX - originX,
+    // localY = originY - mercY. Same relationship, read backwards.
+    const double localX = mercX - static_cast<double>(reader_.originX());
+    const double localY = static_cast<double>(reader_.originY()) - mercY;
+    // Round outwards, never inwards: a truncation towards zero here could clip a
+    // way that touches the very edge of the screen.
+    const int32_t loX = static_cast<int32_t>(std::floor(localX));
+    const int32_t hiX = static_cast<int32_t>(std::ceil(localX));
+    const int32_t loY = static_cast<int32_t>(std::floor(localY));
+    const int32_t hiY = static_cast<int32_t>(std::ceil(localY));
+    if (i == 0) {
+      screenBoxMinX_ = loX;
+      screenBoxMaxX_ = hiX;
+      screenBoxMinY_ = loY;
+      screenBoxMaxY_ = hiY;
+      continue;
+    }
+    if (loX < screenBoxMinX_) screenBoxMinX_ = loX;
+    if (hiX > screenBoxMaxX_) screenBoxMaxX_ = hiX;
+    if (loY < screenBoxMinY_) screenBoxMinY_ = loY;
+    if (hiY > screenBoxMaxY_) screenBoxMaxY_ = hiY;
+  }
+  screenBoxValid_ = true;
+}
+
 bool MapTileSource::mayReachScreen(const uint16_t pointCount) const {
-  // No screen configured: nothing to reject against, so keep everything. This
-  // is the path a caller with no viewport takes (see Config).
-  if (config_.screenWidth <= 0 || config_.screenHeight <= 0) return true;
+  // No screen configured, or no box for this tile: keep everything. Both are the
+  // safe answer, and the first is what a caller with no viewport wants (Config).
+  if (!screenBoxValid_) return true;
   if (pointCount == 0) return false;
 
+  // Integer only, and no projection: the screen has already been brought into
+  // these coordinates once for the whole tile (computeScreenBoxForTile).
   int16_t minX = xs_[0], maxX = xs_[0], minY = ys_[0], maxY = ys_[0];
   for (uint16_t i = 1; i < pointCount; ++i) {
     if (xs_[i] < minX) minX = xs_[i];
@@ -160,37 +222,7 @@ bool MapTileSource::mayReachScreen(const uint16_t pointCount) const {
     if (ys_[i] > maxY) maxY = ys_[i];
   }
 
-  // All four corners, not two: the projection rotates, so the local box's
-  // min/max corners are not the screen box's min/max corners at any heading
-  // other than north.
-  const int16_t localX[4] = {minX, maxX, minX, maxX};
-  const int16_t localY[4] = {minY, minY, maxY, maxY};
-  int screenMinX = 0, screenMaxX = 0, screenMinY = 0, screenMaxY = 0;
-  for (int i = 0; i < 4; ++i) {
-    int16_t sx = 0, sy = 0;
-    proj_.projectTileLocal(reader_.originX(), reader_.originY(), localX[i], localY[i], sx, sy);
-    if (i == 0) {
-      screenMinX = screenMaxX = sx;
-      screenMinY = screenMaxY = sy;
-      continue;
-    }
-    if (sx < screenMinX) screenMinX = sx;
-    if (sx > screenMaxX) screenMaxX = sx;
-    if (sy < screenMinY) screenMinY = sy;
-    if (sy > screenMaxY) screenMaxY = sy;
-  }
-
-  // A stroke is centred on its line, so ink reaches past the geometry by half
-  // the width. The margin is the full width (mapStyleMaxStrokePx) -- being one
-  // pixel too generous keeps a way that draws nothing, which costs a little
-  // time; being one pixel too tight loses a pixel that should be on the panel.
-  const int margin = config_.rejectMarginPx > 0 ? config_.rejectMarginPx : 0;
-  screenMinX -= margin;
-  screenMinY -= margin;
-  screenMaxX += margin;
-  screenMaxY += margin;
-
-  return !(screenMaxX < 0 || screenMaxY < 0 || screenMinX >= config_.screenWidth || screenMinY >= config_.screenHeight);
+  return !(maxX < screenBoxMinX_ || minX > screenBoxMaxX_ || maxY < screenBoxMinY_ || minY > screenBoxMaxY_);
 }
 
 bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {

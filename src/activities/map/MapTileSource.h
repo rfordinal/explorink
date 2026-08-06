@@ -168,6 +168,11 @@ class MapTileSource : public IMapSource {
   // that rectangle, so a "no" is always a real no. Every segment of the way lies
   // inside its own bbox, so no drawing can escape it either.
   bool mayReachScreen(uint16_t pointCount) const;
+  // Works out `screenBox*_`: the screen rectangle, inflated by the stroke
+  // margin, expressed in the current tile's own local coordinates. Called once
+  // per tile open, so every record afterwards is tested with integer compares
+  // and no projection at all.
+  void computeScreenBoxForTile();
   // Opens the next tile in the range that actually has the current layer.
   // Returns false when the range is exhausted.
   bool advanceToNextTile();
@@ -195,6 +200,20 @@ class MapTileSource : public IMapSource {
   uint32_t pointsProjected_ = 0;
   uint32_t waysOffScreen_ = 0;
   uint32_t ioUs_ = 0;
+
+  // The screen, in this tile's local coordinates. int32 rather than int16: the
+  // screen box is a *superset* of the visible area at any heading other than a
+  // multiple of 90 degrees, and at the coarse rungs it can run well past the
+  // int16 range a tile's own points live in.
+  //
+  // Valid only while a tile is open, and only when the screen test is on
+  // (Config::screenWidth). screenBoxValid_ false means "keep everything", which
+  // is the safe answer if the inverse projection ever produced nonsense.
+  int32_t screenBoxMinX_ = 0;
+  int32_t screenBoxMaxX_ = 0;
+  int32_t screenBoxMinY_ = 0;
+  int32_t screenBoxMaxY_ = 0;
+  bool screenBoxValid_ = false;
 
   // The one live record. Overwritten by every nextWay()/nextPlace().
   int16_t xs_[MapTileReader::kMaxWayPoints];
