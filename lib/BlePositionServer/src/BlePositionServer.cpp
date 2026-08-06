@@ -120,8 +120,21 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // channel depends on these two and neither is knowable from a return value --
   // the central drives both (docs/optimization/03-ble-link.md, step 1).
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
+    self().onConnIntervalChanged(info.getConnInterval());
     // Interval is in 1.25 ms units.
     LOG_INF("BLEPOS", "connected: interval %u units (%u ms), latency %u, timeout %u",
+            static_cast<unsigned>(info.getConnInterval()), static_cast<unsigned>(info.getConnInterval() * 5 / 4),
+            static_cast<unsigned>(info.getConnLatency()), static_cast<unsigned>(info.getConnTimeout()));
+  }
+
+  // The central can change the interval mid-connection, and it does: the phone
+  // app asks for a fast one while a tile sync runs and gives it back afterwards
+  // (android/README.md). Without this hook the log only ever showed the interval
+  // agreed at connect, so there was no way to tell whether that request landed --
+  // and the interval, not the MTU, is what caps the transfer.
+  void onConnParamsUpdate(NimBLEConnInfo& info) override {
+    self().onConnIntervalChanged(info.getConnInterval());
+    LOG_INF("BLEPOS", "conn params: interval %u units (%u ms), latency %u, timeout %u",
             static_cast<unsigned>(info.getConnInterval()), static_cast<unsigned>(info.getConnInterval() * 5 / 4),
             static_cast<unsigned>(info.getConnLatency()), static_cast<unsigned>(info.getConnTimeout()));
   }
@@ -413,6 +426,8 @@ void BlePositionServer::onTransferSubscribe(bool subscribed) {
 
 void BlePositionServer::onMtuChanged(uint16_t mtu) { mtu_ = mtu; }
 
+void BlePositionServer::onConnIntervalChanged(uint16_t units) { connIntervalUnits_ = units; }
+
 void BlePositionServer::onCommandSubscribe(bool subscribed) {
   commandSubscribed_ = subscribed;
   LOG_DBG("BLEPOS", "command channel %s", subscribed ? "subscribed" : "unsubscribed");
@@ -440,6 +455,7 @@ void BlePositionServer::onCentralDisconnect() {
   // The MTU belongs to the connection too -- reporting the last link's number
   // while nothing is connected is how a stale figure ends up in a bug report.
   mtu_ = 0;
+  connIntervalUnits_ = 0;
 
   portENTER_CRITICAL(&g_mux);
   const TransferHooks hooks = transferHooks_;
@@ -493,6 +509,7 @@ void BlePositionServer::onTransferIngest(const uint8_t*, size_t) {}
 void BlePositionServer::onTransferSubscribe(bool) {}
 void BlePositionServer::onCommandSubscribe(bool) {}
 void BlePositionServer::onMtuChanged(uint16_t) {}
+void BlePositionServer::onConnIntervalChanged(uint16_t) {}
 void BlePositionServer::onCentralDisconnect() {}
 
 }  // namespace freeink

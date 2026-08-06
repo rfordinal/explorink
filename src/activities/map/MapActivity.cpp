@@ -423,6 +423,8 @@ void MapActivity::onEnter() {
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
   consoleState_.setLinkMtuProvider(
       +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().negotiatedMtu(); });
+  consoleState_.setLinkIntervalProvider(
+      +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().connIntervalMs(); });
   // So `info` answers with real numbers before the first fix arrives rather
   // than reporting a 0 m/px viewport that has simply never been drawn.
   consoleState_.setZoomInfo(zoomStep(), MapViewport::kZoomLadder[zoomStep()].z,

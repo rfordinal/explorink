@@ -181,6 +181,11 @@ class MapConsoleState {
   // an MTU of zero.
   void setLinkMtuProvider(uint16_t (*provider)()) { linkMtuProvider_ = provider; }
 
+  // Same shape again, for the connection interval in milliseconds. Reported
+  // next to the MTU because it, not the MTU, is what caps a transfer: a chunk
+  // is write-with-response, so it costs one interval each way.
+  void setLinkIntervalProvider(uint16_t (*provider)()) { linkIntervalProvider_ = provider; }
+
   // Pushed by MapActivity after every viewport reset: what the zoom step it
   // actually rendered at resolves to. `info`'s zoom/lod/mpp lines read this.
   void setZoomInfo(uint8_t zoomStep, uint8_t lod, double mpp) {
@@ -259,6 +264,7 @@ class MapConsoleState {
   uint32_t seq_ = 0;
   uint32_t (*freeHeapProvider_)() = nullptr;
   uint16_t (*linkMtuProvider_)() = nullptr;
+  uint16_t (*linkIntervalProvider_)() = nullptr;
 
   uint8_t zoomStep_ = 0;
   uint8_t markerStep_ = 0;

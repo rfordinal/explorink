@@ -70,6 +70,8 @@ void TileSyncActivity::onEnter() {
   consoleState_.setSkipObserver(this);
   consoleState_.setLinkMtuProvider(
       +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().negotiatedMtu(); });
+  consoleState_.setLinkIntervalProvider(
+      +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().connIntervalMs(); });
   // Quoted in NEED_TILES below and reported by `info`. A tile built to another
   // version transfers fine, passes CRC and is then refused on open, so the
   // supplier needs the number before it sends anything (MapTileReader.h).

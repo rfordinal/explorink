@@ -244,6 +244,14 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
     }
   }
 
+  if (linkIntervalProvider_ != nullptr) {
+    const uint16_t ms = linkIntervalProvider_();
+    if (ms != 0) {
+      snprintf(line, sizeof(line), "INFO conn_interval_ms=%u", static_cast<unsigned>(ms));
+      out.reply(line);
+    }
+  }
+
   if (freeHeapProvider_ != nullptr) {
     snprintf(line, sizeof(line), "INFO heap=%lu", static_cast<unsigned long>(freeHeapProvider_()));
     out.reply(line);

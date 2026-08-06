@@ -170,8 +170,24 @@ class BlePositionServer {
   // header and 5 of chunk header. 0 while the MTU is unknown.
   uint16_t transferPayloadBytes() const { return mtu_ > 8 ? static_cast<uint16_t>(mtu_ - 8) : 0; }
 
+  // The link's connection interval in 1.25 ms units, 0 before a central
+  // connects.
+  //
+  // **This, not the MTU, is what caps a tile transfer.** A chunk is written
+  // with-response, so it spends one interval going out and one coming back: at
+  // 50 ms and a 248-byte payload that is 2.4 kB/s, which is exactly what the
+  // first real fetch measured. The central owns this number -- a peripheral's
+  // request for faster parameters is usually ignored by Android -- so the phone
+  // asks for a fast link while a sync runs, and this is how the device can tell
+  // whether it got one.
+  uint16_t connIntervalUnits() const { return connIntervalUnits_; }
+  // The same in milliseconds, rounded down. 0 while nothing is connected.
+  uint16_t connIntervalMs() const { return static_cast<uint16_t>(connIntervalUnits_ * 5 / 4); }
+
   // Internal: called by the NimBLE backend on the MTU exchange.
   void onMtuChanged(uint16_t mtu);
+  // Internal: on connect and on every mid-connection parameter update.
+  void onConnIntervalChanged(uint16_t units);
 
   // True once the central has subscribed to the status characteristic. A
   // transfer started before this has nowhere to report its verdict to, so
@@ -210,6 +226,7 @@ class BlePositionServer {
   volatile bool transferSubscribed_ = false;
   volatile bool commandSubscribed_ = false;
   volatile uint16_t mtu_ = 0;
+  volatile uint16_t connIntervalUnits_ = 0;
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;
