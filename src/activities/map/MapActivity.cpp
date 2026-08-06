@@ -98,11 +98,6 @@ constexpr int kHeaderBleBarsWidth =
     kHeaderBleBarCount * kHeaderBleBarWidth + (kHeaderBleBarCount - 1) * kHeaderBleBarGap;
 constexpr int kHeaderBtLogoWidth = 6;
 constexpr int kHeaderBtToBarsGap = 4;
-// Upper bound on drawBatteryRight's own percentage text + its
-// batteryPercentSpacing (BaseTheme.h:241, BaseTheme.cpp:120) -- "100%" at
-// SMALL_FONT_ID plus the 4px gap never exceeds this, so the bars never need
-// that text's actual width to avoid overlapping it.
-constexpr int kHeaderBatteryTextAllowance = 32;
 constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to bars
 // GUI.drawHeader() only clears its own 80px-wide battery box (BaseTheme.cpp:366);
 // the BLE logo+bars sit further left, over live map lines like the compass and
@@ -436,9 +431,14 @@ void MapActivity::drawHeaderStatus() {
                  nullptr);
 
   // BLE: bars right-anchored clear of the battery block (icon plus its own
-  // worst-case text), then a small Bluetooth logo to their left.
+  // worst-case text), then a small Bluetooth logo to their left. "100%" is
+  // the widest string drawBatteryRight ever draws (BaseTheme.cpp:118-120) --
+  // measured here, not guessed, after a guessed 32px allowance (2026-08-06)
+  // turned out too tight for some percentages and let the bars run into the
+  // text.
   const int batteryX = screenWidth - kHeaderMarginRight - BaseMetrics::values.batteryWidth;
-  const int barsRight = batteryX - kHeaderBatteryTextAllowance - kHeaderGroupGap;
+  const int worstCasePercentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
+  const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
   // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
