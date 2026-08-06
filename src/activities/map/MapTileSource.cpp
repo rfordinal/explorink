@@ -23,6 +23,7 @@ void MapTileSource::begin(const Config& config) {
   waysFiltered_ = 0;
   placesEmitted_ = 0;
   bytesRead_ = 0;
+  pointsProjected_ = 0;
 }
 
 void MapTileSource::buildPath(uint32_t col, uint32_t row) {
@@ -169,6 +170,7 @@ bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
     for (uint16_t i = 0; i < header.pointCount; ++i) {
       proj_.projectTileLocal(reader_.originX(), reader_.originY(), xs_[i], ys_[i], xs_[i], ys_[i]);
     }
+    pointsProjected_ += header.pointCount;
 
     out.classId = header.classId;
     out.roughness = header.roughness;
@@ -200,6 +202,7 @@ bool MapTileSource::nextPlace(MapPlaceRef& out) {
     int16_t sx = 0;
     int16_t sy = 0;
     proj_.projectTileLocal(reader_.originX(), reader_.originY(), header.x, header.y, sx, sy);
+    ++pointsProjected_;
 
     out.x = sx;
     out.y = sy;

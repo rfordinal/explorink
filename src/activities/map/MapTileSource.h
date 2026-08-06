@@ -102,6 +102,16 @@ class MapTileSource : public IMapSource {
   // I/O reduction from a lucky, mostly-cached SD card.
   uint32_t bytesRead() const { return bytesRead_; }
 
+  // Points handed to MapProjection since begin(), across every pass. This is
+  // the render path's own unit of work: the projection is a software `double`
+  // on this target (docs/optimization/01-render-pipeline.md), so it is the
+  // count that fixed point and off-screen rejection are measured against.
+  //
+  // Frame-scoped, cleared only in begin() -- unlike tilesOpened() and
+  // tilesUnavailable(), which startPass() resets and which therefore describe
+  // whichever pass ran last.
+  uint32_t pointsProjected() const { return pointsProjected_; }
+
  private:
   bool startPass(MapTileReader::Layer layer);
   // The shared way-record walk. `applyClassMask` is false for buildings and
@@ -132,6 +142,7 @@ class MapTileSource : public IMapSource {
   uint32_t waysFiltered_ = 0;
   uint32_t placesEmitted_ = 0;
   uint32_t bytesRead_ = 0;
+  uint32_t pointsProjected_ = 0;
 
   // The one live record. Overwritten by every nextWay()/nextPlace().
   int16_t xs_[MapTileReader::kMaxWayPoints];

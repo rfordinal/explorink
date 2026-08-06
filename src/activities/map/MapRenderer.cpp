@@ -140,7 +140,18 @@ void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style
 }  // namespace
 
 void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
-                         IMapRouteSource* route) {
+                         IMapRouteSource* route, MapRenderTiming* timing) {
+  // Instrumentation only. `mark` holds the last stamp; each layer's field gets
+  // the delta since it. With no timing, or no clock in it, both of these are a
+  // null check and nothing else -- no clock call, no pixel changed.
+  const auto stamp = [timing]() -> uint32_t { return (timing && timing->nowMs) ? timing->nowMs() : 0; };
+  const auto lap = [&stamp](uint32_t& field, uint32_t& mark) {
+    const uint32_t now = stamp();
+    field = now - mark;
+    mark = now;
+  };
+  uint32_t mark = stamp();
+
   // Draw order is fixed and not arbitrary (docs/map-data-spec.md, "A tile is a
   // storage unit, not a render unit"): built-up area, green area, water,
   // buildings, road casings, road fills, then places. Landuse tones are
@@ -157,6 +168,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
     drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
   }
+  if (timing) lap(timing->landuseMs, mark);
 
   if (style.buildingsEnabled && source.beginBuildings()) {
     MapWayRef ring;
@@ -169,6 +181,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       MapAreaFill::outlineRing(canvas, ring.xs, ring.ys, ring.pointCount, style.buildingOutlinePx, MapInk::Black);
     }
   }
+  if (timing) lap(timing->buildingsMs, mark);
 
   if (style.waterEnabled && source.beginWater()) {
     MapWayRef way;
@@ -191,6 +204,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       }
     }
   }
+  if (timing) lap(timing->waterMs, mark);
 
   // One pass per layer, each pass pulled straight from the source and
   // forgotten. Nothing is collected first -- see IMapSource.h.
@@ -226,6 +240,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       strokeWay(canvas, way, lineWidth - 2 * casing, MapInk::White);
     }
   }
+  if (timing) lap(timing->roadsMs, mark);
 
   // The route sits over the roads it follows and under the place dots -- the
   // draw order docs/map-data-spec.md fixes ("built-up area, green area, water,
@@ -233,6 +248,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // route hidden under a casing is not a route; under the dots because a dot on
   // the route is exactly what item 4 of the render spec draws.
   if (route != nullptr) drawRoute(canvas, *route, style);
+  if (timing) lap(timing->routeMs, mark);
 
   const int dotDiameter = style.placeDotDiameterPx;
   if (dotDiameter > 0 && source.beginPlaces()) {
@@ -242,6 +258,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
                              dotDiameter / 2, MapInk::Black);
     }
   }
+  if (timing) lap(timing->placesMs, mark);
 
   // No marker draw here -- MapActivity draws its own mode-specific one (ring +
   // dot/arrow, sized per hike/cycle/ride) after this call returns. Drawing the

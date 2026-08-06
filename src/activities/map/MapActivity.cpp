@@ -26,6 +26,11 @@ namespace {
 
 constexpr const char* kLogTag = "MAP";
 
+// The clock MapRenderer's optional per-layer timing calls. A plain function
+// pointer, because MapRenderer is compiled for the host too and cannot see
+// millis() (MapRenderer.h, MapRenderTiming).
+uint32_t renderClockMs() { return millis(); }
+
 // docs/map-data-spec.md, "Layers as separate files".
 constexpr const char* kTileRoot = "/trailink";
 
@@ -1053,7 +1058,12 @@ void MapActivity::renderRouteOverview() {
   view.markerY = anchorY;
   view.heading = static_cast<MapHeading>(fit.heading & 0x0F);
 
-  const uint32_t missing = drawMapLayers(range, canvas, view);
+  // Per-layer timing, so a slow reset can be attributed to a layer rather than
+  // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one
+  // millis() call per layer and changes no pixel.
+  MapRenderTiming timing;
+  timing.nowMs = &renderClockMs;
+  const uint32_t missing = drawMapLayers(range, canvas, view, &timing);
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -1097,7 +1107,8 @@ void MapActivity::renderRouteOverview() {
   busyShown_ = false;
 }
 
-uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view) {
+uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
+                                    MapRenderTiming* timing) {
   MapTileSource::Config config;
   config.rootDir = kTileRoot;
   config.z = range.z;
@@ -1118,7 +1129,7 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // The route rides along as a second source, re-read from the card on every
   // reset and never held in RAM (IMapRouteSource.h). nullptr when the rider
   // skipped the picker, and then the route pass costs nothing at all.
-  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get());
+  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing);
 
   // Hatch after the geometry, because which tiles are missing is only known
   // once the source has tried to open them, and asking up front would cost a
@@ -1262,6 +1273,18 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
           static_cast<unsigned long>(source_->tilesUnavailable()), static_cast<unsigned long>(missing),
           static_cast<unsigned long>(source_->waysEmitted()), static_cast<unsigned long>(source_->waysFiltered()),
           static_cast<unsigned long>(source_->placesEmitted()), static_cast<unsigned long>(source_->bytesRead()));
+  // Where the frame went. `points` is every point handed to the projection this
+  // frame, which is the render path's own unit of work; the per-layer times say
+  // which layer spent it.
+  LOG_DBG(kLogTag,
+          "render %lu ms: landuse %lu, buildings %lu, water %lu, roads %lu, route %lu, places %lu; "
+          "%lu points projected",
+          static_cast<unsigned long>(timing.landuseMs + timing.buildingsMs + timing.waterMs + timing.roadsMs +
+                                     timing.routeMs + timing.placesMs),
+          static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.buildingsMs),
+          static_cast<unsigned long>(timing.waterMs), static_cast<unsigned long>(timing.roadsMs),
+          static_cast<unsigned long>(timing.routeMs), static_cast<unsigned long>(timing.placesMs),
+          static_cast<unsigned long>(source_->pointsProjected()));
   LOG_DBG(kLogTag, "heap: %lu before tile load, %lu after, delta %ld; framebuffer ready in %lu ms",
           static_cast<unsigned long>(heapBefore), static_cast<unsigned long>(heapAfter),
           static_cast<long>(heapBefore) - static_cast<long>(heapAfter), static_cast<unsigned long>(elapsedMs));

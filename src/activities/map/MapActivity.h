@@ -139,7 +139,12 @@ class MapActivity final : public Activity {
   // One function rather than two, because "which tiles were missing" and "the
   // route is a layer over the tiles" are properties of the map, not of which
   // kind of frame is being drawn.
-  uint32_t drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view);
+  // `timing`, when given, is filled with per-layer milliseconds for this frame
+  // (MapRenderer.h). Instrumentation: it changes no pixel and costs one clock
+  // call per layer. The route overview passes nullptr -- it is not on the path
+  // whose cost is being tracked.
+  uint32_t drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
+                         MapRenderTiming* timing = nullptr);
   // Re-renders the last received fix at the current ladder steps and mode.
   // This is what a zoom or marker step produces: the reset re-anchors on the
   // marker, which is the point -- zooming out must show more of the road

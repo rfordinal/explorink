@@ -21,6 +21,28 @@ struct MapViewState {
   MapHeading heading = MapHeading::N;
 };
 
+// Wall time each layer of one render() call spent, in milliseconds.
+//
+// The caller supplies the clock. MapRenderer is compiled for the host as well
+// as the device (test/map_preview links the same .cpp), and the host build has
+// no Arduino `millis()`; a plain function pointer keeps that dependency at the
+// call site instead of in here. A null `nowMs` -- or a null MapRenderTiming --
+// means no timing is taken and nothing is called.
+//
+// Why per layer and not one number for the frame: the frame time is already on
+// the debug readout (`MapActivity.cpp`, `%lums`), and it cannot answer the only
+// question worth asking, which is *which layer*. See
+// docs/optimization/01-render-pipeline.md, step 1.
+struct MapRenderTiming {
+  uint32_t (*nowMs)() = nullptr;
+  uint32_t landuseMs = 0;
+  uint32_t buildingsMs = 0;
+  uint32_t waterMs = 0;
+  uint32_t roadsMs = 0;
+  uint32_t routeMs = 0;
+  uint32_t placesMs = 0;
+};
+
 // Draws the base map (roads, place dots) onto whatever IMapCanvas it's
 // given. No hardware/HAL dependency -- this is what both the native preview
 // and MapActivity call.
@@ -51,8 +73,11 @@ class MapRenderer {
   // A second source rather than a layer of the first, because a route is one
   // file that outlives any viewport while IMapSource is a range of tiles
   // (IMapRouteSource.h).
+  //
+  // `timing` is optional instrumentation and changes no pixel. Pass nullptr --
+  // the default -- and the clock is never read.
   static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
-                     IMapRouteSource* route = nullptr);
+                     IMapRouteSource* route = nullptr, MapRenderTiming* timing = nullptr);
 
   // The style's position puck: white disc, black ring, heading arrow. Drawn
   // by callers with no travel mode of their own -- test/map_preview, which has
