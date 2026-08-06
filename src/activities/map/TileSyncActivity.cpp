@@ -507,10 +507,22 @@ void TileSyncActivity::renderScreen() {
     case Phase::Running:
       formatSummary(status, sizeof(status));
       break;
-    case Phase::Finished:
-      snprintf(status, sizeof(status), "%s   %lu / %lu", I18N.get(verdict_),
-               static_cast<unsigned long>(transfer.completed), static_cast<unsigned long>(rowCount_));
+    case Phase::Finished: {
+      // The verdict a run ends on has to carry the same two numbers the running
+      // line does, or a rider reads "finished" and cannot tell whether anything
+      // arrived. What landed, what was not available, and how much moved.
+      char moved[16];
+      formatBytes(transfer.completedBytes, moved, sizeof(moved));
+      char unavailable[32] = {};
+      if (skipped_ > 0) {
+        snprintf(unavailable, sizeof(unavailable), "   %lu %s", static_cast<unsigned long>(skipped_),
+                 tr(STR_TILE_SYNC_ROW_MISSING));
+      }
+      snprintf(status, sizeof(status), "%s   %lu / %lu%s   %s", I18N.get(verdict_),
+               static_cast<unsigned long>(transfer.completed), static_cast<unsigned long>(rowCount_), unavailable,
+               moved);
       break;
+    }
   }
   renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
   y += lineHeight;
@@ -524,11 +536,17 @@ void TileSyncActivity::renderScreen() {
     // belongs. GUI.drawProgressBar writes that percentage itself, centred below
     // the bar, which is exactly what is wanted here and exactly what made it
     // wrong for the rows.
-    const uint32_t settled = transfer.completed + skipped_;
+    //
+    // It counts **arrivals**, not settled tiles. A tile the supplier does not
+    // have settles the run too, but filling the bar with it tells the rider the
+    // map is complete when nothing was transferred -- a run where the CDN holds
+    // none of the area would end on a full bar. Measured on the panel: 0 landed,
+    // 5 unavailable, bar at 100%. The unavailable count goes in the line above
+    // instead, where it cannot be read as progress.
     GUI.drawProgressBar(
         renderer,
         Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-        settled, rowCount_ > 0 ? rowCount_ : 1);
+        transfer.completed, rowCount_ > 0 ? rowCount_ : 1);
   }
 
   drawList();
