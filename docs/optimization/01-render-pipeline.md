@@ -50,12 +50,19 @@ is the extreme case:
 | 3 | 12 | z11 | 19,568 m | 1,532 km² | 55.3 km² | 28x |
 | 4 | 20 | z11 | 19,568 m | 3,446 km² (3x3) | 153.6 km² | 22x |
 
-The fattest z13 tile in that set holds **11,294 buildings and 110,939 points in
-643 KB**. At rung 0 a 2x2 range therefore reads about **45,000 buildings to draw
-about 181** — 0.4 % of the buildings walked produce a pixel. At rung 1 it is
-3.6 %.
+A dense z13 tile in that set holds **9,000 to 11,300 buildings and about
+100,000 points in 640-710 KB** — two ranges because `mapbuilder/test-data` is
+gitignored and gets regenerated, and both builds measured on 2026-08-06 landed in
+that band. At rung 0 a 2x2 range therefore reads **36,000 to 45,000 buildings to
+draw 150 to 180** — 0.4 % of the buildings walked produce a pixel. At rung 1 it
+is 3.6 %.
 
-Every one of those 45,000 is read off the card, **projected point by point in
+The **ratio** is the durable number here, not the tile: it comes from the tile
+grid against the screen, so it does not move with which area was built. Re-derive
+any of this with the tool; do not trust a tile path in this document to still
+exist.
+
+Every one of those tens of thousands is read off the card, **projected point by point in
 software `double`** (`MapTileSource.cpp:169-171`), and **hatch-scanned in full**
 (`MapAreaFill::hatchRing`, which takes its scan range from the ring's own bbox
 and never asks where the screen is, `MapAreaFill.cpp:126-153`). Only the last
@@ -63,9 +70,9 @@ step — the pixel write — is skipped, by `clipToRect` rejecting the line
 (`GfxRendererCanvas.h:44`).
 
 For scale on the other side of that ratio: an on-screen building at 1 m/px is
-13 hatch lines and 416 hatch pixels (cross hatch, 4 px, `data/mapstyle.json`).
-181 of them is ~75,000 pixels — nothing. **The frame's cost is almost entirely
-work on geometry that is not on the screen.**
+13-15 hatch lines and 400-660 hatch pixels (cross hatch, 4 px,
+`data/mapstyle.json`). 150 of them is under 100,000 pixels — nothing. **The
+frame's cost is almost entirely work on geometry that is not on the screen.**
 
 This changes the order of this plan. Step 3 was written as a maybe with a "skip
 it if under ~15 %" gate; the number is 99.6 % at rung 0, so **step 3 is the
@@ -429,8 +436,9 @@ Steps 6(1) and 7 are their own branches with their own device evidence.
 
 Step 3 stops the device **projecting and scanning** geometry it will not draw. It
 cannot stop it **reading** it: the bytes are what advances the stream
-(`MapTileSource.cpp:160-163`). At rung 0 that leaves ~45,000 buildings' worth of
-card reads for 181 drawn buildings, whatever this plan does.
+(`MapTileSource.cpp:160-163`). At rung 0 that leaves tens of thousands of
+buildings' worth of card reads for ~150 drawn buildings, whatever this plan
+does.
 
 Two places that can be fixed, neither of them here:
 
