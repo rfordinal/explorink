@@ -7,6 +7,12 @@ does, what it costs, and what has not been measured yet.
 
 Written 2026-08-06, with the branch `feat/route-layer`.
 
+**Verified on real hardware 2026-08-06.** Flashed to the X4, a route pushed over
+BLE, picked from the picker, and the overview photographed off the panel:
+`docs/device-shots/route-overview-first-frame.png` in the parent xteink repo.
+The measured numbers are in "What it costs" below. Known-good build archived as
+`docs/firmware-builds/feat-route-layer-a434acbf-good.bin` there.
+
 ## What happens, in order
 
 1. The home menu's Map row opens the picker, not the map
@@ -34,8 +40,10 @@ tooling is unaffected.
 ## The overview fit
 
 `MapRouteFit` answers "which zoom rung and which heading show the most of this
-route". **Read off the code, and unit-tested on the host**
-(`test/map_route/MapRouteTest.cpp`); not yet measured on hardware.
+route". Unit-tested on the host (`test/map_route/MapRouteTest.cpp`) and
+**confirmed on the panel**: a 71-point route running north-east came out at
+heading 2 and zoom step 3, whole route on screen, with the compass rotated to
+match (device log, 2026-08-06).
 
 One streaming pass over the points, 16 sets of accumulators, one per heading on
 `MapHeading`'s grid. It measures the **point set**, not the bounding box: a route
@@ -133,9 +141,19 @@ Tile geometry keeps `int16_t`: a tile range is only ever 3x3 around the anchor.
 
 A 3,000-point route is 24 KB on the card and 24 KB read per viewport reset. Against
 the 181 KB a four-tile reset already reads for geometry, that is around 13 %.
-**Read off the code, not measured on hardware** — the number to check is
-`MapRouteSource::bytesRead()` against `MapTileSource::bytesRead()` in the same
-frame.
+**Read off the code** — the number to check is `MapRouteSource::bytesRead()`
+against `MapTileSource::bytesRead()` in the same frame.
+
+**Measured on hardware 2026-08-06**, 71-point route, two z11 tiles:
+
+- **the whole overview frame took 2,537 ms**, tile reads and the e-ink refresh
+  included (`route overview: heading 2, zoom step 3, 2 tiles, 2 missing, 2537 ms,
+  whole route`). That is the same order as any other viewport reset, which pays
+  about 1,800 ms for the refresh alone — the route did not add a cost worth
+  seeing.
+- **heap delta 0 across the tile load** in the frames after it
+  (`heap: 55432 before tile load, 55432 after, delta 0`). The streaming claim
+  holds on the device, not only on the host.
 
 `points_crc32` is checked **once**, when the route is loaded
 (`MapRouteReader::verifyPoints()`, `MapRouteReader.h:98`), not per reset. The file
@@ -149,21 +167,24 @@ allocated on demand.
 
 ## Open, and what would settle it
 
-- **Not run on hardware yet.** Everything above is host-verified or read off the
-  code. The gates: push a route with `mapbuilder/build_route.py --push`, open the
-  map, check the picker lists it, pick it, and take a `CMD:SCREENSHOT` of the
-  overview.
+- ~~**Not run on hardware yet.**~~ Done 2026-08-06: pushed over BLE, listed by the
+  picker, picked, overview drawn and screenshotted. The route file landed on the
+  card through the **existing** transfer path with no firmware change, which was
+  the plan's one untested assumption.
 - **The route is 8 px wide and the widest road is 10 px**
   (`scripts/gen_mapstyle.py` warns about it on every build). Width is the only
   thing telling them apart on 1-bit e-ink, so the style needs a pass in the
   webapp. Judge it on a `map_preview --route` render, not by arithmetic.
-- **How long a viewport reset takes with a route loaded** is unmeasured. The reset
-  already pays about 1,800 ms for the refresh, so a 24 KB sequential read should
-  disappear into it — but "should" is not a measurement.
+- ~~**How long a viewport reset takes with a route loaded** is unmeasured.~~
+  Measured: 2,537 ms for the overview frame, see above. Still unmeasured for a
+  *long* route — the test route is 71 points, and a 3,000-point one reads 40x the
+  bytes.
 - **A route that crosses a tile-coverage gap** draws over the hatch, because the
   route pass runs before the hatch (`drawMapLayers()`, `MapActivity.cpp:1098`).
-  That is the honest order — the route is real data even where the base map is
-  missing — but it has not been looked at on a real gap.
+  The verification frame happened to include a real gap — two of its four z11
+  tiles were missing, hatched down the left of the panel — and the route stayed
+  readable over it. Not yet seen with the route itself crossing into the hatched
+  area, which is the case that matters.
 - **No console command.** `route` / `overview` would let the fit be exercised over
   USB serial without touching the picker. The menu row covers it for now.
 - **A ladder press before the first fix drops the overview to the waiting
