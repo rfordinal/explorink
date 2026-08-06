@@ -87,6 +87,19 @@ struct MapStyle {
   // not drawn.
   uint8_t placeDotDiameterPx;
 
+  // layers.route. The route is distinguished from the roads by width alone --
+  // there is no colour on 1-bit e-ink -- so this is deliberately wider than any
+  // road class. 0 means the route is not drawn even when one is loaded.
+  //
+  // The arrow is the filled head at the far end (docs/map-render-spec.md item
+  // 3): without it the line does not say which way round the route runs.
+  // `routeArrowLenPx` is tip-to-base, `routeArrowWidthPx` is the base. Both are
+  // device pixels and do not scale with mpp: a screen decoration has to stay
+  // legible at every zoom rung. Either at 0 draws the line and no head.
+  uint8_t routeWidthPx;
+  uint8_t routeArrowLenPx;
+  uint8_t routeArrowWidthPx;
+
   // device.marker_x_px / marker_y_px -- the viewport anchor, which is also
   // where the marker itself sits (MapViewport::kAnchorScreenX/Y).
   int16_t markerXPx;

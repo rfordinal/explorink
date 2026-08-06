@@ -11,6 +11,8 @@
 #include "MapHatch.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
+#include "MapRouteFit.h"
+#include "MapRouteSource.h"
 #include "MapStyleDefaults.h"
 #include "MapTileGrid.h"
 #include "MapTileSource.h"
@@ -38,16 +40,68 @@ std::string tilePath(const std::string& tilesDir, uint8_t z, uint32_t col, uint3
 
 MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& canvas) {
   MapPreviewResult result;
-  const MapViewport::ZoomStep& lod = MapViewport::kZoomLadder[request.zoom];
-  result.lodZoom = lod.z;
-
   const MapStyle& style = request.style ? *request.style : kDefaultMapStyle;
-  const int16_t markerY = request.markerY != 0 ? request.markerY : style.markerYPx;
-  result.markerY = markerY;
 
   MapProjection proj;
-  proj.reset(request.lat, request.lon, style.markerXPx, markerY, request.heading,
-             MapViewport::mppMercFor(request.zoom, request.lat));
+
+  // The route is loaded before the projection is built, because --fit-route
+  // lets it decide the projection. Its own file source, never the tile source's:
+  // both stream during a render and one seek cursor cannot serve two readers
+  // (MapRouteSource.h).
+  StdioFileSource routeFile;
+  std::unique_ptr<MapRouteSource> route;
+  if (!request.routePath.empty()) {
+    route = std::make_unique<MapRouteSource>(routeFile, proj);
+    if (route->load(request.routePath.c_str())) {
+      result.routeLoaded = true;
+      result.routeName = route->name();
+      result.routePoints = route->pointCount();
+    } else {
+      std::fprintf(stderr, "warning: %s was refused -- bad magic, wrong version, or a failed crc\n",
+                   request.routePath.c_str());
+      route.reset();
+    }
+  }
+
+  // What the frame is drawn at. --fit-route overrides all four of these from the
+  // route itself, which is what the device does when a route is picked.
+  double lat = request.lat;
+  double lon = request.lon;
+  uint8_t heading = request.heading;
+  int zoom = request.zoom;
+  int16_t anchorX = style.markerXPx;
+  int16_t anchorY = request.markerY != 0 ? request.markerY : style.markerYPx;
+
+  if (request.fitRoute && route) {
+    MapRouteFit::Result fit;
+    if (route->computeFit(SCREEN_WIDTH, SCREEN_HEIGHT, fit)) {
+      lat = fit.anchorLat;
+      lon = fit.anchorLon;
+      heading = fit.heading;
+      zoom = fit.zoomStep;
+      // An overview is not a follow frame: it has no look-ahead to reserve, so
+      // the anchor is the middle of the screen rather than the marker ladder's
+      // rung.
+      anchorX = SCREEN_WIDTH / 2;
+      anchorY = SCREEN_HEIGHT / 2;
+      result.routeFitRan = true;
+      result.routeFits = fit.fits;
+      result.routeFitHeading = fit.heading;
+      result.routeFitZoomStep = fit.zoomStep;
+      result.routeFitRequiredMpp = fit.requiredMpp;
+      result.routeFitLat = fit.anchorLat;
+      result.routeFitLon = fit.anchorLon;
+    } else {
+      std::fprintf(stderr, "warning: the route fit failed -- the point array read short\n");
+    }
+  }
+
+  const MapViewport::ZoomStep& lod = MapViewport::kZoomLadder[zoom];
+  result.lodZoom = lod.z;
+  const int16_t markerY = anchorY;
+  result.markerY = markerY;
+
+  proj.reset(lat, lon, anchorX, markerY, heading, MapViewport::mppMercFor(zoom, lat));
 
   MapViewport::TileRange range;
   if (request.singleTile) {
@@ -78,9 +132,9 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   }
 
   MapViewState view;
-  view.markerX = style.markerXPx;
+  view.markerX = anchorX;
   view.markerY = markerY;
-  view.heading = static_cast<MapHeading>(request.heading);
+  view.heading = static_cast<MapHeading>(heading);
 
   StdioFileSource file;
   // Heap, not a local: MapTileSource is ~5 KB and CLAUDE.md caps stack
@@ -104,11 +158,14 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // on top of that is what the reset..read window measures, and the answer
   // should be nothing.
   HeapProbe::reset();
-  MapRenderer::render(canvas, *source, view, style);
+  MapRenderer::render(canvas, *source, view, style, route.get());
   // render() does not draw the marker (MapActivity draws its own mode-specific
   // one). This preview has no travel mode, so it draws the style's puck
-  // explicitly.
-  MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
+  // explicitly -- except in a route overview, which is framed on the route and
+  // has no fix in it. A puck at the screen centre there would claim the rider is
+  // standing in the middle of their own route.
+  const bool drawPuck = !result.routeFitRan;
+  if (drawPuck) MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
   result.peakHeapDuringRender = HeapProbe::peakBytes();
   result.allocsDuringRender = HeapProbe::allocCount();
 
@@ -122,6 +179,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());
   result.missingMask = source->unavailableMask();
+  if (route) result.routeBytesRead = route->bytesRead();
 
   // Off by default, and deliberately: the committed golden PPM is the only
   // safety net the streaming refactor has, and it is never regenerated to
@@ -132,7 +190,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
       if ((result.missingMask & (1u << index)) == 0) continue;
       MapHatch::drawTile(canvas, proj, range.z, range.colAt(index), range.rowAt(index));
     }
-    MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
+    if (drawPuck) MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
   }
 
   return result;

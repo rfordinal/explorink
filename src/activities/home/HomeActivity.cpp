@@ -145,7 +145,9 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
-void HomeActivity::onMapOpen() { activityManager.goToMap(); }
+// The picker first, then the map. It falls through to the map on its own when
+// the card has no routes (ActivityManager::goToRouteSelect).
+void HomeActivity::onMapOpen() { activityManager.goToRouteSelect(); }
 
 void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
 

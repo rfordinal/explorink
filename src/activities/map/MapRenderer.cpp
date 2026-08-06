@@ -1,5 +1,7 @@
 #include "MapRenderer.h"
 
+#include <cmath>
+
 #include "MapAreaClass.h"
 #include "MapAreaFill.h"
 
@@ -67,9 +69,78 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
   }
 }
 
+// The route: one thick black polyline, with a filled arrowhead at the far end
+// (docs/map-render-spec.md item 3). Streamed, never collected -- two points are
+// live at a time whatever the route's length (IMapRouteSource.h).
+//
+// Coordinates are int32_t. In follow mode the far end of a long route is
+// millions of pixels off screen, and the canvas clips per segment, so an honest
+// off-screen coordinate is cheap while a wrapped int16_t one is a line drawn
+// across the middle of the map.
+void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style) {
+  if (style.routeWidthPx == 0) return;
+  if (!route.beginRoute()) return;
+
+  int32_t x = 0;
+  int32_t y = 0;
+  if (!route.nextRoutePoint(x, y)) return;
+
+  int32_t prevX = x;
+  int32_t prevY = y;
+  // The segment before the last point, kept for the arrowhead's direction. A
+  // route is at least two points (the format enforces it), so by the end of the
+  // walk this is always a real segment.
+  int32_t tailX = x;
+  int32_t tailY = y;
+  bool drewAny = false;
+
+  while (route.nextRoutePoint(x, y)) {
+    canvas.drawLine(static_cast<int>(prevX), static_cast<int>(prevY), static_cast<int>(x), static_cast<int>(y),
+                    style.routeWidthPx, MapInk::Black);
+    tailX = prevX;
+    tailY = prevY;
+    prevX = x;
+    prevY = y;
+    drewAny = true;
+  }
+  if (!drewAny) return;
+
+  // Arrowhead at the far end, pointing along the last segment. `arrow_len_px`
+  // is tip-to-base and `arrow_width_px` is the base, both device pixels: screen
+  // decorations stay legible at any map zoom, so they do not scale with mpp
+  // (data/mapstyle.json, layers.route).
+  const int arrowLen = style.routeArrowLenPx;
+  const int arrowWidth = style.routeArrowWidthPx;
+  if (arrowLen <= 0 || arrowWidth <= 0) return;
+
+  const double dx = static_cast<double>(prevX - tailX);
+  const double dy = static_cast<double>(prevY - tailY);
+  const double len = std::sqrt(dx * dx + dy * dy);
+  // A zero-length last segment has no direction to point along. Two identical
+  // points in a row are deduped by the builder, so this is a corrupt file rather
+  // than a normal route -- draw the line, skip the head.
+  if (len < 1e-6) return;
+  const double ux = dx / len;
+  const double uy = dy / len;
+
+  const double baseX = static_cast<double>(prevX) - ux * arrowLen;
+  const double baseY = static_cast<double>(prevY) - uy * arrowLen;
+  const double halfWidth = arrowWidth / 2.0;
+  // Perpendicular, same length scale.
+  const double px = -uy * halfWidth;
+  const double py = ux * halfWidth;
+
+  const int xs[3] = {static_cast<int>(prevX), static_cast<int>(std::lround(baseX + px)),
+                     static_cast<int>(std::lround(baseX - px))};
+  const int ys[3] = {static_cast<int>(prevY), static_cast<int>(std::lround(baseY + py)),
+                     static_cast<int>(std::lround(baseY - py))};
+  canvas.fillPolygon(xs, ys, 3, MapInk::Black);
+}
+
 }  // namespace
 
-void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style) {
+void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
+                         IMapRouteSource* route) {
   // Draw order is fixed and not arbitrary (docs/map-data-spec.md, "A tile is a
   // storage unit, not a render unit"): built-up area, green area, water,
   // buildings, road casings, road fills, then places. Landuse tones are
@@ -155,6 +226,13 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       strokeWay(canvas, way, lineWidth - 2 * casing, MapInk::White);
     }
   }
+
+  // The route sits over the roads it follows and under the place dots -- the
+  // draw order docs/map-data-spec.md fixes ("built-up area, green area, water,
+  // buildings, roads, route, junctions, places"). Over the roads because a
+  // route hidden under a casing is not a route; under the dots because a dot on
+  // the route is exactly what item 4 of the render spec draws.
+  if (route != nullptr) drawRoute(canvas, *route, style);
 
   const int dotDiameter = style.placeDotDiameterPx;
   if (dotDiameter > 0 && source.beginPlaces()) {

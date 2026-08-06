@@ -9,9 +9,12 @@
 #include "MapBleConsole.h"
 #include "MapModeMask.h"
 #include "MapProjection.h"
+#include "MapRenderer.h"
+#include "MapRouteSource.h"
 #include "MapSerialConsole.h"
 #include "MapTileSource.h"
 #include "MapTransferReceiver.h"
+#include "MapViewport.h"
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 
@@ -80,7 +83,11 @@
 // SD write (CLAUDE.md rule 8), and it must never sit in front of the redraw.
 class MapActivity final : public Activity {
  public:
-  MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  // `routePath` is an absolute card path to a .tir route, or nullptr for none.
+  // RouteSelectActivity passes what the rider picked; every other caller --
+  // `CMD:GOTO_MAP` over serial, the OOM fallbacks -- passes nothing and gets the
+  // map exactly as it was before routes existed.
+  MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath = nullptr);
 
   void onEnter() override;
   void onExit() override;
@@ -114,6 +121,25 @@ class MapActivity final : public Activity {
   // channel-specific conversion before calling this, so the projection and
   // the debug readout only ever see one heading representation.
   void renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq);
+  // The whole route on one screen: MapRouteFit picks the rung, the heading and
+  // the anchor, and the anchor is the screen centre rather than the marker
+  // ladder's rung -- an overview has no look-ahead to reserve because it has no
+  // rider position in it (MapRouteFit.h).
+  //
+  // This is the first frame after a route is picked, and the map menu's "Whole
+  // route" row draws it again at any time. It is deliberately not followable:
+  // overviewShown_ holds until a button asks for the normal map back, so a fix
+  // arriving two seconds later cannot yank the frame away while the rider is
+  // still reading it.
+  void renderRouteOverview();
+  // Shared by the follow frame and the overview: points the tile source at
+  // `range`, streams it through MapRenderer with the route drawn on top, then
+  // hatches whatever was missing and records it. Returns the unavailable mask.
+  //
+  // One function rather than two, because "which tiles were missing" and "the
+  // route is a layer over the tiles" are properties of the map, not of which
+  // kind of frame is being drawn.
+  uint32_t drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view);
   // Re-renders the last received fix at the current ladder steps and mode.
   // This is what a zoom or marker step produces: the reset re-anchors on the
   // marker, which is the point -- zooming out must show more of the road
@@ -191,6 +217,20 @@ class MapActivity final : public Activity {
   // references to both, so neither may move or die while it is alive.
   std::unique_ptr<HalFileSource> file_;
   std::unique_ptr<MapTileSource> source_;
+  // The loaded route, and its own file handle. **Its own**, not the tile
+  // source's: both stream during a render and one seek cursor cannot serve two
+  // readers (MapRouteSource.h). Null when the rider skipped the picker, which is
+  // what makes the route layer cost nothing when there is no route.
+  std::unique_ptr<HalFileSource> routeFile_;
+  std::unique_ptr<MapRouteSource> route_;
+  // What RouteSelectActivity picked, empty for none. Copied rather than held by
+  // pointer: the activity that chose it is deleted the moment this one is
+  // constructed (main.cpp's exitActivity).
+  char routePath_[MapRouteSource::kMaxPathLen] = {};
+  // True while the panel holds the route overview rather than a follow frame.
+  // Fixes are still recorded in that state but do not redraw -- see
+  // renderRouteOverview().
+  bool overviewShown_ = false;
   // Reset per viewport reset, before the source is used again -- the source
   // reads it live, so it must not change part-way through a render.
   MapProjection proj_;

@@ -5,7 +5,9 @@
 // Usage:
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
 //               [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle]
-//               [--tile <col>/<row>] [--hatch] [--out <file>]
+//               [--tile <col>/<row>] [--hatch] [--route <file.tir>]
+//               [--fit-route] [--out <file>]
+//   map_preview --tiles <dir> --route <file.tir> --fit-route
 //   map_preview --zoom-ladder
 //
 // <dir> is a mapbuilder-produced SD root (mapbuilder/build_tiles.py), i.e.
@@ -20,6 +22,13 @@
 //
 // --hatch draws the missing-tile hatch the device always draws (P4). It is
 // opt-in here so the committed golden PPM stays byte-identical.
+//
+// --route draws a .tir route file over the tiles
+// (../../../docs/route-file-spec.md in the parent xteink repo). --fit-route then
+// frames the whole route the way the device does when the rider picks one:
+// MapRouteFit chooses the rung, the heading and the anchor, and --lat/--lon are
+// not needed at all. That is what makes route styling a two-second laptop edit
+// instead of a flash.
 //
 // --marker moves the marker down the marker-height ladder (P5); left off, the
 // marker sits at the compiled style's device.marker_y_px. --mode applies the
@@ -97,6 +106,12 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
         return false;
       }
       request.classMask = MapModeMasks{}.forMode(mode);
+    } else if (arg == "--route") {
+      const char* v = next();
+      if (!v) return false;
+      request.routePath = v;
+    } else if (arg == "--fit-route") {
+      request.fitRoute = true;
     } else if (arg == "--hatch") {
       request.drawHatch = true;
     } else if (arg == "--zoom-ladder") {
@@ -119,6 +134,9 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
     }
     request.markerY = MapViewport::markerYForStep(markerStep);
   }
+  // --fit-route takes the anchor off the route, so a coordinate is not only
+  // unnecessary there, asking for one invites a mismatch between the two.
+  if (request.fitRoute && !request.routePath.empty()) return haveTiles;
   return haveTiles && haveLat && haveLon;
 }
 
@@ -143,7 +161,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: map_preview --tiles <dir> --lat <d> --lon <d> "
                  "[--heading 0-15] [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle] "
-                 "[--tile <col>/<row>] [--hatch] [--out <file>]\n"
+                 "[--tile <col>/<row>] [--hatch] [--route <file.tir>] [--fit-route] [--out <file>]\n"
+                 "       map_preview --tiles <dir> --route <file.tir> --fit-route\n"
                  "       map_preview --zoom-ladder\n");
     return 1;
   }
@@ -162,6 +181,24 @@ int main(int argc, char** argv) {
               preview.waysFiltered);
   std::printf("tile size on disk: %ld..%ld bytes, %u bytes actually read\n", preview.smallestTileBytes,
               preview.largestTileBytes, preview.bytesRead);
+  if (!request.routePath.empty()) {
+    if (preview.routeLoaded) {
+      std::printf("route \"%s\": %u points, %u bytes read\n", preview.routeName.c_str(), preview.routePoints,
+                  preview.routeBytesRead);
+    } else {
+      std::printf("route %s: REFUSED, nothing drawn\n", request.routePath.c_str());
+    }
+  }
+  if (preview.routeFitRan) {
+    std::printf("fit: heading %u, zoom step %u (%.0f m/px), anchor %.5f,%.5f -- %s\n", preview.routeFitHeading,
+                preview.routeFitZoomStep, MapViewport::kZoomLadder[preview.routeFitZoomStep].mpp, preview.routeFitLat,
+                preview.routeFitLon,
+                preview.routeFits ? "whole route on screen" : "too long for the ladder, showing the middle");
+    if (!preview.routeFits) {
+      std::printf("     needed %.1f m/px, the coarsest rung is %.0f\n", preview.routeFitRequiredMpp,
+                  MapViewport::kZoomLadder[MapViewport::kZoomStepCount - 1].mpp);
+    }
+  }
   std::printf("peak RAM: %zu B resident source + %zu B heap during render (%zu allocations) = %zu B total\n",
               preview.sourceBytes, preview.peakHeapDuringRender, preview.allocsDuringRender,
               preview.sourceBytes + preview.peakHeapDuringRender);

@@ -999,8 +999,9 @@ Chat logs and commit messages are not where the next agent looks.
 
 Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
 `docs/activity-manager.md`, `docs/webserver-endpoints.md`, `docs/map-style.md`,
-`docs/map-follow.md`, `docs/missing-tiles.md`, `docs/power-management.md`,
-`docs/sleep-screen.md`. Extend one before adding another.
+`docs/map-follow.md`, `docs/missing-tiles.md`, `docs/route-layer.md`,
+`docs/power-management.md`, `docs/sleep-screen.md`. Extend one before adding
+another.
 
 **Before planning work on the map, BLE or tile paths, read the matching plan in
 `docs/optimization/`.** That directory is a full review of this fork's own code

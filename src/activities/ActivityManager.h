@@ -97,7 +97,15 @@ class ActivityManager {
   void goToRecentBooks();
   void goToBrowser();
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
-  void goToMap();
+  // `routePath` is an absolute card path to a .tir route, or nullptr for none
+  // (MapActivity.h). `CMD:GOTO_MAP` and every internal fallback pass nothing, so
+  // the scripted path into the map is unchanged.
+  void goToMap(const char* routePath = nullptr);
+  // The route picker, on the way into the map -- what the home menu opens.
+  // Straight to the map when the card carries no routes: a one-row list whose
+  // only row is Skip is a screen that exists to be dismissed
+  // (RouteSelectActivity.h).
+  void goToRouteSelect();
   // Asks the phone for the tiles the map had to hatch. Its own screen rather
   // than a map-menu item: it is preparation done at home, not something a rider
   // stops mid-trail for, and it starts its own BLE (TileSyncActivity.h).

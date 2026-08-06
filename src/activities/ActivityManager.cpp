@@ -15,6 +15,8 @@
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "map/MapActivity.h"
+#include "map/MapRouteStore.h"
+#include "map/RouteSelectActivity.h"
 #include "map/TileSyncActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "preview/PreviewActivity.h"
@@ -202,7 +204,17 @@ void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
 
-void ActivityManager::goToMap() { replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput)); }
+void ActivityManager::goToMap(const char* routePath) {
+  replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput, routePath));
+}
+
+void ActivityManager::goToRouteSelect() {
+  if (!MapRouteStore::anyRoutes()) {
+    goToMap();
+    return;
+  }
+  replaceActivity(std::make_unique<RouteSelectActivity>(renderer, mappedInput));
+}
 
 void ActivityManager::goToTileSync() { replaceActivity(std::make_unique<TileSyncActivity>(renderer, mappedInput)); }
 
