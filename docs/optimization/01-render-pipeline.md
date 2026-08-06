@@ -94,6 +94,14 @@ hike, whole zoom ladder, tiles already on the card. `bytes` is
 | 3 | z11 | 2 | 5,038 | 1,280 | 12 | 535 | **3,191** | 20 | 81,081 | 0.9 MB |
 | 4 | z11 | 9 | 12,731 | 3,554 | 56 | 1,828 | **7,205** | 88 | 229,280 | 2.5 MB |
 
+**The route layer landed on `develop` after these numbers were taken**
+(`docs/route-layer.md`), so the table has no `route` column and the totals carry
+no route pass. The instrumentation now times that pass too (`MapRenderTiming::
+routeMs`), and a re-measure with a route loaded is the next capture. It does not
+invalidate anything below: the route is one polyline read from its own file, not
+a tile layer, so it adds to the frame rather than changing what the tile layers
+cost.
+
 Five things in that table, and three of them were not what this plan assumed:
 
 1. **Buildings are the detail-LOD cost, as predicted.** 65 % of rung 0, 56 % of
