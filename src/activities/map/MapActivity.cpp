@@ -1085,6 +1085,8 @@ void MapActivity::renderRouteOverview() {
   view.markerX = anchorX;
   view.markerY = anchorY;
   view.heading = static_cast<MapHeading>(fit.heading & 0x0F);
+  // Same rule as the follow frame, from the rung the fit chose.
+  view.drawBuildings = MapViewport::kZoomLadder[fit.zoomStep].buildings;
 
   const uint32_t missing = drawMapLayers(range, canvas, view);
   // North still rotates with the frame -- the overview is drawn at the fit's
@@ -1255,6 +1257,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // rotation-aware), so anything but agreement here has the two disagreeing
   // about which way is up.
   view.heading = static_cast<MapHeading>(headingStep & 0x0F);
+  // Buildings are a rung decision (MapViewport::ZoomStep::buildings): only the
+  // closest rung draws them, and on every other rung the layer is never opened.
+  view.drawBuildings = MapViewport::kZoomLadder[zoomStep()].buildings;
 
   // Per-layer timing, so a slow reset can be attributed to a layer rather than
   // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one

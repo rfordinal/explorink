@@ -170,7 +170,11 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   }
   if (timing) lap(timing->landuseMs, mark);
 
-  if (style.buildingsEnabled && source.beginBuildings()) {
+  // Both gates read: the style says whether buildings are drawn at all, the view
+  // says whether this rung draws them. Either one false and the layer is not
+  // opened -- and not opening it is what saves the card read, not just the
+  // drawing (MapStyle::buildingsEnabled, MapViewState::drawBuildings).
+  if (style.buildingsEnabled && state.drawBuildings && source.beginBuildings()) {
     MapWayRef ring;
     while (source.nextBuilding(ring)) {
       // Tone or hatch, whichever the style chose, then the outline on top so a

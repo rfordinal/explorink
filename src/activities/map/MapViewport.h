@@ -19,6 +19,25 @@ namespace MapViewport {
 struct ZoomStep {
   double mpp;  // ground metres per pixel
   uint8_t z;   // tile zoom of the LOD this step reads
+  // Whether this rung draws the buildings layer at all.
+  //
+  // A rung decision, not a style one: mapstyle.json says what a building looks
+  // like, and this says where one is worth drawing. Set false and the layer is
+  // never opened, so it costs no card read either
+  // (MapRenderer, MapStyle::buildingsEnabled).
+  //
+  // Only rung 0 draws them, decided by the maintainer 2026-08-06. At 1 m/px a
+  // building is 21 px across and is what the rider is looking at -- that rung
+  // exists for "where exactly am I". At 3 m/px it is 7 px, and measured on
+  // hardware the layer cost 4,122 ms of that rung's 7,463: 55 % of the slowest
+  // rung on the ladder, for texture. Rungs 2-4 read tiles that carry no
+  // buildings at all (mapbuilder/build_config.json), so false there only skips
+  // an empty pass.
+  //
+  // This is the one place the device's drawing depends on the zoom rung.
+  // docs/map-data-spec.md's "the device needs no zoom-dependent style" is
+  // amended by it, and says so.
+  bool buildings;
 };
 
 inline constexpr int kZoomStepCount = kMapLadderStepCount;
@@ -26,11 +45,11 @@ inline constexpr int kZoomStepCount = kMapLadderStepCount;
 // Five rungs, 1 to 20 m/px. A step maps to exactly one LOD, so no zoom
 // value can sit on an LOD boundary and thrash SD reads.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
-    {1.0, 13},   // step 0, detail
-    {3.0, 13},   // step 1, detail
-    {6.0, 12},   // step 2, regional
-    {12.0, 11},  // step 3, overview
-    {20.0, 11},  // step 4, overview
+    {1.0, 13, true},    // step 0, detail -- the only rung that draws buildings
+    {3.0, 13, false},   // step 1, detail
+    {6.0, 12, false},   // step 2, regional -- tiles carry none anyway
+    {12.0, 11, false},  // step 3, overview
+    {20.0, 11, false},  // step 4, overview
 };
 
 // Label overhang, added to the geometry bbox before it is mapped to tiles.

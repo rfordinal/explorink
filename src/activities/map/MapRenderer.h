@@ -19,6 +19,14 @@ struct MapViewState {
   int16_t markerX = 0;
   int16_t markerY = 0;
   MapHeading heading = MapHeading::N;
+  // Whether this frame draws buildings. Comes off the zoom rung
+  // (MapViewport::ZoomStep::buildings), because it is a decision about the rung
+  // rather than about the style -- and false means the layer is never opened, so
+  // it costs no card read either.
+  //
+  // Default true so a caller that does not know about rungs (a test, a probe)
+  // gets what the style asks for and nothing surprising.
+  bool drawBuildings = true;
 };
 
 // Wall time each layer of one render() call spent, in milliseconds.

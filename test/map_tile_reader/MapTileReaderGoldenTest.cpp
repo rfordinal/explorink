@@ -493,6 +493,40 @@ TEST(MapMarkerLadder, EveryRungIsOnScreenAndMovesThePicture) {
   EXPECT_EQ(MapViewport::markerYForStep(99), MapViewport::kMarkerLadder[MapViewport::kMarkerStepCount - 1]);
 }
 
+TEST(MapBuildingsPerRung, OnlyTheClosestRungDrawsThemAndSkippingThemSkipsTheRead) {
+  // The rule (MapViewport::ZoomStep::buildings): rung 0 draws buildings, no other
+  // rung does. Decided by the maintainer 2026-08-06 -- at 3 m/px a building is
+  // 7 px and the layer cost 4,122 ms of that rung's 7,463 on hardware.
+  EXPECT_TRUE(MapViewport::kZoomLadder[0].buildings);
+  for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
+    EXPECT_FALSE(MapViewport::kZoomLadder[step].buildings) << "step " << step;
+  }
+
+  // And the flag actually reaches the renderer. The golden style has buildings
+  // off, so this needs one that has them on -- the fixture tile carries 30 of
+  // them.
+  MapStyle withBuildings = kGoldenStyle;
+  withBuildings.buildingsEnabled = true;
+  withBuildings.buildingHatch = MapAreaFill::Pattern::Cross;
+  withBuildings.buildingHatchSpacingPx = 4;
+
+  MapPreviewRequest on = fixtureRequest();
+  on.style = &withBuildings;
+  on.drawBuildings = true;
+  PpmCanvas onCanvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult drawn = renderMapPreview(on, onCanvas);
+
+  MapPreviewRequest off = on;
+  off.drawBuildings = false;
+  PpmCanvas offCanvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult skipped = renderMapPreview(off, offCanvas);
+
+  EXPECT_NE(onCanvas.pixels(), offCanvas.pixels()) << "the flag must change the picture";
+  // The point of gating the layer rather than the drawing: an unopened layer
+  // costs no card read. That is where the milliseconds come from.
+  EXPECT_LT(skipped.bytesRead, drawn.bytesRead) << "and it must skip the read, not just the draw";
+}
+
 TEST(MapZoomLadder, EveryStepIsReachableAndMapsToOneLod) {
   for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
     const MapViewport::ZoomStep& rung = MapViewport::kZoomLadder[step];

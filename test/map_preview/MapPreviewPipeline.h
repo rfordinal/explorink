@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "IMapCanvas.h"
@@ -46,6 +47,16 @@ struct MapPreviewRequest {
   // view both ways and asserts the pixels match
   // (MapOffScreenReject in test/map_tile_reader/).
   bool rejectOffScreen = true;
+
+  // Override the rung's buildings decision (MapViewport::ZoomStep::buildings).
+  // Empty follows the rung, which is what the device does and what a preview
+  // should show by default.
+  //
+  // Set it to compare the same view with and without them -- which is how the
+  // "are buildings worth their cost at 3 m/px" question gets answered by looking
+  // rather than by arguing, and how the test below proves the flag reaches the
+  // renderer at all.
+  std::optional<bool> drawBuildings;
 
   // Render exactly one named tile instead of the whole tile range the
   // viewport touches. Only useful for quoting a per-tile RAM figure against
