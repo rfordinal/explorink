@@ -448,18 +448,22 @@ void MapActivity::drawHeaderStatus() {
   renderer.fillRect(logoLeft - kHeaderBackingPad, iconTop - kHeaderBackingPad, backingWidth,
                     kHeaderIconHeight + kHeaderBackingPad * 2, false);
 
-  // Logo: a small hand-drawn Bluetooth rune -- spine-to-chevron zigzag, same
-  // "vector glyph via GfxRenderer primitives" approach as the compass. No
-  // bitmap asset exists at this size; the 32x32 menu icon
+  // Logo: a small hand-drawn Bluetooth rune -- a vertical spine (the actual
+  // Bluetooth glyph's ascender/descender) plus two chevron wings crossing it,
+  // same "vector glyph via GfxRenderer primitives" approach as the compass.
+  // No bitmap asset exists at this size; the 32x32 menu icon
   // (components/icons/bluetooth.h) is for the home-screen launcher, not a
-  // 14px status row.
+  // 14px status row. logoLeft is the spine's x -- the wings reach right of it
+  // by kHeaderBtLogoWidth, crossing the spine at top, mid and bottom.
   const int logoQuarter = iconTop + kHeaderIconHeight / 4;
   const int logoMid = iconTop + kHeaderIconHeight / 2;
   const int logoThreeQuarter = iconTop + (kHeaderIconHeight * 3) / 4;
-  renderer.drawLine(logoLeft, iconTop, logoLeft + kHeaderBtLogoWidth, logoQuarter, 1, true);
-  renderer.drawLine(logoLeft + kHeaderBtLogoWidth, logoQuarter, logoLeft, logoMid, 1, true);
-  renderer.drawLine(logoLeft, logoMid, logoLeft + kHeaderBtLogoWidth, logoThreeQuarter, 1, true);
-  renderer.drawLine(logoLeft + kHeaderBtLogoWidth, logoThreeQuarter, logoLeft, iconBottom, 1, true);
+  const int logoTipX = logoLeft + kHeaderBtLogoWidth;
+  renderer.drawLine(logoLeft, iconTop, logoLeft, iconBottom, 1, true);           // spine
+  renderer.drawLine(logoLeft, iconTop, logoTipX, logoQuarter, 1, true);          // upper wing, down to tip
+  renderer.drawLine(logoTipX, logoQuarter, logoLeft, logoMid, 1, true);          // upper wing, back to spine
+  renderer.drawLine(logoLeft, logoMid, logoTipX, logoThreeQuarter, 1, true);     // lower wing, down to tip
+  renderer.drawLine(logoTipX, logoThreeQuarter, logoLeft, iconBottom, 1, true);  // lower wing, back to spine
 
   auto& ble = freeink::BlePositionServer::getInstance();
   // A negotiated MTU only exists once a central has connected and completed
