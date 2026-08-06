@@ -135,23 +135,6 @@ bool MapTileReader::parseHeader() {
   return true;
 }
 
-bool MapTileReader::validateLayerCrc32(const LayerEntry& entry) {
-  if (!seekCounted(entry.offset)) return false;
-
-  uint32_t crc = MapCrc32::kInit;
-  uint32_t remaining = entry.length;
-  while (remaining > 0) {
-    const size_t toRead = remaining < kStreamBufferSize ? static_cast<size_t>(remaining) : kStreamBufferSize;
-    const int n = readCounted(streamBuffer_, toRead);
-    if (n <= 0) return false;
-    crc = MapCrc32::update(crc, streamBuffer_, static_cast<size_t>(n));
-    remaining -= static_cast<uint32_t>(n);
-  }
-  crc = MapCrc32::final(crc);
-
-  return crc == entry.crc32;
-}
-
 const MapTileReader::LayerEntry* MapTileReader::findLayer(Layer layer) const {
   const uint8_t id = static_cast<uint8_t>(layer);
   for (uint8_t i = 0; i < layerCount_; ++i) {
@@ -180,22 +163,38 @@ uint32_t MapTileReader::layerLength(Layer layer) const {
 bool MapTileReader::beginLayer(Layer layer, const bool skipCrc32) {
   const LayerEntry* e = findLayer(layer);
   if (!e || e->length == 0) return false;
-  if (!skipCrc32 && !validateLayerCrc32(*e)) return false;
   if (!seekCounted(e->offset)) return false;
 
   layerCursorAbs_ = e->offset;
   layerEndAbs_ = e->offset + e->length;
   bufferPos_ = 0;
   bufferFill_ = 0;
+  // Fold the sum out of the read that is happening anyway, unless this pair was
+  // already checked in this frame and the caller said so.
+  streamCrc_ = MapCrc32::kInit;
+  streamCrcExpected_ = e->crc32;
+  layerCheck_ = skipCrc32 ? LayerCheck::Skipped : LayerCheck::NotFinished;
   return true;
 }
 
 bool MapTileReader::refill() {
   const uint32_t avail = layerEndAbs_ - layerCursorAbs_;
-  if (avail == 0) return false;
+  if (avail == 0) {
+    // End of the layer. Every one of its bytes has passed through here, so the
+    // running sum is complete and this is the moment to judge it. Only for a
+    // layer that was actually folded: Skipped stays Skipped.
+    if (layerCheck_ == LayerCheck::NotFinished) {
+      const uint32_t folded = MapCrc32::final(streamCrc_);
+      layerCheck_ = folded == streamCrcExpected_ ? LayerCheck::Passed : LayerCheck::Failed;
+    }
+    return false;
+  }
   const size_t toRead = avail < kStreamBufferSize ? avail : kStreamBufferSize;
   const int n = readCounted(streamBuffer_, toRead);
   if (n <= 0) return false;
+  if (layerCheck_ == LayerCheck::NotFinished) {
+    streamCrc_ = MapCrc32::update(streamCrc_, streamBuffer_, static_cast<size_t>(n));
+  }
   bufferFill_ = static_cast<size_t>(n);
   bufferPos_ = 0;
   layerCursorAbs_ += static_cast<uint32_t>(n);

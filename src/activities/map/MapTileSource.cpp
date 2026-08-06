@@ -30,6 +30,10 @@ void MapTileSource::begin(const Config& config) {
   ioUs_ = 0;
   crc32Validated_ = 0;
   crc32Skipped_ = 0;
+  // Carried in rather than cleared: a caller re-rendering after corruption has to
+  // be able to say "not this layer again" (Config::knownBadLayers).
+  crc32Failed_ = config_.knownBadLayers;
+  corruptLayers_ = 0;
 }
 
 void MapTileSource::buildPath(uint32_t col, uint32_t row) {
@@ -48,6 +52,32 @@ void MapTileSource::closeCurrentTile() {
   // reader that never opened anything simply reports zero.
   bytesRead_ += reader_.takeBytesRead();
   ioUs_ += reader_.takeIoUs();
+  if (tileOpen_) {
+    // The streamed sum is only complete once the layer has run dry, which is
+    // exactly when the walk closes the tile. Passed marks the pair so later
+    // passes skip the check; Failed marks the tile unavailable so the caller's
+    // second attempt hatches it instead of drawing it again.
+    const uint32_t bit = crcBitFor(currentTileIndex_, layer_);
+    if (bit < 64) {
+      switch (reader_.layerCheck()) {
+        case MapTileReader::LayerCheck::Passed:
+          crc32Validated_ |= (1ull << bit);
+          break;
+        case MapTileReader::LayerCheck::Failed:
+          crc32Failed_ |= (1ull << bit);
+          ++corruptLayers_;
+          ++tilesUnavailable_;
+          if (currentTileIndex_ < 32) unavailableMask_ |= (1u << currentTileIndex_);
+          break;
+        case MapTileReader::LayerCheck::NotFinished:
+        case MapTileReader::LayerCheck::Skipped:
+          // Not finished: the walk stopped before the end of the layer, so
+          // nothing is known and the pair stays unmarked -- the next pass checks
+          // it in full, as before. Skipped: already known good this frame.
+          break;
+      }
+    }
+  }
   if (tileOpen_) {
     reader_.close();
     tileOpen_ = false;
@@ -122,6 +152,19 @@ bool MapTileSource::advanceToNextTile() {
     // have changed -- a file does not rot between two passes of one frame.
     // docs/optimization/02-tile-io.md, step 2.
     const uint32_t crcBit = crcBitFor(index, layer_);
+    // Known bad from an earlier pass in this same frame: do not stream it again.
+    // The tile is already on the unavailable mask, so it hatches.
+    if (crcBit < 64 && (crc32Failed_ & (1ull << crcBit)) != 0) {
+      // Known bad, either from an earlier pass of this frame or handed in by a
+      // caller re-rendering after the first attempt drew it. Do not stream it
+      // again; hatch the tile instead.
+      ++tilesUnavailable_;
+      if (index < 32) unavailableMask_ |= (1u << index);
+      bytesRead_ += reader_.takeBytesRead();
+      ioUs_ += reader_.takeIoUs();
+      reader_.close();
+      continue;
+    }
     const bool alreadyValidated = crcBit < 64 && (crc32Validated_ & (1ull << crcBit)) != 0;
     if (alreadyValidated) ++crc32Skipped_;
     if (!reader_.beginLayer(layer_, alreadyValidated)) {
@@ -137,9 +180,12 @@ bool MapTileSource::advanceToNextTile() {
       continue;
     }
 
-    if (crcBit < 64) crc32Validated_ |= (1ull << crcBit);
+    // No longer marked here: the sum is now folded out of the record stream and
+    // the verdict only exists once the layer has been walked to its end, which
+    // closeCurrentTile() is what sees (MapTileReader::LayerCheck).
     ++tilesOpened_;
     tileOpen_ = true;
+    currentTileIndex_ = index;
     // The tile's origin is known now, so the screen can be brought into its
     // coordinates. Once here rather than once per record is the whole point.
     computeScreenBoxForTile();

@@ -67,6 +67,12 @@ class MapTileSource : public IMapSource {
     // nullptr means the reads are not timed, which is what the host build and
     // every test want -- see ioUs().
     uint32_t (*nowUs)() = nullptr;
+
+    // (tile, layer) pairs already known corrupt, in crc32Failed_'s bit layout.
+    // Such a layer is not opened at all and its tile lands on the unavailable
+    // mask, so it hatches. Set by a caller re-rendering after a streamed sum
+    // came out wrong -- see failedLayerMask().
+    uint64_t knownBadLayers = 0;
   };
 
   // `file` is reused for every tile: opened, streamed, closed, reopened for
@@ -159,6 +165,22 @@ class MapTileSource : public IMapSource {
   // of that layer's bytes not paid.
   uint32_t crc32Skipped() const { return crc32Skipped_; }
 
+  // Layers whose streamed crc32 came out wrong this frame. Non-zero means this
+  // frame drew records off a corrupt layer before the corruption was known, so
+  // the caller must draw the frame again -- the tile is now on the unavailable
+  // mask and the second attempt hatches it instead
+  // (MapTileReader::LayerCheck, and MapActivity's redraw).
+  //
+  // Frame-scoped. Expected to be zero always; it exists so a card going bad is
+  // visible in `info` rather than only as a strange picture.
+  uint32_t corruptLayers() const { return corruptLayers_; }
+
+  // The (tile, layer) pairs that failed, in the same bit layout Config takes
+  // back as knownBadLayers. This is how a caller re-renders without the geometry
+  // it has just been handed: begin() clears the frame's state, so the mask has to
+  // travel back in rather than survive inside.
+  uint64_t failedLayerMask() const { return crc32Failed_; }
+
  private:
   bool startPass(MapTileReader::Layer layer);
   // The shared way-record walk. `applyClassMask` is false for buildings and
@@ -237,6 +259,14 @@ class MapTileSource : public IMapSource {
   // (MapRenderer::kRoadPasses, plus landuse's built-up and forest walks).
   uint64_t crc32Validated_ = 0;
   uint32_t crc32Skipped_ = 0;
+  // (tile, layer) pairs whose streamed sum failed this frame. Checked before a
+  // layer is opened, so the frame that follows the failure does not stream the
+  // same garbage a second time.
+  uint64_t crc32Failed_ = 0;
+  uint32_t corruptLayers_ = 0;
+  // Which tile index the open reader belongs to, so a verdict that arrives when
+  // the layer runs dry can be attributed to the right pair.
+  uint32_t currentTileIndex_ = 0;
 
   // The one live record. Overwritten by every nextWay()/nextPlace().
   int16_t xs_[MapTileReader::kMaxWayPoints];

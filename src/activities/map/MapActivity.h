@@ -152,7 +152,7 @@ class MapActivity final : public Activity {
   // call per layer. The route overview passes nullptr -- it is not on the path
   // whose cost is being tracked.
   uint32_t drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
-                         MapRenderTiming* timing = nullptr);
+                         MapRenderTiming* timing = nullptr, uint64_t knownBadLayers = 0);
   // Re-renders the last received fix at the current ladder steps and mode.
   // This is what a zoom or marker step produces: the reset re-anchors on the
   // marker, which is the point -- zooming out must show more of the road

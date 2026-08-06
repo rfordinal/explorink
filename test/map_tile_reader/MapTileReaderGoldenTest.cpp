@@ -246,7 +246,25 @@ TEST(MapTileReader, RejectsHeaderCrcCorruption) {
 // -- open() (header crc only) and every other layer must be unaffected.
 // That is the property the whole per-layer split is for: a corrupt
 // buildings layer, say, must not cost roads or places anything.
-TEST(MapTileReader, RejectsLayerCrcCorruptionWithoutBreakingOtherLayers) {
+// Draws every way record out of the open layer until the stream runs dry, which
+// is what makes the folded crc32 verdict available (MapTileReader::layerCheck).
+// The renderer's own walk does exactly this -- MapTileSource::nextWayRecord loops
+// until readWayHeader fails.
+void drainWayLayer(MapTileReader& reader) {
+  int16_t xs[MapTileReader::kMaxWayPoints];
+  int16_t ys[MapTileReader::kMaxWayPoints];
+  MapTileReader::WayHeader header;
+  while (reader.readWayHeader(header)) {
+    if (!reader.readWayPoints(xs, ys, header.pointCount)) break;
+  }
+}
+
+TEST(MapTileReader, CatchesLayerCrcCorruptionOnceTheLayerHasBeenRead) {
+  // Changed 2026-08-06: the sum is folded out of the record stream rather than
+  // checked by a second pass first, so beginLayer() no longer refuses a corrupt
+  // layer -- the verdict arrives after the records have been handed out. That is
+  // the trade this test now pins down, and the reason MapTileSource re-renders
+  // when it sees a Failed.
   std::vector<uint8_t> data = readFile(fixturesDir() + "/tiny-sd/base/13/4484/2829.tib");
   ASSERT_GT(data.size(), 36u);
 
@@ -273,14 +291,23 @@ TEST(MapTileReader, RejectsLayerCrcCorruptionWithoutBreakingOtherLayers) {
   StdioFileSource file;
   MapTileReader reader;
   ASSERT_TRUE(reader.open(file, tmpPath.c_str())) << "header crc32 must still be valid";
-  EXPECT_FALSE(reader.beginLayer(static_cast<MapTileReader::Layer>(corruptedLayerId)));
-  EXPECT_TRUE(reader.beginLayer(MapTileReader::Layer::Roads)) << "an intact layer must still open fine";
+
+  const auto corrupted = static_cast<MapTileReader::Layer>(corruptedLayerId);
+  ASSERT_TRUE(reader.beginLayer(corrupted)) << "the directory still says this layer is there";
+  EXPECT_EQ(reader.layerCheck(), MapTileReader::LayerCheck::NotFinished) << "nothing is known before the end";
+  drainWayLayer(reader);
+  EXPECT_EQ(reader.layerCheck(), MapTileReader::LayerCheck::Failed) << "and the corruption must be caught at the end";
+
+  ASSERT_TRUE(reader.beginLayer(MapTileReader::Layer::Roads)) << "an intact layer must still open fine";
+  drainWayLayer(reader);
+  EXPECT_EQ(reader.layerCheck(), MapTileReader::LayerCheck::Passed);
 }
 
-TEST(MapTileReader, SkipCrc32OpensALayerThatWouldOtherwiseBeRejected) {
-  // The flag's contract, stated as a test because it is a loaded gun: it opens a
-  // layer whose payload was never checked. MapTileSource only sets it for a
-  // (tile, layer) pair that already passed inside the same frame.
+TEST(MapTileReader, SkipCrc32FoldsNothingAndSaysSo) {
+  // The flag's contract: it is the caller stating this pair already passed in
+  // this frame, so nothing is folded and no verdict is produced. Written as a
+  // test because it is a loaded gun -- a caller that sets it wrongly gets a
+  // corrupt layer with no complaint.
   std::vector<uint8_t> data = readFile(fixturesDir() + "/tiny-sd/base/13/4484/2829.tib");
   ASSERT_GT(data.size(), 36u);
 
@@ -306,22 +333,14 @@ TEST(MapTileReader, SkipCrc32OpensALayerThatWouldOtherwiseBeRejected) {
   MapTileReader reader;
   ASSERT_TRUE(reader.open(file, tmpPath.c_str()));
   const auto layer = static_cast<MapTileReader::Layer>(targetLayerId);
-  EXPECT_FALSE(reader.beginLayer(layer)) << "checked: the corruption must be caught";
-  EXPECT_TRUE(reader.beginLayer(layer, true)) << "skipped: the same layer opens, unchecked";
-}
 
-TEST(MapCrc32Once, TheRepeatCheckIsGoneAndThePictureIsNot) {
-  // The renderer walks roads twice and landuse twice, so a frame that draws them
-  // opens those layers more than once. Each repeat used to re-read the whole
-  // layer to re-check a sum that cannot have changed within one frame.
-  PpmCanvas canvas(kScreenWidth, kScreenHeight);
-  const MapPreviewResult result = renderMapPreview(fixtureRequest(), canvas);
+  ASSERT_TRUE(reader.beginLayer(layer));
+  drainWayLayer(reader);
+  EXPECT_EQ(reader.layerCheck(), MapTileReader::LayerCheck::Failed) << "folded: the corruption is caught";
 
-  EXPECT_GT(result.crc32Skipped, 0u) << "the second roads pass must reuse the first pass's check";
-  // The picture itself is guarded by RendersFixedViewportByteExact, which renders
-  // the same request and compares against the committed golden PPM. If skipping
-  // the repeat check changed one pixel, that test fails, not this one.
-  EXPECT_EQ(result.waysDrawn, 43u);
+  ASSERT_TRUE(reader.beginLayer(layer, true));
+  drainWayLayer(reader);
+  EXPECT_EQ(reader.layerCheck(), MapTileReader::LayerCheck::Skipped) << "skipped: no sum, no verdict, no complaint";
 }
 
 // --- P5: the mode filter and the marker-height ladder -------------------

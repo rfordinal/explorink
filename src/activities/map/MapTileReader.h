@@ -100,26 +100,46 @@ class MapTileReader {
   bool hasAnyGeometry() const;
   uint32_t layerLength(Layer layer) const;
 
-  // Validates that layer's own crc32 -- a second full pass over just its
-  // bytes, through the same fixed stream buffer -- then seeks back to its
-  // start and resets the streaming cursor. Only one layer is open for
-  // reading at a time. Returns false if the layer is absent, empty, or
-  // fails its crc32 (which the caller must treat the same as "tile
-  // unavailable", not "nothing here": findLayer() already ruled out
-  // "absent" by the time crc is checked, so a false here past that point is
-  // corrupt data, not an empty layer).
+  // Seeks to that layer and resets the streaming cursor. Only one layer is open
+  // for reading at a time. Returns false only for a layer that is absent or
+  // empty per the directory -- both of which come from the header, which open()
+  // has already checked.
   //
-  // `skipCrc32` opens the layer **without** re-reading it to check the sum.
-  // Only legitimate when this exact (file, layer) pair already passed within the
-  // same viewport reset: a file cannot become corrupt between two passes of one
-  // frame, and the renderer walks the roads and landuse layers twice each
-  // (MapRenderer::kRoadPasses). MapTileSource tracks which pairs have passed and
-  // is the only caller that may pass true -- see its crc32Validated_.
+  // **It no longer verifies the payload up front.** Changed 2026-08-06: the sum
+  // is folded out of the record stream instead, and the verdict lands in
+  // layerCheck() once the layer has been walked to its end. So a `true` here
+  // means "the directory says this layer exists", not "its bytes are good", and
+  // a caller that draws what it reads is drawing before the sum is known. See
+  // layerCheck() for why that trade was taken and what the caller owes in
+  // return.
   //
-  // Absent, empty and "the directory says a different length" are still caught
-  // with the flag set, because those come from the header, which is checked on
-  // open(). What is skipped is only the repeat pass over the payload.
+  // `skipCrc32` says this exact (file, layer) pair already passed inside the
+  // same viewport reset, so there is nothing to fold: a file does not become
+  // corrupt between two passes of one frame, and the renderer walks roads and
+  // landuse twice each (MapRenderer::kRoadPasses). MapTileSource tracks which
+  // pairs have passed and is the only caller that may pass true.
   bool beginLayer(Layer layer, bool skipCrc32 = false);
+
+  // How the open layer's crc32 came out, folded from the record stream as it was
+  // read rather than from a second pass over the same bytes.
+  //
+  // Why this exists: verifying first and then reading again costs the layer
+  // twice, and at the detail LOD the buildings layer is the bulk of the file and
+  // is walked only once -- so nothing can be remembered and reused. Folding the
+  // sum into the one read that has to happen anyway halves it.
+  //
+  // The trade, agreed with the maintainer 2026-08-06: corruption is now found
+  // **after** the records have been handed out and drawn, not before. A corrupt
+  // layer therefore puts geometry on the panel that has to be taken back off
+  // it -- the caller re-renders and hatches the tile instead. Corruption is
+  // rare, one extra frame is cheap, and the read halves on every frame.
+  enum class LayerCheck : uint8_t {
+    NotFinished,  // the stream has not reached the end of the layer yet
+    Skipped,      // opened with skipCrc32, so nothing was folded
+    Passed,
+    Failed,
+  };
+  LayerCheck layerCheck() const { return layerCheck_; }
 
   // Reads one way record's fixed header. Follow with readWayPoints() for
   // exactly `out.pointCount` points before reading the next way header.
@@ -219,7 +239,6 @@ class MapTileReader {
   };
 
   bool parseHeader();
-  bool validateLayerCrc32(const LayerEntry& entry);
   const LayerEntry* findLayer(Layer layer) const;
   bool readRaw(void* dst, size_t len);
   bool refill();
@@ -251,6 +270,11 @@ class MapTileReader {
   size_t bufferFill_ = 0;
   uint32_t layerCursorAbs_ = 0;
   uint32_t layerEndAbs_ = 0;
+  // The running sum over the open layer's bytes, folded in refill(), and the
+  // value the directory says it must equal.
+  uint32_t streamCrc_ = 0;
+  uint32_t streamCrcExpected_ = 0;
+  LayerCheck layerCheck_ = LayerCheck::NotFinished;
   uint32_t bytesRead_ = 0;
   uint32_t (*nowUs_)() = nullptr;
   uint32_t ioUs_ = 0;

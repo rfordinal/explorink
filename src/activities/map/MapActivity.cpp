@@ -1131,7 +1131,7 @@ void MapActivity::renderRouteOverview() {
 }
 
 uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
-                                    MapRenderTiming* timing) {
+                                    MapRenderTiming* timing, uint64_t knownBadLayers) {
   MapTileSource::Config config;
   config.rootDir = kTileRoot;
   config.z = range.z;
@@ -1153,6 +1153,9 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // Card time, so a slow frame can be split into "the card was slow" and "the
   // arithmetic was slow" -- the two have entirely different fixes.
   config.nowUs = &cardClockUs;
+  // Layers a previous attempt at this same frame found corrupt. Empty on the
+  // first attempt (MapTileSource::Config::knownBadLayers).
+  config.knownBadLayers = knownBadLayers;
   source_->begin(config);
 
   // kDefaultMapStyle is the compiled data/mapstyle.json (MapStyleDefaults.h,
@@ -1258,7 +1261,25 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // millis() call per layer and changes no pixel.
   MapRenderTiming timing;
   timing.nowMs = &renderClockMs;
-  const uint32_t missing = drawMapLayers(range, canvas, view, &timing);
+  uint32_t missing = drawMapLayers(range, canvas, view, &timing);
+
+  // A layer's checksum is now folded out of the record stream, so corruption is
+  // found *after* its records have been drawn (MapTileReader::layerCheck). When
+  // that happens the framebuffer holds geometry decoded from bad bytes, and the
+  // only way to take it back off is to draw the frame again without that layer.
+  //
+  // One retry, not a loop: the second attempt hatches every pair the first one
+  // failed, and a card corrupting a *different* layer on the very next read is
+  // not worth a third pass. Expected never to fire -- corruption is rare, which
+  // is the whole reason the read was halved
+  // (docs/optimization/02-tile-io.md).
+  if (source_->corruptLayers() > 0) {
+    const uint64_t bad = source_->failedLayerMask();
+    LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%llx) -- redrawing without them",
+            static_cast<unsigned long>(source_->corruptLayers()), static_cast<unsigned long long>(bad));
+    renderer.clearScreen();
+    missing = drawMapLayers(range, canvas, view, &timing, bad);
+  }
 
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's
