@@ -285,8 +285,25 @@ bool MapTileReader::refill() {
     // A cell-windowed pass continues into the next wanted cell. A failed cell
     // stops the walk: the caller has to hear about it before more records arrive,
     // and one bad cell means the file is not to be trusted for the rest either.
-    if (cellsValid_ && layerCheck_ != LayerCheck::Failed && advanceToNextCell()) {
-      return refill();
+    //
+    // A loop, not a recursive call into refill(). Recursion here costs one stack
+    // frame per cell boundary crossed, and a window can span all 64 cells plus the
+    // bucket -- 65 frames deep on an activity task with a 2-4 KB stack
+    // (CLAUDE.md's stack rules). It would have worked in every test and failed on
+    // a dense tile.
+    while (cellsValid_ && layerCheck_ != LayerCheck::Failed && advanceToNextCell()) {
+      const uint32_t cellAvail = layerEndAbs_ - layerCursorAbs_;
+      if (cellAvail == 0) continue;  // advanceToNextCell only positions on non-empty cells, but be exact
+      const size_t toRead = cellAvail < kStreamBufferSize ? cellAvail : kStreamBufferSize;
+      const int got = readCounted(streamBuffer_, toRead);
+      if (got <= 0) return false;
+      if (layerCheck_ == LayerCheck::NotFinished) {
+        streamCrc_ = MapCrc32::update(streamCrc_, streamBuffer_, static_cast<size_t>(got));
+      }
+      bufferFill_ = static_cast<size_t>(got);
+      bufferPos_ = 0;
+      layerCursorAbs_ += static_cast<uint32_t>(got);
+      return true;
     }
     return false;
   }
