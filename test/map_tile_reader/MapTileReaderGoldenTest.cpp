@@ -600,6 +600,17 @@ TEST(MapBuildingsPerRung, OnlyTheClosestRungDrawsThemAndSkippingThemSkipsTheRead
   for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
     EXPECT_FALSE(MapViewport::kZoomLadder[step].buildings) << "step " << step;
   }
+  // And the mirror: built-up is the wash that replaces them, so exactly the rungs
+  // without buildings have it. Every rung must draw one or the other, or a village
+  // is roads in empty white -- which is what rung 1 looked like for one build.
+  EXPECT_FALSE(MapViewport::kZoomLadder[0].builtUp);
+  for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
+    EXPECT_TRUE(MapViewport::kZoomLadder[step].builtUp) << "step " << step;
+  }
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    EXPECT_NE(MapViewport::kZoomLadder[step].buildings, MapViewport::kZoomLadder[step].builtUp)
+        << "step " << step << " must draw buildings or the wash, never neither and never both";
+  }
 
   // And the flag actually reaches the renderer. The golden style has buildings
   // off, so this needs one that has them on -- the fixture tile carries 30 of

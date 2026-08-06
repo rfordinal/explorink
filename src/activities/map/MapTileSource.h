@@ -158,6 +158,13 @@ class MapTileSource : public IMapSource {
   // the card as it draws, so its milliseconds are both costs added together.
   uint32_t ioUs() const { return ioUs_; }
 
+  // Cells and bytes the cell index let this frame skip, summed over every layer
+  // and pass. Zero when no layer read went through the index -- which is every
+  // rung that draws no buildings, since buildings are the only layer big enough
+  // for the writer to index (mapbuilder/tiles.py, MIN_INDEXED_LAYER_BYTES).
+  uint32_t cellsSkipped() const { return cellsSkipped_; }
+  uint32_t bytesSkippedByIndex() const { return bytesSkippedByIndex_; }
+
   // Layer crc32 checks skipped because that (tile, layer) pair already passed
   // in this frame. Frame-scoped. The evidence that the repeat check is gone:
   // with the renderer's seven passes over six layers, this should be non-zero
@@ -202,6 +209,10 @@ class MapTileSource : public IMapSource {
   // per tile open, so every record afterwards is tested with integer compares
   // and no projection at all.
   void computeScreenBoxForTile();
+  // The cell window the screen box covers, in the 8x8 grid a version-3 index
+  // divides the tile into (MapTileReader::kCellGrid). False when there is no
+  // screen box to derive it from, in which case the caller reads whole layers.
+  bool screenCellWindow(uint32_t& col0, uint32_t& col1, uint32_t& row0, uint32_t& row1) const;
   // Bit index for a (tile index, layer id) pair in crc32Validated_.
   static uint32_t crcBitFor(uint32_t tileIndex, MapTileReader::Layer layer) {
     return tileIndex * 7u + static_cast<uint32_t>(layer);
@@ -264,6 +275,8 @@ class MapTileSource : public IMapSource {
   // same garbage a second time.
   uint64_t crc32Failed_ = 0;
   uint32_t corruptLayers_ = 0;
+  uint32_t cellsSkipped_ = 0;
+  uint32_t bytesSkippedByIndex_ = 0;
   // Which tile index the open reader belongs to, so a verdict that arrives when
   // the layer runs dry can be attributed to the right pair.
   uint32_t currentTileIndex_ = 0;

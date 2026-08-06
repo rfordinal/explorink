@@ -38,6 +38,20 @@ struct ZoomStep {
   // docs/map-data-spec.md's "the device needs no zoom-dependent style" is
   // amended by it, and says so.
   bool buildings;
+  // Whether this rung draws the built-up landuse wash.
+  //
+  // The mirror of `buildings`, and for the same reason read backwards: at rung 0
+  // individual buildings are the thing being looked at, and a wash under them
+  // would be a second grey adding nothing (docs/map-data-spec.md's original
+  // argument for leaving built-up out of the detail LOD entirely). From rung 1
+  // out there are no buildings, and the wash is what says "village" -- without
+  // it that rung showed roads in empty white.
+  //
+  // The tile carries built-up at every LOD since 2026-08-06
+  // (mapbuilder/build_config.json); this decides which rung draws it. Not a read
+  // saving -- the landuse layer is read for forest regardless -- so it is a
+  // drawing decision only, and landuse is a few KB.
+  bool builtUp;
 };
 
 inline constexpr int kZoomStepCount = kMapLadderStepCount;
@@ -45,11 +59,12 @@ inline constexpr int kZoomStepCount = kMapLadderStepCount;
 // Five rungs, 1 to 20 m/px. A step maps to exactly one LOD, so no zoom
 // value can sit on an LOD boundary and thrash SD reads.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
-    {1.0, 13, true},    // step 0, detail -- the only rung that draws buildings
-    {3.0, 13, false},   // step 1, detail
-    {6.0, 12, false},   // step 2, regional -- tiles carry none anyway
-    {12.0, 11, false},  // step 3, overview
-    {20.0, 11, false},  // step 4, overview
+    //  mpp   z  buildings  builtUp
+    {1.0, 13, true, false},   // step 0, detail -- buildings, no wash under them
+    {3.0, 13, false, true},   // step 1, detail -- the wash instead of buildings
+    {6.0, 12, false, true},   // step 2, regional
+    {12.0, 11, false, true},  // step 3, overview
+    {20.0, 11, false, true},  // step 4, overview
 };
 
 // Label overhang, added to the geometry bbox before it is mapped to tiles.

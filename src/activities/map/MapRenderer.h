@@ -27,6 +27,11 @@ struct MapViewState {
   // Default true so a caller that does not know about rungs (a test, a probe)
   // gets what the style asks for and nothing surprising.
   bool drawBuildings = true;
+  // Whether this frame draws the built-up landuse class. Comes off the same rung
+  // table (MapViewport::ZoomStep::builtUp) and is the mirror of drawBuildings:
+  // rung 0 draws buildings without a wash, every rung above draws the wash
+  // instead. Forest is unaffected.
+  bool drawBuiltUp = true;
 };
 
 // Wall time each layer of one render() call spent, in milliseconds.

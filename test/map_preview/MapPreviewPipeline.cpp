@@ -138,8 +138,9 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // Same rung rule the device applies (MapViewport::ZoomStep::buildings), so the
   // laptop preview shows what the panel will show rather than a nicer version of
   // it. Draws buildings at rung 0 only.
-  view.drawBuildings = request.drawBuildings.value_or(
-      MapViewport::kZoomLadder[std::clamp(request.zoom, 0, MapViewport::kZoomStepCount - 1)].buildings);
+  const int rung = std::clamp(request.zoom, 0, MapViewport::kZoomStepCount - 1);
+  view.drawBuildings = request.drawBuildings.value_or(MapViewport::kZoomLadder[rung].buildings);
+  view.drawBuiltUp = MapViewport::kZoomLadder[rung].builtUp;
 
   StdioFileSource file;
   // Heap, not a local: MapTileSource is ~5 KB and CLAUDE.md caps stack

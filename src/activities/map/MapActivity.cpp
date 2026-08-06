@@ -1087,6 +1087,7 @@ void MapActivity::renderRouteOverview() {
   view.heading = static_cast<MapHeading>(fit.heading & 0x0F);
   // Same rule as the follow frame, from the rung the fit chose.
   view.drawBuildings = MapViewport::kZoomLadder[fit.zoomStep].buildings;
+  view.drawBuiltUp = MapViewport::kZoomLadder[fit.zoomStep].builtUp;
 
   const uint32_t missing = drawMapLayers(range, canvas, view);
   // North still rotates with the frame -- the overview is drawn at the fit's
@@ -1260,6 +1261,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // Buildings are a rung decision (MapViewport::ZoomStep::buildings): only the
   // closest rung draws them, and on every other rung the layer is never opened.
   view.drawBuildings = MapViewport::kZoomLadder[zoomStep()].buildings;
+  view.drawBuiltUp = MapViewport::kZoomLadder[zoomStep()].builtUp;
 
   // Per-layer timing, so a slow reset can be attributed to a layer rather than
   // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one
@@ -1342,14 +1344,17 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // which layer spent it.
   LOG_DBG(kLogTag,
           "render %lu ms: landuse %lu, buildings %lu, water %lu, roads %lu, route %lu, places %lu; "
-          "%lu points projected, %lu ways off screen, %lu ms in the card, %lu crc32 skipped",
+          "%lu points projected, %lu ways off screen, %lu ms in the card, %lu crc32 skipped, "
+          "%lu cells skipped (%lu KB)",
           static_cast<unsigned long>(timing.landuseMs + timing.buildingsMs + timing.waterMs + timing.roadsMs +
                                      timing.routeMs + timing.placesMs),
           static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.buildingsMs),
           static_cast<unsigned long>(timing.waterMs), static_cast<unsigned long>(timing.roadsMs),
           static_cast<unsigned long>(timing.routeMs), static_cast<unsigned long>(timing.placesMs),
           static_cast<unsigned long>(source_->pointsProjected()), static_cast<unsigned long>(source_->waysOffScreen()),
-          static_cast<unsigned long>(source_->ioUs() / 1000u), static_cast<unsigned long>(source_->crc32Skipped()));
+          static_cast<unsigned long>(source_->ioUs() / 1000u), static_cast<unsigned long>(source_->crc32Skipped()),
+          static_cast<unsigned long>(source_->cellsSkipped()),
+          static_cast<unsigned long>(source_->bytesSkippedByIndex() / 1024u));
   LOG_DBG(kLogTag, "heap: %lu before tile load, %lu after, delta %ld; framebuffer ready in %lu ms",
           static_cast<unsigned long>(heapBefore), static_cast<unsigned long>(heapAfter),
           static_cast<long>(heapBefore) - static_cast<long>(heapAfter), static_cast<unsigned long>(elapsedMs));

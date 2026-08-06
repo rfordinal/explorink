@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "MapTileGrid.h"
+
 MapTileSource::MapTileSource(IFileSource& file, const MapProjection& proj) : file_(file), proj_(proj) {
   name_[0] = '\0';
   path_[0] = '\0';
@@ -33,6 +35,8 @@ void MapTileSource::begin(const Config& config) {
   // Carried in rather than cleared: a caller re-rendering after corruption has to
   // be able to say "not this layer again" (Config::knownBadLayers).
   crc32Failed_ = config_.knownBadLayers;
+  cellsSkipped_ = 0;
+  bytesSkippedByIndex_ = 0;
   corruptLayers_ = 0;
 }
 
@@ -61,7 +65,11 @@ void MapTileSource::closeCurrentTile() {
     if (bit < 64) {
       switch (reader_.layerCheck()) {
         case MapTileReader::LayerCheck::Passed:
-          crc32Validated_ |= (1ull << bit);
+          // Only a whole-layer read proves the layer's own sum. On the cell path
+          // layerCheck() speaks for the last cell, and marking the layer validated
+          // off that would let a later whole-layer pass skip a check that never
+          // happened (MapTileReader::readingCells).
+          if (!reader_.readingCells()) crc32Validated_ |= (1ull << bit);
           break;
         case MapTileReader::LayerCheck::Failed:
           crc32Failed_ |= (1ull << bit);
@@ -118,6 +126,11 @@ bool MapTileSource::advanceToNextTile() {
       continue;
     }
 
+    // The origin is known the moment the header is parsed, so the screen box can
+    // be brought into this tile's coordinates before any layer is opened -- the
+    // cell window is derived from it.
+    computeScreenBoxForTile();
+
     if (!reader_.hasAnyGeometry()) {
       // Valid tile, nothing in any layer -- a data hole wearing a tile's
       // clothes. Counted as unavailable so it hatches and reaches
@@ -151,6 +164,32 @@ bool MapTileSource::advanceToNextTile() {
     // walk used to re-read the whole layer just to re-check a sum that cannot
     // have changed -- a file does not rot between two passes of one frame.
     // docs/optimization/02-tile-io.md, step 2.
+    // The cell index, when this layer has one and there is a screen box to derive
+    // a window from. Only buildings are ever indexed in practice, so this is the
+    // path the closest rung takes and no other.
+    //
+    // No crc32Validated_ bookkeeping on this path, deliberately: that bitmap
+    // records "this layer's own sum passed", and a cell read never computes that
+    // sum -- it checks one per cell instead. Marking the layer validated off a
+    // cell read would let a later whole-layer pass skip a check it never had.
+    uint32_t cellCol0 = 0, cellCol1 = 0, cellRow0 = 0, cellRow1 = 0;
+    if (reader_.layerHasIndex(layer_) && screenCellWindow(cellCol0, cellCol1, cellRow0, cellRow1)) {
+      if (!reader_.beginLayerCells(layer_, cellCol0, cellCol1, cellRow0, cellRow1)) {
+        ++tilesUnavailable_;
+        if (index < 32) unavailableMask_ |= (1u << index);
+        bytesRead_ += reader_.takeBytesRead();
+        ioUs_ += reader_.takeIoUs();
+        reader_.close();
+        continue;
+      }
+      ++tilesOpened_;
+      tileOpen_ = true;
+      currentTileIndex_ = index;
+      cellsSkipped_ += reader_.cellsSkipped();
+      bytesSkippedByIndex_ += reader_.bytesSkipped();
+      return true;
+    }
+
     const uint32_t crcBit = crcBitFor(index, layer_);
     // Known bad from an earlier pass in this same frame: do not stream it again.
     // The tile is already on the unavailable mask, so it hatches.
@@ -186,9 +225,6 @@ bool MapTileSource::advanceToNextTile() {
     ++tilesOpened_;
     tileOpen_ = true;
     currentTileIndex_ = index;
-    // The tile's origin is known now, so the screen can be brought into its
-    // coordinates. Once here rather than once per record is the whole point.
-    computeScreenBoxForTile();
     return true;
   }
   return false;
@@ -261,6 +297,30 @@ void MapTileSource::computeScreenBoxForTile() {
     if (hiY > screenBoxMaxY_) screenBoxMaxY_ = hiY;
   }
   screenBoxValid_ = true;
+}
+
+bool MapTileSource::screenCellWindow(uint32_t& col0, uint32_t& col1, uint32_t& row0, uint32_t& row1) const {
+  if (!screenBoxValid_) return false;
+
+  // The screen box is already in this tile's local coordinates
+  // (computeScreenBoxForTile), so the window is a division. Cell size comes from
+  // the tile's own span, and the grid has to be the one mapbuilder wrote with
+  // (MapTileReader::kCellGrid mirrors tiles.py's CELL_GRID).
+  const double span = MapTileGrid::kWorldSizeM / static_cast<double>(1u << config_.z);
+  const double cell = span / static_cast<double>(MapTileReader::kCellGrid);
+  const int32_t last = static_cast<int32_t>(MapTileReader::kCellGrid) - 1;
+
+  const auto slot = [cell, last](int32_t local) -> uint32_t {
+    if (local < 0) return 0;
+    const int32_t index = static_cast<int32_t>(static_cast<double>(local) / cell);
+    return static_cast<uint32_t>(index > last ? last : index);
+  };
+
+  col0 = slot(screenBoxMinX_);
+  col1 = slot(screenBoxMaxX_);
+  row0 = slot(screenBoxMinY_);
+  row1 = slot(screenBoxMaxY_);
+  return true;
 }
 
 bool MapTileSource::mayReachScreen(const uint16_t pointCount) const {

@@ -163,6 +163,19 @@ class MapTileReader {
   // (docs/map-data-spec.md, "Version 3: a cell index per layer").
   bool beginLayerCells(Layer layer, uint32_t col0, uint32_t col1, uint32_t row0, uint32_t row1);
 
+  // Does this layer carry a cell index? Answered from the directory, so it costs
+  // no file access. A caller uses it to decide which begin to call: the cell path
+  // checks a sum per cell and the whole-layer path checks one for the layer, and
+  // the two verdicts are not interchangeable (see MapTileSource).
+  bool layerHasIndex(Layer layer) const {
+    const LayerEntry* e = findLayer(layer);
+    return e != nullptr && e->indexLength > 0;
+  }
+
+  // True while the open layer is being walked cell by cell. Then layerCheck()
+  // speaks for the cell that just ended, not for the layer.
+  bool readingCells() const { return cellsValid_; }
+
   // Cells whose bytes this layer pass skipped, and the bytes they held. Zero for
   // an unindexed layer. Frame-scoped accounting for the caller; reset by every
   // beginLayer/beginLayerCells.

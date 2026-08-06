@@ -165,7 +165,9 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     // Two walks over one layer, built-up first: a park inside a housing estate
     // has to land on top of it, and a single walk would draw them in whatever
     // order the tile happens to store.
-    drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
+    // Built-up is per rung (MapViewState::drawBuiltUp); forest is drawn at every
+    // rung, because no building shows where a wood is.
+    if (state.drawBuiltUp) drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
     drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
   }
   if (timing) lap(timing->landuseMs, mark);
