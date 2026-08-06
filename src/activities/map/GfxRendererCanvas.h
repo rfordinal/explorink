@@ -33,15 +33,40 @@ class GfxRendererCanvas : public IMapCanvas {
     const int maxX = renderer_.getScreenWidth() - 1;
     const int maxY = renderer_.getScreenHeight() - 1;
     const MapStroke::Stack stack = MapStroke::stackFor(x1, y1, x2, y2, lineWidth);
-    // Clipped per copy, not once for the bundle: each copy is its own segment,
-    // and a wide road along a screen edge has some copies on screen and some
-    // off it.
+
+    // Does the whole bundle fit on the screen? If it does, no copy needs
+    // clipping and none of them enters clipToRect at all.
+    //
+    // Worth the four compares: a road is drawn twice (MapRenderer::kRoadPasses)
+    // and a 6 px road at 45 degrees is nine copies, so a segment used to pay
+    // eighteen Cohen-Sutherland runs in `double` -- on a target with no FPU --
+    // to learn eighteen times that it was already inside. Measured 2026-08-06:
+    // roads were 2,146 ms of rung 2's 2,927.
+    //
+    // The per-copy path is still there and still correct: a wide road along a
+    // screen edge genuinely has some copies on and some off, which is why this
+    // is a fast path and not a replacement.
+    const int loK = stack.first;
+    const int hiK = stack.first + stack.count - 1;
+    int boundsX1 = x1 < x2 ? x1 : x2;
+    int boundsX2 = x1 < x2 ? x2 : x1;
+    int boundsY1 = y1 < y2 ? y1 : y2;
+    int boundsY2 = y1 < y2 ? y2 : y1;
+    if (stack.alongY) {
+      boundsY1 += loK;
+      boundsY2 += hiK;
+    } else {
+      boundsX1 += loK;
+      boundsX2 += hiK;
+    }
+    const bool wholeStackOnScreen = boundsX1 >= 0 && boundsY1 >= 0 && boundsX2 <= maxX && boundsY2 <= maxY;
+
     for (int i = 0; i < stack.count; ++i) {
       const int k = stack.first + i;
       const int offsetX = stack.alongY ? 0 : k;
       const int offsetY = stack.alongY ? k : 0;
       int cx1 = x1 + offsetX, cy1 = y1 + offsetY, cx2 = x2 + offsetX, cy2 = y2 + offsetY;
-      if (!clipToRect(cx1, cy1, cx2, cy2, maxX, maxY)) continue;
+      if (!wholeStackOnScreen && !clipToRect(cx1, cy1, cx2, cy2, maxX, maxY)) continue;
       renderer_.drawLine(cx1, cy1, cx2, cy2, ink == MapInk::Black);
     }
   }
@@ -134,6 +159,18 @@ class GfxRendererCanvas : public IMapCanvas {
   // overflow 32 bits well inside the int16 coordinate range the projection
   // produces.
   static bool clipToRect(int& outX1, int& outY1, int& outX2, int& outY2, int maxX, int maxY) {
+    // Trivial accept, in integers, before a single `double` is touched. The
+    // function used to convert all four coordinates and compute its outcodes in
+    // `double` even for a segment wholly inside the screen -- for which the whole
+    // body is a no-op that rounds its own inputs back to where they started.
+    //
+    // This is the second line of defence behind the bundle test in drawLine():
+    // it catches the individual copies of a stack that straddles an edge, where
+    // most copies are still inside.
+    if (outX1 >= 0 && outX1 <= maxX && outY1 >= 0 && outY1 <= maxY && outX2 >= 0 && outX2 <= maxX && outY2 >= 0 &&
+        outY2 <= maxY) {
+      return true;
+    }
     double x1 = outX1, y1 = outY1, x2 = outX2, y2 = outY2;
     int c1 = outcode(x1, y1, maxX, maxY);
     int c2 = outcode(x2, y2, maxX, maxY);
