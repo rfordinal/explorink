@@ -223,6 +223,18 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     const char* labels[] = {topBtn, bottomBtn};
     const int x = screenWidth - buttonMargin - buttonWidth;
 
+    // White backing first: this call draws no fill of its own, only the
+    // border and text, so a caller over live content (a map, a rendered
+    // page) shows through it -- unlike drawButtonHints() just above, which
+    // does fill each box.
+    const bool hasTop = topBtn != nullptr && topBtn[0] != '\0';
+    const bool hasBottom = bottomBtn != nullptr && bottomBtn[0] != '\0';
+    if (hasTop || hasBottom) {
+      const int footprintHeight = (hasTop && hasBottom) ? 2 * buttonHeight : buttonHeight;
+      const int footprintY = (hasTop) ? topButtonY : topButtonY + buttonHeight;
+      renderer.fillRect(x, footprintY, buttonWidth, footprintHeight, false);
+    }
+
     if (topBtn != nullptr && topBtn[0] != '\0') {
       renderer.drawLine(x, topButtonY, x + buttonWidth - 1, topButtonY);
       renderer.drawLine(x, topButtonY, x, topButtonY + buttonHeight - 1);

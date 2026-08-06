@@ -425,12 +425,20 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     const char* labels[] = {topBtn, bottomBtn};
     const int x = screenWidth - buttonWidth;
 
+    // White backing first, same pairing drawButtonHints() uses just above
+    // (fillRoundedRect then drawRoundedRect) -- this call draws no fill of
+    // its own otherwise, so a caller over live content (a map, a rendered
+    // page) shows through it.
     if (topBtn != nullptr && topBtn[0] != '\0') {
+      renderer.fillRoundedRect(x, topHintButtonY, buttonWidth, buttonHeight, cornerRadius, true, false, true, false,
+                               Color::White);
       renderer.drawRoundedRect(x, topHintButtonY, buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false,
                                true);
     }
 
     if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
+      renderer.fillRoundedRect(x, topHintButtonY + buttonHeight + 5, buttonWidth, buttonHeight, cornerRadius, true,
+                               false, true, false, Color::White);
       renderer.drawRoundedRect(x, topHintButtonY + buttonHeight + 5, buttonWidth, buttonHeight, 1, cornerRadius, true,
                                false, true, false, true);
     }
