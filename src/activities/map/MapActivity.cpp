@@ -1,6 +1,7 @@
 #include "MapActivity.h"
 
 #include <BlePositionServer.h>
+#include <HalGPIO.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -489,6 +490,29 @@ void MapActivity::drawHeaderStatus() {
       renderer.drawRect(x, y, kHeaderBleBarWidth, barHeight, true);
     }
   }
+}
+
+void MapActivity::drawZoomSideHints() {
+  // Matches BaseTheme::drawSideButtonHints' own X4 branch exactly
+  // (BaseTheme.cpp: topButtonY=345, buttonHeight=80, two stacked boxes on the
+  // right edge, buttonMargin=4) -- X4 is this project's only target
+  // (CLAUDE.md), so the X3 side-by-side layout is not replicated here.
+  if (gpio.hasTouch() || gpio.deviceIsX3()) {
+    GUI.drawSideButtonHints(renderer, tr(STR_ZOOM_IN), tr(STR_ZOOM_OUT));
+    return;
+  }
+
+  constexpr int kSideHintTop = 345;
+  constexpr int kSideHintBoxHeight = 80;
+  constexpr int kSideHintMargin = 4;
+  const int sideHintX = renderer.getScreenWidth() - kSideHintMargin - BaseMetrics::values.sideButtonHintsWidth;
+
+  // White backing first, like every other piece of screen furniture here:
+  // drawSideButtonHints() itself clears nothing, and its one other caller
+  // (KeyboardEntryActivity) never needed to -- that screen has no live
+  // content under it.
+  renderer.fillRect(sideHintX, kSideHintTop, BaseMetrics::values.sideButtonHintsWidth, kSideHintBoxHeight * 2, false);
+  GUI.drawSideButtonHints(renderer, tr(STR_ZOOM_IN), tr(STR_ZOOM_OUT));
 }
 
 void MapActivity::drawDebugLine(int y, char* text) {
@@ -984,6 +1008,7 @@ void MapActivity::renderWaiting() {
   renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_WAITING_BLE), true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  drawZoomSideHints();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   busyShown_ = false;  // this frame painted over the badge
   // No map and no marker on this frame: there is nothing for a fix to move
@@ -1004,6 +1029,7 @@ void MapActivity::renderLoadingTiles() {
   renderer.drawText(UI_10_FONT_ID, 8, kTextLine2Y, line, true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  drawZoomSideHints();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   // Deliberately does not touch viewportDrawn_ or markerPatchValid_: the
   // viewport reset that follows sets both from its own frame, and claiming a
@@ -1234,6 +1260,7 @@ void MapActivity::renderRouteOverview() {
 
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  drawZoomSideHints();
 
   // No marker and no follow state. There is no fix in this frame, and a marker
   // at the screen centre would claim the rider is standing in the middle of
@@ -1499,6 +1526,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // were there.
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  drawZoomSideHints();
 
   // The marker goes on **last**, and its patch is taken immediately before it.
   // Everything the marker can sit over -- map, hatch, compass, readout, button

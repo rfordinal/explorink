@@ -172,6 +172,11 @@ class MapActivity final : public Activity {
   // so this reads the same; the BLE logo and signal bars are this screen's
   // own -- no other activity has a wireless link to show.
   void drawHeaderStatus();
+  // Up/Down are physical side buttons -- GUI.drawButtonHints()'s four front-
+  // button boxes never mention them. This draws the matching GUI side-hint
+  // boxes, backed in white first: no other caller of drawSideButtonHints()
+  // sits over live content, so the theme call itself clears nothing.
+  void drawZoomSideHints();
   // Immediate "working on it" feedback, above the button hints. A ladder step
   // or a Refresh does not reach the panel for the better part of two seconds
   // (settle, tile reads, then the refresh itself), which is long enough that a
