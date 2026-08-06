@@ -12,6 +12,11 @@ void MapProjection::lonLatToMerc(double lat, double lon, double& outMercX, doubl
   outMercY = kMercRadius * std::log(std::tan(3.14159265358979323846 / 4.0 + lat * kDegToRad / 2.0));
 }
 
+void MapProjection::mercToLonLat(double mercX, double mercY, double& outLat, double& outLon) {
+  outLon = mercX / kMercRadius / kDegToRad;
+  outLat = (2.0 * std::atan(std::exp(mercY / kMercRadius)) - 3.14159265358979323846 / 2.0) / kDegToRad;
+}
+
 void MapProjection::reset(double anchorLat, double anchorLon, int16_t anchorScreenX, int16_t anchorScreenY,
                           uint8_t headingStep, double mppMerc) {
   lonLatToMerc(anchorLat, anchorLon, anchorMercX_, anchorMercY_);
@@ -31,6 +36,16 @@ void MapProjection::projectMerc(double mercX, double mercY, int16_t& outScreenX,
   const double syOff = -(east * sinTheta_ + north * cosTheta_) / mppMerc_;
   outScreenX = static_cast<int16_t>(anchorScreenX_ + std::lround(sxOff));
   outScreenY = static_cast<int16_t>(anchorScreenY_ + std::lround(syOff));
+}
+
+void MapProjection::projectMercWide(double mercX, double mercY, int32_t& outScreenX, int32_t& outScreenY) const {
+  const double east = mercX - anchorMercX_;
+  const double north = mercY - anchorMercY_;
+  const double sx = anchorScreenX_ + (east * cosTheta_ - north * sinTheta_) / mppMerc_;
+  const double sy = anchorScreenY_ - (east * sinTheta_ + north * cosTheta_) / mppMerc_;
+  const double limit = static_cast<double>(kMaxWidePx);
+  outScreenX = static_cast<int32_t>(std::lround(std::fmax(-limit, std::fmin(limit, sx))));
+  outScreenY = static_cast<int32_t>(std::lround(std::fmax(-limit, std::fmin(limit, sy))));
 }
 
 void MapProjection::projectTileLocal(int32_t originX, int32_t originY, int16_t localX, int16_t localY,
