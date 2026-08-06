@@ -982,7 +982,7 @@ void MapActivity::renderWaiting() {
   overviewShown_ = false;
   renderer.clearScreen();
   renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_WAITING_BLE), true);
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_ZOOM_IN), tr(STR_ZOOM_OUT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   busyShown_ = false;  // this frame painted over the badge
@@ -1002,7 +1002,7 @@ void MapActivity::renderLoadingTiles() {
   snprintf(line, sizeof(line), "z%u  %.0f m/px", MapViewport::kZoomLadder[zoomStep()].z,
            MapViewport::kZoomLadder[zoomStep()].mpp);
   renderer.drawText(UI_10_FONT_ID, 8, kTextLine2Y, line, true);
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_ZOOM_IN), tr(STR_ZOOM_OUT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   // Deliberately does not touch viewportDrawn_ or markerPatchValid_: the
@@ -1232,7 +1232,7 @@ void MapActivity::renderRouteOverview() {
   }
   drawDebugLine(kTextLine2Y, line);
 
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_ZOOM_IN), tr(STR_ZOOM_OUT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // No marker and no follow state. There is no fix in this frame, and a marker
@@ -1497,7 +1497,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // screen (drawDebugLine() above): the map fills the whole viewport, there
   // is no margin set aside for chrome, so UI text overlays whatever tiles
   // were there.
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_ZOOM_IN), tr(STR_ZOOM_OUT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // The marker goes on **last**, and its patch is taken immediately before it.
