@@ -17,6 +17,7 @@ BlePositionServer& BlePositionServer::getInstance() {
 
 #include <Logging.h>
 #include <NimBLEDevice.h>
+#include <host/ble_gap.h>  // ble_gap_conn_rssi() -- no NimBLEServer/NimBLEConnInfo wrapper exists for it
 
 #include <cstdio>
 #include <cstring>
@@ -121,6 +122,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // the central drives both (docs/optimization/03-ble-link.md, step 1).
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
     self().onConnIntervalChanged(info.getConnInterval());
+    self().onConnHandleChanged(info.getConnHandle());
     // Interval is in 1.25 ms units.
     LOG_INF("BLEPOS", "connected: interval %u units (%u ms), latency %u, timeout %u",
             static_cast<unsigned>(info.getConnInterval()), static_cast<unsigned>(info.getConnInterval() * 5 / 4),
@@ -428,6 +430,17 @@ void BlePositionServer::onMtuChanged(uint16_t mtu) { mtu_ = mtu; }
 
 void BlePositionServer::onConnIntervalChanged(uint16_t units) { connIntervalUnits_ = units; }
 
+void BlePositionServer::onConnHandleChanged(uint16_t connHandle) { connHandle_ = connHandle; }
+
+// Read fresh, not cached: the last connection's RSSI is not a fact about the
+// current one, and this is a single HCI round trip, not a channel worth
+// polling and storing every frame.
+int8_t BlePositionServer::rssi() const {
+  if (connHandle_ == BLE_HS_CONN_HANDLE_NONE) return 0;
+  int8_t value = 0;
+  return ble_gap_conn_rssi(connHandle_, &value) == 0 ? value : 0;
+}
+
 void BlePositionServer::onCommandSubscribe(bool subscribed) {
   commandSubscribed_ = subscribed;
   LOG_DBG("BLEPOS", "command channel %s", subscribed ? "subscribed" : "unsubscribed");
@@ -456,6 +469,7 @@ void BlePositionServer::onCentralDisconnect() {
   // while nothing is connected is how a stale figure ends up in a bug report.
   mtu_ = 0;
   connIntervalUnits_ = 0;
+  connHandle_ = BLE_HS_CONN_HANDLE_NONE;
 
   portENTER_CRITICAL(&g_mux);
   const TransferHooks hooks = transferHooks_;
@@ -510,7 +524,9 @@ void BlePositionServer::onTransferSubscribe(bool) {}
 void BlePositionServer::onCommandSubscribe(bool) {}
 void BlePositionServer::onMtuChanged(uint16_t) {}
 void BlePositionServer::onConnIntervalChanged(uint16_t) {}
+void BlePositionServer::onConnHandleChanged(uint16_t) {}
 void BlePositionServer::onCentralDisconnect() {}
+int8_t BlePositionServer::rssi() const { return 0; }
 
 }  // namespace freeink
 

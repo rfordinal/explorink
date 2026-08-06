@@ -184,10 +184,18 @@ class BlePositionServer {
   // The same in milliseconds, rounded down. 0 while nothing is connected.
   uint16_t connIntervalMs() const { return static_cast<uint16_t>(connIntervalUnits_ * 5 / 4); }
 
+  // The link's RSSI in dBm, read fresh from the radio (not cached) via a raw
+  // HCI Read RSSI command against the active connection handle. 0 while
+  // nothing is connected -- 0 dBm is not a real BLE RSSI reading (every real
+  // one is negative), so it doubles as the sentinel.
+  int8_t rssi() const;
+
   // Internal: called by the NimBLE backend on the MTU exchange.
   void onMtuChanged(uint16_t mtu);
   // Internal: on connect and on every mid-connection parameter update.
   void onConnIntervalChanged(uint16_t units);
+  // Internal: on connect, so rssi() has a handle to query.
+  void onConnHandleChanged(uint16_t connHandle);
 
   // True once the central has subscribed to the status characteristic. A
   // transfer started before this has nowhere to report its verdict to, so
@@ -227,6 +235,7 @@ class BlePositionServer {
   volatile bool commandSubscribed_ = false;
   volatile uint16_t mtu_ = 0;
   volatile uint16_t connIntervalUnits_ = 0;
+  volatile uint16_t connHandle_ = 0xFFFF;  // BLE_HS_CONN_HANDLE_NONE, kept out of this NimBLE-free header
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;

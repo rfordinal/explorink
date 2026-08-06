@@ -24,6 +24,41 @@ Worth stating so nobody "fixes" it:
   accumulated from arriving chunks, so a card that accepted a write and lost it
   is caught (`MapTransferReceiver.cpp:375-398`).
 
+## RSSI: readable despite being a peripheral, no wrapper for it
+
+**Read off the code, not measured on hardware.** `BlePositionServer` had no way
+to report link quality until the map header needed a signal-bars indicator
+(2026-08-06). The obvious API, `NimBLEClient::getRssi()`
+(`NimBLE-Arduino/src/NimBLEClient.cpp:623-638`), is central-only — this device is
+the peripheral (`NimBLEServer`), and no equivalent exists on `NimBLEServer` or
+`NimBLEConnInfo`.
+
+The underlying HCI command is role-agnostic, though: `ble_gap_conn_rssi(conn_handle,
+&rssi)` (`nimble/nimble/host/include/host/ble_gap.h:3192`, implemented
+`ble_gap.c:8553-8564`) just issues a Read RSSI against any active ACL connection
+by handle. `NimBLEClient::getRssi()` is nothing but a thin call to this same
+function. So `BlePositionServer::rssi()` (`BlePositionServer.h:161-164`,
+`BlePositionServer.cpp:436-442`) calls it directly, using a connection handle
+captured in `onConnHandleChanged()` from `NimBLEConnInfo::getConnHandle()` at
+connect time (`BlePositionServer.cpp:122-125`) and cleared in
+`onCentralDisconnect()` (`:459`) — the same set/clear lifecycle already used for
+`mtu_` and `connIntervalUnits_`.
+
+Not cached: each call is one HCI round trip, read fresh at redraw time, not
+polled and stored every frame. Returns 0 (not a real BLE RSSI value — every real
+one is negative) when nothing is connected.
+
+**Open — needs measurement on hardware.** The signal-to-bars thresholds
+(`MapActivity.cpp`, `bleBarsForRssi()`: -85/-75/-65/-55 dBm) are carried over
+unchanged from the WiFi indicator's rise thresholds
+(`CrossPointWebServerActivity.cpp:53-59`). BLE and WiFi share the 2.4 GHz band,
+so the bands should read similarly, but nobody has checked what `rssi()`
+actually returns at a given phone-to-device distance, or whether
+`ble_gap_conn_rssi()` even succeeds reliably on this NimBLE-Arduino version in
+the peripheral role — the return-code path has not been exercised. `CMD:` over
+the map serial console plus a stationary phone at a known distance would settle
+it.
+
 ## The throughput picture
 
 **read.** The preferred ATT MTU is 256 (`sdkconfig.defaults:752`,
