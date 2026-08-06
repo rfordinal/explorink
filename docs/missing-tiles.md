@@ -172,6 +172,26 @@ information and does not earn an SD write.
 5. The progress screen counts arrivals and skips until they add up to the
    total.
 
+### The link's real parameters are logged now
+
+`info` reports `mtu` and `chunk_payload`, and the server logs the negotiated MTU
+and the connection interval when a central connects
+(`lib/BlePositionServer/src/BlePositionServer.cpp`, `ServerCallbacks::onConnect`
+and `onMTUChange`). Step 1 of `docs/optimization/03-ble-link.md`, and the reason
+it comes first: everything about transfer speed depends on two numbers the
+**central** decides, and neither can be inferred from a return value.
+
+At the 23-byte default MTU a chunk carries 15 bytes of file. At 256 it carries
+248. That is the difference between a "fill the gaps" button worth pressing and
+one nobody presses twice, and until this landed the device could not say which
+link it had. A phone-side developer cannot see the number from their end at all,
+which is why it is on the console and not only in the log.
+
+Reported as a provider, not a pushed value: the MTU changes when a central
+connects, and a number pushed once would report the last link's MTU forever. It
+reads 0 with nothing connected, and `info` then omits both lines rather than
+claiming an MTU of zero.
+
 ### Waiting for the phone is a state, not a failure
 
 `sendCommandReply()` cannot tell you whether anybody is listening: NimBLE

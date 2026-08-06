@@ -232,6 +232,18 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
     out.reply(line);
   }
 
+  // The link's real ATT MTU and what it leaves for a file chunk. The phone side
+  // cannot see this from its end, and it decides the whole transfer speed.
+  if (linkMtuProvider_ != nullptr) {
+    const uint16_t mtu = linkMtuProvider_();
+    if (mtu != 0) {
+      snprintf(line, sizeof(line), "INFO mtu=%u", static_cast<unsigned>(mtu));
+      out.reply(line);
+      snprintf(line, sizeof(line), "INFO chunk_payload=%u", static_cast<unsigned>(mtu > 8 ? mtu - 8 : 0));
+      out.reply(line);
+    }
+  }
+
   if (freeHeapProvider_ != nullptr) {
     snprintf(line, sizeof(line), "INFO heap=%lu", static_cast<unsigned long>(freeHeapProvider_()));
     out.reply(line);

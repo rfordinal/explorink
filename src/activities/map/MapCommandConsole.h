@@ -174,6 +174,13 @@ class MapConsoleState {
   // line is simply omitted, which is what the native tests want.
   void setFreeHeapProvider(uint32_t (*provider)()) { freeHeapProvider_ = provider; }
 
+  // Same shape, for the link's negotiated ATT MTU. A provider rather than a
+  // pushed value because it changes when a central connects, and a number
+  // pushed once would report the last link's MTU forever. Returns 0 when
+  // nothing is connected, and `info` then omits the line rather than claiming
+  // an MTU of zero.
+  void setLinkMtuProvider(uint16_t (*provider)()) { linkMtuProvider_ = provider; }
+
   // Pushed by MapActivity after every viewport reset: what the zoom step it
   // actually rendered at resolves to. `info`'s zoom/lod/mpp lines read this.
   void setZoomInfo(uint8_t zoomStep, uint8_t lod, double mpp) {
@@ -251,6 +258,7 @@ class MapConsoleState {
   uint16_t speedKmh_ = 0;
   uint32_t seq_ = 0;
   uint32_t (*freeHeapProvider_)() = nullptr;
+  uint16_t (*linkMtuProvider_)() = nullptr;
 
   uint8_t zoomStep_ = 0;
   uint8_t markerStep_ = 0;

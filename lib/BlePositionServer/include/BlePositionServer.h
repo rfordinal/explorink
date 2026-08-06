@@ -155,6 +155,24 @@ class BlePositionServer {
   // with nothing to show for it.
   bool isCommandSubscribed() const { return commandSubscribed_; }
 
+  // The link's negotiated ATT MTU, or 0 before a central has connected and
+  // exchanged one.
+  //
+  // **The central initiates the exchange; the device only states a preference**
+  // (CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU, sdkconfig.defaults). So this is the
+  // only way to know what the link actually is -- and it decides the whole
+  // transfer speed: 23 bytes leaves 15 bytes of file payload per write, 256
+  // leaves 248 (docs/optimization/03-ble-link.md). A phone-side developer cannot
+  // see this number from their end at all, which is why `info` reports it.
+  uint16_t negotiatedMtu() const { return mtu_; }
+
+  // File payload per transfer chunk on this link: MTU minus 3 bytes of ATT
+  // header and 5 of chunk header. 0 while the MTU is unknown.
+  uint16_t transferPayloadBytes() const { return mtu_ > 8 ? static_cast<uint16_t>(mtu_ - 8) : 0; }
+
+  // Internal: called by the NimBLE backend on the MTU exchange.
+  void onMtuChanged(uint16_t mtu);
+
   // True once the central has subscribed to the status characteristic. A
   // transfer started before this has nowhere to report its verdict to, so
   // MapTransferReceiver refuses one -- same check sendCommandReply's channel
@@ -191,6 +209,7 @@ class BlePositionServer {
   TransferHooks transferHooks_;
   volatile bool transferSubscribed_ = false;
   volatile bool commandSubscribed_ = false;
+  volatile uint16_t mtu_ = 0;
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;

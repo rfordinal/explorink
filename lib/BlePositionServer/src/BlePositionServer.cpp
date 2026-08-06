@@ -116,6 +116,25 @@ class TransferStatusCharCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 class ServerCallbacks : public NimBLEServerCallbacks {
+  // What the link actually negotiated. Every throughput number for the transfer
+  // channel depends on these two and neither is knowable from a return value --
+  // the central drives both (docs/optimization/03-ble-link.md, step 1).
+  void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
+    // Interval is in 1.25 ms units.
+    LOG_INF("BLEPOS", "connected: interval %u units (%u ms), latency %u, timeout %u",
+            static_cast<unsigned>(info.getConnInterval()), static_cast<unsigned>(info.getConnInterval() * 5 / 4),
+            static_cast<unsigned>(info.getConnLatency()), static_cast<unsigned>(info.getConnTimeout()));
+  }
+
+  void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
+    self().onMtuChanged(mtu);
+    // The second number is the one that matters: 3 bytes of ATT header plus the
+    // 5-byte chunk header come off every write, so a 23-byte MTU carries 15
+    // bytes of file per transaction and a 256-byte one carries 248.
+    LOG_INF("BLEPOS", "MTU now %u, file payload %u bytes per chunk", static_cast<unsigned>(mtu),
+            static_cast<unsigned>(mtu > 8 ? mtu - 8 : 0));
+  }
+
   // NimBLE-Arduino stops advertising once a central connects and does not
   // resume automatically -- restart it on disconnect so a dropped link
   // (out of range, phone Bluetooth toggled) can reconnect without a reboot.
@@ -392,6 +411,8 @@ void BlePositionServer::onTransferSubscribe(bool subscribed) {
   LOG_DBG("BLEPOS", "transfer status %s", subscribed ? "subscribed" : "unsubscribed");
 }
 
+void BlePositionServer::onMtuChanged(uint16_t mtu) { mtu_ = mtu; }
+
 void BlePositionServer::onCommandSubscribe(bool subscribed) {
   commandSubscribed_ = subscribed;
   LOG_DBG("BLEPOS", "command channel %s", subscribed ? "subscribed" : "unsubscribed");
@@ -416,6 +437,9 @@ void BlePositionServer::onCentralDisconnect() {
   // phone would go on believing one is there long after it walked away.
   commandSubscribed_ = false;
   transferSubscribed_ = false;
+  // The MTU belongs to the connection too -- reporting the last link's number
+  // while nothing is connected is how a stale figure ends up in a bug report.
+  mtu_ = 0;
 
   portENTER_CRITICAL(&g_mux);
   const TransferHooks hooks = transferHooks_;
@@ -468,6 +492,7 @@ bool BlePositionServer::sendTransferStatus(const char*) { return false; }
 void BlePositionServer::onTransferIngest(const uint8_t*, size_t) {}
 void BlePositionServer::onTransferSubscribe(bool) {}
 void BlePositionServer::onCommandSubscribe(bool) {}
+void BlePositionServer::onMtuChanged(uint16_t) {}
 void BlePositionServer::onCentralDisconnect() {}
 
 }  // namespace freeink
