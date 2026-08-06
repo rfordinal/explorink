@@ -431,19 +431,28 @@ void TileSyncActivity::formatDuration(uint32_t seconds, char* out, size_t outSiz
 
 void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
   const MapTransferReceiver::Status transfer = transfer_.status();
+  // Still what decides the ETA -- a tile the supplier lacks does shorten the
+  // run, even though it must not fill the bar.
   const uint32_t settled = transfer.completed + skipped_;
-  const uint32_t percent = rowCount_ > 0 ? settled * 100 / rowCount_ : 0;
 
   char moved[16];
   formatBytes(transfer.completedBytes + (transfer.active ? transfer.received : 0), moved, sizeof(moved));
+
+  // Stated apart from the arrivals, and only when there are any: it is a
+  // different outcome, not a slower one, and the rider can do nothing about it.
+  char unavailable[32] = {};
+  if (skipped_ > 0) {
+    snprintf(unavailable, sizeof(unavailable), "   %lu %s", static_cast<unsigned long>(skipped_),
+             tr(STR_TILE_SYNC_ROW_MISSING));
+  }
 
   // The rate and the remainder both need a tile to have actually landed. Before
   // that there is no honest number, so the line simply stops there rather than
   // showing a zero or a guess that will be wrong by an order of magnitude.
   const uint32_t elapsedMs = startedMs_ != 0 ? millis() - startedMs_ : 0;
   if (transfer.completed == 0 || elapsedMs < 1000) {
-    snprintf(out, outSize, "%lu / %lu  %lu%%   %s", static_cast<unsigned long>(settled),
-             static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(percent), moved);
+    snprintf(out, outSize, "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
+             static_cast<unsigned long>(rowCount_), unavailable, moved);
     return;
   }
 
@@ -461,13 +470,12 @@ void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
   }
 
   if (eta[0] != '\0') {
-    snprintf(out, outSize, "%lu / %lu  %lu%%   %s  %lu.%lu kB/s  %s %s", static_cast<unsigned long>(settled),
-             static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(percent), moved,
-             static_cast<unsigned long>(rateBps / 1000), static_cast<unsigned long>((rateBps % 1000) / 100), eta,
-             tr(STR_TILE_SYNC_LEFT));
+    snprintf(out, outSize, "%lu / %lu%s   %s  %lu.%lu kB/s  %s %s", static_cast<unsigned long>(transfer.completed),
+             static_cast<unsigned long>(rowCount_), unavailable, moved, static_cast<unsigned long>(rateBps / 1000),
+             static_cast<unsigned long>((rateBps % 1000) / 100), eta, tr(STR_TILE_SYNC_LEFT));
   } else {
-    snprintf(out, outSize, "%lu / %lu  %lu%%   %s", static_cast<unsigned long>(settled),
-             static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(percent), moved);
+    snprintf(out, outSize, "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
+             static_cast<unsigned long>(rowCount_), unavailable, moved);
   }
 }
 
