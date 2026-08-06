@@ -62,7 +62,7 @@ void TileSyncActivity::onEnter() {
     }
     for (uint32_t i = 0; i < rowCount_; ++i) {
       rows_[i].tile = MapTileCoord{hits[i].z, hits[i].col, hits[i].row};
-      rows_[i].skipped = false;
+      rows_[i].unavailable = false;
     }
   }
 
@@ -199,7 +199,7 @@ void TileSyncActivity::onTileSkipped(uint8_t z, uint32_t col, uint32_t row) {
   ++skipped_;
   for (uint32_t i = 0; i < rowCount_; ++i) {
     if (rows_[i].tile.z == z && rows_[i].tile.col == col && rows_[i].tile.row == row) {
-      rows_[i].skipped = true;
+      rows_[i].unavailable = true;
       return;
     }
   }
@@ -242,7 +242,7 @@ TileSyncActivity::RowState TileSyncActivity::stateOf(int index, uint32_t& receiv
     total = transfer.total;
     return RowState::Active;
   }
-  if (row.skipped) return RowState::Skipped;
+  if (row.unavailable) return RowState::Missing;
   // Gone from the store means it landed: forget() is the only thing that
   // removes an entry, and only an arrival calls it.
   return stillMissing(row.tile) ? RowState::Waiting : RowState::Done;
@@ -340,8 +340,8 @@ void TileSyncActivity::drawRow(int index, int y, int rowHeight) {
     case RowState::Done:
       right = tr(STR_TILE_SYNC_ROW_DONE);
       break;
-    case RowState::Skipped:
-      right = tr(STR_TILE_SYNC_ROW_SKIPPED);
+    case RowState::Missing:
+      right = tr(STR_TILE_SYNC_ROW_MISSING);
       break;
     case RowState::Waiting:
       right = tr(STR_TILE_SYNC_ROW_WAITING);

@@ -100,7 +100,11 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
   enum class Phase : uint8_t { Waiting, Running, Finished };
 
   // What one row is doing. Derived per repaint -- see the header comment.
-  enum class RowState : uint8_t { Waiting, Active, Done, Skipped };
+  //
+  // `Missing`, not `Skipped`: the wire verb is `skip` and stays that way, but
+  // from the rider's side nothing was skipped -- the tile simply is not
+  // available from the supplier. "Skipped" reads as a choice somebody made.
+  enum class RowState : uint8_t { Waiting, Active, Done, Missing };
 
   void renderScreen();
   // Bytes as a rider reads them: "6.1 kB", "440 kB", "1.2 MB". A raw byte count
@@ -163,7 +167,8 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
   // cheaper of the two. Freed in onExit().
   struct Row {
     MapTileCoord tile;
-    bool skipped = false;
+    // The supplier answered `skip` for this one: it does not have it.
+    bool unavailable = false;
   };
   std::unique_ptr<Row[]> rows_;
   uint32_t rowCount_ = 0;
