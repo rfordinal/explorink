@@ -121,15 +121,78 @@ Five things in that table, and three of them were not what this plan assumed:
 5. **Up to 3.1 MB read off the card for one frame.** That is
    [plan 02](02-tile-io.md)'s territory and it is the largest single number here.
 
+### Which rungs matter — the maintainer's call, 2026-08-06
+
+**Optimise rung 1 and rung 2. Rung 0 is allowed to be slow. Rungs 3-4 barely
+matter.** Stated by the maintainer and it outranks any ms in the tables here,
+because a millisecond on a rung nobody waits at is not a millisecond anyone
+notices:
+
+- **rung 0 (1 m/px)** — used rarely and deliberately: "where exactly am I", or
+  lost. The rider is interactive at that moment and accepts that detail costs
+  something. Slow is acceptable.
+- **rungs 1-2 (3 and 6 m/px)** — the everyday zooms. These must be quick **and**
+  look good. This is where the work goes.
+- **rungs 3-4 (12 and 20 m/px)** — long-trip overview. A reset there happens very
+  seldom, so there is nothing to chase.
+
+Re-read against those two rungs only, with the off-screen reject already in:
+
+| | rung 1 (13,665 ms) | rung 2 (6,422 ms) |
+|---|---|---|
+| **roads** | **7,737** | **5,370** |
+| buildings | 5,740 | 25 (empty pass) |
+| landuse | 128 | 759 |
+| card I/O | 5,004 | 2,346 |
+
+So **roads are the top cost at both rungs that matter** — 84 % of rung 2's
+compute. Buildings are a rung-1-only question and a visual decision (see plan
+09). Card I/O is a third of both and is plan 02.
+
 Revised order, on the measurement rather than on the counts:
 
-1. Step 3, off-screen reject — the only item that cuts every layer at once.
-2. Step 10 (trivial-accept clip) and step 6(2) (clip a stack once) — the road
-   path, which the counts had ranked too low.
-3. Step 4 and 5 — landuse at the coarse rungs.
-4. Step 2, fixed point — 170k to 291k points per frame go through it.
-5. Step 9 — the hairline fill, which mostly helps hatch and so mostly helps
-   rung 0-1.
+1. ~~Step 3, off-screen reject.~~ **Done**, `cab319e4`. Measured: rung 0
+   10,884 -> 6,780 ms, rung 1 15,369 -> 13,575, every rung byte-identical on the
+   panel. It also **cost** roads 300-1,200 ms per rung, because it pays four
+   `double` projections per record and a long road's box almost always reaches
+   the screen — see step 3a.
+2. **Step 3a — the screen box in tile coordinates, not the record in screen
+   coordinates.** Inverse-project the screen rect once per tile and the per-record
+   test becomes integer compares. Removes the regression above and the rest of the
+   per-record cost. First, because it is the road path and the road path is the
+   priority.
+3. Step 6(2) (clip a stack once) and step 10 (integer trivial-accept) — the rest
+   of the road cost, and it is the largest single item at rungs 1-2.
+4. Plan [02](02-tile-io.md) — card I/O is a third of both target rungs, and at a
+   measured 600 KB/s the saving is arithmetic rather than a guess.
+5. Step 4 and 5 — landuse. 759 ms at rung 2, so worth having, not urgent.
+6. Step 2, fixed point, and step 9, the hairline fill. Both help, both are behind
+   the items above now that the reject has taken most of the point count out.
+
+**Card versus compute, measured 2026-08-06** (`MapTileSource::ioUs`), which is
+what settles "smaller tiles or cheaper drawing":
+
+| rung | frame | card | card % | compute | bytes | KB/s |
+|---|---|---|---|---|---|---|
+| 0 | 6,831 | 2,893 | 42 % | 3,938 | 1.8 MB | 608 |
+| 1 | 13,665 | 5,004 | 36 % | 8,661 | 3.1 MB | 605 |
+| 2 | 6,422 | 2,346 | 36 % | 4,076 | 1.4 MB | 563 |
+| 3 | 4,889 | 1,537 | 31 % | 3,352 | 0.9 MB | 577 |
+| 4 | 11,561 | 4,371 | 37 % | 2.5 MB read | 2.5 MB | 550 |
+
+Two findings in that table:
+
+- **The card is a third of every frame, never the majority.** So neither "shrink
+  the tiles" nor "compute less" wins alone.
+- **Throughput is 550-608 KB/s across every rung, tile and layer mix.** Card time
+  is a pure function of bytes -- not of file count, not of seeks. So halving the
+  bytes halves the card time, predictably, which is what makes plan 02's saving
+  calculable before it is written.
+
+That is the opposite of what this plan assumed before the measurement: smaller
+tiles (`docs/tile-simplification-plan.md` in the parent repo) went from "the
+honest fix" to **last**. After plan 02 the card is ~1.5 s at rung 0, so z14 would
+buy ~1.1 s in exchange for rebuilding every tile on the card.
 
 ## Step 1 — measure before changing anything
 
