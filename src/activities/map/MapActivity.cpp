@@ -1,7 +1,6 @@
 #include "MapActivity.h"
 
 #include <BlePositionServer.h>
-#include <HalGPIO.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -500,46 +499,23 @@ void MapActivity::drawHeaderStatus() {
 }
 
 void MapActivity::drawZoomSideHints() {
-  // Matches BaseTheme::drawSideButtonHints' own X4 branch exactly
-  // (BaseTheme.cpp: topButtonY=345, buttonHeight=80, two stacked boxes on the
-  // right edge, buttonMargin=4) -- X4 is this project's only target
-  // (CLAUDE.md), so the X3 side-by-side layout is not replicated here.
-  if (gpio.hasTouch() || gpio.deviceIsX3()) {
-    GUI.drawSideButtonHints(renderer, tr(STR_ZOOM_IN), tr(STR_ZOOM_OUT));
-    return;
-  }
-
-  constexpr int kSideHintTop = 345;
-  constexpr int kSideHintBoxHeight = 80;
-  constexpr int kSideHintMargin = 4;
-  const int sideHintX = renderer.getScreenWidth() - kSideHintMargin - BaseMetrics::values.sideButtonHintsWidth;
-
-  // White backing first, like every other piece of screen furniture here:
-  // drawSideButtonHints() itself clears nothing, and its one other caller
-  // (KeyboardEntryActivity) never needed to -- that screen has no live
-  // content under it.
-  const int boxWidth = BaseMetrics::values.sideButtonHintsWidth;
-  renderer.fillRect(sideHintX, kSideHintTop, boxWidth, kSideHintBoxHeight * 2, false);
-
-  // "Zoom In"/"Zoom Out" sideways at SMALL_FONT_ID -- drawSideButtonHints'
-  // only font choice -- read as a blur in a 30px-wide box. A plus/minus
-  // needs no rotation (a single glyph fits this box upright) and reads at a
-  // glance the way seven sideways letters don't; UI_12 is the biggest font
-  // guaranteed present in every build (OMIT_FONTS strips NotoSans/Serif,
-  // see drawCompass()'s label comment above). Same "symbol over word in a
-  // tight space" call as KeyboardEntryActivity.cpp:947's ">"/"<".
-  constexpr const char* kZoomInGlyph = "+";
-  constexpr const char* kZoomOutGlyph = "-";
-  const char* glyphs[] = {kZoomInGlyph, kZoomOutGlyph};
-  const int textHeight = renderer.getTextHeight(UI_12_FONT_ID);
-  for (int i = 0; i < 2; ++i) {
-    const int boxY = kSideHintTop + i * kSideHintBoxHeight;
-    renderer.drawRect(sideHintX, boxY, boxWidth, kSideHintBoxHeight, 1, true);
-    const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, glyphs[i], EpdFontFamily::BOLD);
-    const int textX = sideHintX + (boxWidth - textWidth) / 2;
-    const int textY = boxY + (kSideHintBoxHeight - textHeight) / 2;
-    renderer.drawText(UI_12_FONT_ID, textX, textY, glyphs[i], true, EpdFontFamily::BOLD);
-  }
+  // GUI.drawSideButtonHints(), not a hand-drawn box: every theme (Lyra,
+  // RoundedRaff, ...) overrides it with its own rounded, correctly margined
+  // box (e.g. LyraTheme.cpp:395-445), and hand-copying one theme's private
+  // layout constants here (tried 2026-08-06, reverted) drifts the moment
+  // that theme's numbers change and only matches the one theme copied.
+  //
+  // Symbols, not words: every override hardcodes SMALL_FONT_ID with no size
+  // parameter, and "Zoom In"/"Zoom Out" rotated into a ~30px-wide box reads
+  // as a blur. A single glyph is legible at that size and needs no font
+  // control to prove it -- same "symbol over word in a tight space" call as
+  // KeyboardEntryActivity.cpp:947's ">"/"<". Plain literals, not tr(): a
+  // plus/minus is not language-dependent, matching that same precedent.
+  // "-" alone rendered as barely a dot: smallFontFamily has no bold face
+  // (main.cpp:102-103, single-glyph constructor) and the hyphen is a short,
+  // thin stroke even before the 90-degree rotation shrinks it further.
+  // Doubled, it survives -- same glyph, twice the ink, no new font needed.
+  GUI.drawSideButtonHints(renderer, "+", "--");
 }
 
 void MapActivity::drawDebugLine(int y, char* text) {

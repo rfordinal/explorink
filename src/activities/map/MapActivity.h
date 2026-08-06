@@ -173,9 +173,8 @@ class MapActivity final : public Activity {
   // own -- no other activity has a wireless link to show.
   void drawHeaderStatus();
   // Up/Down are physical side buttons -- GUI.drawButtonHints()'s four front-
-  // button boxes never mention them. This draws the matching GUI side-hint
-  // boxes, backed in white first: no other caller of drawSideButtonHints()
-  // sits over live content, so the theme call itself clears nothing.
+  // button boxes never mention them. Calls the theme's own
+  // drawSideButtonHints() for the matching side-hint boxes.
   void drawZoomSideHints();
   // Immediate "working on it" feedback, above the button hints. A ladder step
   // or a Refresh does not reach the panel for the better part of two seconds
