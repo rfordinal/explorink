@@ -152,6 +152,13 @@ class MapTileSource : public IMapSource {
   // the card as it draws, so its milliseconds are both costs added together.
   uint32_t ioUs() const { return ioUs_; }
 
+  // Layer crc32 checks skipped because that (tile, layer) pair already passed
+  // in this frame. Frame-scoped. The evidence that the repeat check is gone:
+  // with the renderer's seven passes over six layers, this should be non-zero
+  // on any frame that draws roads or landuse, and every skip is one full read
+  // of that layer's bytes not paid.
+  uint32_t crc32Skipped() const { return crc32Skipped_; }
+
  private:
   bool startPass(MapTileReader::Layer layer);
   // The shared way-record walk. `applyClassMask` is false for buildings and
@@ -173,6 +180,10 @@ class MapTileSource : public IMapSource {
   // per tile open, so every record afterwards is tested with integer compares
   // and no projection at all.
   void computeScreenBoxForTile();
+  // Bit index for a (tile index, layer id) pair in crc32Validated_.
+  static uint32_t crcBitFor(uint32_t tileIndex, MapTileReader::Layer layer) {
+    return tileIndex * 7u + static_cast<uint32_t>(layer);
+  }
   // Opens the next tile in the range that actually has the current layer.
   // Returns false when the range is exhausted.
   bool advanceToNextTile();
@@ -214,6 +225,18 @@ class MapTileSource : public IMapSource {
   int32_t screenBoxMinY_ = 0;
   int32_t screenBoxMaxY_ = 0;
   bool screenBoxValid_ = false;
+
+  // One bit per (tile index, layer id) pair that has passed its crc32 in this
+  // frame. 9 tiles at most (MapViewport::kMaxTiles) and layer ids run 1..6
+  // (MapTileReader::Layer), so 9 x 7 = 63 bits fit one word with a bit to
+  // spare. Cleared in begin(), exactly like unavailableMask_.
+  //
+  // Why it is safe to trust: a file on the card cannot become corrupt between
+  // two passes of one viewport reset, and the whole point of the pass-outer
+  // walk is that the same layer is opened more than once per frame
+  // (MapRenderer::kRoadPasses, plus landuse's built-up and forest walks).
+  uint64_t crc32Validated_ = 0;
+  uint32_t crc32Skipped_ = 0;
 
   // The one live record. Overwritten by every nextWay()/nextPlace().
   int16_t xs_[MapTileReader::kMaxWayPoints];

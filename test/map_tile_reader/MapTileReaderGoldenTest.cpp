@@ -277,6 +277,53 @@ TEST(MapTileReader, RejectsLayerCrcCorruptionWithoutBreakingOtherLayers) {
   EXPECT_TRUE(reader.beginLayer(MapTileReader::Layer::Roads)) << "an intact layer must still open fine";
 }
 
+TEST(MapTileReader, SkipCrc32OpensALayerThatWouldOtherwiseBeRejected) {
+  // The flag's contract, stated as a test because it is a loaded gun: it opens a
+  // layer whose payload was never checked. MapTileSource only sets it for a
+  // (tile, layer) pair that already passed inside the same frame.
+  std::vector<uint8_t> data = readFile(fixturesDir() + "/tiny-sd/base/13/4484/2829.tib");
+  ASSERT_GT(data.size(), 36u);
+
+  const uint8_t layerCount = data[35];
+  uint8_t targetLayerId = 0;
+  for (uint8_t i = 0; i < layerCount; ++i) {
+    const size_t entryOff = 36 + i * 13;
+    uint32_t offset = 0, length = 0;
+    std::memcpy(&offset, &data[entryOff + 1], sizeof(offset));
+    std::memcpy(&length, &data[entryOff + 5], sizeof(length));
+    if (length > 0) {
+      data[offset] ^= 0xFF;
+      targetLayerId = data[entryOff];
+      break;
+    }
+  }
+  ASSERT_NE(targetLayerId, 0);
+
+  const std::string tmpPath = testing::TempDir() + "map_tile_reader_skip_crc.tib";
+  writeFile(tmpPath, data);
+
+  StdioFileSource file;
+  MapTileReader reader;
+  ASSERT_TRUE(reader.open(file, tmpPath.c_str()));
+  const auto layer = static_cast<MapTileReader::Layer>(targetLayerId);
+  EXPECT_FALSE(reader.beginLayer(layer)) << "checked: the corruption must be caught";
+  EXPECT_TRUE(reader.beginLayer(layer, true)) << "skipped: the same layer opens, unchecked";
+}
+
+TEST(MapCrc32Once, TheRepeatCheckIsGoneAndThePictureIsNot) {
+  // The renderer walks roads twice and landuse twice, so a frame that draws them
+  // opens those layers more than once. Each repeat used to re-read the whole
+  // layer to re-check a sum that cannot have changed within one frame.
+  PpmCanvas canvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult result = renderMapPreview(fixtureRequest(), canvas);
+
+  EXPECT_GT(result.crc32Skipped, 0u) << "the second roads pass must reuse the first pass's check";
+  // The picture itself is guarded by RendersFixedViewportByteExact, which renders
+  // the same request and compares against the committed golden PPM. If skipping
+  // the repeat check changed one pixel, that test fails, not this one.
+  EXPECT_EQ(result.waysDrawn, 43u);
+}
+
 // --- P5: the mode filter and the marker-height ladder -------------------
 //
 // Both are render-time parameters over the same tiles. The fixture is one

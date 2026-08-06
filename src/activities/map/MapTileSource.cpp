@@ -28,6 +28,8 @@ void MapTileSource::begin(const Config& config) {
   pointsProjected_ = 0;
   waysOffScreen_ = 0;
   ioUs_ = 0;
+  crc32Validated_ = 0;
+  crc32Skipped_ = 0;
 }
 
 void MapTileSource::buildPath(uint32_t col, uint32_t row) {
@@ -114,7 +116,15 @@ bool MapTileSource::advanceToNextTile() {
       continue;
     }
 
-    if (!reader_.beginLayer(layer_)) {
+    // Check this layer's crc32 once per frame, not once per pass. The renderer
+    // walks roads twice and landuse twice (MapRenderer::kRoadPasses), and every
+    // walk used to re-read the whole layer just to re-check a sum that cannot
+    // have changed -- a file does not rot between two passes of one frame.
+    // docs/optimization/02-tile-io.md, step 2.
+    const uint32_t crcBit = crcBitFor(index, layer_);
+    const bool alreadyValidated = crcBit < 64 && (crc32Validated_ & (1ull << crcBit)) != 0;
+    if (alreadyValidated) ++crc32Skipped_;
+    if (!reader_.beginLayer(layer_, alreadyValidated)) {
       // Present per the directory, but its own crc32 failed. hasLayer()
       // already ruled out "absent" above, so this is corrupt data, not an
       // empty layer -- it must count as unavailable and hatch, the same as
@@ -127,6 +137,7 @@ bool MapTileSource::advanceToNextTile() {
       continue;
     }
 
+    if (crcBit < 64) crc32Validated_ |= (1ull << crcBit);
     ++tilesOpened_;
     tileOpen_ = true;
     // The tile's origin is known now, so the screen can be brought into its

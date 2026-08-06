@@ -177,10 +177,10 @@ uint32_t MapTileReader::layerLength(Layer layer) const {
   return e ? e->length : 0;
 }
 
-bool MapTileReader::beginLayer(Layer layer) {
+bool MapTileReader::beginLayer(Layer layer, const bool skipCrc32) {
   const LayerEntry* e = findLayer(layer);
   if (!e || e->length == 0) return false;
-  if (!validateLayerCrc32(*e)) return false;
+  if (!skipCrc32 && !validateLayerCrc32(*e)) return false;
   if (!seekCounted(e->offset)) return false;
 
   layerCursorAbs_ = e->offset;

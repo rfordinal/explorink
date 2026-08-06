@@ -108,7 +108,18 @@ class MapTileReader {
   // unavailable", not "nothing here": findLayer() already ruled out
   // "absent" by the time crc is checked, so a false here past that point is
   // corrupt data, not an empty layer).
-  bool beginLayer(Layer layer);
+  //
+  // `skipCrc32` opens the layer **without** re-reading it to check the sum.
+  // Only legitimate when this exact (file, layer) pair already passed within the
+  // same viewport reset: a file cannot become corrupt between two passes of one
+  // frame, and the renderer walks the roads and landuse layers twice each
+  // (MapRenderer::kRoadPasses). MapTileSource tracks which pairs have passed and
+  // is the only caller that may pass true -- see its crc32Validated_.
+  //
+  // Absent, empty and "the directory says a different length" are still caught
+  // with the flag set, because those come from the header, which is checked on
+  // open(). What is skipped is only the repeat pass over the payload.
+  bool beginLayer(Layer layer, bool skipCrc32 = false);
 
   // Reads one way record's fixed header. Follow with readWayPoints() for
   // exactly `out.pointCount` points before reading the next way header.

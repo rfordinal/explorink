@@ -1316,14 +1316,14 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // which layer spent it.
   LOG_DBG(kLogTag,
           "render %lu ms: landuse %lu, buildings %lu, water %lu, roads %lu, route %lu, places %lu; "
-          "%lu points projected, %lu ways off screen, %lu ms in the card",
+          "%lu points projected, %lu ways off screen, %lu ms in the card, %lu crc32 skipped",
           static_cast<unsigned long>(timing.landuseMs + timing.buildingsMs + timing.waterMs + timing.roadsMs +
                                      timing.routeMs + timing.placesMs),
           static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.buildingsMs),
           static_cast<unsigned long>(timing.waterMs), static_cast<unsigned long>(timing.roadsMs),
           static_cast<unsigned long>(timing.routeMs), static_cast<unsigned long>(timing.placesMs),
           static_cast<unsigned long>(source_->pointsProjected()), static_cast<unsigned long>(source_->waysOffScreen()),
-          static_cast<unsigned long>(source_->ioUs() / 1000u));
+          static_cast<unsigned long>(source_->ioUs() / 1000u), static_cast<unsigned long>(source_->crc32Skipped()));
   LOG_DBG(kLogTag, "heap: %lu before tile load, %lu after, delta %ld; framebuffer ready in %lu ms",
           static_cast<unsigned long>(heapBefore), static_cast<unsigned long>(heapAfter),
           static_cast<long>(heapBefore) - static_cast<long>(heapAfter), static_cast<unsigned long>(elapsedMs));

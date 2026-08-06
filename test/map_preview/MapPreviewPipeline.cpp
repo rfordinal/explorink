@@ -183,6 +183,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.waysDrawn = source->waysEmitted() / MapRenderer::kRoadPasses;
   result.waysFiltered = source->waysFiltered() / MapRenderer::kRoadPasses;
   result.waysOffScreen = source->waysOffScreen() / MapRenderer::kRoadPasses;
+  result.crc32Skipped = source->crc32Skipped();
   result.placesDrawn = source->placesEmitted();
   result.bytesRead = source->bytesRead();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
