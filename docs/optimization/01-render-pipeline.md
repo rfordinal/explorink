@@ -79,6 +79,50 @@ it if under ~15 %" gate; the number is 99.6 % at rung 0, so **step 3 is the
 first thing to do**, and the fixed-point work in step 2 matters mostly for the
 points that survive it.
 
+## The baseline, measured on hardware
+
+**measured 2026-08-06** on the X4, firmware `4079a4c0` (this plan's step 1
+instrumentation), dense Bratislava — `pos 48.151428 17.116699 heading 3`, mode
+hike, whole zoom ladder, tiles already on the card. `bytes` is
+`MapTileSource::bytesRead()`, `points` is `pointsProjected()`.
+
+| rung | LOD | tiles | total ms | landuse | **buildings** | water | **roads** | places | points | bytes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | z13 | 1 | 10,861 | 130 | **7,058** | 58 | 3,605 | 10 | 170,922 | 1.8 MB |
+| 1 | z13 | 2 | **15,324** | 159 | **8,641** | 65 | 6,441 | 18 | 290,914 | 3.1 MB |
+| 2 | z12 | 4 | 6,636 | 1,439 | 25 | 376 | **4,761** | 35 | 116,400 | 1.4 MB |
+| 3 | z11 | 2 | 5,038 | 1,280 | 12 | 535 | **3,191** | 20 | 81,081 | 0.9 MB |
+| 4 | z11 | 9 | 12,731 | 3,554 | 56 | 1,828 | **7,205** | 88 | 229,280 | 2.5 MB |
+
+Five things in that table, and three of them were not what this plan assumed:
+
+1. **Buildings are the detail-LOD cost, as predicted.** 65 % of rung 0, 56 % of
+   rung 1. The count-based prediction holds.
+2. **Rung 1 is the worst rung, not rung 0** — 15.3 s. Two tiles instead of one,
+   so it reads twice the geometry for a coarser picture. The area ratio said
+   rung 0 was the outlier; wall time says the tile *count* matters more than the
+   ratio.
+3. **Roads are the second cost everywhere and the first cost at every coarse
+   rung.** 7.2 s of rung 4's 12.7 s, 4.8 s of rung 2's 6.6 s. This plan
+   under-weighted them: a road is drawn twice (`kRoadPasses`), each pass
+   decomposes every thick segment into `MapStroke` copies, and **each copy gets
+   its own `clipToRect` in `double`** (`GfxRendererCanvas.h:39-46`). So step 6(2)
+   and step 10 are not tail items — they are the coarse-rung fix.
+4. **Landuse is 3.5 s at rung 4**, from unclamped scan lines over rings far
+   bigger than the panel. Step 4 confirmed.
+5. **Up to 3.1 MB read off the card for one frame.** That is
+   [plan 02](02-tile-io.md)'s territory and it is the largest single number here.
+
+Revised order, on the measurement rather than on the counts:
+
+1. Step 3, off-screen reject — the only item that cuts every layer at once.
+2. Step 10 (trivial-accept clip) and step 6(2) (clip a stack once) — the road
+   path, which the counts had ranked too low.
+3. Step 4 and 5 — landuse at the coarse rungs.
+4. Step 2, fixed point — 170k to 291k points per frame go through it.
+5. Step 9 — the hairline fill, which mostly helps hatch and so mostly helps
+   rung 0-1.
+
 ## Step 1 — measure before changing anything
 
 Add a temporary counter pair to `renderViewport()`: points projected, and

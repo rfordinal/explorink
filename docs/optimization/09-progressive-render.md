@@ -7,6 +7,50 @@ Proposed 2026-08-06 after a **14 second** viewport reset on a dense tile, report
 from the device. This plan says how it would be built, what it costs, and — the
 important part — **the condition under which it is worth building at all**.
 
+## Step 0 — a frame that says "loading" before the tiles are read
+
+Raised by the maintainer 2026-08-06, and it is both cheaper than everything below
+and independent of it. Build this one first, whatever happens to the rest.
+
+**The problem, measured.** Entering the map screen with a persisted fix calls
+`renderViewport()` straight from `onEnter()` (`MapActivity.cpp:460`), and nothing
+reaches the panel until `displayBuffer()` at the very end of it
+(`MapActivity.cpp:1118`). E-ink holds the last image, so the panel keeps showing
+**the previous screen** — the home menu — for the whole read. Measured on
+hardware: **10.9 s at rung 0, 15.3 s at rung 1** (see the baseline table in
+[01-render-pipeline.md](01-render-pipeline.md)). No badge, no text, nothing: the
+device looks broken for fifteen seconds.
+
+`renderWaiting()` already draws a text frame and refreshes it
+(`MapActivity.cpp:777-788`), but only on the path where there is no last fix
+(`:461-463`). The path that takes 15 s is the one with no feedback.
+
+**The fix.** Draw a status frame and refresh it *before* the tile work starts, on
+entry. Cost: one 500 ms refresh, and the first pixel of feedback arrives in tens
+of milliseconds instead of fifteen seconds.
+
+It has none of the hazards the rest of this plan carries: no draw-order question,
+no additive-ink requirement, no marker-patch problem — the tile render that
+follows clears the screen and draws the whole frame exactly as it does today.
+
+Two open choices, both cheap:
+
+- **What it says.** `STR_MAP_WAITING_BLE` is the existing waiting string and is
+  about BLE, not tiles, so this needs its own `tr()` key. Whether it also shows
+  the coordinate and the rung is a judgement call — that information is what makes
+  the wait legible rather than merely acknowledged.
+- **When it fires.** Only on `onEnter()` (the 15 s case, and the only one with no
+  feedback at all), or before every viewport reset. A zoom press already gets the
+  busy badge through `showBusy()` (`MapActivity.cpp:279-300`), so entry is the
+  gap. Start with entry only.
+
+The second half of the maintainer's point — **not being dependent on tiles to draw
+a map screen at all** — is a bigger idea and belongs with the phases below: the
+furniture (compass, marker, hints, scale) costs no tile read, so a frame carrying
+only that is available almost immediately. That is the natural phase A if this
+plan ever grows a third tier, and it is strictly better than a text screen because
+it is already the real screen, just without the map in it.
+
 ## What it does not do
 
 It does not make a reset faster. The total work is the same; the panel just shows
