@@ -256,7 +256,11 @@ void TileSyncActivity::listRect(int& x, int& y, int& w, int& h) const {
   // and the hint while waiting). Reserved whether or not the hint is drawn, so
   // the list does not jump up and down as the phase changes.
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + lineHeight * 2;
+  // Below the header, the summary line, the overall bar and the percentage
+  // GUI.drawProgressBar centres 15 px under it. Reserved whether or not the bar
+  // is drawn, so the list does not jump as the phase changes.
+  const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + lineHeight +
+                  metrics.progressBarHeight + 15 + lineHeight;
 
   x = metrics.contentSidePadding;
   w = pageWidth - metrics.contentSidePadding * 2;
@@ -364,7 +368,18 @@ void TileSyncActivity::drawRow(int index, int y, int rowHeight) {
     barValue = received;
     barMax = total;
   }
-  GUI.drawProgressBar(renderer, Rect{lx, barY, lw, kRowBarHeight}, barValue, barMax);
+  // Drawn here rather than through GUI.drawProgressBar, which always writes a
+  // centred percentage 15 px below its bar. That is right for the one big bar it
+  // was built for (FontDownloadActivity) and wrong for a list: ten 6-pixel row
+  // bars produced ten labels, each landing on the next row's text, each erased
+  // by the next row's fill -- leaving one stray number under the list that read
+  // as overall progress and was actually the last row's state. A 6-pixel bar has
+  // no room for a label anyway.
+  renderer.drawRect(lx, barY, lw, kRowBarHeight);
+  if (barValue > 0) {
+    const int fill = static_cast<int>((lw - 4) * barValue / barMax);
+    if (fill > 0) renderer.fillRect(lx + 2, barY + 2, fill, kRowBarHeight - 4);
+  }
   (void)metrics;
 }
 
@@ -496,6 +511,16 @@ void TileSyncActivity::renderScreen() {
   // "waiting" leaves the rider with nothing to try.
   if (phase_ == Phase::Waiting) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_WAITING_HINT), true);
+  } else {
+    // The one bar that is about the whole run, and the one place a percentage
+    // belongs. GUI.drawProgressBar writes that percentage itself, centred below
+    // the bar, which is exactly what is wanted here and exactly what made it
+    // wrong for the rows.
+    const uint32_t settled = transfer.completed + skipped_;
+    GUI.drawProgressBar(
+        renderer,
+        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+        settled, rowCount_ > 0 ? rowCount_ : 1);
   }
 
   drawList();
