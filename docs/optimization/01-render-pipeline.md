@@ -33,12 +33,57 @@ fit `int32_t`. The rotation is two constants per frame.
 **open**: how many milliseconds this actually is. Nothing has profiled it. The
 measurement is step 1 below and it is cheap.
 
+## The other fact: almost none of that work draws a pixel
+
+**measured 2026-08-06**, from real `.tib` tiles in
+`mapbuilder/test-data/trailink-sd`, by `mapbuilder/tools/tile_cost.py` (parent
+repo). Counts are exact; no device needed, and no device timing is implied.
+
+A tile is much larger than the screen at the rung that reads it. The detail LOD
+is the extreme case:
+
+| rung | m/px | LOD | tile span | loaded area (2x2) | screen area | ratio |
+|---|---|---|---|---|---|---|
+| 0 | 1 | z13 | 4,892 m | 95.7 km² | 0.38 km² | **249x** |
+| 1 | 3 | z13 | 4,892 m | 95.7 km² | 3.46 km² | 28x |
+| 2 | 6 | z12 | 9,784 m | 382.9 km² | 13.8 km² | 28x |
+| 3 | 12 | z11 | 19,568 m | 1,532 km² | 55.3 km² | 28x |
+| 4 | 20 | z11 | 19,568 m | 3,446 km² (3x3) | 153.6 km² | 22x |
+
+The fattest z13 tile in that set holds **11,294 buildings and 110,939 points in
+643 KB**. At rung 0 a 2x2 range therefore reads about **45,000 buildings to draw
+about 181** — 0.4 % of the buildings walked produce a pixel. At rung 1 it is
+3.6 %.
+
+Every one of those 45,000 is read off the card, **projected point by point in
+software `double`** (`MapTileSource.cpp:169-171`), and **hatch-scanned in full**
+(`MapAreaFill::hatchRing`, which takes its scan range from the ring's own bbox
+and never asks where the screen is, `MapAreaFill.cpp:126-153`). Only the last
+step — the pixel write — is skipped, by `clipToRect` rejecting the line
+(`GfxRendererCanvas.h:44`).
+
+For scale on the other side of that ratio: an on-screen building at 1 m/px is
+13 hatch lines and 416 hatch pixels (cross hatch, 4 px, `data/mapstyle.json`).
+181 of them is ~75,000 pixels — nothing. **The frame's cost is almost entirely
+work on geometry that is not on the screen.**
+
+This changes the order of this plan. Step 3 was written as a maybe with a "skip
+it if under ~15 %" gate; the number is 99.6 % at rung 0, so **step 3 is the
+first thing to do**, and the fixed-point work in step 2 matters mostly for the
+points that survive it.
+
 ## Step 1 — measure before changing anything
 
 Add a temporary counter pair to `renderViewport()`: points projected, and
 `millis()` around the `MapRenderer::render()` call only, separate from the tile
 reads. `MapTileSource::waysEmitted()` already gives way counts
 (`MapTileSource.h:90`); points are what is missing.
+
+**Time each layer, not just the frame.** Four `millis()` deltas around the four
+blocks of `MapRenderer::render()` — landuse, buildings, water, roads
+(`MapRenderer.cpp:82`, `:90`, `:102`, `:134`) — answer "is it buildings?" in one
+flash, and that is the question every item below turns on. Log them as one
+`LOG_DBG` line; they do not need to reach the panel.
 
 Run the same coordinate at every zoom rung, ride and hike mode, over serial
 (`mapcmd.py pos ...` then `zoom`). Record ms and point count per rung.
@@ -110,11 +155,15 @@ projection (`MapViewport.h:13-16`).
 
 ## Step 3 — reject off-screen ways before projecting them
 
+**Do this one first.** It is the largest single item in this plan: at rung 0 it
+removes the work for 99.6 % of the buildings walked (measured, see above).
+
 The tile range is deliberately wider than the screen — `kMarginPx` is 64 px on
-top of a rotated bbox (`MapViewport.h:37`, `MapViewport.cpp:37-41`) — so a
-large share of every tile's geometry is off-panel. Right now every point of
-every way is projected, then the segments are clipped one at a time
-(`GfxRendererCanvas.h:44`).
+top of a rotated bbox (`MapViewport.h:37`, `MapViewport.cpp:37-41`) — but that
+margin is not why the range is wide. The range is wide because **a z13 tile is
+4,892 m and the rung-0 screen is 480x800 m**: the smallest possible range is
+already 250x the visible area. Right now every point of every way is projected,
+then the segments are clipped one at a time (`GfxRendererCanvas.h:44`).
 
 Cheaper: while reading a way's points (`MapTileSource::nextWayRecord`,
 `MapTileSource.cpp:135`) track the local `min/max` x and y — free, integer,
@@ -129,9 +178,20 @@ The record must still be **read** in full — reading is what advances the strea
 (`MapTileSource.cpp:143-146` already says this about the class mask). Only the
 projecting is skipped.
 
-**open**: what fraction of ways in a real viewport are fully off-screen. Add a
-counter next to `waysFiltered_` and read it off `info`. If it is under ~15%,
-skip this step.
+**Rejection has to happen in `MapTileSource`, not in `MapRenderer`.** A reject in
+the renderer saves the hatch scan but not the projection, and the projection is
+the bigger half. Two levels, both worth having:
+
+1. **In `nextWayRecord`** (`MapTileSource.cpp:142-181`): track local `min/max`
+   while reading the points, project the four bbox corners, reject before the
+   per-point loop at `:169-171`. Saves projection **and** everything downstream.
+2. **In `MapAreaFill`** (step 4 below): clamp what survives to the screen.
+
+**open, and cheap to close**: the same fraction for roads. The measurement above
+is buildings, whose count comes from a real tile; roads are 6,073 records and
+18,596 points in the same tile, so the ratio is the same but the absolute saving
+is 6x smaller. Add a counter next to `waysFiltered_` (`MapTileSource.h:90`) and
+read it off `info` per layer.
 
 ## Step 4 — clamp area fills to the screen before scanning
 
@@ -267,18 +327,116 @@ Verdict: grey stays out of the map until there is a bounded display list. Not a
 task in this plan — a reason recorded so the question does not get re-opened
 from scratch.
 
-## Commit sequence
+## Step 9 — an axis-aligned hairline is a rect, not a pixel loop
 
-One concern per commit (`refactor-for-review` skill):
+**read.** `GfxRenderer::drawLine` special-cases both axis-aligned directions and
+walks them **one `drawPixel` call per pixel** (`GfxRenderer.cpp:673-686`).
+`drawPixel` is a non-inlined function with a `rotateCoordinates` switch, a bounds
+check carrying a `LOG_ERR` branch, and a read-modify-write on one byte
+(`GfxRenderer.cpp:490-524`).
 
-1. `perf(map): count points and time the render pass` — instrumentation only.
-2. `perf(map): project way points in fixed point` — step 2.
+`GfxRenderer::fillRect` reaches the same pixels through `fillRectImpl`, which
+rotates **two corners**, then writes whole bytes with masks and a `memset`
+(`GfxRenderer.cpp:837-843`, `:892-963`). Same pixels, one call instead of N.
+
+Every hatch line is exactly this shape: `hatchAxis` emits axis-aligned lines of
+width 1 (`MapAreaFill.cpp:87-89`). So does every horizontal or vertical road
+segment and every ring outline edge on those axes.
+
+Change, in `GfxRendererCanvas::drawLine` (`GfxRendererCanvas.h:32-47`), not in
+`GfxRenderer` — the fork rule keeps inherited code alone (`CLAUDE.md`, "Treat
+inherited code as upstream's"):
+
+```cpp
+// after clipToRect, per stack copy
+if (cy1 == cy2)      renderer_.fillRect(min(cx1,cx2), cy1, |cx2-cx1|+1, 1, black);
+else if (cx1 == cx2) renderer_.fillRect(cx1, min(cy1,cy2), 1, |cy2-cy1|+1, black);
+else                 renderer_.drawLine(...);   // unchanged
+```
+
+Pixel-identical by construction, so the screenshot gate should show a byte-equal
+framebuffer. Note the portrait asymmetry from step 7: a **logical vertical** run
+is contiguous in physical memory and gets the `memset` path, while a logical
+horizontal run of N pixels is N one-byte masked writes. Both beat N `drawPixel`
+calls; only one of them beats it by a lot. Mirror the change in
+`test/map_preview`'s `PpmCanvas` only if it measures there too — it does not have
+to, the two canvases already differ in their line implementations
+(`docs/device-preview.md` in the parent repo, "Close, not provably
+byte-identical").
+
+## Step 10 — clipping an already-visible line should not touch a `double`
+
+**read.** `clipToRect` converts all four coordinates to `double` before it even
+computes the two outcodes, and it does that for every line
+(`GfxRendererCanvas.h:136-140`). The common case after step 3 is a line **fully
+inside** the screen, where the whole function is a no-op that rounds its own
+inputs back to where they started.
+
+Change: an integer trivial-accept in front of it.
+
+```cpp
+if (x1 >= 0 && x1 <= maxX && y1 >= 0 && y1 <= maxY &&
+    x2 >= 0 && x2 <= maxX && y2 >= 0 && y2 <= maxY) return true;   // no doubles
+```
+
+Four compares against eight, no `double`, no `lround`. Pixel-identical: for an
+inside segment the existing path already returns the same integers.
+
+Cheapest item in this plan by effort. It is listed last because its size depends
+on step 3 — before step 3, most lines are *not* trivially inside, and the fast
+path misses.
+
+## The style levers, for when code is not wanted
+
+Two knobs cut hatch work with no code at all, both in `data/mapstyle.json` under
+`layers.buildings.rule`, both testable in the webapp's `firmware` panel in about
+two seconds (`docs/device-preview.md` in the parent repo):
+
+- **`hatch_spacing_px: 4` → `6` or `8`.** Hatch lines per axis go as
+  `1/spacing`, so 8 is half the lines and half the pixels of 4.
+- **`hatch: "XXXX"` → `"||||"`.** `X` is `Cross`, which runs `hatchAxis` twice
+  (`MapAreaFill.cpp:140-143`). One axis is half the work. Prefer the **vertical**
+  one: in portrait a logical vertical span is a contiguous physical byte run
+  (step 7), so it is also the cheaper axis to fill.
+
+Both change what the map looks like, so they are style decisions, not
+optimisations, and they go through the preview panel and a look on glass. They
+are listed here so the cost side of that decision is on record.
+
+One concern per commit (`refactor-for-review` skill). Reordered 2026-08-06: the
+off-screen reject moved to the front, because the measurement above says it is
+where the frame goes.
+
+1. `perf(map): time each layer of the render pass` — instrumentation only,
+   step 1.
+2. `perf(map): skip projecting fully off-screen ways` — step 3. Biggest item.
 3. `perf(map): clamp area scan lines to the screen` — step 4.
-4. `perf(map): integer edge crossings in area fill` — step 5.
-5. `perf(map): clip a thick road once, not once per copy` — step 6(2).
-6. `perf(map): skip projecting fully off-screen ways` — step 3, if step 3's
-   counter justifies it.
-7. Revert the instrumentation from commit 1, or keep it behind the existing
+4. `perf(map): fill an axis-aligned hairline as a rect` — step 9.
+5. `perf(map): accept an on-screen segment without clipping it` — step 10.
+6. `perf(map): project way points in fixed point` — step 2.
+7. `perf(map): integer edge crossings in area fill` — step 5.
+8. `perf(map): clip a thick road once, not once per copy` — step 6(2).
+9. Revert the instrumentation from commit 1, or keep it behind the existing
    `LOG_DBG` level if the numbers stay useful.
 
+Commits 2 to 5 are all pixel-identical and all small; take the framebuffer
+comparison after each. Commits 6 and 7 change arithmetic, so they need the golden
+test as well.
+
 Steps 6(1) and 7 are their own branches with their own device evidence.
+
+## What this plan cannot fix
+
+Step 3 stops the device **projecting and scanning** geometry it will not draw. It
+cannot stop it **reading** it: the bytes are what advances the stream
+(`MapTileSource.cpp:160-163`). At rung 0 that leaves ~45,000 buildings' worth of
+card reads for 181 drawn buildings, whatever this plan does.
+
+Two places that can be fixed, neither of them here:
+
+- **The read itself** — plan [02-tile-io.md](02-tile-io.md), which halves it by
+  not reading every layer twice.
+- **The tile contents** — the detail LOD's tile is 6x the screen's height at
+  rung 0, so the smallest legal range is already 250x the visible area. That is a
+  tile-format and mapbuilder question: `docs/tile-simplification-plan.md` in the
+  parent repo.

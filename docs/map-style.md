@@ -263,6 +263,32 @@ Two implementation notes worth not undoing:
   hatch line looks like a stray road, not like a fill bug, which is why that test
   measures ink position rather than ink existence.
 
+### What the hatch fields cost
+
+Both of these are render cost, decided in the style file, with no code involved.
+Measured counts are in
+[`optimization/01-render-pipeline.md`](optimization/01-render-pipeline.md); the
+short version:
+
+- **`hatch_spacing_px`.** Lines per axis go as `1/spacing`, so 8 is half the lines
+  and half the pixels of 4. At 1 m/px a building is 13 hatch lines and 416 pixels
+  at spacing 4.
+- **The pattern's axis count.** `X` is cross, which runs the axis fill twice. One
+  axis is half the work, and in portrait the **vertical** one is the cheaper of
+  the two, because a logical vertical span is contiguous in physical framebuffer
+  memory.
+
+Both change the picture, so they are style decisions. Judge them in the webapp's
+`firmware` panel (`docs/device-preview.md` in the parent repo), not by arithmetic.
+
+**One constraint if `fill` ever changes to `tone`.** A tone is a dithered fill,
+and a dithered fill writes **both** inks (`GfxRenderer.cpp:1030-1052`), while
+hatch and outline write black only. Anything that relies on buildings being
+additive — notably the two-phase render in
+[`optimization/09-progressive-render.md`](optimization/09-progressive-render.md),
+which draws buildings after the roads — breaks silently the moment buildings get
+a tone.
+
 ### Turning buildings on costs SD reads, not pixels
 
 Measured on the laptop preview at the reference view
@@ -279,6 +305,13 @@ parent repo), 2026-08-05:
 `buildingsEnabled` and `waterEnabled` gate the **read**, not the draw: a
 disabled layer is never opened. Render time barely moves (11-17 ms on the
 laptop), so on the device this is an SD I/O decision, not a drawing one.
+
+**Do not read those 11-17 ms as device milliseconds.** The laptop has an FPU and
+the ESP32-C3 does not, and the whole geometry path — projection, edge crossings,
+segment clipping — is written in `double`
+([`optimization/01-render-pipeline.md`](optimization/01-render-pipeline.md)). The
+same work is a software routine per operation on device. The host number is a
+count-of-work proxy, not a timing.
 
 **Answered on hardware 2026-08-05**, see the timing table at the top of this
 document: 484 KB with buildings at the detail LOD is a 2.5-3.2 s viewport reset

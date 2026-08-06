@@ -26,6 +26,7 @@ line number is off by a few, the surrounding function name is the anchor.
 | [06-memory-and-flash.md](06-memory-and-flash.md) | RAM and flash budget | measured: flash 58% used, static DRAM 58 KB — the constraint is elsewhere |
 | [07-power-and-lifecycle.md](07-power-and-lifecycle.md) | CPU scaling, sleep, BLE lifetime | the map screen pins the CPU at 160 MHz forever |
 | [08-verification.md](08-verification.md) | tests, gates, instrumentation | CI never runs the 20 host test suites |
+| [09-progressive-render.md](09-progressive-render.md) | base map first, buildings second | measured: 99.6 % of the buildings walked at rung 0 never draw a pixel, so fix that before splitting the frame |
 
 ## Confidence labels
 
@@ -56,6 +57,23 @@ Dependency order, not importance order.
 6. **05 structure** — after 01/02 land, so the refactor moves settled code.
 7. **06 memory** and **07 power** — both start with a measurement, and 07's is a
    hardware measurement that needs the user.
+8. **09 progressive render** — last, and conditional. It makes a reset *feel*
+   faster without making it faster, so it is only worth building if a rung is
+   still slow after 01 and 02. Its own "trigger condition" section says when.
+
+### Added 2026-08-06 after a 14-second reset was reported
+
+01 and 02 were written before anyone counted what a tile holds against what the
+screen shows. That count now exists — `mapbuilder/tools/tile_cost.py` in the
+parent repo, run against real `.tib` tiles — and it says the detail LOD reads
+about **45,000 buildings to draw about 181** at the closest rung. It changed two
+things:
+
+- 01's step 3 (reject off-screen ways) went from a maybe to the first commit in
+  the plan, and 01 grew two more pixel-identical items (steps 9 and 10).
+- The tile side of it is not a firmware problem at all: a z13 tile is 6x the
+  screen's height at rung 0. That is `docs/tile-simplification-plan.md` in the
+  parent repo.
 
 ## Two things found while reviewing
 
