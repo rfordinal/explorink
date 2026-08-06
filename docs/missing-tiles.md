@@ -155,20 +155,39 @@ information and does not earn an SD write.
 1. The store is sorted into fetch priority and its size is the fetch's total.
 2. The skip tally is cleared, so the failure count on screen belongs to this
    fetch (`MapConsoleState::clearSkips()`).
-3. The device sends `NEED_TILES <count> fmt <version>` as an **unsolicited
-   indication** on the command characteristic. This is the one place the device
-   starts a conversation instead of answering one; the mechanism is the same
-   `BlePositionServer::sendCommandReply()` every other reply uses, which needs
-   only a prior subscribe, not a poll.
+3. The screen waits for a phone to subscribe to the command characteristic, and
+   says so. When one does, the device sends `NEED_TILES <count> fmt <version>`
+   as an **unsolicited indication** -- the one place the device starts a
+   conversation instead of answering one.
 4. The phone pages the list with `missing` and pushes tiles back over the
    transfer channel (`docs/ble-map-transfer-protocol.md` in the parent repo).
 5. The progress screen counts arrivals and skips until they add up to the
    total.
 
-If `NEED_TILES` cannot be delivered -- BLE down, or nobody subscribed to the
-command characteristic -- the screen says so instead of counting to zero
-forever. An empty list says "no missing tiles" and stops there: the rider
-pressed a button and is owed an answer.
+### Waiting for the phone is a state, not a failure
+
+`sendCommandReply()` cannot tell you whether anybody is listening: NimBLE
+accepts an indication into its one-slot queue with nobody subscribed, so its
+return value is not evidence a phone heard anything. Measured on hardware
+2026-08-06 -- the screen logged "asked for 29 tiles" into an empty room and then
+sat at 0 of 29 with nothing to explain itself.
+
+So the subscription is tracked directly (`BlePositionServer::isCommandSubscribed()`,
+an `onSubscribe` callback because NimBLE-Arduino has no `getSubscribedCount()`),
+and the screen has a real Waiting phase: it says it is waiting, says the channel
+is Bluetooth, and says what would make it start. The ask goes out when a phone
+subscribes, so opening the screen before the app is ready is the normal case
+rather than a miss. A phone that walks off mid-sync puts it back to waiting
+instead of leaving a bar that will never move again -- and "no phone has ever
+turned up" and "the phone was here and left" get different words, because one is
+a setup problem and the other is range.
+
+The subscription is also cleared on disconnect. NimBLE does not fire
+`onSubscribe(0)` when a link simply drops, so without that the screen would
+believe a phone was there long after it walked away.
+
+An empty list says "no missing tiles" and stops there: the rider picked the menu
+item and is owed an answer.
 
 ### The format version is part of the ask
 
@@ -341,12 +360,14 @@ used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
     map activity's `loop()`. If a page stalls it long enough to matter,
     `kMissingPageSize` is the knob. `tools/blereplay.py` in the parent repo
     against a card with this 29-entry list settles it.
-  - **The sync screen has never been on the panel.** It needs a home-menu
-    selection; no serial command opens it (`CMD:GOTO_MAP` reaches the map, and
-    that is all). Its row geometry comes from theme metrics rather than
-    measurement, so the open questions are how many rows actually fit and
-    whether a row's windowed refresh rectangle clips a descender -- which leaves
-    a smear only a full refresh clears.
+  - **The sync screen reaches the panel and waits correctly** (2026-08-06,
+    build `develop-70da0b86`): it enters from the home menu, starts BLE, draws
+    29 rows in 45 ms, logs `29 tiles to ask for, waiting for a phone` instead of
+    the false `asked for 29 tiles` the previous build logged into an empty room,
+    and BACK leaves cleanly with the heap returned. **What no phone has yet
+    exercised**: the ask itself, a row's bar moving, the windowed refresh of one
+    row (does its rectangle clip a descender), and whether the row count that
+    fits is the one the geometry predicts.
   - **`NEED_TILES` reaching a real central.** The mechanism is the one
     `sendCommandReply()` already uses on hardware, but nothing has subscribed
     to the command characteristic from a phone yet.
