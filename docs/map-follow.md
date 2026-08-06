@@ -9,6 +9,14 @@ Status: **verified on real hardware 2026-08-05** by replaying a recorded ride
 crash, no leak, heap flat at 58,824 bytes for the whole run. The measured numbers
 are in "What the ride measured" below; anything still unmeasured says so.
 
+> **Optimisation review, 2026-08-06.** Before changing this path, read
+> [`optimization/05-map-activity-structure.md`](optimization/05-map-activity-structure.md)
+> — it extracts the patch save/restore into a `MapMarkerLayer` and names the
+> ordering invariant that is currently held only by a comment (the patch must be
+> saved after every other layer is drawn). `kMaxPartialMoves` is still untuned;
+> [`optimization/07-power-and-lifecycle.md`](optimization/07-power-and-lifecycle.md)
+> says what measurement settles it.
+
 ## Why
 
 A viewport reset is the most expensive thing the map screen does: tile reads off

@@ -9,6 +9,13 @@ over the map console (`missing`, below), which is what lets a phone ask the
 device what it is short of and push those tiles back
 (`docs/ble-map-transfer-protocol.md`).
 
+> **Optimisation review, 2026-08-06.**
+> [`optimization/04-tile-sync.md`](optimization/04-tile-sync.md) reviews this
+> store and the `TileSyncActivity` that consumes it. Three open items matter
+> before touching either: a sync that goes quiet never ends, completion counts
+> landed *files* rather than settled rows, and arrivals on the map screen no
+> longer clear the list at all (a regression from `412e0ed9`).
+
 ## Where a hit comes from
 
 `MapTileSource::unavailableMask()` already knows which tiles in the current

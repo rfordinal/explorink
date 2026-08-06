@@ -128,12 +128,20 @@ improvement in this whole review.
 Read off the code and the docs, so the list is honest about what is claimed
 versus what is checked:
 
-- **Marker follow on hardware.** The README's own status table says it: "exists,
-  host-tested, **not measured on hardware**". `MapFollow`'s policy is tested;
-  the patch save/restore against a real framebuffer and the ghosting budget are
-  not. `tools/blereplay.py` plus `CMD:SCREENSHOT` after each fix would settle
-  it.
-- **`kMaxPartialMoves = 12`.** Explicitly untuned (`MapFollow.h:41-45`).
+- **`kMaxPartialMoves = 12`** — the ghosting budget. Explicitly untuned
+  (`MapFollow.h:41-45`, and `docs/map-follow.md` says the same). The replayed
+  ride shows it is the *governing* constant, not a safety bound: 3 of 14
+  re-anchors came from it and the keep-in frame never fired at all. So the number
+  directly sets how often the map redraws, and nobody has looked at the panel to
+  find where ghosting actually becomes visible. Replay a ride, watch the glass,
+  raise it until it shows.
+
+  Note: marker follow itself **is** hardware-verified — 2026-08-05, 117 fixes,
+  ~160 s against the ~1,040 s all-redraws would have cost, heap flat
+  (`docs/map-follow.md`, "What the ride measured"). `README.md`'s status table
+  said "not measured on hardware" until this review; that line was stale and is
+  fixed in the same branch. Two docs disagreeing about what was measured is the
+  exact failure the citation rule exists to prevent.
 - **The transfer path end to end with a real phone.** Verified with a script
   (`tools/blepush.py`), not with an Android app that has its own MTU and
   interval behaviour — which is exactly what plan 03 is about.

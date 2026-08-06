@@ -3,6 +3,14 @@
 CPU frequency scaling on idle, and what it breaks if you switch activities
 without going through a button press.
 
+> **Optimisation review, 2026-08-06.**
+> [`optimization/07-power-and-lifecycle.md`](optimization/07-power-and-lifecycle.md)
+> adds the other half of this: `preventAutoSleep()` is one bool answering two
+> questions, so the map screen pins the CPU at 160 MHz for as long as it is up
+> and can never auto-sleep. Nothing has measured the device's current draw in any
+> state, and that measurement is step 1 of that plan. Record the numbers here
+> when they exist.
+
 ## Power-saving mode drops CPU frequency after idle
 
 `main.cpp:638` calls `powerManager.setPowerSaving(true)` after the device has

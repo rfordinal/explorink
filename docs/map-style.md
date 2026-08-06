@@ -7,6 +7,14 @@ i18n string tables.
 Verified by reading this tree on 2026-08-05 (branch `feat/mapstyle-to-renderer`,
 merged to `develop` the same day).
 
+> **Optimisation review, 2026-08-06.** The renderer this style feeds is the
+> device's slowest path.
+> [`optimization/01-render-pipeline.md`](optimization/01-render-pipeline.md) has
+> the costs and the order to fix them in — fixed-point projection, screen-clamped
+> area scans, one clip per road instead of one per stroke copy. A style change
+> that adds an area layer or a wider road pays into all three, so read it before
+> planning one.
+
 **Confirmed on the panel, 2026-08-05**, with framebuffers pulled off the device
 over `CMD:SCREENSHOT` (`docs/device-shots/malacky-landuse-z*.png` in the parent
 repo, captured by `tools/device_map_shot.py`). Buildings with outlines and a

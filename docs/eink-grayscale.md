@@ -8,6 +8,14 @@ docs across both repos.
 Everything below marked **verified** is read off the code. Everything marked
 **open** needs a hardware measurement and must not be built on until measured.
 
+> **Optimisation review, 2026-08-06.** The map deliberately does not use grey,
+> and there is now a second reason on top of the contrast one:
+> `GrayscaleFrame::render()` calls its draw callback 13 times on a 480-row panel,
+> and the map's callback is a streaming pull off the SD card — so a grey map frame
+> costs 13 full tile loads, not one extra waveform pass. See
+> [`optimization/01-render-pipeline.md`](optimization/01-render-pipeline.md),
+> step 8. Grey on the map needs a bounded display list first.
+
 ## The panel
 
 X4 is an SSD1677. X3 is a UC8253. Both drivers are linked into one binary; the
