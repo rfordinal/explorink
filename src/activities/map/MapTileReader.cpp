@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "MapCrc32.h"
+
 namespace {
 
 // Byte layout is exactly mapbuilder/tiles.py's struct.calcsize("<4sHBIIiiIIIB")
@@ -20,21 +22,6 @@ constexpr size_t kHeaderFixedLen = 36;
 constexpr size_t kCrcFieldOffset = 31;  // struct.calcsize("<4sHBIIiiII")
 constexpr size_t kDirEntryLen = 13;     // <BIII>
 constexpr uint8_t kMagic[4] = {'T', 'I', 'B', '1'};
-
-// Standard IEEE CRC32 (poly 0xEDB88320, reflected), the same algorithm
-// zlib.crc32 uses -- must match mapbuilder/tiles.py's zlib.crc32 bit-for-bit
-// for round-trip validation to mean anything. Self-contained: no zlib/miniz
-// dependency, portable to the device build in P4 as-is.
-uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
-  for (size_t i = 0; i < len; ++i) {
-    crc ^= data[i];
-    for (int bit = 0; bit < 8; ++bit) {
-      const uint32_t mask = -(crc & 1u);
-      crc = (crc >> 1) ^ (0xEDB88320u & mask);
-    }
-  }
-  return crc;
-}
 
 }  // namespace
 
@@ -115,10 +102,10 @@ bool MapTileReader::parseHeader() {
   // the only crc check open() ever pays for; a layer's own bytes are
   // checked only if and when beginLayer() actually opens that layer.
   std::memset(&hdr[kCrcFieldOffset], 0, sizeof(headerCrc32Stored_));
-  uint32_t crc = 0xFFFFFFFFu;
-  crc = crc32Update(crc, hdr, kHeaderFixedLen);
-  crc = crc32Update(crc, dir, dirLen);
-  crc ^= 0xFFFFFFFFu;
+  uint32_t crc = MapCrc32::kInit;
+  crc = MapCrc32::update(crc, hdr, kHeaderFixedLen);
+  crc = MapCrc32::update(crc, dir, dirLen);
+  crc = MapCrc32::final(crc);
   if (crc != headerCrc32Stored_) return false;
 
   for (uint8_t i = 0; i < layerCount_; ++i) {
@@ -135,16 +122,16 @@ bool MapTileReader::parseHeader() {
 bool MapTileReader::validateLayerCrc32(const LayerEntry& entry) {
   if (!file_->seek(entry.offset)) return false;
 
-  uint32_t crc = 0xFFFFFFFFu;
+  uint32_t crc = MapCrc32::kInit;
   uint32_t remaining = entry.length;
   while (remaining > 0) {
     const size_t toRead = remaining < kStreamBufferSize ? static_cast<size_t>(remaining) : kStreamBufferSize;
     const int n = readCounted(streamBuffer_, toRead);
     if (n <= 0) return false;
-    crc = crc32Update(crc, streamBuffer_, static_cast<size_t>(n));
+    crc = MapCrc32::update(crc, streamBuffer_, static_cast<size_t>(n));
     remaining -= static_cast<uint32_t>(n);
   }
-  crc ^= 0xFFFFFFFFu;
+  crc = MapCrc32::final(crc);
 
   return crc == entry.crc32;
 }
