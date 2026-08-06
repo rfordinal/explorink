@@ -145,6 +145,16 @@ class BlePositionServer {
   // 3ms burst that made the command channel need the confirm wait.
   bool sendTransferStatus(const char* line);
 
+  // True once a central has subscribed to the **command** characteristic --
+  // i.e. somebody is actually listening for `NEED_TILES` and will answer it.
+  //
+  // sendCommandReply() cannot answer this question. NimBLE's indicate() accepts
+  // a line into its one-slot queue whether or not a peer is subscribed, so a
+  // reply "succeeding" is not evidence that anything heard it. A screen that
+  // waits for a phone has to ask here instead, or it sits at 0 of N forever
+  // with nothing to show for it.
+  bool isCommandSubscribed() const { return commandSubscribed_; }
+
   // True once the central has subscribed to the status characteristic. A
   // transfer started before this has nowhere to report its verdict to, so
   // MapTransferReceiver refuses one -- same check sendCommandReply's channel
@@ -157,6 +167,7 @@ class BlePositionServer {
   void onCommandIngest(const uint8_t* data, size_t len);
   void onTransferIngest(const uint8_t* data, size_t len);
   void onTransferSubscribe(bool subscribed);
+  void onCommandSubscribe(bool subscribed);
   void onCentralDisconnect();
 
  private:
@@ -179,6 +190,7 @@ class BlePositionServer {
   // hook can't be swapped out between the null check and the call.
   TransferHooks transferHooks_;
   volatile bool transferSubscribed_ = false;
+  volatile bool commandSubscribed_ = false;
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;

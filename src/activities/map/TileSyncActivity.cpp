@@ -88,24 +88,58 @@ void TileSyncActivity::onEnter() {
     return;
   }
 
+  // Advertising now; nothing to ask until a phone subscribes to the command
+  // channel. trackPhone() does the asking when one does -- see phoneListening().
+  phase_ = Phase::Waiting;
+  verdict_ = StrId::STR_MAP_FETCH_DONE;
+  drawnPhoneListening_ = phoneListening();
+  hadPhone_ = drawnPhoneListening_;
+  LOG_INF(kLogTag, "%lu tiles to ask for, waiting for a phone", static_cast<unsigned long>(rowCount_));
+  renderScreen();
+  if (drawnPhoneListening_) askForTiles();
+}
+
+bool TileSyncActivity::phoneListening() const {
+  return freeink::BlePositionServer::getInstance().isCommandSubscribed();
+}
+
+void TileSyncActivity::askForTiles() {
   // Unsolicited indication on the command channel -- the one place the device
-  // starts a conversation instead of answering one. It fails when BLE is down or
-  // nobody has subscribed, which is exactly what the rider needs told: with no
-  // phone listening, no tile is ever going to arrive.
+  // starts a conversation instead of answering one.
+  //
+  // Its return value is NOT evidence that a phone heard it: NimBLE accepts a
+  // line into its queue whether or not anybody is subscribed. phoneListening()
+  // is the real check and the caller has already made it; this only catches a
+  // link that died between the two.
   char line[48];
   snprintf(line, sizeof(line), "NEED_TILES %lu fmt %u", static_cast<unsigned long>(rowCount_),
            static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
-    LOG_ERR(kLogTag, "NEED_TILES not delivered, nobody subscribed");
-    phase_ = Phase::Finished;
-    verdict_ = StrId::STR_MAP_FETCH_NO_PHONE;
-    renderScreen();
+    LOG_ERR(kLogTag, "NEED_TILES not delivered");
+    return;
+  }
+  LOG_INF(kLogTag, "asked for %lu tiles", static_cast<unsigned long>(rowCount_));
+  phase_ = Phase::Running;
+  renderScreen();
+}
+
+void TileSyncActivity::trackPhone() {
+  if (phase_ == Phase::Finished) return;
+  const bool listening = phoneListening();
+  if (listening == drawnPhoneListening_) return;
+  drawnPhoneListening_ = listening;
+
+  if (listening) {
+    hadPhone_ = true;
+    LOG_INF(kLogTag, "phone subscribed, asking");
+    askForTiles();
     return;
   }
 
-  LOG_INF(kLogTag, "asked for %lu tiles", static_cast<unsigned long>(rowCount_));
-  phase_ = Phase::Running;
-  verdict_ = StrId::STR_MAP_FETCH_DONE;
+  // The phone walked away. Whatever was in flight died with the link, and the
+  // screen says so rather than sitting on a bar that will never move again.
+  LOG_INF(kLogTag, "phone gone, back to waiting");
+  phase_ = Phase::Waiting;
   renderScreen();
 }
 
@@ -135,6 +169,7 @@ void TileSyncActivity::loop() {
   // something on a map screen that is not up -- nothing to redraw here.
   ble_.poll();
 
+  trackPhone();
   drainTransferredTiles();
   updateProgress();
 
@@ -142,7 +177,7 @@ void TileSyncActivity::loop() {
 }
 
 void TileSyncActivity::leave() {
-  if (phase_ == Phase::Running) {
+  if (phase_ == Phase::Running && phoneListening()) {
     // The phone is mid-push and has to be told: the device cannot stop it from
     // this end. The transfer channel's abort opcode (0x03) is a frame the
     // *central* writes, so a peripheral's only cancel is a word on the command
@@ -212,7 +247,11 @@ void TileSyncActivity::listRect(int& x, int& y, int& w, int& h) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 2;
+  // Below the header and the two text lines renderScreen() puts there (status,
+  // and the hint while waiting). Reserved whether or not the hint is drawn, so
+  // the list does not jump up and down as the phase changes.
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + lineHeight * 2;
 
   x = metrics.contentSidePadding;
   w = pageWidth - metrics.contentSidePadding * 2;
@@ -342,18 +381,45 @@ void TileSyncActivity::drawList() {
 void TileSyncActivity::renderScreen() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
 
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_TILE_SYNC));
+  // The channel is in the header, not left to be guessed. A rider who opens
+  // this has no way of knowing whether the device wants Bluetooth, WiFi or a
+  // cable, and the answer changes what they go and do about it.
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_TILE_SYNC),
+                 tr(STR_TILE_SYNC_OVER_BLE));
 
-  // One summary line above the list: the list itself shows detail, but "how far
-  // through" should not need counting rows.
   const MapTransferReceiver::Status transfer = transfer_.status();
-  char summary[64];
-  snprintf(summary, sizeof(summary), "%lu / %lu   fail %lu", static_cast<unsigned long>(transfer.completed),
-           static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(skipped_));
-  renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding,
-                    metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing / 2, summary, true);
+  int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing / 2;
+
+  // One line that says what is going on, because "0 / 29" alone cannot tell a
+  // sync that is waiting for a phone from one that has hung.
+  char status[80];
+  switch (phase_) {
+    case Phase::Waiting:
+      // "never turned up" and "was here and left" are different problems --
+      // one is setup, the other is range -- so they get different words.
+      snprintf(status, sizeof(status), "%s",
+               hadPhone_ ? tr(STR_TILE_SYNC_PHONE_LEFT) : tr(STR_TILE_SYNC_WAITING_PHONE));
+      break;
+    case Phase::Running:
+      snprintf(status, sizeof(status), "%lu / %lu   fail %lu", static_cast<unsigned long>(transfer.completed),
+               static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(skipped_));
+      break;
+    case Phase::Finished:
+      snprintf(status, sizeof(status), "%s   %lu / %lu", I18N.get(verdict_),
+               static_cast<unsigned long>(transfer.completed), static_cast<unsigned long>(rowCount_));
+      break;
+  }
+  renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
+  y += lineHeight;
+
+  // While waiting, say what would make it start. A screen that only says
+  // "waiting" leaves the rider with nothing to try.
+  if (phase_ == Phase::Waiting) {
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_WAITING_HINT), true);
+  }
 
   drawList();
 

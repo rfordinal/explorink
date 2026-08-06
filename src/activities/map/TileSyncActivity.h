@@ -88,10 +88,16 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
   void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) override;
 
  private:
+  // Waiting means the device is advertising and nothing has subscribed to the
+  // command channel yet -- no phone, or a phone with the app closed. It is a
+  // state worth showing, not an error: the rider opens this screen first and
+  // the phone catches up a moment later, and a screen that said nothing would
+  // look identical to one that had hung.
+  //
   // Running until arrivals plus skips reach the total; Finished keeps the
-  // verdict on screen until the rider presses Back. A sync that ends on its own
-  // must not silently vanish.
-  enum class Phase : uint8_t { Running, Finished };
+  // verdict up until the rider presses Back, so a sync that ends on its own
+  // does not silently vanish.
+  enum class Phase : uint8_t { Waiting, Running, Finished };
 
   // What one row is doing. Derived per repaint -- see the header comment.
   enum class RowState : uint8_t { Waiting, Active, Done, Skipped };
@@ -122,7 +128,23 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
   // Sends `FETCH_CANCEL` if the sync was still running, then goes home.
   void leave();
 
-  Phase phase_ = Phase::Running;
+  Phase phase_ = Phase::Waiting;
+  // Sends NEED_TILES and moves to Running. Called when the phone subscribes,
+  // and again if it leaves and comes back.
+  void askForTiles();
+  // Watches the command channel's subscription and moves between Waiting and
+  // Running. A phone that walks out of range mid-sync takes the transfer with
+  // it, so the screen goes back to waiting rather than pretending.
+  void trackPhone();
+  // True while a central is subscribed to the command channel.
+  bool phoneListening() const;
+  // Whether the panel currently shows a phone or not, so trackPhone() only
+  // repaints on a real change.
+  bool drawnPhoneListening_ = false;
+  // True once a phone has subscribed at least once this session. Distinguishes
+  // "no phone has ever shown up" from "the phone was here and left", which want
+  // different words: the first is a setup problem, the second is a range one.
+  bool hadPhone_ = false;
   // Which end state Finished is showing. Only read once phase_ is Finished.
   StrId verdict_ = StrId::STR_MAP_FETCH_DONE;
 

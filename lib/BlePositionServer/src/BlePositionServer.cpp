@@ -72,6 +72,15 @@ class CommandCharCallbacks : public NimBLECharacteristicCallbacks {
   void onStatus(NimBLECharacteristic*, NimBLEConnInfo&, int) override {
     if (g_indicateAckSem) xSemaphoreGive(g_indicateAckSem);
   }
+
+  // Whether anybody is listening at all. Same reason the status channel tracks
+  // it (below): NimBLE-Arduino has no getSubscribedCount(), and indicate()
+  // succeeds into an empty room, so this is the only way a screen can tell a
+  // connected phone from no phone.
+  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
+    // bit1 is indications, bit0 notifications. Only indications count here.
+    self().onCommandSubscribe((subValue & 0x0002) != 0);
+  }
 };
 
 // The file transfer data channel. No onStatus here on purpose: this
@@ -219,6 +228,7 @@ bool BlePositionServer::begin(const char* deviceName) {
   commandTail_ = 0;
   portEXIT_CRITICAL(&g_mux);
   transferSubscribed_ = false;
+  commandSubscribed_ = false;
 
   begun_ = true;
   return true;
@@ -242,6 +252,7 @@ void BlePositionServer::end() {
   transferHooks_ = TransferHooks{};
   portEXIT_CRITICAL(&g_mux);
   transferSubscribed_ = false;
+  commandSubscribed_ = false;
 
   // Return the NimBLE host + BT controller RAM to the heap. Retry once if
   // the stack didn't fully tear down, same pattern as BleKeyboardHost::end().
@@ -381,6 +392,11 @@ void BlePositionServer::onTransferSubscribe(bool subscribed) {
   LOG_DBG("BLEPOS", "transfer status %s", subscribed ? "subscribed" : "unsubscribed");
 }
 
+void BlePositionServer::onCommandSubscribe(bool subscribed) {
+  commandSubscribed_ = subscribed;
+  LOG_DBG("BLEPOS", "command channel %s", subscribed ? "subscribed" : "unsubscribed");
+}
+
 void BlePositionServer::onTransferIngest(const uint8_t* data, size_t len) {
   if (!data || len == 0) return;
 
@@ -395,6 +411,12 @@ void BlePositionServer::onTransferIngest(const uint8_t* data, size_t len) {
 }
 
 void BlePositionServer::onCentralDisconnect() {
+  // A subscription belongs to a connection, and NimBLE does not fire
+  // onSubscribe(0) when the link simply drops. Left set, a screen waiting for a
+  // phone would go on believing one is there long after it walked away.
+  commandSubscribed_ = false;
+  transferSubscribed_ = false;
+
   portENTER_CRITICAL(&g_mux);
   const TransferHooks hooks = transferHooks_;
   portEXIT_CRITICAL(&g_mux);
@@ -445,6 +467,7 @@ void BlePositionServer::setTransferHooks(const TransferHooks&) {}
 bool BlePositionServer::sendTransferStatus(const char*) { return false; }
 void BlePositionServer::onTransferIngest(const uint8_t*, size_t) {}
 void BlePositionServer::onTransferSubscribe(bool) {}
+void BlePositionServer::onCommandSubscribe(bool) {}
 void BlePositionServer::onCentralDisconnect() {}
 
 }  // namespace freeink
