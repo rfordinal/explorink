@@ -42,7 +42,25 @@ inline constexpr int16_t kMinMovePx = 8;
 // Windowed refreshes are differential and leave ghosting behind. Force a clean
 // full frame after this many moves -- docs/firmware-implementation-plan.md's
 // open decision 4 ("every 10-20 marker updates, needs on-device tuning").
-inline constexpr uint8_t kMaxPartialMoves = 12;
+inline constexpr uint16_t kMaxPartialMoves = 12;
+
+// The same budget for a frame the route holds, where a forced clean frame is the
+// only thing left that can interrupt a leg (see Request::routeHoldsFrame).
+//
+// A leg costs about `leg length / (kMinMovePx * metres-per-pixel)` marker moves,
+// so this number and the zoom rung are one choice: 160 covers the 3.4 km Baba
+// pass at 3 m/px (142 moves) and anything shorter or coarser comfortably. A leg
+// that would need more has to be drawn at a coarser rung rather than allowed to
+// interrupt.
+//
+// **This number has NOT been checked against real ghosting, and cannot be from
+// the host.** `CMD:SCREENSHOT` dumps the framebuffer, which is clean by
+// construction; ghosting is what the panel does to it, so the only instrument is
+// somebody looking at the panel. docs/route-navigation.md's open list says what
+// to look at. If 160 windowed refreshes in a row turn out to smear, lower this
+// and let the rung rule pick a coarser frame -- the mechanism does not change,
+// only the number.
+inline constexpr uint16_t kRouteFramePartialMoves = 160;
 
 enum class Action : uint8_t {
   // The fix landed close enough to where the marker already is that nothing is
@@ -69,8 +87,27 @@ struct Request {
   // Heading the frame was drawn with, and the heading of the new fix.
   uint8_t anchorHeadingStep = 0;
   uint8_t fixHeadingStep = 0;
-  // Marker moves since the last full frame.
-  uint8_t partialMoves = 0;
+  // Marker moves since the last full frame, and how many are allowed before a
+  // clean one is forced.
+  uint16_t partialMoves = 0;
+  uint16_t partialMoveBudget = kMaxPartialMoves;
+
+  // True while a route owns the frame's orientation, which makes a heading
+  // change no reason at all to redraw -- docs/route-navigation.md, "The
+  // decision".
+  //
+  // The rider is following a planned route, so the frame is oriented to the
+  // route and not to them. Their own direction is still on screen: the marker is
+  // an arrow drawn with relativeHeadingStep() against this frame, so a rider who
+  // turns 90 degrees gets an arrow 90 degrees off up inside a map that has not
+  // moved. Turning the whole picture to say the same thing costs a full-panel
+  // waveform and hands back a map the rider has to re-read.
+  //
+  // Measured on a switchback pass before this existed: three full rotations
+  // across 3.4 km, the last of them back to the orientation the first one had.
+  // On a road that reverses direction every 200 m no drift threshold helps,
+  // because the road really does turn further than any threshold worth having.
+  bool routeHoldsFrame = false;
 };
 
 // Shortest distance between two 16-step headings, in steps (0..8). Wraps: N and

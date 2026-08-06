@@ -145,4 +145,116 @@ TEST(MapFollowDecide, ARunOfFixesFollowsThenReAnchors) {
   EXPECT_GT(reAnchors, 0);
 }
 
+// --- A route holding the frame (docs/route-navigation.md, "The decision") ---
+
+TEST(MapFollowRouteFrame, HeadingNeverReAnchorsWhileTheRouteHoldsTheFrame) {
+  MapFollow::Request request = baseRequest();
+  request.routeHoldsFrame = true;
+  // Fully reversed -- eight steps, the most a heading can drift. On a free-ride
+  // frame this is the strongest possible reason to redraw; here it is no reason
+  // at all, because the frame is the route's and the arrow carries the rider's.
+  request.fixHeadingStep = 8;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::Skip);
+
+  // And it must not sneak back in once the marker is also moving.
+  request.fixX = 240 + MapFollow::kMinMovePx;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::MoveMarker);
+}
+
+TEST(MapFollowRouteFrame, EveryHeadingStepIsIgnored) {
+  // The switchback case: the tangent swings through every step of the ring over
+  // one pass. Not one of them may redraw.
+  for (uint8_t step = 0; step < 16; ++step) {
+    MapFollow::Request request = baseRequest();
+    request.routeHoldsFrame = true;
+    request.fixHeadingStep = step;
+    request.fixX = 240 + MapFollow::kMinMovePx;
+    EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::MoveMarker) << "step " << int(step);
+  }
+}
+
+TEST(MapFollowRouteFrame, RunningOutOfFrameStillReAnchors) {
+  // The one trigger the decision keeps: the rider is about to leave the picture.
+  MapFollow::Request request = baseRequest();
+  request.routeHoldsFrame = true;
+  request.fixY = 800 - MapFollow::kKeepInMarginPx;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
+}
+
+TEST(MapFollowRouteFrame, TheBudgetIsTheRequestsToGive) {
+  MapFollow::Request request = baseRequest();
+  request.routeHoldsFrame = true;
+  request.fixX = 240 + MapFollow::kMinMovePx;
+  request.partialMoveBudget = 40;
+
+  // Past the free-ride budget and still moving the marker: the limit is whatever
+  // the caller asked for, not the constant.
+  request.partialMoves = MapFollow::kMaxPartialMoves + 1;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::MoveMarker);
+
+  request.partialMoves = 39;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::MoveMarker);
+  request.partialMoves = 40;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
+}
+
+TEST(MapFollowRouteFrame, ASwitchbackPassDrawsOneFrame) {
+  // The whole point, end to end. A marker walking across the frame while the
+  // heading reverses repeatedly -- what the 503 over Baba does -- must produce
+  // no redraw at all until the marker runs out of room.
+  //
+  // 60 fixes of 10 px up the screen is 600 px of travel from the ladder anchor
+  // at y=690, so the marker reaches the keep-in edge and that, once, is allowed.
+  MapFollow::Request request = baseRequest();
+  request.routeHoldsFrame = true;
+  request.partialMoveBudget = 200;  // deliberately not the limit under test
+  const uint8_t headings[] = {12, 0, 4, 0, 12, 8, 2, 14};
+  int moves = 0;
+  int reAnchors = 0;
+  for (int i = 0; i < 60; ++i) {
+    request.fixHeadingStep = headings[i % 8];
+    request.fixY = static_cast<int16_t>(request.drawnY - 10);
+    const MapFollow::Action action = MapFollow::decide(request);
+    if (action == MapFollow::Action::ReAnchor) {
+      ++reAnchors;
+      request.drawnX = 240;
+      request.drawnY = 690;
+      request.partialMoves = 0;
+      continue;
+    }
+    ASSERT_EQ(action, MapFollow::Action::MoveMarker) << "fix " << i;
+    ++moves;
+    request.drawnY = request.fixY;
+    request.partialMoves = static_cast<uint16_t>(request.partialMoves + 1);
+  }
+  // Every fix but the handful that ran out of screen moved the marker, and the
+  // redraws that did happen are keep-in ones, not heading ones.
+  EXPECT_GT(moves, 50);
+  EXPECT_LE(reAnchors, 1);
+}
+
+TEST(MapFollowRouteFrame, TheSameRunWithoutTheRouteRedrawsConstantly) {
+  // The control for the test above: identical fixes, routeHoldsFrame false. This
+  // is what the panel actually did before the decision, and it is why the frozen
+  // frame exists.
+  MapFollow::Request request = baseRequest();
+  const uint8_t headings[] = {12, 0, 4, 0, 12, 8, 2, 14};
+  int reAnchors = 0;
+  for (int i = 0; i < 60; ++i) {
+    request.fixHeadingStep = headings[i % 8];
+    request.fixY = static_cast<int16_t>(request.drawnY - 10);
+    if (MapFollow::decide(request) == MapFollow::Action::ReAnchor) {
+      ++reAnchors;
+      request.drawnX = 240;
+      request.drawnY = 690;
+      request.partialMoves = 0;
+      request.anchorHeadingStep = request.fixHeadingStep;
+      continue;
+    }
+    request.drawnY = request.fixY;
+    request.partialMoves = static_cast<uint16_t>(request.partialMoves + 1);
+  }
+  EXPECT_GT(reAnchors, 10);
+}
+
 }  // namespace

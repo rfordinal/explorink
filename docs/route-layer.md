@@ -222,8 +222,19 @@ allocated on demand.
   tiles were missing, hatched down the left of the panel — and the route stayed
   readable over it. Not yet seen with the route itself crossing into the hatched
   area, which is the case that matters.
-- **No console command.** `route` / `overview` would let the fit be exercised over
-  USB serial without touching the picker. The menu row covers it for now.
+- ~~**No console command.**~~ Done 2026-08-07: **`CMD:GOTO_MAP <card path>`** takes
+  an optional route, e.g.
+  `CMD:GOTO_MAP /trailink/trips/baba-serp.tir` (`src/main.cpp`). It goes through the
+  same `ActivityManager::goToMap(path)` the picker uses, so it exercises the load,
+  the fit and the overview for real. With no argument it behaves exactly as before.
+
+  This was not a convenience. Without it the only way to a loaded route is the
+  picker's buttons, so nothing on the route path could be driven or regression-tested
+  from a laptop -- `route-navigation.md`'s ride gate exists because this does.
+
+  One thing it does **not** do: a fix arriving while the overview is up is held by
+  design (see "The overview is not a follow frame"), so a host driving a ride has to
+  ask for the ordinary map first -- any ladder command does it.
 - **A ladder press before the first fix drops the overview to the waiting
   banner.** Any button asking for the ordinary map ends the overview
   (`renderViewport()` / `renderWaiting()`), and with no fix yet the ordinary map

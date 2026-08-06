@@ -1120,7 +1120,7 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
   // there. Whatever redraw the badge was announcing clears it (renderViewport()).
   LOG_DBG(kLogTag, "marker move to %d,%d (h%u rel %u), %u/%u before a clean frame", (int)sx, (int)sy,
           (unsigned)headingStep, (unsigned)MapFollow::relativeHeadingStep(headingStep, anchorHeading_),
-          (unsigned)partialMoves_, (unsigned)MapFollow::kMaxPartialMoves);
+          (unsigned)partialMoves_, (unsigned)partialMoveBudget());
 }
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
@@ -1162,6 +1162,11 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
   request.anchorHeadingStep = anchorHeading_;
   request.fixHeadingStep = headingStep;
   request.partialMoves = partialMoves_;
+  // With a route loaded the frame is the route's and a heading change is not a
+  // reason to redraw it, so the budget is the only thing left that can interrupt
+  // a leg -- and it gets the bigger one (docs/route-navigation.md).
+  request.routeHoldsFrame = routeHoldsFrame();
+  request.partialMoveBudget = partialMoveBudget();
 
   switch (MapFollow::decide(request)) {
     case MapFollow::Action::Skip:
@@ -1210,6 +1215,24 @@ void MapActivity::renderRouteOverview() {
       renderWaiting();
     }
     return;
+  }
+
+  // The fit's answer is the frame the rest of this route is ridden with, not
+  // just the frame being drawn now -- docs/route-navigation.md, "The decision".
+  // Both halves of it are kept:
+  //
+  // - **The heading**, so every later reset draws the route the same way up
+  //   instead of re-orienting to the rider.
+  // - **The rung**, because the fit picked the one this route fits on, and the
+  //   first fix arriving used to throw that away and re-render at whatever was
+  //   persisted from the last ride. Measured on the panel: an overview at 3 m/px
+  //   became 1 m/px on the next fix, one bend of a pass on screen. The rider can
+  //   still step the ladder afterwards; that is an instruction, this is a default.
+  routeFrameHeading_ = fit.heading;
+  routeFrameHeadingValid_ = true;
+  if (fit.zoomStep < MapViewport::kZoomStepCount) {
+    zoomStep_[static_cast<uint8_t>(mode_)] = fit.zoomStep;
+    publishLadders();
   }
 
   // The anchor is the screen centre, not the marker ladder's rung: an overview
@@ -1349,6 +1372,10 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   return missing;
 }
 
+uint8_t MapActivity::frameHeadingFor(uint8_t fixHeadingStep) const {
+  return routeHoldsFrame() ? routeFrameHeading_ : fixHeadingStep;
+}
+
 void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   LOG_DBG(kLogTag, "renderViewport start: lat=%d lon=%d heading=%u seq=%u", (int)latE7, (int)lonE7,
           (unsigned)headingStep, (unsigned)seq);
@@ -1388,7 +1415,15 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // Assumed track-up throughout the design (docs/roadmap.md's "Map rotation
   // model", firmware-implementation-plan.md's follow-up list) and confirmed
   // with the user 2026-08-05.
-  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, headingStep, MapViewport::mppMercFor(zoomStep(), lat));
+  //
+  // **Track-up means the route, not the rider, once a route is loaded**
+  // (docs/route-navigation.md, "The decision"). The rider's heading still
+  // reaches the marker's arrow through relativeHeadingStep() below; what it no
+  // longer does is turn the map. Without this a keep-in reset would quietly
+  // re-orient to whatever the rider was doing at that moment, which is the
+  // rotating map the frozen frame exists to stop.
+  const uint8_t frameHeading = frameHeadingFor(headingStep);
+  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, frameHeading, MapViewport::mppMercFor(zoomStep(), lat));
 
   const MapViewport::TileRange range =
       MapViewport::tileRangeFor(proj_, tileZ, renderer.getScreenWidth(), renderer.getScreenHeight());
@@ -1408,7 +1443,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // in raw screen direction (MapRenderer.cpp's kHeadingDir, not
   // rotation-aware), so anything but agreement here has the two disagreeing
   // about which way is up.
-  view.heading = static_cast<MapHeading>(headingStep & 0x0F);
+  view.heading = static_cast<MapHeading>(frameHeading & 0x0F);
   // Buildings are a rung decision (MapViewport::ZoomStep::buildings): only the
   // closest rung draws them, and on every other rung the layer is never opened.
   view.drawBuildings = MapViewport::kZoomLadder[zoomStep()].buildings;
@@ -1442,7 +1477,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's
   // heading, which is the only heading it is ever correct for.
-  drawCompass(headingStep);
+  // The frame's heading, not the fix's: the compass says which way the picture
+  // is turned, and with a route holding the frame that is the route's direction.
+  drawCompass(frameHeading);
   drawHeaderStatus();
 
   // Does not count the marker or its patch save, both of which happen after the
@@ -1537,7 +1574,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // background and restoring it later erases the marker with nothing left
   // behind. Draw it any earlier and a marker low on the screen would come back
   // with the hints painted through it.
-  anchorHeading_ = headingStep;
+  anchorHeading_ = frameHeading;
   markerDrawnX_ = view.markerX;
   markerDrawnY_ = markerY;
   partialMoves_ = 0;

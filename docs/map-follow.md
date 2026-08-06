@@ -23,12 +23,14 @@ are in "What the ride measured" below; anything still unmeasured says so.
 > number on `kMaxPartialMoves`: at 12 the marker crosses 18 % of the screen it was
 > given before a full frame is forced.
 >
-> **Decided 2026-08-06: with a route loaded, heading drift will not re-anchor at
-> all.** Check 1 below becomes route-mode-only-off, leaving keep-in as the single
-> trigger, because the marker's arrow is already drawn relative to the frame and so
-> carries the heading without turning the map. Do not treat check 1's ordering
-> argument as settled for route mode -- read `route-navigation.md`, "The decision",
-> before touching this ladder.
+> **Since 2026-08-07, check 1 does not apply when a route is loaded.**
+> `Request::routeHoldsFrame` turns it off, leaving keep-in and the budget as the
+> only triggers, because the marker's arrow is already drawn relative to the frame
+> and carries the heading without turning the map. Verified on the panel: the same
+> 136 fixes over a switchback pass gave 11 full redraws and 9 different frame
+> orientations without a route, and 0 redraws in 1 orientation with one. So the
+> table below describes **free-ride** behaviour; read `route-navigation.md` before
+> touching this ladder.
 
 ## Why
 

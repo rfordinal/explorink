@@ -6,10 +6,12 @@ are `route-layer.md`; the follow-or-redraw decision is `map-follow.md`. This fil
 is the layer above both: **which frame should be on the panel while a route is
 being ridden, and how often it may change.**
 
-Written 2026-08-06, then corrected the same day against real hardware. The
-re-anchor counts are still simulated on the laptop; **the frame costs and the
-overview's own choices are now measured on the panel.** Every claim below says
-which kind it is.
+Written 2026-08-06, corrected the same day against hardware, and **implemented and
+verified on the panel 2026-08-07** (see the next section). Frame costs, re-anchor
+counts and the overview's own choices are all measured on the device now. The
+laptop simulation is kept where it predicts something no ride has covered, and says
+so. One thing remains genuinely unmeasured -- panel ghosting -- and it cannot be
+measured from a host at all; see the open list.
 
 Three things in the first draft were wrong and are corrected in place:
 
@@ -50,6 +52,44 @@ decision.
 | ghosting budget | `kMaxPartialMoves` (`:45`) | 12 moves |
 
 and skips a fix that moves the marker under `kMinMovePx` (`:40`), 8 px.
+
+## Built and verified on the panel, 2026-08-07
+
+The decision below is **implemented and measured on the X4**. What landed:
+
+- `MapFollow::Request::routeHoldsFrame` turns the heading-drift check off, so with
+  a route loaded only keep-in and the budget can re-anchor (`MapFollow.cpp`).
+- `MapActivity::frameHeadingFor()` makes the frame's "up" the route's direction, so
+  a re-anchor that does happen hands back the **same** orientation. Everything that
+  must agree about up -- the projection, `MapViewState::heading`, the compass and
+  `anchorHeading_` -- goes through that one answer.
+- The overview's rung is kept as well as its heading. It used to be thrown away by
+  the first fix: measured beforehand, a 3 m/px overview became 1 m/px on the next
+  fix, one bend of the pass on screen.
+- `kRouteFramePartialMoves` (160) is the budget while a route holds the frame.
+- `CMD:GOTO_MAP <path>` takes an optional route path, which is what makes any of
+  this testable from a laptop -- see `route-layer.md`.
+
+**The gate**, three runs of the same 136 positions along the 3.4 km Baba leg at
+25 m spacing, same firmware, on hardware:
+
+| run | full redraws | of those, caused by heading | distinct frame orientations |
+|---|---|---|---|
+| route loaded, rung the fit chose | **0** | **0** | **1** |
+| route loaded, forced to 1 m/px | 6 (all keep-in) | **0** | **1** |
+| **no route** (the control) | 11 (8 budget, 3 heading) | 3 | 9 |
+
+The route tangent went through 11 of the 16 heading steps in every run, so the
+rider really was turning. Heap drift across a whole ride: **0 bytes**.
+
+The middle row is the one worth reading twice. Forced to a rung the leg does not
+fit, the marker runs out of frame six times and gets six new frames -- and every
+one of them is the same way up. The decision is not "never redraw"; it is "never
+redraw because the rider turned, and never hand back a differently-oriented map".
+
+Panel shots of a whole traverse, one frame with the marker walking across it, are
+`build/analysis/D9-po-zmene-jeden-frame.png` in the parent repo (gitignored,
+regenerate it).
 
 ## The decision: while a leg is on screen, it does not get redrawn
 
@@ -417,16 +457,24 @@ layout; it was never built.
 
 ## Open, and what would settle it
 
-- **What the largest usable ghosting budget is.** The one thing blocked on
-  hardware, and now the whole decision rests on it: "no redraw while the leg is on
-  screen" is only deliverable if the budget covers the leg. Note the question has
-  changed shape -- it is no longer "is 67 acceptable" but "what is the ceiling",
-  because the rung can be chosen to fit whatever the answer is (see the moves-per-leg
-  formula above). Measurement: replay one leg with `kMaxPartialMoves` at 12, 30, 67
-  and unbounded, and photograph the panel at the end of each. What is being judged is
-  the *accumulated* ghosting after N windowed refreshes with no clean frame between
-  them, so the photograph at the end is the whole measurement -- do not judge it
-  mid-leg.
+- **What the largest usable ghosting budget is. `kRouteFramePartialMoves` is 160
+  on no evidence at all.** It is enough to cover the Baba leg at 3 m/px, which is
+  why the gate shows zero redraws; whether 160 windowed refreshes in a row leave a
+  readable panel is unknown.
+
+  **And it cannot be measured from a host.** `CMD:SCREENSHOT` dumps the
+  framebuffer, which is clean by construction -- ghosting is what the panel does to
+  a frame, not what the frame contains, so every screenshot of a badly ghosted
+  panel looks perfect. The only instrument is a person looking at the device, or a
+  camera pointed at it. That is worth knowing before anyone plans to gate this in
+  CI.
+
+  What to do: ride a leg with the value at 12, 40, 80 and 160 (one constant,
+  `MapFollow.h`), and **look at the panel at the end of each** -- the quantity is
+  accumulated ghosting after N windowed refreshes with no clean frame between them,
+  so a glance part way through measures nothing. If 160 smears, lower it; the
+  moves-per-leg formula then says which rung a leg of a given length has to be
+  drawn at, and the mechanism does not change.
 - **A leg longer than the budget can hold has no good answer yet.** The formula
   gives a coarser rung, and coarsening has a floor: past some length the leg does not
   fit the panel at any rung (`route-layer.md`, "When nothing fits") and the frame has
