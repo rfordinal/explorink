@@ -182,7 +182,8 @@ information and does not earn an SD write.
 ## Asking the phone to fill the gaps
 
 **Sync map tiles** in the home menu, which opens `TileSyncActivity`
-(`src/activities/map/TileSyncActivity.{h,cpp}`). What happens, in order:
+(`src/activities/map/TileSyncActivity.{h,cpp}`). Verified end to end on hardware
+2026-08-06 -- see "Verified vs assumed" at the end. What happens, in order:
 
 1. The store is sorted into fetch priority and its size is the fetch's total.
 2. The skip tally is cleared, so the failure count on screen belongs to this
@@ -361,6 +362,91 @@ badge. Per chunk would spend the transfer refreshing instead of receiving.
 BACK cancels. The device cannot stop the phone from its end -- the transfer
 protocol's abort opcode (`0x03`) is a frame the *central* writes -- so the
 cancel is `FETCH_CANCEL` on the command channel.
+
+## Getting the file itself off the device
+
+**Not reachable via WebDAV / the WiFi file manager.** `WebDAVHandler::isProtectedPath()`
+rejects any path with a segment starting with `.`, `/.crosspoint/...`
+included (`src/network/WebDAVHandler.cpp:774-782`) -- verified by reading
+the guard, not tested against a live server. So the raw
+`missing_tiles.json` still needs an SD card pull, the same channel already
+used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
+`missing` command above is the over-the-air path and does not need the file.
+
+## Verified vs assumed
+
+- **Verified on hardware, over USB serial (2026-08-06, build
+  `develop-41e1a6e3`).** Gaps were made on purpose by sending `pos` to empty
+  country at three zoom steps, then reading the list back:
+  - `INFO tile_fmt=2` in `info`.
+  - Recording works across viewport resets and across LODs: 7 entries after
+    three resets, 29 after thirteen.
+  - **Priority order is what it claims.** With 7 entries the reply was 4x z12
+    (regional) first, then z11 (overview), then 2x z13 (detail) -- and inside
+    z12, all at count 1, ascending by col then row, which is the total-order
+    tiebreak doing its job.
+  - **Count-descending inside a tier**: after a tile was hatched twice,
+    `missing_13_4496_2826=2` sorted ahead of every count-1 z13 entry.
+  - **Paging**: at 29 entries, page 0 printed exactly 20 and answered
+    `missing_next=20`; `missing 20` printed the remaining 9 and
+    `missing_next=done`. Order held across the page boundary.
+  - **An offset past the end** answers `missing_total=29`,
+    `missing_offset=20`, `missing_next=done`, `OK` -- an empty page, not an
+    error, which is what makes a paging loop's last request harmless.
+- **Verified on the host**: the `unavailable` case, page-0-only ordering, the
+  `skip` verb, its tally and its per-tile observer, the priority policy in isolation and the tile-path
+  parse (`test/map_command_parser/MapCommandParserTest.cpp`,
+  `test/missing_tile_priority/MissingTilePriorityTest.cpp`,
+  `test/map_tile_path/MapTilePathTest.cpp`; 247 tests green across the whole
+  suite, 2026-08-06).
+- **Verified**: compiles clean (`pio run`, default env, 2026-08-05); RAM cost
+  is 200 x `sizeof(MissingTileHit)` (~16 bytes with padding) plus
+  `std::vector` overhead, well inside headroom (build reported 17.6% DRAM
+  used overall). Read off the code, not measured on hardware: the
+  `isProtectedPath` block above, and the throttle's actual behaviour on a
+  real ride.
+- **Verified end to end on hardware, 2026-08-06** (build `develop-d02a5faf`,
+  format v3, tiles served by the live CDN and pushed by the phone over BLE):
+  - The whole chain ran: `NEED_TILES 10 fmt 3` out, the list paged back, the
+    phone fetched from `tiles.trailink-app.com/v3/` over LTE, and **5 tiles
+    landed with their CRC verified** -- 322 kB in 43 s. The other 5 came back
+    `skip ... nosource` because the CDN genuinely does not hold them, and each
+    arrival cleared its own entry from the store.
+  - **The connection interval is the transfer's ceiling, and the phone can move
+    it.** Logged on the device: connected at 24 units (30 ms), then 12 units
+    (15 ms) one second later when the app asked for a high-priority link, then
+    back to 30 ms in the same second the fetch ended. Throughput went from
+    **2.4 kB/s to 7.4 kB/s** -- 3.1x, and the MTU (256, 248 B per chunk) had not
+    changed between the two runs. The scoping works: the fast interval is held
+    for the fetch and no longer.
+  - The panel's own numbers were wrong twice before they were right, both times
+    caught by looking at the screen rather than the code -- see "What the panel
+    shows" below.
+- **Still not verified**: a page of 20 `missing` replies over BLE (this run's
+  list was 10, so the indication burst was never near the page size), and a
+  transfer interrupted mid-file by a real link drop.
+
+## What the panel shows, and two mistakes it took to get there
+
+Both were numbers that were **true and still misleading**, which is the failure
+mode worth remembering here:
+
+1. **A stray percentage under the list.** `BaseTheme::drawProgressBar` always
+   writes a centred percentage 15 px below its bar -- right for the single large
+   bar it was written for (`FontDownloadActivity`), wrong for a list. Ten
+   6-pixel row bars produced ten labels, each landing on the next row's text and
+   each erased by the next row's fill, leaving one number under the list that
+   read as overall progress and was actually the last row's state. It sat at 0%
+   for a whole run. Rows now draw their own outline and fill, with no label.
+2. **A full bar on a run that transferred nothing.** The overall bar counted
+   *settled* tiles, and a tile the supplier does not have settles the run -- so
+   0 landed of 5 read as 100%. It counts arrivals now, and the unavailable count
+   is stated in the line above where it cannot be read as progress. Measured
+   after the fix: `Fetch finished 0 / 5   5 not available   0 B`, bar at 0%.
+
+Also: a tile the supplier lacks is shown as **"not available"**, not "skipped".
+The wire verb stays `skip` -- that is the protocol -- but from the rider's side
+nothing was skipped, and "skipped" reads as a choice somebody made.
 
 ## Getting the file itself off the device
 
