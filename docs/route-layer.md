@@ -39,6 +39,11 @@ tooling is unaffected.
 
 ## The overview fit
 
+> The same fit run over **one leg** of a route rather than the whole of it is what
+> [`route-navigation.md`](route-navigation.md) proposes as the frame to ride with.
+> That file also has the numbers for why the ordinary follow frame is the wrong
+> one on a pass.
+
 `MapRouteFit` answers "which zoom rung and which heading show the most of this
 route". Unit-tested on the host (`test/map_route/MapRouteTest.cpp`) and
 **confirmed on the panel**: a 71-point route running north-east came out at
@@ -104,6 +109,38 @@ exist — see `docs/map-data-spec.md` open question 1 in the parent repo.
   held (`MapActivity.cpp:943`). The phone sends one every five seconds, so
   redrawing would snatch the overview away before it could be read, and pay a full
   refresh to do it.
+
+## Do not overwrite a route the map has open
+
+**Measured on hardware 2026-08-06.** Pushing a `.tir` over BLE to a path the map
+screen already has open **silently stops the route drawing**. Not an error, not a
+banner: the route simply is not there any more, on that frame and every frame
+after it, until the route is picked again from the picker.
+
+The mechanism is the file handle. `load()` opens the route once and keeps it open
+for the life of the screen -- that is the whole design, so a viewport reset seeks
+back instead of reopening (`MapRouteSource.h`, "The file stays open"). A BLE push
+writes the same path through a second handle underneath it. After that the reader's
+seeks land in a file it no longer has a coherent view of,
+`MapRouteSource::nextRoutePoint()` returns false, and false is defined as "end the
+polyline here" (`IMapRouteSource.h`) -- which for a failure on the first point
+means draw nothing at all.
+
+Drawing nothing is the right call for a truncated read: half a route ends
+somewhere it does not. It is a bad failure to *diagnose*, because the frame looks
+exactly like a frame with no route loaded, and the route name still sits in the
+status line.
+
+Two ways round it, both on the laptop side:
+
+- **Push under a new name** and pick that one. Cheapest, and it keeps the old file
+  as a fallback.
+- **Leave the map screen first**, so `onExit()` closes the file, then push.
+
+`CLAUDE.md`'s "Close before reopen" rule is the same hazard, one layer down. Worth
+a guard on the device eventually -- the transfer path knows the destination path
+and `MapRouteSource` knows what it has open -- but nothing here is broken enough to
+justify it before the console command below exists.
 
 ## Drawing
 
