@@ -1430,13 +1430,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
            static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->waysEmitted()),
            static_cast<unsigned long>(elapsedMs));
   drawDebugLine(kTextLine2Y, line);
-  if (showingPersistedFix_) {
-    // Still the fix loaded off the card in onEnter() -- nothing from BLE or
-    // the console has landed yet this session. Cleared the moment one does
-    // (see loop()'s BLE/console branches).
-    snprintf(line, sizeof(line), "%s", tr(STR_MAP_LAST_KNOWN_WAITING_BLE));
-    drawDebugLine(kTextLine3Y, line);
-  } else if (routePath_[0] != '\0' && !route_) {
+  if (routePath_[0] != '\0' && !route_) {
     // The rider picked a route and there is none on screen. The picker only
     // checks each file's header, so a route whose point array fails its own crc
     // gets this far -- and an empty map with no explanation reads as a bug in
