@@ -17,6 +17,30 @@ device what it is short of and push those tiles back
 > screen no longer clear this list at all, so the next sync asks the phone for
 > tiles the card already holds (a regression from `412e0ed9`).
 
+## A valid tile can still be a hole
+
+`MapTileSource` counts a tile as unavailable when it has **no geometry in any
+layer** (`MapTileReader::hasAnyGeometry()`), not only when it fails to open.
+
+Such tiles exist on cards built before 2026-08-06. mapbuilder padded its fetch
+bbox out to the coarsest LOD's tile grid but took tile identity from the
+geometry, so every tile the padded extract happened to touch was written --
+producing a ring of tiles holding one clipped sliver, or nothing at all
+(../../docs/map-data-spec.md, "A tile is written only where the build was asked
+to cover"). The builder no longer does this; the check stays because the cards
+do.
+
+Why it must count as unavailable rather than draw: the file is valid, so every
+crc passes and nothing would hatch, `unavailableMask()` would stay clear, and no
+entry would reach this store. The panel would show white -- **empty countryside**
+-- over a square that is 13 km across at z11 and has never been surveyed. Hatch
+says "no data here", which is the truth, and it is also the only state that gets
+the tile onto the missing list where a fetch can ask for it.
+
+The trade, stated plainly: a genuinely empty tile -- mid-lake, unmapped forest --
+now hatches too. That is the safer of the two wrong answers. "No data" invites a
+fetch; "empty countryside" invites riding into it.
+
 ## Where a hit comes from
 
 `MapTileSource::unavailableMask()` already knows which tiles in the current

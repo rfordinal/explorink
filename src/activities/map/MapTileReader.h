@@ -80,6 +80,24 @@ class MapTileReader {
   uint32_t osmEpoch() const { return osmEpoch_; }
 
   bool hasLayer(Layer layer) const;
+
+  // True when at least one layer in this tile holds bytes.
+  //
+  // A tile can be perfectly valid and hold nothing at all -- header, layer
+  // directory, no geometry, 114 bytes. mapbuilder used to emit those around the
+  // edge of a build, because the fetch bbox is padded out to the coarsest LOD's
+  // tile grid while the data is not (mapbuilder/build_tiles.py). A z11 tile is
+  // 13 km across, so one of those covers a large area of real roads with
+  // nothing in it.
+  //
+  // That is a data hole, and it must not read as empty countryside: white means
+  // "nothing is there", hatch means "no data here". Reading the two the same way
+  // is how a rider rides into a gap thinking it was surveyed. MapTileSource
+  // treats a tile with no geometry as unavailable for exactly that reason.
+  //
+  // Free to call: the layer directory is already parsed by open(), so this
+  // touches no bytes on the card.
+  bool hasAnyGeometry() const;
   uint32_t layerLength(Layer layer) const;
 
   // Validates that layer's own crc32 -- a second full pass over just its

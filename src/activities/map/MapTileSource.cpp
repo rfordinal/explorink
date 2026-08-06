@@ -77,6 +77,23 @@ bool MapTileSource::advanceToNextTile() {
       continue;
     }
 
+    if (!reader_.hasAnyGeometry()) {
+      // Valid tile, nothing in any layer -- a data hole wearing a tile's
+      // clothes. Counted as unavailable so it hatches and reaches
+      // MissingTilesStore, because "no data here" is what it actually is;
+      // drawing it white would say "empty countryside" and nothing downstream
+      // would ever know to ask for it (MapTileReader::hasAnyGeometry).
+      //
+      // The trade this accepts: a tile that is genuinely empty -- mid-lake,
+      // unmapped forest -- now hatches too. That is the safer of the two wrong
+      // answers, and mapbuilder no longer writes empty tiles at all, so the
+      // case this fires on is an older card.
+      closeCurrentTile();
+      ++tilesUnavailable_;
+      if (index < 32) unavailableMask_ |= (1u << index);
+      continue;
+    }
+
     if (!reader_.hasLayer(layer_)) {
       // Real, header-valid tile, just nothing in this layer. The layer
       // directory made skipping it free, and an empty layer is not a

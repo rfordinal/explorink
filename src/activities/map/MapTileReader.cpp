@@ -162,6 +162,13 @@ bool MapTileReader::hasLayer(Layer layer) const {
   return e != nullptr && e->length > 0;
 }
 
+bool MapTileReader::hasAnyGeometry() const {
+  for (uint8_t i = 0; i < layerCount_; ++i) {
+    if (layers_[i].length > 0) return true;
+  }
+  return false;
+}
+
 uint32_t MapTileReader::layerLength(Layer layer) const {
   const LayerEntry* e = findLayer(layer);
   return e ? e->length : 0;
