@@ -141,6 +141,34 @@ class MapTileReader {
   };
   LayerCheck layerCheck() const { return layerCheck_; }
 
+  // The cell grid a version-3 index divides a tile into, and the always-read slot
+  // past it. Mirrors mapbuilder/tiles.py's CELL_GRID and SPANS_MANY_BUCKET; the
+  // two must agree or the reader walks the wrong entries.
+  static constexpr uint32_t kCellGrid = 8;
+  static constexpr uint32_t kCellCount = kCellGrid * kCellGrid;
+  static constexpr uint32_t kSpansManyBucket = kCellCount;
+  static constexpr uint32_t kIndexSlots = kCellCount + 1;
+
+  // Open a layer but read only the cells covering [col0..col1] x [row0..row1],
+  // plus the always-read bucket. Column and row are cell coordinates, 0-based,
+  // clamped internally.
+  //
+  // Falls back to the whole layer when it carries no index, so a caller can ask
+  // for a window unconditionally and get correct geometry either way -- the only
+  // difference is how many bytes it costs.
+  //
+  // The checksum is per cell here, not per layer: a reader that seeks past two
+  // thirds of a layer cannot produce the layer's own sum, so version 3 puts one
+  // on each cell. Whatever is read is still checked
+  // (docs/map-data-spec.md, "Version 3: a cell index per layer").
+  bool beginLayerCells(Layer layer, uint32_t col0, uint32_t col1, uint32_t row0, uint32_t row1);
+
+  // Cells whose bytes this layer pass skipped, and the bytes they held. Zero for
+  // an unindexed layer. Frame-scoped accounting for the caller; reset by every
+  // beginLayer/beginLayerCells.
+  uint32_t cellsSkipped() const { return cellsSkipped_; }
+  uint32_t bytesSkipped() const { return bytesSkipped_; }
+
   // Reads one way record's fixed header. Follow with readWayPoints() for
   // exactly `out.pointCount` points before reading the next way header.
   bool readWayHeader(WayHeader& out);
@@ -228,7 +256,7 @@ class MapTileReader {
   // dropped from the missing list -- and is then rejected by the reader on the
   // next render and recorded as missing all over again. The transfer is not
   // wasted once; it is wasted on every fetch.
-  static constexpr uint16_t kFormatVersion = 2;
+  static constexpr uint16_t kFormatVersion = 3;
 
  private:
   struct LayerEntry {
@@ -236,6 +264,13 @@ class MapTileReader {
     uint32_t offset = 0;
     uint32_t length = 0;
     uint32_t crc32 = 0;
+    // Where this layer's cell index sits in the file, and how long it is. Both
+    // zero when the layer has none, which means "read it whole" -- the writer
+    // leaves small layers unindexed because 780 bytes of index is not worth it
+    // against a 9 KB landuse layer (mapbuilder/tiles.py,
+    // MIN_INDEXED_LAYER_BYTES).
+    uint32_t indexOffset = 0;
+    uint32_t indexLength = 0;
   };
 
   bool parseHeader();
@@ -249,6 +284,11 @@ class MapTileReader {
   // a real SD transaction, and open() walks the directory. Both belong in
   // takeIoUs() or the number is only part of the story.
   bool seekCounted(uint32_t offset);
+  // Reads the open layer's cell index into cells_. False when the layer has none
+  // or the index is the wrong size for its slot count.
+  bool loadCellIndex(const LayerEntry& entry);
+  // Positions the stream at the next wanted cell, or reports the layer done.
+  bool advanceToNextCell();
   bool openCounted(const char* path);
 
   IFileSource* file_ = nullptr;
@@ -275,6 +315,24 @@ class MapTileReader {
   uint32_t streamCrc_ = 0;
   uint32_t streamCrcExpected_ = 0;
   LayerCheck layerCheck_ = LayerCheck::NotFinished;
+
+  // The open layer's cell index, when it has one. 65 slots at 12 bytes is 780
+  // bytes -- held rather than re-read per cell, because MapTileSource is
+  // heap-allocated once per session (MapActivity::onEnter) and 780 bytes against
+  // its ~5.5 KB buys one file read per layer instead of 65.
+  struct CellEntry {
+    uint32_t offset = 0;  // relative to the layer's own offset
+    uint32_t length = 0;
+    uint32_t crc32 = 0;
+  };
+  CellEntry cells_[kIndexSlots];
+  bool cellsValid_ = false;
+  // The window this pass wants, in cell coordinates, plus where the walk is.
+  uint32_t wantCol0_ = 0, wantCol1_ = 0, wantRow0_ = 0, wantRow1_ = 0;
+  uint32_t nextCellSlot_ = 0;
+  uint32_t layerBaseOffset_ = 0;
+  uint32_t cellsSkipped_ = 0;
+  uint32_t bytesSkipped_ = 0;
   uint32_t bytesRead_ = 0;
   uint32_t (*nowUs_)() = nullptr;
   uint32_t ioUs_ = 0;

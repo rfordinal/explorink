@@ -12,6 +12,7 @@
 // neighbour, which doubles as coverage for the missing-tile path.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -491,6 +492,104 @@ TEST(MapMarkerLadder, EveryRungIsOnScreenAndMovesThePicture) {
   // byte out of a settings file a user can edit.
   EXPECT_EQ(MapViewport::markerYForStep(-1), MapViewport::kMarkerLadder[0]);
   EXPECT_EQ(MapViewport::markerYForStep(99), MapViewport::kMarkerLadder[MapViewport::kMarkerStepCount - 1]);
+}
+
+TEST(MapCellIndex, AWindowReadsFewerBytesAndTheSameRecords) {
+  // The indexed fixture is the same tile with an index forced onto its small
+  // layers (mapbuilder/tiles.py, build_indexed_layer's min_bytes) -- a
+  // realistically-sized one would be a 430 KB file in the repo.
+  const std::string indexed = fixturesDir() + "/indexed-sd/base/13/4484/2829.tib";
+
+  // Whole layer, for the reference set.
+  StdioFileSource wholeFile;
+  MapTileReader whole;
+  ASSERT_TRUE(whole.open(wholeFile, indexed.c_str()));
+  ASSERT_TRUE(whole.beginLayer(MapTileReader::Layer::Buildings));
+  std::vector<std::string> allRecords;
+  {
+    int16_t xs[MapTileReader::kMaxWayPoints];
+    int16_t ys[MapTileReader::kMaxWayPoints];
+    MapTileReader::WayHeader header;
+    while (whole.readWayHeader(header)) {
+      if (!whole.readWayPoints(xs, ys, header.pointCount)) break;
+      std::string key;
+      for (uint16_t i = 0; i < header.pointCount; ++i) {
+        key += std::to_string(xs[i]) + "," + std::to_string(ys[i]) + ";";
+      }
+      allRecords.push_back(key);
+    }
+  }
+  EXPECT_EQ(whole.layerCheck(), MapTileReader::LayerCheck::Passed);
+  ASSERT_FALSE(allRecords.empty());
+  EXPECT_EQ(whole.cellsSkipped(), 0u) << "a whole-layer read skips nothing";
+
+  // The whole window: every cell wanted. Must produce exactly the same records,
+  // and skip nothing.
+  StdioFileSource allCellsFile;
+  MapTileReader allCells;
+  ASSERT_TRUE(allCells.open(allCellsFile, indexed.c_str()));
+  ASSERT_TRUE(allCells.beginLayerCells(MapTileReader::Layer::Buildings, 0, MapTileReader::kCellGrid - 1, 0,
+                                       MapTileReader::kCellGrid - 1));
+  std::vector<std::string> windowed;
+  {
+    int16_t xs[MapTileReader::kMaxWayPoints];
+    int16_t ys[MapTileReader::kMaxWayPoints];
+    MapTileReader::WayHeader header;
+    while (allCells.readWayHeader(header)) {
+      if (!allCells.readWayPoints(xs, ys, header.pointCount)) break;
+      std::string key;
+      for (uint16_t i = 0; i < header.pointCount; ++i) {
+        key += std::to_string(xs[i]) + "," + std::to_string(ys[i]) + ";";
+      }
+      windowed.push_back(key);
+    }
+  }
+  EXPECT_EQ(allCells.cellsSkipped(), 0u);
+  std::sort(allRecords.begin(), allRecords.end());
+  std::sort(windowed.begin(), windowed.end());
+  EXPECT_EQ(windowed, allRecords) << "the full window must be the whole layer, record for record";
+
+  // One cell only: fewer bytes, and every record it returns must be one the whole
+  // layer had. This is the property the index lives or dies on -- it may return
+  // less, it may never invent or corrupt.
+  StdioFileSource oneCellFile;
+  MapTileReader oneCell;
+  ASSERT_TRUE(oneCell.open(oneCellFile, indexed.c_str()));
+  ASSERT_TRUE(oneCell.beginLayerCells(MapTileReader::Layer::Buildings, 0, 0, 0, 0));
+  size_t narrowCount = 0;
+  {
+    int16_t xs[MapTileReader::kMaxWayPoints];
+    int16_t ys[MapTileReader::kMaxWayPoints];
+    MapTileReader::WayHeader header;
+    while (oneCell.readWayHeader(header)) {
+      if (!oneCell.readWayPoints(xs, ys, header.pointCount)) break;
+      std::string key;
+      for (uint16_t i = 0; i < header.pointCount; ++i) {
+        key += std::to_string(xs[i]) + "," + std::to_string(ys[i]) + ";";
+      }
+      EXPECT_NE(std::find(allRecords.begin(), allRecords.end(), key), allRecords.end())
+          << "a windowed read returned a record the whole layer does not have";
+      ++narrowCount;
+    }
+  }
+  EXPECT_GT(oneCell.cellsSkipped(), 0u) << "one cell of 64 must skip the rest";
+  EXPECT_GT(oneCell.bytesSkipped(), 0u);
+  EXPECT_LT(narrowCount, allRecords.size()) << "and it must return fewer records than the whole layer";
+}
+
+TEST(MapCellIndex, AnUnindexedLayerFallsBackToTheWholeLayer) {
+  // The committed fixture carries no index -- every layer is far under the
+  // writer's threshold. Asking for one cell of it must still return everything,
+  // because correctness cannot depend on whether the writer thought an index was
+  // worth it.
+  StdioFileSource file;
+  MapTileReader reader;
+  ASSERT_TRUE(reader.open(file, (fixturesDir() + "/tiny-sd/base/13/4484/2829.tib").c_str()));
+  ASSERT_TRUE(reader.beginLayerCells(MapTileReader::Layer::Roads, 0, 0, 0, 0));
+  drainWayLayer(reader);
+  EXPECT_EQ(reader.layerCheck(), MapTileReader::LayerCheck::Passed) << "and the layer's own sum still checks";
+  EXPECT_EQ(reader.cellsSkipped(), 0u);
+  EXPECT_EQ(reader.bytesSkipped(), 0u);
 }
 
 TEST(MapBuildingsPerRung, OnlyTheClosestRungDrawsThemAndSkippingThemSkipsTheRead) {

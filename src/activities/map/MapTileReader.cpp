@@ -11,16 +11,17 @@ namespace {
 // build_epoch(4) osm_epoch(4) header_crc32(4) layer_count(1). Field offsets
 // below are that layout's cumulative sums -- change one, change all after it.
 //
-// Format version 2: header_crc32 covers only these 36 bytes plus the layer
+// Format version 3: header_crc32 covers only these 36 bytes plus the layer
 // directory that follows (with header_crc32 itself zeroed while computing),
-// not the whole file. Each directory entry is 13 bytes -- id, offset,
-// length, and that layer's own crc32 -- up from version 1's 9 (no
-// per-layer crc). A reader must check the version before trusting the
-// directory's shape at all: parsing a v1 file's 9-byte entries as v2's
-// 13-byte ones produces plausible-looking garbage offsets, not an error.
+// not the whole file. Each directory entry is 21 bytes -- id, offset, length,
+// that layer's own crc32, and where its cell index lives (offset, length; both
+// zero when the layer has none). Version 2's entries were 13 bytes and version
+// 1's 9. A reader must check the version before trusting the directory's shape
+// at all: parsing one version's entries at another's width produces
+// plausible-looking garbage offsets, not an error.
 constexpr size_t kHeaderFixedLen = 36;
 constexpr size_t kCrcFieldOffset = 31;  // struct.calcsize("<4sHBIIiiII")
-constexpr size_t kDirEntryLen = 13;     // <BIII>
+constexpr size_t kDirEntryLen = 21;     // <BIIIII>
 constexpr uint8_t kMagic[4] = {'T', 'I', 'B', '1'};
 
 }  // namespace
@@ -131,6 +132,8 @@ bool MapTileReader::parseHeader() {
     std::memcpy(&out.offset, &entry[1], sizeof(out.offset));
     std::memcpy(&out.length, &entry[5], sizeof(out.length));
     std::memcpy(&out.crc32, &entry[9], sizeof(out.crc32));
+    std::memcpy(&out.indexOffset, &entry[13], sizeof(out.indexOffset));
+    std::memcpy(&out.indexLength, &entry[17], sizeof(out.indexLength));
   }
   return true;
 }
@@ -174,18 +177,116 @@ bool MapTileReader::beginLayer(Layer layer, const bool skipCrc32) {
   streamCrc_ = MapCrc32::kInit;
   streamCrcExpected_ = e->crc32;
   layerCheck_ = skipCrc32 ? LayerCheck::Skipped : LayerCheck::NotFinished;
+  // Whole-layer read: no cell walk, and the sum being checked is the layer's own.
+  cellsValid_ = false;
+  cellsSkipped_ = 0;
+  bytesSkipped_ = 0;
   return true;
+}
+
+bool MapTileReader::loadCellIndex(const LayerEntry& entry) {
+  cellsValid_ = false;
+  if (entry.indexLength == 0) return false;
+
+  // 1 slot-count byte plus 12 per slot -- the shape mapbuilder writes
+  // (docs/map-data-spec.md, "Version 3"). A length that disagrees means the file
+  // and this reader disagree about the format, which is not something to guess
+  // through: fall back to reading the layer whole.
+  if (!seekCounted(entry.indexOffset)) return false;
+  uint8_t slotCount = 0;
+  if (readCounted(&slotCount, 1) != 1) return false;
+  if (slotCount != kIndexSlots) return false;
+  if (entry.indexLength != 1u + kIndexSlots * 12u) return false;
+
+  for (uint32_t slot = 0; slot < kIndexSlots; ++slot) {
+    uint8_t raw[12];
+    if (readCounted(raw, sizeof(raw)) != static_cast<int>(sizeof(raw))) return false;
+    std::memcpy(&cells_[slot].offset, &raw[0], 4);
+    std::memcpy(&cells_[slot].length, &raw[4], 4);
+    std::memcpy(&cells_[slot].crc32, &raw[8], 4);
+  }
+  cellsValid_ = true;
+  return true;
+}
+
+bool MapTileReader::advanceToNextCell() {
+  // Walks the wanted window in slot order, so cells that are adjacent in the file
+  // -- which a row of the window always is -- need no seek between them. The
+  // always-read bucket is the last slot and is never skipped.
+  while (nextCellSlot_ < kIndexSlots) {
+    const uint32_t slot = nextCellSlot_++;
+    bool wanted;
+    if (slot == kSpansManyBucket) {
+      wanted = true;
+    } else {
+      const uint32_t col = slot % kCellGrid;
+      const uint32_t row = slot / kCellGrid;
+      wanted = col >= wantCol0_ && col <= wantCol1_ && row >= wantRow0_ && row <= wantRow1_;
+    }
+    const CellEntry& cell = cells_[slot];
+    if (!wanted) {
+      if (cell.length > 0) {
+        ++cellsSkipped_;
+        bytesSkipped_ += cell.length;
+      }
+      continue;
+    }
+    if (cell.length == 0) continue;  // wanted but empty: nothing to read, nothing to check
+
+    const uint32_t absolute = layerBaseOffset_ + cell.offset;
+    if (layerCursorAbs_ != absolute && !seekCounted(absolute)) return false;
+    layerCursorAbs_ = absolute;
+    layerEndAbs_ = absolute + cell.length;
+    bufferPos_ = 0;
+    bufferFill_ = 0;
+    streamCrc_ = MapCrc32::kInit;
+    streamCrcExpected_ = cell.crc32;
+    layerCheck_ = LayerCheck::NotFinished;
+    return true;
+  }
+  return false;
+}
+
+bool MapTileReader::beginLayerCells(Layer layer, uint32_t col0, uint32_t col1, uint32_t row0, uint32_t row1) {
+  const LayerEntry* e = findLayer(layer);
+  if (!e || e->length == 0) return false;
+
+  cellsSkipped_ = 0;
+  bytesSkipped_ = 0;
+  if (!loadCellIndex(*e)) {
+    // No index, or one this reader cannot make sense of: read the layer whole.
+    // Correct either way, just not cheap.
+    return beginLayer(layer);
+  }
+
+  layerBaseOffset_ = e->offset;
+  wantCol0_ = col0 < kCellGrid ? col0 : kCellGrid - 1;
+  wantCol1_ = col1 < kCellGrid ? col1 : kCellGrid - 1;
+  wantRow0_ = row0 < kCellGrid ? row0 : kCellGrid - 1;
+  wantRow1_ = row1 < kCellGrid ? row1 : kCellGrid - 1;
+  if (wantCol1_ < wantCol0_) wantCol1_ = wantCol0_;
+  if (wantRow1_ < wantRow0_) wantRow1_ = wantRow0_;
+  nextCellSlot_ = 0;
+  // An empty window still has the bucket to read, so a false here means the whole
+  // layer -- window and bucket alike -- held nothing.
+  return advanceToNextCell();
 }
 
 bool MapTileReader::refill() {
   const uint32_t avail = layerEndAbs_ - layerCursorAbs_;
   if (avail == 0) {
-    // End of the layer. Every one of its bytes has passed through here, so the
-    // running sum is complete and this is the moment to judge it. Only for a
-    // layer that was actually folded: Skipped stays Skipped.
+    // End of the layer -- or of one cell of it. Every byte of it has passed
+    // through here, so the running sum is complete and this is the moment to
+    // judge it. Only for a span that was actually folded: Skipped stays Skipped.
     if (layerCheck_ == LayerCheck::NotFinished) {
       const uint32_t folded = MapCrc32::final(streamCrc_);
       layerCheck_ = folded == streamCrcExpected_ ? LayerCheck::Passed : LayerCheck::Failed;
+    }
+    // A cell-windowed pass continues into the next wanted cell. A failed cell
+    // stops the walk: the caller has to hear about it before more records arrive,
+    // and one bad cell means the file is not to be trusted for the rest either.
+    if (cellsValid_ && layerCheck_ != LayerCheck::Failed && advanceToNextCell()) {
+      return refill();
     }
     return false;
   }
