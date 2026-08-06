@@ -11,10 +11,11 @@ device what it is short of and push those tiles back
 
 > **Optimisation review, 2026-08-06.**
 > [`optimization/04-tile-sync.md`](optimization/04-tile-sync.md) reviews this
-> store and the `TileSyncActivity` that consumes it. Three open items matter
-> before touching either: a sync that goes quiet never ends, completion counts
-> landed *files* rather than settled rows, and arrivals on the map screen no
-> longer clear the list at all (a regression from `412e0ed9`).
+> store and the `TileSyncActivity` that consumes it. Two open items matter before
+> touching either: completion counts landed *files* rather than settled rows, so a
+> sync can declare itself done with rows still waiting; and arrivals on the map
+> screen no longer clear this list at all, so the next sync asks the phone for
+> tiles the card already holds (a regression from `412e0ed9`).
 
 ## Where a hit comes from
 
