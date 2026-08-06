@@ -40,7 +40,7 @@ tooling is unaffected.
 ## The overview fit
 
 > The same fit run over **one leg** of a route rather than the whole of it is what
-> [`route-navigation.md`](route-navigation.md) proposes as the frame to ride with.
+> [`route-navigation.md`](route-navigation.md) settles on as the frame to ride with.
 > That file also has the numbers for why the ordinary follow frame is the wrong
 > one on a pass.
 

@@ -51,6 +51,66 @@ decision.
 
 and skips a fix that moves the marker under `kMinMovePx` (`:40`), 8 px.
 
+## The decision: while a leg is on screen, it does not get redrawn
+
+**Decided by the maintainer 2026-08-06**, after watching the traverse on the panel:
+
+> In route mode the frame is not redrawn at all while the leg is on screen. A
+> heading change is not a reason to change what the rider is looking at. The rider
+> is following the route; the only reason to draw a new frame is that they are
+> about to run out of the one they have.
+
+So the rule is **keep-in only**. Heading drift stops being a re-anchor reason the
+moment a route is loaded, and the ghosting budget has to be made big enough to
+cover a leg rather than being allowed to interrupt one.
+
+This is safe because the heading is already shown somewhere better.
+`drawPositionMarker()` gets `MapFollow::relativeHeadingStep(headingStep,
+anchorHeading_)` (`MapActivity.cpp:937`), so in ride and cycle mode the marker is an
+arrow drawn **relative to the frame** -- a rider who turns 90 degrees gets an arrow
+90 degrees off up, inside a map that has not moved. That mechanism exists, is wired,
+and today only gets to work until the drift limit fires and rotates the whole
+picture out from under it. Removing the drift re-anchor is what lets it do the job
+it was built for. (Hike mode draws a plain dot with no arrow, deliberately --
+`MapActivity.cpp:187`. Hike is not the case this rule is aimed at, but it means the
+frozen frame carries no heading at all there.)
+
+### What that costs, and the one number it turns on
+
+**Simulated**, drift disabled, fixes every 25 m as the phone sends them, over the
+3.4 km Baba leg. "Extra" is redraws after the first frame -- the number the decision
+wants at zero:
+
+| rung | budget 12 | budget 30 | budget 67 |
+|---|---|---|---|
+| 1 (3 m/px) | +6 | +2 | +1 |
+| **2 (6 m/px)** | +4 | +1 | **0** |
+| 3 (12 m/px) | +2 | **0** | **0** |
+
+Keep-in fires exactly once across that whole table, at rung 1 on the shipped
+budget. It is not the binding constraint, because a per-leg fit picks a rung the leg
+already fits inside -- which is the same reason the decision can afford to keep
+keep-in as the only trigger.
+
+**Everything therefore turns on the ghosting budget, and the number needed is
+knowable in advance.** A leg costs one marker move per `kMinMovePx` of screen
+travel, so:
+
+```
+moves per leg ~= leg length / (kMinMovePx * metres-per-pixel)
+```
+
+3.4 km at 6 m/px is 3400 / (8 x 6) = 71 moves; at 12 m/px it is 35. The simulated
+budgets that reach zero -- 67 and 30 -- sit just under those, because the marker's
+path across the frame is not a straight line up it.
+
+That formula is the design rule this decision needs: **the rung and the ghosting
+budget are one choice, not two.** If the panel turns out to tolerate only 30
+windowed refreshes before ghosting makes it unreadable, then a 3.4 km leg has to be
+drawn at 12 m/px, not 6, and the fit can work that out before it draws anything. So
+the open measurement is no longer "is 67 all right" but "what is the largest budget
+the panel holds" -- and whatever it answers, the fit can pick a rung to match.
+
 ## A switchback road turns further than the drift limit, and no tangent fixes it
 
 **Measured off the tiles**, `mapbuilder/tools/route_follow_sim.py --curvature`
@@ -191,7 +251,11 @@ headroom in the one constraint that is not binding -- the same thing the Bratisl
 ride found ("The keep-in frame never fired", `map-follow.md`), now on a road with a
 completely different shape.
 
-## Freezing the frame per leg fixes it
+## Why the heading has to be frozen and not merely smoothed
+
+The decision above says the frame does not turn. This section is why nothing short
+of that works, which is worth keeping because "look further ahead" is the obvious
+first idea and it is wrong.
 
 **Simulated**, so read the frame counts and ignore any timing: same serpentine,
 25 m fix spacing, the route's tangent as the heading unless stated.
@@ -353,11 +417,21 @@ layout; it was never built.
 
 ## Open, and what would settle it
 
-- **How many windowed refreshes the panel tolerates.** The whole per-leg frame
-  idea is worth one frame per leg instead of two only if the ghosting budget can
-  be raised. Still the one thing blocked on hardware. Measurement: ride or replay
-  one leg with `kMaxPartialMoves` at 12, 30 and 67 and photograph the panel at the
-  end of each.
+- **What the largest usable ghosting budget is.** The one thing blocked on
+  hardware, and now the whole decision rests on it: "no redraw while the leg is on
+  screen" is only deliverable if the budget covers the leg. Note the question has
+  changed shape -- it is no longer "is 67 acceptable" but "what is the ceiling",
+  because the rung can be chosen to fit whatever the answer is (see the moves-per-leg
+  formula above). Measurement: replay one leg with `kMaxPartialMoves` at 12, 30, 67
+  and unbounded, and photograph the panel at the end of each. What is being judged is
+  the *accumulated* ghosting after N windowed refreshes with no clean frame between
+  them, so the photograph at the end is the whole measurement -- do not judge it
+  mid-leg.
+- **A leg longer than the budget can hold has no good answer yet.** The formula
+  gives a coarser rung, and coarsening has a floor: past some length the leg does not
+  fit the panel at any rung (`route-layer.md`, "When nothing fits") and the frame has
+  to break mid-leg after all. Where that boundary lands, and whether the break should
+  happen at a chosen place rather than wherever the budget runs out, is undecided.
 - **Every re-anchor count here is simulated, and the simulation is optimistic.**
   It walks the route exactly, one fix every 25 m. Real GPS sits off the
   polyline, which adds drift and keep-in redraws the sim never sees. The frame
