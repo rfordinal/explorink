@@ -103,6 +103,13 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
   enum class RowState : uint8_t { Waiting, Active, Done, Skipped };
 
   void renderScreen();
+  // Bytes as a rider reads them: "6.1 kB", "440 kB", "1.2 MB". A raw byte count
+  // is arithmetic homework on a screen glanced at in gloves.
+  static void formatBytes(uint32_t bytes, char* out, size_t outSize);
+  // "2m 20s" / "45s". Empty while there is nothing to base it on.
+  static void formatDuration(uint32_t seconds, char* out, size_t outSize);
+  // Writes the summary line: done/total, percent, transferred, rate, ETA.
+  void formatSummary(char* out, size_t outSize) const;
   // Repaints what changed: the whole list when a tile settles, or just the
   // active row while its bytes climb.
   void updateProgress();
@@ -170,6 +177,9 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
   // from a poll.
   uint32_t drawnDone_ = 0;
   uint32_t drawnSkipped_ = 0;
+  // millis() when the ask went out. The clock the rate and the ETA are built
+  // on -- both are meaningless before the phone actually starts sending.
+  uint32_t startedMs_ = 0;
   // millis() of the last active-row repaint. The bytes of a transfer in flight
   // change constantly and each repaint is a real waveform pass, so the moving
   // bar is rate-capped rather than drawn per chunk.

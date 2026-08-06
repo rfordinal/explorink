@@ -287,6 +287,7 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   declaredTotal_ = 0;
   activeTileValid_ = false;
   ++completed_;
+  completedBytes_ += bytes;
 
   // The path is the only place this class learns what the file *is*. A tile
   // path means a MissingTilesStore entry just became stale; the activity task
@@ -409,6 +410,7 @@ void MapTransferReceiver::publish() {
   next.received = received_;
   next.total = declaredTotal_;
   next.completed = completed_;
+  next.completedBytes = completedBytes_;
   next.failed = failed_;
   next.lastTileValid = lastTileValid_;
   next.lastTile = lastTile_;

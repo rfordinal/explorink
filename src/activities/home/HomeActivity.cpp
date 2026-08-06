@@ -117,13 +117,13 @@ void HomeActivity::render(RenderLock&&) {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC), tr(STR_PREVIEW),
                                               tr(STR_SETTINGS_TITLE)};
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Wifi, Image, Settings};
+  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Image, Settings};
 #else
   const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC),
                                               tr(STR_SETTINGS_TITLE)};
-  // Wifi stands in for "over the air" -- there is no tile icon asset yet, same
-  // placeholder situation as Map's Bookmark above.
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Wifi, Settings};
+  // Bluetooth, not Wifi: tile sync goes over BLE and nothing else, and a WiFi
+  // glyph sends a rider to the wrong settings page.
+  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Settings};
 #endif
 
   GUI.drawButtonMenu(

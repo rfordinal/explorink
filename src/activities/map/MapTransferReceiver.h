@@ -88,7 +88,11 @@ class MapTransferReceiver {
     uint32_t received = 0;   // bytes of the transfer in flight
     uint32_t total = 0;      // its declared length
     uint32_t completed = 0;  // files that landed since the screen opened
-    uint32_t failed = 0;     // transfers refused or failed since then
+    // Bytes of those files, summed. A progress screen needs a real rate to put
+    // a time on the remainder, and a count of files cannot give one: the tiles
+    // in one fetch ranged from 6 KB to 75 KB.
+    uint32_t completedBytes = 0;
+    uint32_t failed = 0;  // transfers refused or failed since then
     // The last file that landed, if its path was a tile
     // (MapTilePath.h). `completed` counts every landed file including
     // non-tiles, so it is not the same signal.
@@ -180,6 +184,7 @@ class MapTransferReceiver {
   char partPath_[kMaxRelPathBytes + 48] = {};
 
   uint32_t completed_ = 0;
+  uint32_t completedBytes_ = 0;
   uint32_t failed_ = 0;
   // Host task's side of Status::lastTile / tileSeq above.
   bool lastTileValid_ = false;

@@ -122,6 +122,7 @@ void TileSyncActivity::askForTiles() {
   }
   LOG_INF(kLogTag, "asked for %lu tiles", static_cast<unsigned long>(rowCount_));
   phase_ = Phase::Running;
+  startedMs_ = millis();
   renderScreen();
 }
 
@@ -326,11 +327,14 @@ void TileSyncActivity::drawRow(int index, int y, int rowHeight) {
   const char* right = nullptr;
   char bytes[32];
   switch (state) {
-    case RowState::Active:
-      snprintf(bytes, sizeof(bytes), "%lu / %lu B", static_cast<unsigned long>(received),
-               static_cast<unsigned long>(total));
+    case RowState::Active: {
+      char got[16], want[16];
+      formatBytes(received, got, sizeof(got));
+      formatBytes(total, want, sizeof(want));
+      snprintf(bytes, sizeof(bytes), "%s / %s", got, want);
       right = bytes;
       break;
+    }
     case RowState::Done:
       right = tr(STR_TILE_SYNC_ROW_DONE);
       break;
@@ -380,6 +384,76 @@ void TileSyncActivity::drawList() {
   }
 }
 
+void TileSyncActivity::formatBytes(uint32_t bytes, char* out, size_t outSize) {
+  // Decimal kB/MB, not KiB: the number next to it is a file size a rider
+  // compares against a phone's storage screen, which is decimal everywhere.
+  if (bytes < 1000) {
+    snprintf(out, outSize, "%lu B", static_cast<unsigned long>(bytes));
+  } else if (bytes < 1000000) {
+    snprintf(out, outSize, "%lu kB", static_cast<unsigned long>((bytes + 500) / 1000));
+  } else {
+    // One decimal past a megabyte -- "1 MB" for anything from 1.0 to 1.9 would
+    // hide most of a fetch's progress.
+    const uint32_t tenths = (bytes + 50000) / 100000;
+    snprintf(out, outSize, "%lu.%lu MB", static_cast<unsigned long>(tenths / 10),
+             static_cast<unsigned long>(tenths % 10));
+  }
+}
+
+void TileSyncActivity::formatDuration(uint32_t seconds, char* out, size_t outSize) {
+  if (seconds >= 3600) {
+    snprintf(out, outSize, "%luh %lum", static_cast<unsigned long>(seconds / 3600),
+             static_cast<unsigned long>((seconds % 3600) / 60));
+  } else if (seconds >= 60) {
+    snprintf(out, outSize, "%lum %lus", static_cast<unsigned long>(seconds / 60),
+             static_cast<unsigned long>(seconds % 60));
+  } else {
+    snprintf(out, outSize, "%lus", static_cast<unsigned long>(seconds));
+  }
+}
+
+void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
+  const MapTransferReceiver::Status transfer = transfer_.status();
+  const uint32_t settled = transfer.completed + skipped_;
+  const uint32_t percent = rowCount_ > 0 ? settled * 100 / rowCount_ : 0;
+
+  char moved[16];
+  formatBytes(transfer.completedBytes + (transfer.active ? transfer.received : 0), moved, sizeof(moved));
+
+  // The rate and the remainder both need a tile to have actually landed. Before
+  // that there is no honest number, so the line simply stops there rather than
+  // showing a zero or a guess that will be wrong by an order of magnitude.
+  const uint32_t elapsedMs = startedMs_ != 0 ? millis() - startedMs_ : 0;
+  if (transfer.completed == 0 || elapsedMs < 1000) {
+    snprintf(out, outSize, "%lu / %lu  %lu%%   %s", static_cast<unsigned long>(settled),
+             static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(percent), moved);
+    return;
+  }
+
+  const uint32_t elapsedS = elapsedMs / 1000;
+  const uint32_t rateBps = transfer.completedBytes / (elapsedS > 0 ? elapsedS : 1);
+
+  char eta[16] = {};
+  const uint32_t remaining = rowCount_ > settled ? rowCount_ - settled : 0;
+  if (remaining > 0) {
+    // Time per settled tile, times what is left. Tiles vary a lot in size
+    // (6 KB to 75 KB in one real fetch), so this is an estimate that firms up
+    // as the run goes -- which is what an ETA is, and better than no answer at
+    // all while a rider decides whether to wait.
+    formatDuration(elapsedS * remaining / settled, eta, sizeof(eta));
+  }
+
+  if (eta[0] != '\0') {
+    snprintf(out, outSize, "%lu / %lu  %lu%%   %s  %lu.%lu kB/s  %s %s", static_cast<unsigned long>(settled),
+             static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(percent), moved,
+             static_cast<unsigned long>(rateBps / 1000), static_cast<unsigned long>((rateBps % 1000) / 100), eta,
+             tr(STR_TILE_SYNC_LEFT));
+  } else {
+    snprintf(out, outSize, "%lu / %lu  %lu%%   %s", static_cast<unsigned long>(settled),
+             static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(percent), moved);
+  }
+}
+
 void TileSyncActivity::renderScreen() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
@@ -397,7 +471,7 @@ void TileSyncActivity::renderScreen() {
 
   // One line that says what is going on, because "0 / 29" alone cannot tell a
   // sync that is waiting for a phone from one that has hung.
-  char status[80];
+  char status[112];
   switch (phase_) {
     case Phase::Waiting:
       // "never turned up" and "was here and left" are different problems --
@@ -406,8 +480,7 @@ void TileSyncActivity::renderScreen() {
                hadPhone_ ? tr(STR_TILE_SYNC_PHONE_LEFT) : tr(STR_TILE_SYNC_WAITING_PHONE));
       break;
     case Phase::Running:
-      snprintf(status, sizeof(status), "%lu / %lu   fail %lu", static_cast<unsigned long>(transfer.completed),
-               static_cast<unsigned long>(rowCount_), static_cast<unsigned long>(skipped_));
+      formatSummary(status, sizeof(status));
       break;
     case Phase::Finished:
       snprintf(status, sizeof(status), "%s   %lu / %lu", I18N.get(verdict_),
