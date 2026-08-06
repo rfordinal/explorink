@@ -51,6 +51,19 @@ struct MapPreviewRequest {
   // default so the committed golden PPM stays byte-identical -- the device
   // always hatches; this is for eyeballing the same drawing on the laptop.
   bool drawHatch = false;
+
+  // A .tir route file to draw over the tiles, or empty for none
+  // (../../../docs/route-file-spec.md in the parent xteink repo). This is what
+  // makes route styling a two-second laptop edit rather than a flash.
+  std::string routePath;
+
+  // Frame the whole route instead of the lat/lon/heading/zoom above: run
+  // MapRouteFit over the loaded route and use what it picks. Exactly what the
+  // device does when the rider selects a route (MapActivity's route overview),
+  // so a fit can be checked on a real route and real tiles without hardware.
+  //
+  // With this set, lat/lon are ignored and the anchor is the screen centre.
+  bool fitRoute = false;
 };
 
 struct MapPreviewResult {
@@ -84,6 +97,25 @@ struct MapPreviewResult {
   size_t sourceBytes = 0;
   size_t peakHeapDuringRender = 0;
   size_t allocsDuringRender = 0;
+
+  // The route, when one was given. `routeLoaded` false with a non-empty
+  // routePath means the file was rejected -- bad magic, wrong version, or a
+  // failed crc -- and nothing was drawn, which is deliberate: half a route ends
+  // somewhere it does not.
+  bool routeLoaded = false;
+  std::string routeName;
+  uint32_t routePoints = 0;
+  uint32_t routeBytesRead = 0;
+  // Filled when fitRoute was set and the fit ran. `routeFits` false means even
+  // the coarsest rung could not hold the whole route, and the frame shows as
+  // much of it as 20 m/px allows.
+  bool routeFitRan = false;
+  bool routeFits = false;
+  uint8_t routeFitHeading = 0;
+  uint8_t routeFitZoomStep = 0;
+  double routeFitRequiredMpp = 0.0;
+  double routeFitLat = 0.0;
+  double routeFitLon = 0.0;
 };
 
 MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& canvas);
