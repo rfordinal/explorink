@@ -128,10 +128,11 @@ constexpr int kHeaderBackingPad = 2;
 // Every design-space point below is the original scaled by 0.75 around the
 // arc centre (50,47), which stays fixed -- it is the rotation pivot, not a
 // point being scaled. kCompassCenterTop is pushed down far enough that the
-// halo (radius 40) clears the header row (bottom at kHeaderMarginTop + 17)
-// plus an 8px gap: 6 + 17 + 8 + 40 = 71.
+// halo (radius 40) clears the header row (bottom at kHeaderMarginTop + 23 --
+// drawHeaderStatus()'s batteryIconTop comment has the real battery-icon
+// offset this counts from) plus an 8px gap: 6 + 23 + 8 + 40 = 77.
 constexpr int kCompassCenterMarginRight = 56;  // arc centre, in from the right edge
-constexpr int kCompassCenterTop = 71;          // arc centre, down from the top edge
+constexpr int kCompassCenterTop = 77;          // arc centre, down from the top edge
 // Design-space distance from the arc centre to the furthest thing drawn: the
 // scaled label sits ~24.75 above it and is about 16 tall, so 36 clears it
 // with a few px of slack. The accent triangle's tip (~21) and the arcs (18)
@@ -440,8 +441,14 @@ void MapActivity::drawHeaderStatus() {
   const int barsRight = batteryX - kHeaderBatteryTextAllowance - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
-  const int iconTop = kHeaderMarginTop + 5 + BaseMetrics::values.batteryHeight - kHeaderIconHeight;
-  const int iconBottom = iconTop + kHeaderIconHeight;
+  // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
+  // hands drawBatteryRight() rect.y+5 (BaseTheme.cpp:374), and
+  // drawBatteryRight() adds another +6 of its own (:99) before drawing the
+  // outline. Missing that second +6 is what put this row 6px above the
+  // battery instead of level with it.
+  const int batteryIconTop = kHeaderMarginTop + 5 + 6;
+  const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
+  const int iconTop = iconBottom - kHeaderIconHeight;
 
   // White backing first, like the compass halo and the busy badge: this can
   // land on live map lines, not blank margin.
