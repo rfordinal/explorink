@@ -44,8 +44,27 @@ bool MapSerialConsole::poll() {
   bool redraw = false;
 
   for (int i = 0; i < kBytesPerPoll && logSerial.available() > 0; ++i) {
+    // Leave the "CMD:" namespace to main.cpp's handler.
+    //
+    // main.cpp guards its own side by peeking for 'C' before it consumes
+    // anything (src/main.cpp, the serial command block) -- but that guard only
+    // helps if a whole line is already buffered when its turn comes. This
+    // console feeds byte by byte, so with bytes trickling in off USB it starts
+    // consuming a line before main.cpp ever sees a 'C' at the head, and then
+    // answers "<ERR unknown_command" to a command that was never addressed to
+    // it. Measured 2026-08-06: CMD:SCREENSHOT and CMD:GOTO_MAP both landed in
+    // MAPCON while the map screen was up, so no screenshot could be taken of
+    // the one screen worth screenshotting.
+    //
+    // Only at a line boundary: mid-line a 'C' is just a character. No map
+    // command starts with 'C' (MapCommandParser.h), so nothing legitimate is
+    // withheld, and main.cpp consumes a stray 'C'-headed line either way --
+    // it reads the line and discards it when the prefix does not match -- so
+    // this cannot deadlock the port.
+    if (atLineStart_ && logSerial.peek() == 'C') break;
     const int byte = logSerial.read();
     if (byte < 0) break;
+    atLineStart_ = (byte == '\n' || byte == '\r');
     if (console_.feed(static_cast<char>(byte), out)) redraw = true;
   }
 

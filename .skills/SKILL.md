@@ -887,6 +887,35 @@ This is now a real way to get a device shot without pulling the SD card --
 see `docs/device-shots/` in the parent repo. The POWER+DOWN combo is still
 useful as an independent reference to compare against.
 
+### The map console used to swallow `CMD:` -- fixed 2026-08-06
+
+**Measured on hardware.** With the map screen up, `CMD:SCREENSHOT` and
+`CMD:GOTO_MAP` never reached `main.cpp`'s handler. They landed in the map console
+instead, which answered `<ERR unknown_command`:
+
+```
+[36974] [DBG] [MAPCON] rx: CMD:GOTO_MAP
+<ERR unknown_command
+```
+
+So a screenshot could not be taken of the one screen worth screenshotting, and
+every host-side grab failed the same opaque way: `no START marker in 107 bytes`
+(the `<ERR` line plus log noise).
+
+Cause was a mismatch in how the two readers on this UART consume it. `main.cpp`
+peeks for `'C'` before consuming anything, precisely so `CMD:` is a real
+namespace. `MapSerialConsole::poll()` read bytes unconditionally and assembles a
+line across `loop()` calls, so with bytes trickling in off USB it starts eating a
+line before `main.cpp` ever sees a `'C'` at the head of the buffer. The
+incremental reader always wins that race.
+
+Fixed by giving the console the symmetric guard: at a line boundary, if the next
+byte is `'C'`, stop polling and leave it. No map command starts with `'C'`
+(`MapCommandParser.h`), and `main.cpp` consumes a stray `'C'`-headed line either
+way, so nothing is withheld and the port cannot deadlock.
+
+Anything else that adds a second reader to this UART needs the same guard.
+
 ### `CMD:SCREENSHOT_GRAY` -- the same channel, with the grey
 
 `CMD:SCREENSHOT` dumps the framebuffer, and in the framebuffer a grey pixel is

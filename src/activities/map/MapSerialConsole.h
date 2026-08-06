@@ -35,4 +35,9 @@ class MapSerialConsole {
 
  private:
   MapCommandConsole console_;
+  // Whether the next byte would start a fresh line. poll() refuses to consume
+  // a line that begins with 'C', so main.cpp's "CMD:" handler can have it --
+  // see the comment in poll(). Starts true: the first byte after boot is a
+  // line start.
+  bool atLineStart_ = true;
 };
