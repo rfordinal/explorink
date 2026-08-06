@@ -12,6 +12,7 @@ MapTileSource::~MapTileSource() { closeCurrentTile(); }
 void MapTileSource::begin(const Config& config) {
   closeCurrentTile();
   config_ = config;
+  reader_.setClock(config_.nowUs);
   rowSpan_ = config_.row1 >= config_.row0 ? (config_.row1 - config_.row0 + 1) : 0;
   const uint32_t colSpan = config_.col1 >= config_.col0 ? (config_.col1 - config_.col0 + 1) : 0;
   tileCount_ = colSpan * rowSpan_;
@@ -25,6 +26,7 @@ void MapTileSource::begin(const Config& config) {
   bytesRead_ = 0;
   pointsProjected_ = 0;
   waysOffScreen_ = 0;
+  ioUs_ = 0;
 }
 
 void MapTileSource::buildPath(uint32_t col, uint32_t row) {
@@ -42,6 +44,7 @@ void MapTileSource::closeCurrentTile() {
   // real bytes on the header attempt and those must be counted too, and a
   // reader that never opened anything simply reports zero.
   bytesRead_ += reader_.takeBytesRead();
+  ioUs_ += reader_.takeIoUs();
   if (tileOpen_) {
     reader_.close();
     tileOpen_ = false;
@@ -102,6 +105,7 @@ bool MapTileSource::advanceToNextTile() {
       // reason to hatch the tile.
       ++tilesOpened_;
       bytesRead_ += reader_.takeBytesRead();
+      ioUs_ += reader_.takeIoUs();
       reader_.close();
       continue;
     }
@@ -114,6 +118,7 @@ bool MapTileSource::advanceToNextTile() {
       ++tilesUnavailable_;
       if (index < 32) unavailableMask_ |= (1u << index);
       bytesRead_ += reader_.takeBytesRead();
+      ioUs_ += reader_.takeIoUs();
       reader_.close();
       continue;
     }

@@ -27,7 +27,7 @@ constexpr uint8_t kMagic[4] = {'T', 'I', 'B', '1'};
 
 bool MapTileReader::open(IFileSource& file, const char* path) {
   file_ = &file;
-  if (!file_->open(path)) {
+  if (!openCounted(path)) {
     file_ = nullptr;
     return false;
   }
@@ -47,14 +47,30 @@ void MapTileReader::close() {
 }
 
 int MapTileReader::readCounted(void* dst, size_t len) {
+  const uint32_t started = nowUs_ ? nowUs_() : 0;
   const int n = file_->read(dst, len);
+  if (nowUs_) ioUs_ += nowUs_() - started;
   if (n > 0) bytesRead_ += static_cast<uint32_t>(n);
   return n;
 }
 
+bool MapTileReader::seekCounted(const uint32_t offset) {
+  const uint32_t started = nowUs_ ? nowUs_() : 0;
+  const bool ok = file_->seek(offset);
+  if (nowUs_) ioUs_ += nowUs_() - started;
+  return ok;
+}
+
+bool MapTileReader::openCounted(const char* path) {
+  const uint32_t started = nowUs_ ? nowUs_() : 0;
+  const bool ok = file_->open(path);
+  if (nowUs_) ioUs_ += nowUs_() - started;
+  return ok;
+}
+
 bool MapTileReader::parseHeader() {
   bytesRead_ = 0;
-  if (!file_->seek(0)) return false;
+  if (!seekCounted(0)) return false;
 
   uint8_t hdr[kHeaderFixedLen];
   int n = readCounted(hdr, sizeof(hdr));
@@ -120,7 +136,7 @@ bool MapTileReader::parseHeader() {
 }
 
 bool MapTileReader::validateLayerCrc32(const LayerEntry& entry) {
-  if (!file_->seek(entry.offset)) return false;
+  if (!seekCounted(entry.offset)) return false;
 
   uint32_t crc = MapCrc32::kInit;
   uint32_t remaining = entry.length;
@@ -165,7 +181,7 @@ bool MapTileReader::beginLayer(Layer layer) {
   const LayerEntry* e = findLayer(layer);
   if (!e || e->length == 0) return false;
   if (!validateLayerCrc32(*e)) return false;
-  if (!file_->seek(e->offset)) return false;
+  if (!seekCounted(e->offset)) return false;
 
   layerCursorAbs_ = e->offset;
   layerEndAbs_ = e->offset + e->length;

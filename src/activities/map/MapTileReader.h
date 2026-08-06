@@ -153,6 +153,30 @@ class MapTileReader {
     return n;
   }
 
+  // Microseconds spent inside the card: open, seek and read, nothing else.
+  //
+  // Why this exists: the per-layer render timing cannot separate I/O from
+  // arithmetic, because a layer pulls from the card as it draws. So "buildings
+  // 2,686 ms" is both, and the two have completely different fixes -- fewer
+  // bytes (a smaller tile, docs/tile-simplification-plan.md in the parent repo)
+  // against fewer operations (docs/optimization/01-render-pipeline.md). Guessing
+  // the split would mean rebuilding every tile on a hunch.
+  //
+  // Microseconds, not milliseconds: one 4 KB read is well under a millisecond,
+  // so a millisecond clock would round most of them to zero and the total would
+  // be wrong by more than the answer. uint32 wraps after 71 minutes; a frame is
+  // seconds.
+  //
+  // The clock is injected for the same reason MapRenderTiming's is: this file is
+  // compiled for the host too, where there is no micros(). No clock means no
+  // timing and no calls.
+  void setClock(uint32_t (*nowUs)()) { nowUs_ = nowUs; }
+  uint32_t takeIoUs() {
+    const uint32_t n = ioUs_;
+    ioUs_ = 0;
+    return n;
+  }
+
   // There is deliberately no peakBufferBytes() accessor here. It used to
   // return kStreamBufferSize, and the test asserting it equalled
   // kStreamBufferSize proved nothing -- it would have passed with a
@@ -191,6 +215,11 @@ class MapTileReader {
   // The one place that ever calls file_->read(). Every byte it returns is
   // real I/O, so this is also the one place bytesRead_ is incremented.
   int readCounted(void* dst, size_t len);
+  // The other two card operations, wrapped for the same reason: a seek can cost
+  // a real SD transaction, and open() walks the directory. Both belong in
+  // takeIoUs() or the number is only part of the story.
+  bool seekCounted(uint32_t offset);
+  bool openCounted(const char* path);
 
   IFileSource* file_ = nullptr;
 
@@ -212,4 +241,6 @@ class MapTileReader {
   uint32_t layerCursorAbs_ = 0;
   uint32_t layerEndAbs_ = 0;
   uint32_t bytesRead_ = 0;
+  uint32_t (*nowUs_)() = nullptr;
+  uint32_t ioUs_ = 0;
 };

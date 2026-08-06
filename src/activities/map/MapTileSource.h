@@ -62,6 +62,11 @@ class MapTileSource : public IMapSource {
     int16_t screenWidth = 0;
     int16_t screenHeight = 0;
     int16_t rejectMarginPx = 0;
+
+    // Microsecond clock for the card-time accounting (MapTileReader::setClock).
+    // nullptr means the reads are not timed, which is what the host build and
+    // every test want -- see ioUs().
+    uint32_t (*nowUs)() = nullptr;
   };
 
   // `file` is reused for every tile: opened, streamed, closed, reopened for
@@ -139,6 +144,14 @@ class MapTileSource : public IMapSource {
   // docs/optimization/01-render-pipeline.md, step 3.
   uint32_t waysOffScreen() const { return waysOffScreen_; }
 
+  // Microseconds spent inside the card since begin(): open, seek, read, summed
+  // across every tile and every pass. Zero when Config::nowUs is null.
+  //
+  // This is the number that decides whether the next move is a smaller tile or a
+  // cheaper draw. The per-layer render times cannot answer it: a layer reads from
+  // the card as it draws, so its milliseconds are both costs added together.
+  uint32_t ioUs() const { return ioUs_; }
+
  private:
   bool startPass(MapTileReader::Layer layer);
   // The shared way-record walk. `applyClassMask` is false for buildings and
@@ -181,6 +194,7 @@ class MapTileSource : public IMapSource {
   uint32_t bytesRead_ = 0;
   uint32_t pointsProjected_ = 0;
   uint32_t waysOffScreen_ = 0;
+  uint32_t ioUs_ = 0;
 
   // The one live record. Overwritten by every nextWay()/nextPlace().
   int16_t xs_[MapTileReader::kMaxWayPoints];
