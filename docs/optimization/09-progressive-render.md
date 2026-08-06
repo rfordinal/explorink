@@ -7,6 +7,54 @@ Proposed 2026-08-06 after a **14 second** viewport reset on a dense tile, report
 from the device. This plan says how it would be built, what it costs, and — the
 important part — **the condition under which it is worth building at all**.
 
+## The cheaper question first: are buildings wanted at rung 1 at all?
+
+Raised by the maintainer 2026-08-06, and it beats everything else in this plan on
+cost per line of code. Recorded here because it is a **product decision with a
+measured price**, not an optimisation — nobody should re-derive the price later.
+
+The map only carries buildings at the detail LOD, rungs 0 and 1
+(`mapbuilder/build_config.json`). Rung 2 and up read tiles that have no buildings
+layer at all, which the measurement confirms: 25 ms, 13 ms and 55 ms for those
+passes are an empty walk, not drawing. So the question is only about rung 1.
+
+At rung 1, measured on hardware with the off-screen reject in place:
+
+| rung 1 | ms | share of the frame |
+|---|---|---|
+| buildings | **5,699** | 42 % |
+| roads | 7,689 | 57 % |
+| whole frame | 13,575 | |
+
+Rung 1 is the **slowest rung on the ladder**, and buildings are nearly half of it.
+
+**Turning them off there is cheaper than it looks**, because `buildingsEnabled`
+gates the **read**, not the draw: a disabled layer is never opened
+(`MapRenderer.cpp:173`, `MapStyle.h:44-48`). So it takes the milliseconds *and*
+most of rung 1's 3.1 MB of card traffic. Estimated 13.5 s down to 4-5 s from one
+switch — more than the off-screen reject, the integer box and the road clip work
+put together.
+
+**What it costs in design terms.** `docs/map-data-spec.md` states the device needs
+no zoom-dependent style: it draws whatever the tile holds. A per-rung buildings
+switch breaks that sentence. There is a precedent in the same code that makes it
+defensible rather than a special case: the travel mode is already a render-time
+filter over classes (`MapModeMask`), so this would be one more mask, not a second
+style file. Splitting the detail LOD into "z13 with buildings" for rung 0 and
+"z13 without" for rung 1 is the alternative and it is worse — twice the tiles on
+the card for the same ground.
+
+**What is not settled, and is not a technical question.** The maintainer's own
+point against it: buildings at 3 m/px look *beautiful and authentic*, and since
+rung 0 is for the rare "where exactly am I / I am lost" case, rung 1 is the
+detailed view a rider actually looks at. That is a real reason, and the numbers do
+not overrule it.
+
+Judge it without a flash: the webapp's `firmware` panel draws rung 1 with and
+without buildings in about two seconds, through the same `MapRenderer` the device
+runs (`docs/device-preview.md` in the parent repo). Decide from the pair of
+images, not from this table.
+
 ## Step 0 — a frame that says "loading" before the tiles are read
 
 Raised by the maintainer 2026-08-06, and it is both cheaper than everything below
