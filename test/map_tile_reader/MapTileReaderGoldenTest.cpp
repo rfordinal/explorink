@@ -115,7 +115,12 @@ TEST(MapTileReaderGolden, RendersFixedViewportByteExact) {
 
   ASSERT_EQ(preview.tilesLoaded, 1);
   ASSERT_EQ(preview.tilesMissing, 1);  // the viewport's other touched tile is deliberately not in the fixture
-  ASSERT_EQ(preview.waysDrawn, 90u);
+  // 43, not the 90 this fixture read before 2026-08-06: MapTileSource now drops a
+  // way whose bounding box cannot reach the screen before projecting it
+  // (Config::screenWidth). The golden PPM below is unchanged by that, which is
+  // the whole claim -- 47 of this tile's ways were being projected, clipped and
+  // drawn into nothing.
+  ASSERT_EQ(preview.waysDrawn, 43u);
   ASSERT_EQ(preview.placesDrawn, 2u);
 
   const std::string outPath = testing::TempDir() + "map_tile_reader_golden_out.ppm";
@@ -164,7 +169,7 @@ TEST(MapTileReaderGolden, PeakRamDoesNotMoveWithTileContent) {
   PpmCanvas canvasA(kScreenWidth, kScreenHeight);
   const MapPreviewResult oneTile = renderMapPreview(single, canvasA);
   ASSERT_EQ(oneTile.tilesLoaded, 1);
-  ASSERT_EQ(oneTile.waysDrawn, 90u);
+  ASSERT_EQ(oneTile.waysDrawn, 43u);  // see RendersFixedViewportByteExact: was 90 before the off-screen reject
 
   PpmCanvas canvasB(kScreenWidth, kScreenHeight);
   const MapPreviewResult viewport = renderMapPreview(fixtureRequest(), canvasB);
@@ -327,7 +332,39 @@ TEST(MapModeFilter, SameTilesSameBytesDifferentWaysDrawn) {
   // the card, only a different subset drawn. This is the property that lets
   // one card serve all three modes (docs/map-data-spec.md).
   EXPECT_EQ(with.tilesLoaded, without.tilesLoaded);
-  EXPECT_EQ(with.waysDrawn + with.waysFiltered, without.waysDrawn + without.waysFiltered);
+  // Three outcomes per record, not two: drawn, dropped by the mode mask, or
+  // dropped because it cannot reach the screen (MapTileSource::waysOffScreen,
+  // added 2026-08-06). The mask runs first, so a way it drops never reaches the
+  // screen test -- which is why the two-term version of this identity fails and
+  // the three-term one holds.
+  EXPECT_EQ(with.waysDrawn + with.waysFiltered + with.waysOffScreen,
+            without.waysDrawn + without.waysFiltered + without.waysOffScreen);
+}
+
+TEST(MapOffScreenReject, DropsWhatCannotReachTheScreenAndNothingElse) {
+  // Same fixture, same view, with and without the screen test. The picture must
+  // be identical and the way count must not be: that pair is the whole claim of
+  // docs/optimization/01-render-pipeline.md's step 3.
+  MapPreviewRequest withReject = fixtureRequest();
+  PpmCanvas withCanvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult with = renderMapPreview(withReject, withCanvas);
+
+  // screenWidth/Height 0 disables the test inside MapTileSource, which is the
+  // "before" this step is measured against. rejectAll is not a mode -- there is
+  // no way to ask for more geometry than the screen needs.
+  MapPreviewRequest noReject = fixtureRequest();
+  noReject.rejectOffScreen = false;
+  PpmCanvas withoutCanvas(kScreenWidth, kScreenHeight);
+  const MapPreviewResult without = renderMapPreview(noReject, withoutCanvas);
+
+  EXPECT_EQ(withCanvas.pixels(), withoutCanvas.pixels()) << "the reject must not change one pixel";
+  EXPECT_LT(with.waysDrawn, without.waysDrawn) << "and it must actually drop something on this fixture";
+  EXPECT_GT(with.waysOffScreen, 0u);
+  EXPECT_EQ(without.waysOffScreen, 0u);
+  // Same bytes off the card either way: reading is what advances the record
+  // stream, so a rejected way is still read in full. Only the projecting, the
+  // clipping and the drawing are skipped.
+  EXPECT_EQ(with.bytesRead, without.bytesRead);
 }
 
 TEST(MapModeFilter, AnEmptyMaskDrawsNoWaysButStillReadsTheTiles) {

@@ -44,6 +44,24 @@ class MapTileSource : public IMapSource {
     // docs/map-data-spec.md, "Mode is a render-time filter" -- the tile set
     // is the same for every mode and is never filtered at build time.
     uint32_t classMask = 0xFFFFFFFFu;
+
+    // The screen the projection targets, and how far a stroke can reach past
+    // the geometry that carries it (mapStyleMaxStrokePx, MapStyle.h). Together
+    // they let this source drop a record that cannot put a pixel on the panel
+    // *before* projecting its points.
+    //
+    // Worth having because the tile range is far larger than the screen: at the
+    // closest rung a z13 tile is 4,892 m against a 480x800 m screen, so a 2x2
+    // range covers 250x the visible area and 99.6 % of the buildings walked
+    // never draw anything (docs/optimization/01-render-pipeline.md, measured).
+    //
+    // Zero width or height disables the test, which is what a caller that has
+    // no screen (a format probe, a byte-counting tool) wants. Both real callers
+    // -- MapActivity and test/map_preview -- set it, so the golden render is
+    // what proves the test drops nothing visible.
+    int16_t screenWidth = 0;
+    int16_t screenHeight = 0;
+    int16_t rejectMarginPx = 0;
   };
 
   // `file` is reused for every tile: opened, streamed, closed, reopened for
@@ -112,12 +130,31 @@ class MapTileSource : public IMapSource {
   // whichever pass ran last.
   uint32_t pointsProjected() const { return pointsProjected_; }
 
+  // Ways read off the card and dropped because their own bounding box cannot
+  // reach the screen (Config::screenWidth). Frame-scoped, cleared in begin().
+  //
+  // Distinct from waysFiltered(), which is the travel-mode class filter: this
+  // one is about where a way is, that one about what it is. A high number here
+  // is the tile grid being much larger than the panel, not a bug -- see
+  // docs/optimization/01-render-pipeline.md, step 3.
+  uint32_t waysOffScreen() const { return waysOffScreen_; }
+
  private:
   bool startPass(MapTileReader::Layer layer);
   // The shared way-record walk. `applyClassMask` is false for buildings and
   // water: their class_id is always 0, so filtering them against a road mode
   // mask would be filtering on a field that carries nothing.
   bool nextWayRecord(MapWayRef& out, bool applyClassMask);
+  // Can a way whose tile-local points are already in xs_/ys_ put ink on the
+  // screen? Projects the four corners of its local bounding box -- four
+  // projections instead of up to kMaxWayPoints of them -- inflates by
+  // Config::rejectMarginPx and tests against the screen rect.
+  //
+  // Conservative by construction: the rotation maps the local bbox to a rotated
+  // rectangle, and the axis-aligned bbox of the four projected corners contains
+  // that rectangle, so a "no" is always a real no. Every segment of the way lies
+  // inside its own bbox, so no drawing can escape it either.
+  bool mayReachScreen(uint16_t pointCount) const;
   // Opens the next tile in the range that actually has the current layer.
   // Returns false when the range is exhausted.
   bool advanceToNextTile();
@@ -143,6 +180,7 @@ class MapTileSource : public IMapSource {
   uint32_t placesEmitted_ = 0;
   uint32_t bytesRead_ = 0;
   uint32_t pointsProjected_ = 0;
+  uint32_t waysOffScreen_ = 0;
 
   // The one live record. Overwritten by every nextWay()/nextPlace().
   int16_t xs_[MapTileReader::kMaxWayPoints];

@@ -24,6 +24,7 @@ void MapTileSource::begin(const Config& config) {
   placesEmitted_ = 0;
   bytesRead_ = 0;
   pointsProjected_ = 0;
+  waysOffScreen_ = 0;
 }
 
 void MapTileSource::buildPath(uint32_t col, uint32_t row) {
@@ -140,6 +141,53 @@ bool MapTileSource::beginLanduse() { return startPass(MapTileReader::Layer::Land
 
 bool MapTileSource::nextLanduse(MapWayRef& out) { return nextWayRecord(out, false); }
 
+bool MapTileSource::mayReachScreen(const uint16_t pointCount) const {
+  // No screen configured: nothing to reject against, so keep everything. This
+  // is the path a caller with no viewport takes (see Config).
+  if (config_.screenWidth <= 0 || config_.screenHeight <= 0) return true;
+  if (pointCount == 0) return false;
+
+  int16_t minX = xs_[0], maxX = xs_[0], minY = ys_[0], maxY = ys_[0];
+  for (uint16_t i = 1; i < pointCount; ++i) {
+    if (xs_[i] < minX) minX = xs_[i];
+    if (xs_[i] > maxX) maxX = xs_[i];
+    if (ys_[i] < minY) minY = ys_[i];
+    if (ys_[i] > maxY) maxY = ys_[i];
+  }
+
+  // All four corners, not two: the projection rotates, so the local box's
+  // min/max corners are not the screen box's min/max corners at any heading
+  // other than north.
+  const int16_t localX[4] = {minX, maxX, minX, maxX};
+  const int16_t localY[4] = {minY, minY, maxY, maxY};
+  int screenMinX = 0, screenMaxX = 0, screenMinY = 0, screenMaxY = 0;
+  for (int i = 0; i < 4; ++i) {
+    int16_t sx = 0, sy = 0;
+    proj_.projectTileLocal(reader_.originX(), reader_.originY(), localX[i], localY[i], sx, sy);
+    if (i == 0) {
+      screenMinX = screenMaxX = sx;
+      screenMinY = screenMaxY = sy;
+      continue;
+    }
+    if (sx < screenMinX) screenMinX = sx;
+    if (sx > screenMaxX) screenMaxX = sx;
+    if (sy < screenMinY) screenMinY = sy;
+    if (sy > screenMaxY) screenMaxY = sy;
+  }
+
+  // A stroke is centred on its line, so ink reaches past the geometry by half
+  // the width. The margin is the full width (mapStyleMaxStrokePx) -- being one
+  // pixel too generous keeps a way that draws nothing, which costs a little
+  // time; being one pixel too tight loses a pixel that should be on the panel.
+  const int margin = config_.rejectMarginPx > 0 ? config_.rejectMarginPx : 0;
+  screenMinX -= margin;
+  screenMinY -= margin;
+  screenMaxX += margin;
+  screenMaxY += margin;
+
+  return !(screenMaxX < 0 || screenMaxY < 0 || screenMinX >= config_.screenWidth || screenMinY >= config_.screenHeight);
+}
+
 bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
   for (;;) {
     if (!tileOpen_ && !advanceToNextTile()) return false;
@@ -164,6 +212,19 @@ bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
     // per-point cost. docs/map-data-spec.md, "Mode is a render-time filter".
     if (applyClassMask && (config_.classMask & (1u << (header.classId & 31))) == 0) {
       ++waysFiltered_;
+      continue;
+    }
+
+    // Then the screen test, on the record's own bounding box, still in tile-local
+    // coordinates. The tile range is much larger than the panel -- at the closest
+    // rung 250x its area -- so most records cannot draw anything, and the cost of
+    // finding that out is four corner projections against up to 256 point ones
+    // (docs/optimization/01-render-pipeline.md, step 3).
+    //
+    // Same rule as the class mask above: the bytes were still read, because
+    // reading is what advances the stream. Only the work after it is skipped.
+    if (!mayReachScreen(header.pointCount)) {
+      ++waysOffScreen_;
       continue;
     }
 

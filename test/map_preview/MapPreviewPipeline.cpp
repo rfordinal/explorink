@@ -150,6 +150,14 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   config.col1 = result.col1;
   config.row1 = result.row1;
   config.classMask = request.classMask;
+  // Same screen test the device applies, from the same style, so the golden
+  // render is what proves the test drops nothing visible
+  // (MapTileSource::Config).
+  if (request.rejectOffScreen) {
+    config.screenWidth = SCREEN_WIDTH;
+    config.screenHeight = SCREEN_HEIGHT;
+    config.rejectMarginPx = mapStyleMaxStrokePx(style);
+  }
   source->begin(config);
 
   result.sourceBytes = sizeof(MapTileSource);
@@ -174,6 +182,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // wants is ways in the picture, i.e. one walk's worth.
   result.waysDrawn = source->waysEmitted() / MapRenderer::kRoadPasses;
   result.waysFiltered = source->waysFiltered() / MapRenderer::kRoadPasses;
+  result.waysOffScreen = source->waysOffScreen() / MapRenderer::kRoadPasses;
   result.placesDrawn = source->placesEmitted();
   result.bytesRead = source->bytesRead();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());

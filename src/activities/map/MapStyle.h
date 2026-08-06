@@ -113,3 +113,32 @@ struct MapStyle {
   uint8_t puckRingPx;
   uint8_t puckArrowPx;
 };
+
+// The widest stroke this style can draw around a way's own geometry, in device
+// pixels.
+//
+// This is the margin an off-screen test has to allow: a way whose points all
+// sit just off the panel can still put ink on it, because a stroke is drawn
+// centred on the line. MapTileSource uses it to decide what cannot possibly be
+// visible (Config::rejectMarginPx).
+//
+// The **full** width, not half of it: half is what a centred stroke actually
+// extends, and doubling that is one cheap pixel of paranoia against a rounding
+// step or an off-centre stack (MapStroke::stackFor's `first` biases odd counts
+// by half a pixel).
+//
+// Area fills are not in here on purpose. A tone or a hatch is clipped to the
+// ring that carries it (MapAreaFill), so it never reaches past the geometry;
+// only outlines and line strokes do.
+inline uint8_t mapStyleMaxStrokePx(const MapStyle& style) {
+  uint8_t widest = 0;
+  const auto take = [&widest](uint8_t candidate) {
+    if (candidate > widest) widest = candidate;
+  };
+  for (uint8_t i = 0; i < kClassEnumSlots; ++i) take(style.roadWidthPx[i]);
+  for (uint8_t i = 0; i < kWaterClassSlots; ++i) take(style.waterLinePx[i]);
+  for (uint8_t i = 0; i < kLanduseClassSlots; ++i) take(style.landuseOutlinePx[i]);
+  take(style.buildingOutlinePx);
+  take(style.routeWidthPx);
+  return widest;
+}

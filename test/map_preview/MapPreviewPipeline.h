@@ -40,6 +40,13 @@ struct MapPreviewRequest {
   // unless --mode is given.
   uint32_t classMask = 0xFFFFFFFFu;
 
+  // Drop geometry whose bounding box cannot reach the screen before projecting
+  // it (MapTileSource::Config::screenWidth). On by default, exactly as the
+  // device does it. False exists for one reason: a test that renders the same
+  // view both ways and asserts the pixels match
+  // (MapOffScreenReject in test/map_tile_reader/).
+  bool rejectOffScreen = true;
+
   // Render exactly one named tile instead of the whole tile range the
   // viewport touches. Only useful for quoting a per-tile RAM figure against
   // a per-tile figure from the old pipeline; leave it off for real previews.
@@ -76,6 +83,11 @@ struct MapPreviewResult {
   uint32_t missingMask = 0;
   uint32_t waysDrawn = 0;
   uint32_t waysFiltered = 0;  // read off the card, dropped by classMask
+  // Read off the card, dropped because the way's own bounding box cannot reach
+  // the screen (MapTileSource::waysOffScreen). Every record read is exactly one
+  // of drawn, filtered or off-screen, which is what the mode-filter test
+  // asserts.
+  uint32_t waysOffScreen = 0;
   uint32_t placesDrawn = 0;
   uint8_t lodZoom = 0;
   uint32_t col0 = 0, row0 = 0, col1 = 0, row1 = 0;
