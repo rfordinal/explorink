@@ -1081,12 +1081,7 @@ void MapActivity::renderRouteOverview() {
   view.markerY = anchorY;
   view.heading = static_cast<MapHeading>(fit.heading & 0x0F);
 
-  // Per-layer timing, so a slow reset can be attributed to a layer rather than
-  // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one
-  // millis() call per layer and changes no pixel.
-  MapRenderTiming timing;
-  timing.nowMs = &renderClockMs;
-  const uint32_t missing = drawMapLayers(range, canvas, view, &timing);
+  const uint32_t missing = drawMapLayers(range, canvas, view);
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -1243,7 +1238,12 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // about which way is up.
   view.heading = static_cast<MapHeading>(headingStep & 0x0F);
 
-  const uint32_t missing = drawMapLayers(range, canvas, view);
+  // Per-layer timing, so a slow reset can be attributed to a layer rather than
+  // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one
+  // millis() call per layer and changes no pixel.
+  MapRenderTiming timing;
+  timing.nowMs = &renderClockMs;
+  const uint32_t missing = drawMapLayers(range, canvas, view, &timing);
 
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's
