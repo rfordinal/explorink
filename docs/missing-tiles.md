@@ -491,13 +491,12 @@ succeeds into an empty room.
     At 14 px it reads as a crosshair-in-a-circle as much as a globe; legible and
     unambiguous against everything else in that row, but if it should look more
     like a globe, curving the meridian is the change.
-  - **Transfer rate, one sample each**: 34,915 B in 13.1 s (2.6 kB/s) and
-    2,430 B in 0.9 s (2.7 kB/s), both at a 45 ms connection interval with the
-    device logging `MTU now 256, file payload 248 bytes per chunk`. **Not
-    comparable to this doc's earlier 2.4 kB/s at 30 ms**: that was the phone app,
-    this was `tools/blepush.py`, and a slower interval producing a higher rate
-    says the two runs differ in something not being controlled for. Treat both as
-    order-of-magnitude, not as a trend.
+  - **Transfer rate is the connection interval, again.** `tools/blepush.py` at a
+    45 ms interval: 34,915 B in 13.1 s and 2,430 B in 0.9 s, both 2.6-2.7 kB/s.
+    The phone app at 12.5 ms: 317,895 B in 34.6 s, **9.0 kB/s**. Same MTU (256,
+    248 B per chunk) in every one of them, so the interval is the whole
+    difference -- which is what `docs/optimization/03-ble-link.md` says and what
+    the 2.4 -> 7.4 kB/s pair measured on 2026-08-06 already showed.
 - **Verified on the host**: compiles clean (`pio run`, default env, 2026-08-07).
   260/260 tests green -- **which covers none of this change**: `MissingTilesStore`
   needs ArduinoJson and `PersistableStore`, neither of which the native tests
@@ -510,10 +509,29 @@ succeeds into an empty room.
     members are not in `.bss`.
   - Device heap with the map screen up: **55.2-56.1 KB free** across five samples
     in the session log, at zoom rungs 0 and 1 with 1-2 tiles loaded.
+- **Verified against the real phone app, 2026-08-07** -- the whole chain, with
+  nothing standing in for anything. A tile under the rider's actual position was
+  deleted off the card over WebDAV (`DELETE /trailink/base/13/4485/2843.tib`,
+  204, then 404 to confirm), the map was reopened and the app connected:
+
+  ```
+  13:08:30.779  device wants 1 tiles, format 3, scope viewport, source is CDN
+  13:08:30.970  list complete: 1 tiles of 1
+  13:09:05.542  landed z13 4485/2843 (317895 bytes)
+  13:09:05.557  fetch finished: done (1 sent, 0 skipped of 1)
+  ```
+
+  `scope viewport` is the app reading the `view` word and answering from `tiles`.
+  The listing took **191 ms** -- one request, no paging. The tile came off the
+  CDN at exactly the byte count the CDN serves, and the map redrew itself on the
+  device.
+
+  **9.0 kB/s** for that transfer (317,895 B in 34.6 s), against 2.6 kB/s for the
+  same file pushed by `tools/blepush.py`. The difference is the connection
+  interval and nothing else: the app asks for a high-priority link and Android
+  gave it 10 units (12.5 ms), then handed it back to 24 units (30 ms) 180 ms
+  after the fetch ended. That scoping works, and it is worth 3.5x.
 - **Still not verified**:
-  - **The real phone app.** It does not implement `view` yet -- today it would
-    page `missing` and push the whole list, which is exactly what this feature
-    exists to avoid. Everything above used the laptop gate.
   - **The quiet timer actually expiring.** The old flat budget was seen to expire
     (that is how it was found wrong), but nothing has yet gone 45 s silent with
     an ask open. What would settle it: start a push, kill the client mid-file,
