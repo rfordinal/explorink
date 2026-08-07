@@ -916,6 +916,48 @@ way, so nothing is withheld and the port cannot deadlock.
 
 Anything else that adds a second reader to this UART needs the same guard.
 
+### `CMD:SHOWIMAGE` -- the same channel, backwards
+
+The host pushes a framebuffer, the panel shows it. There is no other way to
+judge a dither on this device: a hatch or a stipple tone reads as separate dots
+at 1:1 on a laptop LCD and as flat grey on the glass, so a tone decision made
+against a PNG preview is unverified until it has been through here. The map
+preview binary (`test/map_preview`) is trustworthy for geometry and line widths
+and says nothing about how a texture resolves on the panel.
+
+```
+CMD:SHOWIMAGE\n            ->  SHOWIMAGE_READY:<bufferSize>\n
+<bufferSize raw bytes>     ->  SHOWIMAGE_OK:<bytes>\n   or  SHOWIMAGE_ERR:<bytes>\n
+```
+
+The payload is the framebuffer exactly as `CMD:SCREENSHOT` dumps it -- 800x480
+landscape, 1bpp MSB-first, physical row order, bit 1 = white -- so the two
+commands are inverses and share one layout definition.
+
+No allocation: the bytes land straight in the framebuffer the panel already
+owns, so whatever was on screen is destroyed. A `RenderLock` is held across the
+read *and* the refresh, because the render task writes the same buffer and a
+repaint mid-transfer would leave half the host's image and half of its own.
+
+Two deliberate choices:
+
+- **`FULL_REFRESH`, not `FAST_REFRESH`.** The fast LUT leaves ghosting, and
+  ghosting on top of a dither is the thing being judged.
+- **A short read refuses to refresh** and answers `SHOWIMAGE_ERR:<bytes>`. A
+  half-written panel presented as a rendering result is worse than no result;
+  the next activity repaint clears it.
+
+The RX ring buffer went 256 -> 4096 bytes for this, mirroring the TX bump that
+`CMD:SCREENSHOT` needed and for the same reason.
+
+Host side: `tools/show_on_device.py` in the parent repo, which takes a 480x800
+PNG. Its `--selftest` round-trips the byte packing through
+`tools/screenshot_gate.py`'s proven decoder and needs no device -- run it after
+touching either end of the layout.
+
+**Untested on hardware** as of 2026-08-07: builds clean, the byte layout is
+proven by the selftest, but nothing has been on the glass yet.
+
 ### `CMD:SCREENSHOT_GRAY` -- the same channel, with the grey
 
 `CMD:SCREENSHOT` dumps the framebuffer, and in the framebuffer a grey pixel is

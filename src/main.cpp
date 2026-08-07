@@ -323,6 +323,12 @@ void setup() {
   // when the host keeps up. 4096 cuts that to ~12 and costs 3,840 bytes of
   // heap, negligible next to the ~118KB free heap this build reports.
   logSerial.setTxBufferSize(4096);
+  // The mirror of the above, for CMD:SHOWIMAGE reading a 48,000-byte
+  // framebuffer *in*. The read loop drains whatever `available()` reports, so a
+  // 256-byte ring works but has to be serviced ~190 times with no slack; a host
+  // burst that outruns one pass is dropped by the USB stack, not queued. Same
+  // 3,840 bytes of heap for the same reason.
+  logSerial.setRxBufferSize(4096);
 #endif
 #endif
 
@@ -616,6 +622,67 @@ void loop() {
           LOG_ERR("SCR", "screenshot write incomplete: %u of %u bytes", (unsigned)written, (unsigned)bufferSize);
         }
         logSerial.printf("SCREENSHOT_END\n");
+      } else if (cmd == "SHOWIMAGE") {
+        // CMD:SCREENSHOT backwards: the host pushes a whole framebuffer and the
+        // panel shows it. There is no other way to judge a dither on this
+        // device. A hatch or a tone looks like separate dots on a laptop LCD and
+        // like flat grey on the panel, so every tone decision made against a PNG
+        // preview is unverified until it has been through here
+        // (docs/map-legibility.md, "judged on the wrong medium").
+        //
+        // Wire format, host side:
+        //   CMD:SHOWIMAGE\n  ->  SHOWIMAGE_READY:<bufferSize>\n
+        //   <bufferSize raw bytes>  ->  SHOWIMAGE_OK:<bytes>\n or SHOWIMAGE_ERR:<bytes>\n
+        // The payload is the framebuffer exactly as CMD:SCREENSHOT dumps it:
+        // 800x480 landscape, 1bpp MSB-first, physical row order, bit 1 = white.
+        // tools/show_on_device.py in the parent repo builds it from a 480x800
+        // portrait PNG.
+        //
+        // No allocation: the bytes go straight into the framebuffer the panel
+        // already owns. Whatever was on screen is destroyed, which is the point.
+        const uint32_t bufferSize = display.getBufferSize();
+        uint8_t* buf = display.getFrameBuffer();
+        if (buf == nullptr) {
+          logSerial.printf("SHOWIMAGE_ERR:0\n");
+        } else {
+          // Held for the read *and* the refresh: the render task writes this
+          // same buffer, and a repaint landing mid-transfer would leave half the
+          // host's image on the panel and half of whatever it drew.
+          RenderLock lock;
+          SerialLogMute quiet;  // a log line mid-payload is indistinguishable from image data
+          logSerial.printf("SHOWIMAGE_READY:%u\n", (unsigned)bufferSize);
+
+          // Read the remainder against whatever has arrived, same shape as
+          // writeAllChunked and for the same reason: one readBytes() call cannot
+          // be trusted to drain a 48 KB transfer through HWCDC's ring buffer.
+          // 10 seconds total -- the host has to push 48,000 bytes, which is
+          // slower than the device sending them.
+          size_t got = 0;
+          const unsigned long deadline = millis() + 10000;
+          while (got < bufferSize) {
+            const int avail = logSerial.available();
+            if (avail <= 0) {
+              if (static_cast<long>(millis() - deadline) >= 0) break;
+              delay(2);
+              continue;
+            }
+            const size_t want =
+                static_cast<size_t>(avail) < (bufferSize - got) ? static_cast<size_t>(avail) : (bufferSize - got);
+            got += logSerial.readBytes(buf + got, want);
+          }
+
+          if (got != bufferSize) {
+            // The framebuffer now holds a partial image. Say so rather than
+            // refreshing: a half-written panel read as a rendering result would
+            // be a lie, and the next activity repaint cleans it up anyway.
+            logSerial.printf("SHOWIMAGE_ERR:%u\n", (unsigned)got);
+          } else {
+            // FULL_REFRESH, not FAST: the fast LUT leaves ghosting, and ghosting
+            // on top of a dither is exactly the thing being judged.
+            display.displayBuffer(HalDisplay::RefreshMode::FULL_REFRESH);
+            logSerial.printf("SHOWIMAGE_OK:%u\n", (unsigned)got);
+          }
+        }
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->
