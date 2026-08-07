@@ -48,19 +48,28 @@ inline constexpr uint16_t kMaxPartialMoves = 12;
 // only thing left that can interrupt a leg (see Request::routeHoldsFrame).
 //
 // A leg costs about `leg length / (kMinMovePx * metres-per-pixel)` marker moves,
-// so this number and the zoom rung are one choice: 160 covers the 3.4 km Baba
-// pass at 3 m/px (142 moves) and anything shorter or coarser comfortably. A leg
-// that would need more has to be drawn at a coarser rung rather than allowed to
-// interrupt.
+// so this number and the zoom rung are one choice. 1000 is 48 km of leg at
+// 6 m/px, or 24 km at 3 m/px -- chosen by the maintainer 2026-08-07 with hiking
+// in mind, where a leg is long and slow and a redraw mid-leg is worth avoiding.
 //
-// **This number has NOT been checked against real ghosting, and cannot be from
-// the host.** `CMD:SCREENSHOT` dumps the framebuffer, which is clean by
-// construction; ghosting is what the panel does to it, so the only instrument is
-// somebody looking at the panel. docs/route-navigation.md's open list says what
-// to look at. If 160 windowed refreshes in a row turn out to smear, lower this
-// and let the rung rule pick a coarser frame -- the mechanism does not change,
-// only the number.
-inline constexpr uint16_t kRouteFramePartialMoves = 160;
+// **160 of these in a row is measured clean. 1000 is not.** The panel held 160
+// consecutive windowed refreshes with no clean frame four times over during one
+// probe run and showed no ghosting at all, judged by eye. It could not be pushed
+// past 160, because the firmware forces a clean frame at exactly this constant --
+// so raising it is an extrapolation from 160, not a measurement, however good the
+// evidence at 160 looks.
+//
+// **And it cannot be measured from a host.** `CMD:SCREENSHOT` dumps the
+// framebuffer, which is clean by construction; ghosting is what the panel does to
+// a frame, so a dump of a badly ghosted panel looks perfect. The only instrument
+// is somebody looking at the device.
+//
+// To settle 1000: set it, flash, and ride a leg at a rung where it fits well
+// inside the keep-in box (6 m/px on a 3.4 km leg gives ~71 moves a lap, so ~14
+// laps with no keep-in interruption), then look at the panel **at the end**. If it
+// smears, lower this; the moves-per-leg formula then says which rung a leg of a
+// given length has to be drawn at, and nothing else changes.
+inline constexpr uint16_t kRouteFramePartialMoves = 1000;
 
 enum class Action : uint8_t {
   // The fix landed close enough to where the marker already is that nothing is

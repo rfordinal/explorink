@@ -91,6 +91,36 @@ Panel shots of a whole traverse, one frame with the marker walking across it, ar
 `build/analysis/D9-po-zmene-jeden-frame.png` in the parent repo (gitignored,
 regenerate it).
 
+### And it is not only for passes -- a city commute gains as much
+
+**Measured on the panel 2026-08-07.** A recorded morning commute replayed against
+the device: 7.4 km, 10 minutes, at 6 m/px. Not a synthetic feed -- the log's
+`packet` records are what the phone really sent, 116 of them out of 717 GPS fixes,
+carrying the headings it actually derived.
+
+| run | full redraws | from heading | frame orientations |
+|---|---|---|---|
+| route loaded | **2** (both keep-in) | **0** | 1 |
+| no route | 12 (4 budget, 8 heading) | 8 | 4 |
+
+**Ten of twelve redraws gone on an ordinary commute.** And the shape of what was
+removed matters more than the count: packets 102, 105, 110 and 112 -- four redraws
+inside ten packets -- flipped the map 8, 4, 8, 4, so it swung 90 degrees back and
+forth four times in the last minute of the ride. Same thrash as the pass, in a
+city, over a couple of junctions.
+
+The two that remain are the rider genuinely leaving the frame: 7.4 km does not fit
+2.9 x 4.8 km. Both handed back a frame at heading 6, the same as the first.
+
+**This corrects a prediction made from the curvature table.** That table said only
+1.4 % of this route's 100 m windows turn past 90 degrees, and the conclusion drawn
+from it -- that a city ride would gain little -- was wrong. A windowed *average*
+smears out clustering, and junction turns cluster: the route is straight for
+kilometres and then turns twice within 200 m. **A mean over windows is the wrong
+statistic for something whose cost is per event.** The curvature table is still
+right about what a road does; it is not a predictor of redraw counts, and only the
+replay is.
+
 ## The decision: while a leg is on screen, it does not get redrawn
 
 **Decided by the maintainer 2026-08-06**, after watching the traverse on the panel:
@@ -111,9 +141,17 @@ arrow drawn **relative to the frame** -- a rider who turns 90 degrees gets an ar
 90 degrees off up, inside a map that has not moved. That mechanism exists, is wired,
 and today only gets to work until the drift limit fires and rotates the whole
 picture out from under it. Removing the drift re-anchor is what lets it do the job
-it was built for. (Hike mode draws a plain dot with no arrow, deliberately --
-`MapActivity.cpp:187`. Hike is not the case this rule is aimed at, but it means the
-frozen frame carries no heading at all there.)
+it was built for. Hike mode used to draw a plain dot with no arrow, deliberately: position over
+direction, which was right while the map itself turned and carried the heading.
+With the frame frozen that reasoning expires -- nothing would have carried it. So
+hike now gets **a thin hand off the dot to the ring's inner edge**, a watch hand
+against a bezel rather than a second arrow (`drawPositionMarker()`).
+
+Its reach is `kMarkerRingDiameter / 2 - kMarkerRingWidth`, and that is a
+correctness bound, not a style choice: anything drawn past `kMarkerBoxSize / 2`
+falls outside the box `saveMarkerPatch()` stores, so a marker move would not
+restore what it covered and would smear a trail across the map. A `static_assert`
+holds it, because that failure shows up on a panel and not in a build.
 
 ### What that costs, and the one number it turns on
 
@@ -457,10 +495,13 @@ layout; it was never built.
 
 ## Open, and what would settle it
 
-- **What the largest usable ghosting budget is. `kRouteFramePartialMoves` is 160
-  on no evidence at all.** It is enough to cover the Baba leg at 3 m/px, which is
-  why the gate shows zero redraws; whether 160 windowed refreshes in a row leave a
-  readable panel is unknown.
+- **`kRouteFramePartialMoves` is 1000, and 160 is as far as the evidence goes.**
+  The panel held **160 consecutive windowed refreshes with no clean frame, four
+  times over in one run, with no ghosting at all** — judged by eye 2026-08-07. It
+  could not be pushed further, because the firmware forces a clean frame at exactly
+  this constant, so a "test 1000" run tests 160 four times and nothing more. Going
+  to 1000 was the maintainer's call for hiking, where legs are long and slow; it is
+  an extrapolation from a clean 160, not a measurement.
 
   **And it cannot be measured from a host.** `CMD:SCREENSHOT` dumps the
   framebuffer, which is clean by construction -- ghosting is what the panel does to
@@ -469,12 +510,10 @@ layout; it was never built.
   camera pointed at it. That is worth knowing before anyone plans to gate this in
   CI.
 
-  What to do: ride a leg with the value at 12, 40, 80 and 160 (one constant,
-  `MapFollow.h`), and **look at the panel at the end of each** -- the quantity is
-  accumulated ghosting after N windowed refreshes with no clean frame between them,
-  so a glance part way through measures nothing. If 160 smears, lower it; the
-  moves-per-leg formula then says which rung a leg of a given length has to be
-  drawn at, and the mechanism does not change.
+  To settle 1000: ride a leg at a rung where it fits well inside the keep-in box,
+  so keep-in never interrupts and the moves accumulate -- 6 m/px on a 3.4 km leg is
+  ~71 moves a lap, so ~14 laps -- and **look at the panel at the end**. A glance
+  part way through measures nothing; the quantity is accumulated.
 - **A leg longer than the budget can hold has no good answer yet.** The formula
   gives a coarser rung, and coarsening has a floor: past some length the leg does not
   fit the panel at any rung (`route-layer.md`, "When nothing fits") and the frame has
