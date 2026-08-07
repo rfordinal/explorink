@@ -27,11 +27,12 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
-                                                              StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+const StrId SettingsActivity::categoryNames[categoryCount] = {
+    StrId::STR_CAT_DISPLAY, StrId::STR_CAT_MAP, StrId::STR_CAT_READER, StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
 
 void SettingsActivity::rebuildSettingsLists() {
   displaySettings.clear();
+  mapSettings.clear();
   readerSettings.clear();
   controlsSettings.clear();
   systemSettings.clear();
@@ -49,6 +50,8 @@ void SettingsActivity::rebuildSettingsLists() {
     if (setting.category == StrId::STR_NONE_OPT) continue;
     if (setting.category == StrId::STR_CAT_DISPLAY) {
       displaySettings.push_back(setting);
+    } else if (setting.category == StrId::STR_CAT_MAP) {
+      mapSettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_READER) {
       // Settings merged into "Text Settings"
       // (they stay in the shared list for the web settings API)
@@ -86,18 +89,22 @@ void SettingsActivity::rebuildSettingsLists() {
                         SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
 
-  // Update currentSettings pointer and count for the active category
+  // Update currentSettings pointer and count for the active category.
+  // Index order must match categoryNames[] above.
   switch (selectedCategoryIndex) {
     case 0:
       currentSettings = &displaySettings;
       break;
     case 1:
-      currentSettings = &readerSettings;
+      currentSettings = &mapSettings;
       break;
     case 2:
-      currentSettings = &controlsSettings;
+      currentSettings = &readerSettings;
       break;
     case 3:
+      currentSettings = &controlsSettings;
+      break;
+    case 4:
       currentSettings = &systemSettings;
       break;
   }
@@ -133,17 +140,21 @@ void SettingsActivity::loop() {
   bool hasChangedCategory = false;
 
   auto applyCategorySelection = [this] {
+    // Same index order as categoryNames[] and rebuildSettingsLists().
     switch (selectedCategoryIndex) {
       case 0:
         currentSettings = &displaySettings;
         break;
       case 1:
-        currentSettings = &readerSettings;
+        currentSettings = &mapSettings;
         break;
       case 2:
-        currentSettings = &controlsSettings;
+        currentSettings = &readerSettings;
         break;
       case 3:
+        currentSettings = &controlsSettings;
+        break;
+      case 4:
         currentSettings = &systemSettings;
         break;
     }

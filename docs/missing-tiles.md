@@ -11,11 +11,14 @@ device what it is short of and push those tiles back
 
 > **Optimisation review, 2026-08-06.**
 > [`optimization/04-tile-sync.md`](optimization/04-tile-sync.md) reviews this
-> store and the `TileSyncActivity` that consumes it. Two open items matter before
-> touching either: completion counts landed *files* rather than settled rows, so a
-> sync can declare itself done with rows still waiting; and arrivals on the map
-> screen no longer clear this list at all, so the next sync asks the phone for
-> tiles the card already holds (a regression from `412e0ed9`).
+> store and the `TileSyncActivity` that consumes it. One open item is still
+> open: completion counts landed *files* rather than settled rows, so a sync can
+> declare itself done with rows still waiting.
+>
+> The other -- arrivals on the map screen clearing nothing, a regression from
+> `412e0ed9` -- was fixed on 2026-08-07 by
+> `MapActivity::drainTransferredTiles()`, which the autosync work below needed
+> anyway. Read off the code, not yet run against a real arrival.
 
 ## A valid tile can still be a hole
 
@@ -298,6 +301,227 @@ fetch asks for again.
 Unlike a reorder, a removal **does** mark the store dirty. A list that still
 asks for tiles already on the card would have the phone send them all again
 after a restart.
+
+## Autosync: the map screen asking for what it just hatched
+
+**Off by default.** Settings > Map > *Auto-sync tiles*
+(`SettingsList.h`, `CrossPointSettings::mapAutoSyncTiles`). On, a frame that had
+to hatch anything asks the connected phone for exactly those tiles, and the map
+redraws itself when they land.
+
+This is the mid-ride case the sync screen above deliberately is not. Nobody
+opens a second screen at a junction, and the tiles that matter there are the
+nine on the panel, not the two hundred in the store.
+
+**It cost no new activity and no new allocation.** Everything it needs was
+already on the map screen: `BlePositionServer::begin()` and `transfer_.attach()`
+in `onEnter()` (`src/activities/map/MapActivity.cpp`), the command console the
+phone answers on, and the store the hatch loop already writes to.
+
+What was added, counted rather than estimated (2026-08-07): one setting byte,
+**11** members on `MapActivity` (7 for autosync, 4 for the header row's drawn
+state), and **158 non-comment lines** in `MapActivity.cpp` plus the store's
+`markRefused`/`isRefused` and the Settings-screen wiring. Every member is on an
+activity that is allocated once per screen entry, so none of it is resident while
+the map is closed.
+
+### The conversation
+
+`NEED_TILES <count> fmt <version> view`, an unsolicited indication -- the sync
+screen's ask with one extra word. `view` tells the phone to answer from `tiles`
+(the current viewport, at most 32 entries, each flagged `missing` or `ok`)
+rather than page `missing` (everything, up to 200). Full wire detail in
+`../../docs/ble-map-transfer-protocol.md`, "The `view` ask".
+
+The count is computed in the hatch loop itself
+(`MapActivity::drawMapLayers()`): it already walks each missing tile to draw the
+hatch and record it, so counting there costs nothing. It is **published, not
+acted on** -- `autoSyncWantCount_` is read by `loop()`. A render must not start
+a BLE conversation part-way through drawing a frame.
+
+### Three rules, none of them optional
+
+**Viewport only.** See above. The rest is what the sync screen is for.
+
+**A refused tile is never asked for twice.** `skip` used to be counted and
+nothing else. It now also sets `MissingTileHit::refused`
+(`MissingTilesStore::markRefused()`), and `drawMapLayers()` skips a refused tile
+when counting what to ask for. Without this the feature actively harms: a rider
+parked at the edge of coverage re-hatches the same squares on **every viewport
+reset** (that is why `record()` distinguishes a first appearance from a count
+bump, above), so every reset would be a fresh ask for tiles the phone has
+already said it does not have -- forever, on the phone's mobile data.
+
+The flag costs nothing, and this is measured rather than reasoned: compiled
+side by side with the old struct on the host (2026-08-07), both are **16 bytes**
+and `refused` sits at **offset 1**, inside the padding the `uint32_t` alignment
+already forces. So the 200-entry cap is still 3.2 KB. It is **not** persisted --
+a tile the CDN lacks today may exist next week, and a restart is the natural
+moment to find out.
+
+Anything added to this struct should be measured the same way. "It will fit in
+the padding" is a claim about the compiler, not about the code.
+
+**One ask per `kAutoSyncIntervalMs`** (60 s, `MapActivity.cpp`), and never a
+second while the first is outstanding. A rate cap, not a settle timer: more
+hatching does not push the next ask further out.
+
+### The globe
+
+A circle with an equator and a meridian, left of the Bluetooth logo in the
+header row (`MapActivity::drawHeaderStatus()`). Lit while `autoSyncPending_ > 0`
+-- tiles asked for and not yet settled by an arrival or a `skip`.
+
+The device has no radio that reaches the internet; the phone does. The glyph is
+still honest about the thing that matters to the rider: **mobile data is being
+spent on their behalf right now.**
+
+It should cost **two waveform passes per fetch, not per tile** -- the row is
+repainted only when its state actually flips, and only the strip, through
+`displayBufferWindow()`. Read off the code, **not counted on hardware**: a
+successful windowed repaint logs nothing, so counting them needs a build that
+says when it repaints. The row, its geometry and its repaint policy are their own
+topic: [`map-header-status.md`](map-header-status.md).
+
+### Every arrival owes a redraw -- not just the one that settles an ask
+
+`drainTransferredTiles()` arms `arrivalRedrawDueMs_` whenever `forget()` removed
+an entry, **whatever the ask is doing**. The panel is hatching a square the card
+now holds, and that is the one thing hatch must never mean.
+
+Tying the redraw to an ask settling was the first version and it was visibly
+wrong: a tile that arrived outside an ask -- pushed by hand, or landing after its
+ask had already expired -- was filed away while the map kept the hatch. Seen on
+the panel 2026-08-07.
+
+It is a **settle** timer (`kArrivalRedrawSettleMs`, 5 s), pushed out by each new
+arrival, not a rate cap. Arrivals come in bursts, each redraw is the better part
+of two seconds of waveform, and the frame worth spending is the one after the
+last tile. It is also deliberately not `armRedraw()`'s deadline: a button press
+must not be made to wait behind a transfer.
+
+### When an ask ends
+
+- **Every tile settled** -- arrivals plus skips reach the count. The globe goes
+  out. Any redraw owed was already armed by the arrivals themselves; a run where
+  every answer was `skip` owes none, because the panel's hatch is still the right
+  picture.
+- **`kAutoSyncQuietMs` (45 s) with no bytes moving.** The deadline is on
+  **silence, not on elapsed time**: `expireAutoSync()` rearms it every time the
+  receiver's byte counters move, so a slow transfer stays alive and only a phone
+  that walked away ends the ask.
+
+  A flat three-minute budget for the whole ask was the first version, and the
+  panel showed why it was wrong: **395 KB at 2.6 kB/s is 147 s for one tile**
+  (measured 2026-08-07), so the ask expired mid-transfer and the tile that landed
+  afterwards had no ask left to settle. Detail tiles twice that size exist on the
+  card.
+- **The rider leaves the map** -- `onExit()` sends `FETCH_CANCEL`, the same word
+  `TileSyncActivity::leave()` sends and for the same reason: the abort opcode is
+  a frame the central writes, so a peripheral's only cancel is on the command
+  channel.
+
+### What this fixed on the way past
+
+Arrivals on the map screen cleared nothing from the store -- the regression from
+`412e0ed9` noted at the top of this doc. `MapActivity::drainTransferredTiles()`
+now exists, so a tile pushed while the map is up drops its own entry, and the
+next sync stops asking for tiles the card already holds.
+
+### A subscription is a subscription, notify or indicate
+
+The command characteristic is created `WRITE | NOTIFY | INDICATE`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:232-233`), so the **central**
+picks which. BlueZ picks notify; the Android app picks indicate.
+
+`CommandCharCallbacks::onSubscribe` used to count only the indication bit, and
+that quietly broke autosync for every notify-subscribing client:
+
+- Replies reached them perfectly well. `onStatus` fires for a notification too,
+  so `sendCommandReply()`'s confirm wait returns normally.
+- But `isCommandSubscribed()` answered false, so **every unsolicited ask was
+  withheld** -- `NEED_TILES` from this screen and from the sync screen both.
+
+Measured on hardware 2026-08-07: a bleak client connected, subscribed, ran
+`tiles` and received all four reply lines, while the device logged `command
+channel unsubscribed` and never asked for anything. It now counts either bit
+(`subValue & 0x0003`).
+
+The transfer *status* characteristic still counts indications only, and there
+the asymmetry is not a choice: it is created `INDICATE`-only, so notify is not a
+subscription a central can make.
+
+**Anything that gates behaviour on somebody listening should use
+`isCommandSubscribed()`, never the reply path's return value.** `indicate()`
+succeeds into an empty room.
+
+### Verified vs assumed (autosync)
+
+- **Verified end to end on hardware, 2026-08-07** (this branch, `fmt 3`, a
+  laptop standing in for the phone via `tools/autosync_gate.py` in the parent
+  repo). Every step of the gate passed:
+  - **The ask goes out unprompted and is viewport-scoped**: `NEED_TILES 4 fmt 3
+    view` after a frame that hatched 4 tiles, and `NEED_TILES 2 fmt 3 view` at a
+    second gap. **The latency was not measured** -- the gate waits 20 s for the
+    frame before it looks, so all that is known is "inside 20 s of the `pos`".
+  - **`tiles` answers the viewport**, four entries, all `missing`.
+  - **`skip` settles the ask** -- four skips, tally 1..4, and the globe went out.
+  - **A refused tile is not asked for again.** After the four skips, the rate cap
+    was waited out in full (65 s) and the same position re-hatched: **no second
+    ask**. The positive control in the same run -- a different gap -- still
+    produced one, so the silence was the flag, not a dead feature.
+  - **An arrival clears its entry and redraws the map on its own.** With one ask
+    outstanding, `tools/blepush.py` pushed the real tile: `[MAP] z13 4490/2852
+    arrived, dropped from the list`, then the hatch was gone, the globe was out
+    and the frame had repainted **with no `redraw` command sent**. A following
+    `tiles` reported `ok`, so the file is readable at the path it landed on.
+  - **The whole loop, on a dense tile, watched on the panel.** At a gap the card
+    was missing two z13 tiles (23 KB and 322 KB), autosync asked, both were
+    pushed as answers, and 5 s after the last one the map redrew itself into a
+    real town: `2t 479w`, ink over the map area 3.37% -> 6.61%, globe out. No
+    command was sent to make it happen. The 322 KB tile took 120 s, which the
+    quiet timer rode out without expiring the ask.
+
+    This is the check that caught both bugs above, and it caught them because it
+    was watched **on the glass**. The gate answers every ask with `skip`, so it
+    exercises the refusal path and never the arrival path -- a green gate said
+    nothing about either.
+  - **The globe draws and is not clipped** -- `CMD:SCREENSHOT` with an ask
+    outstanding shows the ring, equator and meridian clear of the Bluetooth logo.
+    At 14 px it reads as a crosshair-in-a-circle as much as a globe; legible and
+    unambiguous against everything else in that row, but if it should look more
+    like a globe, curving the meridian is the change.
+  - **Transfer rate, one sample each**: 34,915 B in 13.1 s (2.6 kB/s) and
+    2,430 B in 0.9 s (2.7 kB/s), both at a 45 ms connection interval with the
+    device logging `MTU now 256, file payload 248 bytes per chunk`. **Not
+    comparable to this doc's earlier 2.4 kB/s at 30 ms**: that was the phone app,
+    this was `tools/blepush.py`, and a slower interval producing a higher rate
+    says the two runs differ in something not being controlled for. Treat both as
+    order-of-magnitude, not as a trend.
+- **Verified on the host**: compiles clean (`pio run`, default env, 2026-08-07).
+  260/260 tests green -- **which covers none of this change**: `MissingTilesStore`
+  needs ArduinoJson and `PersistableStore`, neither of which the native tests
+  link, and `MapActivity` has no host test at all. The suite says nothing else
+  broke, not that this works.
+  - Static RAM reads 17.6%, the same figure this doc recorded before the change.
+    **Not a same-day A/B**: no baseline build of `develop` was measured, so this
+    is "matches what was written down", not "measured unchanged". It is also the
+    expected result either way -- `MapActivity` is heap-allocated, so its new
+    members are not in `.bss`.
+  - Device heap with the map screen up: **55.2-56.1 KB free** across five samples
+    in the session log, at zoom rungs 0 and 1 with 1-2 tiles loaded.
+- **Still not verified**:
+  - **The real phone app.** It does not implement `view` yet -- today it would
+    page `missing` and push the whole list, which is exactly what this feature
+    exists to avoid. Everything above used the laptop gate.
+  - **The quiet timer actually expiring.** The old flat budget was seen to expire
+    (that is how it was found wrong), but nothing has yet gone 45 s silent with
+    an ask open. What would settle it: start a push, kill the client mid-file,
+    and watch the globe go out 45 s later with no further ask for that tile.
+  - **Interleaved arrivals and skips** crossing each other inside one ask, and a
+    tile arriving that the outstanding ask did not request.
+  - **The rate cap under a moving rider**, where viewport resets come from real
+    fixes rather than from `pos` commands.
 
 ### Its own screen, off the home menu -- not a map-menu item
 

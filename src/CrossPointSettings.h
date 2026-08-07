@@ -247,6 +247,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   int32_t mapLastLatE7 = 0;
   int32_t mapLastLonE7 = 0;
   uint8_t mapLastHeading = 0;
+  // Ask the phone for a tile the moment the map hatches one, instead of
+  // waiting for a deliberate trip to the tile sync screen. Off by default:
+  // it spends the phone's mobile data without being asked, so it has to be
+  // a decision the rider made once, on purpose.
+  //
+  // In SettingsList (category Map), unlike the ladder state above -- this one
+  // IS a Settings-screen toggle, so the generic toJson/fromJson loop carries
+  // it and nothing here has to.
+  uint8_t mapAutoSyncTiles = 0;
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships

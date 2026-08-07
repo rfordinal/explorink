@@ -52,6 +52,18 @@ void MissingTilesStore::record(uint8_t z, uint32_t col, uint32_t row) {
     return;
   }
 
+  // Field-by-field, not an aggregate initialiser: MissingTileHit carries a
+  // `refused` flag between `z` and `col`, and a positional {z, col, row, 1}
+  // would silently assign the column into it.
+  MissingTileHit fresh;
+  fresh.z = z;
+  fresh.col = col;
+  fresh.row = row;
+  fresh.count = 1;
+  // refused stays false: a tile nobody has been asked for yet has not been
+  // refused, and re-recording a tile that WAS refused takes the branch above
+  // instead, which leaves its flag alone.
+
   if (hits_.size() >= kMaxEntries) {
     // Full: give up the slot with the fewest hits so far rather than drop
     // the new one. A tile seen once and never again is the least useful
@@ -59,13 +71,27 @@ void MissingTilesStore::record(uint8_t z, uint32_t col, uint32_t row) {
     // overtake it the next time it is seen too.
     auto worst = std::min_element(hits_.begin(), hits_.end(),
                                   [](const MissingTileHit& a, const MissingTileHit& b) { return a.count < b.count; });
-    *worst = MissingTileHit{z, col, row, 1};
+    *worst = fresh;
     dirty_ = true;
     return;
   }
 
-  hits_.push_back(MissingTileHit{z, col, row, 1});
+  hits_.push_back(fresh);
   dirty_ = true;
+}
+
+bool MissingTilesStore::markRefused(uint8_t z, uint32_t col, uint32_t row) {
+  auto it = std::find_if(hits_.begin(), hits_.end(),
+                         [&](const MissingTileHit& hit) { return hit.z == z && hit.col == col && hit.row == row; });
+  if (it == hits_.end()) return false;
+  it->refused = true;
+  return true;
+}
+
+bool MissingTilesStore::isRefused(uint8_t z, uint32_t col, uint32_t row) const {
+  auto it = std::find_if(hits_.begin(), hits_.end(),
+                         [&](const MissingTileHit& hit) { return hit.z == z && hit.col == col && hit.row == row; });
+  return it != hits_.end() && it->refused;
 }
 
 bool MissingTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {

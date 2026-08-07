@@ -57,6 +57,39 @@ constexpr uint32_t kSaveSettleMs = 4000;
 // counted from the first new tile since the last flush (renderViewport()).
 constexpr uint32_t kMissingTilesSaveIntervalMs = 10 * 60 * 1000;
 
+// Autosync's rate cap: at most one `NEED_TILES` per this many milliseconds,
+// counted from the ask that went out, not pushed further by more hatching.
+// A rider crossing a coverage gap re-hatches on every viewport reset, and a
+// reset can be seconds apart -- without a cap that is a stream of asks for a
+// list that has barely changed.
+constexpr uint32_t kAutoSyncIntervalMs = 60 * 1000;
+
+// How long an ask may go **completely quiet** before the device gives up on it.
+// Not a budget for the whole fetch: expireAutoSync() rearms this every time the
+// receiver's byte counters move, so a slow transfer stays alive and only real
+// silence -- a phone out of range, an app closed mid-push -- ends the ask.
+//
+// A flat whole-fetch budget was tried first and was wrong on the panel: 395 KB
+// at 2.6 kB/s is 147 s for one tile, so three minutes expired mid-transfer
+// (measured 2026-08-07).
+constexpr uint32_t kAutoSyncQuietMs = 45 * 1000;
+
+// How long after the last arrival the map is redrawn. A settle timer, not a
+// rate cap: arrivals come in bursts and the frame worth spending is the one
+// after the last tile, so each arrival pushes this out.
+constexpr uint32_t kArrivalRedrawSettleMs = 5000;
+
+// How often the header status row's state is looked at (updateHeaderStatus()).
+// Bounds the rate of rssi() calls into the NimBLE host, and is still prompt for
+// a link that has dropped.
+constexpr uint32_t kHeaderPollMs = 2000;
+
+// And the floor between two repaints caused by nothing but a moving bar count.
+// RSSI sitting on a threshold flips the count back and forth, and each flip is
+// a real waveform pass on e-ink. A link appearing or dropping ignores this --
+// that one is not cosmetic.
+constexpr uint32_t kHeaderBarsRepaintMs = 30 * 1000;
+
 // Stateless view onto MISSING_TILES for the `missing` command, shared with the
 // tile sync screen (MissingTilesConsoleSource.h).
 MissingTilesConsoleSource g_missingTilesConsoleSource;
@@ -97,6 +130,16 @@ constexpr int kHeaderBleBarsWidth =
     kHeaderBleBarCount * kHeaderBleBarWidth + (kHeaderBleBarCount - 1) * kHeaderBleBarGap;
 constexpr int kHeaderBtLogoWidth = 6;
 constexpr int kHeaderBtToBarsGap = 4;
+// The globe, left of the Bluetooth logo: data is moving over the link right
+// now. A circle with an equator and a meridian -- at 14 px an ellipse for the
+// meridian is one pixel wide either side of the centre line and reads as
+// noise, so it is a straight line.
+//
+// The device has no radio that reaches the internet. The globe is honest
+// anyway, and about the thing that matters to the rider: the phone is spending
+// mobile data on their behalf.
+constexpr int kHeaderGlobeDiameter = kHeaderIconHeight;
+constexpr int kHeaderGlobeToBtGap = 6;
 constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to bars
 // GUI.drawHeader() only clears its own 80px-wide battery box (BaseTheme.cpp:366);
 // the BLE logo+bars sit further left, over live map lines like the compass and
@@ -400,6 +443,195 @@ void MapActivity::showBusy() {
   busyShown_ = true;
 }
 
+void MapActivity::maybeAutoSyncTiles() {
+  const uint32_t want = autoSyncWantCount_;
+  if (want == 0) return;
+
+  // Cleared unconditionally below: this is a snapshot of one frame's hatching,
+  // and a want kept across minutes would fire an ask for tiles the rider has
+  // since ridden away from. The next frame over a gap hatches again and asks
+  // again -- there is nothing to remember.
+  autoSyncWantCount_ = 0;
+
+  if (SETTINGS.mapAutoSyncTiles == 0) return;
+  // One ask at a time. A second ask while the first is still being answered
+  // would double-count the settle arithmetic and ask for tiles already on the
+  // wire.
+  if (autoSyncPending_ > 0) return;
+
+  const uint32_t now = millis();
+  if (autoSyncNextAskMs_ != 0 && now < autoSyncNextAskMs_) return;
+
+  // Nobody to ask. Not an error and not worth a line on screen: the rider
+  // turned this on and rode out of range of their own phone, which is the
+  // normal end of a ride.
+  if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) return;
+
+  askForViewportTiles(want);
+}
+
+void MapActivity::askForViewportTiles(uint32_t count) {
+  // Unsolicited indication on the command channel, the same mechanism
+  // TileSyncActivity::askForTiles() uses. Its return value is not evidence a
+  // phone heard it -- NimBLE accepts a line into its one-slot queue with
+  // nobody subscribed -- which is why the caller checks isCommandSubscribed()
+  // first and why the ask expires (expireAutoSync()).
+  //
+  // `view` is what separates this from the sync screen's ask: answer from
+  // `tiles`, the tiles on screen right now, not the whole `missing` list.
+  char line[48];
+  snprintf(line, sizeof(line), "NEED_TILES %lu fmt %u view", static_cast<unsigned long>(count),
+           static_cast<unsigned>(MapTileReader::kFormatVersion));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "autosync: NEED_TILES not delivered");
+    return;
+  }
+
+  const uint32_t now = millis();
+  autoSyncPending_ = count;
+  autoSyncArrived_ = false;
+  autoSyncDeadlineMs_ = now + kAutoSyncQuietMs;
+  // The baseline the quiet timer measures against. Taken now, so a transfer
+  // already in flight for something else does not read as this ask's progress.
+  lastTransferProgress_ = transfer_.status().completedBytes + transfer_.status().received;
+  // From the ask, not from when it settles: the cap is on how often the device
+  // may start a conversation, and a slow transfer already blocks the next ask
+  // through autoSyncPending_.
+  autoSyncNextAskMs_ = now + kAutoSyncIntervalMs;
+  LOG_INF(kLogTag, "autosync: asked for %lu tiles on screen", static_cast<unsigned long>(count));
+}
+
+void MapActivity::drainTransferredTiles() {
+  const MapTransferReceiver::Status transfer = transfer_.status();
+  if (!transfer.lastTileValid || transfer.tileSeq == lastClearedTileSeq_) return;
+  lastClearedTileSeq_ = transfer.tileSeq;
+
+  if (!MISSING_TILES.forget(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row)) {
+    // A tile the device never hatched -- a corridor pushed ahead of a ride,
+    // say. Nothing to clear, nothing this screen asked for, and not an error.
+    return;
+  }
+  LOG_INF(kLogTag, "z%u %lu/%lu arrived, dropped from the list", static_cast<unsigned>(transfer.lastTile.z),
+          static_cast<unsigned long>(transfer.lastTile.col), static_cast<unsigned long>(transfer.lastTile.row));
+
+  // **Every arrival owes a redraw, whether or not an ask is outstanding.** The
+  // panel is hatching a square the card now holds, which is the one thing hatch
+  // must never mean. This used to be tied to an ask settling, so a tile that
+  // arrived outside one -- pushed by hand, or landing after the ask had already
+  // expired -- was filed away and never drawn. Seen on the panel 2026-08-07: a
+  // 395 KB tile finished after its ask timed out, and the map kept the hatch.
+  //
+  // Coalesced on its own, longer settle rather than the button one: arrivals
+  // come in bursts, each redraw is the better part of two seconds of waveform,
+  // and the redraw that matters is the one after the last tile. Each arrival
+  // pushes the deadline out, so a burst costs one frame, not one per tile.
+  arrivalRedrawDueMs_ = millis() + kArrivalRedrawSettleMs;
+
+  if (autoSyncPending_ == 0) return;
+  --autoSyncPending_;
+  autoSyncArrived_ = true;
+  if (autoSyncPending_ > 0) return;
+
+  autoSyncDeadlineMs_ = 0;
+  LOG_INF(kLogTag, "autosync: settled");
+}
+
+void MapActivity::onTileSkipped(uint8_t z, uint32_t col, uint32_t row) {
+  // The supplier does not have this tile. Remembered, so the next frame over
+  // the same gap does not ask for it again -- see the class comment.
+  MISSING_TILES.markRefused(z, col, row);
+  LOG_DBG(kLogTag, "autosync: z%u %lu/%lu refused, not asking again", static_cast<unsigned>(z),
+          static_cast<unsigned long>(col), static_cast<unsigned long>(row));
+
+  if (autoSyncPending_ == 0) return;
+  --autoSyncPending_;
+  if (autoSyncPending_ > 0) return;
+
+  autoSyncDeadlineMs_ = 0;
+  // No redraw scheduled here even when tiles did land: an arrival already owes
+  // one through arrivalRedrawDueMs_. A run where every answer was `skip` owes
+  // nothing at all -- the panel's hatch is still the right picture, and a full
+  // frame is two seconds of waveform for no pixel change.
+}
+
+void MapActivity::expireAutoSync() {
+  if (autoSyncPending_ == 0 || autoSyncDeadlineMs_ == 0) return;
+
+  // **The deadline is on silence, not on the whole fetch.** Bytes still moving
+  // means the phone is answering, however slowly, and cutting it off there
+  // throws away everything already transferred.
+  //
+  // The first version put a flat three minutes on the whole ask, which a single
+  // tile can exceed on its own: measured 2026-08-07, 395 KB at 2.6 kB/s took
+  // 147 s, and detail tiles twice that size exist. It expired mid-transfer, and
+  // the tile that landed afterwards had no ask left to settle.
+  const uint32_t progress = transfer_.status().completedBytes + transfer_.status().received;
+  if (progress != lastTransferProgress_) {
+    lastTransferProgress_ = progress;
+    autoSyncDeadlineMs_ = millis() + kAutoSyncQuietMs;
+    return;
+  }
+
+  if (millis() < autoSyncDeadlineMs_) return;
+
+  LOG_INF(kLogTag, "autosync: %lu tiles unanswered for %lus, giving up", static_cast<unsigned long>(autoSyncPending_),
+          static_cast<unsigned long>(kAutoSyncQuietMs / 1000));
+  autoSyncPending_ = 0;
+  autoSyncDeadlineMs_ = 0;
+}
+
+void MapActivity::updateHeaderStatus() {
+  // Nothing to update before there is a frame to update: the waiting banner
+  // draws no header row at all, and painting one onto it would leave a floating
+  // status row over a screen with no map.
+  if (!viewportDrawn_) return;
+
+  // Polled, not checked per tick: rssi() is a NimBLE host call
+  // (ble_gap_conn_rssi), and asking it hundreds of times a second to answer a
+  // question about a 14 px icon is not a trade worth making. Half a hertz is
+  // still prompt for a link that dropped.
+  const uint32_t now = millis();
+  if (nextHeaderPollMs_ != 0 && now < nextHeaderPollMs_) return;
+  nextHeaderPollMs_ = now + kHeaderPollMs;
+
+  auto& ble = freeink::BlePositionServer::getInstance();
+  const bool globe = autoSyncPending_ > 0;
+  // Same test drawHeaderStatusStrip() uses, and the comment there says why it is
+  // the interval rather than the MTU.
+  const bool connected = ble.connIntervalMs() != 0;
+  const int bars = connected ? bleBarsForRssi(ble.rssi()) : 0;
+
+  // Two classes of change, and they earn different urgency.
+  //
+  // A link appearing or dropping, or a transfer starting or ending, changes
+  // what the row *means* -- repaint at once. This is the one that was missing:
+  // the row was drawn only by a full frame, so closing the phone's GPS app left
+  // the bars on the panel until something else forced a redraw. Reported from a
+  // real session, 2026-08-07.
+  const bool structural = globe != transferIconShown_ || connected != drawnLinkConnected_;
+  // A bar count moving while the link holds is the same story told slightly
+  // differently, and RSSI sitting on a threshold flips it back and forth.
+  // Every flip is a real waveform pass, so it is rate-capped.
+  const bool barsMoved = connected && bars != drawnBleBars_;
+
+  if (!structural && !barsMoved) return;
+  if (!structural && now < nextBarsRepaintMs_) return;
+  if (barsMoved) nextBarsRepaintMs_ = now + kHeaderBarsRepaintMs;
+
+  int x, y, w, h;
+  headerStatusRect(x, y, w, h);
+  // The strip alone, not drawHeaderStatus(): that one also redraws the battery
+  // block, which sits outside this window. Drawing outside what is refreshed
+  // puts a battery in the framebuffer that the panel will not show until the
+  // next full frame -- and if the charge has moved since, the two disagree.
+  drawHeaderStatusStrip();  // records what it drew, for the comparisons above
+  // Windowed, like the busy badge: the map on the rest of the panel is
+  // untouched and a full refresh would cost a second and throw it away twice.
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "header status window rejected: %d,%d %dx%d", x, y, w, h);
+  }
+}
+
 void MapActivity::drawCompass(uint8_t headingStep) {
   const int centreX = renderer.getScreenWidth() - kCompassCenterMarginRight;
   const int centreY = kCompassCenterTop;
@@ -465,26 +697,21 @@ void MapActivity::drawCompass(uint8_t headingStep) {
   renderer.fillPolygon(accentXs, accentYs, 3, true);
 }
 
-void MapActivity::drawHeaderStatus() {
+void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
+  // The strip the status row owns: the globe slot, the Bluetooth logo and the
+  // signal bars, plus the opaque backing's padding. Deliberately excludes the
+  // battery block -- GUI.drawHeader() clears and draws that itself.
+  //
+  // **The globe's slot is always part of this rect, whether or not the globe
+  // is drawn.** A rect that shrank when the globe went away would leave the
+  // globe's pixels on the panel with nothing to erase them.
   const int screenWidth = renderer.getScreenWidth();
-
-  // Battery: same call every other screen makes (BaseTheme.cpp:363), with no
-  // title/subtitle -- those draw nothing when null, leaving just the icon and
-  // (setting-permitting) the percentage text this screen never had before.
-  GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, BaseMetrics::values.batteryHeight + 10}, nullptr,
-                 nullptr);
-
-  // BLE: bars right-anchored clear of the battery block (icon plus its own
-  // worst-case text), then a small Bluetooth logo to their left. "100%" is
-  // the widest string drawBatteryRight ever draws (BaseTheme.cpp:118-120) --
-  // measured here, not guessed, after a guessed 32px allowance (2026-08-06)
-  // turned out too tight for some percentages and let the bars run into the
-  // text.
   const int batteryX = screenWidth - kHeaderMarginRight - BaseMetrics::values.batteryWidth;
   const int worstCasePercentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+  const int globeLeft = logoLeft - kHeaderGlobeToBtGap - kHeaderGlobeDiameter;
   // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
   // hands drawBatteryRight() rect.y+5 (BaseTheme.cpp:374), and
   // drawBatteryRight() adds another +6 of its own (:99) before drawing the
@@ -494,11 +721,72 @@ void MapActivity::drawHeaderStatus() {
   const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
   const int iconTop = iconBottom - kHeaderIconHeight;
 
+  x = globeLeft - kHeaderBackingPad;
+  y = iconTop - kHeaderBackingPad;
+  w = (barsRight - globeLeft) + kHeaderBackingPad * 2;
+  h = kHeaderIconHeight + kHeaderBackingPad * 2;
+}
+
+void MapActivity::drawHeaderStatus() {
+  const int screenWidth = renderer.getScreenWidth();
+
+  // Battery: same call every other screen makes (BaseTheme.cpp:363), with no
+  // title/subtitle -- those draw nothing when null, leaving just the icon and
+  // (setting-permitting) the percentage text this screen never had before.
+  GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, BaseMetrics::values.batteryHeight + 10}, nullptr,
+                 nullptr);
+
+  drawHeaderStatusStrip();
+}
+
+void MapActivity::drawHeaderStatusStrip() {
+  const int screenWidth = renderer.getScreenWidth();
+
+  // BLE: bars right-anchored clear of the battery block (icon plus its own
+  // worst-case text), then a small Bluetooth logo to their left. "100%" is
+  // the widest string drawBatteryRight ever draws (BaseTheme.cpp:118-120) --
+  // measured here, not guessed, after a guessed 32px allowance (2026-08-06)
+  // turned out too tight for some percentages and let the bars run into the
+  // text.
+  //
+  // Every horizontal position here is re-derived by headerStatusRect(), which
+  // is what the windowed repaint refreshes. Keep the two in step -- a strip
+  // narrower than what is drawn leaves half a glyph behind.
+  const int batteryX = screenWidth - kHeaderMarginRight - BaseMetrics::values.batteryWidth;
+  const int worstCasePercentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
+  const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
+  const int barsLeft = barsRight - kHeaderBleBarsWidth;
+  const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+  const int globeLeft = logoLeft - kHeaderGlobeToBtGap - kHeaderGlobeDiameter;
+  const int batteryIconTop = kHeaderMarginTop + 5 + 6;
+  const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
+  const int iconTop = iconBottom - kHeaderIconHeight;
+
   // White backing first, like the compass halo and the busy badge: this can
   // land on live map lines, not blank margin.
-  const int backingWidth = (barsRight - logoLeft) + kHeaderBackingPad * 2;
-  renderer.fillRect(logoLeft - kHeaderBackingPad, iconTop - kHeaderBackingPad, backingWidth,
-                    kHeaderIconHeight + kHeaderBackingPad * 2, false);
+  int backingX, backingY, backingW, backingH;
+  headerStatusRect(backingX, backingY, backingW, backingH);
+  renderer.fillRect(backingX, backingY, backingW, backingH, false);
+
+  // The globe, while a transfer this screen asked for is outstanding. Drawn
+  // from autoSyncPending_ rather than from transferIconShown_: this function
+  // paints what is true, and transferIconShown_ only records what the panel
+  // was last told -- which this call is about to make current.
+  if (autoSyncPending_ > 0) {
+    const int radius = kHeaderGlobeDiameter / 2;
+    const int cx = globeLeft + radius;
+    const int cy = iconTop + kHeaderIconHeight / 2;
+    // Four quadrants make the closed ring. drawArc() can only start and end on
+    // 90-degree boundaries (see drawCompass()'s note), which is exactly right
+    // here -- a full circle is what is wanted, not an open arc.
+    renderer.drawArc(radius, cx, cy, +1, +1, 1, true);
+    renderer.drawArc(radius, cx, cy, +1, -1, 1, true);
+    renderer.drawArc(radius, cx, cy, -1, +1, 1, true);
+    renderer.drawArc(radius, cx, cy, -1, -1, 1, true);
+    renderer.drawLine(cx - radius, cy, cx + radius, cy, 1, true);  // equator
+    renderer.drawLine(cx, cy - radius, cx, cy + radius, 1, true);  // meridian
+  }
+  transferIconShown_ = autoSyncPending_ > 0;
 
   // Logo: a small hand-drawn Bluetooth rune -- a vertical spine (the actual
   // Bluetooth glyph's ascender/descender) plus two chevron wings crossing it,
@@ -518,19 +806,32 @@ void MapActivity::drawHeaderStatus() {
   renderer.drawLine(logoTipX, logoThreeQuarter, logoLeft, iconBottom, 1, true);  // lower wing, back to spine
 
   auto& ble = freeink::BlePositionServer::getInstance();
-  // A negotiated MTU only exists once a central has connected and completed
-  // the ATT exchange (BlePositionServer.h:158) -- the same signal MapCommandConsole
-  // already reports as link state (MapCommandConsole.cpp:233).
-  const bool connected = ble.negotiatedMtu() != 0;
+  // The connection interval, **not** the MTU.
+  //
+  // This row answers one question for the rider: is my phone there. The
+  // interval is set in `onConnect` and zeroed in `onCentralDisconnect`, so it
+  // means exactly that and nothing else.
+  //
+  // The MTU does not. The *central* initiates the ATT exchange and many never
+  // do: measured 2026-08-07, a BlueZ client connected, subscribed, ran `tiles`
+  // and read every reply line while `negotiatedMtu()` stayed 0 -- and this row,
+  // which used to test the MTU, drew the "no link" X through the whole session.
+  // `info` omitting its `mtu` line was what proved it.
+  const bool connected = ble.connIntervalMs() != 0;
+  // Recorded on both paths, so updateHeaderStatus() compares against what is
+  // actually on the panel rather than against the last thing it decided.
+  drawnLinkConnected_ = connected;
   if (!connected) {
     // X across the bar slot, same "not present" convention as the WiFi
     // indicator (CrossPointWebServerActivity.cpp:483-486).
     renderer.drawLine(barsLeft, iconTop, barsLeft + kHeaderBleBarsWidth, iconBottom, 2, true);
     renderer.drawLine(barsLeft, iconBottom, barsLeft + kHeaderBleBarsWidth, iconTop, 2, true);
+    drawnBleBars_ = 0;
     return;
   }
 
   const int bars = bleBarsForRssi(ble.rssi());
+  drawnBleBars_ = bars;
   for (int i = 0; i < kHeaderBleBarCount; ++i) {
     const int barHeight = (i + 1) * kHeaderIconHeight / kHeaderBleBarCount;
     const int x = barsLeft + i * (kHeaderBleBarWidth + kHeaderBleBarGap);
@@ -606,6 +907,24 @@ void MapActivity::onEnter() {
   markerPatchValid_ = false;
   partialMoves_ = 0;
 
+  // Autosync starts from nothing every time this screen opens. The rate cap in
+  // particular is per session on purpose: a rider who left the map and came
+  // back is asking for the picture again, and making them wait out a cap armed
+  // before they left would look like the feature is off.
+  autoSyncWantCount_ = 0;
+  autoSyncPending_ = 0;
+  autoSyncArrived_ = false;
+  autoSyncNextAskMs_ = 0;
+  autoSyncDeadlineMs_ = 0;
+  lastClearedTileSeq_ = 0;
+  arrivalRedrawDueMs_ = 0;
+  lastTransferProgress_ = 0;
+  transferIconShown_ = false;
+  drawnLinkConnected_ = false;
+  drawnBleBars_ = -1;
+  nextHeaderPollMs_ = 0;
+  nextBarsRepaintMs_ = 0;
+
   // Ladder state comes back off the card exactly as it was left, per mode.
   mode_ = static_cast<MapRideMode>(SETTINGS.mapMode < kMapRideModeCount ? SETTINGS.mapMode : 0);
   for (uint8_t mode = 0; mode < kMapRideModeCount; ++mode) {
@@ -620,6 +939,12 @@ void MapActivity::onEnter() {
   // copied in -- MISSING_TILES was loaded from the card in setup() and keeps
   // growing while this screen is open, so a copy would go stale mid-session.
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
+  // `skip` has to reach this screen per tile, not as a tally: two skips
+  // between two loop() ticks would settle one ask and leave the other tile
+  // unmarked, and an unmarked refusal is asked for again on the next frame.
+  // Cleared in onExit() -- the console outlives nothing here, but a dangling
+  // observer is not a thing to leave lying around either.
+  consoleState_.setSkipObserver(this);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -732,6 +1057,18 @@ void MapActivity::onExit() {
   // loop() to debounce into -- and it is still guarded by the value check,
   // so leaving the map without touching a button writes nothing.
   saveLaddersIfChanged();
+
+  // An autosync still being answered has to be called off. The device cannot
+  // stop the phone from its end -- the transfer protocol's abort opcode (0x03)
+  // is a frame the *central* writes -- so the cancel is a word on the command
+  // channel, the same one TileSyncActivity::leave() sends.
+  if (autoSyncPending_ > 0 && freeink::BlePositionServer::getInstance().isCommandSubscribed()) {
+    if (!freeink::BlePositionServer::getInstance().sendCommandReply("FETCH_CANCEL")) {
+      LOG_ERR(kLogTag, "autosync: FETCH_CANCEL not delivered");
+    }
+  }
+  autoSyncPending_ = 0;
+  consoleState_.setSkipObserver(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this
@@ -854,6 +1191,20 @@ void MapActivity::loop() {
 
   handleButtons();
 
+  // Autosync, in the order the state moves: land what arrived, settle what the
+  // phone refused (that happens in ble_.poll() above, through onTileSkipped),
+  // give up on what neither, then ask for whatever the last frame hatched, and
+  // finally put the globe on or off to match.
+  //
+  // All of it is a handful of integer compares per tick when the feature is
+  // off or idle -- the same cost class as the redraw and save deadlines below.
+  drainTransferredTiles();
+  expireAutoSync();
+  maybeAutoSyncTiles();
+  // Also the link state and the signal bars, which have nothing to do with
+  // autosync -- this is simply the one place that repaints that row.
+  updateHeaderStatus();
+
   const uint32_t now = millis();
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
     redrawDueMs_ = 0;
@@ -865,6 +1216,15 @@ void MapActivity::loop() {
   if (missingTilesSaveDueMs_ != 0 && now >= missingTilesSaveDueMs_) {
     missingTilesSaveDueMs_ = 0;
     MISSING_TILES.flushIfDirty();
+  }
+  // A tile landed and the panel is still hatching where it goes. Deliberately
+  // its own deadline rather than armRedraw()'s: this settles on the last
+  // arrival, and a button press must not be made to wait behind it.
+  if (arrivalRedrawDueMs_ != 0 && now >= arrivalRedrawDueMs_) {
+    arrivalRedrawDueMs_ = 0;
+    LOG_INF(kLogTag, "tiles arrived, redrawing");
+    showBusy();
+    renderCurrent();
   }
   // Checked after the redraw, never before it: the redraw is what the rider
   // is waiting for, and this is an SD write.
@@ -886,8 +1246,12 @@ void MapActivity::handleButtons() {
   // Logical buttons, never HalGPIO::BTN_* -- the front four are remappable
   // in settings and the mapping is orientation-aware (firmware CLAUDE.md).
   //
-  // Up is toward the closest rung: step 0 is 3 m/px, step 4 is 15. Zooming
-  // in is going up the ladder.
+  // Up is toward the closest rung: step 0 is 1 m/px, step 4 is 20
+  // (MapViewport.h:61-68). Zooming in is going up the ladder.
+  //
+  // Worth keeping in mind when a rung looks broken: step 0 shows 480x800
+  // **metres**, so over sparse countryside an empty panel there is the honest
+  // answer, not a missing tile. Mistaken for a render bug once, 2026-08-07.
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) stepZoom(-1);
   if (mappedInput.wasPressed(MappedInputManager::Button::Down)) stepZoom(+1);
 
@@ -1396,11 +1760,26 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // is the marker, which goes back on top afterwards.
   const uint32_t missing = source_->unavailableMask();
   if (missing != 0) {
+    // Tiles worth asking a phone for: hatched here, and not already refused by
+    // the supplier. Counted in the same pass that hatches them -- the loop
+    // already has each tile's real (z, col, row) in hand, and a second walk to
+    // work out the same thing would be a second walk for nothing.
+    uint32_t fetchable = 0;
     for (uint32_t index = 0; index < range.count() && index < 32; ++index) {
       if ((missing & (1u << index)) == 0) continue;
-      MapHatch::drawTile(canvas, proj_, range.z, range.colAt(index), range.rowAt(index));
-      MISSING_TILES.record(range.z, range.colAt(index), range.rowAt(index));
+      const uint32_t col = range.colAt(index);
+      const uint32_t row = range.rowAt(index);
+      MapHatch::drawTile(canvas, proj_, range.z, col, row);
+      // Before record(), never after: record() adds the tile at count 1 with
+      // refused false, so asking afterwards would count a tile the supplier
+      // refused ten minutes ago as fresh and beg for it again.
+      if (!MISSING_TILES.isRefused(range.z, col, row)) ++fetchable;
+      MISSING_TILES.record(range.z, col, row);
     }
+    // Published, not acted on here: the ask goes out from loop(), which is
+    // where the rate cap and the link state live. A render must not start a
+    // BLE conversation half-way through drawing a frame.
+    autoSyncWantCount_ = fetchable;
     // No marker restore here: the caller draws the marker after this returns, so
     // the hatch cannot bury it. Drawing the style's puck here as well would only
     // leave it peeking out from under a smaller mode marker.
