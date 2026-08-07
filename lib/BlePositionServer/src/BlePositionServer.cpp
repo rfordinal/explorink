@@ -79,8 +79,21 @@ class CommandCharCallbacks : public NimBLECharacteristicCallbacks {
   // succeeds into an empty room, so this is the only way a screen can tell a
   // connected phone from no phone.
   void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
-    // bit1 is indications, bit0 notifications. Only indications count here.
-    self().onCommandSubscribe((subValue & 0x0002) != 0);
+    // bit1 is indications, bit0 notifications. **Either one counts.**
+    //
+    // This characteristic offers both (see createCharacteristic below), and a
+    // central picks. BlueZ picks notify, so every Linux host does; the Android
+    // app happens to pick indicate. Counting only indications therefore meant a
+    // whole class of perfectly working clients was invisible: replies reached
+    // them (onStatus fires for a notification too, so sendCommandReply's
+    // confirm wait returns normally), but isCommandSubscribed() answered false,
+    // and every unsolicited ask -- NEED_TILES from the sync screen and from the
+    // map's autosync -- was silently withheld.
+    //
+    // Measured on hardware 2026-08-07: a bleak client subscribed, read the
+    // viewport with `tiles` and got all four reply lines, while the device
+    // logged "command channel unsubscribed" and never asked for anything.
+    self().onCommandSubscribe((subValue & 0x0003) != 0);
   }
 };
 
@@ -111,7 +124,10 @@ class TransferCharCallbacks : public NimBLECharacteristicCallbacks {
 // transfer must not start with its verdict going nowhere.
 class TransferStatusCharCallbacks : public NimBLECharacteristicCallbacks {
   void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
-    // bit1 is indications, bit0 notifications. Only indications count here.
+    // bit1 is indications, bit0 notifications. Only indications count here,
+    // and unlike the command channel that is not a choice: this characteristic
+    // is created INDICATE-only, so notify is not a subscription a central can
+    // even make.
     self().onTransferSubscribe((subValue & 0x0002) != 0);
   }
 };
