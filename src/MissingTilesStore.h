@@ -10,17 +10,29 @@
 // crc32-mismatched, same "unavailable" definition MapTileSource uses.
 struct MissingTileHit {
   uint8_t z = 0;
+  // The supplier answered `skip` for this tile: it does not have it. Set by
+  // markRefused(), read by autosync so it stops asking for a tile nobody can
+  // send (MapActivity::maybeAutoSyncTiles()).
+  //
+  // Declared here, immediately after `z`, so it lands in the padding the
+  // uint32_t alignment already forces -- sizeof(MissingTileHit) stays 16
+  // bytes, and the 200-entry cap below stays the same 3.2 KB it was.
+  //
+  // **Not persisted**, deliberately: toJson()/fromJson() do not carry it. The
+  // tile does not exist *today*; the CDN may hold it next week, and a reboot
+  // is the natural moment to try again.
+  bool refused = false;
   uint32_t col = 0;
   uint32_t row = 0;
   uint32_t count = 0;
 };
 
 // Persists which tiles MapActivity has hatched, across restarts, with a
-// count of how many separate viewport resets asked for each one. Nothing on
-// the device fetches a tile over the network -- the point is purely to leave
-// a record on the SD card so a laptop tool (over WebDAV/WiFi file manager,
-// same channel that already reaches /.crosspoint/, or a card pull) can read
-// which tiles a real ride actually needed and prioritise building them.
+// count of how many separate viewport resets asked for each one. The device
+// has no network of its own: the record exists so somebody else can fill the
+// gaps -- a laptop tool reading the file off the card, TileSyncActivity
+// asking a phone for the whole list, or the map screen's autosync asking for
+// what is hatched on screen right now (docs/missing-tiles.md).
 //
 // MapTileSource::unavailableMask() already knows this for one render, but it
 // is cleared by the next begin() call (MapTileSource.h) -- nothing accumulates
@@ -65,6 +77,24 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // still asks for tiles the device already has would have the phone send
   // them again after a restart.
   bool forget(uint8_t z, uint32_t col, uint32_t row);
+
+  // Marks a tile as one the supplier said it does not have (`skip` on the
+  // command channel). Returns true if the tile was on the list.
+  //
+  // The entry stays: the tile is still missing and the map still hatches it.
+  // What changes is that autosync stops asking for it -- without this a rider
+  // parked at the edge of coverage re-hatches the same tile on every viewport
+  // reset, and every one of those would be a fresh ask for a tile the phone
+  // has already refused, burning mobile data and BLE airtime on the same
+  // answer forever.
+  //
+  // Does not mark the store dirty. The flag is in-memory only (see the
+  // MissingTileHit comment), so there is nothing new to write.
+  bool markRefused(uint8_t z, uint32_t col, uint32_t row);
+
+  // True when this tile is on the list and has been refused. Unknown tiles
+  // answer false -- never asked for, so never refused.
+  bool isRefused(uint8_t z, uint32_t col, uint32_t row) const;
 
   // True once a tile has been added or evicted since the last flush. A tile
   // already on the list simply getting hit again does not set this -- see

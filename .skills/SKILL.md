@@ -1071,7 +1071,8 @@ Chat logs and commit messages are not where the next agent looks.
 Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
 `docs/activity-manager.md`, `docs/webserver-endpoints.md`, `docs/map-style.md`,
 `docs/map-follow.md`, `docs/missing-tiles.md`, `docs/route-layer.md`,
-`docs/route-navigation.md`, `docs/power-management.md`, `docs/sleep-screen.md`.
+`docs/route-navigation.md`, `docs/map-header-status.md`,
+`docs/power-management.md`, `docs/sleep-screen.md`.
 Extend one before adding another.
 
 **Before planning work on the map, BLE or tile paths, read the matching plan in

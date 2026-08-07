@@ -51,7 +51,7 @@
 //
 // ## The buttons
 //
-// | UP / DOWN      | zoom ladder, 5 rungs, 3..15 m/px                     |
+// | UP / DOWN      | zoom ladder, 5 rungs, 1..20 m/px                     |
 // | LEFT / RIGHT   | marker-height ladder, 5 rungs, look-ahead 50..95 %   |
 // | CONFIRM        | open the map menu: Refresh, Mode (ride/hike/cycle)   |
 // | BACK           | leave (or close the menu, if it is open)             |
@@ -82,7 +82,30 @@
 // The settings write is armed on a longer timer still. CrossPointSettings
 // persists to /.crosspoint/settings.json on the SD card, so every save is an
 // SD write (CLAUDE.md rule 8), and it must never sit in front of the redraw.
-class MapActivity final : public Activity {
+//
+// ## Autosync: asking the phone for a tile the moment one is hatched
+//
+// Off unless SETTINGS.mapAutoSyncTiles says otherwise. On, a frame that had to
+// hatch anything asks the connected phone for exactly those tiles
+// (maybeAutoSyncTiles()), a globe in the header says data is moving, and the
+// map redraws once the answers are in. Everything it needs was already on this
+// screen: the BLE peripheral, the transfer receiver, the command console the
+// phone answers on, and the store the hatch loop already writes to.
+//
+// Three rules keep it from being a nuisance, and none of them is optional:
+//
+// - **Viewport only.** `NEED_TILES <n> fmt <v> view` tells the phone to read
+//   the current screen with `tiles`, not to page the whole 200-entry
+//   `missing` list. What is hatched in front of the rider is the urgent part;
+//   the rest is what the tile sync screen is for.
+// - **A refused tile is never asked for twice.** The phone answering `skip`
+//   marks the entry (MissingTilesStore::markRefused()), and a marked tile does
+//   not count toward the next ask. Without it a rider parked at the edge of
+//   coverage re-hatches the same squares on every viewport reset and begs for
+//   them forever, on the phone's mobile data.
+// - **One ask per kAutoSyncIntervalMs.** A rate cap, not a settle timer: the
+//   next ask is not pushed further out by more hatching.
+class MapActivity final : public Activity, public IMapSkipObserver {
  public:
   // `routePath` is an absolute card path to a .tir route, or nullptr for none.
   // RouteSelectActivity passes what the rider picked; every other caller --
@@ -97,6 +120,11 @@ class MapActivity final : public Activity {
   // don't let the device auto-sleep (and drop off USB) while the BLE
   // peripheral is running and might receive a position update any moment.
   bool preventAutoSleep() override;
+
+  // IMapSkipObserver -- the phone saying it cannot supply one tile. Marks the
+  // entry refused so autosync stops asking for it, and settles the row against
+  // the ask that is outstanding.
+  void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) override;
 
  private:
   void renderWaiting();
@@ -187,6 +215,10 @@ class MapActivity final : public Activity {
   // so this reads the same; the BLE logo and signal bars are this screen's
   // own -- no other activity has a wireless link to show.
   void drawHeaderStatus();
+  // The globe / Bluetooth logo / signal bars alone -- everything inside
+  // headerStatusRect() and nothing outside it. Split out so the windowed
+  // repaint can redraw exactly what it refreshes.
+  void drawHeaderStatusStrip();
   // Up/Down are physical side buttons -- GUI.drawButtonHints()'s four front-
   // button boxes never mention them. Calls the theme's own
   // drawSideButtonHints() for the matching side-hint boxes.
@@ -202,6 +234,39 @@ class MapActivity final : public Activity {
   // (armRedraw()), and the badge is already on screen, so they must not each
   // pay a refresh. busyShown_ is that latch, cleared by whatever repaints the
   // whole screen.
+  // Sends the ask, if the setting is on, a phone is listening, nothing is
+  // already in flight and the rate cap has expired. Called from loop(), never
+  // from the render path: the hatch loop only records what it would be worth
+  // asking for (autoSyncWantCount_).
+  void maybeAutoSyncTiles();
+  // `NEED_TILES <count> fmt <version> view` -- the `view` word is what tells
+  // the phone to answer from `tiles` (this screen) rather than page `missing`
+  // (the tile sync screen). docs/ble-map-transfer-protocol.md.
+  void askForViewportTiles(uint32_t count);
+  // Clears MissingTilesStore entries for tiles that have landed, and settles
+  // them against the outstanding ask.
+  //
+  // On the activity task, never in the BLE callback: this and
+  // renderViewport()'s record() are the store's only writers, and a second
+  // writer on the NimBLE host task would corrupt the vector. The receiver
+  // publishes a coordinate plus a sequence number and this acts on the change
+  // (MapTransferReceiver::Status::lastTile).
+  void drainTransferredTiles();
+  // Gives up on an ask nothing has answered, so the globe cannot stay lit
+  // forever after the phone walks away mid-transfer.
+  void expireAutoSync();
+  // Keeps the header status row honest between full frames: the globe, the
+  // link state and the signal bars. Refreshes only the header strip, and only
+  // when something actually changed -- same windowed mechanism as the busy
+  // badge.
+  //
+  // Without this the row is drawn only by a full frame, so a phone that
+  // disconnects leaves its signal bars on the panel until something unrelated
+  // forces a redraw. Seen in a real session, 2026-08-07.
+  void updateHeaderStatus();
+  // The globe's own slot, and the strip drawHeaderStatus() backs and repaints.
+  // One source for both, or the repaint clips what the draw put down.
+  void headerStatusRect(int& x, int& y, int& w, int& h) const;
   void showBusy();
   void drawBusyBadge();
   // Badge rectangle in logical screen coordinates. displayBufferWindow()
@@ -357,6 +422,48 @@ class MapActivity final : public Activity {
 
   // True while the busy badge is on the panel. See showBusy().
   bool busyShown_ = false;
+
+  // ## Autosync state (see the class comment)
+  //
+  // Tiles the last frame hatched that are worth asking for -- hatched, and not
+  // already refused by the supplier. 0 means there is nothing to ask for.
+  // Written by drawMapLayers(), consumed and cleared by maybeAutoSyncTiles().
+  uint32_t autoSyncWantCount_ = 0;
+  // Tiles asked for and not yet settled by an arrival or a `skip`. Non-zero is
+  // exactly the condition the globe shows.
+  uint32_t autoSyncPending_ = 0;
+  // True once at least one tile of this ask has actually landed, so the map is
+  // redrawn when the ask settles -- and is not redrawn when every answer was
+  // "not available", which would spend two seconds of waveform on the same
+  // picture.
+  bool autoSyncArrived_ = false;
+  // millis() deadlines; 0 means nothing armed. The interval is a rate cap on
+  // asks, the deadline is the give-up on one ask.
+  uint32_t autoSyncNextAskMs_ = 0;
+  uint32_t autoSyncDeadlineMs_ = 0;
+  // Last tileSeq already cleared out of the store (drainTransferredTiles()).
+  uint32_t lastClearedTileSeq_ = 0;
+  // Deadline for the redraw a tile arrival owes, pushed out by each further
+  // arrival so a burst costs one frame. 0 means none owed.
+  uint32_t arrivalRedrawDueMs_ = 0;
+  // Bytes the receiver had moved when the ask's quiet timer was last rearmed.
+  // The ask expires on silence, not on elapsed time (expireAutoSync()).
+  uint32_t lastTransferProgress_ = 0;
+  // ## What the header status row currently has on it
+  //
+  // Not the state itself -- autoSyncPending_ and the BLE server are. These are
+  // what was last *drawn*, so updateHeaderStatus() can tell a real change from
+  // a poll. All three are written by drawHeaderStatusStrip(), on every path
+  // that draws the row, including full frames.
+  bool transferIconShown_ = false;
+  bool drawnLinkConnected_ = false;
+  // -1 means "never drawn", which is not the same as 0 bars.
+  int drawnBleBars_ = -1;
+  // millis() deadlines; 0 means due now. The poll interval bounds how often
+  // rssi() is asked; the bars interval bounds how often a bar count that keeps
+  // crossing a threshold may spend a waveform pass.
+  uint32_t nextHeaderPollMs_ = 0;
+  uint32_t nextBarsRepaintMs_ = 0;
 
   // One state, two channels. A `zoom 3` over USB and a `zoom 3` over BLE
   // land on the same number because they share this object, not because two
