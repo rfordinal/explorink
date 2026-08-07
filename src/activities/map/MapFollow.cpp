@@ -21,13 +21,18 @@ Action decide(const Request& request) {
   // movement floor, so a fix that is barely moving but has turned the rider (or
   // has run out of ghosting budget) still gets its redraw instead of being
   // skipped as "close enough".
-  if (headingDriftSteps(request.fixHeadingStep, request.anchorHeadingStep) >= kMaxHeadingDriftSteps) {
+  //
+  // With a route holding the frame there is no heading check at all: the frame
+  // is the route's, so the rider turning is not news about the picture, only
+  // about the arrow drawn inside it (Request::routeHoldsFrame).
+  if (!request.routeHoldsFrame &&
+      headingDriftSteps(request.fixHeadingStep, request.anchorHeadingStep) >= kMaxHeadingDriftSteps) {
     return Action::ReAnchor;
   }
   if (!insideKeepIn(request.fixX, request.fixY, request.screenWidth, request.screenHeight)) {
     return Action::ReAnchor;
   }
-  if (request.partialMoves >= kMaxPartialMoves) {
+  if (request.partialMoves >= request.partialMoveBudget) {
     return Action::ReAnchor;
   }
 

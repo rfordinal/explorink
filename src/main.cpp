@@ -616,7 +616,7 @@ void loop() {
           LOG_ERR("SCR", "screenshot write incomplete: %u of %u bytes", (unsigned)written, (unsigned)bufferSize);
         }
         logSerial.printf("SCREENSHOT_END\n");
-      } else if (cmd == "GOTO_MAP") {
+      } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->
         // BlePositionServer::begin()) hangs solid if entered while still in
@@ -625,8 +625,24 @@ void loop() {
         // Same call HomeActivity::onMapOpen() makes on manual selection --
         // arms replaceActivity(), resolved by activityManager.loop() later
         // in this same iteration.
-        LOG_DBG("MAIN", "CMD:GOTO_MAP received, calling goToMap()");
-        activityManager.goToMap();
+        // An optional route path after the command, so a host can put the map on
+        // screen *with a route loaded* -- docs/route-layer.md's open "no console
+        // command" item. Without it the only way to a loaded route is the
+        // picker's buttons, which means the whole route frame path cannot be
+        // exercised or regression-tested from the laptop at all.
+        //
+        // MapActivity's constructor copies the path into its own fixed buffer
+        // (MapActivity.cpp, `routePath_`), and runs synchronously inside
+        // goToMap(), so handing it this local String's storage is safe.
+        String routePath = cmd.substring(8);
+        routePath.trim();
+        if (routePath.isEmpty()) {
+          LOG_DBG("MAIN", "CMD:GOTO_MAP received, calling goToMap()");
+          activityManager.goToMap();
+        } else {
+          LOG_DBG("MAIN", "CMD:GOTO_MAP received with route %s", routePath.c_str());
+          activityManager.goToMap(routePath.c_str());
+        }
         LOG_DBG("MAIN", "goToMap() returned");
         logSerial.printf("GOTO_MAP_OK\n");
       }

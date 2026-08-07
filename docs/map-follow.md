@@ -17,6 +17,21 @@ are in "What the ride measured" below; anything still unmeasured says so.
 > [`optimization/07-power-and-lifecycle.md`](optimization/07-power-and-lifecycle.md)
 > says what measurement settles it.
 
+> **This policy has no idea a route is loaded**, and on a switchback road that
+> costs a redraw every 500 m or worse.
+> [`route-navigation.md`](route-navigation.md) has the measurements. It also puts a
+> number on `kMaxPartialMoves`: at 12 the marker crosses 18 % of the screen it was
+> given before a full frame is forced.
+>
+> **Since 2026-08-07, check 1 does not apply when a route is loaded.**
+> `Request::routeHoldsFrame` turns it off, leaving keep-in and the budget as the
+> only triggers, because the marker's arrow is already drawn relative to the frame
+> and carries the heading without turning the map. Verified on the panel: the same
+> 136 fixes over a switchback pass gave 11 full redraws and 9 different frame
+> orientations without a route, and 0 redraws in 1 orientation with one. So the
+> table below describes **free-ride** behaviour; read `route-navigation.md` before
+> touching this ladder.
+
 ## Why
 
 A viewport reset is the most expensive thing the map screen does: tile reads off
@@ -132,6 +147,31 @@ So the saving is not on the panel at all. It is the framebuffer work:
 the `MapRenderer` pass, not out of the waveform. `MapActivity.h`'s coalescing note
 still says "the better part of two seconds" for a reset; at zoom step 2 over
 Bratislava (22,904 ways, 4 tiles, 1.57 MB read) it is four times that.
+
+### That 8.9 s is a city number. Rural is ten times cheaper
+
+**Measured 2026-08-06** on a forested pass in the Malé Karpaty, route loaded,
+`framebuffer ready in N ms` off the device log, two runs per rung:
+
+| rung | ways | bytes | framebuffer | full reset |
+|---|---|---|---|---|
+| 1 (3 m/px) | 186 | 113 kB | 536 ms | ~1.04 s |
+| 2 (6 m/px) | 563 | 51 kB | **400 ms** | ~0.90 s |
+| 3 (12 m/px) | 2,083 | 309 kB | 1,133 ms | ~1.63 s |
+| 4 (20 m/px) | 4,443 | 433 kB | 1,750 ms | ~2.25 s |
+
+Same rung 2, same firmware: 400 ms against Bratislava's ~8,300. **Cost per reset
+is a property of the geometry under the screen, not of the device**, so no single
+figure describes it -- quote the terrain with the number, and measure where the
+change will actually run.
+
+Two things follow. The **waveform becomes the bulk of the cost** out of town (500
+of 900 ms), so out there the only lever is redrawing less often, not rendering
+faster. And **a coarser rung costs more, not less**, because it covers more ground
+and so more geometry -- rung 4 is 4.4x rung 2 here. Reaching for zoom-out to buy
+cheaper redraws gets the sign wrong.
+
+[`route-navigation.md`](route-navigation.md) has the measurement in context.
 
 ## What the ride measured
 

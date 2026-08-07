@@ -7,6 +7,7 @@
 
 #include "HalFileSource.h"
 #include "MapBleConsole.h"
+#include "MapFollow.h"
 #include "MapModeMask.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
@@ -167,6 +168,20 @@ class MapActivity final : public Activity {
   // furniture -- it is only correct for the heading the frame was drawn with
   // (anchorHeading_), never for the newest fix.
   void drawCompass(uint8_t headingStep);
+  // Which way is up on the frame about to be drawn: the route's direction while a
+  // route holds the frame, otherwise the rider's own heading. Everything that has
+  // to agree about "up" -- the projection, MapViewState::heading, the compass and
+  // anchorHeading_ -- goes through this one answer.
+  uint8_t frameHeadingFor(uint8_t fixHeadingStep) const;
+  // True while the loaded route owns the frame's orientation, which is also what
+  // stops a heading change from re-anchoring (MapFollow::Request::routeHoldsFrame).
+  bool routeHoldsFrame() const { return route_ != nullptr && routeFrameHeadingValid_; }
+  // Marker moves this frame may spend before a clean one is forced. One source
+  // for the decision and for the log line that reports it -- they disagreed once,
+  // and a log that reports the wrong budget is worse than none.
+  uint16_t partialMoveBudget() const {
+    return routeHoldsFrame() ? MapFollow::kRouteFramePartialMoves : MapFollow::kMaxPartialMoves;
+  }
   // Battery and BLE status row, top-right, above the compass. Battery mirrors
   // the block GUI.drawHeader() draws on every other screen (BaseTheme.cpp:363)
   // so this reads the same; the BLE logo and signal bars are this screen's
@@ -283,6 +298,14 @@ class MapActivity final : public Activity {
   // The heading the frame was drawn track-up with. proj_ is rotated by it, so
   // it is also the frame's "up".
   uint8_t anchorHeading_ = 0;
+  // With a route loaded, the frame's "up" is the route's own direction and stays
+  // that way for every reset -- docs/route-navigation.md, "The decision". Taken
+  // from MapRouteFit, which measures the route's point set per heading and breaks
+  // ties on its direction of travel, so this is already "the way this route
+  // runs". Without it a keep-in reset would re-orient to the rider's heading and
+  // hand back the rotating map the frozen frame exists to stop.
+  uint8_t routeFrameHeading_ = 0;
+  bool routeFrameHeadingValid_ = false;
   // Where the marker is drawn, in screen pixels. Starts at the ladder anchor
   // after a reset and walks from there.
   int16_t markerDrawnX_ = 0;
@@ -299,8 +322,10 @@ class MapActivity final : public Activity {
   // rather than leave a stale marker on the panel.
   bool markerPatchValid_ = false;
   // Marker moves since the last full frame. Windowed refreshes are
-  // differential and ghost, so this is a budget (MapFollow::kMaxPartialMoves).
-  uint8_t partialMoves_ = 0;
+  // differential and ghost, so this is a budget (MapFollow::kMaxPartialMoves,
+  // or kRouteFramePartialMoves once a route holds the frame -- a leg is worth
+  // far more moves than a free-ride frame).
+  uint16_t partialMoves_ = 0;
 
   // Ladder state, per mode, held in memory and seeded from settings once in
   // onEnter(). **In memory, not read back out of settings on a mode

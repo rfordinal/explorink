@@ -154,6 +154,12 @@ constexpr int kCompassHaloMargin = 4;  // white backing, past the glyph's own sw
 constexpr int kMarkerRingDiameter = 54;
 constexpr int kMarkerRingWidth = 3;
 constexpr int kMarkerHikeDotDiameter = 18;
+// Hike's heading hand: from the dot out to the ring's inner edge
+// (kMarkerRingDiameter / 2 - kMarkerRingWidth = 24), 4 px wide. The reach must
+// stay inside kMarkerBoxSize's half-extent or a marker move leaves the hand
+// behind on the map -- see the note where it is drawn.
+constexpr int kMarkerHikeHandReach = kMarkerRingDiameter / 2 - kMarkerRingWidth;
+constexpr int kMarkerHikeHandHalfW = 2;
 constexpr int kMarkerCycleTipLen = 16;    // center to tip, pixels
 constexpr int kMarkerCycleBaseHalfW = 9;  // center to each base corner, pixels
 constexpr int kMarkerRideTipLen = 25;
@@ -165,6 +171,11 @@ constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radi
 // drawPositionMarker() paints), so saving this box before the marker goes down
 // and writing it back afterwards erases the marker exactly.
 constexpr int kMarkerBoxSize = kMarkerRingDiameter + 2 * kMarkerHaloMargin;  // 64
+// The hike hand is the only marker part whose reach is a free parameter, so it is
+// the one that can be pushed out of the saved patch box. Past that box a move does
+// not restore what the hand covered and it smears a trail across the map.
+static_assert(kMarkerHikeHandReach + kMarkerHikeHandHalfW <= kMarkerBoxSize / 2,
+              "hike heading hand must stay inside the marker patch box, or a move smears it");
 // Worst-case bytes for that box in panel memory. readFramebufferRegion snaps
 // the x extent outward to a multiple of 8, so a 64 px wide box can need 72 px
 // (9 bytes) of columns; the +8 rows are slack against the same rounding after
@@ -219,7 +230,41 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
                            true);
 
   if (mode == MapRideMode::Hike) {
-    // Position over direction: a plain dot, no heading arrow at all.
+    // Position over direction, but not direction *nowhere*: a dot for where the
+    // hiker is, and a thin hand off it for which way they face -- a watch hand
+    // against the ring's bezel, not a second arrow.
+    //
+    // The dot alone was right while the map turned track-up, because then the
+    // whole picture carried the heading. With a route holding the frame the map
+    // no longer turns (docs/route-navigation.md, "The decision"), so without this
+    // a hiker would have no heading on screen at all.
+    //
+    // Drawn *before* the dot on purpose: the dot then covers the inner end, so
+    // the hand grows out of a solid boss instead of meeting it at a seam.
+    //
+    // `kMarkerHikeHandReach` is the ring's inner edge, which keeps the whole hand
+    // inside the 64x64 box saveMarkerPatch() stores (kMarkerBoxSize). Anything
+    // drawn past that box is not restored when the marker moves and smears a
+    // trail across the map -- the reach is a correctness bound, not a style
+    // choice.
+    const HeadingVec& hand = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
+    const HeadingVec handPerp{-hand.dy, hand.dx};
+    const int tipX = cx + hand.dx * kMarkerHikeHandReach / 8;
+    const int tipY = cy + hand.dy * kMarkerHikeHandReach / 8;
+    const int hx[4] = {
+        cx + handPerp.dx * kMarkerHikeHandHalfW / 8,
+        tipX + handPerp.dx * kMarkerHikeHandHalfW / 8,
+        tipX - handPerp.dx * kMarkerHikeHandHalfW / 8,
+        cx - handPerp.dx * kMarkerHikeHandHalfW / 8,
+    };
+    const int hy[4] = {
+        cy + handPerp.dy * kMarkerHikeHandHalfW / 8,
+        tipY + handPerp.dy * kMarkerHikeHandHalfW / 8,
+        tipY - handPerp.dy * kMarkerHikeHandHalfW / 8,
+        cy - handPerp.dy * kMarkerHikeHandHalfW / 8,
+    };
+    renderer.fillPolygon(hx, hy, 4, true);
+
     renderer.fillRoundedRect(cx - kMarkerHikeDotDiameter / 2, cy - kMarkerHikeDotDiameter / 2, kMarkerHikeDotDiameter,
                              kMarkerHikeDotDiameter, kMarkerHikeDotDiameter / 2, Color::Black);
     return;
@@ -1120,7 +1165,7 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
   // there. Whatever redraw the badge was announcing clears it (renderViewport()).
   LOG_DBG(kLogTag, "marker move to %d,%d (h%u rel %u), %u/%u before a clean frame", (int)sx, (int)sy,
           (unsigned)headingStep, (unsigned)MapFollow::relativeHeadingStep(headingStep, anchorHeading_),
-          (unsigned)partialMoves_, (unsigned)MapFollow::kMaxPartialMoves);
+          (unsigned)partialMoves_, (unsigned)partialMoveBudget());
 }
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
@@ -1162,6 +1207,11 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
   request.anchorHeadingStep = anchorHeading_;
   request.fixHeadingStep = headingStep;
   request.partialMoves = partialMoves_;
+  // With a route loaded the frame is the route's and a heading change is not a
+  // reason to redraw it, so the budget is the only thing left that can interrupt
+  // a leg -- and it gets the bigger one (docs/route-navigation.md).
+  request.routeHoldsFrame = routeHoldsFrame();
+  request.partialMoveBudget = partialMoveBudget();
 
   switch (MapFollow::decide(request)) {
     case MapFollow::Action::Skip:
@@ -1210,6 +1260,24 @@ void MapActivity::renderRouteOverview() {
       renderWaiting();
     }
     return;
+  }
+
+  // The fit's answer is the frame the rest of this route is ridden with, not
+  // just the frame being drawn now -- docs/route-navigation.md, "The decision".
+  // Both halves of it are kept:
+  //
+  // - **The heading**, so every later reset draws the route the same way up
+  //   instead of re-orienting to the rider.
+  // - **The rung**, because the fit picked the one this route fits on, and the
+  //   first fix arriving used to throw that away and re-render at whatever was
+  //   persisted from the last ride. Measured on the panel: an overview at 3 m/px
+  //   became 1 m/px on the next fix, one bend of a pass on screen. The rider can
+  //   still step the ladder afterwards; that is an instruction, this is a default.
+  routeFrameHeading_ = fit.heading;
+  routeFrameHeadingValid_ = true;
+  if (fit.zoomStep < MapViewport::kZoomStepCount) {
+    zoomStep_[static_cast<uint8_t>(mode_)] = fit.zoomStep;
+    publishLadders();
   }
 
   // The anchor is the screen centre, not the marker ladder's rung: an overview
@@ -1349,6 +1417,10 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   return missing;
 }
 
+uint8_t MapActivity::frameHeadingFor(uint8_t fixHeadingStep) const {
+  return routeHoldsFrame() ? routeFrameHeading_ : fixHeadingStep;
+}
+
 void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   LOG_DBG(kLogTag, "renderViewport start: lat=%d lon=%d heading=%u seq=%u", (int)latE7, (int)lonE7,
           (unsigned)headingStep, (unsigned)seq);
@@ -1388,7 +1460,15 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // Assumed track-up throughout the design (docs/roadmap.md's "Map rotation
   // model", firmware-implementation-plan.md's follow-up list) and confirmed
   // with the user 2026-08-05.
-  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, headingStep, MapViewport::mppMercFor(zoomStep(), lat));
+  //
+  // **Track-up means the route, not the rider, once a route is loaded**
+  // (docs/route-navigation.md, "The decision"). The rider's heading still
+  // reaches the marker's arrow through relativeHeadingStep() below; what it no
+  // longer does is turn the map. Without this a keep-in reset would quietly
+  // re-orient to whatever the rider was doing at that moment, which is the
+  // rotating map the frozen frame exists to stop.
+  const uint8_t frameHeading = frameHeadingFor(headingStep);
+  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, frameHeading, MapViewport::mppMercFor(zoomStep(), lat));
 
   const MapViewport::TileRange range =
       MapViewport::tileRangeFor(proj_, tileZ, renderer.getScreenWidth(), renderer.getScreenHeight());
@@ -1408,7 +1488,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // in raw screen direction (MapRenderer.cpp's kHeadingDir, not
   // rotation-aware), so anything but agreement here has the two disagreeing
   // about which way is up.
-  view.heading = static_cast<MapHeading>(headingStep & 0x0F);
+  view.heading = static_cast<MapHeading>(frameHeading & 0x0F);
   // Buildings are a rung decision (MapViewport::ZoomStep::buildings): only the
   // closest rung draws them, and on every other rung the layer is never opened.
   view.drawBuildings = MapViewport::kZoomLadder[zoomStep()].buildings;
@@ -1442,7 +1522,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's
   // heading, which is the only heading it is ever correct for.
-  drawCompass(headingStep);
+  // The frame's heading, not the fix's: the compass says which way the picture
+  // is turned, and with a route holding the frame that is the route's direction.
+  drawCompass(frameHeading);
   drawHeaderStatus();
 
   // Does not count the marker or its patch save, both of which happen after the
@@ -1537,7 +1619,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // background and restoring it later erases the marker with nothing left
   // behind. Draw it any earlier and a marker low on the screen would come back
   // with the hints painted through it.
-  anchorHeading_ = headingStep;
+  anchorHeading_ = frameHeading;
   markerDrawnX_ = view.markerX;
   markerDrawnY_ = markerY;
   partialMoves_ = 0;

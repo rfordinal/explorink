@@ -42,7 +42,34 @@ inline constexpr int16_t kMinMovePx = 8;
 // Windowed refreshes are differential and leave ghosting behind. Force a clean
 // full frame after this many moves -- docs/firmware-implementation-plan.md's
 // open decision 4 ("every 10-20 marker updates, needs on-device tuning").
-inline constexpr uint8_t kMaxPartialMoves = 12;
+inline constexpr uint16_t kMaxPartialMoves = 12;
+
+// The same budget for a frame the route holds, where a forced clean frame is the
+// only thing left that can interrupt a leg (see Request::routeHoldsFrame).
+//
+// A leg costs about `leg length / (kMinMovePx * metres-per-pixel)` marker moves,
+// so this number and the zoom rung are one choice. 1000 is 48 km of leg at
+// 6 m/px, or 24 km at 3 m/px -- chosen by the maintainer 2026-08-07 with hiking
+// in mind, where a leg is long and slow and a redraw mid-leg is worth avoiding.
+//
+// **160 of these in a row is measured clean. 1000 is not.** The panel held 160
+// consecutive windowed refreshes with no clean frame four times over during one
+// probe run and showed no ghosting at all, judged by eye. It could not be pushed
+// past 160, because the firmware forces a clean frame at exactly this constant --
+// so raising it is an extrapolation from 160, not a measurement, however good the
+// evidence at 160 looks.
+//
+// **And it cannot be measured from a host.** `CMD:SCREENSHOT` dumps the
+// framebuffer, which is clean by construction; ghosting is what the panel does to
+// a frame, so a dump of a badly ghosted panel looks perfect. The only instrument
+// is somebody looking at the device.
+//
+// To settle 1000: set it, flash, and ride a leg at a rung where it fits well
+// inside the keep-in box (6 m/px on a 3.4 km leg gives ~71 moves a lap, so ~14
+// laps with no keep-in interruption), then look at the panel **at the end**. If it
+// smears, lower this; the moves-per-leg formula then says which rung a leg of a
+// given length has to be drawn at, and nothing else changes.
+inline constexpr uint16_t kRouteFramePartialMoves = 1000;
 
 enum class Action : uint8_t {
   // The fix landed close enough to where the marker already is that nothing is
@@ -69,8 +96,27 @@ struct Request {
   // Heading the frame was drawn with, and the heading of the new fix.
   uint8_t anchorHeadingStep = 0;
   uint8_t fixHeadingStep = 0;
-  // Marker moves since the last full frame.
-  uint8_t partialMoves = 0;
+  // Marker moves since the last full frame, and how many are allowed before a
+  // clean one is forced.
+  uint16_t partialMoves = 0;
+  uint16_t partialMoveBudget = kMaxPartialMoves;
+
+  // True while a route owns the frame's orientation, which makes a heading
+  // change no reason at all to redraw -- docs/route-navigation.md, "The
+  // decision".
+  //
+  // The rider is following a planned route, so the frame is oriented to the
+  // route and not to them. Their own direction is still on screen: the marker is
+  // an arrow drawn with relativeHeadingStep() against this frame, so a rider who
+  // turns 90 degrees gets an arrow 90 degrees off up inside a map that has not
+  // moved. Turning the whole picture to say the same thing costs a full-panel
+  // waveform and hands back a map the rider has to re-read.
+  //
+  // Measured on a switchback pass before this existed: three full rotations
+  // across 3.4 km, the last of them back to the orientation the first one had.
+  // On a road that reverses direction every 200 m no drift threshold helps,
+  // because the road really does turn further than any threshold worth having.
+  bool routeHoldsFrame = false;
 };
 
 // Shortest distance between two 16-step headings, in steps (0..8). Wraps: N and
