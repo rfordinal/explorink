@@ -95,16 +95,6 @@ constexpr uint32_t kHeaderBarsRepaintMs = 30 * 1000;
 // tile sync screen (MissingTilesConsoleSource.h).
 MissingTilesConsoleSource g_missingTilesConsoleSource;
 
-// Debug readout geometry.
-constexpr int kTextX = 8;
-constexpr int kTextLine1Y = 8;
-constexpr int kTextLine2Y = 26;
-constexpr int kTextLine3Y = 44;
-// Only drawn when a BLE map transfer has actually happened -- an idle screen
-// keeps the lines it had before that channel existed. Its own line rather than
-// sharing line 3, which the last-known-fix notice already owns.
-constexpr int kTextLine4Y = 62;
-
 // Busy badge geometry: an hourglass just above the button hints, right-aligned.
 // Out of the way of the debug readout (top-left) and the compass (top-right),
 // and small enough that its windowed refresh is cheap to look at.
@@ -146,6 +136,25 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 // the BLE logo+bars sit further left, over live map lines like the compass and
 // marker do, so they need the same opaque backing those give themselves.
 constexpr int kHeaderBackingPad = 2;
+// The full-width strip GUI.drawHeader() clears for the row above (its own
+// Rect{0, kHeaderMarginTop, screenWidth, ...} in drawHeaderStatus()).
+constexpr int kHeaderRowHeight = BaseMetrics::values.batteryHeight + 10;
+
+// Debug readout geometry. Starts below the header status row above (battery,
+// BLE bars, globe), not stuck at the top of the screen sharing its band --
+// a debug line starting inside [kHeaderMarginTop, kHeaderMarginTop +
+// kHeaderRowHeight) reads as glued to the status row instead of sitting
+// under it, even though the two never overlap horizontally.
+constexpr int kTextX = 8;
+constexpr int kTextGapBelowHeader = 14;
+constexpr int kTextTopY = kHeaderMarginTop + kHeaderRowHeight + kTextGapBelowHeader;
+// Line-to-line spacing is derived from the font's own line height at each
+// call site (renderer.getLineHeight(), not a hardcoded pixel count) --
+// ubuntu_10_regular/bold's advanceY is 24 (EpdFontData: advanceY, ascender,
+// descender = 24, 20, -4), so a fixed 18px gap left each line's backing box
+// (drawDebugLine's own line height + 2*kDebugPad tall) overlapping the box
+// above it, erasing the bottom few pixels of that line's text.
+constexpr int kDebugPad = 3;
 
 // North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
@@ -734,8 +743,7 @@ void MapActivity::drawHeaderStatus() {
   // Battery: same call every other screen makes (BaseTheme.cpp:363), with no
   // title/subtitle -- those draw nothing when null, leaving just the icon and
   // (setting-permitting) the percentage text this screen never had before.
-  GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, BaseMetrics::values.batteryHeight + 10}, nullptr,
-                 nullptr);
+  GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}, nullptr, nullptr);
 
   drawHeaderStatusStrip();
 }
@@ -903,6 +911,20 @@ void MapActivity::drawDebugLine(int y, char* text) {
   for (size_t len = strlen(text); len > 0 && renderer.getTextWidth(UI_10_FONT_ID, text) > maxWidth; --len) {
     text[len - 1] = '\0';
   }
+  // White backing sized to this line's own text, not a fixed strip: the
+  // header status row (battery/BLE/globe, top right, drawHeaderStatus())
+  // already drew into this same frame by the time this runs, and a backing
+  // wider than the text it is behind would paint white over it. Same idiom
+  // as that row's own backing (headerStatusRect()) -- just tight to this
+  // line instead of a shared rect for a whole icon group.
+  //
+  // Height is getLineHeight() (the font's full advanceY), not
+  // getTextHeight() (ascender only) -- ascender alone stops short of
+  // descenders ("g", "y", the "j" in a route name), leaving their bottom
+  // few pixels sitting on whatever the map drew, not the backing.
+  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text);
+  const int textHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  renderer.fillRect(kTextX - kDebugPad, y - kDebugPad, textWidth + kDebugPad * 2, textHeight + kDebugPad * 2, false);
   renderer.drawText(UI_10_FONT_ID, kTextX, y, text, true);
 }
 
@@ -1340,7 +1362,7 @@ void MapActivity::handleButtons() {
 
 void MapActivity::openMapMenu() {
   std::vector<std::string> options;
-  options.reserve(7);
+  options.reserve(8);
   options.push_back(tr(STR_REFRESH));
   options.push_back(std::string(tr(STR_MAP_MODE)) + ": " + I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
   // Only once a fix has actually drawn a frame -- same "no row that cannot do
@@ -1379,57 +1401,67 @@ void MapActivity::openMapMenu() {
   options.push_back(std::string(tr(STR_MAP_HEADING_MODE)) + ": " +
                     I18N.get(SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL ? StrId::STR_MANUAL
                                                                                                : StrId::STR_AUTO));
-  optionPopup_.show(
-      StrId::STR_MAP, options, 0, [this, observeIdx, wholeRouteIdx, zoomModeIdx, rotationIdx, headingIdx](int idx) {
-        if (idx == 0) {
-          redrawDueMs_ = 0;
-          showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
-          renderCurrent();
-        } else if (idx == 1) {
-          // One Select steps ride->hike->cycle->ride and closes, same as every
-          // other row -- picking a mode is a deliberate, one-shot choice, not the
-          // start of a cycling gesture. A rider who wants to step again presses
-          // CONFIRM again. mapRideModeName()'s array order.
-          const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
-          switchMode(static_cast<MapRideMode>(next));
-        } else if (idx == observeIdx) {
-          toggleObserveMode();
-        } else if (idx == wholeRouteIdx) {
-          // Back to the whole route, at any point in a ride. Costs one full refresh
-          // and one pass over the route file, the same as the frame the picker drew.
-          redrawDueMs_ = 0;
-          showBusy();
-          renderRouteOverview();
-        } else if (idx == zoomModeIdx) {
-          // No redraw: the setting has no runtime effect yet (auto zoom is
-          // not wired up, docs/map-data-spec.md), so flipping it changes
-          // nothing on screen to acknowledge.
-          SETTINGS.mapZoomMode = SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_MANUAL
-                                     ? CrossPointSettings::MAP_ZOOM_AUTO
-                                     : CrossPointSettings::MAP_ZOOM_MANUAL;
-          SETTINGS.saveToFile();
-        } else if (idx == rotationIdx) {
-          SETTINGS.mapRotationMode = SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_HEADING_UP
-                                         ? CrossPointSettings::MAP_ROTATION_NORTH_UP
-                                         : CrossPointSettings::MAP_ROTATION_HEADING_UP;
-          SETTINGS.saveToFile();
-          redrawDueMs_ = 0;
-          showBusy();
-          renderCurrent();
-        } else if (idx == headingIdx) {
-          SETTINGS.mapHeadingMode = SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_AUTO
-                                        ? CrossPointSettings::MAP_HEADING_MANUAL
-                                        : CrossPointSettings::MAP_HEADING_AUTO;
-          // Freeze on the heading the frame is showing right now, not a stale
-          // or default one -- same capture updateManualHeadingCapture() does
-          // from a fresh fix, called here because a menu pick is not a fix.
-          updateManualHeadingCapture(lastHeading_);
-          SETTINGS.saveToFile();
-          redrawDueMs_ = 0;
-          showBusy();
-          renderCurrent();
-        }
-      });
+  const int debugInfoIdx = static_cast<int>(options.size());
+  options.push_back(std::string(tr(STR_MAP_DEBUG_INFO)) + ": " +
+                    I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
+  optionPopup_.show(StrId::STR_MAP, options, 0,
+                    [this, observeIdx, wholeRouteIdx, zoomModeIdx, rotationIdx, headingIdx, debugInfoIdx](int idx) {
+                      if (idx == 0) {
+                        redrawDueMs_ = 0;
+                        showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
+                        renderCurrent();
+                      } else if (idx == 1) {
+                        // One Select steps ride->hike->cycle->ride and closes, same as every
+                        // other row -- picking a mode is a deliberate, one-shot choice, not the
+                        // start of a cycling gesture. A rider who wants to step again presses
+                        // CONFIRM again. mapRideModeName()'s array order.
+                        const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
+                        switchMode(static_cast<MapRideMode>(next));
+                      } else if (idx == observeIdx) {
+                        toggleObserveMode();
+                      } else if (idx == wholeRouteIdx) {
+                        // Back to the whole route, at any point in a ride. Costs one full refresh
+                        // and one pass over the route file, the same as the frame the picker drew.
+                        redrawDueMs_ = 0;
+                        showBusy();
+                        renderRouteOverview();
+                      } else if (idx == zoomModeIdx) {
+                        // No redraw: the setting has no runtime effect yet (auto zoom is
+                        // not wired up, docs/map-data-spec.md), so flipping it changes
+                        // nothing on screen to acknowledge.
+                        SETTINGS.mapZoomMode = SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_MANUAL
+                                                   ? CrossPointSettings::MAP_ZOOM_AUTO
+                                                   : CrossPointSettings::MAP_ZOOM_MANUAL;
+                        SETTINGS.saveToFile();
+                      } else if (idx == rotationIdx) {
+                        SETTINGS.mapRotationMode =
+                            SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_HEADING_UP
+                                ? CrossPointSettings::MAP_ROTATION_NORTH_UP
+                                : CrossPointSettings::MAP_ROTATION_HEADING_UP;
+                        SETTINGS.saveToFile();
+                        redrawDueMs_ = 0;
+                        showBusy();
+                        renderCurrent();
+                      } else if (idx == headingIdx) {
+                        SETTINGS.mapHeadingMode = SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_AUTO
+                                                      ? CrossPointSettings::MAP_HEADING_MANUAL
+                                                      : CrossPointSettings::MAP_HEADING_AUTO;
+                        // Freeze on the heading the frame is showing right now, not a stale
+                        // or default one -- same capture updateManualHeadingCapture() does
+                        // from a fresh fix, called here because a menu pick is not a fix.
+                        updateManualHeadingCapture(lastHeading_);
+                        SETTINGS.saveToFile();
+                        redrawDueMs_ = 0;
+                        showBusy();
+                        renderCurrent();
+                      } else if (idx == debugInfoIdx) {
+                        SETTINGS.mapDebugInfo = SETTINGS.mapDebugInfo ? 0 : 1;
+                        SETTINGS.saveToFile();
+                        redrawDueMs_ = 0;
+                        showBusy();
+                        renderCurrent();
+                      }
+                    });
   optionPopup_.processRender(renderer, mappedInput);
 }
 
@@ -1923,21 +1955,26 @@ void MapActivity::renderRouteOverview() {
   drawCompass(fit.heading);
   drawHeaderStatus();
 
-  char line[80];
-  snprintf(line, sizeof(line), "%s", route_->name());
-  drawDebugLine(kTextLine1Y, line);
-  // Says out loud when the ladder could not hold the whole route, because a
-  // frame showing the middle of a route looks exactly like one showing all of a
-  // shorter route.
-  if (fit.fits) {
-    snprintf(line, sizeof(line), "%lu pts  z%u %.0fm/px  h%u", static_cast<unsigned long>(route_->pointCount()),
-             static_cast<unsigned>(fit.zoomStep), MapViewport::kZoomLadder[fit.zoomStep].mpp,
-             static_cast<unsigned>(fit.heading));
-  } else {
-    snprintf(line, sizeof(line), "%lu pts  z%u  %s", static_cast<unsigned long>(route_->pointCount()),
-             static_cast<unsigned>(fit.zoomStep), tr(STR_MAP_ROUTE_PARTIAL));
+  if (SETTINGS.mapDebugInfo) {
+    const int linePitch = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
+    const int line1Y = kTextTopY;
+    const int line2Y = line1Y + linePitch;
+    char line[80];
+    snprintf(line, sizeof(line), "%s", route_->name());
+    drawDebugLine(line1Y, line);
+    // Says out loud when the ladder could not hold the whole route, because a
+    // frame showing the middle of a route looks exactly like one showing all
+    // of a shorter route.
+    if (fit.fits) {
+      snprintf(line, sizeof(line), "%lu pts  z%u %.0fm/px  h%u", static_cast<unsigned long>(route_->pointCount()),
+               static_cast<unsigned>(fit.zoomStep), MapViewport::kZoomLadder[fit.zoomStep].mpp,
+               static_cast<unsigned>(fit.heading));
+    } else {
+      snprintf(line, sizeof(line), "%lu pts  z%u  %s", static_cast<unsigned long>(route_->pointCount()),
+               static_cast<unsigned>(fit.zoomStep), tr(STR_MAP_ROUTE_PARTIAL));
+    }
+    drawDebugLine(line2Y, line);
   }
-  drawDebugLine(kTextLine2Y, line);
 
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -2172,31 +2209,39 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   const uint32_t heapAfter = ESP.getFreeHeap();
 
   // Debug readout, kept from the BLE checkpoint: the raw values driving the
-  // marker, plus what the viewport reset actually cost.
-  char line[80];
-  snprintf(line, sizeof(line), "%.5f %.5f h%u #%u", lat, lon, headingStep, seq);
-  drawDebugLine(kTextLine1Y, line);
-  snprintf(line, sizeof(line), "%s z%u m%u %lut %luw %lums", mapRideModeName(mode_), zoomStep(), markerStep(),
-           static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->waysEmitted()),
-           static_cast<unsigned long>(elapsedMs));
-  drawDebugLine(kTextLine2Y, line);
-  if (routePath_[0] != '\0' && !route_) {
-    // The rider picked a route and there is none on screen. The picker only
-    // checks each file's header, so a route whose point array fails its own crc
-    // gets this far -- and an empty map with no explanation reads as a bug in
-    // the route feature rather than as a broken file. Shares line 3 with the
-    // notice above, which is about a different session state and cannot be up
-    // at the same time.
-    snprintf(line, sizeof(line), "%s", tr(STR_MAP_ROUTE_REFUSED));
-    drawDebugLine(kTextLine3Y, line);
-  }
+  // marker, plus what the viewport reset actually cost. Off by default
+  // (SETTINGS.mapDebugInfo) -- diagnostic text, not something a rider needs.
+  if (SETTINGS.mapDebugInfo) {
+    const int linePitch = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
+    const int line1Y = kTextTopY;
+    const int line2Y = line1Y + linePitch;
+    const int line3Y = line2Y + linePitch;
+    const int line4Y = line3Y + linePitch;
+    char line[80];
+    snprintf(line, sizeof(line), "%.5f %.5f h%u #%u", lat, lon, headingStep, seq);
+    drawDebugLine(line1Y, line);
+    snprintf(line, sizeof(line), "%s z%u m%u %lut %luw %lums", mapRideModeName(mode_), zoomStep(), markerStep(),
+             static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->waysEmitted()),
+             static_cast<unsigned long>(elapsedMs));
+    drawDebugLine(line2Y, line);
+    if (routePath_[0] != '\0' && !route_) {
+      // The rider picked a route and there is none on screen. The picker only
+      // checks each file's header, so a route whose point array fails its own
+      // crc gets this far -- and an empty map with no explanation reads as a
+      // bug in the route feature rather than as a broken file. Shares line 3
+      // with the notice above, which is about a different session state and
+      // cannot be up at the same time.
+      snprintf(line, sizeof(line), "%s", tr(STR_MAP_ROUTE_REFUSED));
+      drawDebugLine(line3Y, line);
+    }
 
-  // Enough to see that a file push happened and whether it landed. No new
-  // screen and no refresh of its own: this rides whatever redraw the map was
-  // going to do anyway, because an e-ink refresh costs the better part of two
-  // seconds and a byte counter is not worth one.
-  transfer_.formatStatus(line, sizeof(line));
-  if (line[0] != '\0') drawDebugLine(kTextLine4Y, line);
+    // Enough to see that a file push happened and whether it landed. No new
+    // screen and no refresh of its own: this rides whatever redraw the map
+    // was going to do anyway, because an e-ink refresh costs the better part
+    // of two seconds and a byte counter is not worth one.
+    transfer_.formatStatus(line, sizeof(line));
+    if (line[0] != '\0') drawDebugLine(line4Y, line);
+  }
 
   LOG_DBG(kLogTag,
           "reset z%u col %u..%u row %u..%u: %lu tiles ok, %lu missing (mask 0x%lx), %lu ways, %lu filtered, "

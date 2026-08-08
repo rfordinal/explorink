@@ -45,6 +45,43 @@ repaint refreshes. Two consequences worth stating:
 The row needs an opaque white backing for the same reason the compass halo and
 the busy badge do: it lands on live map lines, not on blank margin.
 
+## The debug readout sits below this row, not inside it
+
+`MapActivity::drawHeaderStatus()` calls `GUI.drawHeader(renderer, Rect{0,
+kHeaderMarginTop, screenWidth, kHeaderRowHeight}, ...)` -- a **full-width**
+clear, not just the right-hand icon strip `headerStatusRect()` covers above.
+`kHeaderRowHeight` (`MapActivity.cpp`, `BaseMetrics::values.batteryHeight +
+10` = 22) is that rect's height, named so the debug readout's own top offset
+(`kTextTopY = kHeaderMarginTop + kHeaderRowHeight + kTextGapBelowHeader`) can
+be derived from it instead of guessed.
+
+Two bugs this fixed, both found on hardware 2026-08-08, in the same session
+the readout got a toggle and a white backing:
+
+- **Backing box wider than the text erased the header icons.** The first cut
+  sized the readout's backing to nearly the full screen width. `drawHeaderStatus()`
+  runs before the readout, so a wide white box painted straight over the
+  battery/BLE icons it had just drawn, on the same frame. Fixed by sizing each
+  line's own backing to that line's own `getTextWidth()`, in `drawDebugLine()` --
+  never wider than the glyphs it is behind.
+- **A fixed 18px line gap was shorter than the font's own line height,** so
+  each line's backing (drawn after the line above it) erased the bottom few
+  pixels of that line's text. `ubuntu_10_regular`/`bold`'s `EpdFontData`:
+  `advanceY` 24, `ascender` 20, `descender` -4 (`lib/EpdFont/builtinFonts/
+  ubuntu_10_regular.h`) -- so line spacing is now `renderer.getLineHeight(
+  UI_10_FONT_ID) + 2*kDebugPad` (30px), derived from the font instead of a
+  guessed constant.
+
+Before either fix, `kTextTopY` was a guessed `16` with no relation to this
+row at all -- close enough to its own `[6, 28)` band that the readout read as
+glued to the status row rather than sitting under it, even on the frames
+where the backing fix alone had already stopped it from erasing the icons.
+
+**Verified on hardware, 2026-08-08**: `CMD:GOTO_MAP` + `tools/screenshot_gate.py`
+grabs, before and after each fix. The last grab shows a clean white gap
+between the status row and the first debug line, and a clean gap between the
+two debug lines -- no erased icons, no overlapping text.
+
 ## "Connected" is the connection interval, not the MTU
 
 Worth its own heading because the obvious signal is the wrong one, and it was
@@ -143,3 +180,7 @@ with no map.
   up and count repaints over a few minutes.
 - **Not verified**: the exact latency from disconnect to the X appearing. The
   poll is 2 s by construction, but nothing has timed it.
+- **Verified on hardware, 2026-08-08**: the debug readout's backing box no
+  longer erases this row's icons, and the readout itself sits below the row
+  with a visible gap -- see "The debug readout sits below this row, not
+  inside it" above.

@@ -202,8 +202,11 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // marker, which is the point -- zooming out must show more of the road
   // ahead, not more of wherever the marker has drifted to.
   void renderCurrent();
-  // Draws one line of the debug readout, trimmed to the screen width.
-  // Mutates `text` in place.
+  // Draws one line of the debug readout, trimmed to the screen width, with a
+  // white backing sized to its own text -- same reason the compass halo and
+  // the header status row get one (MapActivity.cpp:765): the readout sits
+  // over live map lines, not blank margin, and text drawn straight onto a
+  // hatch or a road is unreadable. Mutates `text` in place (the trim).
   void drawDebugLine(int y, char* text);
   // Top-right north indicator. The map is drawn track-up, so this rotates: the
   // whole glyph turns about its own centre by the frame's heading, which is
