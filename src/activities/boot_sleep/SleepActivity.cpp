@@ -44,7 +44,7 @@ void SleepActivity::onEnter() {
       return renderLocationSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::LOCATION_CUSTOM):
       // Gate on whether we have a fix to show, not on lastSleepFromReader --
-      // TrailInk has no book open almost all the time, so a reader-only gate
+      // ExplorInk has no book open almost all the time, so a reader-only gate
       // never fires and this mode always fell through to the custom-wallpaper
       // fallback (and further to the dark default screen if that's empty too).
       if (SETTINGS.mapHasLastFix) {
