@@ -22,6 +22,7 @@
 #include "MissingTilesStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "images/Logo120.h"
 
 namespace {
 
@@ -1640,15 +1641,22 @@ void MapActivity::renderWaiting() {
 }
 
 void MapActivity::renderLoadingTiles() {
+  // Same centred logo layout as BootActivity/SleepActivity, not a top-left
+  // status line: this is the same kind of "device is busy, wait" screen they
+  // are, and should look like one rather than like debug text.
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
   renderer.clearScreen();
-  renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_LOADING_TILES), true);
+  renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_MAP_LOADING_TILES), true, EpdFontFamily::BOLD);
   // The rung, because "reading tiles" alone does not say how long this will
   // take and the rung is what decides it (docs/optimization/01-render-pipeline.md
   // has the per-rung times).
   char line[48];
   snprintf(line, sizeof(line), "z%u  %.0f m/px", MapViewport::kZoomLadder[zoomStep()].z,
            MapViewport::kZoomLadder[zoomStep()].mpp);
-  renderer.drawText(UI_10_FONT_ID, 8, kTextLine2Y, line, true);
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, line);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();

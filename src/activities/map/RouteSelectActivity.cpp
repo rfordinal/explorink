@@ -38,9 +38,10 @@ void RouteSelectActivity::onEnter() {
   }
 
   entryCount_ = MapRouteStore::list(entries_.get(), MapRouteStore::kMaxRoutes, foundCount_);
-  // Highlight the first real route rather than Skip: a rider who opened this
-  // screen came to load something. Skip is one press up.
-  selected_ = entryCount_ > 0 ? 1 : 0;
+  // Highlight Continue rather than the first route: opening the map is the
+  // default path, picking a route is the detour. A rider who wants a route
+  // presses Down once; one who doesn't just presses Confirm.
+  selected_ = 0;
   LOG_INF(kLogTag, "%lu routes listed (%lu on the card)", static_cast<unsigned long>(entryCount_),
           static_cast<unsigned long>(foundCount_));
   renderScreen();
