@@ -399,7 +399,8 @@
           "pattern": "solid",
           "hatch": "~~~~",
           "hatch_spacing_px": 16,
-          "hatch_white": true
+          "hatch_white": true,
+          "hidden": true
         }
       ],
       "_comment": "Water lines and lake areas. Rules key on `class`, the water layer's own class byte (unknown/river/stream/lake, mapbuilder/water_class.py) -- NOT on OSM tags. The tile carries the class; matching tags here would be a second vocabulary nothing can check (docs/map-data-spec.md, 'One vocabulary, not two'). stream covers canal and drain. Only lake arrives as a ring, so only its rule needs a fill."

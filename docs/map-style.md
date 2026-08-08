@@ -154,6 +154,42 @@ size their work by it. The residue is that a *later* cased road crossing a
 railway paints over its blocks. That is a level crossing, where the road is
 meant to read as on top, so it looks right rather than broken.
 
+## A clipped ring's outline draws the cut, not the shore
+
+`MapAreaFill::outlineRing` traces every edge of the ring it is given. A ring
+reaching the device has been **clipped to its tile** (`mapbuilder/tiles.py`,
+`clip_polygon_to_box`), so some of its edges are not shoreline at all -- they
+are the cut along the tile boundary. Outlined, they draw as a hairline straight
+across the water at every tile edge.
+
+Found on the panel 2026-08-08: a 1 px line across a bend of the Morava, traced
+to two 9,000-unit ring segments sitting exactly on `x=0` of tile
+`12/2240/1417`. At heading 270 the frame is rotated, so a tile's vertical edge
+becomes a horizontal line on screen -- which is what made it look like a
+feature rather than an artefact.
+
+**Water areas therefore have no outline** (`layers.water`, the `lake` rule is
+`hidden`, so `waterLinePx[lake]` is 0). The `Dark` tone defines the shape on
+its own; `toneRing` and `hatchRing` do not care about `waterLinePx`, so the
+surface and its waves are untouched.
+
+**Buildings still carry a 1 px outline and have the same flaw.** A building
+clipped by a tile boundary gets a straight edge drawn along it. It is rare and
+small -- a building spanning a tile edge is unusual, and the false edge is a
+few pixels rather than the width of a river -- so it is left alone knowingly.
+Anything that gives buildings a heavier outline, or draws another outlined area
+layer, inherits this.
+
+The honest fix for all of them is a per-vertex "this edge came from the clip"
+flag in the tile format so `outlineRing` can skip those segments. That is a
+format change for a cosmetic problem, which is why it has not been made.
+
+**A trap this cost three wrong diagnoses.** `scripts/gen_mapstyle.py` clamps a
+visible class's width with `max(..., 1)`, so setting `width: 0` in the style to
+test "what if there were no outline" silently generates **1** and changes
+nothing. Only `hidden: true` produces 0. When changing the style to test a
+hypothesis, check the generated header, not the rendered picture.
+
 ## Not every `railway=*` is a railway
 
 `tag_to_class.py` used to be `if tags.get("railway")`, so anything carrying the
