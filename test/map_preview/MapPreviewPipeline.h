@@ -58,6 +58,18 @@ struct MapPreviewRequest {
   // renderer at all.
   std::optional<bool> drawBuildings;
 
+  // Skip the marker puck entirely, on top of whatever routeFitRan already
+  // suppresses it for. On by default (draw it) -- matches every previous
+  // caller's expectation and every committed golden PPM. False is for a
+  // consumer that draws its own marker afterward, at a position and heading
+  // this call has no way to know (tools/render_ride_video.py --track, parent
+  // repo, via marker_stamp: renders a frame once per real redraw with this
+  // off, then stamps the real MapRenderer::drawMarker() glyph on a copy at
+  // wherever the marker actually is for every packet in between -- with this
+  // left on, that background already has one puck baked in at the anchor,
+  // and every later packet's frame would show two).
+  bool drawMarker = true;
+
   // Render exactly one named tile instead of the whole tile range the
   // viewport touches. Only useful for quoting a per-tile RAM figure against
   // a per-tile figure from the old pipeline; leave it off for real previews.
