@@ -11,6 +11,35 @@ without going through a button press.
 > state, and that measurement is step 1 of that plan. Record the numbers here
 > when they exist.
 
+## First real-draw numbers: two rides
+
+**Measured on hardware, 2026-08-07, real rides, not a bench measurement.**
+Both at the spec sheet's 650 mAh nominal capacity, map screen up and a phone
+connected the whole time:
+
+| Ride | Log | Duration | Battery drop | Implied avg draw |
+|---|---|---|---|---|
+| 1 | `docs/rides/trailink-gps-20260807-142303.jsonl` (parent repo) | 34 min | 4% = 26 mAh | ~46 mA |
+| 2 | `docs/rides/trailink-gps-20260807-173058.jsonl` (parent repo) | 46.6 min | 2% = 13 mAh | ~17 mA |
+
+Neither is a clean isolated sample of the plan's "Map screen, phone connected,
+fix every 10 s" row (`optimization/07-power-and-lifecycle.md`, step 1): both
+event logs show tile autosync running mid-ride (ride 1: `fetch_start`/
+`fetch_end` x2, `xfer_in` x8; ride 2: same pattern plus three BLE
+disconnect/reconnect cycles, `connect_timeout` x3), so part of each draw is
+transfer and radio churn, not just the idle-between-fixes case the plan wants
+isolated. The two numbers also disagree with each other (46 mA vs. ~17 mA) for
+what should be a similar activity mix, which is itself evidence the
+phone-reported percentage is too coarse to derive a precise mA number from --
+treat both as ballpark, not a settled draw figure.
+
+**Not verified**: the phone's percentage step size (a 2% read could be
+anywhere in 1.5-2.49%, which alone accounts for real spread at this
+resolution), the X4's actual capacity vs. the 650 mAh spec number, and
+whether the battery's discharge curve is linear enough at this state of
+charge for the mAh math above to hold. A bench measurement with an inline
+meter (the plan's step 1) is still the number to trust over either of these.
+
 ## Power-saving mode drops CPU frequency after idle
 
 `main.cpp:638` calls `powerManager.setPowerSaving(true)` after the device has
