@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "CrossPointSettings.h"
 #include "HalFileSource.h"
 #include "MapBleConsole.h"
 #include "MapFollow.h"
@@ -55,7 +56,8 @@
 //
 // | UP / DOWN      | zoom ladder, 5 rungs, 1..20 m/px                     |
 // | LEFT / RIGHT   | marker-height ladder, 5 rungs, look-ahead 50..95 %   |
-// | CONFIRM        | open the map menu: Refresh, Mode (ride/hike/cycle)   |
+// | CONFIRM        | open the map menu: Refresh, Mode, zoom/rotation/     |
+// |                | heading mode toggles (ride/hike/cycle)               |
 // | BACK           | leave (or close the menu, if it is open)             |
 //
 // Observe mode (menu's "Observation mode" row, MapScreenMode::Observe): the
@@ -214,9 +216,25 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // to agree about "up" -- the projection, MapViewState::heading, the compass and
   // anchorHeading_ -- goes through this one answer.
   uint8_t frameHeadingFor(uint8_t fixHeadingStep) const;
+  // Keeps frozenManualHeading_ current: captures the fix heading once, the
+  // first time SETTINGS.mapHeadingMode reads MAP_HEADING_MANUAL, and clears
+  // the capture (so switching to Manual again re-captures fresh) whenever it
+  // reads MAP_HEADING_AUTO. Called at the top of applyFix() and from onEnter(),
+  // both places a new headingStep becomes available.
+  void updateManualHeadingCapture(uint8_t fixHeadingStep);
   // True while the loaded route owns the frame's orientation, which is also what
   // stops a heading change from re-anchoring (MapFollow::Request::routeHoldsFrame).
   bool routeHoldsFrame() const { return route_ != nullptr && routeFrameHeadingValid_; }
+  // True while nothing on screen should rotate off of frameHeadingFor()'s last
+  // answer because of the rider's own heading -- a route holding the frame, a
+  // North-up rotation mode, or a frozen Manual heading. Same effect on
+  // MapFollow::decide() as routeHoldsFrame() alone used to be
+  // (Request::routeHoldsFrame suppresses the heading-drift ReAnchor check), so
+  // applyFix() ORs this into that field rather than adding a second one.
+  bool frameOrientationLocked() const {
+    return routeHoldsFrame() || SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_NORTH_UP ||
+           SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL;
+  }
   // Marker moves this frame may spend before a clean one is forced. One source
   // for the decision and for the log line that reports it -- they disagreed once,
   // and a log that reports the wrong budget is worse than none.
@@ -312,15 +330,16 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // from what is already stored.
   void saveLaddersIfChanged();
 
-  // CONFIRM's menu: Refresh, Mode and Observation/Follow mode, one flat list,
-  // no second popup. Every row commits and closes on one Select -- picking
-  // Mode steps ride->hike->cycle->ride and is done, same as any other row; a
-  // rider who wants a different mode again presses CONFIRM again. Draws the
-  // popup itself via optionPopup_.processRender() right after show() --
-  // MapActivity never calls requestUpdate() (it always has drawn straight to
-  // the buffer, on the main task, not through Activity's
-  // render(RenderLock&&)/render-task path), so nothing else would ever paint
-  // the popup's first frame.
+  // CONFIRM's menu: Refresh, Mode, Observation/Follow mode, and the
+  // zoom/rotation/heading mode toggles, one flat list, no second popup. Every
+  // row commits and closes on one Select -- picking Mode steps
+  // ride->hike->cycle->ride and is done, same as any other row; a rider who
+  // wants a different mode (or a different zoom/rotation/heading value)
+  // again presses CONFIRM again. Draws the popup itself via
+  // optionPopup_.processRender() right after show() -- MapActivity never
+  // calls requestUpdate() (it always has drawn straight to the buffer, on
+  // the main task, not through Activity's render(RenderLock&&)/render-task
+  // path), so nothing else would ever paint the popup's first frame.
   void openMapMenu();
   // No-op if newMode is already current -- picking the mode already on
   // screen must cost nothing, same rule as stepZoom/stepMarker's ladder ends.
@@ -424,6 +443,15 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // hand back the rotating map the frozen frame exists to stop.
   uint8_t routeFrameHeading_ = 0;
   bool routeFrameHeadingValid_ = false;
+  // Same idea as routeFrameHeading_, for SETTINGS.mapHeadingMode ==
+  // MAP_HEADING_MANUAL instead of a loaded route: the heading frameHeadingFor()
+  // returns while the rider has frozen the frame by hand. Captured once, by
+  // updateManualHeadingCapture(), from the fix heading in effect at the moment
+  // Manual was switched on -- not editable from a button yet (no spare one,
+  // MapActivity.h's button table), so this only stops the frame from following
+  // the rider; it does not yet let them re-aim it.
+  uint8_t frozenManualHeading_ = 0;
+  bool manualHeadingCaptured_ = false;
   // Where the marker is drawn, in screen pixels. Starts at the ladder anchor
   // after a reset and walks from there.
   int16_t markerDrawnX_ = 0;

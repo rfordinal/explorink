@@ -151,6 +151,18 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Hide battery percentage
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
+  // Map zoom mode. Manual is the button-driven ladder (stepZoom(), unchanged).
+  // Auto reserves the setting for a speed- and junction-proximity-driven
+  // picker (docs/map-data-spec.md, "Auto zoom picks a rung") -- not wired up
+  // yet, this only lets the rider select it.
+  enum MAP_ZOOM_MODE { MAP_ZOOM_MANUAL = 0, MAP_ZOOM_AUTO = 1, MAP_ZOOM_MODE_COUNT };
+  // Whether the frame's "up" is the rider's heading or true north.
+  enum MAP_ROTATION_MODE { MAP_ROTATION_HEADING_UP = 0, MAP_ROTATION_NORTH_UP = 1, MAP_ROTATION_MODE_COUNT };
+  // Whether the frame's heading (when MAP_ROTATION_HEADING_UP) tracks the
+  // incoming fix or stays frozen at whatever it was when the rider switched
+  // to Manual (MapActivity::updateManualHeadingCapture()).
+  enum MAP_HEADING_MODE { MAP_HEADING_AUTO = 0, MAP_HEADING_MANUAL = 1, MAP_HEADING_MODE_COUNT };
+
   // Page turn button long press behavior
   enum LONG_PRESS_BUTTON_BEHAVIOR {
     OFF = 0,
@@ -256,6 +268,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // IS a Settings-screen toggle, so the generic toJson/fromJson loop carries
   // it and nothing here has to.
   uint8_t mapAutoSyncTiles = 0;
+  // Zoom/rotation/heading mode settings, all category Map, all default to the
+  // behaviour the map screen had before this setting existed.
+  uint8_t mapZoomMode = MAP_ZOOM_MANUAL;
+  uint8_t mapRotationMode = MAP_ROTATION_HEADING_UP;
+  uint8_t mapHeadingMode = MAP_HEADING_AUTO;
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships
