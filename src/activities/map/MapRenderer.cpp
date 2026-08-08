@@ -41,6 +41,53 @@ void strokeWay(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, MapInk i
   }
 }
 
+// The same way, drawn as inked runs of `dashPx` separated by gaps of `gapPx`.
+//
+// Dash and gap are separate numbers because the two features that need them
+// want opposite proportions. A railway is the modern-map convention: long dark
+// runs with short breaks cut across them, which reads as one continuous line
+// that happens to be ticked. A watercourse wants the opposite -- short marks
+// with real space between them, so it reads as broken.
+//
+// A broken line is the only mark left that says "this is not a road you drive
+// on", and two features need it: a railway (thick, the modern-map convention)
+// and a watercourse (thin). Both otherwise arrive as plain black lines
+// indistinguishable from a street.
+//
+// The dash phase carries across vertices rather than restarting at each one.
+// Restarting is the obvious implementation and it is wrong: a curved way is
+// made of many short segments, so every vertex would start a fresh dash and a
+// bend would fill in solid -- exactly where the eye is looking.
+void strokeWayDashed(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, int dashPx, int gapPx, MapInk ink) {
+  if (lineWidth <= 0 || dashPx <= 0 || gapPx <= 0) return;
+  const int period = dashPx + gapPx;
+  int phase = 0;  // distance into the current period, 0..period-1
+
+  for (uint16_t i = 1; i < way.pointCount; ++i) {
+    const int x0 = way.xs[i - 1], y0 = way.ys[i - 1];
+    const int x1 = way.xs[i], y1 = way.ys[i];
+    const int dx = x1 - x0, dy = y1 - y0;
+    const int len =
+        static_cast<int>(std::lround(std::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy)));
+    if (len <= 0) continue;
+
+    int walked = 0;
+    while (walked < len) {
+      const int remainingInPhase = (phase < dashPx ? dashPx : period) - phase;
+      const int step = std::min(remainingInPhase, len - walked);
+      if (phase < dashPx) {  // the inked half of the period
+        const int ax = x0 + dx * walked / len;
+        const int ay = y0 + dy * walked / len;
+        const int bx = x0 + dx * (walked + step) / len;
+        const int by = y0 + dy * (walked + step) / len;
+        canvas.drawLine(ax, ay, bx, by, lineWidth, ink);
+      }
+      walked += step;
+      phase = (phase + step) % period;
+    }
+  }
+}
+
 // Width the style draws this class at, or 0 for "do not draw". A class id past
 // the enum's slots can only come from a corrupt tile; reserved slots carry
 // width 0 anyway, so this guard is about the array bound, not the style.
@@ -202,9 +249,14 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       const int lineWidth = style.waterLinePx[waterClass];
       if (mapWayIsClosedRing(way)) {
         MapAreaFill::toneRing(canvas, way.xs, way.ys, way.pointCount, style.waterTone);
+        // Tone first, then the pattern knocked out of it in white -- the order
+        // is what makes waves on water rather than waves under it.
         MapAreaFill::hatchRing(canvas, way.xs, way.ys, way.pointCount, style.waterHatch, style.waterHatchSpacingPx,
-                               MapInk::Black);
+                               style.waterHatchWhite ? MapInk::White : MapInk::Black);
         MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
+      } else if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
+        strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
+                        MapInk::Black);
       } else {
         MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
       }
@@ -228,7 +280,14 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // Width 0 is the style hiding this class outright (mapstyle.json's
       // `hidden`). Distinct from the mode mask, which drops the way earlier,
       // in the source, and per travel mode rather than for every mode.
-      strokeWay(canvas, way, roadWidthFor(style, way), MapInk::Black);
+      const MapLinePattern pattern =
+          way.classId < kClassEnumSlots ? style.roadPattern[way.classId] : MapLinePattern::Solid;
+      if (pattern == MapLinePattern::Dashed) {
+        strokeWayDashed(canvas, way, roadWidthFor(style, way), style.roadDashPx[way.classId],
+                        style.roadGapPx[way.classId], MapInk::Black);
+      } else {
+        strokeWay(canvas, way, roadWidthFor(style, way), MapInk::Black);
+      }
     }
   }
 
@@ -241,9 +300,23 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       const int lineWidth = roadWidthFor(style, way);
       if (lineWidth == 0) continue;
       const int casing = style.roadCasingPx[way.classId];
-      if (casing == 0) continue;
-      // The generator guarantees 2 * casing < width, so this is at least 1.
-      strokeWay(canvas, way, lineWidth - 2 * casing, MapInk::White);
+      if (casing > 0) {
+        // The generator guarantees 2 * casing < width, so this is at least 1.
+        strokeWay(canvas, way, lineWidth - 2 * casing, MapInk::White);
+      }
+      // Sleepers, drawn in this pass rather than a third one. They have to
+      // land after their own way's white fill or that fill erases them, and
+      // doing it here costs nothing; a third walk would re-read the whole
+      // roads layer off the SD card for a few ticks (kRoadPasses is
+      // load-bearing -- MapTileSource and MapTileReader size their work by it).
+      //
+      // The residue: a *later* cased road crossing this one paints its white
+      // fill over these ticks. That is a level crossing, where the road is
+      // meant to read as on top anyway, so it looks right rather than broken.
+      if (style.roadPattern[way.classId] == MapLinePattern::Ticked) {
+        strokeWayDashed(canvas, way, lineWidth, style.roadDashPx[way.classId], style.roadGapPx[way.classId],
+                        MapInk::Black);
+      }
     }
   }
   if (timing) lap(timing->roadsMs, mark);

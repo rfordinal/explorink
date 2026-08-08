@@ -92,6 +92,54 @@ void hatchAxis(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, uint16_
   }
 }
 
+// Rows of tildes instead of straight rules. Same scanline walk as hatchAxis --
+// crossings sorted, filled in pairs so a concave bank leaves its notch alone --
+// but each span is drawn as a triangle wave rather than one straight line.
+//
+// Amplitude and period both come off spacingPx, so the style keeps one number
+// per fill and the wave stays in proportion when it changes. Period 2x spacing
+// and amplitude a third of it reads as `~` from about 4 px of spacing upward;
+// below that there are not enough pixels for a squiggle and it degenerates to a
+// wobbly line, which is still water-ish and still better than nothing.
+//
+// The wave rides +/- amplitude off its scanline, so it can overshoot the ring
+// by that much at a bank. MapRenderer draws outlineRing after the hatch, which
+// covers it -- worth knowing before reusing this pattern somewhere with no
+// outline.
+void hatchWave(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, uint16_t pointCount, int spacingPx, int minY,
+               int maxY, MapInk ink) {
+  int crossings[MapAreaFill::kMaxCrossings];
+  const int amplitude = std::max(1, spacingPx / 3);
+  const int quarter = std::max(1, spacingPx / 2);  // a quarter of the 2x period
+  // Phase offsets of one full cycle, as multiples of the amplitude.
+  static constexpr int kPhase[4] = {0, 1, 0, -1};
+
+  const int start = minY - (((minY % spacingPx) + spacingPx) % spacingPx);
+  for (int value = start; value <= maxY; value += spacingPx) {
+    if (value < minY) continue;
+    const int count = collectCrossings(xs, ys, pointCount, true, value, crossings, MapAreaFill::kMaxCrossings);
+    if (count < 2) continue;
+    std::sort(crossings, crossings + count);
+    for (int i = 0; i + 1 < count; i += 2) {
+      const int x0 = crossings[i];
+      const int x1 = crossings[i + 1];
+      // Phase is anchored to absolute x, not to the span, so neighbouring
+      // scanlines line up into a wave field instead of each starting fresh.
+      int prevX = x0;
+      int prevY = value + kPhase[((x0 / quarter) % 4 + 4) % 4] * amplitude;
+      for (int x = x0 - (((x0 % quarter) + quarter) % quarter) + quarter; x <= x1; x += quarter) {
+        const int y = value + kPhase[((x / quarter) % 4 + 4) % 4] * amplitude;
+        canvas.drawLine(prevX, prevY, x, y, 1, ink);
+        prevX = x;
+        prevY = y;
+      }
+      if (prevX < x1) {
+        canvas.drawLine(prevX, prevY, x1, value + kPhase[((x1 / quarter) % 4 + 4) % 4] * amplitude, 1, ink);
+      }
+    }
+  }
+}
+
 void hatchDiagonal(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, uint16_t pointCount, bool antiDiagonal,
                    int spacingPx, MapInk ink) {
   int minX, minY, maxX, maxY;
@@ -146,6 +194,9 @@ void MapAreaFill::hatchRing(IMapCanvas& canvas, const int16_t* xs, const int16_t
       break;
     case Pattern::AntiDiagonal:
       hatchDiagonal(canvas, xs, ys, pointCount, true, spacingPx, ink);
+      break;
+    case Pattern::Wave:
+      hatchWave(canvas, xs, ys, pointCount, spacingPx, minY, maxY, ink);
       break;
     case Pattern::None:
       break;

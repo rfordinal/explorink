@@ -99,6 +99,80 @@ The second walk means `MapTileSource::waysEmitted()` reports the way count
 `kRoadPasses` times over. That is the counter working as documented; a caller
 that wants "ways in the picture" divides by it.
 
+## One ink, and the marks it has to spend
+
+There is no colour, so a feature is told apart by the **shape of its mark**, not
+its hue. The whole style is the job of keeping these apart, and every one of
+them was settled by pushing renders to the panel and looking
+(`../../docs/map-legibility.md`).
+
+| mark | means |
+|---|---|
+| solid, wide | the route |
+| hollow ribbon (black edges, white core) | a major road |
+| thin hairline | a minor road, and in bulk the texture that says settlement |
+| dark surface with white waves knocked out | water |
+| diagonal hatch | forest |
+| stipple | built-up area |
+| cased line in alternating black and hollow blocks | a railway |
+
+Two consequences worth stating, because both were learned by getting them
+wrong:
+
+**Solid black is the route's mark and nothing else may take it.** Making major
+roads solid black reads beautifully in isolation and destroys the route, which
+`drawRoute` draws as a plain solid line with nothing else to distinguish it.
+That is why roads keep their casing and why `gen_mapstyle.py` refuses a route
+no wider than the widest road.
+
+**A cased class needs a visible white core.** Below about 3 px the core stops
+reading and the road turns back into a solid stroke -- into the route's
+territory. Rule: `width - 2 * casing >= 3`.
+
+## Dashed and ticked are different marks, not two lengths of one
+
+`MapLinePattern` (`MapStyle.h`) has three values, and the middle two are easy to
+confuse:
+
+- **`Dashed`** breaks the stroke itself, so the background shows through. A
+  watercourse: it should read as discontinuous, because it is not something you
+  drive along.
+- **`Ticked`** leaves the stroke whole -- casing and all -- and lays blocks
+  across it. A railway: it must still read as one continuous line, because it
+  is continuous, and it is a barrier crossed only at a level crossing.
+
+They also want opposite rhythms, which is why `dash_px` and `gap_px` are
+separate numbers rather than one period. The railway's proportions were read
+off a reference map and are deliberate: 4 px wide as 1 px outline + 2 px core +
+1 px outline, with blocks three widths long, 12 px black against 12 px hollow.
+
+**The ticks are drawn in the second (white) road pass, not a third walk.** They
+have to land after their own way's white fill or that fill erases them, and a
+third pass would re-read the whole roads layer off the SD card for a few blocks
+-- `kRoadPasses` is load-bearing in `MapTileSource` and `MapTileReader`, which
+size their work by it. The residue is that a *later* cased road crossing a
+railway paints over its blocks. That is a level crossing, where the road is
+meant to read as on top, so it looks right rather than broken.
+
+## Not every `railway=*` is a railway
+
+`tag_to_class.py` used to be `if tags.get("railway")`, so anything carrying the
+key drew as a mainline track. Measured over one Bratislava viewport
+2026-08-07: 1508 `rail`, and also **604 `tram`**, 64 `disused`, 54 `razed`, 18
+`abandoned`, plus 21 `workshop` / `signal_box` / `turntable` / `roundhouse` /
+`traverser` / `loading_ramp`.
+
+136 of those are track that no longer physically exists. Drawn as a bold
+barrier, the map was announcing a level crossing where there is only road. It
+went unnoticed while every line was 1 px; the block symbol made it obvious.
+
+`mapbuilder/tag_to_class.py` now uses an **allowlist** (`_RAILWAY_DRAWN`), not a
+denylist -- the key carries far more than tracks, and a denylist lets the next
+unfamiliar value through as a mainline railway, which is exactly how this
+happened. `tram` is excluded by decision rather than error: a tram runs in the
+street and is crossed anywhere, so drawing it like a mainline railway misstates
+what the rider will meet.
+
 ## GfxRenderer's thick line is not usable for a map
 
 **Found 2026-08-05, read off the code, not yet confirmed on the panel.**

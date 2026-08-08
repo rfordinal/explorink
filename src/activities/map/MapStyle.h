@@ -19,6 +19,16 @@
 // into the laptop-side preview (test/map_preview). One argument makes "which
 // style produced this pixel" answerable there; free constants would only be
 // answerable by rebuilding and hoping.
+// How a line class is broken up.
+//
+// The two are genuinely different marks, not two lengths of one mark. `Dashed`
+// breaks the stroke itself, so the background shows through -- that is a
+// watercourse, and it reads as discontinuous. `Ticked` leaves the stroke whole,
+// casing and all, and lays short marks across it -- that is a railway, and it
+// reads as one continuous line that happens to be ticked. Every modern map
+// draws them that way round.
+enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked };
+
 struct MapStyle {
   // Road line width per class_id -- index with MapClassId, whose slot count
   // this array matches. 0 means the class is not drawn, which is how
@@ -36,6 +46,19 @@ struct MapStyle {
   // with no colour to spend (docs/map-render-spec.md, "What must be drawn").
   // 0 means a solid black line of the full width.
   uint8_t roadCasingPx[kClassEnumSlots];
+
+  // Dash length per class, 0 for a solid stroke; the gap matches the dash.
+  // A broken line is the one mark left that says "not a road you drive on",
+  // and two classes need it -- a railway (thick, the modern-map convention)
+  // and a watercourse. mapstyle.json's `pattern` field finally means
+  // something: it was declared for ferry, railway and aerialway from the
+  // start and read by nothing at all.
+  MapLinePattern roadPattern[kClassEnumSlots];
+  uint8_t roadDashPx[kClassEnumSlots];
+  // Gap between dashes. Separate from the dash so a railway can be long runs
+  // with short ticks (the modern-map look) while a watercourse is short marks
+  // with real space -- one number for both would force the same rhythm.
+  uint8_t roadGapPx[kClassEnumSlots];
 
   // layers.buildings. A ring is drawn as an optional outline plus a hatch --
   // never a solid fill, which on 1-bit swallows the roads around it
@@ -66,9 +89,20 @@ struct MapStyle {
   // `waterEnabled` gates the read, not the draw -- see buildings above.
   bool waterEnabled;
   uint8_t waterLinePx[kWaterClassSlots];
+  // Dash length per water class, 0 for a solid stroke. Same reason as
+  // roadDashPx: a solid black line is a road, and a stream drawn as one sends
+  // the eye down the river instead of the road beside it.
+  MapLinePattern waterPattern[kWaterClassSlots];
+  uint8_t waterDashPx[kWaterClassSlots];
+  uint8_t waterGapPx[kWaterClassSlots];
   MapAreaTone waterTone;
   MapAreaFill::Pattern waterHatch;
   uint8_t waterHatchSpacingPx;
+  // White waves on a dark surface is the whole point of the water fill: a tone
+  // dense enough to read as water at a glance, with the pattern knocked out of
+  // it rather than added on top. Every other layer's hatch is black on white,
+  // so this is a per-layer choice, not a global one.
+  bool waterHatchWhite;
 
   // layers.landuse. Forest and built-up areas share one tile layer and are
   // drawn at different depths -- built-up under everything, forest above it --
