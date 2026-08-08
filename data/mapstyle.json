@@ -359,6 +359,16 @@
         {
           "match": {
             "class": [
+              "unknown"
+            ]
+          },
+          "width": 1,
+          "pattern": "dashed",
+          "color": "#000000"
+        },
+        {
+          "match": {
+            "class": [
               "river"
             ]
           },
