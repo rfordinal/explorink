@@ -96,7 +96,10 @@ class RoundedRaffTheme : public BaseTheme {
                 const std::function<UIIcon(int index)>& rowIcon = nullptr,
                 const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
                 const std::function<bool(int index)>& rowDimmed = nullptr) const override;
+  // 0 means "use this theme's own font" -- see BaseTheme.h's declaration for
+  // why this can't just be a normal per-class default argument. Same for
+  // btn3FontId/btn4FontId (0 means "same as fontId").
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                       const char* btn4) const override;
+                       const char* btn4, int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const override;
   bool homeMenuShowsContinueReading() const { return true; }
 };

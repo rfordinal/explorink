@@ -352,7 +352,10 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
 }
 
 void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                       const char* btn4) const {
+                                       const char* btn4, int fontId, int btn3FontId, int btn4FontId) const {
+  if (fontId == 0) fontId = kGuideFontId;
+  if (btn3FontId == 0) btn3FontId = fontId;
+  if (btn4FontId == 0) btn4FontId = fontId;
   if (gpio.hasTouch()) {
     return;
   }
@@ -368,7 +371,12 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
   const int hintHeight = RoundedRaffMetrics::values.buttonHintsHeight - 10;  // 30px total guide height
   const int groupWidth = (pageWidth - sidePadding * 2 - groupGap) / 2;
   const int hintY = pageHeight - hintHeight - bottomMargin;
-  const int textY = hintY + (hintHeight - renderer.getLineHeight(kGuideFontId)) / 2;
+  const int textY = hintY + (hintHeight - renderer.getLineHeight(fontId)) / 2;
+  // Own vertical centering for the right group: btn3FontId/btn4FontId can be
+  // a different size than fontId (MapActivity's Observe mode), and centering
+  // both groups on fontId's line height would sit the right group's text off
+  // its own box's middle whenever the two sizes differ.
+  const int rightTextY = hintY + (hintHeight - renderer.getLineHeight(btn3FontId)) / 2;
 
   const bool backDisabled = (btn1 == nullptr || btn1[0] == '\0');
   const int leftGroupX = sidePadding;
@@ -384,8 +392,8 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
   renderer.fillRect(rightGroupX, hintY, groupWidth, hintHeight, false);
 
   renderer.drawRoundedRect(leftGroupX, hintY, groupWidth, hintHeight, 2, kBottomRadius, true);
-  const int selectWidth = renderer.getTextWidth(kGuideFontId, selectText.c_str(), EpdFontFamily::REGULAR);
-  const int downWidth = renderer.getTextWidth(kGuideFontId, downText.c_str(), EpdFontFamily::REGULAR);
+  const int selectWidth = renderer.getTextWidth(fontId, selectText.c_str(), EpdFontFamily::REGULAR);
+  const int downWidth = renderer.getTextWidth(btn4FontId, downText.c_str(), EpdFontFamily::REGULAR);
   constexpr int innerEdgePadding = 16;
 
   const int backX = leftGroupX + innerEdgePadding;
@@ -394,14 +402,14 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
   const int downX = rightGroupX + groupWidth - innerEdgePadding - downWidth;
 
   if (!backDisabled) {
-    renderer.drawText(kGuideFontId, backX, textY, backLabel.c_str(), true, EpdFontFamily::REGULAR);
+    renderer.drawText(fontId, backX, textY, backLabel.c_str(), true, EpdFontFamily::REGULAR);
   }
-  renderer.drawText(kGuideFontId, selectX, textY, selectText.c_str(), true, EpdFontFamily::REGULAR);
+  renderer.drawText(fontId, selectX, textY, selectText.c_str(), true, EpdFontFamily::REGULAR);
 
   renderer.drawRoundedRect(rightGroupX, hintY, groupWidth, hintHeight, 2, kBottomRadius, true);
 
-  renderer.drawText(kGuideFontId, upX, textY, upText.c_str(), true, EpdFontFamily::REGULAR);
-  renderer.drawText(kGuideFontId, downX, textY, downText.c_str(), true, EpdFontFamily::REGULAR);
+  renderer.drawText(btn3FontId, upX, rightTextY, upText.c_str(), true, EpdFontFamily::REGULAR);
+  renderer.drawText(btn4FontId, downX, rightTextY, downText.c_str(), true, EpdFontFamily::REGULAR);
 
   renderer.setOrientation(origOrientation);
 }
