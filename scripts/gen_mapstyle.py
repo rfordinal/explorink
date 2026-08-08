@@ -91,9 +91,12 @@ def road_widths(style):
 
     widths = [0] * _CLASS_SLOTS
     casings = [0] * _CLASS_SLOTS
+    patterns = ["Solid"] * _CLASS_SLOTS
+    dashes = [0] * _CLASS_SLOTS
+    gaps = [0] * _CLASS_SLOTS
     if not roads.get("enabled", True):
         print("gen_mapstyle.py: layers.roads.enabled is false -- no roads will be drawn")
-        return widths, casings
+        return widths, casings, patterns, dashes, gaps
 
     default_width = _round_px(roads.get("default", {}).get("width", 1), "layers.roads.default.width")
     for class_id in _CLASS_ID.values():
@@ -107,6 +110,9 @@ def road_widths(style):
             if rule.get("hidden", False):
                 widths[_CLASS_ID[name]] = 0
                 casings[_CLASS_ID[name]] = 0
+                patterns[_CLASS_ID[name]] = "Solid"
+                dashes[_CLASS_ID[name]] = 0
+                gaps[_CLASS_ID[name]] = 0
                 continue
             width = _round_px(rule.get("width", default_width), f"layers.roads.rules[{index}].width")
             # A visible class must stay visible. Rounding 0.4px to 0 would
@@ -125,11 +131,13 @@ def road_widths(style):
                 print(f"gen_mapstyle.py: class '{name}': casing_px leaves no white inside a {width}px "
                       f"road -- drawing it solid instead")
             casings[_CLASS_ID[name]] = casing
+            (patterns[_CLASS_ID[name]], dashes[_CLASS_ID[name]],
+             gaps[_CLASS_ID[name]]) = _dash(rule, f"layers.roads.rules[{index}]")
 
     if not any(widths):
         sys.exit("gen_mapstyle.py: every road class resolves to width 0 -- a style that draws no "
                  "roads at all is never what a style file means")
-    return widths, casings
+    return widths, casings, patterns, dashes, gaps
 
 
 def puck(style):
@@ -159,11 +167,47 @@ def puck(style):
 # here; the repeat count ("XXXX") is a matplotlib density knob, and density on
 # the device comes from hatch_spacing_px, in device pixels like every other
 # length. Maps to MapAreaFill::Pattern.
+# mapstyle.json's `pattern` finally reaches the device. Dash length in device
+# pixels; the gap matches it. "dotted" is a short dash, not a single pixel --
+# one pixel on and one off is a grey line at arm's length, not a dotted one.
+_LINE_DASH_PX = {
+    "solid": (0, 0),
+    "dashed": (6, 4),
+    "dotted": (2, 3),
+    # Short marks with long spaces, laid across a line that stays whole --
+    # the sleepers of a railway. The opposite rhythm to a dash, which is why
+    # it cannot be expressed by tuning "dashed".
+    "ticked": (2, 8),
+}
+
+
+def _dash(rule, what):
+    """(dash length, gap length) in px. 0/0 means a solid stroke."""
+    pattern = str(rule.get("pattern", "solid")).strip().lower()
+    if pattern not in _LINE_DASH_PX:
+        sys.exit(f"gen_mapstyle.py: {what}: pattern '{pattern}' is not one of "
+                 f"{sorted(_LINE_DASH_PX)}")
+    dash, gap = _LINE_DASH_PX[pattern]
+    kind = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dashed", "ticked": "Ticked"}[pattern]
+    if rule.get("dash_px") is not None:
+        dash = _round_px(rule["dash_px"], f"{what}.dash_px")
+    if rule.get("gap_px") is not None:
+        gap = _round_px(rule["gap_px"], f"{what}.gap_px")
+    for value, field in ((dash, "dash_px"), (gap, "gap_px")):
+        if value > 255:
+            sys.exit(f"gen_mapstyle.py: {what}: {field} {value} does not fit a uint8_t")
+    if dash > 0 and gap <= 0:
+        sys.exit(f"gen_mapstyle.py: {what}: a dash with no gap is a solid line -- "
+                 f"use pattern 'solid' or give gap_px above 0")
+    return kind, dash, gap
+
+
 _HATCH_PATTERN = {
     "/": "Diagonal",
     "\\": "AntiDiagonal",
     "-": "Horizontal",
     "|": "Vertical",
+    "~": "Wave",
     "X": "Cross",
     "x": "Cross",
     "+": "Cross",
@@ -242,13 +286,16 @@ def water(style):
     layer = style.get("layers", {}).get("water", {})
     widths = [0] * _WATER_SLOTS
     if not layer.get("enabled", False):
-        return False, widths, "None", "None", 0
+        return False, widths, ["Solid"] * _WATER_SLOTS, [0] * _WATER_SLOTS, [0] * _WATER_SLOTS, "None", "None", 0, False
 
     default_width = max(_round_px(layer.get("default", {}).get("width", 1), "layers.water.default.width"), 1)
     for class_id in _WATER_CLASS.values():
         widths[class_id] = default_width
 
-    tone, pattern, spacing = "None", "None", 0
+    patterns_w = ["Solid"] * _WATER_SLOTS
+    dashes = [0] * _WATER_SLOTS
+    gaps = [0] * _WATER_SLOTS
+    tone, pattern, spacing, white = "None", "None", 0, False
     for index, rule in enumerate(layer.get("rules", [])):
         what = f"layers.water.rules[{index}]"
         classes = rule.get("match", {}).get("class")
@@ -263,12 +310,19 @@ def water(style):
             if width > 255:
                 sys.exit(f"gen_mapstyle.py: {what}: width {width}px does not fit a uint8_t")
             widths[_WATER_CLASS[name]] = 0 if rule.get("hidden", False) else width
-        fill = rule.get("fill")
-        if fill == "hatch" and pattern == "None":
-            pattern, spacing = _hatch(rule, what)
-        elif fill == "tone" and tone == "None":
-            tone = _tone(rule, what)
-    return True, widths, tone, pattern, spacing
+            (patterns_w[_WATER_CLASS[name]], dashes[_WATER_CLASS[name]],
+             gaps[_WATER_CLASS[name]]) = _dash(rule, what)
+        # Water is the one layer that wants a tone *and* a pattern: a surface
+        # dense enough to read as water, with waves knocked out of it in white.
+        # Everywhere else `fill` picks one or the other, so both are read here
+        # rather than switching on it.
+        if rule.get("tone") and tone == "None":
+            tone = _tone(dict(rule, fill="tone"), what)
+        if rule.get("hatch") and pattern == "None":
+            pattern, spacing = _hatch(dict(rule, fill="hatch"), what)
+            if rule.get("hatch_white"):
+                white = True
+    return True, widths, patterns_w, dashes, gaps, tone, pattern, spacing, white
 
 
 def landuse(style):
@@ -367,7 +421,7 @@ def _array(values, comments):
     return lines
 
 
-def gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x, marker_y,
+def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x, marker_y,
             puck_px):
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
@@ -397,9 +451,36 @@ def gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, r
     for class_id in range(_CLASS_SLOTS):
         name = id_to_name.get(class_id, "(reserved)")
         lines.append(f"        {casings[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
+        "    // Line pattern per class. Order matters: designated initialisers",
+        "    // must follow MapStyle.h.",
+        "    .roadPattern =",
+        "    {",
+    ]
+    for class_id in range(_CLASS_SLOTS):
+        name = id_to_name.get(class_id, "(reserved)")
+        lines.append(f"        MapLinePattern::{patterns[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
+        "    // Dash length per class, same indexing. 0 = a solid stroke.",
+        "    .roadDashPx =",
+        "    {",
+    ]
+    for class_id in range(_CLASS_SLOTS):
+        name = id_to_name.get(class_id, "(reserved)")
+        lines.append(f"        {dashes[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
+        "    .roadGapPx =",
+        "    {",
+    ]
+    for class_id in range(_CLASS_SLOTS):
+        name = id_to_name.get(class_id, "(reserved)")
+        lines.append(f"        {gaps[class_id]},  // {class_id} {name}")
     radius, ring, arrow = puck_px
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
-    w_enabled, w_widths, w_tone, w_pattern, w_spacing = water_px
+    w_enabled, w_widths, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing, w_white = water_px
     l_enabled, l_outlines, l_tones, l_patterns, l_spacings = landuse_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
     landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
@@ -413,9 +494,16 @@ def gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, r
         f"    .waterEnabled = {'true' if w_enabled else 'false'},",
         "    .waterLinePx =",
         *_array(w_widths, water_names),
+        "    .waterPattern =",
+        *_array([f"MapLinePattern::{p}" for p in w_patterns], water_names),
+        "    .waterDashPx =",
+        *_array(w_dashes, water_names),
+        "    .waterGapPx =",
+        *_array(w_gaps, water_names),
         f"    .waterTone = MapAreaTone::{w_tone},",
         f"    .waterHatch = MapAreaFill::Pattern::{w_pattern},",
         f"    .waterHatchSpacingPx = {w_spacing},",
+        f"    .waterHatchWhite = {'true' if w_white else 'false'},",
         f"    .landuseEnabled = {'true' if l_enabled else 'false'},",
         "    .landuseOutlinePx =",
         *_array(l_outlines, landuse_names),
@@ -452,7 +540,7 @@ def main(repo_root, style_path=None, output_path=None):
     with open(style_path) as f:
         style = json.load(f)
 
-    widths, casings = road_widths(style)
+    widths, casings, patterns, dashes, gaps = road_widths(style)
     buildings_px = buildings(style)
     water_px = water(style)
     landuse_px = landuse(style)
@@ -469,7 +557,8 @@ def main(repo_root, style_path=None, output_path=None):
     print(f"gen_mapstyle.py: buildings {'on' if buildings_px[0] else 'off'} "
           f"(outline {buildings_px[1]}px, tone {buildings_px[2]}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "
-          f"(widths {water_px[1]}, tone {water_px[2]}, hatch {water_px[3]}/{water_px[4]}px)")
+          f"(widths {water_px[1]}, dashes {water_px[3]}/{water_px[4]}, tone {water_px[5]}, "
+          f"hatch {water_px[6]}/{water_px[7]}px{' white' if water_px[8] else ''})")
     widest_road = max(widths)
     if route_px[0] and route_px[0] <= widest_road:
         print(f"gen_mapstyle.py: warning -- route width {route_px[0]}px is not wider than the widest road "
@@ -482,7 +571,7 @@ def main(repo_root, style_path=None, output_path=None):
         print("gen_mapstyle.py: landuse off")
 
     with open(output_path, "w") as f:
-        f.write(gen_cpp(widths, casings, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x,
+        f.write(gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x,
                         marker_y, puck_px))
     print(f"gen_mapstyle.py: wrote {output_path}")
 

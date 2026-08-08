@@ -23,7 +23,14 @@ namespace MapAreaFill {
 // cross (horizontal and vertical together). The repeat count in a string like
 // "XXXX" is a matplotlib density knob and has no meaning here -- spacing comes
 // from hatch_spacing_px, in device pixels like every other length.
-enum class Pattern : uint8_t { None = 0, Diagonal, AntiDiagonal, Horizontal, Vertical, Cross };
+// `Wave` is the water one: a row of tildes rather than a straight rule, so a
+// filled river cannot be mistaken for a filled anything else. Drawn as a
+// triangle wave, not as a `~` glyph from a font -- IMapCanvas has no text
+// primitive (drawLine, fillRoundedRect, fillPolygon, fillSpan) and the host
+// preview's PpmCanvas has no font system at all, so a glyph would have to be
+// plumbed through both before it could be judged. When map labels arrive and
+// IMapCanvas grows text, a real `~` becomes an option worth revisiting.
+enum class Pattern : uint8_t { None = 0, Diagonal, AntiDiagonal, Horizontal, Vertical, Cross, Wave };
 
 // Fills the ring with a flat tone (MapAreaTone.h): scan lines paired the same
 // way the hatch is, but painted as spans rather than as lines. This is what a
