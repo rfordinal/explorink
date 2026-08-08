@@ -474,8 +474,25 @@ cost table above is hardware-measured and stays the only source), whether the
 panel ghosts at any of these budgets (`kRouteFramePartialMoves`' comment: a
 framebuffer dump of a ghosted panel looks perfect), or whether a map that holds
 its orientation for 320 m of riding *reads* right to someone on a motorcycle.
-The floor at 2 has not been on hardware yet -- that needs a flash, which needs
-asking first (`CLAUDE.md`).
+
+**Flashed, 2026-08-08, and the count did not match the sweep.** Floor 2 on
+real hardware, ride 142303 replayed the same way the correctness gate above
+was measured (`tools/replay_ride.py`, console `pos`): **30 redraws, not 14**
+-- 14 heading, 15 budget, 1 keep-in, where the sweep says 14 total (8+6+0).
+The gate above still passes exactly at floor 0 on this same build, so the
+harness is not simply wrong. Two things are ruled out: `MapActivity` wiring
+(`applyFix()` calls the identical function for both the console and BLE
+paths, `MapActivity.cpp:1143,1174`) and the console's own `pos`-unchanged
+shortcut (`MapActivity.cpp:1164`, skips `applyFix()` entirely on a repeated
+lat/lon -- present but not the cause, since it would have shown up as an
+*undercount* against the floor-0 gate too, and that gate is exact). Leading
+suspect, not confirmed: the device's persisted last fix before packet 1 --
+two hardware runs of this same ride under the *old* firmware already gave
+different totals (32, then 24) for exactly this reason, and neither hardware
+session controlled for it. `test/map_replay` always starts clean from the
+ride's own first packet; a real device does not. Settling this needs a
+controlled re-run -- same known starting fix before every replay, not a new
+one each session -- not another guess from here.
 
 **One assumption inside the harness**, worth knowing before trusting a number
 it produces: every marker move is taken to succeed. On the device a rejected
@@ -483,6 +500,55 @@ it produces: every marker move is taken to succeed. On the device a rejected
 (`MapActivity.cpp:1512-1522`). That path logs `marker window rejected` and did
 not appear in the hardware runs behind the gate above, which is why the counts
 match exactly -- but a ride that trips it would replay optimistically here.
+
+### Watching a ride instead of counting it
+
+`map_replay --events` prints every packet's outcome (skip/move/reanchor, with
+the fix's screen position and `partialMoves` at decision time) instead of only
+the summary -- for reading a specific stretch, not for a table.
+
+`map_replay --frames DIR` writes `<ride>.frames.csv` per ride: one row per
+**ReAnchor** (packet, timestamp, lat/lon/heading, reason, moves-in) -- every
+moment the device's picture actually changes. `tools/render_ride_video.py`
+(parent repo) turns that into an MP4: one `map_preview` call per row renders
+that exact view with the real `MapRenderer`, held on screen for the real gap
+(clamped, `--min-hold-ms`/`--max-hold-ms`) until the next one. Encoded via
+`imageio-ffmpeg` (`pip install imageio-ffmpeg`, a user-scoped binary, no
+system package); falls back to an animated GIF automatically if that is not
+installed. A `.manifest.txt` next to it maps `mm:ss` back to a packet number
+and reason, so "at 1:24 I see an unnecessary render" is a lookup, not a
+re-count.
+
+In this mode only ReAnchor gets a frame -- MoveMarker slides a 64x64 patch
+inside a frame that is otherwise pixel-identical ("The decision" above), and
+the video showed it: the marker never appeared to move or turn between
+redraws, which reads as a bug the first time you watch it and is not one --
+it is `--frames`' scope cut being visible.
+
+**`map_replay --track DIR` covers that gap**, one row per **packet** (skip
+and move included, not just reanchor), each with the frame's own heading
+alongside the fix's. `tools/render_ride_video.py --track` renders the real
+picture only when a row is `reanchor` (or the ride's first packet, tagged
+`init`), then draws a small red dot and direction line on a *copy* of that
+held picture for every packet in between -- the real, continuous GPS fix,
+independent of whether the device's own marker moved to show it or the frame
+even redrew. Cheap: with 14 real redraws over 339 packets, only 14
+`map_preview` calls happen, the other 325 frames are a PIL composite each.
+
+The direction line's angle is `(fix_heading - anchor_heading)` steps off
+"up", matching `MapFollow::relativeHeadingStep()` exactly -- "up" is the
+frame's own anchor heading, not true north. **Getting this position right
+took a second pass**: a `ReAnchor` event's `(x, y)` from `MapFollow::decide()`
+is the fix projected through the *old* frame -- exactly the drift that
+triggered the reset, meaningless in the new one. The first version of
+`--track` used it anyway and the dot landed nowhere near the marker on every
+reanchor with more than a couple of moves in, found by eye in the rendered
+frames, not by a test. Fixed by recording the *post-reset* position for a
+reanchor row instead -- always `(anchorX, markerY)` with relative drift 0,
+which is what `renderViewport()` actually leaves on screen. Worth remembering
+for the next field added here: `MapFollow::decide()`'s `(x, y)` is pre-reset
+by definition, and anything drawn after a reset needs the reset's own
+answer, not the question that caused it.
 
 ## The heading decides the frame, once
 

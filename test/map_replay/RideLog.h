@@ -20,6 +20,10 @@ struct Packet {
   double lat = 0.0;
   double lon = 0.0;
   uint8_t headingStep = 0;  // 0-15, 22.5 degrees per step, clockwise from north
+  // Wall-clock ms the phone sent this at, straight off the log line. 0 if the
+  // line had none -- only test/map_replay's --frames (video timing) reads
+  // this; the decision replay itself has no notion of real time.
+  int64_t tUtcMs = 0;
 };
 
 struct Ride {

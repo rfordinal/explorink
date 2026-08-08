@@ -178,7 +178,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // explicitly -- except in a route overview, which is framed on the route and
   // has no fix in it. A puck at the screen centre there would claim the rider is
   // standing in the middle of their own route.
-  const bool drawPuck = !result.routeFitRan;
+  const bool drawPuck = !result.routeFitRan && request.drawMarker;
   if (drawPuck) MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
   result.peakHeapDuringRender = HeapProbe::peakBytes();
   result.allocsDuringRender = HeapProbe::allocCount();

@@ -115,6 +115,36 @@ void PpmCanvas::fillSpan(int x1, int x2, const int y, const MapAreaTone tone) {
   }
 }
 
+bool PpmCanvas::readPpm(const std::string& path) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return false;
+
+  char magic[3] = {0};
+  int w = 0, h = 0, maxVal = 0;
+  const bool headerOk = std::fscanf(f, "%2s %d %d %d", magic, &w, &h, &maxVal) == 4;
+  // The single whitespace byte after maxval that the P6 format requires
+  // before raw data starts -- fscanf's "%d" already stopped at it, so one
+  // getc consumes exactly that byte and nothing of the pixel data.
+  if (headerOk) std::fgetc(f);
+  if (!headerOk || magic[0] != 'P' || magic[1] != '6' || maxVal != 255 || w != width_ || h != height_) {
+    std::fclose(f);
+    return false;
+  }
+
+  std::vector<uint8_t> row(static_cast<size_t>(width_) * 3);
+  for (int y = 0; y < height_; ++y) {
+    if (std::fread(row.data(), 1, row.size(), f) != row.size()) {
+      std::fclose(f);
+      return false;
+    }
+    for (int x = 0; x < width_; ++x) {
+      pixels_[static_cast<size_t>(y) * width_ + x] = row[static_cast<size_t>(x) * 3] < 128 ? 1 : 0;
+    }
+  }
+  std::fclose(f);
+  return true;
+}
+
 bool PpmCanvas::writePpm(const std::string& path) const {
   FILE* f = std::fopen(path.c_str(), "wb");
   if (!f) return false;

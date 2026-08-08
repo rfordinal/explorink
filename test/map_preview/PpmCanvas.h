@@ -28,6 +28,17 @@ class PpmCanvas : public IMapCanvas {
 
   bool writePpm(const std::string& path) const;
 
+  // Loads a canvas back from a PPM this class itself wrote (binary P6,
+  // black=(0,0,0)/white=(255,255,255) exactly, no other bilevel-canvas
+  // producer promised) -- for stamping something onto an already-rendered
+  // frame without re-running the geometry pass that produced it (see
+  // test/map_preview's marker_stamp: renders the map once per real redraw,
+  // draws MapRenderer::drawMarker() at wherever the marker actually is once
+  // per packet on a copy). Width/height must match the canvas already
+  // constructed with; returns false on any mismatch or malformed header
+  // rather than guessing.
+  bool readPpm(const std::string& path);
+
   // Raw 1 byte/pixel buffer, for tests that compare two renders against each
   // other rather than against the committed PPM.
   const std::vector<uint8_t>& pixels() const { return pixels_; }

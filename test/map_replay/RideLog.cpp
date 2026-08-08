@@ -23,6 +23,7 @@ struct LineCtx {
   double lat = 0.0;
   double lon = 0.0;
   long heading = 0;
+  int64_t tUtcMs = 0;
 };
 
 void onKey(void* ctx, const char* key, size_t len) {
@@ -49,6 +50,8 @@ void onNumber(void* ctx, const char* value, size_t len) {
   } else if (c->key == "heading") {
     c->heading = std::strtol(text.c_str(), nullptr, 10);
     c->haveHeading = true;
+  } else if (c->key == "t_utc_ms") {
+    c->tUtcMs = std::strtoll(text.c_str(), nullptr, 10);
   }
 }
 
@@ -114,6 +117,7 @@ bool read(const std::string& path, Ride& out, int& skippedLines) {
     packet.lat = ctx.lat;
     packet.lon = ctx.lon;
     packet.headingStep = static_cast<uint8_t>(ctx.heading & 0x0F);
+    packet.tUtcMs = ctx.tUtcMs;
     out.packets.push_back(packet);
   }
   return true;

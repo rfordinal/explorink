@@ -6,7 +6,7 @@
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
 //               [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle]
 //               [--tile <col>/<row>] [--hatch] [--route <file.tir>]
-//               [--fit-route] [--out <file>]
+//               [--fit-route] [--no-marker] [--out <file>]
 //   map_preview --tiles <dir> --route <file.tir> --fit-route
 //   map_preview --zoom-ladder
 //
@@ -22,6 +22,11 @@
 //
 // --hatch draws the missing-tile hatch the device always draws (P4). It is
 // opt-in here so the committed golden PPM stays byte-identical.
+//
+// --no-marker skips the puck this tool normally draws in place of a real
+// mode marker (MapPreviewPipeline.h's MapPreviewRequest::drawMarker). For a
+// consumer that draws its own marker afterward at a position/heading this
+// call has no way to know -- see marker_stamp in this same directory.
 //
 // --route draws a .tir route file over the tiles
 // (../../../docs/route-file-spec.md in the parent xteink repo). --fit-route then
@@ -114,6 +119,8 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
       request.fitRoute = true;
     } else if (arg == "--hatch") {
       request.drawHatch = true;
+    } else if (arg == "--no-marker") {
+      request.drawMarker = false;
     } else if (arg == "--zoom-ladder") {
       // Handled in main() before anything else; accepted here so it does not
       // trip the unknown-argument branch.

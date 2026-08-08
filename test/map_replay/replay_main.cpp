@@ -31,6 +31,9 @@ struct Options {
   std::vector<int> sweepDrift;
   std::vector<int> sweepBudget;
   std::string checkPath;
+  bool showEvents = false;
+  std::string framesDir;
+  std::string trackDir;
 };
 
 void usage() {
@@ -53,7 +56,18 @@ void usage() {
       "        Any --sweep-* switches to the sweep table. Several sweep axes\n"
       "        together run their full cross product.\n"
       "\n"
-      "  --check FILE      replay against hardware-measured numbers and diff\n",
+      "  --check FILE      replay against hardware-measured numbers and diff\n"
+      "  --events          print every packet's outcome, one row each, per ride\n"
+      "                    (baseline mode only -- ignored under --sweep-*/--check)\n"
+      "  --frames DIR      write <ride>.frames.csv per ride: one row per full\n"
+      "                    redraw (ReAnchor) -- packet,t_utc_ms,lat,lon,heading --\n"
+      "                    for tools/render_ride_video.py (parent repo) to turn\n"
+      "                    into PNGs and a video. MoveMarker/Skip are not real\n"
+      "                    redraws so are not rows here.\n"
+      "  --track DIR       write <ride>.track.csv per ride: one row per packet\n"
+      "                    (skip/move/reanchor all included) -- x,y,fix_heading,\n"
+      "                    anchor_heading -- for render_ride_video.py --track,\n"
+      "                    which draws a marker on every frame, not just redraws.\n",
       ReplayEngine::Config{}.zoomStep, ReplayEngine::Config{}.markerStep, ReplayEngine::Config{}.screenWidth,
       ReplayEngine::Config{}.screenHeight, ReplayEngine::Config{}.coordDecimals,
       (unsigned)ReplayEngine::Config{}.headingDriftLimitSteps,
@@ -121,6 +135,16 @@ bool parseArgs(int argc, char** argv, Options& options) {
       const char* v = value();
       if (!v) return false;
       options.checkPath = v;
+    } else if (arg == "--events") {
+      options.showEvents = true;
+    } else if (arg == "--frames") {
+      const char* v = value();
+      if (!v) return false;
+      options.framesDir = v;
+    } else if (arg == "--track") {
+      const char* v = value();
+      if (!v) return false;
+      options.trackDir = v;
     } else if (!arg.empty() && arg[0] == '-') {
       std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
       return false;
@@ -206,6 +230,91 @@ void runBaseline(const std::vector<RideLog::Ride>& rides, const ReplayEngine::Co
     if (over > 0) std::printf("  15+ moves in %3d\n", over);
     std::printf("  <=1 moves in %3d of %d (%.0f%%)\n", totals.thrashAnchors, totals.headingAnchors,
                 100.0 * totals.thrashAnchors / totals.headingAnchors);
+  }
+}
+
+// --- per-packet events -----------------------------------------------------
+
+void runEvents(const std::vector<RideLog::Ride>& rides, ReplayEngine::Config config) {
+  config.recordEvents = true;
+  printConfig(config);
+  std::printf("drift limit %u, movement floor %u, ghosting budget %u\n", (unsigned)config.headingDriftLimitSteps,
+              (unsigned)config.minPartialMovesForHeadingReAnchor, (unsigned)config.partialMoveBudget);
+
+  for (const RideLog::Ride& ride : rides) {
+    const ReplayEngine::Result result = ReplayEngine::replay(ride.packets, config);
+    std::printf("\n%s\n", ride.name.c_str());
+    std::printf("%6s  %-8s %-8s %6s %6s %7s\n", "pkt", "action", "reason", "x", "y", "moves");
+    for (const ReplayEngine::Event& event : result.events) {
+      std::printf("%6d  %-8s %-8s %6d %6d %7d\n", event.packetIndex, event.action, event.reason, (int)event.x,
+                  (int)event.y, event.movesIn);
+    }
+  }
+}
+
+// --- frame list, for a video ------------------------------------------------
+
+// One CSV row per real redraw (ReAnchor) -- the only moments the device's
+// picture actually changes wholesale. MoveMarker slides a 64x64 patch inside
+// a frame that is otherwise identical, which a video of "what full picture
+// was on screen" has no reason to hold a separate frame for; Skip touches
+// the panel not at all. See tools/render_ride_video.py's module docstring
+// (parent repo) for what turns these rows into PNGs and a video, and for the
+// scope cut this implies (marker-only motion is not shown).
+void runFrames(const std::vector<RideLog::Ride>& rides, ReplayEngine::Config config, const std::string& dir) {
+  config.recordEvents = true;
+  for (const RideLog::Ride& ride : rides) {
+    const ReplayEngine::Result result = ReplayEngine::replay(ride.packets, config);
+    const std::string path = dir + "/" + ride.name + ".frames.csv";
+    std::ofstream out(path);
+    if (!out) {
+      std::fprintf(stderr, "cannot write %s\n", path.c_str());
+      continue;
+    }
+    out << "packet,t_utc_ms,lat,lon,heading,reason,moves_in\n";
+    int written = 0;
+    for (const ReplayEngine::Event& event : result.events) {
+      if (std::strcmp(event.action, "reanchor") != 0) continue;
+      const RideLog::Packet& packet = ride.packets[event.packetIndex];
+      out << event.packetIndex << ',' << packet.tUtcMs << ',' << packet.lat << ',' << packet.lon << ','
+          << (int)packet.headingStep << ',' << event.reason << ',' << event.movesIn << '\n';
+      ++written;
+    }
+    std::printf("%s: %d frame(s) -> %s\n", ride.name.c_str(), written, path.c_str());
+  }
+}
+
+// --- full per-packet track, for a video's marker overlay --------------------
+
+// One CSV row per packet -- skip and move included, not just reanchor -- with
+// the frame's own heading at that moment alongside the fix's. A screen
+// position (x, y) plus (fix_heading - anchor_heading) steps off "up" is
+// where the rider actually was and faced on that packet's frame, whether or
+// not the device redrew or moved its own marker to show it. See
+// tools/render_ride_video.py's --track mode (parent repo): it holds the last
+// real redraw's rendered picture and draws a marker on a copy of it for
+// every packet, which is the thing runFrames() above deliberately does not
+// do (a real MoveMarker's 64x64 patch is not a full render, and this is not
+// one either -- it is a compositing shortcut for a video, not a claim about
+// what displayBufferWindow() draws).
+void runTrack(const std::vector<RideLog::Ride>& rides, ReplayEngine::Config config, const std::string& dir) {
+  config.recordEvents = true;
+  for (const RideLog::Ride& ride : rides) {
+    const ReplayEngine::Result result = ReplayEngine::replay(ride.packets, config);
+    const std::string path = dir + "/" + ride.name + ".track.csv";
+    std::ofstream out(path);
+    if (!out) {
+      std::fprintf(stderr, "cannot write %s\n", path.c_str());
+      continue;
+    }
+    out << "packet,t_utc_ms,action,reason,x,y,fix_heading,anchor_heading,moves_in,lat,lon\n";
+    for (const ReplayEngine::Event& event : result.events) {
+      const RideLog::Packet& packet = ride.packets[event.packetIndex];
+      out << event.packetIndex << ',' << packet.tUtcMs << ',' << event.action << ',' << event.reason << ','
+          << event.x << ',' << event.y << ',' << (int)packet.headingStep << ',' << (int)event.anchorHeadingStep
+          << ',' << event.movesIn << ',' << packet.lat << ',' << packet.lon << '\n';
+    }
+    std::printf("%s: %d row(s) -> %s\n", ride.name.c_str(), (int)result.events.size(), path.c_str());
   }
 }
 
@@ -345,5 +454,8 @@ int main(int argc, char** argv) {
     return 0;
   }
   runBaseline(rides, options.config);
+  if (options.showEvents) runEvents(rides, options.config);
+  if (!options.framesDir.empty()) runFrames(rides, options.config, options.framesDir);
+  if (!options.trackDir.empty()) runTrack(rides, options.config, options.trackDir);
   return 0;
 }
