@@ -158,6 +158,10 @@ class MapConsoleState {
   int32_t lonE7() const { return lonE7_; }
   uint8_t heading() const { return heading_; }  // 0-15, see MapHeading.h
   uint16_t speedKmh() const { return speedKmh_; }
+  // Metres above sea level, valid only if hasAltitude() -- not yet consumed
+  // by anything drawn, wired ahead of hike mode.
+  bool hasAltitude() const { return hasAltitude_; }
+  int16_t altitudeM() const { return altitudeM_; }
 
   // Ladder steps and travel mode, as last set by a command or pushed back by
   // MapActivity. MapActivity reads these after a command lands and applies
@@ -261,6 +265,8 @@ class MapConsoleState {
   int32_t lonE7_ = 0;
   uint8_t heading_ = 0;
   uint16_t speedKmh_ = 0;
+  bool hasAltitude_ = false;
+  int16_t altitudeM_ = 0;
   uint32_t seq_ = 0;
   uint32_t (*freeHeapProvider_)() = nullptr;
   uint16_t (*linkMtuProvider_)() = nullptr;

@@ -331,9 +331,9 @@ bool BlePositionServer::getLatest(PositionUpdate& out) const {
 }
 
 void BlePositionServer::onWriteIngest(const uint8_t* data, size_t len) {
-  // Fixed 19-byte payload (see BlePositionServer.h) -- ignore anything else
-  // rather than guess at a partial/malformed write. A 12-byte packet from the
-  // old format lands here and is dropped, deliberately.
+  // Fixed 21-byte payload (see BlePositionServer.h) -- ignore anything else
+  // rather than guess at a partial/malformed write. A 12-byte or 19-byte
+  // packet from an older format lands here and is dropped, deliberately.
   if (!data || len < kPositionPacketBytes) return;
 
   // memcpy for every multi-byte field: `data` is a NimBLE attribute buffer
@@ -349,6 +349,8 @@ void BlePositionServer::onWriteIngest(const uint8_t* data, size_t len) {
   update.flags = data[16];
   update.accuracyM = data[17];
   update.speedKmh = data[18];
+  memcpy(&update.altitudeM, data + 19, sizeof(update.altitudeM));
+  update.hasAltitude = (update.flags & 0x02) != 0;
 
   portENTER_CRITICAL(&g_mux);
   latest_ = update;
