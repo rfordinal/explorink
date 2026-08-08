@@ -33,6 +33,38 @@ inline constexpr int16_t kKeepInMarginPx = 80;
 // turn (it is drawn relative to the frame's heading) and the map stays.
 inline constexpr uint8_t kMaxHeadingDriftSteps = 4;
 
+// Heading drift alone does not force a redraw until at least this many partial
+// moves have landed since the last full frame.
+//
+// Real-ride evidence, 2026-08-07 (three recorded rides, replayed against this
+// decision on real hardware -- docs/rides/trailink-gps-2026080{7-142303,
+// 7-173058,7-201221}.jsonl in the parent repo): 29 of 52 heading-triggered
+// re-anchors had 0 or 1 marker moves since the last frame -- the marker had
+// barely moved when the heading swung past the limit. That is GPS heading
+// noise at low speed or a stop, not a turn in progress: a rider who really is
+// turning while riding crosses this floor within a couple of fixes, so a
+// genuine turn is delayed by moments, not withheld.
+//
+// **Trade-off, accepted deliberately.** A rider who turns while genuinely
+// standing still (parked, stopped at a junction) no longer gets an immediate
+// re-anchor -- the map stays oriented for the direction they arrived from
+// until they move enough to cross this floor. `MapFollowTest.cpp`'s
+// `HeadingDriftReAnchorsEvenStandingStill` used to hold the opposite
+// deliberately (see its history); this is the maintainer's call to trade that
+// guarantee for killing the standing-still thrash, made with the ride data
+// above in hand, not a rediscovery of the same idea the phone's
+// `HeadingTrend` dwell already tried and measured worse (docs/map-follow.md,
+// "Heading thrash, and why the fix is not in this firmware") -- that dwell
+// judged whether a *turn* was real from a 5-fix trend; this gate does not
+// judge the turn at all, it only requires the marker to have actually moved
+// since the last frame, which is a fact already tracked here, not an
+// inference about the rider.
+//
+// **Unverified**: the number 2 itself. It kills the exact thrash pattern
+// measured (0-1 moves in) without being proven optimal -- on-device tuning,
+// same as `kMaxPartialMoves`, per `docs/optimization/07-power-and-lifecycle.md`.
+inline constexpr uint16_t kMinPartialMovesForHeadingReAnchor = 2;
+
 // Movement below this is not worth a waveform. At 6 m/px a fix every 10 m moves
 // the marker under 2 px, and the Android bridge sends on distance, not on a
 // timer (docs/android-install.md) -- without this floor a slow rider would pay
@@ -100,6 +132,23 @@ struct Request {
   // clean one is forced.
   uint16_t partialMoves = 0;
   uint16_t partialMoveBudget = kMaxPartialMoves;
+  // The two heading thresholds, per request, defaulting to the constants above.
+  //
+  // Same pattern and the same reason as `partialMoveBudget`: a caller that has
+  // a reason to ask a different question gets to ask it, and a caller that does
+  // not writes nothing and gets the firmware's own numbers. MapActivity never
+  // sets either (MapActivity.cpp:1565-1578), so device behaviour is exactly what
+  // the constants say.
+  //
+  // What sets them is the host replay harness (test/map_replay), which walks a
+  // recorded ride through this very function at several threshold values in one
+  // run. Without these fields that sweep needs one firmware build per value,
+  // which is how `route_follow_sim.py` (parent repo) ended up re-implementing
+  // this logic in Python and drifting from it.
+  //
+  // Cost is 3 bytes on one stack-local Request per fix, no heap, no flash data.
+  uint8_t headingDriftLimitSteps = kMaxHeadingDriftSteps;
+  uint16_t minPartialMovesForHeadingReAnchor = kMinPartialMovesForHeadingReAnchor;
 
   // True while a route owns the frame's orientation, which makes a heading
   // change no reason at all to redraw -- docs/route-navigation.md, "The

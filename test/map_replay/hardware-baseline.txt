@@ -1,0 +1,17 @@
+# What the real X4 did, measured 2026-08-08 with tools/replay_ride.py (parent
+# repo) over serial: three real motorcycle rides recorded the same day, ride
+# mode, no route, zoom step 4 (20 m/px), marker step 2, packets replayed one by
+# one as `pos <lat> <lon> heading <h>` with the fix printed to 5 decimals.
+#
+# Firmware as compiled on develop *before* kMinPartialMovesForHeadingReAnchor
+# existed, so `map_replay --check` replays with that floor set to 0 and the
+# other two thresholds at their constants (kMaxHeadingDriftSteps = 4,
+# kMaxPartialMoves = 12). If either of those constants moves, this gate fails --
+# which is the point: the numbers below are a measurement of one build.
+#
+# Recorded in firmware/trailink/docs/map-follow.md, "Heading thrash, round two".
+#
+# stem                          packets redraws heading budget keep-in
+trailink-gps-20260807-142303        339      24      20      4       0
+trailink-gps-20260807-173058        389      23      19      4       0
+trailink-gps-20260807-201221        369      20      13      7       0
