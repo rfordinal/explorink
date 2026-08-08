@@ -7,7 +7,7 @@
 // so a threshold can be swept across every ride in one run instead of one
 // reflash per value.
 //
-// See firmware/trailink/docs/map-follow.md, "Sweeping the thresholds off the
+// See firmware/explorink/docs/map-follow.md, "Sweeping the thresholds off the
 // device", for what it measures and what it cannot.
 #include <algorithm>
 #include <cstdio>

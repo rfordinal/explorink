@@ -88,7 +88,7 @@ the class, not the tags
 ========================== [FAILED] Took 5.09 seconds ==========================
 ```
 
-Cause is the uncommitted `data/mapstyle.json` in `firmware/trailink`, not the
+Cause is the uncommitted `data/mapstyle.json` in `firmware/explorink`, not the
 committed tree. The working-tree copy keys water rules on OSM tags
 (`match: {waterway: [river]}`); `develop`'s committed copy keys them on `class`
 (`match: {class: [river]}`), which the generator has required since the water

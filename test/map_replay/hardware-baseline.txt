@@ -9,7 +9,7 @@
 # kMaxPartialMoves = 12). If either of those constants moves, this gate fails --
 # which is the point: the numbers below are a measurement of one build.
 #
-# Recorded in firmware/trailink/docs/map-follow.md, "Heading thrash, round two".
+# Recorded in firmware/explorink/docs/map-follow.md, "Heading thrash, round two".
 #
 # stem                          packets redraws heading budget keep-in
 trailink-gps-20260807-142303        339      24      20      4       0
