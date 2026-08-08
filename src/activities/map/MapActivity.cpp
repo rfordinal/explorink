@@ -1652,7 +1652,11 @@ void MapActivity::renderLoadingTiles() {
   // purpose (like the coordinates on the location sleep screen): the joke
   // only lands in English, and a fallback in the other 30 languages would
   // just be this same string anyway.
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 90, "Safe explorink", true, EpdFontFamily::BOLD);
+  constexpr int kLogoTop = -60;         // logo is 120px, centred on pageHeight / 2
+  constexpr int kPunToLogoMargin = 20;  // minimum requested gap between the two
+  const int punLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 + kLogoTop - kPunToLogoMargin - punLineHeight,
+                            "Safe explorink", true, EpdFontFamily::BOLD);
   renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
   renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_MAP_LOADING_TILES), true, EpdFontFamily::BOLD);
   // The rung, because "reading tiles" alone does not say how long this will
