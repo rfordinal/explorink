@@ -83,6 +83,7 @@ struct MapCommand {
   int32_t latE7 = 0;  // Pos
   int32_t lonE7 = 0;  // Pos
   uint16_t speedKmh = 0;
+  int16_t altitudeM = 0;  // Pos, optional; metres above sea level
   uint8_t heading = 0;  // 0-15, Heading and optional on Pos
   uint8_t zoom = 0;     // 0-4
   uint8_t marker = 0;   // 0-4
@@ -104,6 +105,7 @@ struct MapCommand {
   MapRideMode mode = MapRideMode::Ride;
   bool hasHeading = false;  // Pos carried a heading
   bool hasSpeed = false;    // Pos carried a speed
+  bool hasAltitude = false;  // Pos carried an altitude
 };
 
 // Parses one line. Never fails hard: a bad line comes back as

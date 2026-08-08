@@ -16,7 +16,7 @@
 
 namespace freeink {
 
-// Fixed 19-byte wire format written to the position characteristic, little
+// Fixed 21-byte wire format written to the position characteristic, little
 // endian, no padding -- docs/architecture-plan.md, "Revised packet":
 //
 //   [0..3]   lat        int32,  degrees * 1e7
@@ -25,20 +25,26 @@ namespace freeink {
 //   [12..13] tz_offset  int16,  minutes east of UTC
 //   [14]     heading    0-15, a MapHeading value
 //   [15]     seq        rolling counter; the device redraws when it changes
-//   [16]     flags      bit0 = off-route warning
+//   [16]     flags      bit0 = off-route warning, bit1 = altitude present
 //   [17]     accuracy   metres, saturating
 //   [18]     speed      km/h, saturating
+//   [19..20] altitude   int16, metres above sea level; valid only if flags
+//                        bit1 is set. No fix has "altitude zero" as a
+//                        natural default (sea level is a real place), so a
+//                        flag bit carries "no vertical fix" instead of a
+//                        sentinel value stealing part of the range.
 //
-// This replaced a 12-byte format that had no time, no accuracy and no speed,
-// and carried heading as 0-7. It is not accepted any more: a 12-byte write
-// is dropped rather than read as a truncated 19. The phone app does not
-// exist yet, so there is nothing in the field to be compatible with, and
-// silently reading old bytes into new fields is how a wire format rots.
+// This replaced a 19-byte format with no altitude. Before that, a 12-byte
+// format had no time, no accuracy and no speed, and carried heading as 0-7;
+// it is not accepted any more, nor is a 19-byte write now that 21 is
+// current -- a write of the wrong length is dropped rather than read as a
+// truncated or padded version of the new one.
 //
 // `utc`, `tz_offset` and `accuracy` are wired and stored; nothing draws them
 // yet -- see docs/architecture-plan.md, "Time is mandatory in the payload".
-// `speed` is auto zoom's input and auto zoom is a later phase. All of them
-// are here now so the packet stops changing.
+// `speed` is auto zoom's input and auto zoom is a later phase. `altitude` is
+// hike mode's future input, same reasoning: wired now so the packet stops
+// changing, not drawn or acted on yet.
 struct PositionUpdate {
   int32_t lat = 0;
   int32_t lon = 0;
@@ -49,10 +55,12 @@ struct PositionUpdate {
   uint8_t flags = 0;
   uint8_t accuracyM = 0;
   uint8_t speedKmh = 0;
+  int16_t altitudeM = 0;   // valid only if hasAltitude
+  bool hasAltitude = false;  // from flags bit1
 };
 
 // Exact size of the packet above. A write of any other length is ignored.
-inline constexpr size_t kPositionPacketBytes = 19;
+inline constexpr size_t kPositionPacketBytes = 21;
 
 class BlePositionServer {
  public:

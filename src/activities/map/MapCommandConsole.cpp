@@ -81,6 +81,10 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       lonE7_ = cmd.lonE7;
       if (cmd.hasHeading) heading_ = cmd.heading;
       if (cmd.hasSpeed) speedKmh_ = cmd.speedKmh;
+      if (cmd.hasAltitude) {
+        altitudeM_ = cmd.altitudeM;
+        hasAltitude_ = true;
+      }
       ++seq_;
       out.reply("OK");
       return true;
@@ -178,6 +182,13 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   out.reply(line);
 
   snprintf(line, sizeof(line), "INFO speed_kmh=%u", static_cast<unsigned>(speedKmh_));
+  out.reply(line);
+
+  if (hasAltitude_) {
+    snprintf(line, sizeof(line), "INFO alt_m=%d", static_cast<int>(altitudeM_));
+  } else {
+    snprintf(line, sizeof(line), "INFO alt_m=unset");
+  }
   out.reply(line);
 
   snprintf(line, sizeof(line), "INFO seq=%lu", static_cast<unsigned long>(seq_));

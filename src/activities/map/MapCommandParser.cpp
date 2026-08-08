@@ -2,9 +2,10 @@
 
 namespace {
 
-// Longest legal line is `pos <lat> <lon> heading <n> speed <n>` -- 7 tokens.
-// One spare so an 8th token is seen and rejected rather than truncated away.
-constexpr size_t kMaxTokens = 8;
+// Longest legal line is `pos <lat> <lon> heading <n> speed <n> alt <n>` -- 9
+// tokens. One spare so a 10th token is seen and rejected rather than
+// truncated away.
+constexpr size_t kMaxTokens = 10;
 
 constexpr int32_t kLatMaxE7 = 900000000;
 constexpr int32_t kLonMaxE7 = 1800000000;
@@ -13,6 +14,10 @@ constexpr uint32_t kMaxZoom = 4;
 constexpr uint32_t kMaxMarker = 4;
 constexpr uint32_t kMaxSpeedKmh = 65535;
 constexpr uint32_t kMaxMissingOffset = 65535;
+// Dead Sea shore is -430m, Everest is 8849m -- generous margin either side
+// for GPS altitude noise without letting garbage input through.
+constexpr int32_t kMinAltitudeM = -1000;
+constexpr int32_t kMaxAltitudeM = 9000;
 
 struct Tokens {
   std::string_view t[kMaxTokens];
@@ -99,6 +104,30 @@ bool parseUint(std::string_view s, uint32_t& out) {
   return true;
 }
 
+// Signed whole metres -- altitude, unlike heading/speed/zoom, can be below
+// zero (there is real terrain below sea level).
+bool parseInt(std::string_view s, int32_t& out) {
+  if (s.empty()) return false;
+  size_t i = 0;
+  bool negative = false;
+  if (s[0] == '+' || s[0] == '-') {
+    negative = (s[0] == '-');
+    i = 1;
+  }
+  if (i >= s.size()) return false;  // "+", "-"
+
+  int64_t value = 0;
+  size_t digits = 0;
+  for (; i < s.size(); ++i) {
+    if (!isDigit(s[i])) return false;
+    if (digits >= 9) return false;  // well past Everest either sign; keeps int64 safe
+    value = value * 10 + (s[i] - '0');
+    ++digits;
+  }
+  out = static_cast<int32_t>(negative ? -value : value);
+  return true;
+}
+
 MapCommand fail(MapCommandError error) {
   MapCommand cmd;
   cmd.type = MapCommandType::Error;
@@ -134,17 +163,23 @@ MapCommand parsePos(const Tokens& tokens) {
   cmd.latE7 = static_cast<int32_t>(lat);
   cmd.lonE7 = static_cast<int32_t>(lon);
 
-  // Optional tail. Each value is accepted bare or behind its own keyword,
-  // and bare values fill heading first, then speed.
+  // Optional tail. Heading and speed are accepted bare or behind their own
+  // keyword, and bare values fill heading first, then speed -- altitude can
+  // be negative, so it never takes a bare slot (a bare "-5" would be
+  // ambiguous with a mistyped heading/speed) and is only ever `alt <n>`.
   size_t i = 3;
   while (i < tokens.n) {
     bool wantHeading = false;
     bool wantSpeed = false;
+    bool wantAltitude = false;
     if (tokens.t[i] == "heading") {
       wantHeading = true;
       ++i;
     } else if (tokens.t[i] == "speed") {
       wantSpeed = true;
+      ++i;
+    } else if (tokens.t[i] == "alt") {
+      wantAltitude = true;
       ++i;
     } else if (!cmd.hasHeading) {
       wantHeading = true;
@@ -154,20 +189,29 @@ MapCommand parsePos(const Tokens& tokens) {
       return fail(MapCommandError::BadArity);
     }
 
-    if (i >= tokens.n) return fail(MapCommandError::BadArity);                  // keyword with no value
-    if (wantHeading && cmd.hasHeading) return fail(MapCommandError::BadArity);  // given twice
+    if (i >= tokens.n) return fail(MapCommandError::BadArity);                   // keyword with no value
+    if (wantHeading && cmd.hasHeading) return fail(MapCommandError::BadArity);   // given twice
     if (wantSpeed && cmd.hasSpeed) return fail(MapCommandError::BadArity);
+    if (wantAltitude && cmd.hasAltitude) return fail(MapCommandError::BadArity);
 
-    uint32_t value = 0;
-    if (!parseUint(tokens.t[i], value)) return fail(MapCommandError::BadNumber);
-    if (wantHeading) {
-      if (value > kMaxHeading) return fail(MapCommandError::OutOfRange);
-      cmd.heading = static_cast<uint8_t>(value);
-      cmd.hasHeading = true;
+    if (wantAltitude) {
+      int32_t value = 0;
+      if (!parseInt(tokens.t[i], value)) return fail(MapCommandError::BadNumber);
+      if (value < kMinAltitudeM || value > kMaxAltitudeM) return fail(MapCommandError::OutOfRange);
+      cmd.altitudeM = static_cast<int16_t>(value);
+      cmd.hasAltitude = true;
     } else {
-      if (value > kMaxSpeedKmh) return fail(MapCommandError::OutOfRange);
-      cmd.speedKmh = static_cast<uint16_t>(value);
-      cmd.hasSpeed = true;
+      uint32_t value = 0;
+      if (!parseUint(tokens.t[i], value)) return fail(MapCommandError::BadNumber);
+      if (wantHeading) {
+        if (value > kMaxHeading) return fail(MapCommandError::OutOfRange);
+        cmd.heading = static_cast<uint8_t>(value);
+        cmd.hasHeading = true;
+      } else {
+        if (value > kMaxSpeedKmh) return fail(MapCommandError::OutOfRange);
+        cmd.speedKmh = static_cast<uint16_t>(value);
+        cmd.hasSpeed = true;
+      }
     }
     ++i;
   }

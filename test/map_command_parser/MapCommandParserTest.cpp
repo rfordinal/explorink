@@ -56,6 +56,7 @@ TEST(MapCommandParser, PosMinimal) {
   EXPECT_EQ(cmd.lonE7, 170186000);
   EXPECT_FALSE(cmd.hasHeading);
   EXPECT_FALSE(cmd.hasSpeed);
+  EXPECT_FALSE(cmd.hasAltitude);
 }
 
 TEST(MapCommandParser, PosNegativeAndIntegerDegrees) {
@@ -116,6 +117,34 @@ TEST(MapCommandParser, PosOptionalTailKeyworded) {
   EXPECT_EQ(mixed.speedKmh, 55);
 }
 
+TEST(MapCommandParser, PosAltitude) {
+  const MapCommand cmd = parseMapCommand("pos 48.4372 17.0186 alt 412");
+  ASSERT_EQ(cmd.type, MapCommandType::Pos);
+  EXPECT_TRUE(cmd.hasAltitude);
+  EXPECT_EQ(cmd.altitudeM, 412);
+
+  // Below sea level is a real place -- alt is signed, unlike heading/speed.
+  const MapCommand below = parseMapCommand("pos 31.5 35.5 alt -420");
+  ASSERT_EQ(below.type, MapCommandType::Pos);
+  EXPECT_TRUE(below.hasAltitude);
+  EXPECT_EQ(below.altitudeM, -420);
+
+  // Combines with heading and speed, in any order relative to alt.
+  const MapCommand combined = parseMapCommand("pos 1 2 heading 4 alt 100 speed 30");
+  ASSERT_EQ(combined.type, MapCommandType::Pos);
+  EXPECT_EQ(combined.heading, 4);
+  EXPECT_EQ(combined.altitudeM, 100);
+  EXPECT_EQ(combined.speedKmh, 30);
+
+  // alt never fills bare -- a bare tail value is heading, then speed, never
+  // altitude, so this is speed=100 with no altitude at all.
+  const MapCommand bare = parseMapCommand("pos 1 2 5 100");
+  ASSERT_EQ(bare.type, MapCommandType::Pos);
+  EXPECT_EQ(bare.heading, 5);
+  EXPECT_EQ(bare.speedKmh, 100);
+  EXPECT_FALSE(bare.hasAltitude);
+}
+
 TEST(MapCommandParser, HeadingZoomMarker) {
   const MapCommand heading = parseMapCommand("heading 15");
   ASSERT_EQ(heading.type, MapCommandType::Heading);
@@ -170,7 +199,9 @@ TEST(MapCommandParser, WrongArity) {
   EXPECT_EQ(errorOf("pos 1 2 3 4 5"), MapCommandError::BadArity);
   EXPECT_EQ(errorOf("pos 1 2 heading"), MapCommandError::BadArity);
   EXPECT_EQ(errorOf("pos 1 2 speed"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("pos 1 2 alt"), MapCommandError::BadArity);
   EXPECT_EQ(errorOf("pos 1 2 heading 3 heading 4"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("pos 1 2 alt 3 alt 4"), MapCommandError::BadArity);
   EXPECT_EQ(errorOf("heading"), MapCommandError::BadArity);
   EXPECT_EQ(errorOf("heading 1 2"), MapCommandError::BadArity);
   EXPECT_EQ(errorOf("zoom"), MapCommandError::BadArity);
@@ -194,6 +225,9 @@ TEST(MapCommandParser, BadNumbers) {
   EXPECT_EQ(errorOf("pos . 17"), MapCommandError::BadNumber);
   EXPECT_EQ(errorOf("pos 12x 17"), MapCommandError::BadNumber);
   EXPECT_EQ(errorOf("pos 1 2 -3"), MapCommandError::BadNumber);  // heading is unsigned
+  EXPECT_EQ(errorOf("pos 1 2 alt x"), MapCommandError::BadNumber);
+  EXPECT_EQ(errorOf("pos 1 2 alt 1.5"), MapCommandError::BadNumber);  // altitude is whole metres
+  EXPECT_EQ(errorOf("pos 1 2 alt -"), MapCommandError::BadNumber);
   EXPECT_EQ(errorOf("heading x"), MapCommandError::BadNumber);
   EXPECT_EQ(errorOf("heading 1.5"), MapCommandError::BadNumber);
   EXPECT_EQ(errorOf("zoom -1"), MapCommandError::BadNumber);
@@ -208,6 +242,8 @@ TEST(MapCommandParser, OutOfRange) {
   EXPECT_EQ(errorOf("pos 12345 0"), MapCommandError::OutOfRange);
   EXPECT_EQ(errorOf("pos 1 2 16"), MapCommandError::OutOfRange);
   EXPECT_EQ(errorOf("pos 1 2 4 70000"), MapCommandError::OutOfRange);
+  EXPECT_EQ(errorOf("pos 1 2 alt 9001"), MapCommandError::OutOfRange);   // past Everest's margin
+  EXPECT_EQ(errorOf("pos 1 2 alt -1001"), MapCommandError::OutOfRange);  // past the Dead Sea's margin
   EXPECT_EQ(errorOf("heading 16"), MapCommandError::OutOfRange);
   EXPECT_EQ(errorOf("heading 255"), MapCommandError::OutOfRange);
   EXPECT_EQ(errorOf("zoom 5"), MapCommandError::OutOfRange);
@@ -295,6 +331,23 @@ TEST(MapCommandConsole, PosRepliesOkAndRedraws) {
   EXPECT_EQ(console.state().lonE7(), 170186000);
   EXPECT_EQ(console.state().heading(), 4);
   EXPECT_EQ(console.state().seq(), 1u);
+  EXPECT_FALSE(console.state().hasAltitude());
+}
+
+TEST(MapCommandConsole, PosAltitudePersistsUntilOverwritten) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "pos 48.4372 17.0186 alt 412");
+  EXPECT_TRUE(console.state().hasAltitude());
+  EXPECT_EQ(console.state().altitudeM(), 412);
+
+  // A later pos with no alt keyword leaves the last altitude in place --
+  // same behaviour as heading/speed, which also only update on hasX.
+  feedLine(console, out, "pos 48.4380 17.0190");
+  EXPECT_TRUE(console.state().hasAltitude());
+  EXPECT_EQ(console.state().altitudeM(), 412);
 }
 
 TEST(MapCommandConsole, EmptyLineIsSilent) {
@@ -780,13 +833,25 @@ TEST(MapCommandConsole, InfoReportsStateAndEndsWithOk) {
   EXPECT_EQ(out.lines.back(), "OK");
 
   const std::vector<std::string> expected = {
-      "INFO pos=1", "INFO lat=-0.5000000", "INFO lon=17.0186000", "INFO heading=3", "INFO speed_kmh=42", "INFO seq=1",
+      "INFO pos=1",   "INFO lat=-0.5000000", "INFO lon=17.0186000", "INFO heading=3",
+      "INFO speed_kmh=42", "INFO alt_m=unset", "INFO seq=1",
   };
   for (const std::string& want : expected) {
     EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), want), out.lines.end()) << want;
   }
   // No heap provider set natively, so no heap line.
   for (const std::string& line : out.lines) EXPECT_EQ(line.rfind("INFO heap=", 0), std::string::npos);
+}
+
+TEST(MapCommandConsole, InfoReportsAltitudeWhenSet) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  feedLine(console, out, "pos -0.5 17.0186 alt -14");
+  out.lines.clear();
+
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO alt_m=-14"), out.lines.end());
 }
 
 TEST(MapCommandConsole, InfoReportsTheTileFormatVersionOnlyWhenPushed) {

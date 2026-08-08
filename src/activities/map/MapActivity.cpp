@@ -1179,13 +1179,20 @@ void MapActivity::loop() {
       // carries a MapHeading value, so the *2 fudge the old 8-step packet
       // needed is gone (BlePositionServer.h).
       //
-      // speed and utc are carried and stored, and nothing reads them yet --
-      // auto zoom and the on-screen fix time are later phases. Logged so the
-      // fields can be seen arriving before anything depends on them.
-      LOG_DBG(kLogTag, "ble fix: seq %u, heading %u, speed %u km/h, utc %lu, accuracy %u m",
+      // speed, utc and altitude are carried and stored, and nothing reads
+      // them yet -- auto zoom, the on-screen fix time and hike mode are
+      // later phases. Logged so the fields can be seen arriving before
+      // anything depends on them.
+      char altStr[8];
+      if (update.hasAltitude) {
+        snprintf(altStr, sizeof(altStr), "%d", static_cast<int>(update.altitudeM));
+      } else {
+        snprintf(altStr, sizeof(altStr), "unset");
+      }
+      LOG_DBG(kLogTag, "ble fix: seq %u, heading %u, speed %u km/h, utc %lu, accuracy %u m, alt %s",
               static_cast<unsigned>(update.seq), static_cast<unsigned>(update.heading),
               static_cast<unsigned>(update.speedKmh), static_cast<unsigned long>(update.utc),
-              static_cast<unsigned>(update.accuracyM));
+              static_cast<unsigned>(update.accuracyM), altStr);
       applyFix(update.lat, update.lon, update.heading, update.seq);
       // Debounced into the same save this fires for zoom/marker/mode --
       // CLAUDE.md rule 8 rules out a per-fix SD write just as much as a
