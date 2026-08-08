@@ -1028,6 +1028,7 @@ void MapActivity::onEnter() {
       lastLatE7_ = SETTINGS.mapLastLatE7;
       lastLonE7_ = SETTINGS.mapLastLonE7;
       lastHeading_ = SETTINGS.mapLastHeading;
+      updateManualHeadingCapture(lastHeading_);
     }
     renderRouteOverview();
     LOG_DBG(kLogTag, "onEnter done");
@@ -1044,6 +1045,7 @@ void MapActivity::onEnter() {
     lastLatE7_ = SETTINGS.mapLastLatE7;
     lastLonE7_ = SETTINGS.mapLastLonE7;
     lastHeading_ = SETTINGS.mapLastHeading;
+    updateManualHeadingCapture(lastHeading_);
     LOG_DBG(kLogTag, "onEnter: rendering persisted fix %d,%d", (int)lastLatE7_, (int)lastLonE7_);
     // Before the read, not after: this is the only viewport reset with no
     // feedback of any kind in front of it (a zoom or menu redraw gets the busy
@@ -1313,7 +1315,7 @@ void MapActivity::handleButtons() {
 
 void MapActivity::openMapMenu() {
   std::vector<std::string> options;
-  options.reserve(4);
+  options.reserve(7);
   options.push_back(tr(STR_REFRESH));
   options.push_back(std::string(tr(STR_MAP_MODE)) + ": " + I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
   // Only once a fix has actually drawn a frame -- same "no row that cannot do
@@ -1334,28 +1336,75 @@ void MapActivity::openMapMenu() {
     wholeRouteIdx = static_cast<int>(options.size());
     options.push_back(tr(STR_MAP_WHOLE_ROUTE));
   }
-  optionPopup_.show(StrId::STR_MAP, options, 0, [this, observeIdx, wholeRouteIdx](int idx) {
-    if (idx == 0) {
-      redrawDueMs_ = 0;
-      showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
-      renderCurrent();
-    } else if (idx == 1) {
-      // One Select steps ride->hike->cycle->ride and closes, same as every
-      // other row -- picking a mode is a deliberate, one-shot choice, not the
-      // start of a cycling gesture. A rider who wants to step again presses
-      // CONFIRM again. mapRideModeName()'s array order.
-      const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
-      switchMode(static_cast<MapRideMode>(next));
-    } else if (idx == observeIdx) {
-      toggleObserveMode();
-    } else if (idx == wholeRouteIdx) {
-      // Back to the whole route, at any point in a ride. Costs one full refresh
-      // and one pass over the route file, the same as the frame the picker drew.
-      redrawDueMs_ = 0;
-      showBusy();
-      renderRouteOverview();
-    }
-  });
+  // Quick toggles for settings the rider wants to flip mid-ride without
+  // leaving the map -- zoom/rotation/heading mode. The Settings screen
+  // entries for the same three fields (SettingsList.h) decide what the map
+  // opens with, next time; this menu changes the same CrossPointSettings
+  // fields live, so the two never disagree about the current value.
+  const int zoomModeIdx = static_cast<int>(options.size());
+  options.push_back(
+      std::string(tr(STR_MAP_ZOOM_MODE)) + ": " +
+      I18N.get(SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_AUTO ? StrId::STR_AUTO : StrId::STR_MANUAL));
+  const int rotationIdx = static_cast<int>(options.size());
+  options.push_back(std::string(tr(STR_MAP_ROTATION_MODE)) + ": " +
+                    I18N.get(SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_NORTH_UP
+                                 ? StrId::STR_MAP_ROTATION_NORTH_UP
+                                 : StrId::STR_MAP_ROTATION_HEADING_UP));
+  const int headingIdx = static_cast<int>(options.size());
+  options.push_back(std::string(tr(STR_MAP_HEADING_MODE)) + ": " +
+                    I18N.get(SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL ? StrId::STR_MANUAL
+                                                                                               : StrId::STR_AUTO));
+  optionPopup_.show(
+      StrId::STR_MAP, options, 0, [this, observeIdx, wholeRouteIdx, zoomModeIdx, rotationIdx, headingIdx](int idx) {
+        if (idx == 0) {
+          redrawDueMs_ = 0;
+          showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
+          renderCurrent();
+        } else if (idx == 1) {
+          // One Select steps ride->hike->cycle->ride and closes, same as every
+          // other row -- picking a mode is a deliberate, one-shot choice, not the
+          // start of a cycling gesture. A rider who wants to step again presses
+          // CONFIRM again. mapRideModeName()'s array order.
+          const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
+          switchMode(static_cast<MapRideMode>(next));
+        } else if (idx == observeIdx) {
+          toggleObserveMode();
+        } else if (idx == wholeRouteIdx) {
+          // Back to the whole route, at any point in a ride. Costs one full refresh
+          // and one pass over the route file, the same as the frame the picker drew.
+          redrawDueMs_ = 0;
+          showBusy();
+          renderRouteOverview();
+        } else if (idx == zoomModeIdx) {
+          // No redraw: the setting has no runtime effect yet (auto zoom is
+          // not wired up, docs/map-data-spec.md), so flipping it changes
+          // nothing on screen to acknowledge.
+          SETTINGS.mapZoomMode = SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_MANUAL
+                                     ? CrossPointSettings::MAP_ZOOM_AUTO
+                                     : CrossPointSettings::MAP_ZOOM_MANUAL;
+          SETTINGS.saveToFile();
+        } else if (idx == rotationIdx) {
+          SETTINGS.mapRotationMode = SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_HEADING_UP
+                                         ? CrossPointSettings::MAP_ROTATION_NORTH_UP
+                                         : CrossPointSettings::MAP_ROTATION_HEADING_UP;
+          SETTINGS.saveToFile();
+          redrawDueMs_ = 0;
+          showBusy();
+          renderCurrent();
+        } else if (idx == headingIdx) {
+          SETTINGS.mapHeadingMode = SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_AUTO
+                                        ? CrossPointSettings::MAP_HEADING_MANUAL
+                                        : CrossPointSettings::MAP_HEADING_AUTO;
+          // Freeze on the heading the frame is showing right now, not a stale
+          // or default one -- same capture updateManualHeadingCapture() does
+          // from a fresh fix, called here because a menu pick is not a fix.
+          updateManualHeadingCapture(lastHeading_);
+          SETTINGS.saveToFile();
+          redrawDueMs_ = 0;
+          showBusy();
+          renderCurrent();
+        }
+      });
   optionPopup_.processRender(renderer, mappedInput);
 }
 
@@ -1670,6 +1719,7 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
 }
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  updateManualHeadingCapture(headingStep);
   if (screenMode_ == MapScreenMode::Observe) {
     // A rider looking around must not have the frame snatched away from under
     // them by the next fix -- same reasoning as overviewShown_ below, just
@@ -1725,8 +1775,11 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
   request.partialMoves = partialMoves_;
   // With a route loaded the frame is the route's and a heading change is not a
   // reason to redraw it, so the budget is the only thing left that can interrupt
-  // a leg -- and it gets the bigger one (docs/route-navigation.md).
-  request.routeHoldsFrame = routeHoldsFrame();
+  // a leg -- and it gets the bigger one (docs/route-navigation.md). North-up
+  // rotation and a frozen Manual heading are the same situation: the frame's
+  // "up" does not track the fix, so a heading drift is not a reason to
+  // ReAnchor either (frameOrientationLocked()).
+  request.routeHoldsFrame = frameOrientationLocked();
   request.partialMoveBudget = partialMoveBudget();
 
   switch (MapFollow::decide(request)) {
@@ -1949,7 +2002,20 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
 }
 
 uint8_t MapActivity::frameHeadingFor(uint8_t fixHeadingStep) const {
-  return routeHoldsFrame() ? routeFrameHeading_ : fixHeadingStep;
+  if (routeHoldsFrame()) return routeFrameHeading_;
+  if (SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_NORTH_UP) return 0;
+  if (SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL) return frozenManualHeading_;
+  return fixHeadingStep;
+}
+
+void MapActivity::updateManualHeadingCapture(uint8_t fixHeadingStep) {
+  if (SETTINGS.mapHeadingMode != CrossPointSettings::MAP_HEADING_MANUAL) {
+    manualHeadingCaptured_ = false;
+    return;
+  }
+  if (manualHeadingCaptured_) return;
+  frozenManualHeading_ = fixHeadingStep;
+  manualHeadingCaptured_ = true;
 }
 
 void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {

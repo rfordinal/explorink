@@ -241,6 +241,22 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // rider turns it on deliberately or not at all.
         SettingInfo::Toggle(StrId::STR_MAP_AUTOSYNC_TILES, &CrossPointSettings::mapAutoSyncTiles, "mapAutoSyncTiles",
                             StrId::STR_CAT_MAP),
+        // Manual (default): zoom is the button ladder, unchanged. Auto
+        // reserves the setting for a speed/junction-driven picker that is not
+        // wired up yet (docs/map-data-spec.md, "Auto zoom picks a rung").
+        SettingInfo::Enum(StrId::STR_MAP_ZOOM_MODE, &CrossPointSettings::mapZoomMode,
+                          {StrId::STR_MANUAL, StrId::STR_AUTO}, "mapZoomMode", StrId::STR_CAT_MAP),
+        // Heading up (default, track-up): the frame's "up" is the rider's
+        // heading. North up: the frame never rotates off true north.
+        SettingInfo::Enum(StrId::STR_MAP_ROTATION_MODE, &CrossPointSettings::mapRotationMode,
+                          {StrId::STR_MAP_ROTATION_HEADING_UP, StrId::STR_MAP_ROTATION_NORTH_UP}, "mapRotationMode",
+                          StrId::STR_CAT_MAP),
+        // Auto (default): the frame's heading (when rotation mode is Heading
+        // up) tracks every incoming fix, same as before this setting existed.
+        // Manual: the frame heading freezes at whatever it was when this was
+        // switched on, until switched back.
+        SettingInfo::Enum(StrId::STR_MAP_HEADING_MODE, &CrossPointSettings::mapHeadingMode,
+                          {StrId::STR_AUTO, StrId::STR_MANUAL}, "mapHeadingMode", StrId::STR_CAT_MAP),
 
         // --- Reader ---
         // Built-in font-family entry. Replaced per-call with a registry-aware

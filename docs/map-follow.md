@@ -486,11 +486,23 @@ match exactly -- but a ride that trips it would replay optimistically here.
 
 ## The heading decides the frame, once
 
-The map is drawn track-up: `renderViewport()` passes the fix's heading straight
-into `proj_.reset()`, so that heading is "up" on screen for the whole life of the
-frame. Assumed track-up throughout the design
+The map is drawn track-up by default: `renderViewport()` passes
+`frameHeadingFor()`'s answer into `proj_.reset()`, so that heading is "up" on
+screen for the whole life of the frame. Assumed track-up throughout the design
 (the map workspace's `roadmap.md`, "Map rotation model") and confirmed with the user
 2026-08-05, replacing the earlier forced-north `kNoRouteDisplayHeading`.
+
+Two settings can override what `frameHeadingFor()` answers: `mapRotationMode`
+(`MAP_ROTATION_NORTH_UP` pins it at 0, i.e. true north) and `mapHeadingMode`
+(`MAP_HEADING_MANUAL` freezes it at whatever it was when the rider switched
+Manual on, via `updateManualHeadingCapture()`). Both live in the Settings
+screen (category Map) as the value the map opens with, and both are also
+quick-toggle rows in CONFIRM's own menu (`MapActivity::openMapMenu()`) so a
+rider can flip them mid-ride without leaving the map. Either value also flips
+`Request::routeHoldsFrame` to true (`MapActivity::frameOrientationLocked()`,
+`MapActivity.cpp`) for the same reason a loaded route does: the frame is not
+tracking the fix's heading, so heading drift is not a reason to `ReAnchor`.
+Default for both is the behaviour above, unchanged.
 
 Two things follow from it:
 
