@@ -51,21 +51,34 @@
 //
 // ## The buttons
 //
+// Follow mode (the default):
+//
 // | UP / DOWN      | zoom ladder, 5 rungs, 1..20 m/px                     |
 // | LEFT / RIGHT   | marker-height ladder, 5 rungs, look-ahead 50..95 %   |
 // | CONFIRM        | open the map menu: Refresh, Mode (ride/hike/cycle)   |
 // | BACK           | leave (or close the menu, if it is open)             |
 //
+// Observe mode (menu's "Observation mode" row, MapScreenMode::Observe): the
+// same four direction buttons are re-read as a pan, not a ladder step -- each
+// press moves the viewport half a screen the way it points (panBy()), and the
+// hints/side-hints repaint to say so (renderViewport()'s button-hint switch).
+// GPS fixes are still recorded (applyFix()) but never redraw the frame out
+// from under a rider who is looking around; picking "Follow mode" from the
+// same menu snaps straight back to wherever the last fix actually was.
+//
 // Any of those that triggers a redraw first paints an hourglass badge above the
 // button hints and refreshes only its rectangle (showBusy()). A ladder step
 // waits out the settle timer and then spends the better part of two seconds on
 // tiles and the refresh, which is long enough to read as a dead button. One
-// badge per burst, cleared by the frame that replaces it.
+// badge per burst, cleared by the frame that replaces it. A pan step is not on
+// that settle timer -- see panBy()'s own comment for why coalescing it would
+// either do nothing or be wrong.
 //
 // **There is no spare button** (docs/architecture-plan.md, "The map screen's
 // button budget is exactly full"). CONFIRM stays the only entry point for
 // anything new -- it opens a menu (OptionPopup) rather than acting directly,
-// so Refresh and Mode share the one button the budget allows.
+// so Refresh, Mode and Observation mode share the one button the budget
+// allows.
 //
 // Every one of them goes through MappedInputManager's logical buttons. The
 // front four are user-remappable in settings and the mapping is
@@ -299,21 +312,47 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // from what is already stored.
   void saveLaddersIfChanged();
 
-  // CONFIRM's menu: Refresh and Mode, both in one flat list -- no second
-  // popup. Picking Mode cycles ride->hike->cycle->ride and reopens the same
-  // list with the row's label updated and the highlight still on Mode, so
-  // repeated Select presses step through modes without leaving the menu.
-  // initialIndex lets the Mode-cycle path reopen onto row 1 instead of
-  // resetting to row 0. Draws the popup itself via
-  // optionPopup_.processRender() right after show() -- MapActivity never
-  // calls requestUpdate() (it always has drawn straight to the buffer, on
-  // the main task, not through Activity's render(RenderLock&&)/render-task
-  // path), so nothing else would ever paint the popup's first frame or its
-  // label updating.
-  void openMapMenu(int initialIndex = 0);
+  // CONFIRM's menu: Refresh, Mode and Observation/Follow mode, one flat list,
+  // no second popup. Every row commits and closes on one Select -- picking
+  // Mode steps ride->hike->cycle->ride and is done, same as any other row; a
+  // rider who wants a different mode again presses CONFIRM again. Draws the
+  // popup itself via optionPopup_.processRender() right after show() --
+  // MapActivity never calls requestUpdate() (it always has drawn straight to
+  // the buffer, on the main task, not through Activity's
+  // render(RenderLock&&)/render-task path), so nothing else would ever paint
+  // the popup's first frame.
+  void openMapMenu();
   // No-op if newMode is already current -- picking the mode already on
   // screen must cost nothing, same rule as stepZoom/stepMarker's ladder ends.
   void switchMode(MapRideMode newMode);
+
+  // Follow is the normal ride/hike/cycle screen; Observe repurposes the four
+  // direction buttons to pan the viewport instead of stepping the zoom/marker
+  // ladders. Not MapRideMode -- that picks *what* the frame is for, this picks
+  // *what the buttons do*, and the two are independent (a rider can look
+  // around in any ride mode).
+  enum class MapScreenMode : uint8_t { Follow, Observe };
+  // Left/Right pan along the frame's own horizontal; Up/Down along its
+  // vertical. Screen-space, not compass directions -- track-up means "right"
+  // is whatever the current heading makes it (panBy()).
+  enum class PanDirection : uint8_t { Left, Right, Up, Down };
+  // Toggles screenMode_. Entering Observe stores the fix currently in effect
+  // (observeReturnLatE7_ etc.) so leaving it can render exactly that fix
+  // rather than wherever the rider last panned to -- same idea as
+  // overviewShown_, just with its own return coordinate instead of reusing
+  // lastLatE7_/lastLonE7_, which panBy() repoints at the pan target instead.
+  // No-op entering with no fix yet (hasReceivedAny_ false): nothing to look
+  // around in that case, same "cost nothing" rule as switchMode().
+  void toggleObserveMode();
+  // One half-screen step in `direction`, reusing the projection the frame on
+  // screen was actually drawn with (proj_) -- whether that frame came from a
+  // real fix or the previous pan step. See the .cpp for why this is not on
+  // the ladder steps' settle timer.
+  void panBy(PanDirection direction);
+  // Up/Down side-button hints while Observe is active: same box as
+  // drawZoomSideHints(), different glyphs, because the side buttons pan
+  // instead of zooming.
+  void drawPanSideHints();
 
   // Allocated once in onEnter(), released in onExit(). MapTileSource holds
   // references to both, so neither may move or die while it is alive.
@@ -336,6 +375,20 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // Reset per viewport reset, before the source is used again -- the source
   // reads it live, so it must not change part-way through a render.
   MapProjection proj_;
+
+  // Which way the four direction buttons are wired up right now. Independent
+  // of overviewShown_/mode_ -- see the enum's own comment.
+  MapScreenMode screenMode_ = MapScreenMode::Follow;
+  // The fix Observe mode returns to when the rider picks "Follow mode" again.
+  // Set once on entry and kept current by applyFix() while Observe is active
+  // (both in toggleObserveMode()) -- never written by panBy(), which repoints
+  // lastLatE7_/lastLonE7_/lastHeading_ at the pan target instead. Two separate
+  // coordinates for two separate questions: "what is on screen" (lastLatE7_)
+  // vs. "where is the rider actually" (these).
+  int32_t observeReturnLatE7_ = 0;
+  int32_t observeReturnLonE7_ = 0;
+  uint8_t observeReturnHeading_ = 0;
+  uint8_t observeReturnSeq_ = 0;
 
   bool hasReceivedAny_ = false;
   uint8_t lastDrawnSeq_ = 0;
@@ -472,14 +525,20 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   MapSerialConsole serial_{consoleState_};
   MapBleConsole ble_{consoleState_};
 
-  // CONFIRM's menu (Refresh / Mode). Mode's own onSelect re-shows this same
-  // instance (openMapMenu(1)) to cycle in place, so there is only ever the
-  // one popup, never a second one stacked on top.
+  // CONFIRM's menu (Refresh / Mode / Observation mode).
   OptionPopup optionPopup_;
   // Set when a Back press closes optionPopup_ (loop()), cleared by the one
   // Back release it is meant to swallow (also loop()) -- see the comment
   // there for why the release needs swallowing at all.
   bool suppressBackRelease_ = false;
+  // Same problem, CONFIRM's side of it: a Select is a Confirm *press*
+  // (OptionPopup.h), but handleButtons() opens the menu on a Confirm
+  // *release* -- two edges of the same physical click. Left alone, the press
+  // that picks a row closes the menu and the release that follows it, one
+  // frame or a slow render later, reopens the very menu the row just picked
+  // an action from. Set in loop() alongside suppressBackRelease_, cleared in
+  // handleButtons() the one time it is meant to swallow.
+  bool suppressConfirmRelease_ = false;
 
   // Map files pushed over the same BLE connection the position packets use.
   // Attached while this screen is up and only while it is up: the receiver

@@ -864,6 +864,12 @@ void MapActivity::drawZoomSideHints() {
   GUI.drawSideButtonHints(renderer, "+", "--");
 }
 
+void MapActivity::drawPanSideHints() {
+  // Same box as drawZoomSideHints(), same plain-literal-glyph reasoning --
+  // Up/Down pan instead of zooming while Observe is active.
+  GUI.drawSideButtonHints(renderer, "^", "v");
+}
+
 void MapActivity::drawDebugLine(int y, char* text) {
   // GfxRenderer::drawText does not clip, and GfxRenderer::drawPixel answers
   // every off-panel pixel with a LOG_ERR -- one overlong readout line is
@@ -906,6 +912,7 @@ void MapActivity::onEnter() {
   viewportDrawn_ = false;
   markerPatchValid_ = false;
   partialMoves_ = 0;
+  screenMode_ = MapScreenMode::Follow;
 
   // Autosync starts from nothing every time this screen opens. The rate cap in
   // particular is per session on purpose: a rider who left the map and came
@@ -1108,6 +1115,15 @@ void MapActivity::loop() {
   // release that follows it a frame or two later then also leaves the map.
   // Latch that one release so it is swallowed once, not treated as a second,
   // independent Back.
+  //
+  // Select has the identical problem on CONFIRM: it fires on the *press*
+  // edge too, and handleButtons() opens the menu on CONFIRM's *release* edge.
+  // gpio.update() only runs once per outer loop() (main.cpp), so a Select
+  // whose row spends the better part of two seconds rendering never sees the
+  // release until this activity's next loop() call -- by which point the
+  // popup is already closed, so handleButtons() runs and reopens it. No
+  // extra redraw needed here the way Back's case gets one: every Select
+  // branch (openMapMenu()) already renders the map itself.
   const bool popupWasActive = optionPopup_.isActive();
   if (optionPopup_.handleInput(mappedInput, [this] { optionPopup_.processRender(renderer, mappedInput); })) {
     if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -1119,6 +1135,9 @@ void MapActivity::loop() {
       redrawDueMs_ = 0;
       showBusy();  // the popup's pixels are still up; say the redraw started
       renderCurrent();
+    }
+    if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      suppressConfirmRelease_ = true;
     }
     return;
   }
@@ -1246,51 +1265,90 @@ void MapActivity::handleButtons() {
   // Logical buttons, never HalGPIO::BTN_* -- the front four are remappable
   // in settings and the mapping is orientation-aware (firmware CLAUDE.md).
   //
-  // Up is toward the closest rung: step 0 is 1 m/px, step 4 is 20
-  // (MapViewport.h:61-68). Zooming in is going up the ladder.
+  // Follow: the ladder steps below. Observe: the same four buttons pan
+  // instead (panBy()) -- see MapScreenMode's comment for why this is a
+  // separate switch rather than folded into the ladder-step calls.
+  switch (screenMode_) {
+    case MapScreenMode::Follow:
+      // Up is toward the closest rung: step 0 is 1 m/px, step 4 is 20
+      // (MapViewport.h:61-68). Zooming in is going up the ladder.
+      //
+      // Worth keeping in mind when a rung looks broken: step 0 shows 480x800
+      // **metres**, so over sparse countryside an empty panel there is the
+      // honest answer, not a missing tile. Mistaken for a render bug once,
+      // 2026-08-07.
+      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) stepZoom(-1);
+      if (mappedInput.wasPressed(MappedInputManager::Button::Down)) stepZoom(+1);
+
+      // Right increases look-ahead, which moves the marker *down* the screen
+      // -- docs/architecture-plan.md. Read the pair as a look-ahead slider,
+      // not as a marker position, or the direction reads backwards.
+      if (mappedInput.wasPressed(MappedInputManager::Button::Left)) stepMarker(-1);
+      if (mappedInput.wasPressed(MappedInputManager::Button::Right)) stepMarker(+1);
+      break;
+    case MapScreenMode::Observe:
+      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) panBy(PanDirection::Up);
+      if (mappedInput.wasPressed(MappedInputManager::Button::Down)) panBy(PanDirection::Down);
+      if (mappedInput.wasPressed(MappedInputManager::Button::Left)) panBy(PanDirection::Left);
+      if (mappedInput.wasPressed(MappedInputManager::Button::Right)) panBy(PanDirection::Right);
+      break;
+  }
+
+  // Opens the map menu: Refresh, Mode (ride/hike/cycle) and Observation
+  // mode/Follow mode -- none of that changes with screenMode_, CONFIRM always
+  // opens the same menu.
   //
-  // Worth keeping in mind when a rung looks broken: step 0 shows 480x800
-  // **metres**, so over sparse countryside an empty panel there is the honest
-  // answer, not a missing tile. Mistaken for a render bug once, 2026-08-07.
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) stepZoom(-1);
-  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) stepZoom(+1);
-
-  // Right increases look-ahead, which moves the marker *down* the screen --
-  // docs/architecture-plan.md. Read the pair as a look-ahead slider, not as
-  // a marker position, or the direction reads backwards.
-  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) stepMarker(-1);
-  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) stepMarker(+1);
-
-  // Opens the map menu: Refresh (the whole reason the 10-minute hike cadence
-  // is acceptable is that a rider standing at a junction can still force a
-  // fresh picture) and Mode (switch ride/hike/cycle without leaving the map).
+  // suppressConfirmRelease_ swallows the one release that belongs to the
+  // press a Select already consumed (loop()) -- without it, every Select
+  // reopens the menu it just acted from. Same idiom as suppressBackRelease_
+  // just below it in loop().
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    openMapMenu();
+    if (suppressConfirmRelease_) {
+      suppressConfirmRelease_ = false;
+    } else {
+      openMapMenu();
+    }
   }
 }
 
-void MapActivity::openMapMenu(int initialIndex) {
+void MapActivity::openMapMenu() {
   std::vector<std::string> options;
-  options.reserve(3);
+  options.reserve(4);
   options.push_back(tr(STR_REFRESH));
   options.push_back(std::string(tr(STR_MAP_MODE)) + ": " + I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
+  // Only once a fix has actually drawn a frame -- same "no row that cannot do
+  // anything" rule as Whole route below. A rider with nothing on screen yet
+  // has nothing to look around in.
+  int observeIdx = -1;
+  if (hasReceivedAny_) {
+    observeIdx = static_cast<int>(options.size());
+    options.push_back(
+        I18N.get(screenMode_ == MapScreenMode::Observe ? StrId::STR_MAP_FOLLOW_MODE : StrId::STR_MAP_OBSERVE_MODE));
+  }
   // Only with a route loaded. A row that cannot do anything is worse than no
   // row: it reads as a feature that is broken rather than one that needs a route
   // picked at the door.
   const bool hasRoute = route_ != nullptr;
-  if (hasRoute) options.push_back(tr(STR_MAP_WHOLE_ROUTE));
-  optionPopup_.show(StrId::STR_MAP, options, initialIndex, [this, hasRoute](int idx) {
+  int wholeRouteIdx = -1;
+  if (hasRoute) {
+    wholeRouteIdx = static_cast<int>(options.size());
+    options.push_back(tr(STR_MAP_WHOLE_ROUTE));
+  }
+  optionPopup_.show(StrId::STR_MAP, options, 0, [this, observeIdx, wholeRouteIdx](int idx) {
     if (idx == 0) {
       redrawDueMs_ = 0;
       showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
       renderCurrent();
     } else if (idx == 1) {
-      // Cycle, don't open a second popup -- repeated Select on this row
-      // steps ride->hike->cycle->ride. mapRideModeName()'s array order.
+      // One Select steps ride->hike->cycle->ride and closes, same as every
+      // other row -- picking a mode is a deliberate, one-shot choice, not the
+      // start of a cycling gesture. A rider who wants to step again presses
+      // CONFIRM again. mapRideModeName()'s array order.
       const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
       switchMode(static_cast<MapRideMode>(next));
-      openMapMenu(1);  // reopen with the label refreshed, Mode still highlighted
-    } else if (hasRoute) {
+    } else if (idx == observeIdx) {
+      toggleObserveMode();
+    } else if (idx == wholeRouteIdx) {
       // Back to the whole route, at any point in a ride. Costs one full refresh
       // and one pass over the route file, the same as the frame the picker drew.
       redrawDueMs_ = 0;
@@ -1299,6 +1357,85 @@ void MapActivity::openMapMenu(int initialIndex) {
     }
   });
   optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::toggleObserveMode() {
+  if (screenMode_ == MapScreenMode::Follow) {
+    // Nothing on screen to look around in yet -- same "cost nothing" rule as
+    // switchMode() picking the mode already on screen.
+    if (!hasReceivedAny_) return;
+    screenMode_ = MapScreenMode::Observe;
+    // The fix in effect right now, so "Follow mode" later renders around the
+    // rider's actual position and not wherever panning left off. Not
+    // lastLatE7_/lastLonE7_ themselves -- panBy() repoints those at the pan
+    // target on every step.
+    observeReturnLatE7_ = lastLatE7_;
+    observeReturnLonE7_ = lastLonE7_;
+    observeReturnHeading_ = lastHeading_;
+    observeReturnSeq_ = lastDrawnSeq_;
+    LOG_DBG(kLogTag, "observation mode on, return point %d,%d", static_cast<int>(observeReturnLatE7_),
+            static_cast<int>(observeReturnLonE7_));
+    redrawDueMs_ = 0;
+    showBusy();
+    // Redraws the same frame that is already up -- the point is the button
+    // hints switching to the pan labels, not a new picture.
+    renderCurrent();
+    return;
+  }
+
+  screenMode_ = MapScreenMode::Follow;
+  LOG_DBG(kLogTag, "observation mode off, returning to %d,%d", static_cast<int>(observeReturnLatE7_),
+          static_cast<int>(observeReturnLonE7_));
+  redrawDueMs_ = 0;
+  showBusy();
+  renderViewport(observeReturnLatE7_, observeReturnLonE7_, observeReturnHeading_, observeReturnSeq_);
+}
+
+void MapActivity::panBy(PanDirection direction) {
+  // Guards renderViewport()'s own OOM fallback (renderWaiting() when
+  // source_ is null) rather than viewportDrawn_: that flag is about whether
+  // an *incoming fix* may move the marker incrementally, not about whether a
+  // frame is on screen -- the persisted-fix banner frame draws real tiles
+  // with viewportDrawn_ left false, and panning is just as valid there.
+  if (!source_) return;
+
+  const int16_t markerY = MapViewport::markerYForStep(markerStep());
+  const int16_t halfWidth = static_cast<int16_t>(renderer.getScreenWidth() / 2);
+  const int16_t halfHeight = static_cast<int16_t>(renderer.getScreenHeight() / 2);
+  int16_t targetX = MapViewport::kAnchorScreenX;
+  int16_t targetY = markerY;
+  switch (direction) {
+    case PanDirection::Left:
+      targetX -= halfWidth;
+      break;
+    case PanDirection::Right:
+      targetX += halfWidth;
+      break;
+    case PanDirection::Up:
+      targetY -= halfHeight;
+      break;
+    case PanDirection::Down:
+      targetY += halfHeight;
+      break;
+  }
+
+  // Inverse-project through proj_ -- the frame actually on screen, whether it
+  // was drawn by the last real fix or the previous pan step -- so each press
+  // moves half a screen from wherever the rider last panned to.
+  double mercX = 0.0, mercY = 0.0;
+  proj_.screenToMerc(targetX, targetY, mercX, mercY);
+  double lat = 0.0, lon = 0.0;
+  MapProjection::mercToLonLat(mercX, mercY, lat, lon);
+
+  LOG_DBG(kLogTag, "pan: half-screen step, new anchor %.5f,%.5f", lat, lon);
+  showBusy();
+  // Not coalesced on the settle timer stepZoom/stepMarker use: a pan step's
+  // target is computed from the frame the *previous* step drew (proj_), which
+  // does not exist until that render actually runs, so batching bursts would
+  // either collapse them onto the same target or need its own accumulator for
+  // no real benefit -- loop() cannot poll another press until this blocking
+  // render returns anyway (single-threaded, no coalescing to be had).
+  renderViewport(static_cast<int32_t>(lat * 1e7), static_cast<int32_t>(lon * 1e7), anchorHeading_, lastDrawnSeq_);
 }
 
 void MapActivity::switchMode(MapRideMode newMode) {
@@ -1533,6 +1670,21 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
 }
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  if (screenMode_ == MapScreenMode::Observe) {
+    // A rider looking around must not have the frame snatched away from under
+    // them by the next fix -- same reasoning as overviewShown_ below, just
+    // recorded into observeReturnLatE7_ etc. rather than lastLatE7_/
+    // lastLonE7_: those are what panBy() is repointing at the pan target, and
+    // clobbering them here would make "Follow mode" render around the wrong
+    // spot at the end of a pan.
+    observeReturnLatE7_ = latE7;
+    observeReturnLonE7_ = lonE7;
+    observeReturnHeading_ = headingStep;
+    observeReturnSeq_ = seq;
+    LOG_DBG(kLogTag, "fix held: observation mode is up");
+    return;
+  }
+
   if (overviewShown_) {
     // The rider asked for the whole route and is still looking at it. A fix
     // arrives every five seconds, so redrawing here would snatch the overview
@@ -1988,9 +2140,28 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // screen (drawDebugLine() above): the map fills the whole viewport, there
   // is no margin set aside for chrome, so UI text overlays whatever tiles
   // were there.
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  drawZoomSideHints();
+  // Follow: Up/Down zoom, Left/Right step the marker ladder -- words, since
+  // "zoom in/out" and "look further ahead/back" have no obvious single glyph.
+  // Observe: the four buttons are a pure direction pad, and a direction pad
+  // reads faster as arrows than as the words "Left"/"Right" -- same
+  // symbol-over-word call as drawZoomSideHints()'s "+"/"--"; plain literals,
+  // not tr(), for the same reason (an arrow is not language-dependent).
+  // Exhaustive switch, no default, so a third mode cannot land here silently
+  // unlabeled (control-flow-clarity).
+  switch (screenMode_) {
+    case MapScreenMode::Follow: {
+      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      drawZoomSideHints();
+      break;
+    }
+    case MapScreenMode::Observe: {
+      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), "<", ">");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      drawPanSideHints();
+      break;
+    }
+  }
 
   // The marker goes on **last**, and its patch is taken immediately before it.
   // Everything the marker can sit over -- map, hatch, compass, readout, button
@@ -2008,9 +2179,13 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     // Correct picture, expensive picture.
     LOG_ERR(kLogTag, "marker patch unavailable -- fixes will redraw in full");
   }
+  // Not in Observe: the anchor here is a pan target the rider chose to look
+  // at, not a GPS fix, and a marker glyph on it would claim otherwise.
   // Relative heading 0: this frame is drawn track-up for this very fix, so the
   // arrow points straight up by construction.
-  drawPositionMarker(markerDrawnX_, markerDrawnY_, 0, mode_);
+  if (screenMode_ != MapScreenMode::Observe) {
+    drawPositionMarker(markerDrawnX_, markerDrawnY_, 0, mode_);
+  }
 
   // The persisted-fix frame carries a banner only a full redraw can clear, so it
   // is deliberately not followable (applyFix()).
