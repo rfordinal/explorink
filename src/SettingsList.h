@@ -241,6 +241,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // rider turns it on deliberately or not at all.
         SettingInfo::Toggle(StrId::STR_MAP_AUTOSYNC_TILES, &CrossPointSettings::mapAutoSyncTiles, "mapAutoSyncTiles",
                             StrId::STR_CAT_MAP),
+        // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
+        // something a rider needs. Same field the map's own menu toggles live
+        // (MapActivity::openMapMenu()).
+        SettingInfo::Toggle(StrId::STR_MAP_DEBUG_INFO, &CrossPointSettings::mapDebugInfo, "mapDebugInfo",
+                            StrId::STR_CAT_MAP),
         // Manual (default): zoom is the button ladder, unchanged. Auto
         // reserves the setting for a speed/junction-driven picker that is not
         // wired up yet (docs/map-data-spec.md, "Auto zoom picks a rung").

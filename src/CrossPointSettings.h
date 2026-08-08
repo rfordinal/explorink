@@ -268,6 +268,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // IS a Settings-screen toggle, so the generic toJson/fromJson loop carries
   // it and nothing here has to.
   uint8_t mapAutoSyncTiles = 0;
+  // The GPS/tile/BLE readout in the map's top-left corner. Off by default: it
+  // is diagnostic text, not something a rider needs on screen. Toggled from
+  // the Settings screen (category Map) or live from the map's own menu
+  // (MapActivity::openMapMenu()) -- both flip this same field, so the two
+  // never disagree about the current value (same pattern as mapZoomMode
+  // below).
+  uint8_t mapDebugInfo = 0;
   // Zoom/rotation/heading mode settings, all category Map, all default to the
   // behaviour the map screen had before this setting existed.
   uint8_t mapZoomMode = MAP_ZOOM_MANUAL;
