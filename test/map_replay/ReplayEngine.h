@@ -52,6 +52,24 @@ struct Config {
   uint8_t headingDriftLimitSteps = MapFollow::kMaxHeadingDriftSteps;
   uint16_t minPartialMovesForHeadingReAnchor = MapFollow::kMinPartialMovesForHeadingReAnchor;
   uint16_t partialMoveBudget = MapFollow::kMaxPartialMoves;
+
+  // Fills Result::events with one entry per packet. Off by default: a 1097-
+  // packet run has no reason to carry a 1097-entry vector when only the
+  // summary counts are wanted (every sweep cell, for instance).
+  bool recordEvents = false;
+};
+
+// One packet's outcome, in replay order -- for --events, not the summary.
+struct Event {
+  int packetIndex = 0;
+  // "skip" | "move" | "reanchor"
+  const char* action = "";
+  // "" for skip/move; "heading" | "budget" | "keep-in" for reanchor.
+  const char* reason = "";
+  int16_t x = 0;
+  int16_t y = 0;
+  // partialMoves at the moment this was decided (before any reset).
+  int movesIn = 0;
 };
 
 struct Result {
@@ -71,6 +89,8 @@ struct Result {
   // Of those, how many had 0 or 1 moves in -- the thrash signal
   // (docs/map-follow.md, "Heading thrash, round two").
   int thrashAnchors = 0;
+  // Every packet's outcome, in order. Empty unless Config::recordEvents.
+  std::vector<Event> events;
 };
 
 Result replay(const std::vector<RideLog::Packet>& packets, const Config& config);

@@ -474,8 +474,25 @@ cost table above is hardware-measured and stays the only source), whether the
 panel ghosts at any of these budgets (`kRouteFramePartialMoves`' comment: a
 framebuffer dump of a ghosted panel looks perfect), or whether a map that holds
 its orientation for 320 m of riding *reads* right to someone on a motorcycle.
-The floor at 2 has not been on hardware yet -- that needs a flash, which needs
-asking first (`CLAUDE.md`).
+
+**Flashed, 2026-08-08, and the count did not match the sweep.** Floor 2 on
+real hardware, ride 142303 replayed the same way the correctness gate above
+was measured (`tools/replay_ride.py`, console `pos`): **30 redraws, not 14**
+-- 14 heading, 15 budget, 1 keep-in, where the sweep says 14 total (8+6+0).
+The gate above still passes exactly at floor 0 on this same build, so the
+harness is not simply wrong. Two things are ruled out: `MapActivity` wiring
+(`applyFix()` calls the identical function for both the console and BLE
+paths, `MapActivity.cpp:1143,1174`) and the console's own `pos`-unchanged
+shortcut (`MapActivity.cpp:1164`, skips `applyFix()` entirely on a repeated
+lat/lon -- present but not the cause, since it would have shown up as an
+*undercount* against the floor-0 gate too, and that gate is exact). Leading
+suspect, not confirmed: the device's persisted last fix before packet 1 --
+two hardware runs of this same ride under the *old* firmware already gave
+different totals (32, then 24) for exactly this reason, and neither hardware
+session controlled for it. `test/map_replay` always starts clean from the
+ride's own first packet; a real device does not. Settling this needs a
+controlled re-run -- same known starting fix before every replay, not a new
+one each session -- not another guess from here.
 
 **One assumption inside the harness**, worth knowing before trusting a number
 it produces: every marker move is taken to succeed. On the device a rejected
@@ -483,6 +500,30 @@ it produces: every marker move is taken to succeed. On the device a rejected
 (`MapActivity.cpp:1512-1522`). That path logs `marker window rejected` and did
 not appear in the hardware runs behind the gate above, which is why the counts
 match exactly -- but a ride that trips it would replay optimistically here.
+
+### Watching a ride instead of counting it
+
+`map_replay --events` prints every packet's outcome (skip/move/reanchor, with
+the fix's screen position and `partialMoves` at decision time) instead of only
+the summary -- for reading a specific stretch, not for a table.
+
+`map_replay --frames DIR` writes `<ride>.frames.csv` per ride: one row per
+**ReAnchor** (packet, timestamp, lat/lon/heading, reason, moves-in) -- every
+moment the device's picture actually changes. `tools/render_ride_video.py`
+(parent repo) turns that into an animated GIF: one `map_preview` call per row
+renders that exact view with the real `MapRenderer`, held on screen for the
+real gap (clamped, `--min-hold-ms`/`--max-hold-ms`) until the next one. A
+`.manifest.txt` next to the GIF maps `mm:ss` back to a packet number and
+reason, so "at 1:24 I see an unnecessary render" is a lookup, not a re-count.
+
+**Deliberate scope cut**: only ReAnchor gets a frame. MoveMarker slides a
+64x64 patch inside a frame that is otherwise pixel-identical ("The decision"
+above) -- compositing that patch move on a held raster is real work neither
+`map_preview` nor this GIF does today, so the marker's small in-frame slides
+are invisible in the video; only the wholesale picture changes are. No
+`ffmpeg` on this machine, so the output is an animated GIF via Pillow, not an
+MP4 -- `--keep-frames DIR` also saves the individual PNGs for anyone who wants
+to point a real `ffmpeg` at them later.
 
 ## The heading decides the frame, once
 

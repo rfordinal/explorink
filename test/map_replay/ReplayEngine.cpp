@@ -22,6 +22,7 @@ int32_t toE7(double degrees, int decimals) {
 Result replay(const std::vector<RideLog::Packet>& packets, const Config& config) {
   Result result;
   result.packets = static_cast<int>(packets.size());
+  if (config.recordEvents) result.events.reserve(packets.size());
 
   // MapActivity's follow state (MapActivity.h's proj_, anchorHeading_,
   // markerDrawnX_/Y_, partialMoves_).
@@ -49,7 +50,8 @@ Result replay(const std::vector<RideLog::Packet>& packets, const Config& config)
     viewportDrawn = true;
   };
 
-  for (const RideLog::Packet& packet : packets) {
+  for (size_t i = 0; i < packets.size(); ++i) {
+    const RideLog::Packet& packet = packets[i];
     const double lat = static_cast<double>(toE7(packet.lat, config.coordDecimals)) / 1e7;
     const double lon = static_cast<double>(toE7(packet.lon, config.coordDecimals)) / 1e7;
 
@@ -82,28 +84,44 @@ Result replay(const std::vector<RideLog::Packet>& packets, const Config& config)
     request.headingDriftLimitSteps = config.headingDriftLimitSteps;
     request.minPartialMovesForHeadingReAnchor = config.minPartialMovesForHeadingReAnchor;
 
+    const int packetIndex = static_cast<int>(i);
+    const int movesInBefore = static_cast<int>(partialMoves);
+
     switch (MapFollow::decide(request)) {
       case MapFollow::Action::Skip:
         ++result.skips;
+        if (config.recordEvents) {
+          result.events.push_back({packetIndex, "skip", "", fixX, fixY, movesInBefore});
+        }
         break;
       case MapFollow::Action::MoveMarker:
         ++result.moves;
         markerDrawnX = fixX;
         markerDrawnY = fixY;
         ++partialMoves;
+        if (config.recordEvents) {
+          result.events.push_back({packetIndex, "move", "", fixX, fixY, movesInBefore});
+        }
         break;
       case MapFollow::Action::ReAnchor: {
         ++result.reAnchors;
         // Classified from the state decide() was asked with, before the reset.
         const bool inside = MapFollow::insideKeepIn(fixX, fixY, config.screenWidth, config.screenHeight);
+        const char* reason;
         if (!inside) {
           ++result.keepInAnchors;
+          reason = "keep-in";
         } else if (partialMoves >= config.partialMoveBudget) {
           ++result.budgetAnchors;
+          reason = "budget";
         } else {
           ++result.headingAnchors;
           result.headingMovesIn.push_back(static_cast<int>(partialMoves));
           if (partialMoves <= 1) ++result.thrashAnchors;
+          reason = "heading";
+        }
+        if (config.recordEvents) {
+          result.events.push_back({packetIndex, "reanchor", reason, fixX, fixY, movesInBefore});
         }
         renderViewport(lat, lon, packet.headingStep);
         break;
