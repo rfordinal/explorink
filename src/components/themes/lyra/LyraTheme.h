@@ -90,9 +90,13 @@ class LyraTheme : public BaseTheme {
                 const std::function<std::string(int index)>& rowSubtitle,
                 const std::function<UIIcon(int index)>& rowIcon, const std::function<std::string(int index)>& rowValue,
                 bool highlightValue, const std::function<bool(int index)>& rowDimmed = nullptr) const override;
+  // 0 means "use this theme's own font" -- see BaseTheme.h's declaration for
+  // why this can't just be a normal per-class default argument. Same for
+  // btn3FontId/btn4FontId (0 means "same as fontId").
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                       const char* btn4) const override;
-  void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const override;
+                       const char* btn4, int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const override;
+  void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
+                           int fontId = SMALL_FONT_ID) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon) const override;

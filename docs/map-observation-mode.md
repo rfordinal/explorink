@@ -2,9 +2,10 @@
 
 The map screen's CONFIRM menu can switch the four direction buttons from the
 zoom/marker ladders to a pan. Feature added and verified on hardware
-2026-08-08. This file documents the state model, the pan math, and a button
-race found (and fixed) while testing it that affects every row in the menu,
-not just this one.
+2026-08-08. This file documents the state model, the pan math, a button race
+found (and fixed) while testing it that affects every row in the menu, not
+just this one, and two findings from getting the button hints' arrow glyphs
+right, also verified on hardware the same day.
 
 ## What it is
 
@@ -122,3 +123,76 @@ a release-edge open and a synchronous-render Select is still missing this --
 worth grepping for (`wasReleased(...Confirm)` next to an `OptionPopup` in the
 same file) rather than assuming `EpubReaderActivity` and `MapActivity` are
 the only two.
+
+## Finding: no builtin font has arrow glyphs except OpenDyslexic, and only its Bold cut is thick enough
+
+**Verified on hardware, 2026-08-08.** `<`/`>`/`^`/`v` (the first cut of the
+Observe-mode hints) read fine but looked like an afterthought; real Unicode
+arrows (U+2190-U+2193) were the ask.
+
+`fontconvert.py`'s default codepoint list already includes the Arrows block
+(`(0x2190, 0x21FF)`, `lib/EpdFont/scripts/fontconvert.py`'s `intervals`), but
+that only matters if a source face actually has the glyphs -- the tool skips
+anything `face.get_char_index(cp)` returns 0 for
+(`fontconvert.py:403-405`). Checked every builtin source face
+(`lib/EpdFont/builtinFonts/source/*/`) with `fontTools`: Ubuntu, NotoSans,
+NotoSansHebrew, NotoSansArabic, Ubuntu-Vietnamese and NotoSerif all answer
+`False` for U+2190-U+2193. **OpenDyslexic is the only one that has them**,
+already in the repo for the reader's accessibility font option
+(`lib/EpdFont/builtinFonts/source/OpenDyslexic/`).
+
+Regenerated `ubuntu_10_regular.h`/`ubuntu_10_bold.h` with
+`OpenDyslexic-Bold.otf` appended to the fontstack (lowest priority, same
+"borrow a glyph from a fallback face" pattern the Hebrew/Arabic/Vietnamese
+supplements already use) and `--additional-intervals 0x2190,0x2193` --
+`lib/EpdFont/scripts/convert-builtin-fonts.sh` doesn't have this font pinned
+to a variable, so it was a one-off invocation, not a change to that script.
+`OpenDyslexic-Regular`'s cut of the same four glyphs exists too but reads
+thin at 10 px; `-Bold`'s is visibly heavier side by side
+(`PIL`-rendered comparison, not just read-off-the-code) and was used
+instead, on both the regular and bold variants of `ubuntu_10` -- the glyph
+data for U+2190-U+2193 is identical in both, since neither Ubuntu face
+supplies it.
+
+`notosans_8_regular.h` got the same treatment in an earlier pass, then the
+side hints moved to `UI_10_FONT_ID` anyway (see below) -- reverted rather
+than shipped unused.
+
+## Finding: default arguments do not virtualize, so per-theme font choice can't be a default value
+
+**Verified on hardware, 2026-08-08, the hard way.** Both `drawButtonHints()`
+and `drawSideButtonHints()` (`BaseTheme.h`) needed a per-caller font
+override, so MapActivity's Observe-mode hints could ask for a bigger font
+than whatever a screen's theme normally draws hints in. The obvious approach
+-- give the parameter a default value, a different one in each theme's own
+override -- shipped, built clean, and then grew the button-hint text on
+every other screen in the firmware, not just the map.
+
+Cause: `GUI` (`components/UITheme.h:50`) is
+`UITheme::getInstance().getTheme()`, typed `const BaseTheme&`
+(`UITheme.h:22`) -- a fixed static type, regardless of which concrete theme
+(`LyraTheme`, `RoundedRaffTheme`, `BaseTheme` itself) is actually selected at
+runtime. A default argument is resolved against the **static type at the
+call site**, not the override that ends up running. Every existing
+`GUI.drawButtonHints(...)` call in the codebase omits the new parameter, so
+every one of them got `BaseTheme`'s declared default (`UI_10_FONT_ID`) baked
+in at compile time -- then virtual dispatch correctly ran `LyraTheme`'s (or
+`RoundedRaffTheme`'s) actual body, with that wrong value, silently replacing
+the `SMALL_FONT_ID` those bodies used to hardcode. `LyraTheme`'s and
+`RoundedRaffTheme`'s own declared defaults were never reachable through
+`GUI` at all -- dead code from the moment they were written.
+
+Fix: a sentinel, not a default. `fontId = 0` at every layer (0 is already
+reserved as fontIds.h's "not found" value, `fontIds.h:15`, never a real
+font ID); each override checks `if (fontId == 0) fontId = <its own font>;`
+in the function body, where virtual dispatch has already picked the right
+one. Same fix applied to `btn3FontId`/`btn4FontId`, the follow-up parameters
+that let Exit/Select stay at each theme's normal size while only the arrow
+slots (btn3/btn4) pick up the bigger font -- a single shared `fontId` for
+all four positions was the first attempt, and grew Exit/Select too.
+
+**General, not map-specific**: any virtual method on `BaseTheme` (or any
+base class dispatched through a base-typed reference) that wants a
+per-override default value has this exposure. A default argument can only
+safely vary by override if every override's caller reaches it through that
+override's own static type -- never true for anything called via `GUI`.

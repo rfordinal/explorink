@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "fontIds.h"
+
 class GfxRenderer;
 struct RecentBook;
 
@@ -199,9 +201,32 @@ class BaseTheme {
   void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
                         bool showPercentage = true) const;  // Right aligned (UI headers)
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
+  // fontId 0 means "this theme's own default" -- NOT a default argument
+  // (BaseTheme, LyraTheme and RoundedRaffTheme each want a *different*
+  // fallback font, but GUI is `const BaseTheme&` (UITheme.h), a fixed
+  // static type; a default argument resolves against the static type at the
+  // call site, not the override that actually runs, so three different
+  // per-class defaults would silently collapse to BaseTheme's one --
+  // confirmed the hard way on hardware 2026-08-08: every other screen's
+  // hint text grew because it silently got BaseTheme's default instead of
+  // its own theme's). Each override checks for 0 and substitutes its own
+  // font in the body instead. 0 is safe as a sentinel -- fontIds.h already
+  // reserves it as the "not found" value, never a real font ID.
+  //
+  // btn3FontId/btn4FontId: 0 means "same as fontId" -- btn1/btn2 (Back/
+  // Confirm, always words) and btn3/btn4 (Left/Right, words in Follow but
+  // arrow glyphs in MapActivity's Observe mode) don't always want the same
+  // size. Split only for the pair that actually needs it, so every caller
+  // that wants all four uniform (everyone except Observe mode) still passes
+  // nothing past fontId.
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                               const char* btn4) const;
-  virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
+                               const char* btn4, int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const;
+  // fontId defaults to SMALL_FONT_ID -- every existing caller keeps the same
+  // glyph it always had. A caller with its own larger/bolder use for this
+  // box (MapActivity's pan hints, which need real arrow glyphs no shared
+  // hint font carries at readable size) passes a different one explicitly.
+  virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
+                                   int fontId = SMALL_FONT_ID) const;
   virtual int getListRowStep(bool hasSubtitle) const;
   virtual int getListPageItems(int contentHeight, bool hasSubtitle) const;
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,

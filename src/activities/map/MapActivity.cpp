@@ -866,8 +866,32 @@ void MapActivity::drawZoomSideHints() {
 
 void MapActivity::drawPanSideHints() {
   // Same box as drawZoomSideHints(), same plain-literal-glyph reasoning --
-  // Up/Down pan instead of zooming while Observe is active.
-  GUI.drawSideButtonHints(renderer, "^", "v");
+  // Up/Down pan instead of zooming while Observe is active. Real arrow
+  // glyphs (U+2190-U+2193), not ASCII stand-ins: the interval was added to
+  // ubuntu_10_regular.h/ubuntu_10_bold.h from OpenDyslexic-Bold.otf, the only
+  // builtin source face that actually has them (Ubuntu/NotoSans do not, and
+  // OpenDyslexic's Regular cut of the same glyphs read too thin on the
+  // panel) -- convert-builtin-fonts.sh's fontstack-fallback pattern, same as
+  // the Hebrew/Arabic supplement two faces down the same stack.
+  //
+  // UI_10_FONT_ID, not the side-hint default SMALL_FONT_ID: two points
+  // bigger and the only one of the two with the arrow interval at all.
+  // SMALL_FONT_ID is shared by every other screen's side/button hints
+  // (boot, sleep, file browser, wifi, keyboard...) -- sizing it up for
+  // legible arrows here would resize hints everywhere else too, for no
+  // reason those screens asked for. drawSideButtonHints()'s fontId
+  // parameter (BaseTheme.h/LyraTheme.h) exists so this screen can pick a
+  // different one without touching any of them.
+  //
+  // Fed sideways on purpose: every drawSideButtonHints() caller's text goes
+  // through drawTextRotated90CW() (BaseTheme.cpp), a 90-degree *clockwise*
+  // rotation -- fine for "+"/"--" (rotation-symmetric enough to still read),
+  // wrong for a directional glyph. Confirmed on hardware: right-arrow
+  // rotated CW 90 deg lands pointing up, left-arrow lands pointing down. So
+  // the physical Up button (topBtn) gets "->" and Down (bottomBtn) gets
+  // "<-" -- what is actually wired to which glyph only makes sense after
+  // you account for the rotation, not before.
+  GUI.drawSideButtonHints(renderer, "→", "←", UI_10_FONT_ID);
 }
 
 void MapActivity::drawDebugLine(int y, char* text) {
@@ -2222,8 +2246,15 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
       break;
     }
     case MapScreenMode::Observe: {
-      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), "<", ">");
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), "←", "→");
+      // btn3/btn4 only (Exit/Select stay at the theme's normal size): the
+      // arrow glyphs need drawPanSideHints()'s UI_10_FONT_ID (10pt) to match
+      // the side hints, but Exit/Select are ordinary words that should look
+      // like every other screen's -- found on hardware 2026-08-08, first as
+      // "all four boxes grew" (a shared fontId argument), then as "why is
+      // the whole row bigger, only the arrows should be."
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, 0, UI_10_FONT_ID,
+                          UI_10_FONT_ID);
       drawPanSideHints();
       break;
     }
