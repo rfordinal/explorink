@@ -6,12 +6,12 @@
 #include <HalStorage.h>
 #include <I18n.h>
 
+#include "BrandSplash.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "images/Logo120.h"
 #include "images/MoonIcon.h"
 
 void SleepActivity::onEnter() {
@@ -44,7 +44,7 @@ void SleepActivity::onEnter() {
       return renderLocationSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::LOCATION_CUSTOM):
       // Gate on whether we have a fix to show, not on lastSleepFromReader --
-      // TrailInk has no book open almost all the time, so a reader-only gate
+      // ExplorInk has no book open almost all the time, so a reader-only gate
       // never fires and this mode always fell through to the custom-wallpaper
       // fallback (and further to the dark default screen if that's empty too).
       if (SETTINGS.mapHasLastFix) {
@@ -156,13 +156,8 @@ void SleepActivity::renderCustomSleepScreen() const {
 // sequence, used once for the sleep image. It never runs the multi-flash GC
 // waveform (0xF7) that FULL_REFRESH selects (#2471's blinking complaint).
 void SleepActivity::renderDefaultSleepScreen() const {
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
   renderer.clearScreen();
-  renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
+  drawBrandSplash(renderer, tr(STR_SLEEPING));
 
   // Make sleep screen dark unless light is selected in settings
   if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT) {
@@ -253,12 +248,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
 }
 
 void SleepActivity::renderLocationSleepScreen() const {
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
   renderer.clearScreen();
-  renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
 
   if (SETTINGS.mapHasLastFix) {
     // Order matches MapHeading.h's 16-step enum. Abbreviations, like the
@@ -270,9 +260,9 @@ void SleepActivity::renderLocationSleepScreen() const {
     const float lat = static_cast<float>(SETTINGS.mapLastLatE7) / 1e7f;
     const float lon = static_cast<float>(SETTINGS.mapLastLonE7) / 1e7f;
     snprintf(buf, sizeof(buf), "%.4f, %.4f  %s", lat, lon, kHeadingAbbrev[SETTINGS.mapLastHeading & 0x0F]);
-    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, buf);
+    drawBrandSplash(renderer, buf);
   } else {
-    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
+    drawBrandSplash(renderer, tr(STR_SLEEPING));
   }
 
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);

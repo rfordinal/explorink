@@ -2,7 +2,7 @@
 
 Verified against branch `feat/sleep-location-screen` (based on `develop`
 `7ee28192`) unless noted. Inherited wholesale from upstream CrossPoint;
-TrailInk has repurposed one mode (`COVER` → `LOCATION`, see below) and changed
+ExplorInk has repurposed one mode (`COVER` → `LOCATION`, see below) and changed
 one default value.
 
 ## Where it lives
@@ -31,7 +31,7 @@ Enum `SLEEP_SCREEN_MODE` (`src/CrossPointSettings.h:18-29`):
 DARK = 0, LIGHT = 1, CUSTOM = 2, LOCATION = 3, LOCATION_CUSTOM = 4, BLANK = 5, QUICK_RESUME = 6
 ```
 
-`LOCATION` / `LOCATION_CUSTOM` are TrailInk's rename of upstream's `COVER` /
+`LOCATION` / `LOCATION_CUSTOM` are ExplorInk's rename of upstream's `COVER` /
 `COVER_CUSTOM` (`CrossPointSettings.h:22-25`) — same numeric values, same
 slot in the menu, different content: no book cover, so this now shows the
 last known map fix instead. See "Repurposing COVER" below.
@@ -47,10 +47,10 @@ Dispatch in `onEnter()` (`SleepActivity.cpp:38-57`):
 |---|---|---|
 | `BLANK` | `renderBlankSleepScreen()` — clear screen, half refresh | — |
 | `CUSTOM` | `renderCustomSleepScreen()` — random BMP from `/.sleep` or `/sleep` on SD, or a fixed `/sleep.bmp` if present | `renderDefaultSleepScreen()` if no BMP found |
-| `LOCATION` | `renderLocationSleepScreen()` (`:255-279`) — last known map fix, LIGHT-style (never inverted) | none needed — see below |
+| `LOCATION` | `renderLocationSleepScreen()` (`:250-269`) — last known map fix, LIGHT-style (never inverted) | none needed — see below |
 | `LOCATION_CUSTOM` | Location info if `SETTINGS.mapHasLastFix`, else `renderCustomSleepScreen()` (`:45-54`) | `renderCustomSleepScreen()` |
 | `QUICK_RESUME` | falls through `switch`'s `default:` to `renderDefaultSleepScreen()` — but see Quick Resume below, it's actually intercepted earlier | — |
-| `DARK` / `LIGHT` | `renderDefaultSleepScreen()` (`:158-173`) — logo + "Sleeping" text, inverted to black unless `sleepScreen == LIGHT` (`:168-170`) | — |
+| `DARK` / `LIGHT` | `renderDefaultSleepScreen()` (`:158-168`) — brand splash (see below), inverted to black unless `sleepScreen == LIGHT` (`:163-165`) | — |
 
 `DARK` and `LIGHT` are not two render paths — they're the same
 `renderDefaultSleepScreen()`, and `LIGHT` just skips the `invertScreen()` call.
@@ -62,14 +62,14 @@ from the open XTC/TXT/EPUB (`APP_STATE.openEpubPath`) — real work: file load,
 cover BMP generation, three format branches, a function-pointer fallback
 chain for every failure point (no book open, load failed, cover-gen failed,
 BMP header invalid). None of that applies to a device that doesn't open
-books during a ride. TrailInk's `LOCATION` mode replaces the whole thing with
-a single bool check and a `snprintf` (`SleepActivity.cpp:263-276`):
+books during a ride. ExplorInk's `LOCATION` mode replaces the whole thing with
+a single bool check and a `snprintf` (`SleepActivity.cpp:253-266`):
 
 ```cpp
 if (SETTINGS.mapHasLastFix) {
-  // format "<lat>, <lon>  <compass>" into buf, draw it
+  // format "<lat>, <lon>  <compass>" into buf, hand it to drawBrandSplash()
 } else {
-  renderer.drawCenteredText(SMALL_FONT_ID, ..., tr(STR_SLEEPING));
+  drawBrandSplash(renderer, tr(STR_SLEEPING));
 }
 ```
 
@@ -99,7 +99,7 @@ LIGHT-style layout (logo, never inverted).
 
 `LOCATION_CUSTOM`'s gate was first ported unchanged from `COVER_CUSTOM` —
 `APP_STATE.lastSleepFromReader` — then changed to `SETTINGS.mapHasLastFix`
-after hardware testing showed the reader gate never fires on TrailInk (see
+after hardware testing showed the reader gate never fires on ExplorInk (see
 "Hardware finding" below).
 `renderer.invertScreen()` is never called in either DARK/LIGHT check nor
 LOCATION today so LOCATION cannot be "dark"; if a dark variant is ever
@@ -108,7 +108,62 @@ inside the function, since `SETTINGS.sleepScreen == LOCATION` is guaranteed
 true here and can't distinguish "dark" from "light" the way `DARK`/`LIGHT`
 share one function today.
 
-## Hardware finding: `lastSleepFromReader` never fires on TrailInk
+## Brand splash: shared with the boot screen
+
+`DARK`/`LIGHT` and `LOCATION` used to each draw their own logo + bold-text
+title (`tr(STR_CROSSPOINT)`, whose value had drifted to the literal string
+`"TrailInk"` -- fixed in the same change). `BootActivity` drew the identical
+block. All three now call one function, `drawBrandSplash()`
+(`src/activities/boot_sleep/BrandSplash.h:9`,
+`src/activities/boot_sleep/BrandSplash.cpp:17-26`): the `Logo120` icon, the
+`ExplorinkWordmark` image below it, and one caller-supplied subtitle line.
+Boot passes `tr(STR_BOOTING)`; the two sleep screens pass `tr(STR_SLEEPING)`
+or the coordinate line. The caller still owns `clearScreen()`/`displayBuffer()`
+and anything extra on the page (Boot's version string at
+`BootActivity.cpp:16`, Sleep's `invertScreen()` at `SleepActivity.cpp:163-165`).
+
+### The wordmark image, and a drawImage constraint that only shows up on a non-square asset
+
+`images/ExplorinkWordmark.h` was generated from
+`docs/branding/explorink-wordmark-path.svg` (cropped to its ink bounding box,
+then resized and rotated) -- the same by-hand process `scripts/convert_icon.py`
+already automates for square icons, done manually here to control the crop.
+
+Every icon in this tree before this one (`Logo120`, `MoonIcon`, `LoadingIcon`,
+everything under `src/components/icons/`) happens to be square, which hides a
+real constraint: `GfxRenderer::drawImage()`
+(`lib/GfxRenderer/GfxRenderer.cpp:1208-1229`) rotates the *origin point* for
+the current orientation but not the pixel data (`// TODO: Rotate bits`,
+`GfxRenderer.cpp:1227`) -- and the low-level blit it calls,
+`FreeInkDisplay::drawImage()`
+(`freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp:213-228`),
+indexes the source buffer as `imageWidthBytes = w/8` bytes per row for `h`
+rows, straight off the `width`/`height` arguments. Those arguments must
+therefore equal the *raw buffer's* row-major dimensions, not the image's
+authored on-screen size -- and `width` must be a multiple of 8, since
+`w/8` truncates.
+
+For a square icon the two sizes are the same number, so this never mattered
+before. `ExplorinkWordmark` is authored at 170x40 (the wordmark as a human
+would size it) but pre-rotated 90 degrees before packing, the same convention
+`convert_icon.py`'s own `rotate(90, expand=True)` step uses
+(`scripts/convert_icon.py:32`) -- so the raw buffer is 40x170, and
+`EXPLORINKWORDMARK_WIDTH`/`_HEIGHT` (`images/ExplorinkWordmark.h:8-9`) are
+`40`/`170`, the numbers that actually go into `drawImage()`
+(`BrandSplash.cpp:23-24`). Centring math (`(pageWidth -
+kWordmarkOnScreenWidth) / 2`, `BrandSplash.cpp:23`) uses the *authored* 170
+width instead, since that's the box as it appears on screen once the
+coordinate rotation runs.
+Getting these two numbers backwards does not fail to compile or assert --
+`w/8` just truncates or reads past the intended rows, so the picture comes
+out corrupted rather than erroring.
+
+**Measured on hardware, 2026-08-08**: built, flashed, confirmed correctly
+oriented and legible on the boot screen (wordmark 170px wide on a 480px-wide
+Portrait panel, 20px+ clear of the logo above it) before this convention was
+copied to the two sleep screens above.
+
+## Hardware finding: `lastSleepFromReader` never fires on ExplorInk
 
 `APP_STATE.lastSleepFromReader` is a single bool, not a per-app enum. It comes
 from `ActivityManager::isReaderActivity()` (`src/activities/ActivityManager.cpp:269-273`),
@@ -179,10 +234,10 @@ avoid repeats: `CrossPointState.h:14,17-19` (16-slot ring buffer,
 `recentSleepImages`/`recentSleepPos`/`recentSleepFill`), used via
 `isRecentSleep()` / `pushRecentSleep()` (`SleepActivity.cpp:128,131`).
 
-## Default: still DARK upstream; TrailInk flips to LIGHT on a separate branch
+## Default: still DARK upstream; ExplorInk flips to LIGHT on a separate branch
 
 Upstream CrossPoint's default is `DARK` (`CrossPointSettings.h:179` reads
-`uint8_t sleepScreen = DARK;`, unaffected by this branch). TrailInk flips the
+`uint8_t sleepScreen = DARK;`, unaffected by this branch). ExplorInk flips the
 default to `LIGHT` in commit `088f7b57` ("feat: default the sleep screen to
 LIGHT", 2026-08-05) on a separate branch, `feat/boot-splash-blink`
 (worktree `trailink-worktrees/boot-blink`) — not yet merged into `develop`,
