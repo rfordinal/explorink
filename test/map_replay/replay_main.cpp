@@ -33,6 +33,7 @@ struct Options {
   std::string checkPath;
   bool showEvents = false;
   std::string framesDir;
+  std::string trackDir;
 };
 
 void usage() {
@@ -62,7 +63,11 @@ void usage() {
       "                    redraw (ReAnchor) -- packet,t_utc_ms,lat,lon,heading --\n"
       "                    for tools/render_ride_video.py (parent repo) to turn\n"
       "                    into PNGs and a video. MoveMarker/Skip are not real\n"
-      "                    redraws so are not rows here.\n",
+      "                    redraws so are not rows here.\n"
+      "  --track DIR       write <ride>.track.csv per ride: one row per packet\n"
+      "                    (skip/move/reanchor all included) -- x,y,fix_heading,\n"
+      "                    anchor_heading -- for render_ride_video.py --track,\n"
+      "                    which draws a marker on every frame, not just redraws.\n",
       ReplayEngine::Config{}.zoomStep, ReplayEngine::Config{}.markerStep, ReplayEngine::Config{}.screenWidth,
       ReplayEngine::Config{}.screenHeight, ReplayEngine::Config{}.coordDecimals,
       (unsigned)ReplayEngine::Config{}.headingDriftLimitSteps,
@@ -136,6 +141,10 @@ bool parseArgs(int argc, char** argv, Options& options) {
       const char* v = value();
       if (!v) return false;
       options.framesDir = v;
+    } else if (arg == "--track") {
+      const char* v = value();
+      if (!v) return false;
+      options.trackDir = v;
     } else if (!arg.empty() && arg[0] == '-') {
       std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
       return false;
@@ -272,6 +281,40 @@ void runFrames(const std::vector<RideLog::Ride>& rides, ReplayEngine::Config con
       ++written;
     }
     std::printf("%s: %d frame(s) -> %s\n", ride.name.c_str(), written, path.c_str());
+  }
+}
+
+// --- full per-packet track, for a video's marker overlay --------------------
+
+// One CSV row per packet -- skip and move included, not just reanchor -- with
+// the frame's own heading at that moment alongside the fix's. A screen
+// position (x, y) plus (fix_heading - anchor_heading) steps off "up" is
+// where the rider actually was and faced on that packet's frame, whether or
+// not the device redrew or moved its own marker to show it. See
+// tools/render_ride_video.py's --track mode (parent repo): it holds the last
+// real redraw's rendered picture and draws a marker on a copy of it for
+// every packet, which is the thing runFrames() above deliberately does not
+// do (a real MoveMarker's 64x64 patch is not a full render, and this is not
+// one either -- it is a compositing shortcut for a video, not a claim about
+// what displayBufferWindow() draws).
+void runTrack(const std::vector<RideLog::Ride>& rides, ReplayEngine::Config config, const std::string& dir) {
+  config.recordEvents = true;
+  for (const RideLog::Ride& ride : rides) {
+    const ReplayEngine::Result result = ReplayEngine::replay(ride.packets, config);
+    const std::string path = dir + "/" + ride.name + ".track.csv";
+    std::ofstream out(path);
+    if (!out) {
+      std::fprintf(stderr, "cannot write %s\n", path.c_str());
+      continue;
+    }
+    out << "packet,t_utc_ms,action,reason,x,y,fix_heading,anchor_heading,moves_in,lat,lon\n";
+    for (const ReplayEngine::Event& event : result.events) {
+      const RideLog::Packet& packet = ride.packets[event.packetIndex];
+      out << event.packetIndex << ',' << packet.tUtcMs << ',' << event.action << ',' << event.reason << ','
+          << event.x << ',' << event.y << ',' << (int)packet.headingStep << ',' << (int)event.anchorHeadingStep
+          << ',' << event.movesIn << ',' << packet.lat << ',' << packet.lon << '\n';
+    }
+    std::printf("%s: %d row(s) -> %s\n", ride.name.c_str(), (int)result.events.size(), path.c_str());
   }
 }
 
@@ -413,5 +456,6 @@ int main(int argc, char** argv) {
   runBaseline(rides, options.config);
   if (options.showEvents) runEvents(rides, options.config);
   if (!options.framesDir.empty()) runFrames(rides, options.config, options.framesDir);
+  if (!options.trackDir.empty()) runTrack(rides, options.config, options.trackDir);
   return 0;
 }

@@ -59,8 +59,16 @@ Result replay(const std::vector<RideLog::Packet>& packets, const Config& config)
       // MapActivity.cpp:1550-1553: no followable frame yet, so this fix builds
       // one and decide() is never asked. Not counted as a re-anchor -- the
       // device logs nothing for it either, so the hardware baseline does not
-      // count it (tools/replay_ride.py:176).
+      // count it (tools/replay_ride.py:176), and runFrames() above filters
+      // this "init" action out for the same reason. It still needs an event
+      // of its own, action != "reanchor" so no summary counter moves, purely
+      // so a per-packet consumer (--track) has a real anchor to render its
+      // very first background from instead of guessing.
       renderViewport(lat, lon, packet.headingStep);
+      if (config.recordEvents) {
+        result.events.push_back(
+            {static_cast<int>(i), "init", "", anchorX, markerY, 0, packet.headingStep});
+      }
       continue;
     }
 
@@ -86,12 +94,13 @@ Result replay(const std::vector<RideLog::Packet>& packets, const Config& config)
 
     const int packetIndex = static_cast<int>(i);
     const int movesInBefore = static_cast<int>(partialMoves);
+    const uint8_t anchorHeadingAtDecision = anchorHeading;
 
     switch (MapFollow::decide(request)) {
       case MapFollow::Action::Skip:
         ++result.skips;
         if (config.recordEvents) {
-          result.events.push_back({packetIndex, "skip", "", fixX, fixY, movesInBefore});
+          result.events.push_back({packetIndex, "skip", "", fixX, fixY, movesInBefore, anchorHeadingAtDecision});
         }
         break;
       case MapFollow::Action::MoveMarker:
@@ -100,7 +109,7 @@ Result replay(const std::vector<RideLog::Packet>& packets, const Config& config)
         markerDrawnY = fixY;
         ++partialMoves;
         if (config.recordEvents) {
-          result.events.push_back({packetIndex, "move", "", fixX, fixY, movesInBefore});
+          result.events.push_back({packetIndex, "move", "", fixX, fixY, movesInBefore, anchorHeadingAtDecision});
         }
         break;
       case MapFollow::Action::ReAnchor: {
@@ -121,7 +130,17 @@ Result replay(const std::vector<RideLog::Packet>& packets, const Config& config)
           reason = "heading";
         }
         if (config.recordEvents) {
-          result.events.push_back({packetIndex, "reanchor", reason, fixX, fixY, movesInBefore});
+          // Post-reset position, not fixX/fixY: those are the fix projected
+          // through the *old* frame -- exactly the drift that triggered this
+          // reset, not where anything lands in the new one. After
+          // renderViewport() the marker is always back at (anchorX, markerY)
+          // with the fix's own heading as "up" (relative drift 0 by
+          // construction) -- record that, or a --track consumer draws the
+          // dot at a position that has nothing to do with the frame it just
+          // rendered (found by eye, 2026-08-08: the dot landed nowhere near
+          // the marker on every reanchor with more than a couple of moves in).
+          result.events.push_back(
+              {packetIndex, "reanchor", reason, anchorX, markerY, movesInBefore, packet.headingStep});
         }
         renderViewport(lat, lon, packet.headingStep);
         break;

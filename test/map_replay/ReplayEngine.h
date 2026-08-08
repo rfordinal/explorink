@@ -70,6 +70,12 @@ struct Event {
   int16_t y = 0;
   // partialMoves at the moment this was decided (before any reset).
   int movesIn = 0;
+  // The frame's own heading at decision time (before a reanchor's reset) --
+  // what "up" meant on screen for this fix. A fix drawn at (x, y) pointing
+  // (fixHeadingStep - anchorHeadingStep) steps off "up" is where the rider
+  // actually was and faced, whether or not the device redrew or moved its
+  // own marker to show it (tools/render_ride_video.py's --track mode).
+  uint8_t anchorHeadingStep = 0;
 };
 
 struct Result {
