@@ -679,10 +679,10 @@ void MapActivity::drawCompass(uint8_t headingStep) {
   int rightTopX, rightTopY, rightBottomX, rightBottomY;
   compassPoint(centreX, centreY, kCompassLabelLeftX, kCompassLabelTopY, cosTheta, sinTheta, leftTopX, leftTopY);
   compassPoint(centreX, centreY, kCompassLabelLeftX, kCompassLabelBottomY, cosTheta, sinTheta, leftBottomX,
-              leftBottomY);
+               leftBottomY);
   compassPoint(centreX, centreY, kCompassLabelRightX, kCompassLabelTopY, cosTheta, sinTheta, rightTopX, rightTopY);
   compassPoint(centreX, centreY, kCompassLabelRightX, kCompassLabelBottomY, cosTheta, sinTheta, rightBottomX,
-              rightBottomY);
+               rightBottomY);
   renderer.drawLine(leftTopX, leftTopY, leftBottomX, leftBottomY, kCompassLabelStrokeWidth, true);
   renderer.drawLine(rightTopX, rightTopY, rightBottomX, rightBottomY, kCompassLabelStrokeWidth, true);
   renderer.drawLine(leftTopX, leftTopY, rightBottomX, rightBottomY, kCompassLabelStrokeWidth, true);
