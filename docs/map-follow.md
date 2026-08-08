@@ -66,8 +66,12 @@ The question is "where does this fix fall in the picture already up". Then
 
 The checks, in order (order is load-bearing -- see below):
 
-1. **Heading drift ≥ 4 steps (90°)** → `ReAnchor`. The map is track-up, so the
-   frame is only correct for the heading it was drawn with.
+1. **Heading drift ≥ 4 steps (90°), and at least 2 partial moves since the last
+   full frame** → `ReAnchor`. The map is track-up, so the frame is only correct
+   for the heading it was drawn with. The move-count part is
+   `kMinPartialMovesForHeadingReAnchor`, added 2026-08-08 -- see "Heading
+   thrash, round two" below; before that this check fired on drift alone,
+   moved or not.
 2. **Marker within 80 px of a screen edge** → `ReAnchor`. `kKeepInMarginPx`, one
    marker ring plus slack: inside this frame the marker's 64x64 box never
    straddles the panel edge, and there is still map ahead to look at.
@@ -280,6 +284,76 @@ the single most expensive thing the map screen does, and neither of the two leve
 tried (the phone's derivation, the device's threshold) moved it much. The
 framebuffer cost itself -- 8 to 14 s for one frame -- is the other half of the
 problem and probably the more promising one to attack.
+
+### Heading thrash, round two: gate it on movement, not on the turn
+
+**Measured on hardware, 2026-08-08.** Three real rides recorded the same day
+(`docs/rides/trailink-gps-2026080{7-142303,7-173058,7-201221}.jsonl`, parent
+repo -- motorcycle, ride mode, zoom step 4 / 20 m/px, no route), replayed
+packet-for-packet against the real on-device `MapFollow::decide()` over serial
+(`tools/replay_ride.py`'s method, `pos <lat> <lon> heading <h>` per packet):
+
+| ride | packets | redraws | heading | budget | keep-in |
+|---|---|---|---|---|---|
+| 1 | 339 | 24 | 20 | 4 | 0 |
+| 2 | 389 | 23 | 19 | 4 | 0 |
+| 3 | 369 | 20 | 13 | 7 | 0 |
+| **total** | **1097** | **67** | **52 (78%)** | **15 (22%)** | **0** |
+
+Keep-in fired zero times across all three -- confirms the margin is a safety
+bound, not a governing constant, this time at 20 m/px rather than the 6 m/px
+this doc's earlier measurement used.
+
+**The new number, and why it points somewhere the earlier round did not**: of
+the 52 heading redraws, **29 (56%) had 0 or 1 marker moves since the last full
+frame** -- the marker had barely moved when the heading swung past the 90°
+limit. That is GPS heading noise at low speed or a stop, not a turn in
+progress. Ride 2's packets 230-246 show it clearest: six re-anchors in a row,
+heading swinging 14→5→15→4→0→11→15, the marker not moving at all between any
+of them (`pkt 230/234/236/237/241/242/246`, each `0 moves in` in the replay
+log).
+
+This is a different lever from both of the ones "Heading thrash" above already
+tried and rejected:
+
+- **Not the phone's `HeadingTrend` dwell** (raising confidence that a *turn* is
+  real from a 5-fix trend) -- that was tested and made the redraw count
+  *worse* (14 → 18), because it also holds back genuine corner turns.
+- **Not `kMaxHeadingDriftSteps` itself** (how far a turn has to go before it
+  counts) -- raising it to 5 saved 3 redraws out of 18 and cost orientation
+  accuracy for every real turn, kept at 4.
+
+This lever is orthogonal to both: it does not ask "was this really a turn", it
+asks "has the marker actually moved since the frame was drawn" -- a fact
+`MapFollow` already tracks (`partialMoves`), not an inference about the rider.
+`kMinPartialMovesForHeadingReAnchor = 2` (`MapFollow.h`) adds this as a second
+condition on check 1: heading drift only forces a redraw once at least 2
+partial moves have landed since the last one.
+
+**The trade-off, taken deliberately**: `HeadingDriftReAnchorsEvenStandingStill`
+used to test the opposite -- a rider turned 90° with zero movement still got an
+immediate redraw. That test is now
+`HeadingDriftAloneDoesNotReAnchorWhileStandingStill`
+(`test/map_follow/MapFollowTest.cpp`) and expects `Skip` instead. A rider who
+turns while genuinely parked or stopped at a junction no longer gets the map
+re-oriented until they move enough to cross the floor -- at 20 m/px that is
+about 32 m (2 x 8 px x 20 m/px), a couple of fixes into actually riding again.
+For a device whose whole premise is track-up navigation *while moving*, this
+reads as the right side of the trade: the case given up is a stationary
+picture nobody is navigating by yet; the case bought back is not spending a
+~2 s (rural) to ~9 s (city, per the table above) redraw on heading jitter from
+a stopped GPS.
+
+**Status: host-tested, not yet replayed on hardware.** All 18
+`test/map_follow` tests pass with the new gate, including
+`HeadingDriftReAnchorsOnceMovingEnough`, which checks the other half -- a
+genuine turn while moving still gets its redraw, just once `partialMoves`
+crosses 2. The three-ride numbers in the table above are from the *old*
+behaviour (replayed to establish the baseline this change targets); replaying
+the same three logs against a build with the gate in is the way to settle
+whether 56% of heading redraws actually disappear, or whether some of that
+56% belongs to genuine slow turns this floor also swallows. Not done yet --
+needs a flash, which needs asking first (`CLAUDE.md`).
 
 ## The heading decides the frame, once
 

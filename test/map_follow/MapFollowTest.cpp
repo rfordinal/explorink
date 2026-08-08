@@ -77,21 +77,40 @@ TEST(MapFollowDecide, LeavingTheKeepInFrameReAnchors) {
   EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
 }
 
-TEST(MapFollowDecide, HeadingDriftReAnchorsEvenStandingStill) {
+TEST(MapFollowDecide, HeadingDriftAloneDoesNotReAnchorWhileStandingStill) {
+  // Reversed 2026-08-07 from HeadingDriftReAnchorsEvenStandingStill: real-ride
+  // replay showed this exact case -- turned, marker not moved -- is GPS
+  // heading noise at a stop, not a turn to correct for (kMinPartialMovesFor
+  // HeadingReAnchor's doc comment has the numbers). Same pixel, turned 90
+  // degrees, partialMoves still 0: no redraw, and no marker-arrow change
+  // either since nothing moved.
   MapFollow::Request request = baseRequest();
-  // Same pixel, but the rider has turned 90 degrees: the frame is oriented for
-  // the road they left, so the movement floor must not swallow this.
   request.fixHeadingStep = MapFollow::kMaxHeadingDriftSteps;
-  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::Skip);
 
-  // One step under the limit is a marker-arrow change, not a redraw -- and with
-  // no movement, not even that.
   request.fixHeadingStep = MapFollow::kMaxHeadingDriftSteps - 1;
   EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::Skip);
 }
 
+TEST(MapFollowDecide, HeadingDriftReAnchorsOnceMovingEnough) {
+  // The other half of the trade-off: a turn while actually riding still gets
+  // its redraw, just once the marker has moved enough fixes to say this is
+  // motion and not noise.
+  MapFollow::Request request = baseRequest();
+  request.fixHeadingStep = MapFollow::kMaxHeadingDriftSteps;
+
+  request.partialMoves = MapFollow::kMinPartialMovesForHeadingReAnchor - 1;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::Skip);
+
+  request.partialMoves = MapFollow::kMinPartialMovesForHeadingReAnchor;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
+}
+
 TEST(MapFollowDecide, DriftReAnchorsInEitherDirection) {
   MapFollow::Request request = baseRequest();
+  // Past the movement floor so this exercises direction-wrap, not the gate
+  // above -- that has its own tests.
+  request.partialMoves = MapFollow::kMinPartialMovesForHeadingReAnchor;
   request.anchorHeadingStep = 0;
   request.fixHeadingStep = static_cast<uint8_t>(16 - MapFollow::kMaxHeadingDriftSteps);
   EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
