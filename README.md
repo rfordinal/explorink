@@ -1,11 +1,11 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./docs/images/trailink-lockup-dark.svg">
-    <img src="./docs/images/trailink-lockup.svg" alt="TrailInk — tools for the trail. Ready when you are." width="440">
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/images/explorink-lockup-dark.svg">
+    <img src="./docs/images/explorink-lockup.svg" alt="ExplorInk — tools for the trail. Ready when you are." width="440">
   </picture>
 </p>
 
-# TrailInk
+# ExplorInk
 
 An outdoor trip companion for e-ink readers: offline maps and navigation for
 motorcycle rides and hiking. A fork of
@@ -139,8 +139,8 @@ supports. Development and testing happen on an X4.
 ### Setup
 
 ```bash
-git clone --recursive https://github.com/rfordinal/TrailInk
-cd TrailInk
+git clone --recursive https://github.com/rfordinal/explorink
+cd explorink
 
 # if cloned without --recursive:
 git submodule update --init --recursive
@@ -218,7 +218,7 @@ measurement gate for each. Start at its
 open-source e-reader firmware for Xteink devices, community-built and fully
 hackable, MIT licensed, © 2025 Dave Allie and contributors. The e-ink driver,
 refresh handling, UI framework and toolchain in this repository are their work,
-not ours. TrailInk replaces only what it must for a different purpose.
+not ours. ExplorInk replaces only what it must for a different purpose.
 
 If CrossPoint is useful to you, support the people who maintain it:
 [fund contributors](https://app.royalty.dev/crosspoint-reader/crosspoint-reader),
@@ -242,5 +242,5 @@ MIT, inherited from CrossPoint — see [LICENSE](./LICENSE).
 
 ---
 
-TrailInk is **not affiliated with Xteink, CrossPoint, or any device
+ExplorInk is **not affiliated with Xteink, CrossPoint, or any device
 manufacturer**.
