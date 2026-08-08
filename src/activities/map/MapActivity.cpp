@@ -156,6 +156,11 @@ constexpr int kTextTopY = kHeaderMarginTop + kHeaderRowHeight + kTextGapBelowHea
 // above it, erasing the bottom few pixels of that line's text.
 constexpr int kDebugPad = 3;
 
+// Extra clearance below the whole header row (battery box and BLE strip
+// alike): both of those clear-rects end right at the icon's own edge, so a
+// map line (a road) drawn immediately below reads as touching the icon.
+constexpr int kHeaderExtraMargin = 2;
+
 // North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
 // 100x100 normalized canvas with "N" label, two open arcs (real angles, not
@@ -174,18 +179,21 @@ constexpr int kDebugPad = 3;
 // across) left too much white margin once the header row above needed room.
 // Every design-space point below is the original scaled by 0.75 around the
 // arc centre (50,47), which stays fixed -- it is the rotation pivot, not a
-// point being scaled. kCompassCenterTop is pushed down far enough that the
-// halo (radius 40) clears the header row (bottom at kHeaderMarginTop + 23 --
-// drawHeaderStatus()'s batteryIconTop comment has the real battery-icon
-// offset this counts from) plus an 8px gap: 6 + 23 + 8 + 40 = 77.
+// point being scaled. kCompassCenterTop clears the header row (bottom at
+// kHeaderMarginTop + 23 -- drawHeaderStatus()'s batteryIconTop comment has the
+// real battery-icon offset this counts from) plus an 8px gap plus the halo
+// (radius 39): 6 + 23 + 8 + 40 = 77, then nudged another 10px down
+// (2026-08-08) for more air above the compass.
 constexpr int kCompassCenterMarginRight = 56;  // arc centre, in from the right edge
-constexpr int kCompassCenterTop = 77;          // arc centre, down from the top edge
+constexpr int kCompassCenterTop = 87;          // arc centre, down from the top edge
 // Design-space distance from the arc centre to the furthest thing drawn: the
-// scaled label sits ~24.75 above it and is about 16 tall, so 36 clears it
-// with a few px of slack. The accent triangle's tip (~21) and the arcs (18)
-// are well inside.
+// "N" glyph's top stroke sits at y=16, 31 above the arc centre (47), so 36
+// clears it with a few px of slack. The accent triangle's tip (~21) and the
+// arcs (18) are well inside.
 constexpr int kCompassGlyphRadius = 36;
-constexpr int kCompassLabelCenterX = 50, kCompassLabelCenterY = 22;
+constexpr int kCompassLabelLeftX = 46, kCompassLabelRightX = 54;
+constexpr int kCompassLabelTopY = 16, kCompassLabelBottomY = 28;
+constexpr int kCompassLabelStrokeWidth = 2;
 constexpr int kCompassArcCx = 50, kCompassArcCy = 47;
 constexpr int kCompassArcRadius = 18;
 constexpr float kCompassLeftArcStartDeg = 130.0f, kCompassLeftArcEndDeg = 230.0f;
@@ -198,7 +206,7 @@ constexpr int kCompassTriRightX = 56, kCompassTriRightY = 61;
 constexpr int kCompassAccentX1 = 66, kCompassAccentY1 = 45;
 constexpr int kCompassAccentX2 = 66, kCompassAccentY2 = 51;
 constexpr int kCompassAccentX3 = 71, kCompassAccentY3 = 48;
-constexpr int kCompassHaloMargin = 4;  // white backing, past the glyph's own sweep
+constexpr int kCompassHaloMargin = 3;  // white backing, past the glyph's own sweep (was 4, shrunk ~25%)
 
 // Position marker: one family, three modes, "the higher the speed, the more
 // directional" -- hike is a plain dot (position over direction), cycle is a
@@ -660,22 +668,24 @@ void MapActivity::drawCompass(uint8_t headingStep) {
   renderer.fillRoundedRect(centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius,
                            Color::White);
 
-  // 1. "N", centered on the label's own point -- UI_12, not a NotoSans/Serif
-  // size: those are compiled out under OMIT_FONTS (platformio.ini's
-  // slim-build flag) and silently draw nothing (confirmed on hardware --
-  // GfxRenderer logs "Font not found" and skips). UI_10/UI_12/SMALL are the
-  // only sizes guaranteed present in every build.
-  //
-  // The letter's *position* rotates with the glyph; the letter itself stays
-  // upright. Rotated text is not available at arbitrary angles (GfxRenderer
-  // only has drawTextRotated90CW), and an upright letter on a turning bezel is
-  // how a real compass rose reads anyway.
-  const char* label = "N";
-  const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, label);
-  const int labelHeight = renderer.getTextHeight(UI_12_FONT_ID);
-  int labelX = 0, labelY = 0;
-  compassPoint(centreX, centreY, kCompassLabelCenterX, kCompassLabelCenterY, cosTheta, sinTheta, labelX, labelY);
-  renderer.drawText(UI_12_FONT_ID, labelX - labelWidth / 2, labelY - labelHeight / 2, label, true);
+  // 1. "N", drawn as a 3-stroke monoline glyph -- not a font. GfxRenderer's
+  // text renderer only has two orientations (TextRotation::None and a fixed
+  // Rotated90CW, GfxRenderer.cpp:301), neither of which tracks an arbitrary
+  // heading, so a font glyph here can only ever sit upright. The letter is
+  // simple enough (two verticals and a diagonal) to draw as three lines
+  // instead, rotated the same way as the triangle and accent below -- so the
+  // glyph itself turns with the bezel, not just its position.
+  int leftTopX, leftTopY, leftBottomX, leftBottomY;
+  int rightTopX, rightTopY, rightBottomX, rightBottomY;
+  compassPoint(centreX, centreY, kCompassLabelLeftX, kCompassLabelTopY, cosTheta, sinTheta, leftTopX, leftTopY);
+  compassPoint(centreX, centreY, kCompassLabelLeftX, kCompassLabelBottomY, cosTheta, sinTheta, leftBottomX,
+              leftBottomY);
+  compassPoint(centreX, centreY, kCompassLabelRightX, kCompassLabelTopY, cosTheta, sinTheta, rightTopX, rightTopY);
+  compassPoint(centreX, centreY, kCompassLabelRightX, kCompassLabelBottomY, cosTheta, sinTheta, rightBottomX,
+              rightBottomY);
+  renderer.drawLine(leftTopX, leftTopY, leftBottomX, leftBottomY, kCompassLabelStrokeWidth, true);
+  renderer.drawLine(rightTopX, rightTopY, rightBottomX, rightBottomY, kCompassLabelStrokeWidth, true);
+  renderer.drawLine(leftTopX, leftTopY, rightBottomX, rightBottomY, kCompassLabelStrokeWidth, true);
 
   // 2. Left arc, 3. right arc -- both open, not a closed ring: each spans
   // 100 degrees, leaving a gap at the top (under "N") and at the bottom
@@ -746,6 +756,21 @@ void MapActivity::drawHeaderStatus() {
   GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}, nullptr, nullptr);
 
   drawHeaderStatusStrip();
+
+  // A further kHeaderExtraMargin of white below both clear-rects above --
+  // GUI.drawHeader()'s own battery box (BaseTheme.cpp:378) and
+  // headerStatusRect()'s BLE strip both end flush with the icon, no margin
+  // of their own.
+  const int batteryClearBottom = kHeaderMarginTop + 5 + kHeaderRowHeight;
+  int stripX, stripY, stripW, stripH;
+  headerStatusRect(stripX, stripY, stripW, stripH);
+  const int stripBottom = stripY + stripH;
+  const int headerBottom = batteryClearBottom > stripBottom ? batteryClearBottom : stripBottom;
+  // Starts 1px into the clear-rects above rather than flush against them --
+  // confirmed on hardware (2026-08-08) that flush left one row uncleared,
+  // presumably an off-by-one somewhere in the two edges this butts against.
+  // Overlapping a row already painted white costs nothing.
+  renderer.fillRect(0, headerBottom - 1, screenWidth, kHeaderExtraMargin + 1, false);
 }
 
 void MapActivity::drawHeaderStatusStrip() {
