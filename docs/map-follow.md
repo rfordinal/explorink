@@ -337,23 +337,152 @@ immediate redraw. That test is now
 (`test/map_follow/MapFollowTest.cpp`) and expects `Skip` instead. A rider who
 turns while genuinely parked or stopped at a junction no longer gets the map
 re-oriented until they move enough to cross the floor -- at 20 m/px that is
-about 32 m (2 x 8 px x 20 m/px), a couple of fixes into actually riding again.
+about 320 m (2 x `kMinMovePx` 8 px x 20 m/px), which on these rides is about
+five packets (median 68 m between sent packets across all three logs) and
+measured out at 3.1 packets per marker move.
 For a device whose whole premise is track-up navigation *while moving*, this
 reads as the right side of the trade: the case given up is a stationary
 picture nobody is navigating by yet; the case bought back is not spending a
 ~2 s (rural) to ~9 s (city, per the table above) redraw on heading jitter from
 a stopped GPS.
 
-**Status: host-tested, not yet replayed on hardware.** All 18
+**Status: host-tested and host-replayed; not yet on hardware.** All 20
 `test/map_follow` tests pass with the new gate, including
 `HeadingDriftReAnchorsOnceMovingEnough`, which checks the other half -- a
 genuine turn while moving still gets its redraw, just once `partialMoves`
 crosses 2. The three-ride numbers in the table above are from the *old*
-behaviour (replayed to establish the baseline this change targets); replaying
-the same three logs against a build with the gate in is the way to settle
-whether 56% of heading redraws actually disappear, or whether some of that
-56% belongs to genuine slow turns this floor also swallows. Not done yet --
-needs a flash, which needs asking first (`CLAUDE.md`).
+behaviour (replayed on the panel to establish the baseline this change
+targets). The same three logs have since been replayed through the same
+`MapFollow::decide()` compiled as a host binary -- see the next section for
+what that says, and for the one thing it still cannot answer.
+
+### Sweeping the thresholds off the device
+
+`test/map_replay` walks a recorded ride's packet stream through the real
+`MapFollow::decide()` on the laptop. No serial port, no device, no lock: it
+links `MapFollow.cpp`, `MapProjection.cpp` and `MapViewport.cpp` into a host
+binary (`test/map_replay/CMakeLists.txt`) and reimplements only the bit that
+lives in `MapActivity` -- `applyFix()`'s state machine
+(`MapActivity.cpp:1534-1602`) and `renderViewport()`'s three state effects
+(`MapActivity.cpp:1850`, `MapActivity.cpp:2001-2004`).
+
+```
+cmake -S test -B build/test && cmake --build build/test --target map_replay
+
+# what the constants do today, per ride
+build/test/map_replay/map_replay ../../docs/rides/trailink-gps-2026080*.jsonl
+
+# sweep the movement floor across every ride in one run
+build/test/map_replay/map_replay --sweep-min-moves 0,1,2,3,4,6,8 <rides>
+
+# the correctness gate below, re-runnable
+build/test/map_replay/map_replay --check test/map_replay/hardware-baseline.txt <rides>
+```
+
+Three rides is about 30 ms, so a seven-value sweep across all three costs less
+than one packet of the serial replay it replaces. `tools/replay_ride.py` in the
+parent repo is still the ground truth and still the only thing that measures
+the *panel*; this measures the decision.
+
+**The gate: it reproduces the hardware run exactly.** Replayed with the
+movement floor at 0 (the firmware the hardware numbers were measured on), all
+three rides match the X4 on all five reported columns:
+
+| ride | packets | redraws | heading | budget | keep-in |
+|---|---|---|---|---|---|
+| 142303 | 339 = 339 | 24 = 24 | 20 = 20 | 4 = 4 | 0 = 0 |
+| 173058 | 389 = 389 | 23 = 23 | 19 = 19 | 4 = 4 | 0 = 0 |
+| 201221 | 369 = 369 | 20 = 20 | 13 = 13 | 7 = 7 | 0 = 0 |
+
+Exact, not close. That is the expected result -- same packets, same decision
+code, no float in the path that the device does not also have -- but it is
+worth having as a gate, because the two ways to get it wrong (projecting a fix
+through a *fresh* projection instead of the frame's own, and resetting the
+wrong state on a re-anchor) both produce numbers that still look plausible.
+`hardware-baseline.txt` carries the measurement so the gate can be re-run
+after any change to `decide()`, and `--check` exits non-zero on a diff.
+
+**The sweep, `kMinPartialMovesForHeadingReAnchor` across all three rides**
+(drift limit 4, budget 12, zoom step 4, 1097 packets total):
+
+| floor | redraws | heading | budget | keep-in | thrash (<=1 moves in) |
+|---|---|---|---|---|---|
+| 0 | 67 | 52 | 15 | 0 | 29 |
+| 1 | 48 | 30 | 17 | 1 | 12 |
+| **2** | **43** | **25** | **18** | **0** | **0** |
+| 3 | 43 | 26 | 17 | 0 | 0 |
+| 4 | 39 | 22 | 17 | 0 | 0 |
+| 6 | 37 | 20 | 17 | 0 | 0 |
+| 8 | 33 | 14 | 19 | 0 | 0 |
+
+**2 is the right number, and the data says why 3 is not.** The floor at 2 cuts
+redraws 67 -> 43 (-36%) and takes the whole measured thrash pattern with it.
+Going to 3 buys **nothing at all** -- the same 43 redraws, one of them simply
+moved from the budget column to the heading column. Every further step costs
+proportionally more delay on a genuine turn for less: 4 saves 4 more redraws
+(-9%) for double the wait, 8 saves 10 more (-23%) for four times the wait. At
+20 m/px a floor of 2 is ~320 m of riding; a floor of 8 is ~1.3 km, which is a
+map left facing the wrong way for a whole leg. Nothing in this sweep argues for
+moving off 2.
+
+**Not all 24 saved redraws are free, and the sweep shows the leak.** Budget
+redraws go 15 -> 18 as the floor goes 0 -> 2: three of the frames that no
+longer get re-anchored by heading survive long enough to run out of ghosting
+budget instead. That is the same substitution this doc's earlier round found
+between the drift limit and the budget, measured directly this time instead of
+inferred from two runs.
+
+**The 2D sweep settles which of the two heading levers to pull** (`redraws
+(heading + budget)`, all three rides):
+
+| drift limit | floor 0 | floor 2 | floor 4 |
+|---|---|---|---|
+| 3 | 92 (79+13) | 56 (44+12) | 48 (36+12) |
+| 4 | 67 (52+15) | **43 (25+18)** | 39 (22+17) |
+| 5 | 51 (30+21) | 40 (20+20) | 35 (13+22) |
+| 6 | 47 (26+21) | 39 (17+22) | 35 (14+21) |
+
+Read down the `floor 0` column and the earlier round's finding reappears:
+raising the drift limit trades heading redraws for budget redraws almost
+one-for-one past 5 (30+21 at 5, 26+21 at 6 -- four redraws for another 22.5
+degrees of staleness). Read across the `drift 4` row and the movement floor
+does not do that: it removes 24 redraws and hands 3 back. **The floor is the
+better lever**, and it is better for a reason the numbers only illustrate: it
+costs orientation accuracy *only while the rider is not moving*, where a
+raised drift limit costs it on every real turn. `drift 4 + floor 2` (43) also
+beats `drift 6 + floor 0` (47) outright while keeping the map within 90
+degrees of the direction of travel, so there is no case left for raising
+`kMaxHeadingDriftSteps`.
+
+Two more things the sweep answers cheaply:
+
+- **The 5-decimal console replay costs nothing.** `tools/replay_ride.py:163`
+  types `pos %.5f %.5f`, about 1.1 m of rounding, where a real BLE packet
+  carries 1e7 fixed point (`MapCommandParser.h:47-50`). Replayed at both
+  precisions the counts are identical, every ride, every column -- 1.1 m is
+  0.05 px at 20 m/px. The hardware baseline is not distorted by how it was
+  fed.
+- **The gate holds on the other rungs, but the balance shifts.** Floor 0 -> 2
+  at zoom 2 (6 m/px) is 101 -> 89 redraws and at zoom 3 (12 m/px) 79 -> 62,
+  both wins, but at 6 m/px the budget is already 50 of the 89 -- the ghosting
+  budget governs the close rungs, heading governs the far ones. Same split
+  this doc's original 6 m/px measurement found.
+
+**What this cannot answer, and still needs the device.** It counts decisions,
+not milliseconds and not waveforms: nothing here says what a redraw costs (the
+cost table above is hardware-measured and stays the only source), whether the
+panel ghosts at any of these budgets (`kRouteFramePartialMoves`' comment: a
+framebuffer dump of a ghosted panel looks perfect), or whether a map that holds
+its orientation for 320 m of riding *reads* right to someone on a motorcycle.
+The floor at 2 has not been on hardware yet -- that needs a flash, which needs
+asking first (`CLAUDE.md`).
+
+**One assumption inside the harness**, worth knowing before trusting a number
+it produces: every marker move is taken to succeed. On the device a rejected
+`displayBufferWindow()` falls back to a full refresh and zeroes `partialMoves_`
+(`MapActivity.cpp:1512-1522`). That path logs `marker window rejected` and did
+not appear in the hardware runs behind the gate above, which is why the counts
+match exactly -- but a ride that trips it would replay optimistically here.
 
 ## The heading decides the frame, once
 

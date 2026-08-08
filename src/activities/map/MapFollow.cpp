@@ -25,8 +25,8 @@ Action decide(const Request& request) {
   // With a route holding the frame there is no heading check at all: the frame
   // is the route's, so the rider turning is not news about the picture, only
   // about the arrow drawn inside it (Request::routeHoldsFrame).
-  if (!request.routeHoldsFrame && request.partialMoves >= kMinPartialMovesForHeadingReAnchor &&
-      headingDriftSteps(request.fixHeadingStep, request.anchorHeadingStep) >= kMaxHeadingDriftSteps) {
+  if (!request.routeHoldsFrame && request.partialMoves >= request.minPartialMovesForHeadingReAnchor &&
+      headingDriftSteps(request.fixHeadingStep, request.anchorHeadingStep) >= request.headingDriftLimitSteps) {
     return Action::ReAnchor;
   }
   if (!insideKeepIn(request.fixX, request.fixY, request.screenWidth, request.screenHeight)) {

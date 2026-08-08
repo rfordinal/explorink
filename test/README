@@ -13,3 +13,11 @@ Run a single suite directly:
 
 Google Test is fetched via CMake FetchContent on first configure; the pinned
 version lives in test/CMakeLists.txt.
+
+Two targets here are host tools, not gtest suites, so ctest does not run them:
+
+  map_preview  renders a map frame with the device's own MapRenderer --
+               docs/device-preview.md (parent repo)
+  map_replay   replays a recorded ride through the device's own
+               MapFollow::decide() and counts redraws, with a threshold sweep
+               -- docs/map-follow.md, "Sweeping the thresholds off the device"

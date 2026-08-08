@@ -106,6 +106,38 @@ TEST(MapFollowDecide, HeadingDriftReAnchorsOnceMovingEnough) {
   EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
 }
 
+TEST(MapFollowDecide, ThresholdDefaultsAreTheConstants) {
+  // The whole safety of the per-request overrides: a Request nobody touched
+  // must ask exactly the question the firmware's own constants ask. If a
+  // default here drifts from its constant, the device quietly starts following
+  // a different policy than MapFollow.h documents.
+  const MapFollow::Request request;
+  EXPECT_EQ(request.headingDriftLimitSteps, MapFollow::kMaxHeadingDriftSteps);
+  EXPECT_EQ(request.minPartialMovesForHeadingReAnchor, MapFollow::kMinPartialMovesForHeadingReAnchor);
+  EXPECT_EQ(request.partialMoveBudget, MapFollow::kMaxPartialMoves);
+}
+
+TEST(MapFollowDecide, PerRequestThresholdsOverrideTheConstants) {
+  // What test/map_replay sweeps with. Same decide(), different question.
+  MapFollow::Request request = baseRequest();
+  request.partialMoves = MapFollow::kMinPartialMovesForHeadingReAnchor;
+  request.fixHeadingStep = static_cast<uint8_t>(MapFollow::kMaxHeadingDriftSteps - 1);
+  // One step short of the compiled limit: no redraw.
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::Skip);
+  // Asked with a tighter limit, the same fix does redraw.
+  request.headingDriftLimitSteps = static_cast<uint8_t>(MapFollow::kMaxHeadingDriftSteps - 1);
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
+
+  // And the movement floor, both ways: 0 restores the pre-gate behaviour where
+  // heading drift alone re-anchors from a standstill.
+  MapFollow::Request standing = baseRequest();
+  standing.fixHeadingStep = MapFollow::kMaxHeadingDriftSteps;
+  standing.partialMoves = 0;
+  EXPECT_EQ(MapFollow::decide(standing), MapFollow::Action::Skip);
+  standing.minPartialMovesForHeadingReAnchor = 0;
+  EXPECT_EQ(MapFollow::decide(standing), MapFollow::Action::ReAnchor);
+}
+
 TEST(MapFollowDecide, DriftReAnchorsInEitherDirection) {
   MapFollow::Request request = baseRequest();
   // Past the movement floor so this exercises direction-wrap, not the gate

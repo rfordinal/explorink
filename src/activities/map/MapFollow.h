@@ -132,6 +132,23 @@ struct Request {
   // clean one is forced.
   uint16_t partialMoves = 0;
   uint16_t partialMoveBudget = kMaxPartialMoves;
+  // The two heading thresholds, per request, defaulting to the constants above.
+  //
+  // Same pattern and the same reason as `partialMoveBudget`: a caller that has
+  // a reason to ask a different question gets to ask it, and a caller that does
+  // not writes nothing and gets the firmware's own numbers. MapActivity never
+  // sets either (MapActivity.cpp:1565-1578), so device behaviour is exactly what
+  // the constants say.
+  //
+  // What sets them is the host replay harness (test/map_replay), which walks a
+  // recorded ride through this very function at several threshold values in one
+  // run. Without these fields that sweep needs one firmware build per value,
+  // which is how `route_follow_sim.py` (parent repo) ended up re-implementing
+  // this logic in Python and drifting from it.
+  //
+  // Cost is 3 bytes on one stack-local Request per fix, no heap, no flash data.
+  uint8_t headingDriftLimitSteps = kMaxHeadingDriftSteps;
+  uint16_t minPartialMovesForHeadingReAnchor = kMinPartialMovesForHeadingReAnchor;
 
   // True while a route owns the frame's orientation, which makes a heading
   // change no reason at all to redraw -- docs/route-navigation.md, "The
