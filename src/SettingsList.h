@@ -262,6 +262,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // switched on, until switched back.
         SettingInfo::Enum(StrId::STR_MAP_HEADING_MODE, &CrossPointSettings::mapHeadingMode,
                           {StrId::STR_AUTO, StrId::STR_MANUAL}, "mapHeadingMode", StrId::STR_CAT_MAP),
+        // Off (default): the device never asks whether the tiles it holds have
+        // been republished, which is how it behaved before this existed. Sync
+        // screen: ask once when that screen opens. Live: ask from the map too,
+        // on its own cooldown (docs/tile-freshness.md).
+        SettingInfo::Enum(
+            StrId::STR_MAP_TILE_FRESHNESS_MODE, &CrossPointSettings::mapTileFreshnessMode,
+            {StrId::STR_MAP_FRESHNESS_OFF, StrId::STR_MAP_FRESHNESS_SYNC_SCREEN, StrId::STR_MAP_FRESHNESS_LIVE},
+            "mapTileFreshnessMode", StrId::STR_CAT_MAP),
 
         // --- Reader ---
         // Built-in font-family entry. Replaced per-call with a registry-aware

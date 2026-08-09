@@ -921,3 +921,186 @@ TEST(MapCommandConsole, TwoCommandsInOneBurst) {
   EXPECT_EQ(console.state().heading(), 8);
   EXPECT_EQ(console.state().seq(), 2u);
 }
+
+// ---------------------------------------------------------------------------
+// The freshness exchange: have / stale / checked (docs/tile-freshness.md)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+class RecordingStaleObserver final : public IMapStaleObserver {
+ public:
+  struct Tile {
+    uint8_t z;
+    uint32_t col;
+    uint32_t row;
+  };
+  std::vector<Tile> stale;
+  bool finished = false;
+  bool known = false;
+  uint16_t count = 0;
+
+  void onTileStale(uint8_t z, uint32_t col, uint32_t row) override { stale.push_back(Tile{z, col, row}); }
+  void onCheckFinished(bool k, uint16_t n) override {
+    finished = true;
+    known = k;
+    count = n;
+  }
+};
+
+MapHeldTiles heldOf(std::initializer_list<MapHeldTiles::Entry> entries) {
+  MapHeldTiles held;
+  held.valid = true;
+  for (const auto& e : entries) held.entries[held.count++] = e;
+  return held;
+}
+
+}  // namespace
+
+// `have` is what the phone reads to know which tiles to look up in the CDN's
+// index. Lowercase hex with no 0x, the same way mapbuilder prints a content_id.
+TEST(MapCommandConsole, HaveReportsTheViewportsContentIds) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  state.setHeldTiles(heldOf({{13, 4482, 2839, 0xABB60454u}, {13, 4482, 2840, 0x00000001u}}));
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 4u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=2");
+  EXPECT_EQ(out.lines[1], "INFO have_13_4482_2839=abb60454");
+  EXPECT_EQ(out.lines[2], "INFO have_13_4482_2840=00000001");
+  EXPECT_EQ(out.lines[3], "OK");
+}
+
+// "Cannot answer" must never read as "everything is current" -- the same
+// distinction `tiles=none` and `missing=unavailable` already make.
+TEST(MapCommandConsole, HaveSaysNoneBeforeAnythingIsDrawn) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO have=none");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+TEST(MapCommandConsole, StaleAndCheckedReachTheObserver) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  RecordingStaleObserver observer;
+  state.setStaleObserver(&observer);
+
+  feedLine(console, out, "stale 13 4482 2839");
+  feedLine(console, out, "checked 1");
+
+  ASSERT_EQ(observer.stale.size(), 1u);
+  EXPECT_EQ(observer.stale[0].z, 13);
+  EXPECT_EQ(observer.stale[0].col, 4482u);
+  EXPECT_EQ(observer.stale[0].row, 2839u);
+  EXPECT_TRUE(observer.finished);
+  EXPECT_TRUE(observer.known);
+  EXPECT_EQ(observer.count, 1);
+}
+
+// The whole point of the word. A phone with no signal cannot tell a current
+// tile from a stale one, and `checked unknown` has to arrive as "I do not
+// know" rather than as zero.
+TEST(MapCommandConsole, CheckedUnknownIsNotZero) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  RecordingStaleObserver observer;
+  state.setStaleObserver(&observer);
+
+  feedLine(console, out, "checked unknown");
+  EXPECT_TRUE(observer.finished);
+  EXPECT_FALSE(observer.known);
+}
+
+// A stale tile is on the card and opens fine, so reporting it as `missing`
+// would be a lie -- and the supplier fetches the two differently.
+TEST(MapCommandConsole, TilesFlagsAStaleTileApartFromAMissingOne) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  StaleTilesList stale;
+  stale.add(13, 4482, 2840);
+  state.setStaleTiles(&stale);
+
+  MapTileRangeSnapshot range;
+  range.valid = true;
+  range.z = 13;
+  range.col0 = 4482;
+  range.col1 = 4482;
+  range.row0 = 2839;
+  range.row1 = 2841;
+  range.unavailableMask = 1u << 0;  // the first tile is genuinely absent
+  state.setTileRange(range);
+
+  feedLine(console, out, "tiles");
+  ASSERT_EQ(out.lines.size(), 4u);
+  EXPECT_EQ(out.lines[0], "INFO tile_13_4482_2839=missing");
+  EXPECT_EQ(out.lines[1], "INFO tile_13_4482_2840=stale");
+  EXPECT_EQ(out.lines[2], "INFO tile_13_4482_2841=ok");
+}
+
+TEST(MapCommandParser, RejectsMalformedFreshnessCommands) {
+  EXPECT_EQ(parseMapCommand("stale 13 4482").error, MapCommandError::BadArity);
+  EXPECT_EQ(parseMapCommand("stale 13 4482 x").error, MapCommandError::BadNumber);
+  EXPECT_EQ(parseMapCommand("stale 999 1 1").error, MapCommandError::OutOfRange);
+  EXPECT_EQ(parseMapCommand("checked").error, MapCommandError::BadArity);
+  EXPECT_EQ(parseMapCommand("checked maybe").error, MapCommandError::BadNumber);
+  EXPECT_EQ(parseMapCommand("have 1").error, MapCommandError::BadArity);
+}
+
+// ---------------------------------------------------------------------------
+// StaleTilesList: the two traps the design exists to avoid
+// ---------------------------------------------------------------------------
+
+TEST(StaleTilesList, AddsOnceAndForgetsOnArrival) {
+  StaleTilesList list;
+  EXPECT_TRUE(list.add(13, 1, 1));
+  EXPECT_FALSE(list.add(13, 1, 1));  // duplicate
+  EXPECT_EQ(list.count(), 1u);
+  list.onArrived(13, 1, 1);
+  EXPECT_TRUE(list.empty());
+}
+
+// The ping-pong guard. A tile reported stale again after it was fetched for
+// staleness was not fixed by that fetch -- a cache served the old copy, or the
+// index is ahead of the tiles. Asking once more would ask forever.
+TEST(StaleTilesList, GivesUpOnATileAFetchDidNotFix) {
+  StaleTilesList list;
+  ASSERT_TRUE(list.add(13, 1, 1));
+  list.onArrived(13, 1, 1);
+
+  EXPECT_FALSE(list.add(13, 1, 1));
+  EXPECT_TRUE(list.hasGivenUp(13, 1, 1));
+  EXPECT_TRUE(list.empty());
+
+  // And it stays given up on, whatever else happens.
+  list.clear();
+  EXPECT_FALSE(list.add(13, 1, 1));
+}
+
+// clear() drops the round's findings and keeps the memory that stops the loop.
+TEST(StaleTilesList, ClearKeepsWhatTheGuardNeeds) {
+  StaleTilesList list;
+  list.add(13, 1, 1);
+  list.giveUp(13, 2, 2);
+  list.clear();
+  EXPECT_TRUE(list.empty());
+  EXPECT_TRUE(list.hasGivenUp(13, 2, 2));
+}
+
+TEST(StaleTilesList, StaysBoundedAndAllocatesNothing) {
+  StaleTilesList list;
+  for (uint32_t i = 0; i < StaleTilesList::kMaxEntries + 10; ++i) list.add(13, i, 0);
+  EXPECT_EQ(list.count(), StaleTilesList::kMaxEntries);
+  // The oldest are kept: what is on screen now was added first this round.
+  EXPECT_TRUE(list.contains(13, 0, 0));
+  EXPECT_FALSE(list.contains(13, StaleTilesList::kMaxEntries + 5, 0));
+}

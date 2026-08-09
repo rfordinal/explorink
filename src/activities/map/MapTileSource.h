@@ -112,6 +112,24 @@ class MapTileSource : public IMapSource {
   // render itself, so nothing pays a third read of every tile just to ask.
   uint32_t unavailableMask() const { return unavailableMask_; }
 
+  // The content identity of the tile at [index], or 0 if that index never
+  // opened this frame -- crc32 over the six per-layer crc32s
+  // (MapTileReader::contentId(), docs/tile-freshness.md).
+  //
+  // Free: every value it is built from is already in RAM after the header
+  // parse, so collecting it here costs one array store per tile open and no
+  // extra read. Nothing else on the device could produce it that cheaply, which
+  // is why the freshness check gathers it from the render rather than from a
+  // pass of its own.
+  //
+  // Cleared in begin(), like unavailableMask_ and for the same reason: it
+  // describes the frame, not the last pass.
+  uint32_t contentIdAt(uint32_t index) const { return index < kMaxTrackedTiles ? contentIds_[index] : 0; }
+
+  // Tile indices contentIdAt() can answer for. Matches unavailableMask()'s own
+  // 32-bit cap; the range is never wider (MapViewport::kMaxTiles is 9).
+  static constexpr uint32_t kMaxTrackedTiles = 32;
+
   // Records handed out since begin(), summed across passes. The renderer walks
   // the road layer MapRenderer::kRoadPasses times, so that many times the way
   // count lands here -- that is the streaming design working, not a bug. A
@@ -237,6 +255,7 @@ class MapTileSource : public IMapSource {
   uint32_t tilesOpened_ = 0;
   uint32_t tilesUnavailable_ = 0;
   uint32_t unavailableMask_ = 0;
+  uint32_t contentIds_[kMaxTrackedTiles] = {};
   uint32_t waysEmitted_ = 0;
   uint32_t waysFiltered_ = 0;
   uint32_t placesEmitted_ = 0;

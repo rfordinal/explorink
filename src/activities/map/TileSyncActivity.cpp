@@ -6,6 +6,8 @@
 
 #include <cstdio>
 
+#include "CrossPointSettings.h"
+#include "LastHeldTiles.h"
 #include "MapTileReader.h"
 #include "MappedInputManager.h"
 #include "MissingTilesConsoleSource.h"
@@ -68,6 +70,13 @@ void TileSyncActivity::onEnter() {
 
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   consoleState_.setSkipObserver(this);
+  // What `have` answers from: the tiles the map screen last drew, with the
+  // content_id each was opened at. This screen has no viewport of its own, and
+  // reading a content_id anywhere else on the device would mean opening tiles
+  // for no other reason (LastHeldTiles.h).
+  consoleState_.setHeldTiles(g_lastHeldTiles);
+  consoleState_.setStaleTiles(&staleTiles_);
+  consoleState_.setStaleObserver(this);
   consoleState_.setLinkMtuProvider(
       +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().negotiatedMtu(); });
   consoleState_.setLinkIntervalProvider(
@@ -82,12 +91,27 @@ void TileSyncActivity::onEnter() {
   drawnSkipped_ = 0;
   lastClearedTileSeq_ = transfer_.status().tileSeq;
 
+  staleTiles_.clear();
+  freshnessAsked_ = false;
+
   if (rowCount_ == 0) {
     // Worth a screen rather than a silent bounce back to the menu: the rider
-    // picked this, and "nothing is missing" is good news.
-    phase_ = Phase::Finished;
+    // picked this, and "nothing is missing" is good news. The freshness check
+    // still runs: nothing missing does not mean nothing out of date, and this
+    // is the case the whole feature exists for.
     verdict_ = StrId::STR_MAP_FETCH_NOTHING;
     LOG_INF(kLogTag, "nothing missing, nothing to ask for");
+    drawnPhoneListening_ = phoneListening();
+    hadPhone_ = drawnPhoneListening_;
+    if (drawnPhoneListening_) {
+      askAboutFreshness();
+      phase_ = Phase::Finished;
+    } else {
+      // A phone connecting synchronously with begin() above never happens on
+      // real hardware (measured: ~1.8 s). trackPhone() takes it from here,
+      // same as the missing-tiles path below -- see its comment.
+      phase_ = Phase::Waiting;
+    }
     renderScreen();
     return;
   }
@@ -100,7 +124,46 @@ void TileSyncActivity::onEnter() {
   hadPhone_ = drawnPhoneListening_;
   LOG_INF(kLogTag, "%lu tiles to ask for, waiting for a phone", static_cast<unsigned long>(rowCount_));
   renderScreen();
-  if (drawnPhoneListening_) askForTiles();
+  if (drawnPhoneListening_) {
+    askAboutFreshness();
+    askForTiles();
+  }
+}
+
+void TileSyncActivity::askAboutFreshness() {
+  if (freshnessAsked_) return;
+  if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return;
+  // Nothing drawn since boot means no content_id to offer, and `have` would
+  // answer `have=none` anyway. Saying nothing is the honest version of that.
+  if (!g_lastHeldTiles.valid || g_lastHeldTiles.count == 0) {
+    LOG_INF(kLogTag, "freshness: no tiles drawn yet, nothing to check");
+    return;
+  }
+  char line[32];
+  snprintf(line, sizeof(line), "CHECK_TILES %lu", static_cast<unsigned long>(g_lastHeldTiles.count));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "CHECK_TILES not delivered");
+    return;
+  }
+  freshnessAsked_ = true;
+  LOG_INF(kLogTag, "freshness: asked about %lu tile(s)", static_cast<unsigned long>(g_lastHeldTiles.count));
+}
+
+void TileSyncActivity::onTileStale(uint8_t z, uint32_t col, uint32_t row) {
+  if (staleTiles_.add(z, col, row)) {
+    LOG_INF(kLogTag, "freshness: z%u %lu/%lu is out of date", static_cast<unsigned>(z), static_cast<unsigned long>(col),
+            static_cast<unsigned long>(row));
+  }
+}
+
+void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
+  if (!known) {
+    // The phone could not read the index. Not the same as nothing being out of
+    // date, and not reported as such.
+    LOG_INF(kLogTag, "freshness: phone could not check (no index)");
+    return;
+  }
+  LOG_INF(kLogTag, "freshness: %u tile(s) out of date, phone is pushing them", static_cast<unsigned>(staleCount));
 }
 
 bool TileSyncActivity::phoneListening() const {
@@ -137,7 +200,24 @@ void TileSyncActivity::trackPhone() {
   if (listening) {
     hadPhone_ = true;
     LOG_INF(kLogTag, "phone subscribed, asking");
-    askForTiles();
+    // Freshness first, and it has to be here rather than only in onEnter().
+    //
+    // Measured on hardware 2026-08-09: onEnter() tests phoneListening() at
+    // t=0, the moment BLE starts, and the phone does not actually subscribe
+    // until ~+1.8 s. So the onEnter() call could never fire -- SyncScreen mode
+    // was dead code that unit tests could not catch, because the bug is in the
+    // timing, not the logic. askForTiles() already had this path; the
+    // freshness check did not.
+    askAboutFreshness();
+    if (rowCount_ > 0) {
+      askForTiles();
+    } else {
+      // Nothing to fetch -- the freshness ask above was the only reason this
+      // screen was still waiting. Same verdict onEnter() would have shown had
+      // the phone been there from t=0.
+      phase_ = Phase::Finished;
+      renderScreen();
+    }
     return;
   }
 
@@ -154,6 +234,9 @@ void TileSyncActivity::onExit() {
   // in flight loses its .part file here rather than surviving into a screen with
   // no BLE link.
   transfer_.detach();
+  consoleState_.setSkipObserver(nullptr);
+  consoleState_.setStaleObserver(nullptr);
+  consoleState_.setStaleTiles(nullptr);
   freeink::BlePositionServer::getInstance().end();
   // Leaving is the checkpoint: whatever this sync cleared has to reach the card,
   // or the phone sends the same tiles again after a restart. A no-op when

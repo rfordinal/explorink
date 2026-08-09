@@ -79,6 +79,33 @@ class MapTileReader {
   uint32_t buildEpoch() const { return buildEpoch_; }
   uint32_t osmEpoch() const { return osmEpoch_; }
 
+  // What this tile draws, as one number: crc32 over the six per-layer crc32s,
+  // little endian, in layer id order 1..6 (Water..Landuse).
+  //
+  // This is the whole tile-freshness signal -- see docs/tile-freshness.md and
+  // mapbuilder/tile_index.py. It answers "is my copy the same as the published
+  // one", which the timestamps in this header cannot:
+  //
+  //   osm_epoch is the time of the OSM extract, so it does not move when only
+  //   the build rules change -- a rules rebuild runs from the same cached
+  //   extract. The railway/tram fix that motivated this feature left it
+  //   untouched, measured on real data.
+  //
+  //   build_epoch moves on every build, including one that changes nothing, so
+  //   comparing it would re-download a continent to change nothing.
+  //
+  // The layer crc32s cover geometry and nothing else, so they move if and only
+  // if what the tile draws moved, whichever cause did it.
+  //
+  // Free: the whole layer directory is parsed at open() already, so this is
+  // arithmetic over values that are in RAM -- no seek, no read.
+  //
+  // Must agree bit for bit with mapbuilder's content_id_from_layer_crcs().
+  // test/map_tile/ and mapbuilder/test_tile_index.py assert the same vectors;
+  // that pairing is the only thing keeping two implementations of one
+  // definition honest, same as the .tir route format.
+  uint32_t contentId() const;
+
   bool hasLayer(Layer layer) const;
 
   // True when at least one layer in this tile holds bytes.
