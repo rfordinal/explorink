@@ -146,6 +146,34 @@ const MapTileReader::LayerEntry* MapTileReader::findLayer(Layer layer) const {
   return nullptr;
 }
 
+uint32_t MapTileReader::contentId() const {
+  // Six u32 little endian, in layer id order 1..6, folded in one pass -- the
+  // byte sequence mapbuilder builds with struct.pack("<I", ...) per layer in
+  // LAYER_IDS order (content_id_from_layer_crcs). Built on the stack rather
+  // than fed byte by byte so the layout is visible and matches the Python
+  // side literally.
+  //
+  // A layer the directory does not carry contributes 0, which is crc32 of
+  // nothing -- so "no water layer" and "an empty water layer" are the same
+  // tile, exactly as on the writer side.
+  uint8_t buf[kMaxLayers * 4] = {};
+  for (uint8_t id = 1; id <= kMaxLayers; ++id) {
+    uint32_t crc = 0;
+    for (uint8_t i = 0; i < layerCount_; ++i) {
+      if (layers_[i].id == id) {
+        crc = layers_[i].crc32;
+        break;
+      }
+    }
+    const size_t off = static_cast<size_t>(id - 1) * 4;
+    buf[off + 0] = static_cast<uint8_t>(crc & 0xFFu);
+    buf[off + 1] = static_cast<uint8_t>((crc >> 8) & 0xFFu);
+    buf[off + 2] = static_cast<uint8_t>((crc >> 16) & 0xFFu);
+    buf[off + 3] = static_cast<uint8_t>((crc >> 24) & 0xFFu);
+  }
+  return MapCrc32::final(MapCrc32::update(MapCrc32::kInit, buf, sizeof(buf)));
+}
+
 bool MapTileReader::hasLayer(Layer layer) const {
   const LayerEntry* e = findLayer(layer);
   return e != nullptr && e->length > 0;

@@ -191,6 +191,46 @@ TEST(MapTileReader, AcceptsEveryLayerTheBuilderWrites) {
   EXPECT_EQ(static_cast<int>(MapTileReader::Layer::Landuse), 6);
 }
 
+// content_id is the tile-freshness signal, and it only works if this reader and
+// mapbuilder compute it identically -- the device sends its value, the phone
+// compares it against the published index, and one bit of disagreement means
+// either a tile that never updates or a card that re-downloads itself forever.
+//
+// These constants come from mapbuilder's content_id_from_layer_crcs() run over
+// these exact fixture files:
+//
+//   python3 -c "import tile_reader; print(hex(tile_reader.read_tile_identity(
+//       'test/map_tile_reader/fixtures/tiny-sd/base/13/4484/2829.tib')[5]))"
+//
+// Real bytes, not a synthetic vector, so the byte layout of the layer directory
+// is under test too. If a fixture is ever regenerated these must be recomputed
+// -- and a mismatch here is the intended way to find that out.
+TEST(MapTileReader, ContentIdMatchesMapbuilder) {
+  struct Case {
+    const char* path;
+    uint32_t contentId;
+  };
+  const Case cases[] = {
+      {MAP_TILE_READER_FIXTURES_DIR "/tiny-sd/base/13/4484/2829.tib", 0x0EBD55C8u},
+      {MAP_TILE_READER_FIXTURES_DIR "/indexed-sd/base/13/4484/2829.tib", 0xF7A3DE8Du},
+  };
+
+  for (const Case& c : cases) {
+    StdioFileSource file;
+    MapTileReader reader;
+    ASSERT_TRUE(reader.open(file, c.path)) << c.path;
+    EXPECT_EQ(reader.contentId(), c.contentId)
+        << c.path << " -- this reader and mapbuilder disagree on content_id";
+    reader.close();
+  }
+
+  // Two tiles for the same z/x/y whose layers differ must not share a
+  // content_id. Both fixtures are 13/4484/2829; the indexed one carries more
+  // geometry. If these ever matched, the signal would be blind to exactly the
+  // change it exists to catch.
+  EXPECT_NE(cases[0].contentId, cases[1].contentId);
+}
+
 // The fixture tile predates the landuse layer, so asking for it must be an
 // empty pass rather than a failure: hasLayer() says no and the tile still counts
 // as read. A tile without a layer is not a broken tile.
