@@ -136,6 +136,24 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
     }
 
+    case MapCommandType::Have:
+      writeHave(out);
+      out.reply("OK");
+      return false;
+
+    case MapCommandType::Stale:
+      // Recorded by whoever asked, not here: this half owns no list. Answered
+      // with a bare OK -- the phone sends one of these per differing tile and a
+      // per-line INFO would double the indications for nothing.
+      if (staleObserver_ != nullptr) staleObserver_->onTileStale(cmd.skipZ, cmd.skipCol, cmd.skipRow);
+      out.reply("OK");
+      return false;
+
+    case MapCommandType::Checked:
+      if (staleObserver_ != nullptr) staleObserver_->onCheckFinished(cmd.checkedKnown, cmd.checkedCount);
+      out.reply("OK");
+      return false;
+
     case MapCommandType::Zoom:
       // The parser already rejected anything outside 0-4, so the ladder is
       // never indexed off its end from here.
@@ -286,8 +304,44 @@ void MapConsoleState::writeTiles(IMapReplyWriter& out) const {
     const uint32_t col = tileRange_.col0 + index / rowSpan;
     const uint32_t row = tileRange_.row0 + index % rowSpan;
     const bool missing = (tileRange_.unavailableMask & (1u << index)) != 0;
+    // Three states, not two. A stale tile is on the card and opens fine, so
+    // calling it `missing` would be a lie the log could not later explain --
+    // and the supplier needs to tell them apart anyway: a stale tile is fetched
+    // with the content id the index promised, a missing one with no such
+    // expectation (../../docs/ble-map-transfer-protocol.md).
+    const char* state = "ok";
+    if (missing) {
+      state = "missing";
+    } else if (staleTiles_ != nullptr && staleTiles_->contains(tileRange_.z, col, row)) {
+      state = "stale";
+    }
     snprintf(line, sizeof(line), "INFO tile_%u_%u_%u=%s", static_cast<unsigned>(tileRange_.z),
-             static_cast<unsigned>(col), static_cast<unsigned>(row), missing ? "missing" : "ok");
+             static_cast<unsigned>(col), static_cast<unsigned>(row), state);
+    out.reply(line);
+  }
+}
+
+void MapConsoleState::writeHave(IMapReplyWriter& out) const {
+  if (!held_.valid) {
+    // No viewport yet -- no fix and no pos command since the device started.
+    // Distinct from an empty list on purpose, exactly like `tiles=none`:
+    // "cannot answer" must never read as "everything is current".
+    out.reply("INFO have=none");
+    return;
+  }
+
+  char line[kReplyBuf];
+  snprintf(line, sizeof(line), "INFO have_total=%lu", static_cast<unsigned long>(held_.count));
+  out.reply(line);
+
+  // Lowercase hex, no 0x -- the same way mapbuilder prints a content_id and the
+  // same way this build logs it, so a freshness bug can be read across all
+  // three by eye.
+  for (size_t i = 0; i < held_.count && i < MapHeldTiles::kMaxEntries; ++i) {
+    const MapHeldTiles::Entry& e = held_.entries[i];
+    snprintf(line, sizeof(line), "INFO have_%u_%lu_%lu=%08lx", static_cast<unsigned>(e.z),
+             static_cast<unsigned long>(e.col), static_cast<unsigned long>(e.row),
+             static_cast<unsigned long>(e.contentId));
     out.reply(line);
   }
 }

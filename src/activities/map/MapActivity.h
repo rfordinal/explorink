@@ -120,7 +120,7 @@
 //   them forever, on the phone's mobile data.
 // - **One ask per kAutoSyncIntervalMs.** A rate cap, not a settle timer: the
 //   next ask is not pushed further out by more hatching.
-class MapActivity final : public Activity, public IMapSkipObserver {
+class MapActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver {
  public:
   // `routePath` is an absolute card path to a .tir route, or nullptr for none.
   // RouteSelectActivity passes what the rider picked; every other caller --
@@ -140,6 +140,12 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // entry refused so autosync stops asking for it, and settles the row against
   // the ask that is outstanding.
   void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) override;
+
+  // IMapStaleObserver -- the phone's verdict on the tiles this screen already
+  // holds. onTileStale() only records; the fetch goes out from loop(), where
+  // the rate cap and the link state live (docs/tile-freshness.md).
+  void onTileStale(uint8_t z, uint32_t col, uint32_t row) override;
+  void onCheckFinished(bool known, uint16_t staleCount) override;
 
  private:
   void renderWaiting();
@@ -273,6 +279,11 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // from the render path: the hatch loop only records what it would be worth
   // asking for (autoSyncWantCount_).
   void maybeAutoSyncTiles();
+  // Sibling of maybeAutoSyncTiles(), and deliberately not folded into it: one
+  // asks for tiles the device does not have, the other asks whether the ones it
+  // does have are still current. Different setting, different cooldown,
+  // different question.
+  void maybeCheckTileFreshness();
   // `NEED_TILES <count> fmt <version> view` -- the `view` word is what tells
   // the phone to answer from `tiles` (this screen) rather than page `missing`
   // (the tile sync screen). docs/ble-map-transfer-protocol.md.
@@ -533,6 +544,23 @@ class MapActivity final : public Activity, public IMapSkipObserver {
   // Bytes the receiver had moved when the ask's quiet timer was last rearmed.
   // The ask expires on silence, not on elapsed time (expireAutoSync()).
   uint32_t lastTransferProgress_ = 0;
+
+  // ## Tile freshness state (SETTINGS.mapTileFreshnessMode, docs/tile-freshness.md)
+  //
+  // In memory and never persisted -- see StaleTilesList for why this is not
+  // MissingTilesStore.
+  StaleTilesList staleTiles_;
+  // The viewport's tiles and the content_id each was opened at, refreshed by
+  // every reset. What `have` answers from, and what CHECK_TILES counts.
+  MapHeldTiles heldTiles_;
+  // True between `CHECK_TILES` going out and `checked` coming back. One check
+  // at a time: a second ask would list a viewport the first one is still
+  // answering for.
+  bool freshnessPending_ = false;
+  // millis() rate cap on how often the device may start a check, and the
+  // give-up on one that is never answered. 0 means nothing armed.
+  uint32_t freshnessNextAskMs_ = 0;
+  uint32_t freshnessDeadlineMs_ = 0;
   // ## What the header status row currently has on it
   //
   // Not the state itself -- autoSyncPending_ and the BLE server are. These are

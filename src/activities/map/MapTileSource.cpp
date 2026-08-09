@@ -23,6 +23,7 @@ void MapTileSource::begin(const Config& config) {
   tilesOpened_ = 0;
   tilesUnavailable_ = 0;
   unavailableMask_ = 0;
+  for (uint32_t i = 0; i < kMaxTrackedTiles; ++i) contentIds_[i] = 0;
   waysEmitted_ = 0;
   waysFiltered_ = 0;
   placesEmitted_ = 0;
@@ -125,6 +126,12 @@ bool MapTileSource::advanceToNextTile() {
       if (index < 32) unavailableMask_ |= (1u << index);
       continue;
     }
+
+    // The header is parsed, so every layer's crc32 is in RAM and the tile's
+    // content identity is one crc32 away. Recorded here rather than in a pass of
+    // its own: this is the only moment on the device where it is free
+    // (docs/tile-freshness.md).
+    if (index < kMaxTrackedTiles) contentIds_[index] = reader_.contentId();
 
     // The origin is known the moment the header is parsed, so the screen box can
     // be brought into this tile's coordinates before any layer is opened -- the

@@ -25,6 +25,9 @@
 //   tiles
 //   missing [<offset>]
 //   skip <z> <col> <row> [<reason>]
+//   have
+//   stale <z> <col> <row>
+//   checked <n>|unknown
 //   info
 //
 // `tiles` reports the current viewport. `missing` reports the persisted
@@ -32,6 +35,14 @@
 // much longer thing -- so it is paged: one command answers at most
 // kMissingPageSize entries starting at <offset> (default 0) and says where
 // the next page starts. See MapConsoleState::writeMissing().
+//
+// `have`, `stale` and `checked` are the freshness exchange (docs/tile-freshness.md,
+// ../../docs/ble-map-transfer-protocol.md). `have` reports the viewport's tiles
+// with the content_id each is held at; the phone reads the CDN's index and
+// answers `stale` per differing tile, then `checked <n>` -- or `checked unknown`
+// when it could not reach the index. **`unknown` is not zero.** A phone with no
+// signal cannot tell a current tile from a stale one, and treating its silence
+// as "all current" would bury exactly the bug this exists to find.
 //
 // `skip` is the one command that exists for the phone rather than for a human
 // at a terminal: it is how the supplier of tiles says "I cannot get you this
@@ -62,6 +73,9 @@ enum class MapCommandType : uint8_t {
   Tiles,
   Missing,
   Skip,
+  Have,
+  Stale,
+  Checked,
   Info,
   Error,  // see MapCommand::error
 };
@@ -84,18 +98,24 @@ struct MapCommand {
   int32_t lonE7 = 0;  // Pos
   uint16_t speedKmh = 0;
   int16_t altitudeM = 0;  // Pos, optional; metres above sea level
-  uint8_t heading = 0;  // 0-15, Heading and optional on Pos
-  uint8_t zoom = 0;     // 0-4
-  uint8_t marker = 0;   // 0-4
+  uint8_t heading = 0;    // 0-15, Heading and optional on Pos
+  uint8_t zoom = 0;       // 0-4
+  uint8_t marker = 0;     // 0-4
   // Missing: first entry of the page to print. uint16 because the store is
   // capped at 200 entries (MissingTilesStore::kMaxEntries); an offset past
   // the end is legal and answers an empty page rather than an error, which
   // is what makes a paging loop's last request harmless.
   uint16_t missingOffset = 0;
-  // Skip: which tile the sender is giving up on, and why.
+  // Skip and Stale: which tile, and (Skip only) why. Shared fields because the
+  // two carry the same coordinate triple and never occur in one command.
   uint8_t skipZ = 0;
   uint32_t skipCol = 0;
   uint32_t skipRow = 0;
+  // Checked: how many tiles the phone reported stale. Meaningless unless
+  // checkedKnown -- `checked unknown` means the phone could not read the index
+  // and is claiming nothing, which is a different answer from `checked 0`.
+  uint16_t checkedCount = 0;
+  bool checkedKnown = false;
   // Copied out of the line, not a view into it: a MapCommand outliving the
   // buffer it was parsed from is a use-after-free waiting to happen, and a
   // string_view here would invite exactly that. Truncated rather than
@@ -103,8 +123,8 @@ struct MapCommand {
   static constexpr size_t kSkipReasonBytes = 16;
   char skipReason[kSkipReasonBytes] = {};
   MapRideMode mode = MapRideMode::Ride;
-  bool hasHeading = false;  // Pos carried a heading
-  bool hasSpeed = false;    // Pos carried a speed
+  bool hasHeading = false;   // Pos carried a heading
+  bool hasSpeed = false;     // Pos carried a speed
   bool hasAltitude = false;  // Pos carried an altitude
 };
 

@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "GfxRendererCanvas.h"
+#include "LastHeldTiles.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
 #include "MapRenderer.h"
@@ -74,6 +75,17 @@ constexpr uint32_t kAutoSyncIntervalMs = 60 * 1000;
 // at 2.6 kB/s is 147 s for one tile, so three minutes expired mid-transfer
 // (measured 2026-08-07).
 constexpr uint32_t kAutoSyncQuietMs = 45 * 1000;
+
+// Live freshness: how often the device may ask whether the tiles under the
+// screen have been republished. Far longer than the autosync cap, because the
+// answer changes when somebody rebuilds an area -- hours or weeks apart -- not
+// when the rider moves. Ten minutes is already generous against that.
+constexpr uint32_t kFreshnessIntervalMs = 10 * 60 * 1000;
+
+// How long a `CHECK_TILES` may go unanswered before the device stops waiting.
+// A check is one `have` reply and a handful of kB of HTTP; a phone that has not
+// finished in this long is not going to.
+constexpr uint32_t kFreshnessQuietMs = 40 * 1000;
 
 // How long after the last arrival the map is redrawn. A settle timer, not a
 // rate cap: arrivals come in bursts and the frame worth spending is the one
@@ -462,14 +474,20 @@ void MapActivity::showBusy() {
 }
 
 void MapActivity::maybeAutoSyncTiles() {
+  // Cleared unconditionally: this is a snapshot of one frame's hatching, and a
+  // want kept across minutes would fire an ask for tiles the rider has since
+  // ridden away from. The next frame over a gap hatches again and asks again --
+  // there is nothing to remember.
   const uint32_t want = autoSyncWantCount_;
+  autoSyncWantCount_ = 0;
   if (want == 0) return;
 
-  // Cleared unconditionally below: this is a snapshot of one frame's hatching,
-  // and a want kept across minutes would fire an ask for tiles the rider has
-  // since ridden away from. The next frame over a gap hatches again and asks
-  // again -- there is nothing to remember.
-  autoSyncWantCount_ = 0;
+  // Stale tiles are NOT counted here, and that is the design rather than an
+  // omission. A stale tile is one the phone found by reading the index, so the
+  // phone already knows which tile and which content id to fetch -- it pushes
+  // it unasked, on the transfer channel this screen already accepts pushes on
+  // (docs/tile-freshness.md, ../../docs/ble-map-transfer-protocol.md). Asking
+  // for it again would mean the device relaying back a list the phone wrote.
 
   if (SETTINGS.mapAutoSyncTiles == 0) return;
   // One ask at a time. A second ask while the first is still being answered
@@ -524,6 +542,25 @@ void MapActivity::drainTransferredTiles() {
   if (!transfer.lastTileValid || transfer.tileSeq == lastClearedTileSeq_) return;
   lastClearedTileSeq_ = transfer.tileSeq;
 
+  // Before the missing-list check below, because a stale tile was never on that
+  // list: it opened fine, so nothing ever hatched it. This is also what arms
+  // the ping-pong guard -- a tile reported stale again after arriving here is
+  // one the fetch did not fix, and StaleTilesList gives up on it.
+  const bool wasStale = staleTiles_.contains(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row);
+  if (wasStale) {
+    staleTiles_.onArrived(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row);
+    LOG_INF(kLogTag, "freshness: z%u %lu/%lu replaced", static_cast<unsigned>(transfer.lastTile.z),
+            static_cast<unsigned long>(transfer.lastTile.col), static_cast<unsigned long>(transfer.lastTile.row));
+    // Every arrival owes a redraw -- the panel is showing the old tile.
+    arrivalRedrawDueMs_ = millis() + kArrivalRedrawSettleMs;
+    if (autoSyncPending_ > 0) {
+      --autoSyncPending_;
+      autoSyncArrived_ = true;
+      if (autoSyncPending_ == 0) autoSyncDeadlineMs_ = 0;
+    }
+    return;
+  }
+
   if (!MISSING_TILES.forget(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row)) {
     // A tile the device never hatched -- a corridor pushed ahead of a ride,
     // say. Nothing to clear, nothing this screen asked for, and not an error.
@@ -555,6 +592,10 @@ void MapActivity::drainTransferredTiles() {
 }
 
 void MapActivity::onTileSkipped(uint8_t z, uint32_t col, uint32_t row) {
+  // A skip for a stale tile means the phone could not vouch for the replacement
+  // -- no source, or a download that still did not match. Give up on it rather
+  // than leave it on the list to be asked for on the next drain.
+  if (staleTiles_.contains(z, col, row)) staleTiles_.giveUp(z, col, row);
   // The supplier does not have this tile. Remembered, so the next frame over
   // the same gap does not ask for it again -- see the class comment.
   MISSING_TILES.markRefused(z, col, row);
@@ -570,6 +611,72 @@ void MapActivity::onTileSkipped(uint8_t z, uint32_t col, uint32_t row) {
   // one through arrivalRedrawDueMs_. A run where every answer was `skip` owes
   // nothing at all -- the panel's hatch is still the right picture, and a full
   // frame is two seconds of waveform for no pixel change.
+}
+
+void MapActivity::onTileStale(uint8_t z, uint32_t col, uint32_t row) {
+  // Recorded only. The ask goes out from loop() through maybeAutoSyncTiles(),
+  // where the rate cap and the link state live -- a BLE conversation must not
+  // start from inside a console drain.
+  if (staleTiles_.add(z, col, row)) {
+    LOG_INF(kLogTag, "freshness: z%u %lu/%lu is out of date", static_cast<unsigned>(z), static_cast<unsigned long>(col),
+            static_cast<unsigned long>(row));
+    return;
+  }
+  // add() refused it: already listed, already given up on, or reported stale a
+  // second time after a fetch that did not fix it. The last case is the one
+  // worth a line -- it is the loop guard doing its job.
+  if (staleTiles_.hasGivenUp(z, col, row)) {
+    LOG_INF(kLogTag, "freshness: z%u %lu/%lu still wrong after a fetch, not asking again", static_cast<unsigned>(z),
+            static_cast<unsigned long>(col), static_cast<unsigned long>(row));
+  }
+}
+
+void MapActivity::onCheckFinished(bool known, uint16_t staleCount) {
+  freshnessPending_ = false;
+  freshnessDeadlineMs_ = 0;
+  if (!known) {
+    // The phone could not read the index. **Not the same as zero stale tiles.**
+    // Nothing is claimed, nothing is marked, and the next check is the ordinary
+    // cooldown away -- the phone backs itself off harder than that, so there is
+    // no second timer needed here.
+    LOG_INF(kLogTag, "freshness: phone could not check (no index)");
+    return;
+  }
+  LOG_INF(kLogTag, "freshness: %u tile(s) out of date", static_cast<unsigned>(staleCount));
+}
+
+void MapActivity::maybeCheckTileFreshness() {
+  if (SETTINGS.mapTileFreshnessMode != CrossPointSettings::MAP_TILE_FRESHNESS_LIVE) return;
+  if (freshnessPending_) {
+    if (freshnessDeadlineMs_ != 0 && millis() >= freshnessDeadlineMs_) {
+      LOG_INF(kLogTag, "freshness: unanswered, giving up on this check");
+      freshnessPending_ = false;
+      freshnessDeadlineMs_ = 0;
+    }
+    return;
+  }
+
+  const uint32_t now = millis();
+  if (freshnessNextAskMs_ != 0 && now < freshnessNextAskMs_) return;
+  // Nothing drawn yet means nothing to ask about.
+  if (heldTiles_.count == 0) return;
+  // A transfer already in flight owns the link. Asking now would put a `have`
+  // reply's worth of indications into the middle of somebody's tile.
+  if (autoSyncPending_ > 0) return;
+  if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) return;
+
+  char line[32];
+  snprintf(line, sizeof(line), "CHECK_TILES %lu", static_cast<unsigned long>(heldTiles_.count));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "freshness: CHECK_TILES not delivered");
+    return;
+  }
+  freshnessPending_ = true;
+  freshnessDeadlineMs_ = now + kFreshnessQuietMs;
+  // From the ask, not from the answer: the cap is on how often the device may
+  // start a conversation.
+  freshnessNextAskMs_ = now + kFreshnessIntervalMs;
+  LOG_INF(kLogTag, "freshness: asked about %lu tile(s) on screen", static_cast<unsigned long>(heldTiles_.count));
 }
 
 void MapActivity::expireAutoSync() {
@@ -1024,6 +1131,10 @@ void MapActivity::onEnter() {
   // Cleared in onExit() -- the console outlives nothing here, but a dangling
   // observer is not a thing to leave lying around either.
   consoleState_.setSkipObserver(this);
+  // The freshness half of the same conversation: `tiles` flags a stale tile off
+  // this list, and `stale`/`checked` land on this activity.
+  consoleState_.setStaleTiles(&staleTiles_);
+  consoleState_.setStaleObserver(this);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -1150,6 +1261,8 @@ void MapActivity::onExit() {
   }
   autoSyncPending_ = 0;
   consoleState_.setSkipObserver(nullptr);
+  consoleState_.setStaleObserver(nullptr);
+  consoleState_.setStaleTiles(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this
@@ -1301,6 +1414,7 @@ void MapActivity::loop() {
   drainTransferredTiles();
   expireAutoSync();
   maybeAutoSyncTiles();
+  maybeCheckTileFreshness();
   // Also the link state and the signal bars, which have nothing to do with
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
@@ -2315,6 +2429,31 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   rangeSnapshot.row1 = range.row1;
   rangeSnapshot.unavailableMask = missing;
   consoleState_.setTileRange(rangeSnapshot);
+
+  // The same walk, one field further: each tile's content identity, which the
+  // header parse already put in RAM. This is the only moment on the device where
+  // it is free, so the freshness check reads it off the render rather than
+  // opening every tile again (docs/tile-freshness.md).
+  heldTiles_ = MapHeldTiles{};
+  heldTiles_.valid = true;
+  for (uint32_t index = 0; index < range.count() && index < MapHeldTiles::kMaxEntries; ++index) {
+    // A tile that did not open has no content to compare, and saying it is
+    // held at content 0 would have the phone report it stale forever. It is
+    // already on the missing path, which is where it belongs.
+    if ((missing & (1u << index)) != 0) continue;
+    const uint32_t contentId = source_->contentIdAt(index);
+    if (contentId == 0) continue;
+    MapHeldTiles::Entry& e = heldTiles_.entries[heldTiles_.count++];
+    e.z = range.z;
+    e.col = range.colAt(index);
+    e.row = range.rowAt(index);
+    e.contentId = contentId;
+  }
+  consoleState_.setHeldTiles(heldTiles_);
+  // Left where the tile sync screen can find it: that screen is where a rider
+  // deliberately spends data, and it has no viewport of its own to read a
+  // content_id from (LastHeldTiles.h).
+  g_lastHeldTiles = heldTiles_;
   consoleState_.setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted(),
                                source_->bytesRead(), source_->waysFiltered());
   consoleState_.setZoomInfo(zoomStep(), range.z, MapViewport::kZoomLadder[zoomStep()].mpp);

@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "MapCommandParser.h"
+#include "StaleTilesList.h"
 
 // The channel-free half of the map command console: line assembly, the
 // state the grammar drives, and the replies. Pure -- no Arduino, no serial,
@@ -67,6 +68,43 @@ struct MapTileRangeSnapshot {
   uint32_t col1 = 0;
   uint32_t row1 = 0;
   uint32_t unavailableMask = 0;
+};
+
+// The viewport's tiles and the content_id each is held at, as the `have`
+// command prints them. Pushed by MapActivity right after every viewport reset,
+// exactly like MapTileRangeSnapshot and for the same reason: this half knows
+// nothing about tiles on a card.
+//
+// content_id costs nothing to collect -- MapTileReader keeps every layer's
+// crc32 in RAM after open(), and contentId() is arithmetic over values already
+// there (docs/tile-freshness.md).
+struct MapHeldTiles {
+  static constexpr size_t kMaxEntries = 9;  // MapViewport::kMaxTiles, a 3x3 worst case
+
+  struct Entry {
+    uint8_t z = 0;
+    uint32_t col = 0;
+    uint32_t row = 0;
+    uint32_t contentId = 0;
+  };
+
+  bool valid = false;  // false until the first reset
+  size_t count = 0;
+  Entry entries[kMaxEntries];
+};
+
+// Told about each `stale` line as it lands, so the screen that asked can put the
+// tile on its fetch list. Synchronous, same contract as IMapSkipObserver: the
+// observer runs on the activity task draining the console and cannot miss one.
+class IMapStaleObserver {
+ public:
+  virtual ~IMapStaleObserver() = default;
+  virtual void onTileStale(uint8_t z, uint32_t col, uint32_t row) = 0;
+  // The verdict. [known] false is `checked unknown` -- the phone could not read
+  // the index and is claiming nothing. **Not the same as zero stale tiles**, and
+  // an implementation that treats it as such buries the bug this feature exists
+  // to find.
+  virtual void onCheckFinished(bool known, uint16_t staleCount) = 0;
 };
 
 // One entry of the persisted missing-tile list, as the `missing` command
@@ -224,6 +262,20 @@ class MapConsoleState {
   // Pushed alongside setRenderStats() by the same reset. `tiles` reads this.
   void setTileRange(const MapTileRangeSnapshot& range) { tileRange_ = range; }
 
+  // Pushed by the same reset. `have` reads this, and `tiles` uses it only to
+  // know which entries exist.
+  void setHeldTiles(const MapHeldTiles& held) { held_ = held; }
+
+  // Which tiles the phone has already reported stale, so `tiles` can flag them.
+  // Not owned; must outlive this state. Left unset, no tile is ever flagged
+  // stale and the reply is exactly what it was before this existed.
+  void setStaleTiles(const StaleTilesList* stale) { staleTiles_ = stale; }
+
+  // Where a `stale` line and the closing `checked` go. Not owned; must outlive
+  // this state. Left unset, both are parsed, answered and dropped -- which is
+  // what a native test with no fetch behind it wants.
+  void setStaleObserver(IMapStaleObserver* observer) { staleObserver_ = observer; }
+
   // The .tib format version this build reads (MapTileReader::kFormatVersion),
   // pushed once in onEnter(). Reported by `info` so a tile supplier can ask
   // what to build without starting a fetch to find out; the fetch itself quotes
@@ -258,6 +310,7 @@ class MapConsoleState {
  private:
   void writeInfo(IMapReplyWriter& out) const;
   void writeTiles(IMapReplyWriter& out) const;
+  void writeHave(IMapReplyWriter& out) const;
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
 
   bool hasPosition_ = false;
@@ -283,6 +336,9 @@ class MapConsoleState {
   uint32_t waysFiltered_ = 0;
   uint32_t bytesRead_ = 0;
   MapTileRangeSnapshot tileRange_;
+  MapHeldTiles held_;
+  const StaleTilesList* staleTiles_ = nullptr;
+  IMapStaleObserver* staleObserver_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;

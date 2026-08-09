@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "MapBleConsole.h"
+#include "MapCommandConsole.h"
 #include "MapTilePath.h"
 #include "MapTransferReceiver.h"
 #include "activities/Activity.h"
@@ -73,7 +74,7 @@
 // pages the list with `missing`, pushes tiles over the transfer channel, and
 // sends `skip` for what it cannot supply. Done when arrivals plus skips reach
 // the count. BACK sends `FETCH_CANCEL` and leaves.
-class TileSyncActivity final : public Activity, public IMapSkipObserver {
+class TileSyncActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver {
  public:
   TileSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
@@ -86,6 +87,13 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
 
   // IMapSkipObserver -- the phone saying it cannot supply one tile.
   void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) override;
+
+  // IMapStaleObserver -- the phone's verdict on tiles the device already holds.
+  // This screen does not fetch them itself: the phone found them by reading the
+  // index, so it knows which tile and which content id, and pushes each one
+  // unasked on the transfer channel (docs/tile-freshness.md).
+  void onTileStale(uint8_t z, uint32_t col, uint32_t row) override;
+  void onCheckFinished(bool known, uint16_t staleCount) override;
 
  private:
   // Waiting means the device is advertising and nothing has subscribed to the
@@ -149,6 +157,17 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver {
   void trackPhone();
   // True while a central is subscribed to the command channel.
   bool phoneListening() const;
+  // Sends CHECK_TILES when the rider has asked for the check to run here
+  // (SETTINGS.mapTileFreshnessMode). Preparation at home is exactly where
+  // spending the phone's data belongs, which is why this mode exists separately
+  // from the map screen's live one.
+  void askAboutFreshness();
+  // Stale tiles this visit, for the ping-pong guard and the log. Not persisted
+  // and not this screen's row list -- see StaleTilesList.
+  StaleTilesList staleTiles_;
+  // True once CHECK_TILES has gone out this visit. One check per visit: the
+  // held-tile snapshot does not change while this screen is up.
+  bool freshnessAsked_ = false;
   // Whether the panel currently shows a phone or not, so trackPhone() only
   // repaints on a real change.
   bool drawnPhoneListening_ = false;

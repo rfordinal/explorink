@@ -189,8 +189,8 @@ MapCommand parsePos(const Tokens& tokens) {
       return fail(MapCommandError::BadArity);
     }
 
-    if (i >= tokens.n) return fail(MapCommandError::BadArity);                   // keyword with no value
-    if (wantHeading && cmd.hasHeading) return fail(MapCommandError::BadArity);   // given twice
+    if (i >= tokens.n) return fail(MapCommandError::BadArity);                  // keyword with no value
+    if (wantHeading && cmd.hasHeading) return fail(MapCommandError::BadArity);  // given twice
     if (wantSpeed && cmd.hasSpeed) return fail(MapCommandError::BadArity);
     if (wantAltitude && cmd.hasAltitude) return fail(MapCommandError::BadArity);
 
@@ -262,6 +262,41 @@ MapCommand parseSkip(const Tokens& tokens) {
   return cmd;
 }
 
+// `stale <z> <col> <row>`. The phone saying the CDN has different content for a
+// tile the device already holds.
+MapCommand parseStale(const Tokens& tokens) {
+  if (tokens.n != 4) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Stale;
+
+  uint32_t z = 0;
+  uint32_t col = 0;
+  uint32_t row = 0;
+  if (!parseUint(tokens.t[1], z) || !parseUint(tokens.t[2], col) || !parseUint(tokens.t[3], row)) {
+    return fail(MapCommandError::BadNumber);
+  }
+  if (z > 255) return fail(MapCommandError::OutOfRange);
+  cmd.skipZ = static_cast<uint8_t>(z);
+  cmd.skipCol = col;
+  cmd.skipRow = row;
+  return cmd;
+}
+
+// `checked <n>` or `checked unknown`. The verdict that closes a freshness check.
+MapCommand parseChecked(const Tokens& tokens) {
+  if (tokens.n != 2) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Checked;
+  if (tokens.t[1] == "unknown") return cmd;  // checkedKnown stays false
+
+  uint32_t n = 0;
+  if (!parseUint(tokens.t[1], n)) return fail(MapCommandError::BadNumber);
+  if (n > 0xFFFFu) return fail(MapCommandError::OutOfRange);
+  cmd.checkedCount = static_cast<uint16_t>(n);
+  cmd.checkedKnown = true;
+  return cmd;
+}
+
 MapCommand parseMode(const Tokens& tokens) {
   if (tokens.n != 2) return fail(MapCommandError::BadArity);
   MapCommand cmd;
@@ -302,6 +337,9 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "tiles") return parseBare(tokens, MapCommandType::Tiles);
   if (name == "missing") return parseMissing(tokens);
   if (name == "skip") return parseSkip(tokens);
+  if (name == "have") return parseBare(tokens, MapCommandType::Have);
+  if (name == "stale") return parseStale(tokens);
+  if (name == "checked") return parseChecked(tokens);
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   return fail(MapCommandError::UnknownCommand);
 }

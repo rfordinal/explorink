@@ -162,6 +162,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // incoming fix or stays frozen at whatever it was when the rider switched
   // to Manual (MapActivity::updateManualHeadingCapture()).
   enum MAP_HEADING_MODE { MAP_HEADING_AUTO = 0, MAP_HEADING_MANUAL = 1, MAP_HEADING_MODE_COUNT };
+  // When the device asks the phone whether the tiles it already holds have
+  // been republished (docs/tile-freshness.md). Off by default: it spends the
+  // phone's mobile data and the rider has to choose it, same rule as
+  // mapAutoSyncTiles.
+  //
+  //   Off        never ask.
+  //   SyncScreen ask once when the tile sync screen opens -- preparation at
+  //              home, which is where a rider expects data to be spent.
+  //   Live       ask from the map screen too, on a cooldown, mid-ride.
+  enum MAP_TILE_FRESHNESS_MODE {
+    MAP_TILE_FRESHNESS_OFF = 0,
+    MAP_TILE_FRESHNESS_SYNC_SCREEN = 1,
+    MAP_TILE_FRESHNESS_LIVE = 2,
+    MAP_TILE_FRESHNESS_MODE_COUNT
+  };
 
   // Page turn button long press behavior
   enum LONG_PRESS_BUTTON_BEHAVIOR {
@@ -280,6 +295,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t mapZoomMode = MAP_ZOOM_MANUAL;
   uint8_t mapRotationMode = MAP_ROTATION_HEADING_UP;
   uint8_t mapHeadingMode = MAP_HEADING_AUTO;
+  uint8_t mapTileFreshnessMode = MAP_TILE_FRESHNESS_OFF;
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships

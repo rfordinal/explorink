@@ -20,6 +20,22 @@ device what it is short of and push those tiles back
 > `MapActivity::drainTransferredTiles()`, which the autosync work below needed
 > anyway. Read off the code, not yet run against a real arrival.
 
+## A tile that is out of date is a different list
+
+This store is about tiles the device **does not have**. A tile that opens fine
+and draws fine but has been republished since is a different question with a
+different answer, and it is **deliberately not recorded here**. Two properties
+of this store make it the wrong home:
+
+- Its records persist, so a stale entry would survive the fetch that fixed it
+  and the device would come back up asking for a tile it already holds.
+- It evicts by hit count, so a burst of stale entries would be dropped first --
+  or, in the live check, would push out genuinely missing tiles.
+
+`StaleTilesList` (`src/activities/map/StaleTilesList.h`) keeps those in memory
+instead, empty on every boot. See [`tile-freshness.md`](tile-freshness.md) for
+the signal, the setting and the loop guard.
+
 ## A valid tile can still be a hole
 
 `MapTileSource` counts a tile as unavailable when it has **no geometry in any
