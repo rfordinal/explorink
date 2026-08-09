@@ -99,10 +99,19 @@ void TileSyncActivity::onEnter() {
     // picked this, and "nothing is missing" is good news. The freshness check
     // still runs: nothing missing does not mean nothing out of date, and this
     // is the case the whole feature exists for.
-    if (phoneListening()) askAboutFreshness();
-    phase_ = Phase::Finished;
     verdict_ = StrId::STR_MAP_FETCH_NOTHING;
     LOG_INF(kLogTag, "nothing missing, nothing to ask for");
+    drawnPhoneListening_ = phoneListening();
+    hadPhone_ = drawnPhoneListening_;
+    if (drawnPhoneListening_) {
+      askAboutFreshness();
+      phase_ = Phase::Finished;
+    } else {
+      // A phone connecting synchronously with begin() above never happens on
+      // real hardware (measured: ~1.8 s). trackPhone() takes it from here,
+      // same as the missing-tiles path below -- see its comment.
+      phase_ = Phase::Waiting;
+    }
     renderScreen();
     return;
   }
@@ -191,7 +200,24 @@ void TileSyncActivity::trackPhone() {
   if (listening) {
     hadPhone_ = true;
     LOG_INF(kLogTag, "phone subscribed, asking");
-    askForTiles();
+    // Freshness first, and it has to be here rather than only in onEnter().
+    //
+    // Measured on hardware 2026-08-09: onEnter() tests phoneListening() at
+    // t=0, the moment BLE starts, and the phone does not actually subscribe
+    // until ~+1.8 s. So the onEnter() call could never fire -- SyncScreen mode
+    // was dead code that unit tests could not catch, because the bug is in the
+    // timing, not the logic. askForTiles() already had this path; the
+    // freshness check did not.
+    askAboutFreshness();
+    if (rowCount_ > 0) {
+      askForTiles();
+    } else {
+      // Nothing to fetch -- the freshness ask above was the only reason this
+      // screen was still waiting. Same verdict onEnter() would have shown had
+      // the phone been there from t=0.
+      phase_ = Phase::Finished;
+      renderScreen();
+    }
     return;
   }
 
