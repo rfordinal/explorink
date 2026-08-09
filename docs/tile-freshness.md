@@ -1,9 +1,9 @@
 # Tile freshness: how the device learns a tile it already has went stale
 
-**Status 2026-08-09: built end to end on this branch, never run on hardware.**
-The signal, the setting, the BLE exchange, the stale list and both triggers are
-in and covered by host tests; nothing has been flashed. What is described below
-as "how the check works" is read off the code, not measured.
+**Status 2026-08-09: built, flashed, and the signal verified on real
+hardware.** What is *not* yet verified is the device-initiated half -- the
+`Live` and `SyncScreen` triggers have not been watched firing against a phone.
+See "What was measured" at the end for the exact split.
 
 Laptop side lives in the parent repo: `docs/tile-index-spec.md` (the index
 format), `mapbuilder/tile_index.py`, `mapbuilder/tools/build_index.py`.
@@ -152,16 +152,62 @@ becomes `giveUp()` instead of another entry. A `skip` for a stale tile does the
 same. Both survive `clear()`, so the next check does not rediscover the tile and
 start over.
 
-## Not verified
+## What was measured, 2026-08-09
 
-Everything above is read off the code. Nothing has been on the glass. The
-hardware run that would settle it, once the flash is agreed:
+Flashed to the X4 and driven over the serial map console. The device booted
+clean, drew the map and reported 125 KB free heap.
 
-- Put a deliberately older tile on the card against what the CDN publishes.
-- `Off` produces no `CHECK_TILES` at all -- confirm on the serial log.
-- `SyncScreen` catches it when that screen opens; `Live` catches it mid-ride
-  with the sync screen never opened.
-- **An already-current tile never triggers a fetch in any mode.** This is the
-  one that matters: a false positive costs a rider their viewport over a
-  ~7.4 kB/s link.
+**The signal is right, and it caught a real stale tile on the first try.** The
+card held two tiles for the viewport at 48.15674/17.04819:
+
+```
+have  ->  have_13_4483_2842=23f4190c        the card
+          have_13_4484_2842=c2e2b307
+
+CDN index slot, byte-range read:  4483/2842 = 0x50f97736
+                                  4484/2842 = 0xc198f90b
+```
+
+Both disagreed. That is not a defect in `contentId()` -- it is the thing this
+feature exists to find, and it was proven by fixing one of them:
+`tools/blepush.py` pushed the CDN's current `4483/2842` (143,798 B, fetched
+with `?crc=50f97736`) onto the card, and after a `redraw`:
+
+```
+have  ->  have_13_4483_2842=50f97736        now exactly what the index says
+          have_13_4484_2842=c2e2b307        untouched, still stale
+```
+
+One tile replaced, one left alone as the control. So `MapTileReader::contentId()`
+on real hardware agrees bit for bit with `mapbuilder` and with the published
+index, and the earlier disagreement was a genuinely out-of-date card.
+
+The rest of the wire grammar, on the device:
+
+| sent | device answered |
+|---|---|
+| `have` with a viewport whose only tile is missing | `INFO have_total=0` -- a missing tile has no content to vouch for, so it is left out rather than reported as content 0 |
+| `stale 13 4484 2842` | `freshness: z13 4484/2842 is out of date`, `OK` |
+| `tiles` | `tile_13_4483_2842=ok`, `tile_13_4484_2842=stale` -- the three states, on real data |
+| `checked 1` | `freshness: 1 tile(s) out of date` |
+| `checked unknown` | `freshness: phone could not check (no index)` -- distinct from zero, as it must be |
+| `stale 13 4484` | `ERR bad_arity` |
+| `checked maybe` | `ERR bad_number` |
+
+Binary archived as `docs/firmware-builds/feat-tile-freshness-007950dd-good.bin`
+in the parent repo.
+
+## Still not verified
+
+The device-initiated half. Everything above was driven by a host typing
+commands, which exercises the grammar and the signal but not the triggers:
+
+- `Off` produces no `CHECK_TILES` at all.
+- `SyncScreen` fires it when that screen opens; `Live` fires it mid-ride on its
+  cooldown with the sync screen never opened.
+- **An already-current tile never triggers a fetch in any mode.** The one that
+  matters most: a false positive costs a rider their viewport over a link
+  measured here at 2.6 kB/s.
 - The phone offline answers `checked unknown` and nothing is fetched.
+
+All four need the Android app against the device, which has not been run.
