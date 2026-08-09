@@ -1,9 +1,12 @@
 # Tile freshness: how the device learns a tile it already has went stale
 
-**Status 2026-08-09: built, flashed, and the signal verified on real
-hardware.** What is *not* yet verified is the device-initiated half -- the
-`Live` and `SyncScreen` triggers have not been watched firing against a phone.
-See "What was measured" at the end for the exact split.
+**Status 2026-08-09: built, flashed, signal verified, and all four
+device-initiated triggers run against the real Android app.** `Off` is
+silent, `Live` fires and fetches correctly, a live control pair proved an
+already-current tile is never re-fetched -- `SyncScreen` was found not to fire
+at all, a real firmware bug -- and that bug is now fixed and reverified on
+hardware. See "Device-initiated triggers, verified against the real Android
+app, 2026-08-09" near the end for the detail.
 
 Laptop side lives in the parent repo: `docs/tile-index-spec.md` (the index
 format), `mapbuilder/tile_index.py`, `mapbuilder/tools/build_index.py`.
@@ -197,17 +200,113 @@ The rest of the wire grammar, on the device:
 Binary archived as `docs/firmware-builds/feat-tile-freshness-007950dd-good.bin`
 in the parent repo.
 
-## Still not verified
+## Device-initiated triggers, verified against the real Android app, 2026-08-09
 
-The device-initiated half. Everything above was driven by a host typing
-commands, which exercises the grammar and the signal but not the triggers:
+Firmware `0.1.0-dev-feat/tile-freshness-007950dd`, Android app
+`0.2.0-g2b1c312` (`feat/tile-freshness-index`), Galaxy S24 over real BLE.
+Serial log is the evidence for every timestamp below.
 
-- `Off` produces no `CHECK_TILES` at all.
-- `SyncScreen` fires it when that screen opens; `Live` fires it mid-ride on its
-  cooldown with the sync screen never opened.
-- **An already-current tile never triggers a fetch in any mode.** The one that
-  matters most: a false positive costs a rider their viewport over a link
-  measured here at 2.6 kB/s.
-- The phone offline answers `checked unknown` and nothing is fetched.
+**`Off` sends no `CHECK_TILES`.** 90 s window, BLE connected and subscribed the
+whole time, 7 forced redraws (`redraw` on the map console). Zero `freshness:`
+or `CHECK_TILES` lines. This is the positive-absence proof the silent path
+needs — the redraws prove the code path actually ran each time, not that
+nothing happened at all.
 
-All four need the Android app against the device, which has not been run.
+**`Live` fires automatically and correctly.** Entered the Map activity with
+`Live` set: BLE connect at `+62 ms` from `begin()` (`638280`→`638342`),
+subscribed at `+731 ms` (`639011`), `onEnter` done at `+2821 ms` (`641101`,
+includes the ~1.6 s render), and `freshness: asked about 2 tile(s) on screen`
+fired 61 ms after that (`641162`) — i.e. as soon as the activity had something to
+ask about, not on any fixed delay. No cooldown wait needed: a freshly
+constructed `MapActivity` has `freshnessNextAskMs_ == 0`, which the gate at
+`MapActivity.cpp:651` treats as "not blocked," so leaving and re-entering Map
+is a working substitute for waiting out the real 10-minute
+`kFreshnessIntervalMs`.
+
+**`SyncScreen` did not fire, and could not, as originally written — fixed and
+reverified same day.** This was a firmware bug, not a missing feature.
+`TileSyncActivity::onEnter()` checks `phoneListening()` synchronously, in the
+same call that starts the BLE peripheral (`TileSyncActivity.cpp:97-120`) —
+both branches (`rowCount_ == 0` and the missing-tiles branch) gated on that
+same already-evaluated value. `trackPhone()`, which does correctly notice the
+phone subscribing *later*, called `askForTiles()` and nothing else — it never
+called `askAboutFreshness()`. So the only way `askAboutFreshness()` could fire
+from this screen was if a phone was already subscribed at the exact instant
+`onEnter()` ran, and that instant is microseconds after
+`BlePositionServer::begin()`, which just started advertising. Measured
+end-to-end connect time on real hardware: `begin()` at `489254`, `connected` at
+`490407` (**+1153 ms**), `subscribed` at `491069` (**+1815 ms**). A phone
+cannot connect in zero milliseconds, so `phoneListening()` was false on every
+real entry, not just most of them. This is exactly the kind of bug a unit test
+cannot catch: the logic was correct, the *timing* was not, and nothing about a
+synchronous test exercises a 1.8-second BLE handshake. Confirmed broken by
+entering `TileSync` twice in a row (leave, come straight back): second entry
+logged `phone subscribed, asking` (the missing-tile ask, from `trackPhone()`)
+with **no** `freshness:` line anywhere near it, on either visit.
+
+Fix, `TileSyncActivity.cpp:97-108` and `:191-212`: both `onEnter()` branches
+now defer to `trackPhone()` when no phone is listening yet instead of settling
+into a final state early, and `trackPhone()` calls `askAboutFreshness()`
+before `askForTiles()` on the same subscribe edge that already drove the
+missing-tile ask. No new double-ask risk: `askAboutFreshness()` already
+guarded itself with `freshnessAsked_` (set once per `onEnter()`, checked first
+thing inside the function), so a second subscribe within the same screen visit
+was always going to be a no-op — the fix only needed to give the guarded call
+a second, later place to be reached from.
+
+Reverified on hardware after the fix, same firmware rebuild, real Android app:
+
+- Entered `TileSync` before ever opening the Map screen this boot (so
+  `g_lastHeldTiles` was empty): `phone subscribed, asking` at `65554`, and in
+  the same call, `freshness: no tiles drawn yet, nothing to check` — the honest
+  no-op, not silence and not a crash. `asked for 17 tiles` (the missing-tile
+  ask) followed immediately after, proving the ordering and the fact that a
+  freshness no-op does not block the rest of the visit.
+- Visited Map (populating `g_lastHeldTiles` with 2 tiles), then entered
+  `TileSync` again: `phone subscribed, asking` at `178636`, `freshness: asked
+  about 2 tile(s)` 9 ms later at `178645`, `asked for 17 tiles` at `178660` —
+  freshness first, missing-tiles ask second, exactly the fixed order. Both
+  tiles came back `stale`, both were pushed and replaced
+  (`MAPXFER ... /base/13/4483/2841.tib`, `.../4484/2841.tib`), `checked 2` /
+  `phone is pushing them` logged correctly.
+- Double-ask guard, same visit: force-stopped and relaunched the Android app
+  mid-run to force a real disconnect/reconnect (`phone gone, back to waiting`
+  at `315550`, reconnected and `phone subscribed, asking` again at `318653`).
+  No second `freshness:` line of any kind followed — `askAboutFreshness()`'s
+  existing `freshnessAsked_` guard silently absorbed it, `asked for 17 tiles`
+  fired again as expected (the missing-tile ask has no such guard and
+  legitimately re-asks the phone every reconnect).
+
+**An already-current tile never triggers a fetch, and this was proven with a
+live control pair, not a synthetic one.** The `Live` run above hit a viewport
+whose two tiles disagreed with the CDN by chance (`z13 4483/2842` = current,
+`z13 4484/2842` = stale, the same pair as the "What was measured" session
+above — the earlier fix had not stuck across the intervening reflashes). The
+device asked, the phone answered `stale 13 4484 2842`, and only
+`4484/2842` was pushed (`MAPXFER begin ... 396014 bytes`, control-console `grep
+4483` over the whole session log turns up zero `MAPXFER` lines for it — only
+the four map-viewport `reset` summaries, which always name both tiles as part
+of the redraw regardless of fetch). Post-transfer `have` read back
+`have_13_4483_2842=50f97736` (unchanged) and `have_13_4484_2842=c198f90b`
+(now matching the CDN index, same value the "What was measured" session
+recorded for that slot) — proof the current tile was never touched and the
+stale one now matches exactly.
+
+**Throughput: 7.9 kB/s for the app's real transfer** (396014 bytes in 50.1 s,
+`begin` at `641780`, `done` at `691892`), against `docs/ble-map-transfer-protocol.md`'s
+2.6 kB/s for `blepush.py` at the same negotiated MTU (256, 248-byte payload).
+Not the same measurement: the Android stack renegotiated the connection
+interval down to 12 units (15 ms) during the transfer (log: `conn params:
+interval 12 units (15 ms)`), where it sat at 24 units (30 ms) idle.
+`blepush.py` has no code that requests a connection parameter change at all
+(`grep -n "interval\|priority" tools/blepush.py` — nothing) and BlueZ does not
+expose a simple central-side connection-interval request over its D-Bus API
+the way Android's `requestConnectionPriority()` does. So the two throughput
+numbers measure different links, not different protocol efficiency — see
+`docs/ble-map-transfer-protocol.md` for the correction.
+
+**Phone-offline path (`checked unknown`) was not exercised this pass** — every
+run here had the phone connected throughout. Console-driven `checked unknown`
+handling is already covered in "What was measured" above; only the
+device-initiated trigger for it (CDN unreachable while the phone answers a
+live `CHECK_TILES`) remains open.
