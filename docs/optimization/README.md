@@ -23,7 +23,7 @@ line number is off by a few, the surrounding function name is the anchor.
 | [03-ble-link.md](03-ble-link.md) | `BlePositionServer`, transfer channel | the negotiated MTU is never requested and never logged |
 | [04-tile-sync.md](04-tile-sync.md) | missing list, `TileSyncActivity` | arrivals on the map screen no longer clear the list; completion counts landed files, not settled rows |
 | [05-map-activity-structure.md](05-map-activity-structure.md) | `MapActivity` shape | 1118 + 295 lines, four responsibilities in one class |
-| [06-memory-and-flash.md](06-memory-and-flash.md) | RAM and flash budget | measured: flash 58% used, static DRAM 58 KB — the constraint is elsewhere |
+| [06-memory-and-flash.md](06-memory-and-flash.md) | RAM and flash budget | measured: flash 58% used, static DRAM 58 KB — the constraint is elsewhere. Its step 1 is answered: the map screen leaves 49.5 KB free and floors at 37.8 KB ([../map-memory.md](../map-memory.md)) |
 | [07-power-and-lifecycle.md](07-power-and-lifecycle.md) | CPU scaling, sleep, BLE lifetime | the map screen pins the CPU at 160 MHz forever |
 | [08-verification.md](08-verification.md) | tests, gates, instrumentation | CI never runs the 20 host test suites |
 | [09-progressive-render.md](09-progressive-render.md) | base map first, buildings second | measured: 99.6 % of the buildings walked at rung 0 never draw a pixel, so fix that before splitting the frame |

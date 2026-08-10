@@ -211,6 +211,11 @@ review of the map, BLE and tile paths (2026-08-06), one plan per area, with a
 measurement gate for each. Start at its
 [`README.md`](./docs/optimization/README.md).
 
+[`docs/map-memory.md`](./docs/map-memory.md) is what the map screen actually
+costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, a
+37.7 KB floor under a 50 KB gate, and about 65 KB of it in BLE rather than in
+the map.
+
 ## Credits
 
 **This project exists because of
