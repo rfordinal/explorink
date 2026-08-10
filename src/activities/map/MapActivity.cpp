@@ -87,6 +87,11 @@ constexpr uint32_t kFreshnessIntervalMs = 10 * 60 * 1000;
 // finished in this long is not going to.
 constexpr uint32_t kFreshnessQuietMs = 40 * 1000;
 
+// Rate cap on maybeCheckTileFreshness()'s own gate-reason logging -- that
+// function runs every tick, so without this a blocked gate prints on every
+// loop() instead of at a readable rate on the serial monitor.
+constexpr uint32_t kFreshnessGateLogThrottleMs = 30 * 1000;
+
 // How long after the last arrival the map is redrawn. A settle timer, not a
 // rate cap: arrivals come in bursts and the frame worth spending is the one
 // after the last tile, so each arrival pushes this out.
@@ -657,13 +662,46 @@ void MapActivity::maybeCheckTileFreshness() {
   }
 
   const uint32_t now = millis();
-  if (freshnessNextAskMs_ != 0 && now < freshnessNextAskMs_) return;
+  // One line per gate, not one line at the end, so a silent device says which
+  // condition is holding it rather than just staying silent -- found needing
+  // this while chasing a Live-mode device that never asked for 12+ minutes
+  // with every gate looking satisfied from the code alone. Throttled: this
+  // function runs every tick, and a blocked gate would otherwise print on
+  // every loop() instead of at a readable rate.
+  const bool logGate = now - freshnessLastGateLogMs_ >= kFreshnessGateLogThrottleMs;
+  if (freshnessNextAskMs_ != 0 && now < freshnessNextAskMs_) {
+    if (logGate) {
+      LOG_DBG(kLogTag, "freshness: cooling down, %lu ms left",
+              static_cast<unsigned long>(freshnessNextAskMs_ - now));
+      freshnessLastGateLogMs_ = now;
+    }
+    return;
+  }
   // Nothing drawn yet means nothing to ask about.
-  if (heldTiles_.count == 0) return;
+  if (heldTiles_.count == 0) {
+    if (logGate) {
+      LOG_DBG(kLogTag, "freshness: no tiles held, nothing to ask about");
+      freshnessLastGateLogMs_ = now;
+    }
+    return;
+  }
   // A transfer already in flight owns the link. Asking now would put a `have`
   // reply's worth of indications into the middle of somebody's tile.
-  if (autoSyncPending_ > 0) return;
-  if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) return;
+  if (autoSyncPending_ > 0) {
+    if (logGate) {
+      LOG_DBG(kLogTag, "freshness: autosync has %lu tile(s) in flight, waiting",
+              static_cast<unsigned long>(autoSyncPending_));
+      freshnessLastGateLogMs_ = now;
+    }
+    return;
+  }
+  if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) {
+    if (logGate) {
+      LOG_DBG(kLogTag, "freshness: no phone subscribed to the command channel");
+      freshnessLastGateLogMs_ = now;
+    }
+    return;
+  }
 
   char line[32];
   snprintf(line, sizeof(line), "CHECK_TILES %lu", static_cast<unsigned long>(heldTiles_.count));

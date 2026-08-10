@@ -561,6 +561,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // give-up on one that is never answered. 0 means nothing armed.
   uint32_t freshnessNextAskMs_ = 0;
   uint32_t freshnessDeadlineMs_ = 0;
+  // Throttles the gate-reason log in maybeCheckTileFreshness() -- that check
+  // runs every tick, and without this a blocked gate (no phone subscribed, no
+  // tiles held) would print on every loop() instead of at a readable rate.
+  uint32_t freshnessLastGateLogMs_ = 0;
   // ## What the header status row currently has on it
   //
   // Not the state itself -- autoSyncPending_ and the BLE server are. These are
