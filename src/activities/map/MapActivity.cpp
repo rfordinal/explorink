@@ -703,8 +703,15 @@ void MapActivity::maybeCheckTileFreshness() {
     return;
   }
 
-  char line[32];
-  snprintf(line, sizeof(line), "CHECK_TILES %lu", static_cast<unsigned long>(heldTiles_.count));
+  // `fmt <version>` so the phone can pick the matching index tree without
+  // needing a NEED_TILES to have told it first -- found needing this the hard
+  // way: a device with nothing missing never sends NEED_TILES at all, so
+  // FreshnessChecker's format defaulted to CdnTileSource's stale constant and
+  // compared against the wrong /v<N>/ index tree, one version behind, for
+  // every check.
+  char line[48];
+  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", static_cast<unsigned long>(heldTiles_.count),
+           static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "freshness: CHECK_TILES not delivered");
     return;

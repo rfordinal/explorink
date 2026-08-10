@@ -310,3 +310,55 @@ run here had the phone connected throughout. Console-driven `checked unknown`
 handling is already covered in "What was measured" above; only the
 device-initiated trigger for it (CDN unreachable while the phone answers a
 live `CHECK_TILES`) remains open.
+
+## `CHECK_TILES` never stated its own format version -- found and fixed 2026-08-10
+
+**Found on hardware, chasing a report that a rebuilt, republished area still
+showed old content on a real device with `Live` on and a phone connected.**
+Direct proof it was not a rebuild problem: `have` over the console read back
+the card's real content ids for its four held tiles
+(`67a13267`, `a5d8d099`, `857b4056`, `3d04647a`), and every one of them
+disagreed with what the freshly rebuilt CDN mirror actually contains for
+those same tiles (`913ef02b`, `6ee97058`, `8b2b73a0`, `47d3cfec` --
+`mapbuilder/tile_reader.read_tile_identity()` against `mapbuilder/cdn/base/12/...`).
+Genuinely stale card, and the phone had just answered `checked 0` for it
+minutes earlier.
+
+Cause: `CHECK_TILES <count>` (`MapActivity.cpp`, `maybeCheckTileFreshness()`)
+carried only a count, never a format version, unlike `NEED_TILES <count> fmt
+<version>` (`TileSyncActivity.cpp:182`, `MapActivity.cpp:519`). On the
+Android side, `FreshnessChecker.formatVersion` (`FreshnessChecker.kt:114`,
+before the fix) was written only from a parsed `NEED_TILES` line
+(`FreshnessChecker.kt:127`) and read by every index range read
+(`FreshnessChecker.kt:227`). A device with nothing missing never sends
+`NEED_TILES` at all, so `formatVersion` stayed `null` for the whole
+connection and every index read fell back to
+`CdnTileSource.DEFAULT_FORMAT_VERSION = 2` (`TileSource.kt:85`) -- one
+version behind the device and the CDN, both on 3
+(`mapbuilder/tiles.py:53`'s `FORMAT_VERSION`, confirmed live by the device's
+own `info` reply, `tile_fmt=3`). The phone was comparing the card against the
+CDN's abandoned `/v2/` index tree, where an old, pre-fix content id still
+happened to sit in the same slot -- a false "not stale" on every single
+check, for exactly the devices with nothing missing that this feature most
+needs to reach.
+
+Fixed by giving `CHECK_TILES` the same `fmt <version>` word `NEED_TILES`
+already carries (`MapActivity.cpp`, `MapTileReader::kFormatVersion`), and
+teaching the phone to read it directly (`MissingList.CheckTiles`,
+`MissingList.kt`; `FreshnessChecker.kt`'s `onCommandLine` sets
+`formatVersion` from it before calling `start()`), no longer solely
+dependent on a `NEED_TILES` having arrived first. `NEED_TILES` still updates
+the same field when it does arrive, so a still-missing tile does not regress.
+
+**Verified: unit-tested, not yet re-measured live end to end.** Both apps
+build clean. New coverage: `MissingListTest`'s two `check tiles carries...`
+tests and `FreshnessCheckerTest`'s `CHECK_TILES states its own format
+version, no NEED_TILES required` -- the latter fails without the fix (asserts
+the index read happens against format 3 from a `CHECK_TILES 1 fmt 3` alone,
+no preceding `NEED_TILES`) and passes with it. Flashed to real hardware and
+confirmed the ask still fires (`freshness: asked about N tile(s) on screen`).
+**Open:** a live BLE capture of the actual `CHECK_TILES ... fmt 3` bytes
+in flight was attempted this pass and blocked on a flaky `bleak` connect in
+this environment, not retried — the wire format is unchanged from
+`NEED_TILES`'s already-proven `fmt <version>` grammar, so this is a real gap
+in *this specific verification*, not in confidence about the fix's shape.
