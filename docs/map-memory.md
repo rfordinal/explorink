@@ -33,6 +33,10 @@ Device: X4, panel 800x480, `EINK_DISPLAY_SINGLE_BUFFER_MODE=1`.
 | boot idle, no map, no BLE (10 s uptime) | 124,564 | 124,480 | 114,676 |
 | map screen, BLE up, one central connected, idle | 49,460 | 37,764 | 42,996 |
 
+Both rows are the build as it was before the BLE config trim below. After the
+trim the same map screen reports 58,540 free — the numbers in this section are
+kept as the baseline every later measurement is compared against.
+
 **Total heap is 246,260 bytes**, not 380 KB. 380 KB is the SRAM the chip has;
 static DRAM, IRAM and the framebuffer come off it before the allocator sees
 anything.
@@ -68,15 +72,45 @@ From `MapActivity::onEnter()`'s own before/after log (`MapActivity.cpp:1197-1219
   of heap.
 
 That leaves **67,304 bytes** between "boot idle" and "before source alloc". Of it,
-`MapActivity` itself is 2,272 bytes (measured, below). The rest — about 65 KB —
-is `BlePositionServer::begin()`, which the log shows running immediately before
-(`MapActivity.cpp` onEnter, `BLEPOS begin: calling NimBLEDevice::init`).
+`MapActivity` itself is 2,272 bytes (measured, below). The rest is
+`BlePositionServer::begin()`.
 
-**open — NimBLE's exact share is not isolated.** What settles it: log
-`ESP.getFreeHeap()` immediately before and after `begin()` and `end()` in
-`lib/BlePositionServer/src/BlePositionServer.cpp`. Two log lines, one flash. The
-`end()` comment already claims returning that RAM is the point of the full
-deinit, and no number backs it.
+## Measured: BLE is 86 % of the map screen's heap cost
+
+`begin()` and `end()` now log a heap bracket
+(`lib/BlePositionServer/src/BlePositionServer.cpp`), so the split is a number and
+not a subtraction. Flashed and measured 2026-08-10:
+
+```
+[BLEPOS] heap: 121796 before begin, 57256 after, delta 64544
+[BLEPOS] heap: 47140 before end, 105944 after, returned 58804
+```
+
+**`begin()` costs 64,544 bytes** (three runs: 64,888 / 64,540 / 64,544 — the
+spread is whether a central is connected). Against 7,696 for the whole tile
+streaming path, that is **86 % of the map screen's heap cost in the BLE stack,
+14 % in the map.**
+
+**open — `end()` returns 58,804 of it, 5,740 bytes short.** Free heap does come
+back fully by the next `begin()` (121,796 vs 124,576 at boot, and the 2,780
+difference is the live `MapActivity` plus its file source), so this is not a leak
+across sessions. What is unaccounted for is *when* those 5,740 bytes come back —
+`NimBLEDevice::deinit(true)` does not appear to return everything inside the
+bracket. Settle it by sampling the heap again a second after `end()`.
+
+## Measured: a real transfer costs no heap
+
+Pushed a 42,681-byte tile with `tools/blepush.py` while the map screen was up
+(`MAPXFER begin` -> `MAPXFER done`, crc verified, 2.6 KB/s):
+
+- **Free heap flat at 49,136 through the whole transfer**, min free unchanged at
+  47,032. The receiver streams to the card; it does not buffer the file.
+- NimBLE host task high-water: **2,152 of 4,096 bytes free** at completion
+  (logged by `MAPXFER done`).
+
+So plan 06's worst case — map + BLE + a central + a transfer in flight — floors
+at **47,032 bytes**, and the 37,764 seen before this build was an older session,
+not this path.
 
 ## Measured: struct sizes, riscv32
 
@@ -155,34 +189,59 @@ This firmware is a BLE peripheral that serves exactly one phone and never scans:
 | `BT_NIMBLE_WHITELIST_SIZE` | 12 | 0 |
 
 The mechanism to change them already exists in this repo: `custom_sdkconfig` in
-`platformio.ini:88`, which rebuilds the core libs and already reclaims ~32–37 KB
-by right-sizing timer task stacks and moving WiFi out of IRAM (MEMFIX-PORT).
-Adding BLE keys there is the same one-line-per-key edit.
+`platformio.ini`, which rebuilds the core libs and already reclaims ~32–37 KB by
+right-sizing timer task stacks and moving WiFi out of IRAM (MEMFIX-PORT).
 
-**open — how much this returns.** Nothing here is measured. The gate is the same
-as plan 06's: `riscv32-esp-elf-size -A firmware.elf` before and after, plus the
-`MEM` line from the map screen with a central connected. No saving may be claimed
-without both.
+## Measured: trimming that config returns 9 KB
+
+Landed in `platformio.ini`'s `custom_sdkconfig` and verified on the device
+2026-08-10 — one connection, no central, no observer, one bond, 12 ACL buffers,
+smaller msys pools, a 4,096-byte host task stack, `BT_CTRL_BLE_MAX_ACT=2`:
+
+| | Before | After | Change |
+|---|---|---|---|
+| `begin()` cost | 64,544 | **56,972** | −7,572 |
+| Free heap, map screen | 49,472 | **58,540** | +9,068 |
+| Min free, map screen | 49,376 | **58,444** | +9,068 |
+| Largest block | 45,044 | **55,284** | +10,240 |
+| Total heap | 246,260 | 247,156 | +896 |
+| Static DRAM (`.data` + `.bss`) | 57,777 | 57,081 | −696 |
+
+**The map screen is now above the project's own 50 KB gate**, at 58.5 KB idle and
+57.9 KB with a transfer in flight (min free 57,932 during a verified 42,681-byte
+push).
+
+Verified working after the trim, not just building: map renders on enter, a
+central connects at MTU 256, and a 42,681-byte tile push completes with a
+matching crc at the same 2.6 KB/s. **Watch the host task stack** — its high-water
+now leaves 1,124 of 4,096 bytes free during a transfer (was 2,152 of 5,120), so
+~2,970 bytes is the real usage and 4,096 is the smallest safe setting. Do not cut
+it further without re-reading that number off `MAPXFER done`.
+
+**Untested after the trim: a real phone sending positions.** A laptop central is
+no substitute — BlueZ negotiates a 420 ms supervision timeout, and a 2 s viewport
+render blocks past it, so the link drops on every redraw
+(`tools/blefakephone.py` died on the first position write for exactly that
+reason). The phone app negotiates 500 units and survives. Needs one ride with
+the app.
 
 ## Levers, largest first
 
 | Lever | Size | Confidence | Cost |
 |---|---|---|---|
-| Trim NimBLE + controller config to one peripheral connection | ~65 KB is in play; savings unknown | open | core rebuild, one flash, verify with `MEM` |
-| Log heap around `begin()`/`end()` to split BLE from the rest | 0 (instrumentation) | — | two lines, one flash. Do this first |
+| ~~Trim NimBLE + controller config~~ | **9,068 bytes, done** | measured | landed 2026-08-10 |
+| Cut BLE further: `BT_CTRL_BLE_MAX_ACT=1`, smaller ACL pool, MTU below 256 | unknown | open | each one risks a transfer stall; verify with a push every time |
 | Right-size `ActivityManagerRender` task stack (8,192, `ActivityManager.cpp:36`) | up to a few KB | open | measure `uxTaskGetStackHighWaterMark` on the map's deepest render |
 | `MapTileReader::streamBuffer_` 4,096 -> 2,048 | 2 KB | read | more SD reads per layer; gate on the reset time already logged |
-| Attribute the 11.7 KB transient under min free | up to 11.7 KB | open | heap sample inside a transfer and inside a reset |
-
-Order matters: the instrumentation line is first because every other item is
-argued against a 65 KB block nobody has measured.
+| Account for the 5,740 bytes `end()` does not hand back | up to 5.7 KB | open | sample the heap a second after `end()` |
 
 ## What is still unmeasured
 
-- **Worst case with a transfer in flight.** Plan 06 wanted map + BLE + a
-  transfer + a viewport reset at once. Not captured: the X4 allows one BLE
-  connection, and a real phone held it for the whole session, so
-  `tools/blefakephone.py` could not attach ("no device advertising the map
-  service"). Repeat with the phone's Bluetooth off.
-- **NimBLE's own share** (above).
-- **The 11.7 KB transient** (above).
+- **A real phone sending positions on the trimmed build** (above).
+- **The 5,740 bytes `end()` does not return inside its own bracket** (above).
+- **An advertising restart after a central disconnects.** Seen twice in these
+  captures: after a laptop central dropped, the device stopped advertising and
+  `blefakephone.py` reported "no device advertising the map service" until the
+  map screen was re-entered. Not a memory issue, and there is already a branch
+  for it (`trailink-worktrees/ble-advertising-restart`) — recorded here because
+  it is what made the worst-case capture take three attempts.

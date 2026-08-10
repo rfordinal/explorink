@@ -212,9 +212,10 @@ measurement gate for each. Start at its
 [`README.md`](./docs/optimization/README.md).
 
 [`docs/map-memory.md`](./docs/map-memory.md) is what the map screen actually
-costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, a
-37.7 KB floor under a 50 KB gate, and about 65 KB of it in BLE rather than in
-the map.
+costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, and
+86 % of that in the BLE stack rather than in the map. Trimming the NimBLE config
+to one peripheral connection gave 9 KB back and put the screen above its 50 KB
+gate.
 
 ## Credits
 
