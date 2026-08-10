@@ -60,9 +60,10 @@ The real pressure is **runtime heap during map + BLE**, which is:
   (`BlePositionServer.cpp:227-259`). **open** — not measured. The `end()`
   comment says the point of the full deinit is returning that RAM, but no number
   is recorded anywhere.
-- `sizeof(MapTileSource)` ≈ 5.5 KB, plus 720 bytes of marker patch, both
+- `sizeof(MapTileSource)` is 6,696 bytes (**measured** from DWARF, 2026-08-10 —
+  this said "≈ 5.5 KB" when written), plus 720 bytes of marker patch, both
   allocated in `onEnter()` and both already logged as a heap before/after delta
-  (`MapActivity.cpp:420-440`).
+  (`MapActivity.cpp:1197-1219`).
 - 8,000 bytes of band scratch during a grayscale frame
   (`GrayscaleFrame.h:101-102`), transient.
 
@@ -70,7 +71,24 @@ So the whole budget question is: **what is the free heap on the map screen with
 BLE up and a transfer running?** That number is not written down anywhere. It is
 the only measurement in this plan that matters.
 
-## Step 1 — record the heap floor
+## Step 1 — answered 2026-08-10: `docs/map-memory.md`
+
+**Measured on hardware.** Map screen, BLE up, one central connected: **49,460
+bytes free, 37,764 min free since boot, largest block 42,996.** Boot idle before
+the map was 124,564 free of a 246,260-byte heap, so the map screen costs 75,104
+bytes — and it sits below this project's own 50 KB gate.
+
+Attribution, from the same capture: 7,696 bytes are the tile source plus marker
+patch, 60–68 bytes are a whole viewport reset, and the remaining ~65 KB is
+`BlePositionServer::begin()` — NimBLE host plus BT controller, still not isolated.
+Full numbers, struct sizes and the BLE-config levers are in
+[`../map-memory.md`](../map-memory.md). Everything below stands; the step it was
+waiting on is done.
+
+No firmware change was needed for it: `src/main.cpp:520-528` already prints
+`Free / Total / Min Free / MaxAlloc` every 10 s whenever serial is attached.
+
+## Step 1 (original) — record the heap floor
 
 `MapActivity` already logs heap at three points: before/after the source alloc
 (`:433`, `:449`) and before/after each tile load (`:1169`, `:1262`). What is

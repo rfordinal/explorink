@@ -1073,8 +1073,13 @@ Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
 `docs/map-follow.md`, `docs/missing-tiles.md`, `docs/route-layer.md`,
 `docs/route-navigation.md`, `docs/map-header-status.md`,
 `docs/power-management.md`, `docs/sleep-screen.md`,
-`docs/map-observation-mode.md`.
+`docs/map-observation-mode.md`, `docs/map-memory.md`.
 Extend one before adding another.
+
+**Document as you go, not at the end.** Every pass updates the topic `.md` it
+touches and the `README.md` of every directory whose use changed. A directory
+`README.md` gets a pointer line only -- the content lives in the topic doc. A
+finding that lives only in a chat log or a commit message is lost.
 
 **Before planning work on the map, BLE or tile paths, read the matching plan in
 `docs/optimization/`.** That directory is a full review of this fork's own code
