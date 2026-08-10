@@ -88,7 +88,7 @@ not a pull request.
 | Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
 | Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |
 | Route following, off-route warning | **not started** |
-| Companion phone app | exists — an Android BLE position sender and ride recorder, in the same unpublished workspace as the map tooling |
+| Companion phone app | exists — [ExplorInk GPS](https://github.com/rfordinal/explorink-android), an Android BLE position sender and ride recorder |
 
 `data/mapstyle.json` holds the styling the renderer is meant to follow — road
 widths and casings per class, building, forest, built-up and water area fills,
