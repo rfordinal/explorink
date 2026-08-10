@@ -17,6 +17,7 @@ BlePositionServer& BlePositionServer::getInstance() {
 
 #include <Logging.h>
 #include <NimBLEDevice.h>
+#include <esp_system.h>  // esp_get_free_heap_size() -- the begin()/end() heap bracket below
 #include <host/ble_gap.h>  // ble_gap_conn_rssi() -- no NimBLEServer/NimBLEConnInfo wrapper exists for it
 
 #include <cstdio>
@@ -192,6 +193,14 @@ bool BlePositionServer::begin(const char* deviceName) {
   LOG_DBG("BLEPOS", "begin: start, begun_=%d, isInitialized=%d", (int)begun_, (int)NimBLEDevice::isInitialized());
   if (begun_) return true;
 
+  // The NimBLE host + BT controller are the single biggest heap consumer on the
+  // map screen: measured on hardware 2026-08-10, entering the map costs 75 KB of
+  // a 124 KB free heap and only 7.7 KB of that is the tile source
+  // (docs/map-memory.md). This bracket is what splits the two, so the split is a
+  // number instead of a subtraction. Same reasoning as MapActivity's own
+  // before/after log around the tile source allocation.
+  const uint32_t heapBeforeBegin = esp_get_free_heap_size();
+
   // Self-heal a partial teardown, same reasoning as BleKeyboardHost::begin().
   if (NimBLEDevice::isInitialized()) {
     LOG_DBG("BLEPOS", "begin: self-heal deinit");
@@ -281,12 +290,19 @@ bool BlePositionServer::begin(const char* deviceName) {
   commandSubscribed_ = false;
 
   begun_ = true;
+  const uint32_t heapAfterBegin = esp_get_free_heap_size();
+  LOG_INF("BLEPOS", "heap: %lu before begin, %lu after, delta %ld", (unsigned long)heapBeforeBegin,
+          (unsigned long)heapAfterBegin, (long)heapBeforeBegin - (long)heapAfterBegin);
   return true;
 }
 
 void BlePositionServer::end() {
   if (!begun_) return;
   begun_ = false;
+
+  // The other half of begin()'s bracket. The deinit below claims to return the
+  // host + controller RAM; this is what checks that it does.
+  const uint32_t heapBeforeEnd = esp_get_free_heap_size();
 
   NimBLEDevice::getAdvertising()->stop();
   g_positionChar = nullptr;
@@ -317,6 +333,10 @@ void BlePositionServer::end() {
   commandHead_ = 0;
   commandTail_ = 0;
   portEXIT_CRITICAL(&g_mux);
+
+  const uint32_t heapAfterEnd = esp_get_free_heap_size();
+  LOG_INF("BLEPOS", "heap: %lu before end, %lu after, returned %ld", (unsigned long)heapBeforeEnd,
+          (unsigned long)heapAfterEnd, (long)heapAfterEnd - (long)heapBeforeEnd);
 }
 
 bool BlePositionServer::getLatest(PositionUpdate& out) const {
