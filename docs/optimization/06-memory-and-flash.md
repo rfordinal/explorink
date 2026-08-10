@@ -78,10 +78,16 @@ bytes free, 37,764 min free since boot, largest block 42,996.** Boot idle before
 the map was 124,564 free of a 246,260-byte heap, so the map screen costs 75,104
 bytes — and it sits below this project's own 50 KB gate.
 
-Attribution, from the same capture: 7,696 bytes are the tile source plus marker
-patch, 60–68 bytes are a whole viewport reset, and the remaining ~65 KB is
-`BlePositionServer::begin()` — NimBLE host plus BT controller, still not isolated.
-Full numbers, struct sizes and the BLE-config levers are in
+Attribution, measured the same day with a heap bracket around
+`BlePositionServer::begin()`/`end()`: **`begin()` costs 64,544 bytes — 86 % of the
+map screen's whole heap cost** — against 7,696 for the tile source plus marker
+patch and 96 bytes for a whole viewport reset. A real 42,681-byte tile transfer
+costs nothing measurable.
+
+Trimming the NimBLE and controller config to what a single-connection peripheral
+needs (`platformio.ini`, `custom_sdkconfig`) returned **9,068 bytes**, verified on
+hardware: the map screen now reports 58,540 free, above the 50 KB gate. Full
+numbers, struct sizes and what is left are in
 [`../map-memory.md`](../map-memory.md). Everything below stands; the step it was
 waiting on is done.
 
