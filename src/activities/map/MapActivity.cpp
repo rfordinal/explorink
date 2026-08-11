@@ -121,6 +121,51 @@ constexpr int kBusyMarginBottom = 50;  // clears GUI.drawButtonHints' band
 constexpr int kBusyBorder = 2;
 constexpr int kBusyGlassInset = 8;  // hourglass inset inside the badge box
 
+// Scale bar geometry: five alternating black/white segments, bottom-left.
+// kScaleMarginBottom is the same clearance line kBusyMarginBottom uses --
+// both stacks bottom out flush with each other, one per side, clear of
+// GUI.drawButtonHints' band.
+constexpr int kScaleMarginLeft = 12;
+constexpr int kScaleMarginBottom = 50;
+constexpr int kScaleBarHeight = 6;
+constexpr int kScaleTickHeight = 4;  // tick overshoot above/below the bar
+constexpr int kScaleSegments = 5;
+// Desired bar width before rounding down to a nice ground distance -- the
+// actual width is whatever niceScaleValue() picks divided by mpp, which is
+// always <= this.
+constexpr int kScaleTargetPx = 130;
+constexpr double kScaleNiceMultipliers[3] = {1.0, 2.0, 5.0};
+
+// Largest value of the form {1, 2, 5} x 10^k not exceeding `raw` -- the
+// rounding every classic map scale bar uses so its marks land on numbers a
+// rider can subtract in their head.
+double niceScaleValue(double raw) {
+  if (raw < 1.0) return 1.0;
+  double best = 1.0;
+  double decade = 1.0;
+  for (int k = 0; k < 6; ++k) {
+    for (double mult : kScaleNiceMultipliers) {
+      const double candidate = mult * decade;
+      if (candidate <= raw) best = candidate;
+    }
+    decade *= 10.0;
+  }
+  return best;
+}
+
+// One decimal place only when `value` is not a whole number -- with
+// kScaleSegments = 5 over the {1,2,5}x10^k sequence, that is only the two
+// smallest km totals (1 km, 2 km go to 0.2 km steps); every other total
+// (>= 5 km, or anything shown in metres) divides into whole numbers.
+void formatScaleMark(double value, char* buf, size_t bufSize) {
+  const long tenths = lround(value * 10.0);
+  if (tenths % 10 == 0) {
+    snprintf(buf, bufSize, "%ld", tenths / 10);
+  } else {
+    snprintf(buf, bufSize, "%ld.%ld", tenths / 10, tenths % 10);
+  }
+}
+
 // Header status row: battery, BLE signal bars, a small Bluetooth logo, top
 // right, above the compass. Battery is drawn through GUI.drawHeader() --
 // BaseTheme.cpp:363 -- the same call every other screen makes, so its icon
@@ -459,6 +504,90 @@ void MapActivity::drawBusyBadge() {
   renderer.fillPolygon(lowerX, lowerY, 3, true);
 }
 
+// Ground distance the bar's five segments and the marks under them stand
+// for, at the current zoom step's mpp (MapViewport::kZoomLadder). Bottom-left,
+// the one corner GUI.drawButtonHints() leaves clear on this side of the
+// screen -- its box row starts at x=25 (BaseTheme.cpp's x4ButtonPositions),
+// so the bar sits left of that, and kScaleMarginBottom mirrors the busy
+// badge's own margin to clear the same band from above.
+void MapActivity::drawMapScale() {
+  const double mpp = MapViewport::kZoomLadder[zoomStep()].mpp;
+  const double niceMeters = niceScaleValue(kScaleTargetPx * mpp);
+  const int totalPx = static_cast<int>(lround(niceMeters / mpp));
+  const bool useKm = niceMeters >= 1000.0;
+
+  // Stacked bottom-up from the same clearance line the busy badge uses
+  // (kScaleMarginBottom, mirroring kBusyMarginBottom): label text bottom
+  // lands exactly there, with the ticks and bar above it -- not below, or
+  // the labels would draw into GUI.drawButtonHints' band.
+  const int clearanceY = renderer.getScreenHeight() - kScaleMarginBottom;
+  const int labelY = clearanceY - renderer.getLineHeight(UI_10_FONT_ID);
+  const int tickBottom = labelY - 2;
+  const int barBottom = tickBottom - kScaleTickHeight;
+  const int barTop = barBottom - kScaleBarHeight;
+  const int tickTop = barTop - kScaleTickHeight;
+
+  // Edges computed from the same total rather than a fixed per-segment
+  // pixel width, so five segments always add up to exactly totalPx with no
+  // rounding gap or overlap at the last one.
+  int edgeX[kScaleSegments + 1];
+  for (int i = 0; i <= kScaleSegments; ++i) {
+    edgeX[i] = kScaleMarginLeft + static_cast<int>(lround(static_cast<double>(i) * totalPx / kScaleSegments));
+  }
+
+  for (int i = 0; i < kScaleSegments; ++i) {
+    const bool black = (i % 2) == 0;
+    renderer.fillRect(edgeX[i], barTop, edgeX[i + 1] - edgeX[i], kScaleBarHeight, black);
+  }
+  renderer.drawRect(edgeX[0], barTop, totalPx, kScaleBarHeight, true);
+
+  for (int i = 0; i <= kScaleSegments; ++i) {
+    renderer.drawLine(edgeX[i], tickTop, edgeX[i], tickBottom, 1, true);
+  }
+
+  // Labels, built and measured before any is drawn: a narrow segment at a
+  // loose zoom rung can make adjacent numbers wider than the gap between
+  // their ticks -- confirmed on hardware 2026-08-11 (CMD:SCREENSHOT at
+  // mpp=20), the marks ran together into unreadable overlap. 0 and the final
+  // mark always draw -- they are the two numbers a rider actually needs, the
+  // endpoints of what the bar covers. An interior mark draws only if it
+  // clears both its drawn neighbour to the left and the final label's own
+  // left edge; otherwise its tick stays but its number is dropped rather
+  // than smeared into the next one.
+  char marks[kScaleSegments + 1][16];
+  int textX[kScaleSegments + 1];
+  int textWidths[kScaleSegments + 1];
+  for (int i = 0; i <= kScaleSegments; ++i) {
+    if (i == kScaleSegments) {
+      char value[12];
+      formatScaleMark(useKm ? niceMeters / 1000.0 : niceMeters, value, sizeof(value));
+      snprintf(marks[i], sizeof(marks[i]), "%s %s", value, useKm ? "km" : "m");
+    } else {
+      const double markValue = static_cast<double>(i) * niceMeters / kScaleSegments;
+      formatScaleMark(useKm ? markValue / 1000.0 : markValue, marks[i], sizeof(marks[i]));
+    }
+    textWidths[i] = renderer.getTextWidth(UI_10_FONT_ID, marks[i]);
+    textX[i] = edgeX[i] - textWidths[i] / 2;
+  }
+  // The two ends stay inside the bar's own span, not centred on their tick --
+  // "0" cannot draw left of the margin and the final mark cannot run past
+  // the bar's right edge.
+  textX[0] = edgeX[0];
+  textX[kScaleSegments] = edgeX[kScaleSegments] - textWidths[kScaleSegments];
+
+  constexpr int kLabelGap = 3;
+  renderer.drawText(UI_10_FONT_ID, textX[0], labelY, marks[0], true);
+  int lastLabelRight = textX[0] + textWidths[0];
+  for (int i = 1; i < kScaleSegments; ++i) {
+    const bool clearsPrev = textX[i] >= lastLabelRight + kLabelGap;
+    const bool clearsFinal = textX[i] + textWidths[i] + kLabelGap <= textX[kScaleSegments];
+    if (!clearsPrev || !clearsFinal) continue;  // tick stays; number would overlap a neighbour
+    renderer.drawText(UI_10_FONT_ID, textX[i], labelY, marks[i], true);
+    lastLabelRight = textX[i] + textWidths[i];
+  }
+  renderer.drawText(UI_10_FONT_ID, textX[kScaleSegments], labelY, marks[kScaleSegments], true);
+}
+
 void MapActivity::showBusy() {
   // One badge per burst. Three quick zoom presses are one redraw, so they must
   // also be one refresh -- the badge from the first press is still on screen
@@ -671,8 +800,7 @@ void MapActivity::maybeCheckTileFreshness() {
   const bool logGate = now - freshnessLastGateLogMs_ >= kFreshnessGateLogThrottleMs;
   if (freshnessNextAskMs_ != 0 && now < freshnessNextAskMs_) {
     if (logGate) {
-      LOG_DBG(kLogTag, "freshness: cooling down, %lu ms left",
-              static_cast<unsigned long>(freshnessNextAskMs_ - now));
+      LOG_DBG(kLogTag, "freshness: cooling down, %lu ms left", static_cast<unsigned long>(freshnessNextAskMs_ - now));
       freshnessLastGateLogMs_ = now;
     }
     return;
@@ -2145,6 +2273,7 @@ void MapActivity::renderRouteOverview() {
   // the picture is turned.
   drawCompass(fit.heading);
   drawHeaderStatus();
+  drawMapScale();
 
   if (SETTINGS.mapDebugInfo) {
     const int linePitch = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
@@ -2392,6 +2521,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // is turned, and with a route holding the frame that is the route's direction.
   drawCompass(frameHeading);
   drawHeaderStatus();
+  drawMapScale();
 
   // Does not count the marker or its patch save, both of which happen after the
   // readout is composed -- this is the tile-and-geometry cost, which is the one
