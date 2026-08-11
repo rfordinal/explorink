@@ -93,3 +93,105 @@ TEST(MissingTilePriority, OrderIsTotalSoPagingIsRepeatable) {
   // Irreflexive, as a strict weak ordering must be.
   EXPECT_FALSE(missingTileFetchBefore(a, a));
 }
+
+// --- the last known position ------------------------------------------------
+//
+// A fetch is routinely cut short, so the first squares to go out must be the
+// ones under the rider. These lock that in.
+
+namespace {
+
+std::vector<Tile> sortedNear(std::vector<Tile> tiles, const MissingTileAnchor& anchor) {
+  std::sort(tiles.begin(), tiles.end(),
+            [&anchor](const Tile& a, const Tile& b) { return missingTileFetchBefore(a, b, anchor); });
+  return tiles;
+}
+
+// The rider at z12 2200/1400, with the other two tiers set to the same numbers
+// -- the tests below stay inside one tier, so only that tier's pair matters.
+MissingTileAnchor anchorAt(uint32_t col, uint32_t row) {
+  MissingTileAnchor a;
+  a.valid = true;
+  for (int i = 0; i < 4; ++i) {
+    a.col[i] = col;
+    a.row[i] = row;
+  }
+  return a;
+}
+
+}  // namespace
+
+TEST(MissingTilePriority, DistanceIsManhattanInWholeTiles) {
+  const MissingTileAnchor anchor = anchorAt(2200, 1400);
+  EXPECT_EQ(missingTileDistance(Tile{12, 2200, 1400, 0}, anchor), 0u);
+  EXPECT_EQ(missingTileDistance(Tile{12, 2201, 1400, 0}, anchor), 1u);
+  EXPECT_EQ(missingTileDistance(Tile{12, 2199, 1399, 0}, anchor), 2u);
+  // Absolute, not signed: west and north of the rider count the same as east
+  // and south.
+  EXPECT_EQ(missingTileDistance(Tile{12, 2190, 1400, 0}, anchor), 10u);
+  EXPECT_EQ(missingTileDistance(Tile{12, 2210, 1400, 0}, anchor), 10u);
+}
+
+TEST(MissingTilePriority, NearTheRiderBeatsAHigherHitCountFarAway) {
+  const MissingTileAnchor anchor = anchorAt(2200, 1400);
+  const std::vector<Tile> order = sortedNear(
+      {
+          Tile{12, 2260, 1400, 40},  // hatched forty times, six hundred km away
+          Tile{12, 2201, 1400, 1},   // hatched once, next door
+      },
+      anchor);
+  EXPECT_EQ(order[0].col, 2201u);
+  EXPECT_EQ(order[1].col, 2260u);
+}
+
+TEST(MissingTilePriority, HitCountStillBreaksTiesAtEqualDistance) {
+  const MissingTileAnchor anchor = anchorAt(2200, 1400);
+  // Both one tile away, so the older signal decides -- distance is a bucket,
+  // not a replacement for the hit count.
+  const std::vector<Tile> order = sortedNear(
+      {
+          Tile{12, 2201, 1400, 2},
+          Tile{12, 2199, 1400, 9},
+      },
+      anchor);
+  EXPECT_EQ(order[0].count, 9u);
+  EXPECT_EQ(order[1].count, 2u);
+}
+
+TEST(MissingTilePriority, TierStillOutranksDistance) {
+  const MissingTileAnchor anchor = anchorAt(2200, 1400);
+  // A detail close-up right under the rider does not delay the regional view
+  // they navigate by, even though it is nearer.
+  const std::vector<Tile> order = sortedNear(
+      {
+          Tile{13, 2200, 1400, 1},
+          Tile{12, 2205, 1400, 1},
+      },
+      anchor);
+  EXPECT_EQ(order[0].z, 12);
+  EXPECT_EQ(order[1].z, 13);
+}
+
+TEST(MissingTilePriority, WithoutAFixTheOldOrderIsUnchanged) {
+  // A device that has never had a position must behave exactly as before.
+  const MissingTileAnchor none;
+  const std::vector<Tile> withAnchorArg = sortedNear(
+      {
+          Tile{12, 2260, 1400, 40},
+          Tile{12, 2201, 1400, 1},
+      },
+      none);
+  EXPECT_EQ(withAnchorArg[0].count, 40u);
+  EXPECT_EQ(withAnchorArg[1].count, 1u);
+}
+
+TEST(MissingTilePriority, DistanceOrderIsStillTotal) {
+  const MissingTileAnchor anchor = anchorAt(2200, 1400);
+  // Equidistant, equal count: col then row, as before, or paging repeats and
+  // skips entries.
+  const Tile a{12, 2201, 1400, 5};
+  const Tile b{12, 2199, 1400, 5};
+  EXPECT_TRUE(missingTileFetchBefore(b, a, anchor));
+  EXPECT_FALSE(missingTileFetchBefore(a, b, anchor));
+  EXPECT_FALSE(missingTileFetchBefore(a, a, anchor));
+}

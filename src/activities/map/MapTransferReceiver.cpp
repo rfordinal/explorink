@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "MapByteFormat.h"
+
 namespace {
 
 constexpr const char* kLogTag = "MAPXFER";
@@ -436,8 +438,16 @@ void MapTransferReceiver::formatStatus(char* out, size_t outSize) const {
 
   const Status snapshot = status();
   if (snapshot.active) {
-    snprintf(out, outSize, "xfer %lu/%lu", static_cast<unsigned long>(snapshot.received),
-             static_cast<unsigned long>(snapshot.total));
+    // kB and a percent, not two raw byte counts. "xfer 18432/27648" is arithmetic
+    // homework at a glance on a handlebar; the sync screen has always stated the
+    // same transfer in kB, and the two readouts have to agree
+    // (MapByteFormat.h).
+    char got[16];
+    char want[16];
+    mapfmt::formatBytes(snapshot.received, got, sizeof(got));
+    mapfmt::formatBytes(snapshot.total, want, sizeof(want));
+    const uint32_t pct = snapshot.total > 0 ? snapshot.received * 100 / snapshot.total : 0;
+    snprintf(out, outSize, "xfer %s / %s %lu%%", got, want, static_cast<unsigned long>(pct));
     return;
   }
   // Nothing in flight and nothing has happened: the readout stays two lines,

@@ -3,8 +3,12 @@
 #include <ArduinoJson.h>
 #include <PersistableStore.h>
 
+// The fetch-order policy, including MissingTileAnchor: this header declares the
+// anchored sort, so the type has to come with it.
 #include <cstdint>
 #include <vector>
+
+#include "MissingTilePriority.h"
 
 // One tile the device tried to open and could not -- absent, truncated or
 // crc32-mismatched, same "unavailable" definition MapTileSource uses.
@@ -116,6 +120,11 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // meaning (fromJson() reads it back positionally into the same list), so a
   // reorder is not new information and does not earn an SD write.
   void sortByFetchPriority();
+
+  // Same order, but with "near the rider" ahead of "hatched often" inside each
+  // LOD tier. The anchor is the last known fix in tile coordinates; see
+  // MissingTilePriority.h for why distance outranks the hit count.
+  void sortByFetchPriority(const MissingTileAnchor& anchor);
 };
 
 #define MISSING_TILES MissingTilesStore::getInstance()
