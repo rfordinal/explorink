@@ -251,18 +251,18 @@ same offset still reads right.
   the map's top clip all read correctly on the panel -- the map's own lines
   start right at the separator with nothing bleeding above it. The place
   name lookup also works end to end on real tile data: at the fix rendered
-  (z11, 23 places in the loaded tile range), the header showed "Kittsee,
-  Bratislava" -- a real fine+coarse pair, not a placeholder string. Icon
-  cluster (BLE X, 95% battery) unaffected, as expected -- `drawHeaderStatusStrip()`
-  itself was not touched.
+  (z11, 23 places in the loaded tile range), the header showed a real
+  fine+coarse pair, not a placeholder string (name withheld here --
+  it was the device's persisted GPS fix, close to a real address; see
+  the parent CLAUDE.md's screenshot-privacy rule). Icon cluster (BLE X,
+  95% battery) unaffected, as expected -- `drawHeaderStatusStrip()` itself
+  was not touched.
 - **Verified on hardware, 2026-08-11, a second grab**: a Slovak diacritic
-  renders correctly in the header font -- "Petržalka" (fine tier alone, no
-  coarse match nearby this time), the ž a clean glyph, not a fallback box.
-  Same grab is where the vertical/horizontal offset tuning above (`+2px`
-  left, `+3px` top) happened, alongside the scale bar
-  (`docs/map-scale-bar.md`) on the same screen -- shot:
-  `docs/device-shots/map-scale-bar-and-header-placename.png` in the parent
-  repo.
+  renders correctly in the header font -- a real place name (withheld, same
+  reason as above), the ž a clean glyph, not a fallback box. Same grab is
+  where the vertical/horizontal offset tuning above (`+2px` left, `+3px`
+  top) happened, alongside the scale bar (`docs/map-scale-bar.md`) on the
+  same screen. No shot kept in the repo -- privacy, not a rendering concern.
 - **Not yet checked**: the truncation path (no name seen so far has been
   close to running into the icon cluster) and every other zoom rung's places
   walk.

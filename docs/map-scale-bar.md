@@ -66,9 +66,9 @@ dropped -- no overlap, ticks intact. Not yet checked at every other zoom
 rung; the collision math is general (it does not special-case mpp=20), but
 only one rung has actually been looked at on the glass.
 
-Shot: `docs/device-shots/map-scale-bar-and-header-placename.png` in the
-parent repo -- "0 100 m", bottom-left, alongside the header place-name
-feature the same shot also covers.
+The grab that verified this rendered the device's persisted GPS fix, which
+named a real neighbourhood -- removed from the repo rather than kept as a
+reference shot (privacy, not a rendering concern).
 
 ## Read-off-the-code vs measured on hardware
 
