@@ -263,6 +263,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // button boxes never mention them. Calls the theme's own
   // drawSideButtonHints() for the matching side-hint boxes.
   void drawZoomSideHints();
+  // Five-segment black/white bar, bottom-left, plus tick marks and mark
+  // labels rounded to a nice ground distance (1/2/5 x 10^n) for the current
+  // zoom step's mpp (MapViewport::kZoomLadder).
+  void drawMapScale();
   // Immediate "working on it" feedback, above the button hints. A ladder step
   // or a Refresh does not reach the panel for the better part of two seconds
   // (settle, tile reads, then the refresh itself), which is long enough that a
