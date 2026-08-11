@@ -170,6 +170,15 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // NimBLE-Arduino stops advertising once a central connects and does not
   // resume automatically -- restart it on disconnect so a dropped link
   // (out of range, phone Bluetooth toggled) can reconnect without a reboot.
+  //
+  // start() can fail (e.g. transient "host not synced" right after a link
+  // drop) and this call never checked -- a mid-ride incident showed BLE stop
+  // accepting connections and never recover for the rest of a ride while the
+  // rest of the device stayed responsive (docs/power-management.md, "BLE
+  // stopped accepting connections mid-ride"). A few quick retries turn a
+  // transient failure into a recovered link instead of a silent, permanent
+  // one; ensureAdvertising() (called periodically from MapActivity::loop())
+  // is the backstop if all of these fail too.
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     // Before advertising again: a file transfer in flight is dead the moment
     // the link drops. Resuming across a reconnect is deliberately not built
@@ -177,7 +186,21 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     // has to go now rather than sit on the card looking complete.
     self().onCentralDisconnect();
     self().onTransferSubscribe(false);
-    NimBLEDevice::getAdvertising()->start();
+
+    NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+    constexpr int kMaxAttempts = 5;
+    constexpr uint32_t kRetryDelayMs = 50;
+    bool restarted = false;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      if (advertising->start()) {
+        restarted = true;
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+    }
+    if (!restarted) {
+      LOG_ERR("BLEPOS", "advertising restart failed after disconnect (%d attempts)", kMaxAttempts);
+    }
   }
 };
 
@@ -292,7 +315,11 @@ bool BlePositionServer::begin(const char* deviceName) {
   // the rider off this string (../../docs/ble-app-wake.md in the parent repo).
   advertising->enableScanResponse(true);
   advertising->setName(deviceName ? deviceName : kBleDeviceName);
-  advertising->start();
+  if (!advertising->start()) {
+    LOG_ERR("BLEPOS", "advertising failed to start");
+    NimBLEDevice::deinit(true);
+    return false;
+  }
 
   portENTER_CRITICAL(&g_mux);
   hasUpdate_ = false;
@@ -493,6 +520,23 @@ int8_t BlePositionServer::rssi() const {
   return ble_gap_conn_rssi(connHandle_, &value) == 0 ? value : 0;
 }
 
+// Backstop for onDisconnect()'s own retries: catches advertising going quiet
+// for any other reason (not just a checked-and-retried disconnect) by
+// comparing "should be reachable" against NimBLE's own idea of whether it's
+// advertising. Both checks are register reads, no radio traffic -- cheap
+// enough to poll every few seconds from MapActivity::loop() the whole time
+// the map screen is up.
+void BlePositionServer::ensureAdvertising() {
+  if (!begun_) return;
+  if (connHandle_ != BLE_HS_CONN_HANDLE_NONE) return;  // a client is connected -- nothing to advertise for
+  if (NimBLEDevice::getAdvertising()->isAdvertising()) return;
+
+  LOG_ERR("BLEPOS", "advertising was stopped with no client connected -- restarting");
+  if (!NimBLEDevice::getAdvertising()->start()) {
+    LOG_ERR("BLEPOS", "ensureAdvertising: restart failed");
+  }
+}
+
 void BlePositionServer::onCommandSubscribe(bool subscribed) {
   commandSubscribed_ = subscribed;
   LOG_DBG("BLEPOS", "command channel %s", subscribed ? "subscribed" : "unsubscribed");
@@ -579,6 +623,7 @@ void BlePositionServer::onConnIntervalChanged(uint16_t) {}
 void BlePositionServer::onConnHandleChanged(uint16_t) {}
 void BlePositionServer::onCentralDisconnect() {}
 int8_t BlePositionServer::rssi() const { return 0; }
+void BlePositionServer::ensureAdvertising() {}
 
 }  // namespace freeink
 
