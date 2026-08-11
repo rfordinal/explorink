@@ -73,6 +73,12 @@ are present.
 
 - Payload contents, interval defaults, name placement: **read off the code**
   (this repo and the vendored NimBLE), cited above.
-- Scan response actually reaching an Android scan, and the name showing in the
-  pairing dialog: **not measured yet**. Settled by pairing a phone against a
-  device running this build.
+- **The name reaches an active scan — measured on hardware 2026-08-11.** Flashed
+  this build, opened the map with `CMD:GOTO_MAP`, scanned from the laptop with
+  bleak after dropping BlueZ's cache entry for the device
+  (`bluetoothctl remove`, so a cached name could not be mistaken for a fresh
+  read). One device answered: `14:63:93:F4:8A:36  local_name='XteinkX4Map'
+  rssi=-53  uuids=['5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0001']`. Before this change
+  the same scan returned the service UUID and `local_name=None`.
+- The name showing in Android's companion pairing dialog: **not measured**. Needs
+  a phone. Same scan data underneath, so it is likely, not proven.
