@@ -17,7 +17,7 @@ BlePositionServer& BlePositionServer::getInstance() {
 
 #include <Logging.h>
 #include <NimBLEDevice.h>
-#include <esp_system.h>  // esp_get_free_heap_size() -- the begin()/end() heap bracket below
+#include <esp_system.h>    // esp_get_free_heap_size() -- the begin()/end() heap bracket below
 #include <host/ble_gap.h>  // ble_gap_conn_rssi() -- no NimBLEServer/NimBLEConnInfo wrapper exists for it
 
 #include <cstdio>
@@ -210,7 +210,7 @@ bool BlePositionServer::begin(const char* deviceName) {
   }
 
   LOG_DBG("BLEPOS", "begin: calling NimBLEDevice::init");
-  if (!NimBLEDevice::init(deviceName ? deviceName : "XteinkX4Map")) {
+  if (!NimBLEDevice::init(deviceName ? deviceName : kBleDeviceName)) {
     LOG_DBG("BLEPOS", "begin: NimBLEDevice::init failed");
     return false;
   }
@@ -278,6 +278,20 @@ bool BlePositionServer::begin(const char* deviceName) {
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
   advertising->addServiceUUID(kServiceUuid);
+  // The name goes in the scan response, not the advertisement, and it has to be
+  // set here rather than relying on init(): NimBLEDevice::init()'s name only
+  // reaches the GAP Device Name characteristic (readable after connecting), and
+  // NimBLE 2.x defaults scan response off (NimBLEAdvertising.cpp:44). So before
+  // this the device advertised flags plus one service UUID and no name at all --
+  // and the phone's name filter (BleLink.kt, ScanFilter.setDeviceName) could
+  // never match. Scan response rather than the advertisement because the payload
+  // is full: flags (3 B) plus a 128-bit service UUID (18 B) is 21 of 31 bytes and
+  // the name needs 13 more. An active scan reads the scan response, which is what
+  // Android does. Why it matters: the phone app wakes itself when this screen
+  // opens, and the CompanionDeviceManager association dialog names the device to
+  // the rider off this string (../../docs/ble-app-wake.md in the parent repo).
+  advertising->enableScanResponse(true);
+  advertising->setName(deviceName ? deviceName : kBleDeviceName);
   advertising->start();
 
   portENTER_CRITICAL(&g_mux);
