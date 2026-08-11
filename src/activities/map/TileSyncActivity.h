@@ -162,6 +162,11 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // spending the phone's data belongs, which is why this mode exists separately
   // from the map screen's live one.
   void askAboutFreshness();
+
+  // Snapshots the missing list and zeroes everything one run reports, so a second
+  // run on the same visit starts where a fresh entry would. False means the
+  // snapshot could not be allocated.
+  bool armRun();
   // Stale tiles this visit, for the ping-pong guard and the log. Not persisted
   // and not this screen's row list -- see StaleTilesList.
   StaleTilesList staleTiles_;

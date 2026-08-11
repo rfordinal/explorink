@@ -77,6 +77,15 @@ class MapTransferReceiver {
 
   // Registers the BLE hooks. Call after BlePositionServer::begin().
   void attach();
+
+  // Zeroes the landed/failed counters so a screen can start a second run without
+  // leaving and coming back. Refuses while a transfer is in flight -- the numbers
+  // it would reset are the ones that transfer is about to add to.
+  //
+  // Needed because these counters are "since the screen opened" and the sync
+  // screen can now re-ask on the same visit: a phone that turns up after a run
+  // finished used to be ignored (TileSyncActivity::trackPhone).
+  bool resetCounters();
   // Unregisters them and abandons any transfer in flight, deleting its .part
   // file. Call **before** BlePositionServer::end(): a hook still registered
   // when the activity is deleted is a callback that outlives its owner.

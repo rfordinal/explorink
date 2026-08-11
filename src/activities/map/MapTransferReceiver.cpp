@@ -56,6 +56,20 @@ MapTransferReceiver::~MapTransferReceiver() {
   if (active_) abandon(nullptr);
 }
 
+bool MapTransferReceiver::resetCounters() {
+  if (active_) return false;
+  // Same critical section the publish path uses: the NimBLE host task writes the
+  // snapshot these mirror, and a torn read on the screen's next frame would show
+  // a count that never existed.
+  portENTER_CRITICAL(&g_mux);
+  completed_ = 0;
+  completedBytes_ = 0;
+  failed_ = 0;
+  portEXIT_CRITICAL(&g_mux);
+  publish();
+  return true;
+}
+
 void MapTransferReceiver::attach() {
   freeink::BlePositionServer::TransferHooks hooks;
   hooks.ctx = this;

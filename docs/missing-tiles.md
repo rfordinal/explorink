@@ -819,6 +819,28 @@ Three changes, all in `TileSyncActivity`:
   the map server being static files with no API
   (`../../docs/tile-index-spec.md`).
 
+### A phone that turns up after the run gets asked
+
+`trackPhone()` used to return immediately on `Phase::Finished`, so a screen that
+had finished ignored every later subscribe. The rider who watches a run end with
+nothing, *then* connects their phone, got no ask, no message, and nothing on the
+panel to say the screen had stopped listening. Found on hardware 2026-08-11 while
+setting up the stall-verdict test: a central subscribed to a finished screen
+(`[BLEPOS] command channel subscribed`) and the screen never reacted -- no
+`phone subscribed, asking` line at all.
+
+A finished run now re-arms on a subscribe: `armRun()` re-snapshots the list and
+zeroes everything a run reports, then the ask goes out again. Bounded by connect
+events rather than polling -- it only fires on a false-to-true transition, so a
+phone that stays connected cannot make it loop.
+
+`armRun()` exists because a second run on one visit needs the same starting state
+a fresh entry has, and one of those pieces is easy to miss:
+`MapTransferReceiver`'s counters are "since the screen opened", so without
+`resetCounters()` the second run would start with the first one's arrivals already
+on the board. That reset refuses while a transfer is in flight, and takes the same
+critical section the publish path uses.
+
 ### The finished screen is a result, not a list
 
 The row list is what a rider watches while a fetch works, and it is irrelevant the

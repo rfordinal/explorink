@@ -38,22 +38,16 @@ static MissingTilesConsoleSource g_missingTilesConsoleSource;
 TileSyncActivity::TileSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : Activity("TileSync", renderer, mappedInput), transfer_(kTileRoot) {}
 
-void TileSyncActivity::onEnter() {
-  Activity::onEnter();
-
-  freeink::BlePositionServer::getInstance().begin();
-  // After begin(), so the characteristics exist before anything can be written
-  // to them.
-  transfer_.attach();
-
-  // The list the phone is about to read and the count it is about to be told
-  // have to be the same list in the same order, and where the rider was last
-  // seen decides what goes out first. The same anchor
-  // goes to the console source below, because `missing` re-sorts the store when
-  // the phone starts paging -- two different orders would label the rows on this
-  // screen for tiles the phone was never told about.
+bool TileSyncActivity::armRun() {
+  // The list the phone is about to read and the count it is about to be told have
+  // to be the same list in the same order, and where the rider was last seen
+  // decides what goes out first. The same anchor goes to the console source,
+  // because `missing` re-sorts the store when the phone starts paging -- two
+  // different orders would label the rows on this screen for tiles the phone was
+  // never told about.
   const MissingTileAnchor anchor = missingTileAnchorFromLastFix();
   MISSING_TILES.sortByFetchPriority(anchor);
+  g_missingTilesConsoleSource.setAnchor(anchor);
   const auto& hits = MISSING_TILES.hits();
   rowCount_ = static_cast<uint32_t>(hits.size());
 
@@ -62,13 +56,10 @@ void TileSyncActivity::onEnter() {
     if (!rows_) {
       LOG_ERR(kLogTag, "OOM: %lu rows", static_cast<unsigned long>(rowCount_));
       // Without the snapshot there is no stable order to draw, and a fetch whose
-      // screen cannot show what it is doing is worse than one that did not
-      // start. The list is untouched, so the rider can try again.
+      // screen cannot show what it is doing is worse than one that did not start.
+      // The list is untouched, so the rider can try again.
       rowCount_ = 0;
-      phase_ = Phase::Finished;
-      verdict_ = StrId::STR_MAP_FETCH_NOTHING;
-      renderScreen();
-      return;
+      return false;
     }
     for (uint32_t i = 0; i < rowCount_; ++i) {
       rows_[i].tile = MapTileCoord{hits[i].z, hits[i].col, hits[i].row};
@@ -76,7 +67,36 @@ void TileSyncActivity::onEnter() {
     }
   }
 
-  g_missingTilesConsoleSource.setAnchor(anchor);
+  // Counters, not just the snapshot. The receiver counts "since the screen
+  // opened", so a second run on the same visit would otherwise start with the
+  // first one's arrivals already on the board.
+  transfer_.resetCounters();
+  consoleState_.clearSkips();
+  skipped_ = 0;
+  drawnDone_ = 0;
+  drawnSkipped_ = 0;
+  lastClearedTileSeq_ = transfer_.status().tileSeq;
+  staleTiles_.clear();
+  freshnessAsked_ = false;
+  lastSettleMs_ = 0;
+  return true;
+}
+
+void TileSyncActivity::onEnter() {
+  Activity::onEnter();
+
+  freeink::BlePositionServer::getInstance().begin();
+  // After begin(), so the characteristics exist before anything can be written
+  // to them.
+  transfer_.attach();
+
+  if (!armRun()) {
+    phase_ = Phase::Finished;
+    verdict_ = StrId::STR_MAP_FETCH_NOTHING;
+    renderScreen();
+    return;
+  }
+
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   consoleState_.setSkipObserver(this);
   // What `have` answers from: the tiles the map screen last drew, with the
@@ -98,14 +118,6 @@ void TileSyncActivity::onEnter() {
   // version transfers fine, passes CRC and is then refused on open, so the
   // supplier needs the number before it sends anything (MapTileReader.h).
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
-  consoleState_.clearSkips();
-  skipped_ = 0;
-  drawnDone_ = 0;
-  drawnSkipped_ = 0;
-  lastClearedTileSeq_ = transfer_.status().tileSeq;
-
-  staleTiles_.clear();
-  freshnessAsked_ = false;
 
   if (rowCount_ == 0) {
     // Worth a screen rather than a silent bounce back to the menu: the rider
@@ -203,10 +215,33 @@ void TileSyncActivity::askForTiles() {
 }
 
 void TileSyncActivity::trackPhone() {
-  if (phase_ == Phase::Finished) return;
   const bool listening = phoneListening();
   if (listening == drawnPhoneListening_) return;
   drawnPhoneListening_ = listening;
+
+  // A phone arriving after the run ended is a second chance, not noise. This used
+  // to return early on Phase::Finished, so a rider who watched a run end with
+  // nothing and *then* connected their phone got no ask, no message, and no way
+  // to tell the screen had stopped listening -- found on hardware 2026-08-11
+  // while testing the stall verdict, with a central that subscribed to a finished
+  // screen and was ignored.
+  //
+  // Bounded by connect events, not a poll: this only runs on a false->true
+  // transition, so a phone that stays connected cannot make it loop.
+  if (phase_ == Phase::Finished && listening) {
+    if (!armRun()) return;
+    LOG_INF(kLogTag, "phone arrived after the run, asking again (%lu tiles)", static_cast<unsigned long>(rowCount_));
+    hadPhone_ = true;
+    if (rowCount_ > 0) {
+      askForTiles();
+    } else {
+      askAboutFreshness();
+      verdict_ = StrId::STR_MAP_FETCH_NOTHING;
+      renderScreen();
+    }
+    return;
+  }
+  if (phase_ == Phase::Finished) return;
 
   if (listening) {
     hadPhone_ = true;
