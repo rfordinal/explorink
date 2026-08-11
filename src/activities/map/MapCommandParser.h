@@ -29,6 +29,7 @@
 //   stale <z> <col> <row>
 //   checked <n>|unknown
 //   info
+//   stats
 //
 // `tiles` reports the current viewport. `missing` reports the persisted
 // list of every tile the device has ever hatched, which is a different and
@@ -43,6 +44,14 @@
 // when it could not reach the index. **`unknown` is not zero.** A phone with no
 // signal cannot tell a current tile from a stale one, and treating its silence
 // as "all current" would bury exactly the bug this exists to find.
+//
+// `stats` is the power meter: battery millivolts, CPU clock time, panel
+// refresh counts, loop duty cycle. Same keys as the SD card's power.csv
+// (src/PowerLog.cpp), deliberately -- one vocabulary, two ways out, so a script
+// reading a live device and a script reading a card's log parse the same
+// names. It is a separate command from `info` because it is polled on a
+// different cadence: `info` answers what is on screen and is asked once,
+// `stats` is asked every few minutes across a whole ride.
 //
 // `skip` is the one command that exists for the phone rather than for a human
 // at a terminal: it is how the supplier of tiles says "I cannot get you this
@@ -77,6 +86,7 @@ enum class MapCommandType : uint8_t {
   Stale,
   Checked,
   Info,
+  Stats,
   Error,  // see MapCommand::error
 };
 

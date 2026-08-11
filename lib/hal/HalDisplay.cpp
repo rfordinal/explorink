@@ -1,5 +1,6 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <PowerTelemetry.h>
 
 // Global HalDisplay instance
 HalDisplay display;
@@ -57,12 +58,31 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
   }
 }
 
+// Every panel refresh is counted here, at the one choke point all of them pass
+// through, so a ride's panel cost is a number instead of a guess
+// (PowerTelemetry.h). The count is by waveform because the waveforms do not
+// cost the same, and the elapsed time is recorded because it is the closest
+// stand-in for panel energy without an inline meter.
+PowerTelemetry::Refresh convertTelemetryKind(HalDisplay::RefreshMode mode) {
+  switch (mode) {
+    case HalDisplay::FULL_REFRESH:
+      return PowerTelemetry::Refresh::Full;
+    case HalDisplay::HALF_REFRESH:
+      return PowerTelemetry::Refresh::Half;
+    case HalDisplay::FAST_REFRESH:
+    default:
+      return PowerTelemetry::Refresh::Fast;
+  }
+}
+
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
     einkDisplay.requestResync(1);
   }
 
+  const uint32_t startedMs = millis();
   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
+  POWER_TELEMETRY.onRefresh(convertTelemetryKind(mode), millis() - startedMs);
 }
 
 void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
@@ -70,10 +90,18 @@ void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
     einkDisplay.requestResync(1);
   }
 
+  // Counted here, timed in waitRefreshComplete(): the panel is drawing either
+  // way, but the *caller* only blocks in the wait. Counting the refresh twice
+  // would double every async frame.
   einkDisplay.displayBufferAsyncNoShadow(convertRefreshMode(mode));
+  POWER_TELEMETRY.onRefresh(convertTelemetryKind(mode), 0);
 }
 
-void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
+void HalDisplay::waitRefreshComplete() {
+  const uint32_t startedMs = millis();
+  einkDisplay.waitRefreshComplete();
+  POWER_TELEMETRY.onPanelWait(millis() - startedMs);
+}
 
 bool HalDisplay::supportsAsyncRefresh() const { return einkDisplay.supportsAsyncRefresh(); }
 
@@ -82,11 +110,18 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
     einkDisplay.requestResync(1);
   }
 
+  const uint32_t startedMs = millis();
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
+  POWER_TELEMETRY.onRefresh(convertTelemetryKind(mode), millis() - startedMs);
 }
 
 void HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
+  const uint32_t startedMs = millis();
   einkDisplay.displayWindow(x, y, w, h, turnOffScreen);
+  // Its own bucket, not folded into the three waveforms: a window addresses
+  // only a rectangle, so it is neither a full frame nor free, and a marker-move
+  // ride is mostly these (MapFollow).
+  POWER_TELEMETRY.onRefresh(PowerTelemetry::Refresh::Window, millis() - startedMs);
 }
 
 void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }

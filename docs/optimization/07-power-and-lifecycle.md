@@ -1,5 +1,13 @@
 # Plan 07 — power and lifecycle
 
+> **Superseded in part, 2026-08-11.** Step 1's instruments now exist:
+> `power.csv` on the card and the `stats` console command, both behind
+> `PowerTelemetry` (`../power-management.md`, "The device measures itself
+> now"). The running campaign -- TODO, run methodology, the four states, the
+> ideas backlog -- lives in [`../power-plan.md`](../power-plan.md). The
+> analysis below still stands; read it for the *why*, and the plan for the
+> *next*.
+
 This is a battery-powered navigation device. Nothing in the tree measures its
 own power draw, and the one thing that governs it is a side effect of a flag
 meant for something else.

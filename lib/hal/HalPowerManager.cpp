@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 #include <Logging.h>
 #include <PowerManager.h>
+#include <PowerTelemetry.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
 #include <soc/soc_caps.h>
@@ -18,6 +19,10 @@ void HalPowerManager::begin() {
     pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
   }
   normalFreq = getCpuFrequencyMhz();
+  // States the starting clock so every millisecond from boot lands in a bucket.
+  // Without this the first accrual would be attributed to whatever the default
+  // member values happen to say.
+  POWER_TELEMETRY.onCpuFrequency(static_cast<uint16_t>(normalFreq), /*throttled=*/false);
   modeMutex = xSemaphoreCreateMutex();
   assert(modeMutex != nullptr);
 }
@@ -44,6 +49,10 @@ void HalPowerManager::setPowerSaving(bool enabled) {
       return;
     }
     isLowPower = true;
+    // Only after the call succeeded: a failed setCpuFrequencyMhz() leaves the
+    // CPU on the old clock, and telling the meter otherwise would put the ride
+    // in the wrong bucket for as long as it lasts.
+    POWER_TELEMETRY.onCpuFrequency(LOW_POWER_FREQ, /*throttled=*/true);
 
   } else if ((!enabled || mode != None) && isLowPower) {
     LOG_DBG("PWR", "Restoring normal CPU frequency");
@@ -52,6 +61,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
       return;
     }
     isLowPower = false;
+    POWER_TELEMETRY.onCpuFrequency(static_cast<uint16_t>(normalFreq), /*throttled=*/false);
   }
 
   // Otherwise, no change needed
@@ -91,8 +101,33 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   freeink::PowerManager::deepSleepUntilPowerButton();
 }
 
-uint16_t HalPowerManager::getBatteryPercentage() const {
+namespace {
+// One monitor for both readers below. A function-local static so it is
+// constructed on first use (after BoardConfig is resolved), not at static-init
+// time.
+const BatteryMonitor& batteryMonitor() {
   static const BatteryMonitor battery;
+  return battery;
+}
+}  // namespace
+
+uint16_t HalPowerManager::getBatteryMillivolts(uint8_t samples) const {
+  if (samples == 0) samples = 1;
+  const BatteryMonitor& battery = batteryMonitor();
+  uint32_t total = 0;
+  uint8_t taken = 0;
+  for (uint8_t i = 0; i < samples; ++i) {
+    const uint16_t mv = battery.readMillivolts();
+    if (mv == 0) continue;  // no backend, or a failed I2C read -- do not average in a zero
+    total += mv;
+    ++taken;
+  }
+  if (taken == 0) return 0;
+  return static_cast<uint16_t>(total / taken);
+}
+
+uint16_t HalPowerManager::getBatteryPercentage() const {
+  const BatteryMonitor& battery = batteryMonitor();
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     const unsigned long now = millis();
     if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {

@@ -158,6 +158,45 @@ struct MapSkipTally {
   char reason[MapCommand::kSkipReasonBytes] = {};
 };
 
+// What the `stats` command answers: everything that costs power, as counted by
+// PowerTelemetry plus the battery and the link.
+//
+// A plain struct filled by a provider, not a set of pushed values, for the same
+// reason the MTU is a provider: every field changes on its own schedule and a
+// pushed copy would report whatever was true at the last viewport reset. Kept
+// free of PowerTelemetry.h so this half stays host-testable with no Arduino
+// behind it -- MapActivity does the copying.
+//
+// Field names match power.csv's columns one for one (src/PowerLog.cpp). A
+// script that reads a ride off the card and a script that polls a live device
+// over BLE should not need two vocabularies for one measurement.
+struct MapPowerStats {
+  uint16_t batteryMv = 0;
+  uint16_t batteryPct = 0;
+  uint32_t uptimeS = 0;
+
+  uint16_t cpuMhz = 0;
+  uint32_t fullClockMs = 0;
+  uint32_t throttledMs = 0;
+
+  uint32_t loopIters = 0;
+  uint32_t loopBusyMs = 0;
+  uint32_t loopMaxMs = 0;
+
+  uint32_t refreshFull = 0;
+  uint32_t refreshHalf = 0;
+  uint32_t refreshFast = 0;
+  uint32_t refreshWindow = 0;
+  uint32_t panelBusyMs = 0;
+
+  uint32_t freeHeap = 0;
+  uint32_t minFreeHeap = 0;
+
+  // 0 dBm is not a real BLE reading, so it doubles as "nothing connected"
+  // (BlePositionServer::rssi()).
+  int8_t rssiDbm = 0;
+};
+
 // Told about each `skip` as it lands, so a screen showing one row per tile can
 // mark the right row rather than a count.
 //
@@ -222,6 +261,13 @@ class MapConsoleState {
   // nothing is connected, and `info` then omits the line rather than claiming
   // an MTU of zero.
   void setLinkMtuProvider(uint16_t (*provider)()) { linkMtuProvider_ = provider; }
+
+  // Where `stats` gets its numbers. Returns false when the platform cannot
+  // answer, and `stats` then replies `INFO stats=unavailable` rather than a
+  // page of zeroes -- a zeroed battery reads as a flat one, which is a lie a
+  // measurement log must not contain. Left unset (the default) is the same
+  // case, which is what the native tests want.
+  void setPowerStatsProvider(bool (*provider)(MapPowerStats&)) { powerStatsProvider_ = provider; }
 
   // Same shape again, for the connection interval in milliseconds. Reported
   // next to the MTU because it, not the MTU, is what caps a transfer: a chunk
@@ -309,6 +355,7 @@ class MapConsoleState {
 
  private:
   void writeInfo(IMapReplyWriter& out) const;
+  void writeStats(IMapReplyWriter& out) const;
   void writeTiles(IMapReplyWriter& out) const;
   void writeHave(IMapReplyWriter& out) const;
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
@@ -324,6 +371,7 @@ class MapConsoleState {
   uint32_t (*freeHeapProvider_)() = nullptr;
   uint16_t (*linkMtuProvider_)() = nullptr;
   uint16_t (*linkIntervalProvider_)() = nullptr;
+  bool (*powerStatsProvider_)(MapPowerStats&) = nullptr;
 
   uint8_t zoomStep_ = 0;
   uint8_t markerStep_ = 0;
