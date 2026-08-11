@@ -105,6 +105,11 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       out.reply("OK");
       return false;
 
+    case MapCommandType::Stats:
+      writeStats(out);
+      out.reply("OK");
+      return false;
+
     case MapCommandType::Tiles:
       writeTiles(out);
       out.reply("OK");
@@ -283,6 +288,77 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
 
   if (freeHeapProvider_ != nullptr) {
     snprintf(line, sizeof(line), "INFO heap=%lu", static_cast<unsigned long>(freeHeapProvider_()));
+    out.reply(line);
+  }
+}
+
+void MapConsoleState::writeStats(IMapReplyWriter& out) const {
+  if (powerStatsProvider_ == nullptr) {
+    out.reply("INFO stats=unavailable");
+    return;
+  }
+
+  MapPowerStats s;
+  if (!powerStatsProvider_(s)) {
+    // "cannot answer" must never read as "answered with zeroes" -- a zeroed
+    // battery is a flat battery, and a log full of those would be worse than a
+    // log with a gap in it. Same reasoning as `tiles=none` and `checked
+    // unknown`.
+    out.reply("INFO stats=unavailable");
+    return;
+  }
+
+  char line[kReplyBuf];
+
+  // Millivolts first: it is the number a measurement run actually differences.
+  // The percentage is here for a human reading the log, not for the maths --
+  // one percent of this cell is about twenty minutes of riding
+  // (HalPowerManager::getBatteryMillivolts).
+  snprintf(line, sizeof(line), "INFO batt_mv=%u", static_cast<unsigned>(s.batteryMv));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO batt_pct=%u", static_cast<unsigned>(s.batteryPct));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO uptime_s=%lu", static_cast<unsigned long>(s.uptimeS));
+  out.reply(line);
+
+  snprintf(line, sizeof(line), "INFO cpu_mhz=%u", static_cast<unsigned>(s.cpuMhz));
+  out.reply(line);
+  // The two clock buckets are the point of the whole command on a ride: the map
+  // screen pins the CPU at full speed for as long as BLE is up
+  // (docs/optimization/07-power-and-lifecycle.md), so throttled_ms is expected
+  // to be 0 and a non-zero one would mean that reading of the code is wrong.
+  snprintf(line, sizeof(line), "INFO full_clock_ms=%lu", static_cast<unsigned long>(s.fullClockMs));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO throttled_ms=%lu", static_cast<unsigned long>(s.throttledMs));
+  out.reply(line);
+
+  snprintf(line, sizeof(line), "INFO loops=%lu", static_cast<unsigned long>(s.loopIters));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO loop_busy_ms=%lu", static_cast<unsigned long>(s.loopBusyMs));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO loop_max_ms=%lu", static_cast<unsigned long>(s.loopMaxMs));
+  out.reply(line);
+
+  snprintf(line, sizeof(line), "INFO ref_full=%lu", static_cast<unsigned long>(s.refreshFull));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO ref_half=%lu", static_cast<unsigned long>(s.refreshHalf));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO ref_fast=%lu", static_cast<unsigned long>(s.refreshFast));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO ref_window=%lu", static_cast<unsigned long>(s.refreshWindow));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO panel_busy_ms=%lu", static_cast<unsigned long>(s.panelBusyMs));
+  out.reply(line);
+
+  snprintf(line, sizeof(line), "INFO heap=%lu", static_cast<unsigned long>(s.freeHeap));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO min_heap=%lu", static_cast<unsigned long>(s.minFreeHeap));
+  out.reply(line);
+
+  // 0 dBm is not a real reading, so it means nothing is connected -- omitted
+  // rather than printed, exactly like the MTU line in `info`.
+  if (s.rssiDbm != 0) {
+    snprintf(line, sizeof(line), "INFO rssi_dbm=%d", static_cast<int>(s.rssiDbm));
     out.reply(line);
   }
 }

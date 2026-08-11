@@ -14,6 +14,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <PowerTelemetry.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <builtinFonts/all.h>
@@ -26,6 +27,7 @@
 #include "MappedInputManager.h"
 #include "MissingTilesStore.h"
 #include "OpdsServerStore.h"
+#include "PowerLog.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
@@ -788,6 +790,13 @@ void loop() {
   const unsigned long activityDuration = millis() - activityStartTime;
 
   const unsigned long loopDuration = millis() - loopStartTime;
+  // Duty cycle of the whole device: iterations, time spent working, worst
+  // iteration. On the map screen this loop runs at ~100 Hz and mostly does
+  // nothing (docs/power-management.md), and the counter is how that claim gets
+  // checked on hardware rather than argued from the code.
+  POWER_TELEMETRY.onLoop(static_cast<uint32_t>(loopDuration));
+  // At most one CSV row per minute; a no-op on every other iteration.
+  PowerLog::tick();
   if (loopDuration > maxLoopDuration) {
     maxLoopDuration = loopDuration;
     if (maxLoopDuration > 50) {

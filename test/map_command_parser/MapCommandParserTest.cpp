@@ -833,8 +833,8 @@ TEST(MapCommandConsole, InfoReportsStateAndEndsWithOk) {
   EXPECT_EQ(out.lines.back(), "OK");
 
   const std::vector<std::string> expected = {
-      "INFO pos=1",   "INFO lat=-0.5000000", "INFO lon=17.0186000", "INFO heading=3",
-      "INFO speed_kmh=42", "INFO alt_m=unset", "INFO seq=1",
+      "INFO pos=1",        "INFO lat=-0.5000000", "INFO lon=17.0186000", "INFO heading=3",
+      "INFO speed_kmh=42", "INFO alt_m=unset",    "INFO seq=1",
   };
   for (const std::string& want : expected) {
     EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), want), out.lines.end()) << want;
@@ -872,6 +872,98 @@ TEST(MapCommandConsole, InfoReportsTheTileFormatVersionOnlyWhenPushed) {
   // A supplier of tiles reads this before it pushes anything: a tile built to
   // another version passes CRC and is then refused on open.
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO tile_fmt=2"), out.lines.end());
+}
+
+// Nothing behind the command is the normal state on a host test and on any
+// screen that has not wired a provider. The reply says so instead of printing
+// a page of zeroes -- a zeroed battery reads as a flat one, and a power log
+// with that in it is worse than one with a gap.
+TEST(MapCommandConsole, StatsSaysUnavailableWithNoProvider) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "stats");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO stats=unavailable")), out.lines.end());
+  EXPECT_EQ(out.lines.back(), "OK");
+}
+
+// A provider that refuses is the same case as no provider at all.
+TEST(MapCommandConsole, StatsSaysUnavailableWhenTheProviderRefuses) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  state.setPowerStatsProvider([](MapPowerStats&) -> bool { return false; });
+
+  feedLine(console, out, "stats");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO stats=unavailable")), out.lines.end());
+}
+
+TEST(MapCommandConsole, StatsReportsTheProvidersNumbers) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  state.setPowerStatsProvider([](MapPowerStats& s) -> bool {
+    s.batteryMv = 3812;
+    s.batteryPct = 64;
+    s.uptimeS = 7200;
+    s.cpuMhz = 160;
+    s.fullClockMs = 7'000'000;
+    s.throttledMs = 200'000;
+    s.loopIters = 640'000;
+    s.loopBusyMs = 90'000;
+    s.loopMaxMs = 1900;
+    s.refreshFull = 3;
+    s.refreshHalf = 11;
+    s.refreshFast = 42;
+    s.refreshWindow = 128;
+    s.panelBusyMs = 61'000;
+    s.freeHeap = 51'200;
+    s.minFreeHeap = 40'960;
+    s.rssiDbm = -57;
+    return true;
+  });
+
+  feedLine(console, out, "stats");
+  const auto has = [&out](const char* line) {
+    return std::find(out.lines.begin(), out.lines.end(), std::string(line)) != out.lines.end();
+  };
+  EXPECT_TRUE(has("INFO batt_mv=3812"));
+  EXPECT_TRUE(has("INFO batt_pct=64"));
+  EXPECT_TRUE(has("INFO uptime_s=7200"));
+  EXPECT_TRUE(has("INFO cpu_mhz=160"));
+  EXPECT_TRUE(has("INFO full_clock_ms=7000000"));
+  EXPECT_TRUE(has("INFO throttled_ms=200000"));
+  EXPECT_TRUE(has("INFO loops=640000"));
+  EXPECT_TRUE(has("INFO loop_busy_ms=90000"));
+  EXPECT_TRUE(has("INFO loop_max_ms=1900"));
+  EXPECT_TRUE(has("INFO ref_full=3"));
+  EXPECT_TRUE(has("INFO ref_half=11"));
+  EXPECT_TRUE(has("INFO ref_fast=42"));
+  EXPECT_TRUE(has("INFO ref_window=128"));
+  EXPECT_TRUE(has("INFO panel_busy_ms=61000"));
+  EXPECT_TRUE(has("INFO heap=51200"));
+  EXPECT_TRUE(has("INFO min_heap=40960"));
+  EXPECT_TRUE(has("INFO rssi_dbm=-57"));
+  EXPECT_EQ(out.lines.back(), "OK");
+}
+
+// 0 dBm is not a reading any BLE link produces, so it is the sentinel for
+// "nothing connected" -- and an omitted line is how every other optional value
+// in this console reports that (the MTU in `info`).
+TEST(MapCommandConsole, StatsOmitsRssiWhenNothingIsConnected) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  state.setPowerStatsProvider([](MapPowerStats& s) -> bool {
+    s.rssiDbm = 0;
+    return true;
+  });
+
+  feedLine(console, out, "stats");
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO rssi_dbm=", 0) == 0; }),
+            0);
 }
 
 TEST(MapCommandConsole, InfoUsesTheHeapProviderWhenSet) {

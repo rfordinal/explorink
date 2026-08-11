@@ -8,6 +8,7 @@
 
 #include "CrossPointSettings.h"
 #include "LastHeldTiles.h"
+#include "MapPowerStatsProvider.h"
 #include "MapTileReader.h"
 #include "MappedInputManager.h"
 #include "MissingTilesConsoleSource.h"
@@ -81,6 +82,10 @@ void TileSyncActivity::onEnter() {
       +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().negotiatedMtu(); });
   consoleState_.setLinkIntervalProvider(
       +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().connIntervalMs(); });
+  // Same power meter as the map screen. This screen is the worst case a power
+  // review has -- radio saturated, SD writing, CPU pinned -- so it is the one
+  // state most worth being able to poll while it runs.
+  consoleState_.setPowerStatsProvider(&fillMapPowerStats);
   // Quoted in NEED_TILES below and reported by `info`. A tile built to another
   // version transfers fine, passes CRC and is then refused on open, so the
   // supplier needs the number before it sends anything (MapTileReader.h).

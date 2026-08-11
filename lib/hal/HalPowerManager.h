@@ -45,6 +45,17 @@ class HalPowerManager {
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 
+  // Raw battery voltage in millivolts, averaged over `samples` reads. 0 when
+  // the board has no battery backend.
+  //
+  // The percentage above is the wrong instrument for measuring power draw: on
+  // an ADC board it is a third-order polynomial over this number
+  // (BatteryMonitor::percentageFromMillivolts), and one percent of a 650 mAh
+  // cell is 6.5 mAh -- around twenty minutes of riding, so two firmware builds
+  // cannot be compared by it. Millivolts can. Averaged because a single
+  // analogRead() on this divider is visibly noisy.
+  uint16_t getBatteryMillivolts(uint8_t samples = 8) const;
+
   // RAII helper class to manage power saving locks
   // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs
   // full performance. When the Lock instance is destroyed (goes out of scope), power saving will be re-enabled.

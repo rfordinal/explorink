@@ -11,6 +11,73 @@ without going through a button press.
 > state, and that measurement is step 1 of that plan. Record the numbers here
 > when they exist.
 
+> **The measurement campaign lives in [`power-plan.md`](power-plan.md)**
+> (2026-08-11): the TODO list, the run methodology, the ideas backlog and the
+> table of runs. This file stays what it is -- findings about how power
+> behaves. The plan says what to do about them.
+
+## The device measures itself now
+
+**Added 2026-08-11.** Two instruments, one vocabulary:
+
+- **`/trailink/power.csv` on the SD card**, one row per minute
+  (`src/PowerLog.cpp`, `PowerLog::kIntervalMs`). Written on every screen, from
+  boot, with no phone and no cable needed. This is the only instrument that
+  works for the baseline that matters most -- the device on battery with
+  nothing connected.
+- **`stats` on the map console** (`src/activities/map/MapCommandParser.h`, the
+  grammar block; `MapConsoleState::writeStats()`), answered over BLE or USB.
+  Same key names as the CSV columns, deliberately, so one script parses both.
+  Wired by `MapActivity` and `TileSyncActivity` through
+  `fillMapPowerStats()` (`src/activities/map/MapPowerStatsProvider.h`).
+
+Both read `PowerTelemetry` (`lib/PowerTelemetry/PowerTelemetry.h`), which
+counts what costs power at the places that spend it:
+
+| Counted | Where it is counted |
+|---|---|
+| Panel refreshes by waveform, plus a windowed-update bucket | `lib/hal/HalDisplay.cpp`, `displayBuffer()` / `displayBufferAsync()` / `refreshDisplay()` / `displayWindow()` |
+| Panel busy time (ms blocked in a refresh) | same, plus `waitRefreshComplete()` |
+| Milliseconds at full clock vs. throttled | `lib/hal/HalPowerManager.cpp`, `setPowerSaving()` |
+| Main-loop iterations, busy ms, worst iteration | `src/main.cpp`, end of `loop()` |
+
+Counters are cumulative since boot. Differencing two rows is the analysis;
+the device never writes a delta, because a delta lost with a failed row is
+lost for good.
+
+**Battery is reported in millivolts, not just percent**
+(`HalPowerManager::getBatteryMillivolts()`, 8 averaged ADC reads). On X4 the
+percentage is a third-order polynomial over exactly that number
+(`BatteryMonitor::percentageFromMillivolts()`,
+`freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:443-456`), and
+one percent of a 650 mAh cell is 6.5 mAh -- around twenty minutes of riding at
+the draws measured below. Two firmware builds cannot be told apart by it.
+
+**Not yet verified on hardware**: nothing has read a real `power.csv` off a
+card, and no `stats` reply has come back over a real BLE link. Builds clean,
+72/72 native console tests pass. First ride settles it.
+
+## Charging cannot be turned off in software (X4)
+
+**Read off the board profile, 2026-08-11.** `XTEINK_X4` in
+`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h:685-715`:
+`batteryAdc = 0` (GPIO0), `batteryChargeStatus = PIN_UNASSIGNED`, and
+`NO_GAUGE` -- no fuel gauge, no charger IC on any bus, no charge-enable line.
+The charger is autonomous. The only power-related pin the firmware can drive is
+GPIO13, the battery MOSFET, and that cuts the whole device (`:709-715`).
+
+Two consequences for every measurement:
+
+- **A reading taken with USB plugged in is worthless.** The ADC on GPIO0 sees
+  the charged rail, not a discharge curve.
+- **Cutting VBUS also kills USB CDC**, because the ESP32-C3's USB-Serial-JTAG
+  needs VBUS. So there is no serial channel during a real power run. That is
+  why the instruments above are a card and a radio.
+
+An inline USB meter measures the whole system *including* charging, so it
+answers "what does the wall pay", not "what does the map cost". Only a
+battery run answers the second.
+
 ## First real-draw numbers: two rides
 
 **Measured on hardware, 2026-08-07, real rides, not a bench measurement.**
@@ -39,6 +106,55 @@ resolution), the X4's actual capacity vs. the 650 mAh spec number, and
 whether the battery's discharge curve is linear enough at this state of
 charge for the mAh math above to hold. A bench measurement with an inline
 meter (the plan's step 1) is still the number to trust over either of these.
+
+## Where the power goes on the map screen -- read off the code
+
+**Read, 2026-08-11. None of this is measured**; it is the list a measurement
+run should try to confirm or kill, ordered by how much it is suspected to cost.
+`power-plan.md` carries the actions.
+
+**1. The BLE controller never sleeps its radio.**
+`sdkconfig.default:947` -- `# CONFIG_BT_CTRL_MODEM_SLEEP is not set`, with
+`CONFIG_BT_CTRL_SLEEP_MODE_EFF=0` and `CONFIG_BT_CTRL_SLEEP_CLOCK_EFF=0`
+(`:951-952`). Without controller modem sleep the BT baseband stays powered
+between connection events instead of powering down and waking for each one.
+This is a `custom_sdkconfig` entry (`platformio.ini:85`), not a code change.
+Open: whether the X4 carries an external 32.768 kHz crystal, which decides
+which low-power clock mode is available.
+
+**2. No ESP-IDF power management at all.** `sdkconfig.default:1634` --
+`# CONFIG_PM_ENABLE is not set`. So there is no dynamic frequency scaling and
+no tickless idle; the CPU runs at whatever `HalPowerManager` last set, and the
+idle task waits at that clock.
+
+**3. The map screen holds full clock and the 10 ms loop for the whole ride.**
+`MapActivity::preventAutoSleep()` returns `BlePositionServer::isRunning()`
+(`src/activities/map/MapActivity.cpp:768`), and `src/main.cpp:719-723` resets
+`lastActivityTime` and calls `setPowerSaving(false)` on it every iteration.
+The end of `loop()` then always takes the `delay(10)` branch -- the
+`delay(50)` + `setPowerSaving(true)` branch is unreachable while the map is
+up. `PowerTelemetry`'s `throttled_ms` is the counter that proves or refutes
+this on hardware: it should read 0 for a whole ride.
+
+**4. ~100 wakeups a second, each with two ADC reads.**
+`InputManager::update()` samples both button-ladder pins every call
+(`freeink-sdk/libs/hardware/InputManager/src/InputManager.cpp:137,144`), and
+`main.cpp` calls it once per iteration. In hike mode a fix arrives every 10 s,
+so that is roughly a thousand ladder samples per useful event.
+
+**5. Advertising parameters are left at the NimBLE default.**
+`BlePositionServer::begin()` sets a service UUID, a scan response and a name
+(`lib/BlePositionServer/src/BlePositionServer.cpp:301-317`) but never
+`setMinInterval`/`setMaxInterval`, and never a TX power. A device sitting with
+the map up and no phone connected therefore advertises at the default rate
+indefinitely. The exact default interval is unverified.
+
+**6. Panel refresh cost is unknown.** A full refresh is the single most
+expensive event the device has and nothing has measured it in mA or in joules.
+`MapFollow::kMaxPartialMoves = 12` decides how often one happens
+(`src/activities/map/MapFollow.h:41-45`) and is still untuned, as its own
+comment says. `PowerTelemetry`'s `ref_*` and `panel_busy_ms` counters now make
+the *frequency* half of this measurable per ride.
 
 ## Power-saving mode drops CPU frequency after idle
 

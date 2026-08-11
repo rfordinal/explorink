@@ -341,6 +341,7 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "stale") return parseStale(tokens);
   if (name == "checked") return parseChecked(tokens);
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
+  if (name == "stats") return parseBare(tokens, MapCommandType::Stats);
   return fail(MapCommandError::UnknownCommand);
 }
 

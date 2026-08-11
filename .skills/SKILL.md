@@ -1076,6 +1076,10 @@ Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
 `docs/map-observation-mode.md`, `docs/map-memory.md`.
 Extend one before adding another.
 
+`docs/power-plan.md` is not a topic doc -- it is the running power-measurement
+campaign (TODO, run methodology, ideas, the table of runs). Findings from a run
+go in `docs/power-management.md`; the plan tracks what to do next.
+
 **Document as you go, not at the end.** Every pass updates the topic `.md` it
 touches and the `README.md` of every directory whose use changed. A directory
 `README.md` gets a pointer line only -- the content lives in the topic doc. A

@@ -15,6 +15,7 @@
 #include "LastHeldTiles.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
+#include "MapPowerStatsProvider.h"
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
 #include "MapStyleDefaults.h"
@@ -1382,6 +1383,11 @@ void MapActivity::onEnter() {
       +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().negotiatedMtu(); });
   consoleState_.setLinkIntervalProvider(
       +[]() -> uint16_t { return freeink::BlePositionServer::getInstance().connIntervalMs(); });
+  // `stats`: the power meter. Same numbers the SD card's power.csv carries
+  // (src/PowerLog.cpp), answered live over whichever channel asked -- which on
+  // a ride is BLE, because a device measuring its own draw cannot have USB
+  // plugged in (VBUS charges the cell, and the reading stops meaning anything).
+  consoleState_.setPowerStatsProvider(&fillMapPowerStats);
   // So `info` answers with real numbers before the first fix arrives rather
   // than reporting a 0 m/px viewport that has simply never been drawn.
   consoleState_.setZoomInfo(zoomStep(), MapViewport::kZoomLadder[zoomStep()].z,
