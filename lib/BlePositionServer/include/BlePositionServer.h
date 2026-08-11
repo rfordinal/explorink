@@ -85,13 +85,6 @@ class BlePositionServer {
 
   bool isRunning() const { return begun_; }
 
-  // Periodic self-check: while begun_ and nobody is connected, confirms
-  // advertising is actually still running and restarts it if not. Call this
-  // every few seconds from the owning activity's loop() -- see
-  // docs/power-management.md, "BLE stopped accepting connections mid-ride",
-  // for the incident this backstops. Cheap: two register reads when healthy.
-  void ensureAdvertising();
-
   // Copies the most recently received update. Returns false if nothing has
   // been received yet since begin().
   bool getLatest(PositionUpdate& out) const;

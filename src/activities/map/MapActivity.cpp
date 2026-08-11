@@ -1569,18 +1569,6 @@ void MapActivity::loop() {
     return;
   }
 
-  // BlePositionServer.h, "ensureAdvertising()" -- catches advertising going
-  // quiet for any reason so the map screen doesn't sit unreachable over BLE
-  // for the rest of a ride (docs/power-management.md, "BLE stopped accepting
-  // connections mid-ride").
-  static uint32_t lastBleAdvertisingCheckMs = 0;
-  constexpr uint32_t kBleAdvertisingCheckIntervalMs = 3000;
-  const uint32_t nowMs = millis();
-  if (nowMs - lastBleAdvertisingCheckMs >= kBleAdvertisingCheckIntervalMs) {
-    lastBleAdvertisingCheckMs = nowMs;
-    freeink::BlePositionServer::getInstance().ensureAdvertising();
-  }
-
   freeink::PositionUpdate update;
   if (freeink::BlePositionServer::getInstance().getLatest(update)) {
     if (!hasReceivedAny_ || update.seq != lastDrawnSeq_) {
