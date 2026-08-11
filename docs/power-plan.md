@@ -19,8 +19,12 @@ phase 1).
 - Instruments built: `power.csv` on the card, `stats` on the map console,
   `PowerTelemetry` counters behind both. See `power-management.md`, "The
   device measures itself now".
-- Instruments **unverified on hardware**. No card has been read, no `stats`
-  reply has come back over a real link.
+- **Flashed and part-verified on hardware** (build `f6372ea6`): `stats`
+  answers over serial and over BLE, and its numbers already confirmed two
+  read-only claims (the map never throttles; the loop runs at ~100 Hz there).
+  `power.csv` writes with no error, but no card has been read yet.
+- One new open item: `rssi()` returns 0 on a live link
+  (`power-management.md`, end of the instruments section).
 - Two ride-derived draw figures exist (~46 mA and ~17 mA), both contaminated
   and both too coarse to build on.
 - Nothing has been changed to save power yet. That is deliberate: measure
@@ -101,12 +105,13 @@ Per interval, from two rows of `power.csv`:
 
 Phase 1 -- make the instruments trustworthy:
 
-- [ ] Flash the telemetry build and confirm `power.csv` appears with sane rows.
-- [ ] Confirm `stats` answers over a real BLE link from the phone.
+- [x] Flash the telemetry build (2026-08-11, `f6372ea6`).
+- [x] Confirm `stats` answers over a real BLE link.
+- [x] Confirm `throttled_ms` stops rising on the map screen and rises on Home
+      -- the code reading (`power-management.md`, item 3) checked on hardware.
+- [ ] Read a real `power.csv` off the card and check the rows are sane.
 - [ ] Cross-check one `stats` reply against the CSV row written beside it.
-- [ ] Confirm `throttled_ms` is non-zero on the Home screen and zero on the
-      map screen -- that is the code reading (`power-management.md`, item 3)
-      being checked on hardware.
+- [ ] Chase `rssi()` returning 0 on a live link, or drop the line from `stats`.
 - [ ] Record run 1 (state 1, 2 hours) and run 2 (state 2, 2 hours).
 
 Phase 2 -- baseline the four states:
