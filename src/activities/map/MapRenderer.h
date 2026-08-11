@@ -56,6 +56,27 @@ struct MapRenderTiming {
   uint32_t placesMs = 0;
 };
 
+// Nearest named place to the marker, by screen-pixel distance, picked while
+// render() is already walking the places layer for its dots -- no second
+// pass, no second SD seek (IMapSource.h: "begin*() ... The second pass is a
+// second seek", the exact cost this avoids paying for a lookup the marker
+// dots' own walk already had the data for).
+//
+// Two slots, not one, because the tile format has no admin hierarchy -- a
+// suburb carries no link to the city it is part of
+// (mapbuilder/build_config.json's place_ranks is a flat rank, not a tree).
+// `fine` is the nearest rank>=2 point (village/suburb/hamlet/farm), `coarse`
+// the nearest rank<=1 (city/town). A caller wanting "Karlova Ves, Bratislava"
+// shows both when both are set, falls back to whichever one is, and shows
+// nothing when neither loaded tile carries a name near the marker.
+struct MapNearestPlaces {
+  static constexpr int kNameBufferLen = 40;
+  char fineName[kNameBufferLen] = "";
+  char coarseName[kNameBufferLen] = "";
+  bool hasFine = false;
+  bool hasCoarse = false;
+};
+
 // Draws the base map (roads, place dots) onto whatever IMapCanvas it's
 // given. No hardware/HAL dependency -- this is what both the native preview
 // and MapActivity call.
@@ -89,8 +110,15 @@ class MapRenderer {
   //
   // `timing` is optional instrumentation and changes no pixel. Pass nullptr --
   // the default -- and the clock is never read.
+  //
+  // `nearestOut` is optional and also changes no pixel: it is filled in from
+  // the same places walk that draws the dots, reset to empty first. Passing
+  // it forces the places layer open even when `style.placeDotDiameterPx == 0`
+  // (dots hidden) -- the header wants a name lookup regardless of whether the
+  // style also draws a dot for it.
   static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
-                     IMapRouteSource* route = nullptr, MapRenderTiming* timing = nullptr);
+                     IMapRouteSource* route = nullptr, MapRenderTiming* timing = nullptr,
+                     MapNearestPlaces* nearestOut = nullptr);
 
   // The style's position puck: white disc, black ring, heading arrow. Drawn
   // by callers with no travel mode of their own -- test/map_preview, which has

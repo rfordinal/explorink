@@ -25,9 +25,16 @@
 // far longer logging them than drawing. PpmCanvas::setPixel drops
 // out-of-range pixels silently, so clipping here changes no rendered pixel
 // -- it only stops the flood.
+//
+// `minY` moves the top clip edge down from 0 -- the map screen's header is a
+// fixed band the map itself must never draw into (docs/map-header-status.md),
+// and clipping here means it genuinely does not: nothing above minY reaches
+// GfxRenderer at all, rather than being drawn and then painted over. Default
+// 0 keeps every other caller (test/map_preview has no header) unclipped at
+// the top, same as before this existed.
 class GfxRendererCanvas : public IMapCanvas {
  public:
-  explicit GfxRendererCanvas(GfxRenderer& renderer) : renderer_(renderer) {}
+  explicit GfxRendererCanvas(GfxRenderer& renderer, int minY = 0) : renderer_(renderer), minY_(minY) {}
 
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) override {
     const int maxX = renderer_.getScreenWidth() - 1;
@@ -59,14 +66,14 @@ class GfxRendererCanvas : public IMapCanvas {
       boundsX1 += loK;
       boundsX2 += hiK;
     }
-    const bool wholeStackOnScreen = boundsX1 >= 0 && boundsY1 >= 0 && boundsX2 <= maxX && boundsY2 <= maxY;
+    const bool wholeStackOnScreen = boundsX1 >= 0 && boundsY1 >= minY_ && boundsX2 <= maxX && boundsY2 <= maxY;
 
     for (int i = 0; i < stack.count; ++i) {
       const int k = stack.first + i;
       const int offsetX = stack.alongY ? 0 : k;
       const int offsetY = stack.alongY ? k : 0;
       int cx1 = x1 + offsetX, cy1 = y1 + offsetY, cx2 = x2 + offsetX, cy2 = y2 + offsetY;
-      if (!wholeStackOnScreen && !clipToRect(cx1, cy1, cx2, cy2, maxX, maxY)) continue;
+      if (!wholeStackOnScreen && !clipToRect(cx1, cy1, cx2, cy2, maxX, maxY, minY_)) continue;
       renderer_.drawLine(cx1, cy1, cx2, cy2, ink == MapInk::Black);
     }
   }
@@ -83,7 +90,7 @@ class GfxRendererCanvas : public IMapCanvas {
 
   void fillSpan(int x1, int x2, int y, MapAreaTone tone) override {
     if (tone == MapAreaTone::None) return;
-    if (y < 0 || y >= renderer_.getScreenHeight()) return;
+    if (y < minY_ || y >= renderer_.getScreenHeight()) return;
     if (x2 < x1) {
       const int swap = x1;
       x1 = x2;
@@ -136,18 +143,18 @@ class GfxRendererCanvas : public IMapCanvas {
   }
 
   bool onScreen(int x, int y) const {
-    return x >= 0 && y >= 0 && x < renderer_.getScreenWidth() && y < renderer_.getScreenHeight();
+    return x >= 0 && y >= minY_ && x < renderer_.getScreenWidth() && y < renderer_.getScreenHeight();
   }
 
   bool fullyOnScreen(int x, int y, int width, int height) const {
-    return x >= 0 && y >= 0 && x + width <= renderer_.getScreenWidth() && y + height <= renderer_.getScreenHeight();
+    return x >= 0 && y >= minY_ && x + width <= renderer_.getScreenWidth() && y + height <= renderer_.getScreenHeight();
   }
 
-  static int outcode(double x, double y, int maxX, int maxY) {
+  static int outcode(double x, double y, int maxX, int maxY, int minY) {
     int code = 0;
     if (x < 0.0) code |= 1;
     if (x > maxX) code |= 2;
-    if (y < 0.0) code |= 4;
+    if (y < minY) code |= 4;
     if (y > maxY) code |= 8;
     return code;
   }
@@ -158,7 +165,7 @@ class GfxRendererCanvas : public IMapCanvas {
   // The intersections are computed in doubles because the cross-products
   // overflow 32 bits well inside the int16 coordinate range the projection
   // produces.
-  static bool clipToRect(int& outX1, int& outY1, int& outX2, int& outY2, int maxX, int maxY) {
+  static bool clipToRect(int& outX1, int& outY1, int& outX2, int& outY2, int maxX, int maxY, int minY = 0) {
     // Trivial accept, in integers, before a single `double` is touched. The
     // function used to convert all four coordinates and compute its outcodes in
     // `double` even for a segment wholly inside the screen -- for which the whole
@@ -167,22 +174,22 @@ class GfxRendererCanvas : public IMapCanvas {
     // This is the second line of defence behind the bundle test in drawLine():
     // it catches the individual copies of a stack that straddles an edge, where
     // most copies are still inside.
-    if (outX1 >= 0 && outX1 <= maxX && outY1 >= 0 && outY1 <= maxY && outX2 >= 0 && outX2 <= maxX && outY2 >= 0 &&
+    if (outX1 >= 0 && outX1 <= maxX && outY1 >= minY && outY1 <= maxY && outX2 >= 0 && outX2 <= maxX && outY2 >= minY &&
         outY2 <= maxY) {
       return true;
     }
     double x1 = outX1, y1 = outY1, x2 = outX2, y2 = outY2;
-    int c1 = outcode(x1, y1, maxX, maxY);
-    int c2 = outcode(x2, y2, maxX, maxY);
+    int c1 = outcode(x1, y1, maxX, maxY, minY);
+    int c2 = outcode(x2, y2, maxX, maxY, minY);
 
     // Four edges, so four replacements is the true worst case; the guard is
     // only there so no rounding pathology can spin here forever.
     for (int guard = 0; guard < 8; ++guard) {
       if ((c1 | c2) == 0) {
         outX1 = std::clamp(static_cast<int>(std::lround(x1)), 0, maxX);
-        outY1 = std::clamp(static_cast<int>(std::lround(y1)), 0, maxY);
+        outY1 = std::clamp(static_cast<int>(std::lround(y1)), minY, maxY);
         outX2 = std::clamp(static_cast<int>(std::lround(x2)), 0, maxX);
-        outY2 = std::clamp(static_cast<int>(std::lround(y2)), 0, maxY);
+        outY2 = std::clamp(static_cast<int>(std::lround(y2)), minY, maxY);
         return true;
       }
       if ((c1 & c2) != 0) return false;  // both endpoints outside the same edge
@@ -195,8 +202,8 @@ class GfxRendererCanvas : public IMapCanvas {
         nx = x1 + dx * (maxY - y1) / dy;
         ny = maxY;
       } else if (c & 4) {  // above the top edge
-        nx = x1 + dx * (0.0 - y1) / dy;
-        ny = 0.0;
+        nx = x1 + dx * (minY - y1) / dy;
+        ny = minY;
       } else if (c & 2) {  // right of the right edge
         ny = y1 + dy * (maxX - x1) / dx;
         nx = maxX;
@@ -208,15 +215,16 @@ class GfxRendererCanvas : public IMapCanvas {
       if (c == c1) {
         x1 = nx;
         y1 = ny;
-        c1 = outcode(x1, y1, maxX, maxY);
+        c1 = outcode(x1, y1, maxX, maxY, minY);
       } else {
         x2 = nx;
         y2 = ny;
-        c2 = outcode(x2, y2, maxX, maxY);
+        c2 = outcode(x2, y2, maxX, maxY, minY);
       }
     }
     return false;
   }
 
   GfxRenderer& renderer_;
+  int minY_ = 0;
 };

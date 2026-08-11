@@ -201,8 +201,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // (MapRenderer.h). Instrumentation: it changes no pixel and costs one clock
   // call per layer. The route overview passes nullptr -- it is not on the path
   // whose cost is being tracked.
+  // `nearestOut`, when given, is filled with the header's place-name lookup
+  // (MapRenderer.h, MapNearestPlaces) from the same places walk the dots come
+  // from -- no second SD read.
   uint32_t drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
-                         MapRenderTiming* timing = nullptr, uint64_t knownBadLayers = 0);
+                         MapRenderTiming* timing = nullptr, uint64_t knownBadLayers = 0,
+                         MapNearestPlaces* nearestOut = nullptr);
   // Re-renders the last received fix at the current ladder steps and mode.
   // This is what a zoom or marker step produces: the reset re-anchors on the
   // marker, which is the point -- zooming out must show more of the road
@@ -259,6 +263,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // headerStatusRect() and nothing outside it. Split out so the windowed
   // repaint can redraw exactly what it refreshes.
   void drawHeaderStatusStrip();
+  // Left side of the header: the nearest named place to the marker
+  // (MapRenderer.h, MapNearestPlaces / nearestPlaces_), truncated to fit
+  // before the icon cluster. Draws nothing when nothing is loaded nearby.
+  void drawHeaderPlaceName();
   // Up/Down are physical side buttons -- GUI.drawButtonHints()'s four front-
   // button boxes never mention them. Calls the theme's own
   // drawSideButtonHints() for the matching side-hint boxes.
@@ -557,6 +565,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // The viewport's tiles and the content_id each was opened at, refreshed by
   // every reset. What `have` answers from, and what CHECK_TILES counts.
   MapHeldTiles heldTiles_;
+  // The header's place-name lookup, refreshed by drawMapLayers() every reset
+  // (MapRenderer.h, MapNearestPlaces) and read back by drawHeaderStatus() --
+  // set here rather than passed as a return value because drawMapLayers()
+  // already returns the missing-tile mask.
+  MapNearestPlaces nearestPlaces_;
   // True between `CHECK_TILES` going out and `checked` coming back. One check
   // at a time: a second ask would list a viewport the first one is still
   // answering for.
