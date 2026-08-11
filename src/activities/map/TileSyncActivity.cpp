@@ -601,9 +601,11 @@ void TileSyncActivity::renderScreen() {
         snprintf(unavailable, sizeof(unavailable), "   %lu %s", static_cast<unsigned long>(skipped_),
                  tr(STR_TILE_SYNC_ROW_MISSING));
       }
-      snprintf(status, sizeof(status), "%s   %lu / %lu%s   %s", I18N.get(verdict_),
-               static_cast<unsigned long>(transfer.completed), static_cast<unsigned long>(rowCount_), unavailable,
-               moved);
+      // No verdict word here: the finished screen draws it on its own line, at
+      // UI_12, right above this one. Printing it in both put "Fetch finished"
+      // on the panel twice -- seen on the panel, not readable from the code.
+      snprintf(status, sizeof(status), "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
+               static_cast<unsigned long>(rowCount_), unavailable, moved);
       break;
     }
   }
