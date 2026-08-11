@@ -211,6 +211,10 @@ review of the map, BLE and tile paths (2026-08-06), one plan per area, with a
 measurement gate for each. Start at its
 [`README.md`](./docs/optimization/README.md).
 
+[`docs/ble-advertising.md`](./docs/ble-advertising.md) is what the device puts on
+the air before a phone connects, and when: only while the map or sync-map-tiles
+screen is open, so the advertisement is what the phone app wakes on.
+
 [`docs/map-memory.md`](./docs/map-memory.md) is what the map screen actually
 costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, and
 86 % of that in the BLE stack rather than in the map. Trimming the NimBLE config

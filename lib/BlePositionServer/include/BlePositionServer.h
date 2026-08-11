@@ -55,12 +55,17 @@ struct PositionUpdate {
   uint8_t flags = 0;
   uint8_t accuracyM = 0;
   uint8_t speedKmh = 0;
-  int16_t altitudeM = 0;   // valid only if hasAltitude
+  int16_t altitudeM = 0;     // valid only if hasAltitude
   bool hasAltitude = false;  // from flags bit1
 };
 
 // Exact size of the packet above. A write of any other length is ignored.
 inline constexpr size_t kPositionPacketBytes = 21;
+
+// The advertised name. The phone matches on it (ScanFilter.setDeviceName) and
+// the CompanionDeviceManager association dialog shows it to the rider, so it is
+// wire-visible and must not change casually.
+inline constexpr const char* kBleDeviceName = "XteinkX4Map";
 
 class BlePositionServer {
  public:
@@ -71,7 +76,7 @@ class BlePositionServer {
   // channel; keeping the phone-side BLE code to "connect + write" is worth
   // more than pairing security here. Safe to call once; returns false if
   // BLE init failed or the capability is compiled out.
-  bool begin(const char* deviceName = "XteinkX4Map");
+  bool begin(const char* deviceName = kBleDeviceName);
 
   // Fully tears down the BLE stack so its RAM is returned to the heap --
   // call this in MapActivity::onExit(), not just disconnect(), same reason
