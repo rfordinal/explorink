@@ -178,6 +178,28 @@ constexpr int kDebugPad = 3;
 // map line (a road) drawn immediately below reads as touching the icon.
 constexpr int kHeaderExtraMargin = 2;
 
+// The header is now a fixed-height contract, not a set of independent
+// clear-rects the map happens to get painted over: a single white strip,
+// [0, kHeaderBarHeight), a 1px black separator at its bottom edge, and the
+// map's own content starting only at kMapContentTop --
+// GfxRendererCanvas's minY clips it there, so nothing above the line is
+// drawn at all, not drawn-then-covered (docs/map-header-status.md).
+//
+// kHeaderBarHeight mirrors drawHeaderStatus()'s own former per-element
+// clear-bottom math (kHeaderMarginTop + 5 + kHeaderRowHeight, the +5 being
+// BaseTheme's own internal battery-rect offset) plus the same
+// kHeaderExtraMargin breathing room it already used below the icons, plus
+// 1 -- so the icon cluster's layout needs no retuning: everything it already
+// draws (battery bottom ~28px, BLE strip backing bottom ~31px) fits inside
+// with room to spare.
+constexpr int kHeaderBarHeight = kHeaderMarginTop + 5 + kHeaderRowHeight + kHeaderExtraMargin + 1;  // 36
+constexpr int kHeaderSeparatorY = kHeaderBarHeight;                                                 // the 1px black row
+constexpr int kMapContentTop = kHeaderBarHeight + 1;  // first row the map may draw into
+constexpr int kHeaderPlaceNameRightGap = 6;           // clearance before the icon cluster's own backing
+// 2px past kTextX -- confirmed on hardware 2026-08-11 that the debug
+// readout's own left margin read as too tight for this text specifically.
+constexpr int kHeaderPlaceNameLeftX = kTextX + 2;
+
 // North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
 // 100x100 normalized canvas with "N" label, two open arcs (real angles, not
@@ -671,8 +693,7 @@ void MapActivity::maybeCheckTileFreshness() {
   const bool logGate = now - freshnessLastGateLogMs_ >= kFreshnessGateLogThrottleMs;
   if (freshnessNextAskMs_ != 0 && now < freshnessNextAskMs_) {
     if (logGate) {
-      LOG_DBG(kLogTag, "freshness: cooling down, %lu ms left",
-              static_cast<unsigned long>(freshnessNextAskMs_ - now));
+      LOG_DBG(kLogTag, "freshness: cooling down, %lu ms left", static_cast<unsigned long>(freshnessNextAskMs_ - now));
       freshnessLastGateLogMs_ = now;
     }
     return;
@@ -902,27 +923,72 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
 void MapActivity::drawHeaderStatus() {
   const int screenWidth = renderer.getScreenWidth();
 
+  // One clear for the whole fixed strip, not the old per-element clear-rects
+  // this replaced (GUI.drawHeader()'s own battery box, headerStatusRect()'s
+  // BLE backing, and a manual pad below both). A place-name string shorter
+  // than last frame's leaves no stale tail behind, because everything in
+  // [0, kHeaderBarHeight) is wiped before anything is drawn.
+  renderer.fillRect(0, 0, screenWidth, kHeaderBarHeight, false);
+
   // Battery: same call every other screen makes (BaseTheme.cpp:363), with no
   // title/subtitle -- those draw nothing when null, leaving just the icon and
   // (setting-permitting) the percentage text this screen never had before.
   GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}, nullptr, nullptr);
 
   drawHeaderStatusStrip();
+  drawHeaderPlaceName();
 
-  // A further kHeaderExtraMargin of white below both clear-rects above --
-  // GUI.drawHeader()'s own battery box (BaseTheme.cpp:378) and
-  // headerStatusRect()'s BLE strip both end flush with the icon, no margin
-  // of their own.
-  const int batteryClearBottom = kHeaderMarginTop + 5 + kHeaderRowHeight;
+  // The line the map's own content starts below -- GfxRendererCanvas's minY
+  // (kMapContentTop) is what actually stops the map drawing above this, not
+  // this line; this is only what a rider sees at the boundary.
+  renderer.fillRect(0, kHeaderSeparatorY, screenWidth, 1, true);
+}
+
+// Left side of the header: the nearest named place to the marker, from the
+// same places walk drawMapLayers() already does for the dots
+// (MapRenderer.h, MapNearestPlaces) -- no separate lookup, no second SD read.
+//
+// "Fine, coarse" (e.g. "Karlova Ves, Bratislava") when both a nearby
+// village/suburb-tier point and a nearby city/town-tier point are in the
+// currently loaded tiles; whichever one alone when only one is; nothing when
+// neither is -- the tile format carries no link between the two
+// (mapbuilder/build_config.json's place_ranks is a flat rank, not a
+// hierarchy), so this is the closest available reading of "where am I"
+// rather than a guaranteed "suburb of city" pair.
+void MapActivity::drawHeaderPlaceName() {
+  char text[MapNearestPlaces::kNameBufferLen * 2 + 4];
+  if (nearestPlaces_.hasFine && nearestPlaces_.hasCoarse) {
+    snprintf(text, sizeof(text), "%s, %s", nearestPlaces_.fineName, nearestPlaces_.coarseName);
+  } else if (nearestPlaces_.hasFine) {
+    snprintf(text, sizeof(text), "%s", nearestPlaces_.fineName);
+  } else if (nearestPlaces_.hasCoarse) {
+    snprintf(text, sizeof(text), "%s", nearestPlaces_.coarseName);
+  } else {
+    return;  // nothing loaded near the marker -- left blank, not a placeholder
+  }
+
   int stripX, stripY, stripW, stripH;
   headerStatusRect(stripX, stripY, stripW, stripH);
-  const int stripBottom = stripY + stripH;
-  const int headerBottom = batteryClearBottom > stripBottom ? batteryClearBottom : stripBottom;
-  // Starts 1px into the clear-rects above rather than flush against them --
-  // confirmed on hardware (2026-08-08) that flush left one row uncleared,
-  // presumably an off-by-one somewhere in the two edges this butts against.
-  // Overlapping a row already painted white costs nothing.
-  renderer.fillRect(0, headerBottom - 1, screenWidth, kHeaderExtraMargin + 1, false);
+  // kHeaderPlaceNameLeftX, not kTextX -- confirmed on hardware 2026-08-11 that
+  // this text wants 2px more air from the left edge than the debug readout's
+  // own margin gives it.
+  const int maxWidth = stripX - kHeaderPlaceNameLeftX - kHeaderPlaceNameRightGap;
+  if (maxWidth <= 0) return;
+
+  // Same truncate-until-fits loop drawDebugLine() uses just below --
+  // GfxRenderer::drawText does not clip and drawPixel logs every off-panel
+  // pixel, so an untruncated name running into the icon cluster would flood
+  // the log as well as overlap it.
+  for (size_t len = strlen(text); len > 0 && renderer.getTextWidth(UI_10_FONT_ID, text) > maxWidth; --len) {
+    text[len - 1] = '\0';
+  }
+
+  // +3: confirmed on hardware 2026-08-11 that the plain centred value (0
+  // here, integer division rounding down) put the glyphs' own top pixel
+  // flush against row 0 with no air above them; +1 and +2 still read as too
+  // tight.
+  const int y = (kHeaderBarHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2 + 3;
+  renderer.drawText(UI_10_FONT_ID, kHeaderPlaceNameLeftX, y, text, true);
 }
 
 void MapActivity::drawHeaderStatusStrip() {
@@ -2129,7 +2195,7 @@ void MapActivity::renderRouteOverview() {
   }
 
   renderer.clearScreen();
-  GfxRendererCanvas canvas(renderer);
+  GfxRendererCanvas canvas(renderer, kMapContentTop);
 
   MapViewState view;
   view.markerX = anchorX;
@@ -2139,7 +2205,7 @@ void MapActivity::renderRouteOverview() {
   view.drawBuildings = MapViewport::kZoomLadder[fit.zoomStep].buildings;
   view.drawBuiltUp = MapViewport::kZoomLadder[fit.zoomStep].builtUp;
 
-  const uint32_t missing = drawMapLayers(range, canvas, view);
+  const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, 0, &nearestPlaces_);
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -2191,7 +2257,7 @@ void MapActivity::renderRouteOverview() {
 }
 
 uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
-                                    MapRenderTiming* timing, uint64_t knownBadLayers) {
+                                    MapRenderTiming* timing, uint64_t knownBadLayers, MapNearestPlaces* nearestOut) {
   MapTileSource::Config config;
   config.rootDir = kTileRoot;
   config.z = range.z;
@@ -2225,7 +2291,7 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // The route rides along as a second source, re-read from the card on every
   // reset and never held in RAM (IMapRouteSource.h). nullptr when the rider
   // skipped the picker, and then the route pass costs nothing at all.
-  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing);
+  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing, nearestOut);
 
   // Hatch after the geometry, because which tiles are missing is only known
   // once the source has tried to open them, and asking up front would cost a
@@ -2345,7 +2411,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   }
 
   renderer.clearScreen();
-  GfxRendererCanvas canvas(renderer);
+  GfxRendererCanvas canvas(renderer, kMapContentTop);
 
   MapViewState view;
   view.markerX = MapViewport::kAnchorScreenX;
@@ -2365,7 +2431,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // millis() call per layer and changes no pixel.
   MapRenderTiming timing;
   timing.nowMs = &renderClockMs;
-  uint32_t missing = drawMapLayers(range, canvas, view, &timing);
+  uint32_t missing = drawMapLayers(range, canvas, view, &timing, 0, &nearestPlaces_);
 
   // A layer's checksum is now folded out of the record stream, so corruption is
   // found *after* its records have been drawn (MapTileReader::layerCheck). When
@@ -2382,7 +2448,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%llx) -- redrawing without them",
             static_cast<unsigned long>(source_->corruptLayers()), static_cast<unsigned long long>(bad));
     renderer.clearScreen();
-    missing = drawMapLayers(range, canvas, view, &timing, bad);
+    missing = drawMapLayers(range, canvas, view, &timing, bad, &nearestPlaces_);
   }
 
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top

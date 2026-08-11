@@ -147,6 +147,68 @@ Nothing repaints before `viewportDrawn_`: the waiting banner draws no header row
 at all, and painting one onto it would leave a floating status row over a screen
 with no map.
 
+## Fixed height, a separator, and the place name (2026-08-11)
+
+The header used to be a set of independent clear-rects the map happened to
+get painted over underneath (`drawHeaderStatus()`'s old `batteryClearBottom`
+/ `stripBottom` / `kHeaderExtraMargin` dance). It is now a fixed-height
+contract: one white strip `[0, kHeaderBarHeight)`, a 1px black separator row
+at `kHeaderSeparatorY` (== `kHeaderBarHeight`), and the map's own content
+starting only at `kMapContentTop` (`MapActivity.cpp`).
+
+**The map does not draw above that line at all -- it is not drawn and then
+covered.** `GfxRendererCanvas` (`src/activities/map/GfxRendererCanvas.h`)
+already clipped every draw call to the screen bounds (roads loaded for a
+wider tile range than the viewport need this, see the class comment); it
+now takes a `minY` constructor argument, threaded through `onScreen()`,
+`fullyOnScreen()`, `outcode()` and `clipToRect()` in place of the `0` they
+all used before. `MapActivity` constructs it with `kMapContentTop` at both
+call sites (`renderViewport()`, `drawRouteOverview()`). `test/map_preview`'s
+`PpmCanvas` has no header and is unaffected -- it never took this parameter.
+
+`kHeaderBarHeight` (36px) is derived from the row's own former clear-bottom
+math (`kHeaderMarginTop + 5 + kHeaderRowHeight + kHeaderExtraMargin + 1`), not
+a fresh guess, so the existing icon layout (battery bottom ~28px, BLE strip
+backing bottom ~31px) needed no retuning and the marker ladder
+(`MapViewport::kMarkerLadder`, 400-760px) was never close to this band to
+begin with.
+
+**The place name, left side.** `drawHeaderPlaceName()` shows the nearest
+named place to the marker, read from `MapNearestPlaces`
+(`src/activities/map/MapRenderer.h`) -- populated by `MapRenderer::render()`
+during the same places walk that draws the dots (`MapRenderer.cpp`), not a
+second pass and not a second SD read (`IMapSource.h`: "The second pass is a
+second seek" is exactly the cost this avoids). Two independent nearest-picks,
+by squared screen-pixel distance to the marker:
+
+- **fine**: nearest place with rank >= 2 (village/suburb/hamlet/farm)
+- **coarse**: nearest place with rank <= 1 (city/town)
+
+Shown as `"fine, coarse"` when both are set (e.g. "Karlova Ves, Bratislava"),
+whichever one alone when only one is, and nothing when neither loaded tile
+carries a name near the marker. **There is no third option that guarantees
+the pair is correct** -- the tile format has no admin hierarchy linking a
+suburb to its city (`mapbuilder/build_config.json`'s `place_ranks` is a flat
+rank, not a tree), and "nearest of each tier separately" is a proximity
+approximation of that pair, not a lookup of it. Both picks are also bounded by
+whatever tiles are already loaded for the current viewport (`MapViewport::
+kMaxTiles`, 3x3 worst case) -- there is no wider, dedicated query for the
+coarse tier, so a rider zoomed in tight in open country between towns will
+often see the fine name alone, or nothing.
+
+Truncated to fit with the same loop `drawDebugLine()` uses, against
+`headerStatusRect()`'s own left edge minus a small gap -- so it stops before
+the icon cluster rather than running under it.
+
+**Position, tuned on hardware.** Neither margin matched the debug readout's
+own: `kHeaderPlaceNameLeftX` is `kTextX + 2` (2px further right), and the
+vertical centring formula gets `+ 3` on top of the plain centred value (0,
+1 and 2 were each tried and screenshotted in turn and still read as too
+tight against the top edge). Both are `MapActivity.cpp` constants/literals
+next to `drawHeaderPlaceName()`, not derived from anything else -- if the
+font or `kHeaderBarHeight` changes, re-check by eye rather than assuming the
+same offset still reads right.
+
 ## Verified vs assumed
 
 - **Measured on hardware, by the maintainer**: with the phone's GPS app, the bars
@@ -184,3 +246,23 @@ with no map.
   longer erases this row's icons, and the readout itself sits below the row
   with a visible gap -- see "The debug readout sits below this row, not
   inside it" above.
+- **Verified on hardware, 2026-08-11**, `CMD:SCREENSHOT` via
+  `tools/screenshot_gate.py`: the fixed header strip, the 1px separator, and
+  the map's top clip all read correctly on the panel -- the map's own lines
+  start right at the separator with nothing bleeding above it. The place
+  name lookup also works end to end on real tile data: at the fix rendered
+  (z11, 23 places in the loaded tile range), the header showed "Kittsee,
+  Bratislava" -- a real fine+coarse pair, not a placeholder string. Icon
+  cluster (BLE X, 95% battery) unaffected, as expected -- `drawHeaderStatusStrip()`
+  itself was not touched.
+- **Verified on hardware, 2026-08-11, a second grab**: a Slovak diacritic
+  renders correctly in the header font -- "Petržalka" (fine tier alone, no
+  coarse match nearby this time), the ž a clean glyph, not a fallback box.
+  Same grab is where the vertical/horizontal offset tuning above (`+2px`
+  left, `+3px` top) happened, alongside the scale bar
+  (`docs/map-scale-bar.md`) on the same screen -- shot:
+  `docs/device-shots/map-scale-bar-and-header-placename.png` in the parent
+  repo.
+- **Not yet checked**: the truncation path (no name seen so far has been
+  close to running into the icon cluster) and every other zoom rung's places
+  walk.

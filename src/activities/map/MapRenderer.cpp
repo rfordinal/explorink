@@ -1,6 +1,7 @@
 #include "MapRenderer.h"
 
 #include <cmath>
+#include <cstdio>
 
 #include "MapAreaClass.h"
 #include "MapAreaFill.h"
@@ -187,7 +188,7 @@ void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style
 }  // namespace
 
 void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
-                         IMapRouteSource* route, MapRenderTiming* timing) {
+                         IMapRouteSource* route, MapRenderTiming* timing, MapNearestPlaces* nearestOut) {
   // Instrumentation only. `mark` holds the last stamp; each layer's field gets
   // the delta since it. With no timing, or no clock in it, both of these are a
   // null check and nothing else -- no clock call, no pixel changed.
@@ -330,11 +331,36 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   if (timing) lap(timing->routeMs, mark);
 
   const int dotDiameter = style.placeDotDiameterPx;
-  if (dotDiameter > 0 && source.beginPlaces()) {
+  if (nearestOut) *nearestOut = MapNearestPlaces{};
+  // Rank <= 1 is city/town (mapbuilder/build_config.json's place_ranks:
+  // city=0, town=1); everything above is the fine-grained tier
+  // (village/suburb/hamlet/farm). Opened even with dots hidden
+  // (`nearestOut != nullptr` alone opens the layer) -- see MapRenderer.h.
+  constexpr uint8_t kCoarseMaxRank = 1;
+  if ((dotDiameter > 0 || nearestOut != nullptr) && source.beginPlaces()) {
     MapPlaceRef place;
+    long bestFineDistSq = -1;
+    long bestCoarseDistSq = -1;
     while (source.nextPlace(place)) {
-      canvas.fillRoundedRect(place.x - dotDiameter / 2, place.y - dotDiameter / 2, dotDiameter, dotDiameter,
-                             dotDiameter / 2, MapInk::Black);
+      if (dotDiameter > 0) {
+        canvas.fillRoundedRect(place.x - dotDiameter / 2, place.y - dotDiameter / 2, dotDiameter, dotDiameter,
+                               dotDiameter / 2, MapInk::Black);
+      }
+      if (nearestOut == nullptr || place.name[0] == '\0') continue;
+      const long dx = place.x - state.markerX;
+      const long dy = place.y - state.markerY;
+      const long distSq = dx * dx + dy * dy;
+      if (place.rank <= kCoarseMaxRank) {
+        if (bestCoarseDistSq >= 0 && distSq >= bestCoarseDistSq) continue;
+        bestCoarseDistSq = distSq;
+        snprintf(nearestOut->coarseName, MapNearestPlaces::kNameBufferLen, "%s", place.name);
+        nearestOut->hasCoarse = true;
+      } else {
+        if (bestFineDistSq >= 0 && distSq >= bestFineDistSq) continue;
+        bestFineDistSq = distSq;
+        snprintf(nearestOut->fineName, MapNearestPlaces::kNameBufferLen, "%s", place.name);
+        nearestOut->hasFine = true;
+      }
     }
   }
   if (timing) lap(timing->placesMs, mark);
