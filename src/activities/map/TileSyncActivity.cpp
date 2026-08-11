@@ -607,40 +607,57 @@ void TileSyncActivity::renderScreen() {
       break;
     }
   }
-  renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
-  y += lineHeight;
-
-  // While waiting, say what would make it start. A screen that only says
-  // "waiting" leaves the rider with nothing to try.
-  if (phase_ == Phase::Waiting) {
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_WAITING_HINT), true);
-  } else if (phase_ == Phase::Finished && skipped_ > 0) {
-    // "queued" on a row is short enough to read at a glance and too short to
-    // explain itself, so the run says it once, here: the square is not on the
-    // server yet, the device has it written down, and it will be asked for
-    // again. What it does **not** claim is that anybody was told to build it --
-    // nothing reports these gaps upstream today (../../docs/tile-index-spec.md:
-    // the map server is static files, no API).
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_NOT_BUILT), true);
+  // A finished run is a result, not a live view. The row list is what the rider
+  // watches while it works and is irrelevant the moment it stops -- what they
+  // came for is one answer, so on this screen the answer is the screen: verdict
+  // big, the numbers under it, and for squares that did not arrive the reason
+  // stated plainly rather than as a footnote. No list, no bar.
+  if (phase_ == Phase::Finished) {
+    const int bigLine = renderer.getLineHeight(UI_12_FONT_ID);
+    renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, I18N.get(verdict_), true);
+    y += bigLine;
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
+    y += lineHeight + bigLine / 2;
+    if (skipped_ > 0) {
+      // Not "failed". The server does not have this square yet, the device has
+      // it written down, and it will ask again -- two short lines because one
+      // ran off the right edge at this size (measured on the panel).
+      //
+      // What it does not claim: that anybody was told to build it. Nothing
+      // reports these gaps upstream today (../../docs/tile-index-spec.md -- the
+      // map server is static files, no API).
+      renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_NOT_BUILT), true);
+      y += bigLine;
+      renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_NOT_BUILT_2), true);
+    }
   } else {
-    // The one bar that is about the whole run, and the one place a percentage
-    // belongs. GUI.drawProgressBar writes that percentage itself, centred below
-    // the bar, which is exactly what is wanted here and exactly what made it
-    // wrong for the rows.
-    //
-    // It counts **arrivals**, not settled tiles. A tile the supplier does not
-    // have settles the run too, but filling the bar with it tells the rider the
-    // map is complete when nothing was transferred -- a run where the CDN holds
-    // none of the area would end on a full bar. Measured on the panel: 0 landed,
-    // 5 unavailable, bar at 100%. The unavailable count goes in the line above
-    // instead, where it cannot be read as progress.
-    GUI.drawProgressBar(
-        renderer,
-        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-        transfer.completed, rowCount_ > 0 ? rowCount_ : 1);
-  }
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
+    y += lineHeight;
 
-  drawList();
+    // While waiting, say what would make it start. A screen that only says
+    // "waiting" leaves the rider with nothing to try.
+    if (phase_ == Phase::Waiting) {
+      renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_WAITING_HINT), true);
+    } else {
+      // The one bar that is about the whole run, and the one place a percentage
+      // belongs. GUI.drawProgressBar writes that percentage itself, centred
+      // below the bar, which is exactly what is wanted here and exactly what
+      // made it wrong for the rows.
+      //
+      // It counts **arrivals**, not settled tiles. A tile the supplier does not
+      // have settles the run too, but filling the bar with it tells the rider
+      // the map is complete when nothing was transferred -- a run where the CDN
+      // holds none of the area would end on a full bar. Measured on the panel:
+      // 0 landed, 5 unavailable, bar at 100%. The unavailable count goes in the
+      // line above instead, where it cannot be read as progress.
+      GUI.drawProgressBar(
+          renderer,
+          Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+          transfer.completed, rowCount_ > 0 ? rowCount_ : 1);
+    }
+
+    drawList();
+  }
 
   const auto labels = mappedInput.mapLabels(phase_ == Phase::Running ? tr(STR_CANCEL) : tr(STR_BACK), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

@@ -819,6 +819,18 @@ Three changes, all in `TileSyncActivity`:
   the map server being static files with no API
   (`../../docs/tile-index-spec.md`).
 
+### The finished screen is a result, not a list
+
+The row list is what a rider watches while a fetch works, and it is irrelevant the
+moment it stops -- the maintainer's words, watching a real run. A finished run
+therefore draws no list and no bar: the verdict at UI_12, the numbers under it, and
+when squares were queued, the reason as the biggest thing on the screen. That is
+the one question the screen exists to answer.
+
+Two lines rather than one for the queued sentence, because the single-line version
+ran off the right edge at that size -- measured on the panel, cut mid-word after
+about 48 characters.
+
 The phone side enforces the same rule independently -- a second ask arriving
 mid-conversation is deferred, not answered (`android/README.md`). Both ends need
 it: an older device build still fires both asks.
