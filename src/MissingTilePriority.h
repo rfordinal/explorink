@@ -35,6 +35,39 @@ constexpr uint8_t missingTileTierRank(uint8_t z) {
   }
 }
 
+// Where the rider was last seen, in tile coordinates, one pair per LOD tier
+// (indexed by missingTileTierRank, so [0] is z12, [1] is z11, [2] is z13).
+//
+// The point of it: a gap 200 km behind the rider and a gap under their wheels
+// are worth very different amounts, and until now the list could not tell them
+// apart -- hit count ranked a tile hatched twelve times last week above the one
+// the rider is riding into. On a link that moves ~7 kB/s and a fetch that is
+// routinely cut short, the first minute has to spend itself near the rider.
+//
+// `valid` false means there is no last fix (a device that has never had one),
+// and the order falls back to what it was before.
+struct MissingTileAnchor {
+  bool valid = false;
+  uint32_t col[4] = {0, 0, 0, 0};
+  uint32_t row[4] = {0, 0, 0, 0};
+};
+
+// Whole tiles away from the anchor, Manhattan.
+//
+// Manhattan and not Euclidean: this is a coarse bucket, not a measurement --
+// one z12 tile is about 9.8 km wide, so a tile either is the rider's own square,
+// or a neighbour, or somewhere else entirely. Integer arithmetic on purpose;
+// this runs inside a sort comparator on a core with no hardware floating point.
+template <typename Tile>
+constexpr uint32_t missingTileDistance(const Tile& t, const MissingTileAnchor& anchor) {
+  const uint8_t rank = missingTileTierRank(t.z);
+  const uint32_t ac = anchor.col[rank];
+  const uint32_t ar = anchor.row[rank];
+  const uint32_t dc = t.col > ac ? t.col - ac : ac - t.col;
+  const uint32_t dr = t.row > ar ? t.row - ar : ar - t.row;
+  return dc + dr;
+}
+
 // True when `a` should be fetched before `b`.
 //
 // Tier first, hit count second: a tile hatched once at regional still beats a
@@ -58,11 +91,28 @@ constexpr uint8_t missingTileTierRank(uint8_t z) {
 // Header-only and inlined at both call sites, so the CLAUDE.md warning about
 // template bloat does not bite -- there is no out-of-line copy to duplicate.
 template <typename Tile>
-constexpr bool missingTileFetchBefore(const Tile& a, const Tile& b) {
+constexpr bool missingTileFetchBefore(const Tile& a, const Tile& b, const MissingTileAnchor& anchor) {
   const uint8_t rankA = missingTileTierRank(a.z);
   const uint8_t rankB = missingTileTierRank(b.z);
   if (rankA != rankB) return rankA < rankB;
+  // Distance beats hit count, and only inside a tier. "Near the rider" is a
+  // statement about now; a hit count is a statement about the past, and the
+  // rider cannot ride into last week. Tier still comes first -- a nearby detail
+  // close-up is not worth delaying the regional view the rider navigates by.
+  if (anchor.valid) {
+    const uint32_t distA = missingTileDistance(a, anchor);
+    const uint32_t distB = missingTileDistance(b, anchor);
+    if (distA != distB) return distA < distB;
+  }
   if (a.count != b.count) return a.count > b.count;
   if (a.col != b.col) return a.col < b.col;
   return a.row < b.row;
+}
+
+// Without an anchor: the order this had before a last fix was taken into
+// account. Kept so a caller with no position (and the native test) can still
+// ask for a total order.
+template <typename Tile>
+constexpr bool missingTileFetchBefore(const Tile& a, const Tile& b) {
+  return missingTileFetchBefore(a, b, MissingTileAnchor{});
 }

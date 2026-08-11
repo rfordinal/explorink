@@ -772,3 +772,82 @@ used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
   - **The SD write.** `flushIfDirty()` is on a 10-minute timer or the screen's
     exit, and the test above never left the map screen, so no
     `missing_tiles.json` has been read back off a card yet.
+
+## One queue on the sync screen, missing tiles first (2026-08-11)
+
+**Measured on hardware, and it was broken.** The sync screen used to send both of
+its asks at once -- `CHECK_TILES` (is what I hold still current?) and `NEED_TILES`
+(here is what I do not have) -- 15 ms apart. The phone answers each with a command
+on the same channel, so two conversations ran at once, and a reply listing on this
+channel ends with a plain `OK`. Each conversation could therefore be ended by the
+other's terminator.
+
+What that looked like on the wire (serial capture, 2026-08-11):
+
+```
+[786768] [MAPBLE] rx: have      <- freshness conversation opens
+[786888] [MAPBLE] rx: missing   <- fetch conversation opens, `have` still open
+[788200] [MAPBLE] rx: checked 0
+```
+
+and on the phone, in the same second: `device wants 20 tiles`, then
+`list complete: 0 tiles of 20`, then `fetch finished: done (0 sent, 0 skipped)`.
+
+The device asked for 20 tiles and was told nothing. Worse than nothing: with no
+arrivals and **no `skip` lines**, nothing could move a row, so all 20 sat at
+`waiting` for as long as the rider cared to watch. That is the reported symptom --
+"I open sync tiles, everything says waiting, nothing happens, I don't understand
+what it is doing."
+
+Three changes, all in `TileSyncActivity`:
+
+- **One ask at a time, missing tiles first.** `askForTiles()` goes out alone;
+  `askAboutFreshness()` is held until the fetch settles (`updateProgress`) or
+  until there is nothing to fetch. Missing first because a square the rider has
+  no map for beats one they have an older copy of.
+- **A stall verdict.** `kStallVerdictMs` (30 s, matching the transfer channel's own
+  stalled-transfer reclaim) with nothing in flight and nothing settling ends the
+  run with `STR_TILE_SYNC_NO_ANSWER` instead of leaving rows in limbo. The
+  protocol has no "I am done" from the phone and cannot usefully have one -- a
+  phone out of range would not send it either -- so silence is the only signal
+  there is, and a screen that reads silence as work is a screen that lies.
+- **`queued`, not `not available`.** A square the supplier does not have is
+  written down and asked for again -- the list is persisted (`missing_tiles.json`)
+  and survives a reboot. The run states it once, in `STR_TILE_SYNC_NOT_BUILT`:
+  *Not on the server yet. The request is saved and asked for again.* It does not
+  claim anyone was told to build it: nothing reports these gaps upstream today,
+  the map server being static files with no API
+  (`../../docs/tile-index-spec.md`).
+
+The phone side enforces the same rule independently -- a second ask arriving
+mid-conversation is deferred, not answered (`android/README.md`). Both ends need
+it: an older device build still fires both asks.
+
+## Distance from the last fix decides what goes out first (2026-08-11)
+
+Inside a LOD tier the order was hit count, so a square hatched forty times on last
+week's ride outranked the one the rider is riding into now. A fetch is routinely
+cut short -- the rider leaves, the battery goes, the phone walks out of range -- so
+the first minute has to spend itself near the rider.
+
+`MissingTileAnchor` (`../src/MissingTilePriority.h`) carries the last known fix in
+tile coordinates, one pair per tier, and the comparator's keys are now: tier,
+distance, hit count, col/row. Distance is Manhattan in whole tiles -- a coarse
+bucket, not a measurement, computed in integers because this runs inside a sort
+comparator on a core with no hardware floating point.
+
+- The anchor comes from `SETTINGS.mapHasLastFix`, i.e. the **persisted** fix, not a
+  live one (`../src/activities/map/MapMissingAnchor.h`). The sync screen has no
+  viewport and is normally used at home with the GPS off; the persisted fix is the
+  best available statement of where the rider is, and it survives a power cycle.
+- No fix ever taken means `valid == false` and the old order stands, unchanged.
+- **The same anchor must reach the console source.** `missing` re-sorts the store
+  when the phone starts paging (`MapCommandConsole`, offset 0), while this screen
+  drew its rows from its own snapshot. Two different orders would label rows for
+  tiles the phone was never told about, and every arrival would tick the wrong
+  row. `MissingTilesConsoleSource::setAnchor()` is that wiring.
+
+Verified: 12 native tests in `test/missing_tile_priority` (near-beats-far,
+tier-still-first, ties still fall through to count then col/row, no-fix
+unchanged, order still total). **Not yet measured on hardware** -- what a real
+list looks like once sorted around a real last fix.

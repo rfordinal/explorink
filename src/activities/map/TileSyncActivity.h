@@ -168,6 +168,10 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // True once CHECK_TILES has gone out this visit. One check per visit: the
   // held-tile snapshot does not change while this screen is up.
   bool freshnessAsked_ = false;
+
+  // When something last landed or was skipped, for the stall verdict below.
+  // Armed by askForTiles(), so a screen that never asked cannot time out.
+  uint32_t lastSettleMs_ = 0;
   // Whether the panel currently shows a phone or not, so trackPhone() only
   // repaints on a real change.
   bool drawnPhoneListening_ = false;
@@ -209,6 +213,12 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // bar is rate-capped rather than drawn per chunk.
   uint32_t lastActiveDrawMs_ = 0;
   static constexpr uint32_t kActiveRowRefreshMs = 2000;
+
+  // How long silence is allowed to look like work. The transfer channel reclaims
+  // a stalled transfer after 30 s (docs/ble-map-transfer-protocol.md), so a
+  // phone that is genuinely still pushing cannot be quiet for longer than that
+  // without the link itself being dead.
+  static constexpr uint32_t kStallVerdictMs = 30000;
 
   // Last tileSeq already cleared out of the store. See drainTransferredTiles().
   uint32_t lastClearedTileSeq_ = 0;

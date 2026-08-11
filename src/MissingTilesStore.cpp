@@ -115,6 +115,16 @@ bool MissingTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {
   return true;
 }
 
+void MissingTilesStore::sortByFetchPriority(const MissingTileAnchor& anchor) {
+  // Same comparator, same total order, one extra key. Kept as its own overload
+  // rather than a default argument so a caller has to say whether it has a
+  // position -- passing an empty anchor by accident silently drops the rider's
+  // own square back to wherever its hit count puts it.
+  std::sort(hits_.begin(), hits_.end(), [&anchor](const MissingTileHit& a, const MissingTileHit& b) {
+    return missingTileFetchBefore(a, b, anchor);
+  });
+}
+
 void MissingTilesStore::sortByFetchPriority() {
   // std::sort, not stable_sort: the comparator is a total order (it falls
   // through to col/row), so stability buys nothing -- and stable_sort would

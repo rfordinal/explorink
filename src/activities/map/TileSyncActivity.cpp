@@ -8,6 +8,8 @@
 
 #include "CrossPointSettings.h"
 #include "LastHeldTiles.h"
+#include "MapByteFormat.h"
+#include "MapMissingAnchor.h"
 #include "MapPowerStatsProvider.h"
 #include "MapTileReader.h"
 #include "MappedInputManager.h"
@@ -45,8 +47,13 @@ void TileSyncActivity::onEnter() {
   transfer_.attach();
 
   // The list the phone is about to read and the count it is about to be told
-  // have to be the same list in the same order.
-  MISSING_TILES.sortByFetchPriority();
+  // have to be the same list in the same order, and where the rider was last
+  // seen decides what goes out first. The same anchor
+  // goes to the console source below, because `missing` re-sorts the store when
+  // the phone starts paging -- two different orders would label the rows on this
+  // screen for tiles the phone was never told about.
+  const MissingTileAnchor anchor = missingTileAnchorFromLastFix();
+  MISSING_TILES.sortByFetchPriority(anchor);
   const auto& hits = MISSING_TILES.hits();
   rowCount_ = static_cast<uint32_t>(hits.size());
 
@@ -69,6 +76,7 @@ void TileSyncActivity::onEnter() {
     }
   }
 
+  g_missingTilesConsoleSource.setAnchor(anchor);
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   consoleState_.setSkipObserver(this);
   // What `have` answers from: the tiles the map screen last drew, with the
@@ -129,10 +137,7 @@ void TileSyncActivity::onEnter() {
   hadPhone_ = drawnPhoneListening_;
   LOG_INF(kLogTag, "%lu tiles to ask for, waiting for a phone", static_cast<unsigned long>(rowCount_));
   renderScreen();
-  if (drawnPhoneListening_) {
-    askAboutFreshness();
-    askForTiles();
-  }
+  if (drawnPhoneListening_) askForTiles();
 }
 
 void TileSyncActivity::askAboutFreshness() {
@@ -193,6 +198,7 @@ void TileSyncActivity::askForTiles() {
   LOG_INF(kLogTag, "asked for %lu tiles", static_cast<unsigned long>(rowCount_));
   phase_ = Phase::Running;
   startedMs_ = millis();
+  lastSettleMs_ = startedMs_;
   renderScreen();
 }
 
@@ -205,18 +211,25 @@ void TileSyncActivity::trackPhone() {
   if (listening) {
     hadPhone_ = true;
     LOG_INF(kLogTag, "phone subscribed, asking");
-    // Freshness first, and it has to be here rather than only in onEnter().
+    // It has to be here rather than only in onEnter(). Measured on hardware
+    // 2026-08-09: onEnter() tests phoneListening() at t=0, the moment BLE
+    // starts, and the phone does not actually subscribe until ~+1.8 s. So an
+    // onEnter()-only ask could never fire -- a bug in the timing, not the
+    // logic, which unit tests could not catch.
     //
-    // Measured on hardware 2026-08-09: onEnter() tests phoneListening() at
-    // t=0, the moment BLE starts, and the phone does not actually subscribe
-    // until ~+1.8 s. So the onEnter() call could never fire -- SyncScreen mode
-    // was dead code that unit tests could not catch, because the bug is in the
-    // timing, not the logic. askForTiles() already had this path; the
-    // freshness check did not.
-    askAboutFreshness();
+    // **One conversation at a time, missing tiles first.** Both asks used to go
+    // out here, 15 ms apart, and that is a bug on the wire: the phone answers
+    // each with a command, so two conversations run on one channel and each
+    // one's terminating `OK` can end the other's listing. Measured on hardware
+    // 2026-08-11 -- the device asked for 20 tiles, the phone read the list as
+    // empty ("0 tiles of 20"), sent no tiles and no skips, and all 20 rows sat
+    // at "waiting" forever with nothing to explain it. Freshness now goes out
+    // when the fetch settles (updateProgress) or when there is nothing to
+    // fetch at all.
     if (rowCount_ > 0) {
       askForTiles();
     } else {
+      askAboutFreshness();
       // Nothing to fetch -- the freshness ask above was the only reason this
       // screen was still waiting. Same verdict onEnter() would have shown had
       // the phone been there from t=0.
@@ -490,31 +503,13 @@ void TileSyncActivity::drawList() {
 }
 
 void TileSyncActivity::formatBytes(uint32_t bytes, char* out, size_t outSize) {
-  // Decimal kB/MB, not KiB: the number next to it is a file size a rider
-  // compares against a phone's storage screen, which is decimal everywhere.
-  if (bytes < 1000) {
-    snprintf(out, outSize, "%lu B", static_cast<unsigned long>(bytes));
-  } else if (bytes < 1000000) {
-    snprintf(out, outSize, "%lu kB", static_cast<unsigned long>((bytes + 500) / 1000));
-  } else {
-    // One decimal past a megabyte -- "1 MB" for anything from 1.0 to 1.9 would
-    // hide most of a fetch's progress.
-    const uint32_t tenths = (bytes + 50000) / 100000;
-    snprintf(out, outSize, "%lu.%lu MB", static_cast<unsigned long>(tenths / 10),
-             static_cast<unsigned long>(tenths % 10));
-  }
+  // Definition moved to MapByteFormat.h so the map screen's debug readout states
+  // a transfer the same way this screen does -- it used to print raw bytes.
+  mapfmt::formatBytes(bytes, out, outSize);
 }
 
 void TileSyncActivity::formatDuration(uint32_t seconds, char* out, size_t outSize) {
-  if (seconds >= 3600) {
-    snprintf(out, outSize, "%luh %lum", static_cast<unsigned long>(seconds / 3600),
-             static_cast<unsigned long>((seconds % 3600) / 60));
-  } else if (seconds >= 60) {
-    snprintf(out, outSize, "%lum %lus", static_cast<unsigned long>(seconds / 60),
-             static_cast<unsigned long>(seconds % 60));
-  } else {
-    snprintf(out, outSize, "%lus", static_cast<unsigned long>(seconds));
-  }
+  mapfmt::formatDuration(seconds, out, outSize);
 }
 
 void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
@@ -619,6 +614,14 @@ void TileSyncActivity::renderScreen() {
   // "waiting" leaves the rider with nothing to try.
   if (phase_ == Phase::Waiting) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_WAITING_HINT), true);
+  } else if (phase_ == Phase::Finished && skipped_ > 0) {
+    // "queued" on a row is short enough to read at a glance and too short to
+    // explain itself, so the run says it once, here: the square is not on the
+    // server yet, the device has it written down, and it will be asked for
+    // again. What it does **not** claim is that anybody was told to build it --
+    // nothing reports these gaps upstream today (../../docs/tile-index-spec.md:
+    // the map server is static files, no API).
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_NOT_BUILT), true);
   } else {
     // The one bar that is about the whole run, and the one place a percentage
     // belongs. GUI.drawProgressBar writes that percentage itself, centred below
@@ -655,12 +658,35 @@ void TileSyncActivity::updateProgress() {
   // A tile settling -- landed or skipped -- changes the summary line, one row's
   // state and possibly the window, so that is a whole frame.
   if (done != drawnDone_ || skipped_ != drawnSkipped_) {
+    lastSettleMs_ = millis();
     if (phase_ == Phase::Running && done + skipped_ >= rowCount_) {
       phase_ = Phase::Finished;
       verdict_ = StrId::STR_MAP_FETCH_DONE;
       LOG_INF(kLogTag, "done, %lu landed, %lu skipped", static_cast<unsigned long>(done),
               static_cast<unsigned long>(skipped_));
+      // The queue's second half. Held until now on purpose: two conversations on
+      // one command channel cross each other's replies (see trackPhone).
+      askAboutFreshness();
     }
+    renderScreen();
+    return;
+  }
+
+  // Nothing has settled for a while and nothing is in flight: say so.
+  //
+  // The protocol has no "I am done" from the phone, and it cannot have a useful
+  // one -- a phone that walked out of range would not send it either. So silence
+  // is the only signal, and a screen that treats silence as "still working"
+  // leaves a rider watching rows marked "waiting" with no way to tell a slow
+  // fetch from a finished one. Measured on hardware 2026-08-11: 20 rows sat
+  // there indefinitely after the phone had already given up.
+  if (phase_ == Phase::Running && !transfer.active && lastSettleMs_ != 0 &&
+      millis() - lastSettleMs_ > kStallVerdictMs) {
+    phase_ = Phase::Finished;
+    verdict_ = StrId::STR_TILE_SYNC_NO_ANSWER;
+    LOG_INF(kLogTag, "no answer for %lu ms, %lu landed, %lu skipped", static_cast<unsigned long>(kStallVerdictMs),
+            static_cast<unsigned long>(done), static_cast<unsigned long>(skipped_));
+    askAboutFreshness();
     renderScreen();
     return;
   }
