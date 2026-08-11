@@ -53,9 +53,30 @@ percentage is a third-order polynomial over exactly that number
 one percent of a 650 mAh cell is 6.5 mAh -- around twenty minutes of riding at
 the draws measured below. Two firmware builds cannot be told apart by it.
 
-**Not yet verified on hardware**: nothing has read a real `power.csv` off a
-card, and no `stats` reply has come back over a real BLE link. Builds clean,
-72/72 native console tests pass. First ride settles it.
+**Verified on hardware 2026-08-11** (build `f6372ea6`, X4): `stats` answers
+over both channels -- USB serial and BLE -- with 16 lines each and plausible
+values. `power.csv` writes without an error line on serial across a 2.5-minute
+boot, but **nothing has read the file off the card yet**; that is the one part
+of the instrument still unproven.
+
+What the first two `stats` calls already settled, both previously read-only
+claims:
+
+- **The map screen never throttles.** Across 41 s on the map, `full_clock_ms`
+  rose 29,769 -> 70,470 while `throttled_ms` stayed frozen at 74,452 -- every
+  millisecond of it at full clock. The Home screen before it had done the
+  opposite (`[PWR] Going to low-power mode` 3 s after boot). Confirms
+  `power-management.md` item 3 and `optimization/07`'s reading of
+  `preventAutoSleep()`.
+- **The loop really does run at ~100 Hz on the map.** 4,008 iterations in
+  41 s, against ~33/s on the Home screen. Confirms item 4's premise.
+
+**`rssi()` returns 0 on a live link.** The `INFO rssi_dbm=` line was absent
+from a `stats` answered over BLE, i.e. with a central definitely connected and
+the handle set (`BlePositionServer.cpp:516-520` returns 0 when
+`ble_gap_conn_rssi()` fails). So either that HCI path is unavailable on this
+build or the call errors for another reason. Pre-existing -- `rssi()` had no
+caller before `stats` -- and not yet chased. Open.
 
 ## Charging cannot be turned off in software (X4)
 
