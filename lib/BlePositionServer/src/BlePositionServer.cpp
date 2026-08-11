@@ -170,6 +170,14 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // NimBLE-Arduino stops advertising once a central connects and does not
   // resume automatically -- restart it on disconnect so a dropped link
   // (out of range, phone Bluetooth toggled) can reconnect without a reboot.
+  //
+  // start() can fail (e.g. transient "host not synced" right after a link
+  // drop) and this call never checked -- a mid-ride incident showed BLE stop
+  // accepting connections and never recover for the rest of a ride while the
+  // rest of the device stayed responsive (docs/power-management.md, "BLE
+  // stopped accepting connections mid-ride"). A few quick retries turn a
+  // transient failure into a recovered link instead of a silent, permanent
+  // one.
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     // Before advertising again: a file transfer in flight is dead the moment
     // the link drops. Resuming across a reconnect is deliberately not built
@@ -177,7 +185,21 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     // has to go now rather than sit on the card looking complete.
     self().onCentralDisconnect();
     self().onTransferSubscribe(false);
-    NimBLEDevice::getAdvertising()->start();
+
+    NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+    constexpr int kMaxAttempts = 5;
+    constexpr uint32_t kRetryDelayMs = 50;
+    bool restarted = false;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      if (advertising->start()) {
+        restarted = true;
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+    }
+    if (!restarted) {
+      LOG_ERR("BLEPOS", "advertising restart failed after disconnect (%d attempts)", kMaxAttempts);
+    }
   }
 };
 
@@ -292,7 +314,11 @@ bool BlePositionServer::begin(const char* deviceName) {
   // the rider off this string (../../docs/ble-app-wake.md in the parent repo).
   advertising->enableScanResponse(true);
   advertising->setName(deviceName ? deviceName : kBleDeviceName);
-  advertising->start();
+  if (!advertising->start()) {
+    LOG_ERR("BLEPOS", "advertising failed to start");
+    NimBLEDevice::deinit(true);
+    return false;
+  }
 
   portENTER_CRITICAL(&g_mux);
   hasUpdate_ = false;
