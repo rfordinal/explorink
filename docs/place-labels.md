@@ -178,16 +178,21 @@ render log line.
 | rung | places in range | labels drawn | labelsMs | frame |
 |---|---|---|---|---|
 | 2 (12 m/px) | 5 | 2 | **15 ms** | 508 ms |
-| 6 (45 m/px) | 88 | 5 | **94 ms** | 3,793 ms |
+| 6 (45 m/px), caps of 12 | 88 | 5 | **94 ms** | 3,793 ms |
+| 6 (45 m/px), caps of 32/14 | 88 | 12 | **163 ms** | 3,888 ms |
 
-2.5 % of the frame at the widest rung. The halo is not the expensive thing on
+4.2 % of the frame at the widest rung with a full dozen names on it, and the
+frame itself grew 95 ms -- the cost scales with labels drawn, as the halo says it
+should. The halo is not the expensive thing on
 this screen -- landuse (1,826 ms) and roads (1,440 ms) are. If it ever needs to
 go, the knobs in order are `label_halo_px` 1, then `label_bg` true (one rectangle
 instead of 16 text passes).
 
 Also confirmed on the glass: the 2 px halo separates a name from road casings,
-the forest hatch and the built-up stipple, and the 29/24 tier split reads as a
-hierarchy at arm's length.
+the forest hatch and the built-up stipple, the 29/24 tier split reads as a
+hierarchy at arm's length, and with the raised caps rung 6 carries twelve names
+spread over the panel with none of them under the button row or the side hints
+(parent repo's `docs/device-shots/place-labels-rung6-modra-20260812.png`).
 
 ## Style fields
 
