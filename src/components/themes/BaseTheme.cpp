@@ -960,83 +960,137 @@ void BaseTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int 
   }
 }
 
-void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
-                                int selectedIndex, const std::vector<std::string>& values, bool leftAlign) const {
+BaseTheme::OptionPopupSpacing BaseTheme::optionPopupSpacing(const ThemeMetrics& metrics, const bool compact) {
+  const int hPadding = metrics.optionPopupSelectionHPadding;
+  if (!compact) {
+    return OptionPopupSpacing{
+        metrics.optionPopupItemSpacing, metrics.optionPopupInnerPadding, hPadding, metrics.optionPopupSelectionVPadding,
+        metrics.optionPopupTitleGap,    std::max(4, hPadding / 2),       120};
+  }
+  // Horizontal padding is left alone: it is what keeps a label off the frame
+  // and a value off the label, and it costs one column, not one per row.
+  return OptionPopupSpacing{std::max(2, metrics.optionPopupItemSpacing / 2),
+                            std::max(8, metrics.optionPopupInnerPadding * 7 / 10),
+                            hPadding,
+                            std::max(4, metrics.optionPopupSelectionVPadding / 2),
+                            std::max(6, metrics.optionPopupTitleGap * 6 / 10),
+                            std::max(4, hPadding / 2),
+                            100};
+}
+
+BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer& renderer,
+                                                              const OptionPopupSpec& spec) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const auto spacing = optionPopupSpacing(metrics, spec.compact);
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
 
   const int optionFontId = metrics.optionPopupUseSmallFont ? UI_10_FONT_ID : UI_12_FONT_ID;
   const EpdFontFamily::Style optionStyle =
       metrics.optionPopupOptionFontBold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
 
-  const int itemSpacing = metrics.optionPopupItemSpacing;
-  const int innerPadding = metrics.optionPopupInnerPadding;
-  const int selectionHPadding = metrics.optionPopupSelectionHPadding;
-  const int selectionVPadding = metrics.optionPopupSelectionVPadding;
-
   const int optionLineHeight = renderer.getLineHeight(optionFontId);
   const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int rowHeight = optionLineHeight + selectionVPadding * 2;
+  const int rowHeight = optionLineHeight + spacing.selectionVPadding * 2;
+  const int rowStep = rowHeight + spacing.itemSpacing;
+  const int optionCount = spec.options ? static_cast<int>(spec.options->size()) : 0;
 
-  const int valuePadding = optionPopupValuePadding(selectionHPadding);
-
-  // A row with a value needs label + gap + boxed value. Mirrored in
-  // OptionPopup::getLayout() -- the two must agree or the touch rects miss.
-  int maxTextWidth = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
-  for (size_t i = 0; i < options.size(); i++) {
-    int w = renderer.getTextWidth(optionFontId, options[i].c_str(), optionStyle);
-    if (i < values.size() && !values[i].empty()) {
-      w += selectionHPadding + renderer.getTextWidth(optionFontId, values[i].c_str(), optionStyle) + valuePadding * 2;
+  // A row with a value is label + gap + boxed value; a plain row is just the
+  // label. The title has to fit too, and it is drawn in the bigger font.
+  int maxTextWidth = spec.title ? renderer.getTextWidth(UI_12_FONT_ID, spec.title, EpdFontFamily::BOLD) : 0;
+  for (int i = 0; i < optionCount; i++) {
+    int w = renderer.getTextWidth(optionFontId, (*spec.options)[i].c_str(), optionStyle);
+    if (spec.values && i < static_cast<int>(spec.values->size()) && !(*spec.values)[i].empty()) {
+      w += spacing.selectionHPadding + renderer.getTextWidth(optionFontId, (*spec.values)[i].c_str(), optionStyle) +
+           spacing.valuePadding * 2;
     }
     if (w > maxTextWidth) maxTextWidth = w;
   }
 
-  const int optionCount = static_cast<int>(options.size());
-  const int listHeight = rowHeight * optionCount + itemSpacing * (optionCount - 1);
-  const int dialogW = std::min((maxTextWidth + innerPadding * 2 + selectionHPadding * 2) * 12 / 10,
-                               pageWidth - metrics.optionPopupDialogSideMargin * 2);
-  const int contentHeight = titleLineHeight + metrics.optionPopupTitleGap + listHeight;
-  const int dialogH = contentHeight + innerPadding * 2;
-  const int dialogX = (pageWidth - dialogW) / 2;
-  const int dialogY = (pageHeight - dialogH) / 2;
+  // How many rows are on screen at once. Two bounds, and the point of both is
+  // that the dialog must not grow with its list: a caller that snapshots the
+  // pixels under it (MapActivity's menu backdrop) pays for every row in RAM,
+  // and a dialog taller than half the panel stops reading as a dialog.
+  // Anything past the window scrolls.
+  const int chromeHeight = titleLineHeight + spacing.titleGap + spacing.innerPadding * 2;
+  const int heightBudget = pageHeight * kOptionPopupMaxHeightPercent / 100;
+  int visibleRows = optionCount;
+  if (rowStep > 0 && optionCount > 0) {
+    const int fits = (heightBudget - chromeHeight + spacing.itemSpacing) / rowStep;
+    visibleRows = std::min(optionCount, std::min(kOptionPopupMaxVisibleRows, std::max(1, fits)));
+  }
 
+  const int listHeight = visibleRows > 0 ? rowHeight * visibleRows + spacing.itemSpacing * (visibleRows - 1) : 0;
+  const int dialogW =
+      std::min((maxTextWidth + spacing.innerPadding * 2 + spacing.selectionHPadding * 2) * spacing.widthPercent / 100,
+               pageWidth - metrics.optionPopupDialogSideMargin * 2);
+  const int dialogH = titleLineHeight + spacing.titleGap + listHeight + spacing.innerPadding * 2;
+
+  OptionPopupGeometry geometry;
+  geometry.dialog = Rect{(pageWidth - dialogW) / 2, (pageHeight - dialogH) / 2, dialogW, dialogH};
+  geometry.rowX = geometry.dialog.x + spacing.innerPadding;
+  geometry.rowWidth = dialogW - spacing.innerPadding * 2;
+  geometry.firstRowY = geometry.dialog.y + spacing.innerPadding + titleLineHeight + spacing.titleGap;
+  geometry.rowHeight = rowHeight;
+  geometry.rowStep = rowStep;
+  geometry.visibleRows = visibleRows;
+  geometry.titleLineHeight = titleLineHeight;
+  return geometry;
+}
+
+void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSpec& spec) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto spacing = optionPopupSpacing(metrics, spec.compact);
+  const auto geometry = optionPopupGeometry(renderer, spec);
+  const Rect& dialog = geometry.dialog;
+
+  const int optionFontId = metrics.optionPopupUseSmallFont ? UI_10_FONT_ID : UI_12_FONT_ID;
+  const EpdFontFamily::Style optionStyle =
+      metrics.optionPopupOptionFontBold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+  const int optionLineHeight = renderer.getLineHeight(optionFontId);
+  const int optionCount = spec.options ? static_cast<int>(spec.options->size()) : 0;
   const int frameThickness = metrics.popupFrameThickness;
   const int frameRadius = metrics.popupCornerRadius;
 
   if (frameRadius > 0) {
-    renderer.fillRoundedRect(dialogX - frameThickness, dialogY - frameThickness, dialogW + frameThickness * 2,
-                             dialogH + frameThickness * 2, frameRadius + frameThickness, Color::White);
-    renderer.fillRoundedRect(dialogX, dialogY, dialogW, dialogH, frameRadius, Color::Black);
-    renderer.fillRoundedRect(dialogX + frameThickness, dialogY + frameThickness, dialogW - frameThickness * 2,
-                             dialogH - frameThickness * 2,
+    renderer.fillRoundedRect(dialog.x - frameThickness, dialog.y - frameThickness, dialog.width + frameThickness * 2,
+                             dialog.height + frameThickness * 2, frameRadius + frameThickness, Color::White);
+    renderer.fillRoundedRect(dialog.x, dialog.y, dialog.width, dialog.height, frameRadius, Color::Black);
+    renderer.fillRoundedRect(dialog.x + frameThickness, dialog.y + frameThickness, dialog.width - frameThickness * 2,
+                             dialog.height - frameThickness * 2,
                              frameRadius - frameThickness > 0 ? frameRadius - frameThickness : 0, Color::White);
   } else {
-    renderer.fillRect(dialogX - frameThickness, dialogY - frameThickness, dialogW + frameThickness * 2,
-                      dialogH + frameThickness * 2, true);
-    renderer.fillRect(dialogX, dialogY, dialogW, dialogH, false);
+    renderer.fillRect(dialog.x - frameThickness, dialog.y - frameThickness, dialog.width + frameThickness * 2,
+                      dialog.height + frameThickness * 2, true);
+    renderer.fillRect(dialog.x, dialog.y, dialog.width, dialog.height, false);
   }
 
-  int y = dialogY + innerPadding;
-
-  renderer.drawCenteredText(UI_12_FONT_ID, y, title, true, EpdFontFamily::BOLD);
-  y += titleLineHeight;
+  int y = dialog.y + spacing.innerPadding;
+  renderer.drawCenteredText(UI_12_FONT_ID, y, spec.title, true, EpdFontFamily::BOLD);
+  // Only when the list does not fit: which slice of it is on screen. Without
+  // it a scrolled list reads as a short list that lost rows.
+  if (optionCount > geometry.visibleRows) {
+    char counter[12];
+    snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
+    const int counterW = renderer.getTextWidth(UI_10_FONT_ID, counter);
+    renderer.drawText(UI_10_FONT_ID, dialog.x + dialog.width - spacing.innerPadding - counterW, y, counter, true);
+  }
+  y += geometry.titleLineHeight;
 
   if (metrics.optionPopupTitleSeparator) {
-    const int sepY = y + metrics.optionPopupTitleGap / 2;
-    renderer.drawLine(dialogX + innerPadding, sepY, dialogX + dialogW - innerPadding, sepY, true);
+    const int sepY = y + spacing.titleGap / 2;
+    renderer.drawLine(dialog.x + spacing.innerPadding, sepY, dialog.x + dialog.width - spacing.innerPadding, sepY,
+                      true);
   }
 
-  y += metrics.optionPopupTitleGap;
-
-  const int itemRectX = dialogX + innerPadding;
-  const int itemRectW = dialogW - innerPadding * 2;
   const int selectionRadius = metrics.optionPopupSelectionRadius;
 
-  for (int i = 0; i < optionCount; i++) {
-    const int itemY = y + i * (rowHeight + itemSpacing);
-    const bool selected = (i == selectedIndex);
-    const char* labelText = options[i].c_str();
+  for (int row = 0; row < geometry.visibleRows; row++) {
+    const int i = spec.scrollTop + row;
+    if (i < 0 || i >= optionCount) continue;
+    const int itemY = geometry.firstRowY + row * geometry.rowStep;
+    const bool selected = (i == spec.selectedIndex);
+    const char* labelText = (*spec.options)[i].c_str();
 
     if (metrics.optionPopupDrawAllRows || selected) {
       Color rowColor;
@@ -1046,15 +1100,17 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
         rowColor = Color::White;
       }
       if (selectionRadius > 0) {
-        renderer.fillRoundedRect(itemRectX, itemY, itemRectW, rowHeight, selectionRadius, rowColor);
+        renderer.fillRoundedRect(geometry.rowX, itemY, geometry.rowWidth, geometry.rowHeight, selectionRadius,
+                                 rowColor);
       } else {
-        renderer.fillRect(itemRectX, itemY, itemRectW, rowHeight, rowColor == Color::Black);
+        renderer.fillRect(geometry.rowX, itemY, geometry.rowWidth, geometry.rowHeight, rowColor == Color::Black);
       }
     }
 
     const int textW = renderer.getTextWidth(optionFontId, labelText, optionStyle);
-    const int textY = itemY + (rowHeight - optionLineHeight) / 2;
-    const int textX = leftAlign ? itemRectX + selectionHPadding : itemRectX + (itemRectW - textW) / 2;
+    const int textY = itemY + (geometry.rowHeight - optionLineHeight) / 2;
+    const int textX =
+        spec.leftAlign ? geometry.rowX + spacing.selectionHPadding : geometry.rowX + (geometry.rowWidth - textW) / 2;
     // Unselected items: text is dark (invert=true means draw on white bg).
     // Selected on dark bg: text must be white (invert=false).
     // Selected on light bg: text stays dark (invert=true).
@@ -1063,20 +1119,19 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
 
     // The value, right-aligned, boxed on the selected row -- the same "this is
     // the changeable part" cue the Settings list gives (LyraTheme::drawList()).
-    const size_t idx = static_cast<size_t>(i);
-    if (idx >= values.size() || values[idx].empty()) continue;
-    const char* valueText = values[idx].c_str();
+    if (!spec.values || i >= static_cast<int>(spec.values->size()) || (*spec.values)[i].empty()) continue;
+    const char* valueText = (*spec.values)[i].c_str();
     const int valueW = renderer.getTextWidth(optionFontId, valueText, optionStyle);
-    const int boxW = valueW + valuePadding * 2;
-    const int boxX = itemRectX + itemRectW - boxW;
+    const int boxW = valueW + spacing.valuePadding * 2;
+    const int boxX = geometry.rowX + geometry.rowWidth - boxW;
     if (selected) {
       if (selectionRadius > 0) {
-        renderer.fillRoundedRect(boxX, itemY, boxW, rowHeight, selectionRadius, Color::Black);
+        renderer.fillRoundedRect(boxX, itemY, boxW, geometry.rowHeight, selectionRadius, Color::Black);
       } else {
-        renderer.fillRect(boxX, itemY, boxW, rowHeight, true);
+        renderer.fillRect(boxX, itemY, boxW, geometry.rowHeight, true);
       }
     }
     // Boxed value is white-on-black; everything else is dark on its own row.
-    renderer.drawText(optionFontId, boxX + valuePadding, textY, valueText, !selected, optionStyle);
+    renderer.drawText(optionFontId, boxX + spacing.valuePadding, textY, valueText, !selected, optionStyle);
   }
 }

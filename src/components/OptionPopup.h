@@ -22,7 +22,9 @@ class OptionPopup {
     }
     ownedValues.clear();
     leftAligned = false;
+    compact = false;
     selectedIndex = currentIndex;
+    scrollTop = 0;
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
@@ -37,7 +39,9 @@ class OptionPopup {
     }
     ownedValues.clear();
     leftAligned = false;
+    compact = false;
     selectedIndex = currentIndex;
+    scrollTop = 0;
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
@@ -49,7 +53,9 @@ class OptionPopup {
     ownedStrings = options;
     ownedValues.clear();
     leftAligned = false;
+    compact = false;
     selectedIndex = currentIndex;
+    scrollTop = 0;
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
@@ -67,7 +73,9 @@ class OptionPopup {
     ownedValues = values;
     ownedValues.resize(ownedStrings.size());
     leftAligned = true;
+    compact = true;
     selectedIndex = currentIndex;
+    scrollTop = 0;
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
@@ -81,9 +89,10 @@ class OptionPopup {
     int ty = 0;
     if (input.wasScreenTouchDown(tx, ty)) {
       const auto& hitLayout = getLayout(input.getRenderer());
-      for (int i = 0; i < static_cast<int>(hitLayout.options.size()); i++) {
-        if (contains(hitLayout.options[i], tx, ty)) {
-          if (selectedIndex != i) {
+      for (int row = 0; row < static_cast<int>(hitLayout.rows.size()); row++) {
+        if (contains(hitLayout.rows[row], tx, ty)) {
+          const int i = scrollTop + row;
+          if (i < count && selectedIndex != i) {
             selectedIndex = i;
             requestUpdate();
           }
@@ -94,14 +103,15 @@ class OptionPopup {
     }
     if (input.wasScreenTapped(tx, ty)) {
       const auto& hitLayout = getLayout(input.getRenderer());
-      for (int i = 0; i < static_cast<int>(hitLayout.options.size()); i++) {
-        if (contains(hitLayout.options[i], tx, ty)) {
-          selectedIndex = i;
-          active = false;
-          if (onSelectCallback) onSelectCallback(selectedIndex);
-          requestUpdate();
-          return true;
-        }
+      for (int row = 0; row < static_cast<int>(hitLayout.rows.size()); row++) {
+        if (!contains(hitLayout.rows[row], tx, ty)) continue;
+        const int i = scrollTop + row;
+        if (i >= count) break;
+        selectedIndex = i;
+        active = false;
+        if (onSelectCallback) onSelectCallback(selectedIndex);
+        requestUpdate();
+        return true;
       }
       // Taps on the dialog chrome (title, padding) keep the popup open; taps outside dismiss it
       if (contains(hitLayout.dialog, tx, ty)) return true;
@@ -111,11 +121,11 @@ class OptionPopup {
     }
 
     if (input.wasPressed(MappedInputManager::Button::NavPrevious)) {
-      selectedIndex = (selectedIndex - 1 + count) % count;
+      moveSelection(-1, input.getRenderer());
       requestUpdate();
       return true;
     } else if (input.wasPressed(MappedInputManager::Button::NavNext)) {
-      selectedIndex = (selectedIndex + 1) % count;
+      moveSelection(1, input.getRenderer());
       requestUpdate();
       return true;
     } else if (input.wasPressed(MappedInputManager::Button::Confirm)) {
@@ -142,7 +152,10 @@ class OptionPopup {
 
   void render(const GfxRenderer& renderer) const {
     if (!active) return;
-    GUI.drawOptionPopup(renderer, title.c_str(), ownedStrings, selectedIndex, ownedValues, leftAligned);
+    // Through the layout first: it is what clamps scrollTop to the window the
+    // theme actually gives, and drawing reads scrollTop.
+    getLayout(renderer);
+    GUI.drawOptionPopup(renderer, spec());
   }
 
   bool isActive() const { return active; }
@@ -160,62 +173,74 @@ class OptionPopup {
  private:
   struct Layout {
     Rect dialog{0, 0, 0, 0};
-    std::vector<Rect> options;
+    // One rect per *visible* row, top to bottom. Row n is option
+    // scrollTop + n -- the list scrolls, the window does not move.
+    std::vector<Rect> rows;
+    int visibleRows = 0;
   };
+
+  BaseTheme::OptionPopupSpec spec() const {
+    BaseTheme::OptionPopupSpec s;
+    s.title = title.c_str();
+    s.options = &ownedStrings;
+    s.values = ownedValues.empty() ? nullptr : &ownedValues;
+    s.selectedIndex = selectedIndex;
+    s.scrollTop = scrollTop;
+    s.leftAlign = leftAligned;
+    s.compact = compact;
+    return s;
+  }
 
   // Text measurement is expensive and wasScreenTouchDown() is level-triggered, so the
   // layout is computed once per show() and cached rather than rebuilt every loop().
+  // The geometry itself comes from the theme, so hit test and drawing cannot
+  // disagree about where a row is (BaseTheme::optionPopupGeometry()).
   const Layout& getLayout(const GfxRenderer& renderer) const {
     if (layoutValid) return layout;
 
-    const auto& metrics = UITheme::getInstance().getMetrics();
-    const auto pageWidth = renderer.getScreenWidth();
-    const auto pageHeight = renderer.getScreenHeight();
-    const int optionFontId = metrics.optionPopupUseSmallFont ? UI_10_FONT_ID : UI_12_FONT_ID;
-    const EpdFontFamily::Style optionStyle =
-        metrics.optionPopupOptionFontBold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-
-    const int itemSpacing = metrics.optionPopupItemSpacing;
-    const int innerPadding = metrics.optionPopupInnerPadding;
-    const int selectionHPadding = metrics.optionPopupSelectionHPadding;
-    const int selectionVPadding = metrics.optionPopupSelectionVPadding;
-
-    const int optionLineHeight = renderer.getLineHeight(optionFontId);
-    const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-    const int rowHeight = optionLineHeight + selectionVPadding * 2;
-
-    // Same width math as BaseTheme::drawOptionPopup() -- the two must agree or
-    // the touch rects land off the drawn dialog.
-    int maxTextWidth = renderer.getTextWidth(UI_12_FONT_ID, title.c_str(), EpdFontFamily::BOLD);
-    for (size_t i = 0; i < ownedStrings.size(); i++) {
-      int width = renderer.getTextWidth(optionFontId, ownedStrings[i].c_str(), optionStyle);
-      if (i < ownedValues.size() && !ownedValues[i].empty()) {
-        width += selectionHPadding + renderer.getTextWidth(optionFontId, ownedValues[i].c_str(), optionStyle) +
-                 BaseTheme::optionPopupValuePadding(selectionHPadding) * 2;
-      }
-      if (width > maxTextWidth) maxTextWidth = width;
+    const auto geometry = GUI.optionPopupGeometry(renderer, spec());
+    // A popup can open with a selection past the first window (a picker opens
+    // on the current value); the window has to start where that row is.
+    const int count = static_cast<int>(ownedStrings.size());
+    if (geometry.visibleRows > 0 && geometry.visibleRows < count) {
+      if (selectedIndex >= scrollTop + geometry.visibleRows) scrollTop = selectedIndex - geometry.visibleRows + 1;
+      if (selectedIndex < scrollTop) scrollTop = selectedIndex;
+      if (scrollTop > count - geometry.visibleRows) scrollTop = count - geometry.visibleRows;
+      if (scrollTop < 0) scrollTop = 0;
+    } else {
+      scrollTop = 0;
     }
-
-    const int optionCount = static_cast<int>(ownedStrings.size());
-    const int listHeight = rowHeight * optionCount + itemSpacing * (optionCount - 1);
-    const int dialogW = std::min((maxTextWidth + innerPadding * 2 + selectionHPadding * 2) * 12 / 10,
-                                 pageWidth - metrics.optionPopupDialogSideMargin * 2);
-    const int contentHeight = titleLineHeight + metrics.optionPopupTitleGap + listHeight;
-    const int dialogH = contentHeight + innerPadding * 2;
-    const int dialogX = (pageWidth - dialogW) / 2;
-    const int dialogY = (pageHeight - dialogH) / 2;
-    const int itemRectX = dialogX + innerPadding;
-    const int itemRectW = dialogW - innerPadding * 2;
-    const int firstItemY = dialogY + innerPadding + titleLineHeight + metrics.optionPopupTitleGap;
-
-    layout.dialog = Rect{dialogX, dialogY, dialogW, dialogH};
-    layout.options.clear();
-    layout.options.reserve(optionCount);
-    for (int i = 0; i < optionCount; i++) {
-      layout.options.push_back(Rect{itemRectX, firstItemY + i * (rowHeight + itemSpacing), itemRectW, rowHeight});
+    layout.dialog = geometry.dialog;
+    layout.visibleRows = geometry.visibleRows;
+    layout.rows.clear();
+    layout.rows.reserve(geometry.visibleRows);
+    for (int row = 0; row < geometry.visibleRows; row++) {
+      layout.rows.push_back(
+          Rect{geometry.rowX, geometry.firstRowY + row * geometry.rowStep, geometry.rowWidth, geometry.rowHeight});
     }
     layoutValid = true;
     return layout;
+  }
+
+  // Wraps at both ends, and drags the scroll window along so the selected row
+  // is always one of the drawn ones.
+  void moveSelection(const int delta, const GfxRenderer& renderer) {
+    const int count = static_cast<int>(ownedStrings.size());
+    if (count == 0) return;
+    selectedIndex = (selectedIndex + delta + count) % count;
+    const int visible = getLayout(renderer).visibleRows;
+    if (visible <= 0 || visible >= count) return;
+    int top = scrollTop;
+    if (selectedIndex < top) top = selectedIndex;
+    if (selectedIndex >= top + visible) top = selectedIndex - visible + 1;
+    if (top < 0) top = 0;
+    if (top > count - visible) top = count - visible;
+    if (top == scrollTop) return;
+    scrollTop = top;
+    // Row rects are addressed by visible position, so they are still correct;
+    // only which option each one stands for changed. The dialog itself never
+    // moves, which is why a scroll costs no relayout of the frame.
+    layoutValid = false;
   }
 
   static bool contains(const Rect& rect, const int x, const int y) {
@@ -228,7 +253,13 @@ class OptionPopup {
   // Empty unless showWithValues() was used; sized to ownedStrings there.
   std::vector<std::string> ownedValues;
   bool leftAligned = false;
+  bool compact = false;
   int selectedIndex = 0;
+  // First option on screen. Only ever non-zero for a list longer than the
+  // dialog's row window (BaseTheme::kOptionPopupMaxVisibleRows). Mutable
+  // because getLayout() clamps it: the window size is the theme's answer and
+  // is not known until a renderer is in hand.
+  mutable int scrollTop = 0;
   std::function<void(int)> onSelectCallback;
   mutable Layout layout;
   mutable bool layoutValid = false;

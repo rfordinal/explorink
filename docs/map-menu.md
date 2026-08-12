@@ -71,20 +71,65 @@ included, because the capture happened after that frame was composited. So
 `markerPatchValid_`, `viewportDrawn_` and `busyShown_` still describe what is
 on the glass and the restore deliberately touches none of them.
 
-**Cost.** One heap buffer, allocated on open and freed on close. The size is
-the dialog's region: `getRegionByteSize()` rounds the rect out to byte
-boundaries, so it is roughly `dialogWidth/8 * dialogHeight` bytes -- about
-26 KB for the biggest dialog the map menu builds (eight rows, Lyra metrics).
-**Open: not measured.** Log a `menu backdrop` line and the free heap on a real
-device to confirm the number and the headroom.
+**Cost.** One heap buffer, allocated on open and freed on close. Its size is
+the dialog's region, rounded out to byte boundaries by `getRegionByteSize()`.
+That is why the dialog is now bounded (next section): every row it shows is
+RAM, for as long as the menu is up.
 
-On OOM the capture logs and returns false (`MapActivity.cpp:1791`), and every
-close path falls back to `renderCurrent()` -- the behaviour before this
-existed. Nothing new can strand the popup's pixels on the panel.
+Measured on the panel 2026-08-12: the map screen sits at **54,040 bytes free**
+(`mapcmd.py info`, rung 6, twelve tiles held). Computed from the metrics, the
+capped six-row dialog needs **~9 KB**; the unbounded eight-row one needed
+~20 KB. `captureMenuBackdrop()` logs the real byte count and the free heap on
+every open (`MapActivity.cpp`, `menu backdrop %u bytes`) -- read it off the
+serial log rather than trusting the estimate.
+
+Two guards, and neither can strand the popup's pixels on the panel:
+
+- The capture is skipped when it would leave less than
+  `kMenuBackdropHeapReserve` (24 KB) free (`MapActivity.h`). Everything that
+  runs while the menu is up -- BLE tile transfers, the console, a settings
+  write -- draws from the same pool, and a convenience must not starve the
+  work.
+- On OOM the capture logs and returns false.
+
+Either way every close path falls back to `renderCurrent()` -- the behaviour
+before this existed.
 
 Precedent for the technique in the same file: the marker patch
 (`saveMarkerPatch()`), which saves and restores the box under the position
 marker so a fix can move it without redrawing the map.
+
+## The dialog has a ceiling, and the list scrolls through it
+
+`BaseTheme::optionPopupGeometry()` decides how many rows are on screen at once
+and caps it two ways: `kOptionPopupMaxVisibleRows` (6) and
+`kOptionPopupMaxHeightPercent` (50% of panel height). Rows past the window
+scroll; the dialog itself never grows or moves. The title line carries an
+`n/m` counter whenever the list does not fit, so a scrolled list does not read
+as a short list that lost rows.
+
+`OptionPopup` owns the window position (`scrollTop`) and drags it with the
+selection, wrapping at both ends like the selection always did. It opens
+scrolled to the current value, which matters for a picker whose current value
+is row nine.
+
+Both passes now read one geometry function -- the drawing pass and
+`OptionPopup::getLayout()`, which builds the touch rects. There is no second
+copy of the layout maths to drift.
+
+Alongside that, settings-style rows use compact spacing
+(`BaseTheme::optionPopupSpacing()`, `compact = true`): half the vertical air,
+and no width slack, because their width is computed exactly (label + gap +
+boxed value) instead of being measured and padded. Horizontal padding is
+untouched -- it costs one column, not one per row.
+
+Numbers for the map menu, computed from the Lyra metrics (not measured): row
+height 48 -> 36, dialog height 529 -> ~306 px, width ~289 -> ~233 px. The
+eight rows still exist; six are on screen.
+
+Both caps apply to every popup in the firmware, not just the map's. Nothing
+else builds a list long enough to hit them today, except the font-family
+picker, which now scrolls instead of drawing a dialog the height of the panel.
 
 ## The hint says "Options", not "Select"
 
@@ -102,8 +147,19 @@ English until translated (`docs/i18n.md`).
 
 Verified by eye on the panel 2026-08-12: the left-aligned rows, the black
 value box on the light-grey selected row, and a menu close that puts the map
-straight back. Not verified by measurement:
+straight back. That was the eight-row dialog, before the cap.
 
-- The backdrop's real byte size and the free heap while the menu is open.
+The capped, compact, scrolling dialog was flashed and looked at the same day
+and reads correctly on the panel.
+
+Not verified:
+
+- The backdrop's real byte size (the log line now prints it) and how close the
+  24 KB reserve comes to refusing a capture in practice. Reading it needs a
+  serial monitor, which resets the device on open, so it has not been read
+  yet.
 - The window refresh time for a menu close, against the full redraw it
   replaces.
+- Row labels are still the Settings-screen strings ("Map rotation", "Heading
+  mode"). Shorter ones would narrow the dialog further; they are shared keys,
+  so shortening them changes the Settings screen too.

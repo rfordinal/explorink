@@ -250,18 +250,60 @@ class BaseTheme {
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
-  // `values` is parallel to `options` and may be shorter or empty -- a row with
-  // no value entry draws label-only. `leftAlign` puts every label at the same
-  // left edge instead of centring each one; a value column only reads as a
-  // column when the labels line up.
-  virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
-                               int selectedIndex, const std::vector<std::string>& values = {},
-                               bool leftAlign = false) const;
-  // Padding inside the selected row's value box, both sides. Shared with
-  // OptionPopup's own layout pass so the two width calculations agree.
-  static constexpr int optionPopupValuePadding(int selectionHPadding) {
-    return selectionHPadding / 2 > 4 ? selectionHPadding / 2 : 4;
-  }
+  // What the option popup draws. `values` is parallel to `options` and may be
+  // null or shorter -- a row with no value entry draws label-only.
+  // `leftAlign` puts every label at the same left edge instead of centring
+  // each one; a value column only reads as a column when the labels line up.
+  // `compact` shrinks the paddings (optionPopupSpacing). `scrollTop` is the
+  // first row on screen: the dialog shows a fixed window of rows and the list
+  // scrolls through it (optionPopupGeometry).
+  struct OptionPopupSpec {
+    const char* title = nullptr;
+    const std::vector<std::string>* options = nullptr;
+    const std::vector<std::string>* values = nullptr;
+    int selectedIndex = 0;
+    int scrollTop = 0;
+    bool leftAlign = false;
+    bool compact = false;
+  };
+  // Where the dialog and its visible rows land. One function, two readers: the
+  // drawing pass and OptionPopup's hit test, which must agree or a tap misses
+  // the row it landed on.
+  struct OptionPopupGeometry {
+    Rect dialog{0, 0, 0, 0};  // frame not included
+    int rowX = 0;
+    int rowWidth = 0;
+    int firstRowY = 0;
+    int rowHeight = 0;
+    int rowStep = 0;  // rowHeight plus the gap between rows
+    int visibleRows = 0;
+    int titleLineHeight = 0;
+  };
+  virtual OptionPopupGeometry optionPopupGeometry(const GfxRenderer& renderer, const OptionPopupSpec& spec) const;
+  virtual void drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSpec& spec) const;
+
+  // Hard ceiling on the dialog: rows past it scroll rather than making it
+  // taller. Both bounds exist because the dialog's size is a RAM cost for
+  // MapActivity, which snapshots the pixels underneath it, and because a
+  // dialog that covers the screen is not a dialog.
+  static constexpr int kOptionPopupMaxVisibleRows = 6;
+  static constexpr int kOptionPopupMaxHeightPercent = 50;
+
+  // Every length the option popup's geometry needs, in one place.
+  struct OptionPopupSpacing {
+    int itemSpacing;
+    int innerPadding;
+    int selectionHPadding;
+    int selectionVPadding;
+    int titleGap;
+    int valuePadding;  // inside the selected row's value box, both sides
+    int widthPercent;  // slack on the measured text width
+  };
+  // compact halves the vertical air and drops the width slack. The slack is
+  // there for centred label-only rows, where the text is measured but the
+  // layout is not; a settings-style row's width is computed exactly (label +
+  // gap + boxed value), so padding it out only wastes screen and backdrop.
+  static OptionPopupSpacing optionPopupSpacing(const ThemeMetrics& metrics, bool compact);
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                      std::string title, const int paddingBottom = 0, const int textYOffset = 0,
