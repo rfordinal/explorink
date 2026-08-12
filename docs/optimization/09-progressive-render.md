@@ -14,7 +14,7 @@ cost per line of code. Recorded here because it is a **product decision with a
 measured price**, not an optimisation — nobody should re-derive the price later.
 
 The map only carries buildings at the detail LOD, rungs 0 and 1
-(`mapbuilder/build_config.json`). Rung 2 and up read tiles that have no buildings
+(`mapbuilder/tilegen/build_config.json`). Rung 2 and up read tiles that have no buildings
 layer at all, which the measurement confirms: 25 ms, 13 ms and 55 ms for those
 passes are an empty walk, not drawing. So the question is only about rung 1.
 

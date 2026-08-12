@@ -9,10 +9,10 @@ gen_i18n.py and build_html.py). data/mapstyle.json is the source: it already
 lives in this repo and is the device's definitive style, so the firmware
 builds standalone with nothing read from outside it.
 
-mapbuilder/style.json, in the separate xteink repo, is the laptop-side
-authoring file this data/mapstyle.json is generated from -- that direction
-crosses repos on purpose (an author's laptop writes into this repo), but
-nothing here reads back across that boundary. See docs/mapstyle.json.md.
+The style is authored in the separate laptop-side tooling repo (its webapp
+writes this data/mapstyle.json directly) -- that direction crosses repos on
+purpose, but nothing here reads back across that boundary. See
+docs/mapstyle.json.md.
 
 Usage:
     python3 scripts/gen_mode_masks.py [style_path [output_path]]
@@ -28,7 +28,7 @@ import sys
 # assume.
 _MODE_ORDER = ["ride", "hike", "cycle"]
 
-# The tile format's own class_id enum (mapbuilder/class_spec.py, mirrored in
+# The tile format's own class_id enum (mapbuilder/tilegen/class_spec.py, mirrored in
 # MapClassEnum.h). Owned by the tile format, not by the style -- duplicated
 # here rather than imported because nothing outside this repo may be read to
 # build this repo, and this list is a one-way door the same way the tile

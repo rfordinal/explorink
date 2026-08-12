@@ -185,7 +185,7 @@ pio run -e default
 
 The map renderer and tile reader have no hardware dependency, so they build
 and run on a laptop without the ESP toolchain. `map_preview` reads real
-`.tib` tiles (mapbuilder/build_tiles.py output) around a coordinate:
+`.tib` tiles (mapbuilder/tilegen/build_tiles.py output) around a coordinate:
 
 ```bash
 cmake -S test -B build/test -DCMAKE_BUILD_TYPE=Release
