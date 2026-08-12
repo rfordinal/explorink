@@ -1806,13 +1806,26 @@ bool MapActivity::captureMenuBackdrop() {
   const Rect rect = optionPopup_.frameRect(renderer);
   const size_t size = renderer.getRegionByteSize(rect.x, rect.y, rect.width, rect.height);
   if (size == 0) return false;
+  // A convenience must not be able to starve the work. Measured on the panel
+  // 2026-08-12: the map screen sits at ~54 KB free at the widest rung, and BLE
+  // tile transfers keep running while the menu is up. If taking the backdrop
+  // would leave less than the reserve, do without it -- the close is then slow,
+  // which is strictly better than an allocation failure somewhere else.
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  if (size + kMenuBackdropHeapReserve > freeHeap) {
+    LOG_DBG(kLogTag, "menu backdrop skipped: %u bytes, free heap %u", static_cast<unsigned>(size),
+            static_cast<unsigned>(freeHeap));
+    return false;
+  }
   auto buffer = makeUniqueNoThrow<uint8_t[]>(size);
   if (!buffer) {
     // Not fatal: every close path still has renderCurrent() behind it.
     LOG_ERR(kLogTag, "menu backdrop unavailable: %u bytes, free heap %u", static_cast<unsigned>(size),
-            static_cast<unsigned>(ESP.getFreeHeap()));
+            static_cast<unsigned>(freeHeap));
     return false;
   }
+  LOG_DBG(kLogTag, "menu backdrop %u bytes (%dx%d), free heap %u", static_cast<unsigned>(size), rect.width, rect.height,
+          static_cast<unsigned>(freeHeap));
   if (!renderer.copyRegionToBuffer(rect.x, rect.y, rect.width, rect.height, buffer.get(), size)) {
     LOG_ERR(kLogTag, "menu backdrop read rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
     return false;

@@ -387,6 +387,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // up; on OOM the capture simply fails and every close falls back to
   // renderCurrent(), the behaviour before this existed.
   bool captureMenuBackdrop();
+  // Heap that must survive taking the backdrop. Everything that runs while the
+  // menu is up -- BLE tile transfers, the console, a settings write -- draws
+  // from the same pool.
+  static constexpr uint32_t kMenuBackdropHeapReserve = 24 * 1024;
   // Puts the saved pixels back, repaints the map's own button hints over the
   // popup's, and refreshes just that window. False when there is nothing saved
   // or the write did not fit -- caller then does a full redraw.
