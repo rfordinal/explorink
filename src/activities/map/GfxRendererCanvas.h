@@ -6,6 +6,7 @@
 #include "GfxRenderer.h"
 #include "IMapCanvas.h"
 #include "MapStroke.h"
+#include "fontIds.h"
 
 // Real-firmware IMapCanvas implementation: forwards each call to the real
 // GfxRenderer, after clipping it to the screen. Counterpart to
@@ -122,7 +123,76 @@ class GfxRendererCanvas : public IMapCanvas {
     renderer_.fillPolygon(xPoints, yPoints, numPoints, ink == MapInk::Black);
   }
 
+  // Place labels are drawn with a sans face already in flash -- proportional, no
+  // serifs, Latin plus the diacritics Slovak place names need
+  // (docs/place-labels.md, "The font"). The style asks for a line height in
+  // device pixels and this picks the largest face that does not exceed it;
+  // measureText then reports what it actually got, so nothing is laid out
+  // against the wish.
+  bool measureText(const char* utf8, int sizePx, bool bold, int& outWidth, int& outHeight) override {
+    if (utf8 == nullptr || *utf8 == '\0') {
+      outWidth = 0;
+      outHeight = 0;
+      return true;
+    }
+    const int fontId = fontIdForSize(sizePx);
+    outWidth = renderer_.getTextWidth(fontId, utf8, styleFor(bold));
+    // Line height, not the string's own ink height: every label on screen wants
+    // the same box depth, or a name with no descender sits in a visibly
+    // shallower box than the one next to it.
+    outHeight = renderer_.getLineHeight(fontId);
+    return outWidth > 0 && outHeight > 0;
+  }
+
+  // Faces a label may be drawn with, smallest line height first. The name of a
+  // built-in font says its point size at 150 DPI, not its pixel height
+  // (lib/EpdFont/scripts/fontconvert.py: ppem = size * 150 / 72), so "12" is a
+  // 34 px line -- which is why the sizes here are read at runtime instead of
+  // assumed from the names.
+  //
+  // Consequence worth knowing: the smallest Noto Sans built in is a 34 px line,
+  // too tall for a compact map label, so today's map labels come out as the
+  // Ubuntu UI face at 24/29 px. docs/place-labels.md, "The font", has what a
+  // purpose-built map face would change and what it would cost.
+  static constexpr int kLabelFontIds[] = {SMALL_FONT_ID,       UI_10_FONT_ID,       UI_12_FONT_ID,
+                                          NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
+                                          NOTOSANS_18_FONT_ID};
+
+  // GfxRenderer::drawText's y is the top of the ascender box (it adds the
+  // ascender itself), which is exactly IMapCanvas's top-left contract.
+  void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) override {
+    if (utf8 == nullptr || *utf8 == '\0') return;
+    renderer_.drawText(fontIdForSize(sizePx), x, y, utf8, ink == MapInk::Black, styleFor(bold));
+  }
+
+  void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {
+    outX = 0;
+    outY = minY_;
+    outWidth = renderer_.getScreenWidth();
+    outHeight = renderer_.getScreenHeight() - minY_;
+  }
+
  private:
+  static EpdFontFamily::Style styleFor(const bool bold) { return bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR; }
+
+  // Largest face whose line height fits in `sizePx`, or the smallest face when
+  // even that does not fit. Nearest-below rather than nearest, because a face
+  // taller than the style asked for makes every label box taller than the style
+  // author was looking at when they picked the number.
+  int fontIdForSize(const int sizePx) const {
+    int best = kLabelFontIds[0];
+    int bestHeight = 0;
+    for (const int fontId : kLabelFontIds) {
+      const int height = renderer_.getLineHeight(fontId);
+      if (height <= 0 || height > sizePx) continue;
+      if (height > bestHeight) {
+        bestHeight = height;
+        best = fontId;
+      }
+    }
+    return best;
+  }
+
   // Grey is coming: a second branch is adding the panel's real grey levels, and
   // when it lands a tone should map to one of those instead of to a dither
   // pattern. That swap belongs here and in PpmCanvas, behind MapAreaTone --

@@ -420,6 +420,9 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // source's: both stream during a render and one seek cursor cannot serve two
   // readers (MapRouteSource.h). Null when the rider skipped the picker, which is
   // what makes the route layer cost nothing when there is no route.
+  // Place-name layout scratch, allocated in onEnter() only when the compiled
+  // style draws labels at all. Null means place dots and no names (MapLabels.h).
+  std::unique_ptr<MapLabelScratch> labels_;
   std::unique_ptr<HalFileSource> routeFile_;
   std::unique_ptr<MapRouteSource> route_;
   // What RouteSelectActivity picked, empty for none. Copied rather than held by

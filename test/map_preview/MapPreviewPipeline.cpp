@@ -10,6 +10,7 @@
 #include "HeapProbe.h"
 #include "MapHatch.h"
 #include "MapProjection.h"
+#include "MapLabels.h"
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
 #include "MapRouteSource.h"
@@ -171,8 +172,14 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // Everything resident is already allocated. What the render itself costs
   // on top of that is what the reset..read window measures, and the answer
   // should be nothing.
+  // Label scratch on the stack, deliberately: it is ~3.2 KB and the heap probe
+  // below is meant to catch allocations the *render* makes, so the one buffer
+  // the render is allowed to need must not be one of them. On the device
+  // MapActivity owns the same struct as a member (MapLabels.h).
+  MapLabelScratch labels;
+
   HeapProbe::reset();
-  MapRenderer::render(canvas, *source, view, style, route.get());
+  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr, &labels);
   // render() does not draw the marker (MapActivity draws its own mode-specific
   // one). This preview has no travel mode, so it draws the style's puck
   // explicitly -- except in a route overview, which is framed on the route and
@@ -191,6 +198,8 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.waysOffScreen = source->waysOffScreen() / MapRenderer::kRoadPasses;
   result.crc32Skipped = source->crc32Skipped();
   result.placesDrawn = source->placesEmitted();
+  result.labelsPlaced = labels.placed;
+  result.labelsDropped = labels.dropped;
   result.bytesRead = source->bytesRead();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());

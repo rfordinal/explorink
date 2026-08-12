@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "MapStroke.h"
+#include "PreviewFont.h"
 
 PpmCanvas::PpmCanvas(int width, int height) : width_(width), height_(height), pixels_(width * height, 0) {
   crossings_.reserve(64);
@@ -161,4 +162,33 @@ bool PpmCanvas::writePpm(const std::string& path) const {
   }
   std::fclose(f);
   return true;
+}
+
+bool PpmCanvas::measureText(const char* utf8, const int sizePx, const bool bold, int& outWidth, int& outHeight) {
+  return PreviewFont::measure(PreviewFont::pick(sizePx, bold), utf8, outWidth, outHeight);
+}
+
+void PpmCanvas::drawText(const int x, const int y, const char* utf8, const int sizePx, const bool bold,
+                         const MapInk ink) {
+  // PreviewFont takes a plain function pointer and a context rather than a
+  // std::function, mirroring the firmware's rule against std::function on any
+  // path the renderer touches (CLAUDE.md, "Template and std::function Bloat").
+  struct Sink {
+    PpmCanvas* canvas;
+    MapInk ink;
+  } sink{this, ink};
+  PreviewFont::draw(
+      PreviewFont::pick(sizePx, bold), utf8, x, y,
+      [](const int px, const int py, void* ctx) {
+        auto* target = static_cast<Sink*>(ctx);
+        target->canvas->setPixel(px, py, target->ink);
+      },
+      &sink);
+}
+
+void PpmCanvas::drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const {
+  outX = 0;
+  outY = 0;
+  outWidth = width_;
+  outHeight = height_;
 }

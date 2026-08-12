@@ -6,6 +6,7 @@
 #include "IMapRouteSource.h"
 #include "IMapSource.h"
 #include "MapHeading.h"
+#include "MapLabels.h"
 #include "MapStyle.h"
 
 // Everything the renderer needs that is not geometry. Small and resident by
@@ -54,6 +55,11 @@ struct MapRenderTiming {
   uint32_t roadsMs = 0;
   uint32_t routeMs = 0;
   uint32_t placesMs = 0;
+  // Place-name layout and drawing, which is neither free nor part of the places
+  // walk: the halo is the same string re-drawn eight times per ring radius
+  // (MapLabels.cpp), so this is the field that says whether the halo is
+  // affordable at a given size.
+  uint32_t labelsMs = 0;
 };
 
 // Nearest named place to the marker, by screen-pixel distance, picked while
@@ -116,9 +122,15 @@ class MapRenderer {
   // it forces the places layer open even when `style.placeDotDiameterPx == 0`
   // (dots hidden) -- the header wants a name lookup regardless of whether the
   // style also draws a dot for it.
+  //
+  // `labels` is the place-name pass's working set, owned by the caller because
+  // it is ~3.2 KB and this class holds no state (MapLabels.h). Pass nullptr and
+  // the map gets place dots and no names -- the behaviour before labels
+  // existed. Passing it forces the places layer open the same way `nearestOut`
+  // does, since the names come off that walk.
   static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
                      IMapRouteSource* route = nullptr, MapRenderTiming* timing = nullptr,
-                     MapNearestPlaces* nearestOut = nullptr);
+                     MapNearestPlaces* nearestOut = nullptr, MapLabelScratch* labels = nullptr);
 
   // The style's position puck: white disc, black ring, heading arrow. Drawn
   // by callers with no travel mode of their own -- test/map_preview, which has

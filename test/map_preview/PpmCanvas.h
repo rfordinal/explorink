@@ -26,6 +26,16 @@ class PpmCanvas : public IMapCanvas {
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, MapInk ink) override;
   void fillSpan(int x1, int x2, int y, MapAreaTone tone) override;
 
+  // Real font metrics and real glyphs, out of the same built-in Noto Sans the
+  // device draws with -- see PreviewFont.h for what is shared and what is only
+  // close.
+  bool measureText(const char* utf8, int sizePx, bool bold, int& outWidth, int& outHeight) override;
+  void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) override;
+
+  // The whole canvas: the preview has no header band to keep clear (the device
+  // adapter does -- GfxRendererCanvas's minY).
+  void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override;
+
   bool writePpm(const std::string& path) const;
 
   // Loads a canvas back from a PPM this class itself wrote (binary P6,
