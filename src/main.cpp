@@ -368,7 +368,13 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
-  MISSING_TILES.loadFromFile();
+  // Return value read, unlike the stores above, because this one guards a file the
+  // rider's queued squares live in: a first boot has no file (normal) and an
+  // unreadable card looks the same from here, so it is said out loud either way.
+  // MissingTilesStore::flushIfDirty() is what refuses to overwrite in that state.
+  if (!MISSING_TILES.loadFromFile()) {
+    LOG_INF("MAIN", "missing tile list not read (no file yet, or unreadable) -- not saving over it this run");
+  }
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
