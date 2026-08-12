@@ -961,7 +961,7 @@ void BaseTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int 
 }
 
 void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
-                                int selectedIndex) const {
+                                int selectedIndex, const std::vector<std::string>& values, bool leftAlign) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -979,9 +979,16 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
   const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int rowHeight = optionLineHeight + selectionVPadding * 2;
 
+  const int valuePadding = optionPopupValuePadding(selectionHPadding);
+
+  // A row with a value needs label + gap + boxed value. Mirrored in
+  // OptionPopup::getLayout() -- the two must agree or the touch rects miss.
   int maxTextWidth = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
-  for (const auto& opt : options) {
-    int w = renderer.getTextWidth(optionFontId, opt.c_str(), optionStyle);
+  for (size_t i = 0; i < options.size(); i++) {
+    int w = renderer.getTextWidth(optionFontId, options[i].c_str(), optionStyle);
+    if (i < values.size() && !values[i].empty()) {
+      w += selectionHPadding + renderer.getTextWidth(optionFontId, values[i].c_str(), optionStyle) + valuePadding * 2;
+    }
     if (w > maxTextWidth) maxTextWidth = w;
   }
 
@@ -1047,11 +1054,29 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
 
     const int textW = renderer.getTextWidth(optionFontId, labelText, optionStyle);
     const int textY = itemY + (rowHeight - optionLineHeight) / 2;
-    const int textX = itemRectX + (itemRectW - textW) / 2;
+    const int textX = leftAlign ? itemRectX + selectionHPadding : itemRectX + (itemRectW - textW) / 2;
     // Unselected items: text is dark (invert=true means draw on white bg).
     // Selected on dark bg: text must be white (invert=false).
     // Selected on light bg: text stays dark (invert=true).
     const bool invertText = selected ? metrics.optionPopupSelectionLight : true;
     renderer.drawText(optionFontId, textX, textY, labelText, invertText, optionStyle);
+
+    // The value, right-aligned, boxed on the selected row -- the same "this is
+    // the changeable part" cue the Settings list gives (LyraTheme::drawList()).
+    const size_t idx = static_cast<size_t>(i);
+    if (idx >= values.size() || values[idx].empty()) continue;
+    const char* valueText = values[idx].c_str();
+    const int valueW = renderer.getTextWidth(optionFontId, valueText, optionStyle);
+    const int boxW = valueW + valuePadding * 2;
+    const int boxX = itemRectX + itemRectW - boxW;
+    if (selected) {
+      if (selectionRadius > 0) {
+        renderer.fillRoundedRect(boxX, itemY, boxW, rowHeight, selectionRadius, Color::Black);
+      } else {
+        renderer.fillRect(boxX, itemY, boxW, rowHeight, true);
+      }
+    }
+    // Boxed value is white-on-black; everything else is dark on its own row.
+    renderer.drawText(optionFontId, boxX + valuePadding, textY, valueText, !selected, optionStyle);
   }
 }

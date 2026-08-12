@@ -1548,14 +1548,25 @@ void MapActivity::loop() {
       // handleInput() already set active=false and fired the redraw callback
       // above, but that callback is optionPopup_.processRender(), which is a
       // no-op once inactive -- nothing repaints the map underneath, and the
-      // panel just keeps showing the popup's last pixels. Redraw for real.
-      redrawDueMs_ = 0;
-      showBusy();  // the popup's pixels are still up; say the redraw started
-      renderCurrent();
+      // panel just keeps showing the popup's last pixels.
+      //
+      // A dismiss changed nothing, so the frame the menu covered is still the
+      // right one: put the saved pixels back and refresh that window only
+      // (captureMenuBackdrop()). Milliseconds, no card read. Only when there
+      // is no backdrop does this cost a full redraw.
+      if (!restoreMenuBackdrop()) {
+        redrawDueMs_ = 0;
+        showBusy();  // the popup's pixels are still up; say the redraw started
+        renderCurrent();
+      }
     }
     if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       suppressConfirmRelease_ = true;
     }
+    // Dismissed by a tap outside the dialog (touch panels): no row callback
+    // ran and no button edge lands in either branch above, so a backdrop still
+    // held here is the only sign the map is sitting under the popup's pixels.
+    if (popupWasActive && !optionPopup_.isActive() && menuBackdrop_) restoreMenuBackdrop();
     return;
   }
 
@@ -1736,11 +1747,111 @@ void MapActivity::handleButtons() {
   }
 }
 
+void MapActivity::drawMapButtonHints() {
+  // Follow: Up/Down zoom, Left/Right step the marker ladder -- words, since
+  // "zoom in/out" and "look further ahead/back" have no obvious single glyph.
+  // Observe: the four buttons are a pure direction pad, and a direction pad
+  // reads faster as arrows than as the words "Left"/"Right" -- same
+  // symbol-over-word call as drawZoomSideHints()'s "+"/"--"; plain literals,
+  // not tr(), for the same reason (an arrow is not language-dependent).
+  // CONFIRM says "Options", not "Select": it opens a menu, it does not pick
+  // anything. "Select" belongs inside the popup, where a row really is picked.
+  // Exhaustive switch, no default, so a third mode cannot land here silently
+  // unlabeled (control-flow-clarity).
+  switch (screenMode_) {
+    case MapScreenMode::Follow: {
+      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      drawZoomSideHints();
+      break;
+    }
+    case MapScreenMode::Observe: {
+      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), "←", "→");
+      // btn3/btn4 only (Exit/Options stay at the theme's normal size): the
+      // arrow glyphs need drawPanSideHints()'s UI_10_FONT_ID (10pt) to match
+      // the side hints, but Exit/Options are ordinary words that should look
+      // like every other screen's -- found on hardware 2026-08-08, first as
+      // "all four boxes grew" (a shared fontId argument), then as "why is
+      // the whole row bigger, only the arrows should be."
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, 0, UI_10_FONT_ID,
+                          UI_10_FONT_ID);
+      drawPanSideHints();
+      break;
+    }
+  }
+}
+
+bool MapActivity::captureMenuBackdrop() {
+  dropMenuBackdrop();
+  const Rect rect = optionPopup_.frameRect(renderer);
+  const size_t size = renderer.getRegionByteSize(rect.x, rect.y, rect.width, rect.height);
+  if (size == 0) return false;
+  auto buffer = makeUniqueNoThrow<uint8_t[]>(size);
+  if (!buffer) {
+    // Not fatal: every close path still has renderCurrent() behind it.
+    LOG_ERR(kLogTag, "menu backdrop unavailable: %u bytes, free heap %u", static_cast<unsigned>(size),
+            static_cast<unsigned>(ESP.getFreeHeap()));
+    return false;
+  }
+  if (!renderer.copyRegionToBuffer(rect.x, rect.y, rect.width, rect.height, buffer.get(), size)) {
+    LOG_ERR(kLogTag, "menu backdrop read rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+    return false;
+  }
+  menuBackdrop_ = std::move(buffer);
+  menuBackdropSize_ = size;
+  menuBackdropRect_ = rect;
+  return true;
+}
+
+void MapActivity::dropMenuBackdrop() {
+  menuBackdrop_.reset();
+  menuBackdropSize_ = 0;
+  menuBackdropRect_ = Rect{0, 0, 0, 0};
+}
+
+bool MapActivity::restoreMenuBackdrop() {
+  if (!menuBackdrop_) return false;
+  const Rect rect = menuBackdropRect_;
+  const bool written =
+      renderer.copyBufferToRegion(rect.x, rect.y, rect.width, rect.height, menuBackdrop_.get(), menuBackdropSize_);
+  dropMenuBackdrop();
+  if (!written) {
+    LOG_ERR(kLogTag, "menu backdrop write rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+    return false;
+  }
+  // The popup drew its own four hints over the map's, in the band below the
+  // dialog. Repaint ours, and refresh from the dialog's top down to the bottom
+  // of the panel so the one window covers both.
+  drawMapButtonHints();
+  const int x = 0;
+  const int y = rect.y;
+  const int w = renderer.getScreenWidth();
+  const int h = renderer.getScreenHeight() - rect.y;
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "menu close window rejected: %d,%d %dx%d", x, y, w, h);
+    return false;
+  }
+  // The panel now holds exactly the frame that was up before the menu, marker
+  // included: the backdrop was taken after that frame was composited, so
+  // follow state (markerPatchValid_, viewportDrawn_, busyShown_) still
+  // describes what is on the glass and none of it is touched here.
+  return true;
+}
+
 void MapActivity::openMapMenu() {
+  // Labels and values are separate columns now, not one "Label: value" string:
+  // the popup left-aligns the labels and boxes the value on the selected row,
+  // the same "this is the changeable part" cue the Settings list gives
+  // (OptionPopup::showWithValues(), BaseTheme::drawOptionPopup()). A row with
+  // an empty value is a plain action.
   std::vector<std::string> options;
+  std::vector<std::string> values;
   options.reserve(8);
+  values.reserve(8);
   options.push_back(tr(STR_REFRESH));
-  options.push_back(std::string(tr(STR_MAP_MODE)) + ": " + I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
+  values.emplace_back();
+  options.push_back(tr(STR_MAP_MODE));
+  values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
   // Only once a fix has actually drawn a frame -- same "no row that cannot do
   // anything" rule as Whole route below. A rider with nothing on screen yet
   // has nothing to look around in.
@@ -1749,6 +1860,7 @@ void MapActivity::openMapMenu() {
     observeIdx = static_cast<int>(options.size());
     options.push_back(
         I18N.get(screenMode_ == MapScreenMode::Observe ? StrId::STR_MAP_FOLLOW_MODE : StrId::STR_MAP_OBSERVE_MODE));
+    values.emplace_back();
   }
   // Only with a route loaded. A row that cannot do anything is worse than no
   // row: it reads as a feature that is broken rather than one that needs a route
@@ -1758,6 +1870,7 @@ void MapActivity::openMapMenu() {
   if (hasRoute) {
     wholeRouteIdx = static_cast<int>(options.size());
     options.push_back(tr(STR_MAP_WHOLE_ROUTE));
+    values.emplace_back();
   }
   // Quick toggles for settings the rider wants to flip mid-ride without
   // leaving the map -- zoom/rotation/heading mode. The Settings screen
@@ -1765,79 +1878,96 @@ void MapActivity::openMapMenu() {
   // opens with, next time; this menu changes the same CrossPointSettings
   // fields live, so the two never disagree about the current value.
   const int zoomModeIdx = static_cast<int>(options.size());
-  options.push_back(
-      std::string(tr(STR_MAP_ZOOM_MODE)) + ": " +
+  options.push_back(tr(STR_MAP_ZOOM_MODE));
+  values.push_back(
       I18N.get(SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_AUTO ? StrId::STR_AUTO : StrId::STR_MANUAL));
   const int rotationIdx = static_cast<int>(options.size());
-  options.push_back(std::string(tr(STR_MAP_ROTATION_MODE)) + ": " +
-                    I18N.get(SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_NORTH_UP
-                                 ? StrId::STR_MAP_ROTATION_NORTH_UP
-                                 : StrId::STR_MAP_ROTATION_HEADING_UP));
+  options.push_back(tr(STR_MAP_ROTATION_MODE));
+  values.push_back(I18N.get(SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_NORTH_UP
+                                ? StrId::STR_MAP_ROTATION_NORTH_UP
+                                : StrId::STR_MAP_ROTATION_HEADING_UP));
   const int headingIdx = static_cast<int>(options.size());
-  options.push_back(std::string(tr(STR_MAP_HEADING_MODE)) + ": " +
-                    I18N.get(SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL ? StrId::STR_MANUAL
-                                                                                               : StrId::STR_AUTO));
+  options.push_back(tr(STR_MAP_HEADING_MODE));
+  values.push_back(I18N.get(SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL ? StrId::STR_MANUAL
+                                                                                              : StrId::STR_AUTO));
   const int debugInfoIdx = static_cast<int>(options.size());
-  options.push_back(std::string(tr(STR_MAP_DEBUG_INFO)) + ": " +
-                    I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
-  optionPopup_.show(StrId::STR_MAP, options, 0,
-                    [this, observeIdx, wholeRouteIdx, zoomModeIdx, rotationIdx, headingIdx, debugInfoIdx](int idx) {
-                      if (idx == 0) {
-                        redrawDueMs_ = 0;
-                        showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
-                        renderCurrent();
-                      } else if (idx == 1) {
-                        // One Select steps ride->hike->cycle->ride and closes, same as every
-                        // other row -- picking a mode is a deliberate, one-shot choice, not the
-                        // start of a cycling gesture. A rider who wants to step again presses
-                        // CONFIRM again. mapRideModeName()'s array order.
-                        const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
-                        switchMode(static_cast<MapRideMode>(next));
-                      } else if (idx == observeIdx) {
-                        toggleObserveMode();
-                      } else if (idx == wholeRouteIdx) {
-                        // Back to the whole route, at any point in a ride. Costs one full refresh
-                        // and one pass over the route file, the same as the frame the picker drew.
-                        redrawDueMs_ = 0;
-                        showBusy();
-                        renderRouteOverview();
-                      } else if (idx == zoomModeIdx) {
-                        // No redraw: the setting has no runtime effect yet (auto zoom is
-                        // not wired up, docs/map-data-spec.md), so flipping it changes
-                        // nothing on screen to acknowledge.
-                        SETTINGS.mapZoomMode = SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_MANUAL
-                                                   ? CrossPointSettings::MAP_ZOOM_AUTO
-                                                   : CrossPointSettings::MAP_ZOOM_MANUAL;
-                        SETTINGS.saveToFile();
-                      } else if (idx == rotationIdx) {
-                        SETTINGS.mapRotationMode =
-                            SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_HEADING_UP
-                                ? CrossPointSettings::MAP_ROTATION_NORTH_UP
-                                : CrossPointSettings::MAP_ROTATION_HEADING_UP;
-                        SETTINGS.saveToFile();
-                        redrawDueMs_ = 0;
-                        showBusy();
-                        renderCurrent();
-                      } else if (idx == headingIdx) {
-                        SETTINGS.mapHeadingMode = SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_AUTO
-                                                      ? CrossPointSettings::MAP_HEADING_MANUAL
-                                                      : CrossPointSettings::MAP_HEADING_AUTO;
-                        // Freeze on the heading the frame is showing right now, not a stale
-                        // or default one -- same capture updateManualHeadingCapture() does
-                        // from a fresh fix, called here because a menu pick is not a fix.
-                        updateManualHeadingCapture(lastHeading_);
-                        SETTINGS.saveToFile();
-                        redrawDueMs_ = 0;
-                        showBusy();
-                        renderCurrent();
-                      } else if (idx == debugInfoIdx) {
-                        SETTINGS.mapDebugInfo = SETTINGS.mapDebugInfo ? 0 : 1;
-                        SETTINGS.saveToFile();
-                        redrawDueMs_ = 0;
-                        showBusy();
-                        renderCurrent();
-                      }
-                    });
+  options.push_back(tr(STR_MAP_DEBUG_INFO));
+  values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
+  optionPopup_.showWithValues(
+      StrId::STR_MAP, options, values, 0,
+      [this, observeIdx, wholeRouteIdx, zoomModeIdx, rotationIdx, headingIdx, debugInfoIdx](int idx) {
+        // Rows that redraw the map do not need the backdrop; rows
+        // that change nothing on it (zoom mode) put it back
+        // instead of re-rendering, and so does a plain dismiss
+        // (loop()). Freed first for every redraw row, so the
+        // buffer is not held across a tile read.
+        if (idx != zoomModeIdx) dropMenuBackdrop();
+        if (idx == 0) {
+          redrawDueMs_ = 0;
+          showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
+          renderCurrent();
+        } else if (idx == 1) {
+          // One Select steps ride->hike->cycle->ride and closes, same as every
+          // other row -- picking a mode is a deliberate, one-shot choice, not the
+          // start of a cycling gesture. A rider who wants to step again presses
+          // CONFIRM again. mapRideModeName()'s array order.
+          const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
+          switchMode(static_cast<MapRideMode>(next));
+        } else if (idx == observeIdx) {
+          toggleObserveMode();
+        } else if (idx == wholeRouteIdx) {
+          // Back to the whole route, at any point in a ride. Costs one full refresh
+          // and one pass over the route file, the same as the frame the picker drew.
+          redrawDueMs_ = 0;
+          showBusy();
+          renderRouteOverview();
+        } else if (idx == zoomModeIdx) {
+          // No new frame: the setting has no runtime effect yet (auto zoom is
+          // not wired up, docs/map-data-spec.md), so the map underneath is
+          // still correct. Put the saved pixels back instead of re-reading
+          // tiles for a picture that would come out identical.
+          SETTINGS.mapZoomMode = SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_MANUAL
+                                     ? CrossPointSettings::MAP_ZOOM_AUTO
+                                     : CrossPointSettings::MAP_ZOOM_MANUAL;
+          SETTINGS.saveToFile();
+          if (!restoreMenuBackdrop()) {
+            // Without a backdrop the popup's pixels are still up and only a
+            // real frame clears them.
+            redrawDueMs_ = 0;
+            showBusy();
+            renderCurrent();
+          }
+        } else if (idx == rotationIdx) {
+          SETTINGS.mapRotationMode = SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_HEADING_UP
+                                         ? CrossPointSettings::MAP_ROTATION_NORTH_UP
+                                         : CrossPointSettings::MAP_ROTATION_HEADING_UP;
+          SETTINGS.saveToFile();
+          redrawDueMs_ = 0;
+          showBusy();
+          renderCurrent();
+        } else if (idx == headingIdx) {
+          SETTINGS.mapHeadingMode = SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_AUTO
+                                        ? CrossPointSettings::MAP_HEADING_MANUAL
+                                        : CrossPointSettings::MAP_HEADING_AUTO;
+          // Freeze on the heading the frame is showing right now, not a stale
+          // or default one -- same capture updateManualHeadingCapture() does
+          // from a fresh fix, called here because a menu pick is not a fix.
+          updateManualHeadingCapture(lastHeading_);
+          SETTINGS.saveToFile();
+          redrawDueMs_ = 0;
+          showBusy();
+          renderCurrent();
+        } else if (idx == debugInfoIdx) {
+          SETTINGS.mapDebugInfo = SETTINGS.mapDebugInfo ? 0 : 1;
+          SETTINGS.saveToFile();
+          redrawDueMs_ = 0;
+          showBusy();
+          renderCurrent();
+        }
+      });
+  // After show() (the layout the rect comes from needs the rows) and before
+  // the first draw (the framebuffer still holds the map).
+  captureMenuBackdrop();
   optionPopup_.processRender(renderer, mappedInput);
 }
 
@@ -2037,7 +2167,7 @@ void MapActivity::renderWaiting() {
   overviewShown_ = false;
   renderer.clearScreen();
   renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_WAITING_BLE), true);
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -2074,7 +2204,7 @@ void MapActivity::renderLoadingTiles() {
   snprintf(line, sizeof(line), "z%u  %.0f m/px", MapViewport::kZoomLadder[zoomStep()].z,
            MapViewport::kZoomLadder[zoomStep()].mpp);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, line);
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -2387,7 +2517,7 @@ void MapActivity::renderRouteOverview() {
     drawDebugLine(line2Y, line);
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
 
@@ -2734,35 +2864,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // screen (drawDebugLine() above): the map fills the whole viewport, there
   // is no margin set aside for chrome, so UI text overlays whatever tiles
   // were there.
-  // Follow: Up/Down zoom, Left/Right step the marker ladder -- words, since
-  // "zoom in/out" and "look further ahead/back" have no obvious single glyph.
-  // Observe: the four buttons are a pure direction pad, and a direction pad
-  // reads faster as arrows than as the words "Left"/"Right" -- same
-  // symbol-over-word call as drawZoomSideHints()'s "+"/"--"; plain literals,
-  // not tr(), for the same reason (an arrow is not language-dependent).
-  // Exhaustive switch, no default, so a third mode cannot land here silently
-  // unlabeled (control-flow-clarity).
-  switch (screenMode_) {
-    case MapScreenMode::Follow: {
-      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      drawZoomSideHints();
-      break;
-    }
-    case MapScreenMode::Observe: {
-      const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_SELECT), "←", "→");
-      // btn3/btn4 only (Exit/Select stay at the theme's normal size): the
-      // arrow glyphs need drawPanSideHints()'s UI_10_FONT_ID (10pt) to match
-      // the side hints, but Exit/Select are ordinary words that should look
-      // like every other screen's -- found on hardware 2026-08-08, first as
-      // "all four boxes grew" (a shared fontId argument), then as "why is
-      // the whole row bigger, only the arrows should be."
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, 0, UI_10_FONT_ID,
-                          UI_10_FONT_ID);
-      drawPanSideHints();
-      break;
-    }
-  }
+  drawMapButtonHints();
 
   // The marker goes on **last**, and its patch is taken immediately before it.
   // Everything the marker can sit over -- map, hatch, compass, readout, button

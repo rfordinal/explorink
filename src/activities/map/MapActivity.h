@@ -380,6 +380,22 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // the main task, not through Activity's render(RenderLock&&)/render-task
   // path), so nothing else would ever paint the popup's first frame.
   void openMapMenu();
+  // The map pixels the menu is about to cover, saved so closing the menu costs
+  // one window refresh instead of a full re-render (tiles off the card, then a
+  // whole-panel waveform -- seconds). Allocated on open, freed on close, so the
+  // ~26 KB it needs at the biggest dialog size is held only while the menu is
+  // up; on OOM the capture simply fails and every close falls back to
+  // renderCurrent(), the behaviour before this existed.
+  bool captureMenuBackdrop();
+  // Puts the saved pixels back, repaints the map's own button hints over the
+  // popup's, and refreshes just that window. False when there is nothing saved
+  // or the write did not fit -- caller then does a full redraw.
+  bool restoreMenuBackdrop();
+  void dropMenuBackdrop();
+  // The map's own four button hints for the current screen mode. Shared by the
+  // full render and the menu-close restore, so the two cannot disagree about
+  // what the buttons say.
+  void drawMapButtonHints();
   // No-op if newMode is already current -- picking the mode already on
   // screen must cost nothing, same rule as stepZoom/stepMarker's ladder ends.
   void switchMode(MapRideMode newMode);
@@ -624,6 +640,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
 
   // CONFIRM's menu (Refresh / Mode / Observation mode).
   OptionPopup optionPopup_;
+  // The map under the open menu (captureMenuBackdrop()). Null whenever the menu
+  // is closed or the capture failed.
+  std::unique_ptr<uint8_t[]> menuBackdrop_;
+  size_t menuBackdropSize_ = 0;
+  Rect menuBackdropRect_{0, 0, 0, 0};
   // Set when a Back press closes optionPopup_ (loop()), cleared by the one
   // Back release it is meant to swallow (also loop()) -- see the comment
   // there for why the release needs swallowing at all.

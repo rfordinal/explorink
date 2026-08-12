@@ -20,6 +20,8 @@ class OptionPopup {
     for (int i = 0; i < optionCount; i++) {
       ownedStrings[i] = I18N.get(optionIds[i]);
     }
+    ownedValues.clear();
+    leftAligned = false;
     selectedIndex = currentIndex;
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
@@ -33,6 +35,8 @@ class OptionPopup {
     for (int i = 0; i < optionCount; i++) {
       ownedStrings[i] = options[i];
     }
+    ownedValues.clear();
+    leftAligned = false;
     selectedIndex = currentIndex;
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
@@ -43,6 +47,26 @@ class OptionPopup {
             std::function<void(int)> onSelect) {
     title = I18N.get(titleId);
     ownedStrings = options;
+    ownedValues.clear();
+    leftAligned = false;
+    selectedIndex = currentIndex;
+    onSelectCallback = std::move(onSelect);
+    layoutValid = false;
+    active = true;
+  }
+
+  // Settings-style rows: label left, current value right in a highlight box on
+  // the selected row. `values` is parallel to `options`; an empty entry means
+  // the row is a plain action (Refresh) with no value to show. Rows are
+  // left-aligned, because a column of labels that each start at a different x
+  // is unreadable once half of them carry a value.
+  void showWithValues(StrId titleId, const std::vector<std::string>& options, const std::vector<std::string>& values,
+                      int currentIndex, std::function<void(int)> onSelect) {
+    title = I18N.get(titleId);
+    ownedStrings = options;
+    ownedValues = values;
+    ownedValues.resize(ownedStrings.size());
+    leftAligned = true;
     selectedIndex = currentIndex;
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
@@ -118,10 +142,20 @@ class OptionPopup {
 
   void render(const GfxRenderer& renderer) const {
     if (!active) return;
-    GUI.drawOptionPopup(renderer, title.c_str(), ownedStrings, selectedIndex);
+    GUI.drawOptionPopup(renderer, title.c_str(), ownedStrings, selectedIndex, ownedValues, leftAligned);
   }
 
   bool isActive() const { return active; }
+
+  // The screen rect the dialog covers, frame included. A caller that owns an
+  // expensive background (MapActivity) snapshots this before the popup draws
+  // and restores it on close -- one window refresh instead of a full redraw.
+  Rect frameRect(const GfxRenderer& renderer) const {
+    const int thickness = UITheme::getInstance().getMetrics().popupFrameThickness;
+    const Rect& dialog = getLayout(renderer).dialog;
+    return Rect{dialog.x - thickness, dialog.y - thickness, dialog.width + thickness * 2,
+                dialog.height + thickness * 2};
+  }
 
  private:
   struct Layout {
@@ -150,9 +184,15 @@ class OptionPopup {
     const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
     const int rowHeight = optionLineHeight + selectionVPadding * 2;
 
+    // Same width math as BaseTheme::drawOptionPopup() -- the two must agree or
+    // the touch rects land off the drawn dialog.
     int maxTextWidth = renderer.getTextWidth(UI_12_FONT_ID, title.c_str(), EpdFontFamily::BOLD);
-    for (const auto& opt : ownedStrings) {
-      const int width = renderer.getTextWidth(optionFontId, opt.c_str(), optionStyle);
+    for (size_t i = 0; i < ownedStrings.size(); i++) {
+      int width = renderer.getTextWidth(optionFontId, ownedStrings[i].c_str(), optionStyle);
+      if (i < ownedValues.size() && !ownedValues[i].empty()) {
+        width += selectionHPadding + renderer.getTextWidth(optionFontId, ownedValues[i].c_str(), optionStyle) +
+                 BaseTheme::optionPopupValuePadding(selectionHPadding) * 2;
+      }
       if (width > maxTextWidth) maxTextWidth = width;
     }
 
@@ -185,6 +225,9 @@ class OptionPopup {
   bool active = false;
   std::string title;
   std::vector<std::string> ownedStrings;
+  // Empty unless showWithValues() was used; sized to ownedStrings there.
+  std::vector<std::string> ownedValues;
+  bool leftAligned = false;
   int selectedIndex = 0;
   std::function<void(int)> onSelectCallback;
   mutable Layout layout;
