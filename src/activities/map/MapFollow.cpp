@@ -11,9 +11,8 @@ uint8_t relativeHeadingStep(uint8_t fixHeadingStep, uint8_t anchorHeadingStep) {
   return static_cast<uint8_t>((fixHeadingStep - anchorHeadingStep) & 0x0F);
 }
 
-bool insideKeepIn(int16_t x, int16_t y, int16_t screenWidth, int16_t screenHeight) {
-  return x >= kKeepInMarginPx && y >= kKeepInMarginPx && x < screenWidth - kKeepInMarginPx &&
-         y < screenHeight - kKeepInMarginPx;
+bool insideKeepIn(int16_t x, int16_t y, int16_t screenWidth, int16_t screenHeight, int16_t marginPx) {
+  return x >= marginPx && y >= marginPx && x < screenWidth - marginPx && y < screenHeight - marginPx;
 }
 
 Action decide(const Request& request) {
@@ -29,7 +28,7 @@ Action decide(const Request& request) {
       headingDriftSteps(request.fixHeadingStep, request.anchorHeadingStep) >= request.headingDriftLimitSteps) {
     return Action::ReAnchor;
   }
-  if (!insideKeepIn(request.fixX, request.fixY, request.screenWidth, request.screenHeight)) {
+  if (!insideKeepIn(request.fixX, request.fixY, request.screenWidth, request.screenHeight, request.keepInMarginPx)) {
     return Action::ReAnchor;
   }
   if (request.partialMoves >= request.partialMoveBudget) {
@@ -40,7 +39,7 @@ Action decide(const Request& request) {
   const int dy = request.fixY - request.drawnY;
   const int absDx = dx < 0 ? -dx : dx;
   const int absDy = dy < 0 ? -dy : dy;
-  if (absDx < kMinMovePx && absDy < kMinMovePx) {
+  if (absDx < request.minMovePx && absDy < request.minMovePx) {
     return Action::Skip;
   }
   return Action::MoveMarker;

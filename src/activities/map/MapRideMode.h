@@ -27,12 +27,19 @@ inline constexpr uint8_t kMapRideModeCount = 3;
 inline constexpr uint8_t kDefaultZoomStepForMode[kMapRideModeCount] = {2, 0, 1};
 inline constexpr uint8_t kDefaultMarkerStepForMode[kMapRideModeCount] = {3, 1, 2};
 
-// Rungs on each ladder. Both are five, and both are five for the same
-// reason: a step is a full-screen e-ink refresh, so a longer ladder means
-// waiting through refreshes to get anywhere (docs/map-data-spec.md).
-// MapViewport static_asserts its two tables against this, and
-// CrossPointSettings clamps a hand-edited settings file to it.
-inline constexpr uint8_t kMapLadderStepCount = 5;
+// Rungs on each ladder. They were one number while both were five; they are
+// two numbers since 2026-08-12, because the zoom ladder grew to seven and the
+// marker ladder had no reason to follow it (the marker anchor is a screen
+// position, and five positions already span mid-screen to bottom edge).
+//
+// Both are still short for the same reason: a step is a full-screen e-ink
+// refresh, so a longer ladder means waiting through refreshes to get anywhere
+// (docs/map-data-spec.md). MapViewport static_asserts its two tables against
+// these, and CrossPointSettings clamps a hand-edited settings file to them --
+// each against its own, so a zoom step of 6 survives a reload and a marker step
+// of 6 does not.
+inline constexpr uint8_t kMapZoomStepCount = 7;
+inline constexpr uint8_t kMapMarkerStepCount = 5;
 
 // Wire name, matching mapstyle.json's `modes` keys and the `mode` command's
 // argument. Same string in both directions, so a round trip through `info`

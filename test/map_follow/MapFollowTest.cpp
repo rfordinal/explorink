@@ -308,4 +308,54 @@ TEST(MapFollowRouteFrame, TheSameRunWithoutTheRouteRedrawsConstantly) {
   EXPECT_GT(reAnchors, 10);
 }
 
+// ------------------------------------------------- per-rung follow numbers
+//
+// The ladder grew to seven rungs 2026-08-12, and two of the follow numbers
+// stopped being constants: how far the marker must move to be worth a waveform,
+// and how close to the edge it may come. Both are per rung because a pixel is
+// worth 8 m of ground at rung 0 and 360 m at rung 6 -- see
+// MapViewport::ZoomStep::minMovePx.
+
+TEST(MapFollowPerRung, TheMoveFloorComesFromTheRequestNotTheConstant) {
+  MapFollow::Request request = baseRequest();
+  request.minMovePx = 2;  // rung 6
+  request.fixY = static_cast<int16_t>(request.drawnY - 3);
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::MoveMarker)
+      << "3 px is above rung 6's floor, even though it is below the old fixed 8";
+
+  request.fixY = static_cast<int16_t>(request.drawnY - 1);
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::Skip) << "1 px is still not worth a waveform";
+
+  request.minMovePx = 12;  // rung 0
+  request.fixY = static_cast<int16_t>(request.drawnY - 8);
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::Skip)
+      << "8 px used to move the marker at every rung; at 1 m/px it is 8 m and now waits";
+}
+
+TEST(MapFollowPerRung, TheKeepInMarginComesFromTheRequestNotTheConstant) {
+  MapFollow::Request request = baseRequest();
+  // 70 px from the left edge: inside a 60 px margin, outside the default 80.
+  request.fixX = 70;
+  request.fixY = 400;
+  request.drawnX = 240;
+  request.drawnY = 400;
+
+  request.keepInMarginPx = MapFollow::kKeepInMarginPx;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::ReAnchor);
+
+  request.keepInMarginPx = 60;  // rung 6's marker (34 px ring) plus the slack
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::Action::MoveMarker)
+      << "a smaller marker must be allowed closer to the edge, or the coarse rungs redraw for nothing";
+}
+
+TEST(MapFollowPerRung, DefaultsAreStillTheConstants) {
+  // A caller that fills neither field -- the host harnesses, and anything
+  // written before the fields existed -- must behave exactly as before.
+  const MapFollow::Request request;
+  EXPECT_EQ(request.minMovePx, MapFollow::kMinMovePx);
+  EXPECT_EQ(request.keepInMarginPx, MapFollow::kKeepInMarginPx);
+  EXPECT_EQ(MapFollow::kKeepInMarginPx, 54 + MapFollow::kKeepInSlackPx)
+      << "the fallback margin is the full-size marker ring plus the slack, and must stay derived from it";
+}
+
 }  // namespace

@@ -1,5 +1,7 @@
 #include "MapCommandParser.h"
 
+#include "MapViewport.h"
+
 namespace {
 
 // Longest legal line is `pos <lat> <lon> heading <n> speed <n> alt <n>` -- 9
@@ -10,8 +12,11 @@ constexpr size_t kMaxTokens = 10;
 constexpr int32_t kLatMaxE7 = 900000000;
 constexpr int32_t kLonMaxE7 = 1800000000;
 constexpr uint32_t kMaxHeading = 15;
-constexpr uint32_t kMaxZoom = 4;
-constexpr uint32_t kMaxMarker = 4;
+// Off the ladders themselves, not repeated here: `zoom 6` has to mean the same
+// thing over BLE, over USB and on the buttons, and the two ladders are
+// different lengths since 2026-08-12 (MapRideMode.h).
+constexpr uint32_t kMaxZoom = MapViewport::kZoomStepCount - 1;
+constexpr uint32_t kMaxMarker = MapViewport::kMarkerStepCount - 1;
 constexpr uint32_t kMaxSpeedKmh = 65535;
 constexpr uint32_t kMaxMissingOffset = 65535;
 // Dead Sea shore is -430m, Everest is 8849m -- generous margin either side

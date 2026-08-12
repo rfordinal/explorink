@@ -15,6 +15,7 @@
 #include "LastHeldTiles.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
+#include "MapMarkerMetrics.h"
 #include "MapPowerStatsProvider.h"
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
@@ -66,7 +67,6 @@ constexpr uint32_t kMissingTilesSaveIntervalMs = 10 * 60 * 1000;
 // reset can be seconds apart -- without a cap that is a stream of asks for a
 // list that has barely changed.
 constexpr uint32_t kAutoSyncIntervalMs = 60 * 1000;
-
 
 // How long an ask may go **completely quiet** before the device gives up on it.
 // Not a budget for the whole fetch: expireAutoSync() rearms this every time the
@@ -298,31 +298,6 @@ constexpr int kCompassHaloMargin = 3;  // white backing, past the glyph's own sw
 // directional" -- hike is a plain dot (position over direction), cycle is a
 // small arrow (both matter), ride is a large arrow that fills the ring
 // (direction over position). All three share the same outline ring.
-constexpr int kMarkerRingDiameter = 54;
-constexpr int kMarkerRingWidth = 3;
-constexpr int kMarkerHikeDotDiameter = 18;
-// Hike's heading hand: from the dot out to the ring's inner edge
-// (kMarkerRingDiameter / 2 - kMarkerRingWidth = 24), 4 px wide. The reach must
-// stay inside kMarkerBoxSize's half-extent or a marker move leaves the hand
-// behind on the map -- see the note where it is drawn.
-constexpr int kMarkerHikeHandReach = kMarkerRingDiameter / 2 - kMarkerRingWidth;
-constexpr int kMarkerHikeHandHalfW = 2;
-constexpr int kMarkerCycleTipLen = 16;    // center to tip, pixels
-constexpr int kMarkerCycleBaseHalfW = 9;  // center to each base corner, pixels
-constexpr int kMarkerRideTipLen = 25;
-constexpr int kMarkerRideBaseHalfW = 18;
-constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
-
-// The marker's halo box: the unit of every partial operation. Everything the
-// marker can draw is inside it (the halo is the outermost thing
-// drawPositionMarker() paints), so saving this box before the marker goes down
-// and writing it back afterwards erases the marker exactly.
-constexpr int kMarkerBoxSize = kMarkerRingDiameter + 2 * kMarkerHaloMargin;  // 64
-// The hike hand is the only marker part whose reach is a free parameter, so it is
-// the one that can be pushed out of the saved patch box. Past that box a move does
-// not restore what the hand covered and it smears a trail across the map.
-static_assert(kMarkerHikeHandReach + kMarkerHikeHandHalfW <= kMarkerBoxSize / 2,
-              "hike heading hand must stay inside the marker patch box, or a move smears it");
 // Worst-case bytes for that box in panel memory. readFramebufferRegion snaps
 // the x extent outward to a multiple of 8, so a 64 px wide box can need 72 px
 // (9 bytes) of columns; the +8 rows are slack against the same rounding after
@@ -367,14 +342,21 @@ constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HI
 }  // namespace
 
 void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRideMode mode) {
-  const int radius = kMarkerRingDiameter / 2;
+  // Sized for the rung on the panel right now -- MapViewport::ZoomStep::
+  // markerScale8. markerRect() reads the same metrics, so the patch box the
+  // move path saves always matches what this paints.
+  const MarkerMetrics m = markerMetrics();
+  // The box every partial operation is sized by from here on: recorded at the
+  // moment the marker is painted, so markerRect() erases exactly what was drawn
+  // even if the rung changed in between.
+  markerBoxDrawn_ = static_cast<int16_t>(m.box);
+  const int radius = m.ring / 2;
   // White halo first: the ring is only a 2px stroke, so without this the
   // map lines it sits over would show straight through its interior, and a
   // busy junction under the ring reads as clutter, not a marker.
-  const int haloRadius = radius + kMarkerHaloMargin;
+  const int haloRadius = radius + m.haloMargin;
   renderer.fillRoundedRect(cx - haloRadius, cy - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius, Color::White);
-  renderer.drawRoundedRect(cx - radius, cy - radius, kMarkerRingDiameter, kMarkerRingDiameter, kMarkerRingWidth, radius,
-                           true);
+  renderer.drawRoundedRect(cx - radius, cy - radius, m.ring, m.ring, m.ringWidth, radius, true);
 
   if (mode == MapRideMode::Hike) {
     // Position over direction, but not direction *nowhere*: a dot for where the
@@ -389,31 +371,30 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     // Drawn *before* the dot on purpose: the dot then covers the inner end, so
     // the hand grows out of a solid boss instead of meeting it at a seam.
     //
-    // `kMarkerHikeHandReach` is the ring's inner edge, which keeps the whole hand
-    // inside the 64x64 box saveMarkerPatch() stores (kMarkerBoxSize). Anything
+    // The hand's reach is the ring's inner edge, which keeps the whole hand
+    // inside the box saveMarkerPatch() stores (MarkerMetrics::box). Anything
     // drawn past that box is not restored when the marker moves and smears a
     // trail across the map -- the reach is a correctness bound, not a style
     // choice.
     const HeadingVec& hand = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
     const HeadingVec handPerp{-hand.dy, hand.dx};
-    const int tipX = cx + hand.dx * kMarkerHikeHandReach / 8;
-    const int tipY = cy + hand.dy * kMarkerHikeHandReach / 8;
+    const int tipX = cx + hand.dx * m.hikeHandReach / 8;
+    const int tipY = cy + hand.dy * m.hikeHandReach / 8;
     const int hx[4] = {
-        cx + handPerp.dx * kMarkerHikeHandHalfW / 8,
-        tipX + handPerp.dx * kMarkerHikeHandHalfW / 8,
-        tipX - handPerp.dx * kMarkerHikeHandHalfW / 8,
-        cx - handPerp.dx * kMarkerHikeHandHalfW / 8,
+        cx + handPerp.dx * m.hikeHandHalfW / 8,
+        tipX + handPerp.dx * m.hikeHandHalfW / 8,
+        tipX - handPerp.dx * m.hikeHandHalfW / 8,
+        cx - handPerp.dx * m.hikeHandHalfW / 8,
     };
     const int hy[4] = {
-        cy + handPerp.dy * kMarkerHikeHandHalfW / 8,
-        tipY + handPerp.dy * kMarkerHikeHandHalfW / 8,
-        tipY - handPerp.dy * kMarkerHikeHandHalfW / 8,
-        cy - handPerp.dy * kMarkerHikeHandHalfW / 8,
+        cy + handPerp.dy * m.hikeHandHalfW / 8,
+        tipY + handPerp.dy * m.hikeHandHalfW / 8,
+        tipY - handPerp.dy * m.hikeHandHalfW / 8,
+        cy - handPerp.dy * m.hikeHandHalfW / 8,
     };
     renderer.fillPolygon(hx, hy, 4, true);
 
-    renderer.fillRoundedRect(cx - kMarkerHikeDotDiameter / 2, cy - kMarkerHikeDotDiameter / 2, kMarkerHikeDotDiameter,
-                             kMarkerHikeDotDiameter, kMarkerHikeDotDiameter / 2, Color::Black);
+    renderer.fillRoundedRect(cx - m.hikeDot / 2, cy - m.hikeDot / 2, m.hikeDot, m.hikeDot, m.hikeDot / 2, Color::Black);
     return;
   }
 
@@ -421,8 +402,8 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
   // forced-north display heading renderViewport() uses for map rotation
   // (kNoRouteDisplayHeading) -- direction of travel matters at riding speed
   // even though the map underneath stays north-up.
-  const int tipLen = mode == MapRideMode::Ride ? kMarkerRideTipLen : kMarkerCycleTipLen;
-  const int baseHalfW = mode == MapRideMode::Ride ? kMarkerRideBaseHalfW : kMarkerCycleBaseHalfW;
+  const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.cycleTipLen;
+  const int baseHalfW = mode == MapRideMode::Ride ? m.rideBaseHalfW : m.cycleBaseHalfW;
   const HeadingVec& dir = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
   const HeadingVec perp{-dir.dy, dir.dx};
 
@@ -2111,11 +2092,21 @@ void MapActivity::renderCurrent() {
   renderViewport(lastLatE7_, lastLonE7_, lastHeading_, lastDrawnSeq_);
 }
 
+MarkerMetrics MapActivity::markerMetrics() const {
+  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8);
+}
+
 void MapActivity::markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const {
-  w = kMarkerBoxSize;
-  h = kMarkerBoxSize;
-  x = cx - kMarkerBoxSize / 2;
-  y = cy - kMarkerBoxSize / 2;
+  // The box the marker on the panel was drawn with, not the box the current
+  // rung would draw: a rung change re-anchors (stepZoom -> renderCurrent), but
+  // reading the live rung here would size an erase against a marker painted at
+  // another scale if that order ever changed, and the failure would be a
+  // smeared ring nobody could trace back.
+  const int box = markerBoxDrawn_ > 0 ? markerBoxDrawn_ : markerMetrics().box;
+  w = box;
+  h = box;
+  x = cx - box / 2;
+  y = cy - box / 2;
 }
 
 bool MapActivity::saveMarkerPatch(int cx, int cy) {
@@ -2126,6 +2117,17 @@ bool MapActivity::saveMarkerPatch(int cx, int cy) {
 }
 
 void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
+  // A rung change re-anchors (stepZoom -> renderCurrent), so the marker on the
+  // panel is always the current rung's size when a fix arrives here. If that
+  // order ever changes, the erase below would restore a box of the wrong size
+  // and leave a ring behind, so check rather than trust: a full redraw is the
+  // correct answer and costs what a rung change costs anyway.
+  if (markerBoxDrawn_ > 0 && markerBoxDrawn_ != static_cast<int16_t>(markerMetrics().box)) {
+    LOG_DBG(kLogTag, "marker box %d -> %d without a re-anchor -- full redraw", (int)markerBoxDrawn_,
+            (int)markerMetrics().box);
+    renderCurrent();
+    return;
+  }
   int oldX, oldY, oldW, oldH;
   markerRect(markerDrawnX_, markerDrawnY_, oldX, oldY, oldW, oldH);
   // Erase: the map, compass, readout and hints under the marker exist nowhere
@@ -2159,10 +2161,17 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
   // thing to minimise is the *number* of refreshes, not their area: splitting a
   // far-apart pair into two windows would double both the latency and the panel
   // current for no gain.
+  //
+  // The union is taken over the two rectangles as they are, not over one box
+  // size twice: the marker's box is per rung now (MarkerMetrics::box), and the
+  // old and new boxes are the same size only because a rung change re-anchors
+  // instead of coming through here.
   const int unionX = newX < oldX ? newX : oldX;
   const int unionY = newY < oldY ? newY : oldY;
-  const int unionW = (newX > oldX ? newX - oldX : oldX - newX) + kMarkerBoxSize;
-  const int unionH = (newY > oldY ? newY - oldY : oldY - newY) + kMarkerBoxSize;
+  const int oldRight = oldX + oldW, newRight = newX + newW;
+  const int oldBottom = oldY + oldH, newBottom = newY + newH;
+  const int unionW = (newRight > oldRight ? newRight : oldRight) - unionX;
+  const int unionH = (newBottom > oldBottom ? newBottom : oldBottom) - unionY;
   const bool shown = renderer.displayBufferWindow(unionX, unionY, unionW, unionH);
   if (!shown) {
     // The framebuffer is already correct, so a full refresh shows the right
@@ -2249,6 +2258,12 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
   // ReAnchor either (frameOrientationLocked()).
   request.routeHoldsFrame = frameOrientationLocked();
   request.partialMoveBudget = partialMoveBudget();
+  // Both off the rung on the panel, not off MapFollow's fallback constants:
+  // what a pixel is worth in ground metres, and how big the marker is, are the
+  // two things that change down the ladder (MapViewport::ZoomStep::minMovePx,
+  // MarkerMetrics::ring).
+  request.minMovePx = static_cast<int16_t>(MapViewport::zoomStepAt(zoomStep()).minMovePx);
+  request.keepInMarginPx = static_cast<int16_t>(markerMetrics().ring + MapFollow::kKeepInSlackPx);
 
   switch (MapFollow::decide(request)) {
     case MapFollow::Action::Skip:
@@ -2343,7 +2358,7 @@ void MapActivity::renderRouteOverview() {
   view.drawBuildings = MapViewport::kZoomLadder[fit.zoomStep].buildings;
   view.drawBuiltUp = MapViewport::kZoomLadder[fit.zoomStep].builtUp;
 
-  const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, 0, &nearestPlaces_);
+  const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, {}, &nearestPlaces_);
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -2396,7 +2411,8 @@ void MapActivity::renderRouteOverview() {
 }
 
 uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
-                                    MapRenderTiming* timing, uint64_t knownBadLayers, MapNearestPlaces* nearestOut) {
+                                    MapRenderTiming* timing, MapLayerBits knownBadLayers,
+                                    MapNearestPlaces* nearestOut) {
   MapTileSource::Config config;
   config.rootDir = kTileRoot;
   config.z = range.z;
@@ -2573,7 +2589,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // millis() call per layer and changes no pixel.
   MapRenderTiming timing;
   timing.nowMs = &renderClockMs;
-  uint32_t missing = drawMapLayers(range, canvas, view, &timing, 0, &nearestPlaces_);
+  uint32_t missing = drawMapLayers(range, canvas, view, &timing, {}, &nearestPlaces_);
 
   // A layer's checksum is now folded out of the record stream, so corruption is
   // found *after* its records have been drawn (MapTileReader::layerCheck). When
@@ -2586,9 +2602,10 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // is the whole reason the read was halved
   // (docs/optimization/02-tile-io.md).
   if (source_->corruptLayers() > 0) {
-    const uint64_t bad = source_->failedLayerMask();
-    LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%llx) -- redrawing without them",
-            static_cast<unsigned long>(source_->corruptLayers()), static_cast<unsigned long long>(bad));
+    const MapLayerBits bad = source_->failedLayerMask();
+    LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%llx%016llx) -- redrawing without them",
+            static_cast<unsigned long>(source_->corruptLayers()), static_cast<unsigned long long>(bad.hi),
+            static_cast<unsigned long long>(bad.lo));
     renderer.clearScreen();
     missing = drawMapLayers(range, canvas, view, &timing, bad, &nearestPlaces_);
   }

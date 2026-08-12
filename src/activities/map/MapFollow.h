@@ -21,10 +21,23 @@
 namespace MapFollow {
 
 // How close to the screen edge the marker may come before the map is redrawn
-// around it. One marker ring (54 px) plus slack: a marker inside this frame is
-// always fully on screen, so the patch save/restore never straddles the edge,
-// and there is still real map ahead of the rider to look at.
+// around it. One marker ring (54 px) plus 26 px of slack: a marker inside this
+// frame is always fully on screen, so the patch save/restore never straddles
+// the edge, and there is still real map ahead of the rider to look at.
+//
+// **Also the fallback since 2026-08-12.** The marker is not one size any more
+// (MapViewport::ZoomStep::markerScale8), and this margin is derived from the
+// marker, so it follows the rung: MapActivity fills Request::keepInMarginPx
+// with `ring + kKeepInSlackPx` for the rung on the panel. Keeping 80 px at a
+// rung whose marker is 34 px would fence off screen the rider can see the
+// marker on -- and the reason for the number is the marker, not the panel.
 inline constexpr int16_t kKeepInMarginPx = 80;
+
+// The part of the keep-in margin that is not the marker: how much map stays
+// between the marker and the edge once the ring fits. Same 26 px at every rung
+// -- it is about having somewhere to look, which is a screen quantity, not a
+// ground one.
+inline constexpr int16_t kKeepInSlackPx = 26;
 
 // Heading change that forces a redraw on its own, in 22.5 degree steps. The map
 // is drawn track-up, so the frame on the panel is only correct for the heading
@@ -69,6 +82,13 @@ inline constexpr uint16_t kMinPartialMovesForHeadingReAnchor = 2;
 // the marker under 2 px, and the Android bridge sends on distance, not on a
 // timer (docs/android-install.md) -- without this floor a slow rider would pay
 // a panel refresh for a marker that visibly did not move.
+//
+// **This is the fallback, not what the device uses.** Since 2026-08-12 the
+// floor is per rung (MapViewport::ZoomStep::minMovePx, 12 px at 1 m/px down to
+// 2 px at 45 m/px), because a pixel is worth 8 m of ground at rung 0 and 360 m
+// at rung 6 -- one fixed pixel floor gives the coarse rungs almost no updates
+// at all. MapActivity fills Request::minMovePx from the ladder; a caller that
+// writes nothing gets this.
 inline constexpr int16_t kMinMovePx = 8;
 
 // Windowed refreshes are differential and leave ghosting behind. Force a clean
@@ -132,6 +152,15 @@ struct Request {
   // clean one is forced.
   uint16_t partialMoves = 0;
   uint16_t partialMoveBudget = kMaxPartialMoves;
+  // The movement floor and the keep-in margin for the rung the frame was drawn
+  // at, both defaulting to the constants above. Same pattern and the same
+  // reason as `partialMoveBudget`: the caller that knows the rung fills them,
+  // and a caller that does not gets the firmware's own numbers.
+  //
+  // MapActivity *does* set both (unlike the two heading fields below), because
+  // both are per-rung numbers since the ladder grew to seven rungs.
+  int16_t minMovePx = kMinMovePx;
+  int16_t keepInMarginPx = kKeepInMarginPx;
   // The two heading thresholds, per request, defaulting to the constants above.
   //
   // Same pattern and the same reason as `partialMoveBudget`: a caller that has
@@ -178,8 +207,9 @@ uint8_t headingDriftSteps(uint8_t a, uint8_t b);
 uint8_t relativeHeadingStep(uint8_t fixHeadingStep, uint8_t anchorHeadingStep);
 
 // True while the marker is far enough from every screen edge to keep following
-// inside this frame.
-bool insideKeepIn(int16_t x, int16_t y, int16_t screenWidth, int16_t screenHeight);
+// inside this frame. The margin defaults to the constant for callers with no
+// rung in hand (the host tests); decide() passes Request::keepInMarginPx.
+bool insideKeepIn(int16_t x, int16_t y, int16_t screenWidth, int16_t screenHeight, int16_t marginPx = kKeepInMarginPx);
 
 Action decide(const Request& request);
 

@@ -206,11 +206,11 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     // A missing array (a settings file written before this existed) leaves
     // each mode on its own starting rung rather than on ride's.
     if (mode < storedZoomSteps.size()) {
-      mapZoomStep[mode] =
-          clamp(storedZoomSteps[mode] | kDefaultZoomStepForMode[mode], kMapLadderStepCount, kDefaultZoomStepForMode[mode]);
+      mapZoomStep[mode] = clamp(storedZoomSteps[mode] | kDefaultZoomStepForMode[mode], kMapZoomStepCount,
+                                kDefaultZoomStepForMode[mode]);
     }
     if (mode < storedMarkerSteps.size()) {
-      mapMarkerStep[mode] = clamp(storedMarkerSteps[mode] | kDefaultMarkerStepForMode[mode], kMapLadderStepCount,
+      mapMarkerStep[mode] = clamp(storedMarkerSteps[mode] | kDefaultMarkerStepForMode[mode], kMapMarkerStepCount,
                                   kDefaultMarkerStepForMode[mode]);
     }
   }

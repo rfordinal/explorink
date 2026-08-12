@@ -9,6 +9,7 @@
 #include "HalFileSource.h"
 #include "MapBleConsole.h"
 #include "MapFollow.h"
+#include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
@@ -172,8 +173,16 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // button hints exactly as they were -- including where the marker overlapped
   // them, which is why the saved patch is taken after all of them are drawn.
   void moveMarker(int16_t sx, int16_t sy, uint8_t headingStep);
+  // The marker's dimensions at the rung on the panel now
+  // (MapViewport::ZoomStep::markerScale8). Never full-size constants directly:
+  // rungs 5 and 6 draw a smaller marker, because a fixed pixel object covers
+  // more ground the further out the rung is.
+  MarkerMetrics markerMetrics() const;
   // The marker's halo box, the unit of everything partial: what is saved, what
-  // is restored, what is refreshed. Fixed size, so one buffer fits any position.
+  // is restored, what is refreshed. Sized by the rung the marker on the panel
+  // was drawn at (markerBoxDrawn_), so a save and its erase always agree; the
+  // patch buffer itself is allocated for the largest rung, so one buffer fits
+  // any position at any rung.
   void markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const;
   // Saves the framebuffer under the marker's box at cx/cy into markerPatch_.
   // False when the read did not fit or the box is off-panel, which is what
@@ -209,7 +218,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // (MapRenderer.h, MapNearestPlaces) from the same places walk the dots come
   // from -- no second SD read.
   uint32_t drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
-                         MapRenderTiming* timing = nullptr, uint64_t knownBadLayers = 0,
+                         MapRenderTiming* timing = nullptr, MapLayerBits knownBadLayers = {},
                          MapNearestPlaces* nearestOut = nullptr);
   // Re-renders the last received fix at the current ladder steps and mode.
   // This is what a zoom or marker step produces: the reset re-anchors on the
@@ -486,6 +495,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // after a reset and walks from there.
   int16_t markerDrawnX_ = 0;
   int16_t markerDrawnY_ = 0;
+  // The box size the marker on the panel was drawn with. 0 until the first
+  // marker goes down. Held rather than recomputed so that an erase can never be
+  // sized by a rung the picture was not drawn at -- see markerRect().
+  int16_t markerBoxDrawn_ = 0;
   // The framebuffer under the marker's halo box, as it was before the marker
   // was drawn over it. Restoring this is the only way to erase the marker
   // without re-reading tiles: the map pixels it covered exist nowhere else
