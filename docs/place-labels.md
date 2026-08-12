@@ -109,6 +109,22 @@ regular 24 px** (minor): sans-serif, proportional, both weights present, and the
 only faces in flash small enough for a compact label. The smallest Noto Sans
 built in is a 34 px line -- too tall to fit several names on a 480x800 screen.
 
+### Why 29/24 with a 2 px halo
+
+Judged in the host preview on two scenes (rung 6 over Modra/Pezinok, 108 places
+in range; rung 2 over Pezinok town), 2026-08-12:
+
+| variant | verdict |
+|---|---|
+| **29 bold / 24 regular, halo 2** | chosen. Hierarchy reads at a glance, halo separates the name from roads and the built-up stipple |
+| 29 / 24, halo 1 | halo too thin -- glyph stems touch the road lines under them |
+| 24 bold / 24 regular, halo 2 | fits one name more (6 of 7 vs 5), but hierarchy is weight-only and much weaker |
+| 29 / 29, halo 2 | both tiers big; crowds the screen for no gain |
+
+One trap in that table: a minor tier below 24 px drops to `notosans_8`, so the
+two tiers would come from **different type families** on the same map. Keep both
+tiers on faces of one family -- 24 and 29 are both Ubuntu UI.
+
 **Open.** A purpose-built map face (Source Sans 3 or a small Noto Sans cut, at
 real pixel sizes, Latin plus the Central European diacritics) would be the better
 answer and needs no code change beyond adding it to the candidate list --
