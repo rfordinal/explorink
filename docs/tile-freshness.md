@@ -23,6 +23,15 @@ So the railway/tram fix -- a classification bug that drew a tram line as a
 mainline railway -- was fixed, the area was rebuilt and republished, and every
 device that had already synced kept the wrong tile. Permanently.
 
+Seen again on hardware 2026-08-12, freshness mode still `Off`: trams drawn
+along a city street at zoom rungs 3-6, a fix that had shipped weeks earlier.
+**The map header's debug line is the cheapest way to spot it** -- it prints the
+tile and way counts (`4t 4151w`, `src/activities/map/MapActivity.cpp:2818`), and the same viewport
+rendered on the laptop from the current mirror reported 1043 ways. Four times
+the geometry means the card, not the builder. Nothing on the device reads a
+tile's `build_epoch` back out, so the exact age of what is on the card cannot
+be asked for -- open.
+
 ## The signal: `contentId()`
 
 ```
