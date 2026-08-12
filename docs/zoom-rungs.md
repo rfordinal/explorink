@@ -26,7 +26,8 @@ Rungs 5 and 6 were added for the regional view a long ride wants -- the parent
 repo's `docs/coarse-zoom-plan.md` has the case, the measurements and the
 verdict. Short version: over the Malé Karpaty the panel at rung 6 holds the full
 width of the range plus 40 km of its length, and the host renders showed the
-picture stays readable on z11 data.
+picture stays readable on z11 data -- since confirmed on the panel, see
+"Measured on hardware" below.
 
 ## Rung 4 was the top for a reason, and rungs 5-6 pay for going past it
 
@@ -62,14 +63,40 @@ rung 6.
 allocations at every rung. Device RAM after the change: 17.5 % (57,324 B),
 unchanged in practice.
 
-**Open -- needs measurement on the panel.** How long a 12-tile, 0.5 MB viewport
-reset actually takes on the X4. Rung 0 is 7,463 ms of which buildings are 4,122
-(`MapViewport.h:29-36`, measured), so a coarse rung reading twice the tiles with
-a tenth of the geometry is not obviously slower -- but nothing has timed it. If
-it is slow, the fix is a z10 LOD, which needs one tile-format change (a per-LOD
-`coord_shift` byte, because a z10 tile is 39 km wide and tile-local offsets are
-`int16`). That work is specified in the parent repo's `docs/coarse-zoom-plan.md`
-and deliberately not done yet.
+## Measured on hardware, 2026-08-12
+
+Flashed and timed the same day, anchored on the Malé Karpaty (48.35N 17.30E),
+ride mode, `tools/zoom_rung_timing.py` in the parent repo. The firmware's own
+per-reset log lines are the instrument -- nothing was added to measure this.
+
+| rung | m/px | tiles | bytes | ways | card | render | framebuffer ready |
+|---|---|---|---|---|---|---|---|
+| 4 | 20 | 6 | 374,530 | 549 | 843 ms | 1,303 ms | **1,310 ms** |
+| 5 | 32 | 9 | -- | -- | -- | -- | **2,214 ms** |
+| 6 | 45 | 12 | 786,748 | 7,478 | 1,758 ms | 3,635 ms | **3,646 ms** |
+
+Two runs per rung, and the pairs agree to within 1 ms (1,311/1,309,
+2,214/2,214, 3,646/3,647) -- this is a deterministic cost, not a noisy one.
+
+**Verdict: rung 6 ships as it is.** 3.6 s is well inside what the ladder already
+costs -- rung 0 is 7,463 ms, of which buildings alone are 4,122
+(`MapViewport.h:29-36`). A rung that shows 24 x 40 km for half of rung 0's time
+is a good trade, and a viewport reset is a rare event (`map-follow.md`).
+
+Where the time goes at rung 6: landuse 1,598 ms, roads 1,488 ms, water 444 ms,
+places 105 ms, with 1,758 ms of that inside the card. 63,018 points projected
+against rung 4's 8,006. So it is geometry volume, not tile count -- which is
+exactly what a z10 LOD would cut, and the reason to keep that option open
+(`coord_shift`, parent repo's `docs/coarse-zoom-plan.md`). Expect roughly rung
+4's cost at rung 6 if it is ever built; nothing else about the rungs changes.
+
+**Open -- a discrepancy worth resolving.** The host preview reported 12 tiles
+and 507,146 bytes for this viewport; the device read 786,748. Same rung, same
+anchor, same tiles. Unexplained. Candidates: the wider places ring the device
+opens for edge chevrons (`docs/map-data-spec.md`, "two tile ranges"), or the two
+`bytesRead` accessors not counting the same thing. Until it is chased, quote
+device bytes for device claims and preview bytes for preview claims -- do not
+mix them in one table.
 
 ## Raising the tile cap broke a bitmap, silently
 
@@ -122,6 +149,12 @@ through `MapRenderer::drawMarker`; the device draws `MapActivity::
 drawPositionMarker`, which is the mode-aware one this scaling lives in. That gap
 predates this change (see the parent repo's `docs/device-preview.md`) and the
 scaling does not close it -- judging the marker size needs the panel.
+
+**Judged on the panel 2026-08-12** and it holds: parent repo's
+`docs/device-shots/zoom-rung6-dubova-20260812.png` against
+`zoom-rung4-dubova-20260812.png`, same fix, rungs 6 and 4. The 5/8 marker is
+still unmistakably the marker at 45 m/px, and the full-size one at rung 4 shows
+what it would have covered.
 
 ### 2. Move floor -- `ZoomStep::minMovePx`
 
