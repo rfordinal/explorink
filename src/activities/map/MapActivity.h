@@ -113,11 +113,15 @@
 //   the current screen with `tiles`, not to page the whole 200-entry
 //   `missing` list. What is hatched in front of the rider is the urgent part;
 //   the rest is what the tile sync screen is for.
-// - **A refused tile is never asked for twice.** The phone answering `skip`
-//   marks the entry (MissingTilesStore::markRefused()), and a marked tile does
-//   not count toward the next ask. Without it a rider parked at the edge of
+// - **A refused tile backs off; it is not asked for again straight away.** The
+//   phone answering `skip` schedules the entry
+//   (MissingTilesStore::markRefused()), and a tile inside its delay does not
+//   count toward the next ask. Without that a rider parked at the edge of
 //   coverage re-hatches the same squares on every viewport reset and begs for
-//   them forever, on the phone's mobile data.
+//   them forever, on the phone's mobile data. The delay doubles per refusal from
+//   90 s to an hour and then stays there, because a refusal now means "the CDN
+//   has not built it *yet*" -- the phone's own 404 is what queues the build
+//   (../../../docs/tile-autobuild.md) -- rather than "nobody will ever have it".
 // - **One ask per kAutoSyncIntervalMs.** A rate cap, not a settle timer: the
 //   next ask is not pushed further out by more hatching.
 class MapActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver {

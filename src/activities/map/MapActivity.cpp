@@ -67,6 +67,7 @@ constexpr uint32_t kMissingTilesSaveIntervalMs = 10 * 60 * 1000;
 // list that has barely changed.
 constexpr uint32_t kAutoSyncIntervalMs = 60 * 1000;
 
+
 // How long an ask may go **completely quiet** before the device gives up on it.
 // Not a budget for the whole fetch: expireAutoSync() rearms this every time the
 // receiver's byte counters move, so a slow transfer stays alive and only real
@@ -755,7 +756,9 @@ void MapActivity::onTileSkipped(uint8_t z, uint32_t col, uint32_t row) {
   if (staleTiles_.contains(z, col, row)) staleTiles_.giveUp(z, col, row);
   // The supplier does not have this tile. Remembered, so the next frame over
   // the same gap does not ask for it again -- see the class comment.
-  MISSING_TILES.markRefused(z, col, row);
+  // millis() here, not inside the store: the refusal schedule is the store's
+  // (MissingTilesStore::refusalDelayMs), the clock is the firmware's.
+  MISSING_TILES.markRefused(z, col, row, millis());
   LOG_DBG(kLogTag, "autosync: z%u %lu/%lu refused, not asking again", static_cast<unsigned>(z),
           static_cast<unsigned long>(col), static_cast<unsigned long>(row));
 
@@ -2449,7 +2452,10 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
       // Before record(), never after: record() adds the tile at count 1 with
       // refused false, so asking afterwards would count a tile the supplier
       // refused ten minutes ago as fresh and beg for it again.
-      if (!MISSING_TILES.isRefused(range.z, col, row)) ++fetchable;
+      // Refusals expire on a per-tile schedule, so this is a question about now,
+      // not a permanent verdict: a tile the CDN has built since the phone said
+      // `skip` counts as fetchable again (MissingTilesStore, `refusals`).
+      if (!MISSING_TILES.isRefused(range.z, col, row, millis())) ++fetchable;
       MISSING_TILES.record(range.z, col, row);
     }
     // Published, not acted on here: the ask goes out from loop(), which is

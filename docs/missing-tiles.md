@@ -359,21 +359,54 @@ a BLE conversation part-way through drawing a frame.
 
 **Viewport only.** See above. The rest is what the sync screen is for.
 
-**A refused tile is never asked for twice.** `skip` used to be counted and
-nothing else. It now also sets `MissingTileHit::refused`
-(`MissingTilesStore::markRefused()`), and `drawMapLayers()` skips a refused tile
-when counting what to ask for. Without this the feature actively harms: a rider
-parked at the edge of coverage re-hatches the same squares on **every viewport
-reset** (that is why `record()` distinguishes a first appearance from a count
-bump, above), so every reset would be a fresh ask for tiles the phone has
-already said it does not have -- forever, on the phone's mobile data.
+**A refused tile backs off; it is not asked for again straight away.** `skip`
+used to be counted and nothing else. Then (2026-08-07) it set a permanent
+`MissingTileHit::refused` flag. Since **2026-08-12** it sets a *schedule*:
+`MissingTilesStore::markRefused(z, col, row, nowMs)` bumps
+`MissingTileHit::refusals` and writes `retryAtMs`, and `drawMapLayers()` asks
+`isRefused(z, col, row, millis())` -- a question about now, not a verdict.
 
-The flag costs nothing, and this is measured rather than reasoned: compiled
-side by side with the old struct on the host (2026-08-07), both are **16 bytes**
-and `refused` sits at **offset 1**, inside the padding the `uint32_t` alignment
-already forces. So the 200-entry cap is still 3.2 KB. It is **not** persisted --
-a tile the CDN lacks today may exist next week, and a restart is the natural
-moment to find out.
+Why it changed: a refusal used to mean "nobody has this tile". It now means
+"the CDN has not built it **yet**". The phone's own 404 is what queues the build
+(`../../docs/tile-autobuild.md`) and a real build measured **41 s** from 404 to
+tiles on disk, so a permanent refusal threw away the tile the rider's own miss
+had just caused to exist.
+
+The delay doubles per refusal and then stops growing
+(`MissingTilesStore::refusalDelayMs()`, `kRefusalBaseMs` 90 s, `kRefusalMaxMs`
+60 min):
+
+| refusals | next ask no earlier than |
+|---|---|
+| 1 | +90 s |
+| 2 | +3 min |
+| 3 | +6 min |
+| 4 | +12 min |
+| 5 | +24 min |
+| 6 and up | +60 min |
+
+90 s is chosen against the build time above: the second ask has to land after
+the build and while the rider can still see the square. The hour cap is what
+keeps the original protection -- a rider parked where no tile will ever exist
+pays one ask an hour on their own mobile data, not one every 90 s, and without
+any cap at all they would beg forever on **every viewport reset** (which is why
+`record()` distinguishes a first appearance from a count bump, above).
+
+The entry is never dropped for being refused: the same list is the demand record
+the laptop side reads off the card, and a tile nobody can supply is exactly the
+thing worth knowing about.
+
+The comparison is `(int32_t)(nowMs - retryAtMs) < 0`, not `nowMs < retryAtMs`:
+`millis()` wraps every ~49 days and the plain compare would read a wrapped clock
+as "refused for another 49 days". `retryAtMs == 0` means askable, so a schedule
+landing exactly on a wrapped zero is nudged to 1.
+
+Cost, and this one is arithmetic rather than measured -- **needs the host-side
+`sizeof` check the old flag got**: the `uint8_t` counter still lands in the
+padding at offset 1, but `retryAtMs` grows the struct from **16 to 20 bytes**, so
+the 200-entry cap goes from 3.2 KB to **4.0 KB**. Neither field is persisted --
+both are `millis()`-relative, which means nothing across a reboot, and a reboot
+is another natural moment to try again.
 
 Anything added to this struct should be measured the same way. "It will fit in
 the padding" is a claim about the compiler, not about the code.
