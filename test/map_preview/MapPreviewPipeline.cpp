@@ -142,6 +142,9 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   const int rung = std::clamp(request.zoom, 0, MapViewport::kZoomStepCount - 1);
   view.drawBuildings = request.drawBuildings.value_or(MapViewport::kZoomLadder[rung].buildings);
   view.drawBuiltUp = MapViewport::kZoomLadder[rung].builtUp;
+  // The rung's own label ceiling, so this pane thins names exactly where the
+  // panel does (MapViewport::ZoomStep::maxLabels).
+  view.maxLabels = MapViewport::kZoomLadder[rung].maxLabels;
 
   StdioFileSource file;
   // Heap, not a local: MapTileSource is ~5 KB and CLAUDE.md caps stack

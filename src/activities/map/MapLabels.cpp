@@ -217,8 +217,10 @@ void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const 
   if (scratch.count < MapLabelScratch::kMaxCandidates) ++scratch.count;
 }
 
-void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style) {
-  if (style.placeMaxLabels == 0) return;
+void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style,
+                     const uint8_t rungMaxLabels) {
+  const uint8_t maxLabels = style.placeMaxLabels < rungMaxLabels ? style.placeMaxLabels : rungMaxLabels;
+  if (maxLabels == 0) return;
   if (style.placeLabelPx == 0 && style.placeLabelMinorPx == 0) return;
 
   int drawableX = 0, drawableY = 0, drawableW = 0, drawableH = 0;
@@ -238,7 +240,7 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
                                              : static_cast<int>(style.placeLabelHaloPx);
 
   for (int i = 0; i < scratch.count; ++i) {
-    if (scratch.placed >= style.placeMaxLabels) break;
+    if (scratch.placed >= maxLabels) break;
     const MapLabelCandidate& candidate = scratch.candidates[i];
 
     // A place whose dot is off screen is not a dropped label. The tile range is

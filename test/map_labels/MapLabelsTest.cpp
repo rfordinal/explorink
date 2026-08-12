@@ -221,6 +221,40 @@ TEST(MapLabels, HonoursTheLabelCap) {
   EXPECT_EQ(scratch.placed, 2);
 }
 
+TEST(MapLabels, TheRungCapCanBeStricterThanTheStyle) {
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  MapStyle style = labelStyle();
+  style.placeMaxLabels = 6;
+  for (int i = 0; i < 6; ++i) MapLabels::offer(scratch, place(100, 150 + i * 90, 2, "Vinosady"), 20, 780);
+  // Rung 0 shows 480 x 800 m: one settlement, so it allows fewer names than the
+  // style's own affordability cap (MapViewport::ZoomStep::maxLabels).
+  MapLabels::draw(canvas, scratch, style, 2);
+
+  EXPECT_EQ(canvas.blackTexts().size(), 2u);
+  EXPECT_EQ(scratch.placed, 2);
+}
+
+TEST(MapLabels, TheStyleCapStillWinsWhenItIsTheStricterOne) {
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  MapStyle style = labelStyle();
+  style.placeMaxLabels = 1;
+  for (int i = 0; i < 4; ++i) MapLabels::offer(scratch, place(100, 150 + i * 90, 2, "Vinosady"), 20, 780);
+  MapLabels::draw(canvas, scratch, style, 14);
+
+  EXPECT_EQ(canvas.blackTexts().size(), 1u);
+}
+
+TEST(MapLabels, ARungCapOfZeroDrawsNothing) {
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  MapLabels::offer(scratch, place(200, 400, 1, "Pezinok"), 20, 780);
+  MapLabels::draw(canvas, scratch, labelStyle(), 0);
+
+  EXPECT_TRUE(canvas.texts.empty());
+}
+
 TEST(MapLabels, TruncatesALongNameWithAnEllipsis) {
   FakeCanvas canvas;
   MapLabelScratch scratch;

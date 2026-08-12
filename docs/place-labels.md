@@ -29,7 +29,7 @@ Read with `docs/map-render-spec.md` (parent repo) item 5, which is the contract.
 ## Greedy, not a zoom table
 
 `MapLabels::offer()` is called for every place in the frame during the walk that
-draws the dots (`MapRenderer.cpp`), keeping the best twelve candidates by
+draws the dots (`MapRenderer.cpp`), keeping the best 32 candidates by
 (rank, then distance to the viewport anchor). Nothing is drawn during that walk:
 placement has to know where the earlier labels went, and that is not known until
 the layer has been walked to the end.
@@ -39,8 +39,14 @@ eight positions around the dot -- right, left, below, above, then the four
 diagonals -- taking the first that passes every test:
 
 1. the label's box, inflated by the halo or the box padding, is fully inside the
-   canvas's drawable rect (on the device that excludes the header band --
-   `docs/map-header-status.md`);
+   canvas's drawable rect. On the device that excludes three bands of screen
+   furniture drawn *after* the map: the header (`docs/map-header-status.md`), the
+   button-hint row along the bottom and the side-hint column on the right.
+   Geometry may run under those and be painted over -- a road that continues off
+   the panel still reads as a road. A name with half its letters painted over
+   reads as a different name, so the placer stays out
+   (`GfxRendererCanvas`'s `bottomReservedPx` / `rightReservedPx`, which shrink
+   `drawableRect()` and nothing else);
 2. inflated further by `min_label_gap_px`, it touches no label already placed and
    not the position puck;
 3. no more than `max_route_overlap_pct` of it sits over the route.
@@ -48,6 +54,23 @@ diagonals -- taking the first that passes every test:
 A candidate that fails all eight is dropped, and its dot stands alone.
 `max_labels` caps the count on top of that -- a render-cost backstop, not the
 declutter mechanism.
+
+Two caps, not one. `max_labels` in the style is the affordability ceiling; the
+zoom rung carries its own (`MapViewport::ZoomStep::maxLabels`: 3, 4, 6, 8, 10,
+12, 14 from rung 0 out) and the smaller wins. A rung knows how much ground is on
+the panel, and that is what decides how many names it deserves -- twelve names
+for the 480 x 800 m rung 0 shows is twelve names for one village, while twelve at
+rung 6's 24 x 40 km is a map of the region. `docs/zoom-rungs.md` has the numbers
+next to the other per-rung ones.
+
+**The candidate cap is not a cosmetic number.** It was 12, and the first panel
+run showed why that is wrong: the set is kept nearest-first, so at rung 6 with 88
+places in range the twelve nearest all sat around the marker and the top half of
+the screen was never considered for a name at all -- the label count looked
+sensible while half the map went unnamed. It is 32 now
+(`MapLabelScratch::kMaxCandidates`), which is past the number of places that can
+share a screen rather than past the number of labels that fit, and `max_labels`
+is 14. Same scene then names 13 places spread over the whole frame.
 
 Measured on the Zahorie route overview (`map_preview --route
 build/trips/zahorie-male-karpaty-loop.tir --fit-route`): with only the four
@@ -136,26 +159,35 @@ needs `ruby`, absent on the current build host). Noto Sans TTFs are already in
 
 ## RAM
 
-`MapLabelScratch` is ~3.2 KB: two occupancy grids (route, and what is already
-taken) at 1,250 bytes each, plus twelve 40-byte candidates. Allocated once in
+`MapLabelScratch` is ~3.8 KB: two occupancy grids (route, and what is already
+taken) at 1,250 bytes each, plus 32 candidates of 40 bytes. Allocated once in
 `MapActivity::onEnter()` and only when the compiled style draws labels; freed in
 `onExit()`. On OOM the map keeps its dots and loses the names. `MapRenderer`
 holds no state of its own, which is why the caller owns this
 (`MapRenderer.h`).
 
-## Cost
+## Cost -- measured on the panel
 
-The halo is the same string re-drawn eight times per ring radius (so 16 extra
-passes at `label_halo_px` 2) before the black pass. `MapRenderTiming::labelsMs`
-was added for exactly this question, and the map's render log line now prints it.
+The halo is the same string re-drawn eight times per ring radius (16 extra passes
+at `label_halo_px` 2) before the black pass, so the question was whether that is
+affordable at 160 MHz. `MapRenderTiming::labelsMs` answers it and is in the map's
+render log line.
 
-**Open -- needs measurement on the panel.** Nothing here has been on hardware
-yet: the placement rules were verified in the host preview and by
-`test/map_labels` (18 tests), and the render is 0 errors / 293 host tests green,
-but the halo's real cost at 160 MHz and how the 2 px halo resolves on the glass
-are unmeasured. If it proves expensive, the cheap knobs in order are
-`label_halo_px` 1, then `label_bg` true (one rectangle instead of 16 text
-passes).
+**Measured on hardware 2026-08-12** (X4, ride mode, Modra/Pezinok):
+
+| rung | places in range | labels drawn | labelsMs | frame |
+|---|---|---|---|---|
+| 2 (12 m/px) | 5 | 2 | **15 ms** | 508 ms |
+| 6 (45 m/px) | 88 | 5 | **94 ms** | 3,793 ms |
+
+2.5 % of the frame at the widest rung. The halo is not the expensive thing on
+this screen -- landuse (1,826 ms) and roads (1,440 ms) are. If it ever needs to
+go, the knobs in order are `label_halo_px` 1, then `label_bg` true (one rectangle
+instead of 16 text passes).
+
+Also confirmed on the glass: the 2 px halo separates a name from road casings,
+the forest hatch and the built-up stipple, and the 29/24 tier split reads as a
+hierarchy at arm's length.
 
 ## Style fields
 
@@ -173,7 +205,7 @@ All in `data/mapstyle.json`, `layers.places`, compiled by
 | `label_bg` | false | opaque white box instead of the halo |
 | `label_bg_pad_px` | 3 | box padding |
 | `label_bg_border_px` | 1 | box border |
-| `max_labels` | 6 | hard cap per frame |
+| `max_labels` | 14 | affordability cap per frame; the zoom rung's own ceiling caps it again |
 | `min_label_gap_px` | 4 | minimum space between two label boxes |
 | `max_route_overlap_pct` | 8 | how much of a label may sit over the route |
 | `label_max_width_px` | 170 | width cap; longer names are cut with U+2026 |

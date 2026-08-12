@@ -63,7 +63,7 @@
       "label_minor_px": 24,
       "label_offset_px": 6,
       "label_px": 29,
-      "max_labels": 6,
+      "max_labels": 14,
       "max_route_overlap_pct": 8,
       "min_label_gap_px": 4
     },

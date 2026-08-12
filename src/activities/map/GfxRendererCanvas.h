@@ -33,9 +33,16 @@
 // GfxRenderer at all, rather than being drawn and then painted over. Default
 // 0 keeps every other caller (test/map_preview has no header) unclipped at
 // the top, same as before this existed.
+// `bottomReservedPx` / `rightReservedPx` shrink what drawableRect() reports and
+// nothing else. That asymmetry is the point: map geometry may run under the
+// button-hint band and the side hints and be painted over by them, and it still
+// reads as a road that continues off the panel. A **label** painted over is a
+// name with half its letters gone, which reads as a different name -- so the
+// placer has to stay out of those bands, while the road under them does not.
 class GfxRendererCanvas : public IMapCanvas {
  public:
-  explicit GfxRendererCanvas(GfxRenderer& renderer, int minY = 0) : renderer_(renderer), minY_(minY) {}
+  explicit GfxRendererCanvas(GfxRenderer& renderer, int minY = 0, int bottomReservedPx = 0, int rightReservedPx = 0)
+      : renderer_(renderer), minY_(minY), bottomReserved_(bottomReservedPx), rightReserved_(rightReservedPx) {}
 
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) override {
     const int maxX = renderer_.getScreenWidth() - 1;
@@ -168,8 +175,8 @@ class GfxRendererCanvas : public IMapCanvas {
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {
     outX = 0;
     outY = minY_;
-    outWidth = renderer_.getScreenWidth();
-    outHeight = renderer_.getScreenHeight() - minY_;
+    outWidth = renderer_.getScreenWidth() - rightReserved_;
+    outHeight = renderer_.getScreenHeight() - minY_ - bottomReserved_;
   }
 
  private:
@@ -297,4 +304,6 @@ class GfxRendererCanvas : public IMapCanvas {
 
   GfxRenderer& renderer_;
   int minY_ = 0;
+  int bottomReserved_ = 0;
+  int rightReserved_ = 0;
 };

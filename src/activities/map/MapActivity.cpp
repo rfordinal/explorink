@@ -127,6 +127,14 @@ constexpr int kBusyGlassInset = 8;  // hourglass inset inside the badge box
 // kScaleMarginBottom is the same clearance line kBusyMarginBottom uses --
 // both stacks bottom out flush with each other, one per side, clear of
 // GUI.drawButtonHints' band.
+// Right-edge width the theme's side-button hints occupy. Theme-owned geometry
+// (GUI.drawSideButtonHints, BaseTheme's x4ButtonPositions), so this is a
+// measurement rather than a shared constant: read off a panel screenshot
+// 2026-08-12, the hint box spans the last ~26 px of the row. Rounded up, and
+// used only to keep place labels out of that column -- map geometry still draws
+// under it and gets painted over (GfxRendererCanvas).
+constexpr int kSideHintReservedPx = 30;
+
 constexpr int kScaleMarginLeft = 12;
 constexpr int kScaleMarginBottom = 50;
 constexpr int kScaleBarHeight = 6;
@@ -2360,7 +2368,11 @@ void MapActivity::renderRouteOverview() {
   }
 
   renderer.clearScreen();
-  GfxRendererCanvas canvas(renderer, kMapContentTop);
+  // The two reserved bands keep place labels clear of the button-hint row and
+  // the side hints, both of which are drawn after the map and would cover a name
+  // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
+  // bar and the busy badge already bottom out on.
+  GfxRendererCanvas canvas(renderer, kMapContentTop, kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
   view.markerX = anchorX;
@@ -2369,6 +2381,7 @@ void MapActivity::renderRouteOverview() {
   // Same rule as the follow frame, from the rung the fit chose.
   view.drawBuildings = MapViewport::kZoomLadder[fit.zoomStep].buildings;
   view.drawBuiltUp = MapViewport::kZoomLadder[fit.zoomStep].builtUp;
+  view.maxLabels = MapViewport::kZoomLadder[fit.zoomStep].maxLabels;
 
   const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, {}, &nearestPlaces_);
   // North still rotates with the frame -- the overview is drawn at the fit's
@@ -2586,7 +2599,11 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   }
 
   renderer.clearScreen();
-  GfxRendererCanvas canvas(renderer, kMapContentTop);
+  // The two reserved bands keep place labels clear of the button-hint row and
+  // the side hints, both of which are drawn after the map and would cover a name
+  // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
+  // bar and the busy badge already bottom out on.
+  GfxRendererCanvas canvas(renderer, kMapContentTop, kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
   view.markerX = MapViewport::kAnchorScreenX;
@@ -2600,6 +2617,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // closest rung draws them, and on every other rung the layer is never opened.
   view.drawBuildings = MapViewport::kZoomLadder[zoomStep()].buildings;
   view.drawBuiltUp = MapViewport::kZoomLadder[zoomStep()].builtUp;
+  view.maxLabels = MapViewport::kZoomLadder[zoomStep()].maxLabels;
 
   // Per-layer timing, so a slow reset can be attributed to a layer rather than
   // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one

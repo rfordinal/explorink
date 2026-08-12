@@ -385,7 +385,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // Names last, over everything the map drew and under the marker the caller
   // draws next. A label is the only thing here that is placed rather than
   // simply drawn, so it has to see the finished picture (MapLabels.h).
-  if (labels != nullptr) MapLabels::draw(canvas, *labels, style);
+  if (labels != nullptr) MapLabels::draw(canvas, *labels, style, state.maxLabels);
   if (timing) lap(timing->labelsMs, mark);
 
   // No marker draw here -- MapActivity draws its own mode-specific one (ring +

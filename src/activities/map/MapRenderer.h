@@ -33,6 +33,15 @@ struct MapViewState {
   // rung 0 draws buildings without a wash, every rung above draws the wash
   // instead. Forest is unaffected.
   bool drawBuiltUp = true;
+  // Ceiling on place names for this frame, from the zoom rung
+  // (MapViewport::ZoomStep::maxLabels). The style's own `max_labels` caps it
+  // again, and the smaller of the two wins: the rung says how many names this
+  // much ground deserves, the style says how many the renderer may afford.
+  //
+  // 255 by default so a caller that knows nothing about rungs (a test, a probe)
+  // gets the style's number and nothing surprising -- the same default reasoning
+  // as drawBuildings above.
+  uint8_t maxLabels = 255;
 };
 
 // Wall time each layer of one render() call spent, in milliseconds.

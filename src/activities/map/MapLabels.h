@@ -81,17 +81,26 @@ struct MapLabelCandidate {
 
 // The label pass's whole working set, owned by the caller.
 //
-// ~3.2 KB, which is why it is not a local: the render task's stack budget is
+// ~3.8 KB, which is why it is not a local: the render task's stack budget is
 // 256 bytes of locals per the RAM rules, and MapRenderer holds no state of its
 // own by design (MapRenderer.h). MapActivity allocates one in onEnter() when
 // the style draws labels at all and frees it in onExit(); test/map_preview
 // keeps one on the host stack. Passing nullptr to render() draws dots and no
 // labels, which is exactly what the firmware did before this existed.
 struct MapLabelScratch {
-  // Candidates held before placement. Twelve is well past what fits on a
-  // 480x800 screen at any zoom rung once collisions are honoured (the style's
-  // own cap is 6), and each one costs 40 bytes of the budget above.
-  static constexpr int kMaxCandidates = 12;
+  // Candidates held before placement.
+  //
+  // Twelve was wrong, and wrong in a way the label count did not show: the set is
+  // kept nearest-first, so on a wide rung -- 88 places in range, measured on the
+  // panel at rung 6 -- the twelve nearest all sat around the marker and the top
+  // half of the screen was never even considered for a name. The cap has to be
+  // past the number of places that can share a screen, not past the number of
+  // labels that fit, or it silently decides *where* labels may go.
+  //
+  // 32 costs 1,280 bytes of the budget above and covers every rung measured so
+  // far. A frame with more on-screen places than this still names the nearest 32,
+  // which is the right thing to lose.
+  static constexpr int kMaxCandidates = 32;
 
   MapOccupancyGrid route;
   MapOccupancyGrid taken;
@@ -114,7 +123,7 @@ namespace MapLabels {
 
 // Offers one place to the candidate set, keeping the best kMaxCandidates by
 // (rank, then distance to the anchor). Cheap enough to call for every place in
-// the viewport: no allocation, and the array is twelve entries long.
+// the viewport: no allocation, and the array is kMaxCandidates entries long.
 //
 // `anchorX/anchorY` is the viewport anchor (MapStyle::markerXPx/markerYPx), not
 // the live marker. Label layout must not move when a GPS packet arrives, or the
@@ -125,6 +134,13 @@ void offer(MapLabelScratch& scratch, const MapPlaceRef& place, int anchorX, int 
 // Places and draws what fits. Call after the route has been drawn (so
 // scratch.route is marked) and after the place dots, since a label sits over
 // the map but a dot must not be hidden by another place's label box.
-void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style);
+//
+// `rungMaxLabels` is the zoom rung's own ceiling
+// (MapViewport::ZoomStep::maxLabels, carried in MapViewState); the smaller of it
+// and the style's `max_labels` wins. Two caps rather than one because they
+// answer different questions: the rung knows how much ground is on the panel and
+// therefore how many names that ground deserves, the style knows how many the
+// renderer may afford. Default 255 means "rung has no opinion".
+void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style, uint8_t rungMaxLabels = 255);
 
 }  // namespace MapLabels
