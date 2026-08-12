@@ -104,7 +104,7 @@ The same repo already uses the hardware/ROM one three files away:
 `esp_rom_crc32_le` in `MapTransferReceiver.cpp:388` (include at `:6`). It is
 table-driven in ROM, same polynomial, same reflected convention. With
 `crc = 0` seeded and no final XOR it matches `zlib.crc32`, which is what
-`mapbuilder/tiles.py` writes (`MapTileReader.cpp:24-27`).
+`mapbuilder/tilegen/tiles.py` writes (`MapTileReader.cpp:24-27`).
 
 Change: keep the software loop for the host build, use the ROM one on device.
 

@@ -157,7 +157,7 @@ meant to read as on top, so it looks right rather than broken.
 ## A clipped ring's outline draws the cut, not the shore
 
 `MapAreaFill::outlineRing` traces every edge of the ring it is given. A ring
-reaching the device has been **clipped to its tile** (`mapbuilder/tiles.py`,
+reaching the device has been **clipped to its tile** (`mapbuilder/tilegen/tiles.py`,
 `clip_polygon_to_box`), so some of its edges are not shoreline at all -- they
 are the cut along the tile boundary. Outlined, they draw as a hairline straight
 across the water at every tile edge.
@@ -202,7 +202,7 @@ key drew as a mainline track. Measured over one Bratislava viewport
 barrier, the map was announcing a level crossing where there is only road. It
 went unnoticed while every line was 1 px; the block symbol made it obvious.
 
-`mapbuilder/tag_to_class.py` now uses an **allowlist** (`_RAILWAY_DRAWN`), not a
+`mapbuilder/tilegen/tag_to_class.py` now uses an **allowlist** (`_RAILWAY_DRAWN`), not a
 denylist -- the key carries far more than tracks, and a denylist lets the next
 unfamiliar value through as a mainline railway, which is exactly how this
 happened. `tram` is excluded by decision rather than error: a tram runs in the
@@ -426,7 +426,7 @@ count-of-work proxy, not a timing.
 **Answered on hardware 2026-08-05**, see the timing table at the top of this
 document: 484 KB with buildings at the detail LOD is a 2.5-3.2 s viewport reset
 against 1.1 s for the 198 KB regional view. Buildings are also no longer written
-at the coarse LODs at all (`mapbuilder/build_config.json`), so the expensive case
+at the coarse LODs at all (`mapbuilder/tilegen/build_config.json`), so the expensive case
 only arises at detail zoom, where the wait is expected anyway.
 
 ## Landuse: forest and built-up areas

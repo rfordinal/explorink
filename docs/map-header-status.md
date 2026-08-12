@@ -188,7 +188,7 @@ Shown as `"fine, coarse"` when both are set (e.g. "Karlova Ves, Bratislava"),
 whichever one alone when only one is, and nothing when neither loaded tile
 carries a name near the marker. **There is no third option that guarantees
 the pair is correct** -- the tile format has no admin hierarchy linking a
-suburb to its city (`mapbuilder/build_config.json`'s `place_ranks` is a flat
+suburb to its city (`mapbuilder/tilegen/build_config.json`'s `place_ranks` is a flat
 rank, not a tree), and "nearest of each tier separately" is a proximity
 approximation of that pair, not a lookup of it. Both picks are also bounded by
 whatever tiles are already loaded for the current viewport (`MapViewport::

@@ -9,7 +9,7 @@ hardware. See "Device-initiated triggers, verified against the real Android
 app, 2026-08-09" near the end for the detail.
 
 Laptop side lives in the parent repo: `docs/tile-index-spec.md` (the index
-format), `mapbuilder/tile_index.py`, `mapbuilder/tools/build_index.py`.
+format), `mapbuilder/tilegen/tile_index.py`, `mapbuilder/tilegen/tools/build_index.py`.
 
 ## The problem
 
@@ -335,7 +335,7 @@ before the fix) was written only from a parsed `NEED_TILES` line
 connection and every index read fell back to
 `CdnTileSource.DEFAULT_FORMAT_VERSION = 2` (`TileSource.kt:85`) -- one
 version behind the device and the CDN, both on 3
-(`mapbuilder/tiles.py:53`'s `FORMAT_VERSION`, confirmed live by the device's
+(`mapbuilder/tilegen/tiles.py:53`'s `FORMAT_VERSION`, confirmed live by the device's
 own `info` reply, `tile_fmt=3`). The phone was comparing the card against the
 CDN's abandoned `/v2/` index tree, where an old, pre-fix content id still
 happened to sit in the same slot -- a false "not stale" on every single

@@ -22,7 +22,7 @@ import json
 import os
 import sys
 
-# The tile format's own class_id enum (mapbuilder/class_spec.py, mirrored in
+# The tile format's own class_id enum (mapbuilder/tilegen/class_spec.py, mirrored in
 # MapClassEnum.h). Duplicated here for the same reason gen_mode_masks.py
 # duplicates it: nothing outside this repo may be read to build this repo.
 _CLASS_ID = {
@@ -53,7 +53,7 @@ _CLASS_ID = {
 _CLASS_SLOTS = 32
 
 # The area layers' own small class enums (MapAreaClass.h, mirroring
-# mapbuilder/water_class.py and landuse_class.py). Not slots in the road enum:
+# mapbuilder/tilegen/water_class.py and landuse_class.py). Not slots in the road enum:
 # a record's layer id already says which vocabulary its class byte belongs to.
 _WATER_CLASS = {"unknown": 0, "river": 1, "stream": 2, "lake": 3}
 _LANDUSE_CLASS = {"forest": 1, "built_up": 2}
