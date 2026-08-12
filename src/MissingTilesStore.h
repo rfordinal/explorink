@@ -14,18 +14,36 @@
 // crc32-mismatched, same "unavailable" definition MapTileSource uses.
 struct MissingTileHit {
   uint8_t z = 0;
-  // The supplier answered `skip` for this tile: it does not have it. Set by
+  // How many times the supplier has answered `skip` for this tile, and the
+  // millis() stamp before which it must not be asked for again. Written by
   // markRefused(), read by autosync so it stops asking for a tile nobody can
-  // send (MapActivity::maybeAutoSyncTiles()).
+  // send right now (MapActivity::maybeAutoSyncTiles()).
   //
-  // Declared here, immediately after `z`, so it lands in the padding the
-  // uint32_t alignment already forces -- sizeof(MissingTileHit) stays 16
-  // bytes, and the 200-entry cap below stays the same 3.2 KB it was.
+  // A schedule rather than the permanent flag this was until 2026-08-12, because
+  // a refusal is no longer final. The phone's 404 is what makes the CDN build the
+  // tile (../../docs/tile-autobuild.md), so the tile it could not fetch at
+  // 12:00:01 is usually on the CDN a minute later -- and a permanent refusal made
+  // that build unreachable for the rest of the ride.
   //
-  // **Not persisted**, deliberately: toJson()/fromJson() do not carry it. The
-  // tile does not exist *today*; the CDN may hold it next week, and a reboot
-  // is the natural moment to try again.
-  bool refused = false;
+  // The delay doubles per refusal and then stops growing: 90 s, 3 min, 6, 12, 24,
+  // then 60 min for as long as the ride lasts (kRefusalBaseMs, kRefusalMaxMs).
+  // So a tile the CDN builds is retried within a minute and a half, and a tile
+  // that genuinely does not exist -- ocean, outside what the generator will build,
+  // an area with no data -- costs one ask an hour instead of one every 90 s.
+  //
+  // The entry is never dropped for being refused. It is also the demand record
+  // the laptop side reads off the card (docs/missing-tiles.md), and a tile
+  // nobody can supply is exactly the thing worth knowing about.
+  //
+  // Declared here, immediately after `z`, so the counter lands in the padding the
+  // uint32_t alignment already forces. The stamp does grow the struct, 16 bytes
+  // to 20, and the 200-entry cap with it: 3.2 KB to 4.0 KB.
+  //
+  // **Not persisted**, deliberately: toJson()/fromJson() carry neither. Both are
+  // millis()-relative, which means nothing across a reboot, and a reboot is
+  // another natural moment to try again.
+  uint8_t refusals = 0;
+  uint32_t retryAtMs = 0;
   uint32_t col = 0;
   uint32_t row = 0;
   uint32_t count = 0;
@@ -68,6 +86,17 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   friend class PersistableStore<MissingTilesStore>;
 
  public:
+  // The refusal schedule, in one place because two callers care: markRefused()
+  // applies it and MapActivity's log line quotes it.
+  //
+  // 90 s base because that is the length of the loop it has to close -- the
+  // phone's 404 makes the CDN build the tile, and a real build measured 41 s from
+  // 404 to tiles on disk, so the second ask has to land after that and while the
+  // rider can still see the square. 60 min cap so a tile that will never exist
+  // costs one ask an hour rather than one every 90 s on the rider's own data.
+  static constexpr uint32_t kRefusalBaseMs = 90u * 1000u;
+  static constexpr uint32_t kRefusalMaxMs = 60u * 60u * 1000u;
+
   static const char* getFilePath() { return "/.crosspoint/missing_tiles.json"; }
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);
@@ -100,11 +129,21 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   //
   // Does not mark the store dirty. The flag is in-memory only (see the
   // MissingTileHit comment), so there is nothing new to write.
-  bool markRefused(uint8_t z, uint32_t col, uint32_t row);
+  bool markRefused(uint8_t z, uint32_t col, uint32_t row, uint32_t nowMs);
 
-  // True when this tile is on the list and has been refused. Unknown tiles
-  // answer false -- never asked for, so never refused.
-  bool isRefused(uint8_t z, uint32_t col, uint32_t row) const;
+  // True when this tile is on the list and stands refused **at nowMs**. Unknown
+  // tiles answer false -- never asked for, so never refused -- and so does a
+  // refused tile whose delay has run out, which is what lets a tile the CDN has
+  // built since arrive during the same ride.
+  //
+  // nowMs is passed in rather than read here so the store stays free of Arduino
+  // and the schedule is testable without waiting for real time to pass.
+  bool isRefused(uint8_t z, uint32_t col, uint32_t row, uint32_t nowMs) const;
+
+  // The delay a tile gets after its `refusals`-th refusal: kRefusalBaseMs
+  // doubled per refusal, capped at kRefusalMaxMs. Public because the schedule is
+  // the interesting part of this class to test.
+  static uint32_t refusalDelayMs(uint8_t refusals);
 
   // True once a tile has been added or evicted since the last flush. A tile
   // already on the list simply getting hit again does not set this -- see

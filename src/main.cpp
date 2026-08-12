@@ -691,6 +691,41 @@ void loop() {
             logSerial.printf("SHOWIMAGE_OK:%u\n", (unsigned)got);
           }
         }
+#ifdef ENABLE_SERIAL_LOG
+      } else if (cmd.startsWith("SETTING ")) {
+        // Flip one of the map's opt-in toggles from the host: bench tests cannot
+        // press buttons, and the two features worth testing unattended -- tile
+        // autosync and the freshness check -- are both off by default because
+        // they spend the rider's mobile data. Without this, testing them means a
+        // human walking the Settings menu before every run.
+        //
+        // Deliberately a short allow-list rather than a generic settings poke:
+        // this is a serial backdoor into persisted state, so it can reach exactly
+        // the three toggles a test needs and nothing else. ENABLE_SERIAL_LOG is
+        // set only in env:default (platformio.ini), so it is not in any release
+        // build.
+        //
+        //   CMD:SETTING mapAutoSyncTiles 1   ->  SETTING_OK:mapAutoSyncTiles=1
+        //   CMD:SETTING <unknown> 1          ->  SETTING_ERR:unknown
+        const int space = cmd.indexOf(' ', 8);
+        String key = space < 0 ? cmd.substring(8) : cmd.substring(8, space);
+        String value = space < 0 ? String("") : cmd.substring(space + 1);
+        key.trim();
+        value.trim();
+        uint8_t* target = nullptr;
+        if (key == "mapAutoSyncTiles") target = &SETTINGS.mapAutoSyncTiles;
+        else if (key == "mapTileFreshnessMode") target = &SETTINGS.mapTileFreshnessMode;
+        else if (key == "mapDebugInfo") target = &SETTINGS.mapDebugInfo;
+        if (target == nullptr) {
+          logSerial.printf("SETTING_ERR:unknown\n");
+        } else if (value.length() == 0) {
+          logSerial.printf("SETTING_OK:%s=%u\n", key.c_str(), static_cast<unsigned>(*target));
+        } else {
+          *target = static_cast<uint8_t>(value.toInt());
+          SETTINGS.saveToFile();
+          logSerial.printf("SETTING_OK:%s=%u\n", key.c_str(), static_cast<unsigned>(*target));
+        }
+#endif
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->

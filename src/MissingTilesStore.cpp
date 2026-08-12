@@ -56,17 +56,17 @@ void MissingTilesStore::record(uint8_t z, uint32_t col, uint32_t row) {
     return;
   }
 
-  // Field-by-field, not an aggregate initialiser: MissingTileHit carries a
-  // `refused` flag between `z` and `col`, and a positional {z, col, row, 1}
+  // Field-by-field, not an aggregate initialiser: MissingTileHit carries the
+  // `refusals` counter between `z` and `col`, and a positional {z, col, row, 1}
   // would silently assign the column into it.
   MissingTileHit fresh;
   fresh.z = z;
   fresh.col = col;
   fresh.row = row;
   fresh.count = 1;
-  // refused stays false: a tile nobody has been asked for yet has not been
+  // refusals stays 0: a tile nobody has been asked for yet has not been
   // refused, and re-recording a tile that WAS refused takes the branch above
-  // instead, which leaves its flag alone.
+  // instead, which leaves its counter alone.
 
   if (hits_.size() >= kMaxEntries) {
     // Full: give up the slot with the fewest hits so far rather than drop
@@ -84,18 +84,40 @@ void MissingTilesStore::record(uint8_t z, uint32_t col, uint32_t row) {
   dirty_ = true;
 }
 
-bool MissingTilesStore::markRefused(uint8_t z, uint32_t col, uint32_t row) {
+uint32_t MissingTilesStore::refusalDelayMs(uint8_t refusals) {
+  if (refusals == 0) return 0;
+  uint32_t delay = kRefusalBaseMs;
+  // Shift rather than pow, and bail the moment the cap is reached: refusals is a
+  // uint8_t, so a naive loop to 255 would overflow long before it finished.
+  for (uint8_t i = 1; i < refusals; ++i) {
+    if (delay >= kRefusalMaxMs / 2) return kRefusalMaxMs;
+    delay *= 2;
+  }
+  return delay > kRefusalMaxMs ? kRefusalMaxMs : delay;
+}
+
+bool MissingTilesStore::markRefused(uint8_t z, uint32_t col, uint32_t row, uint32_t nowMs) {
   auto it = std::find_if(hits_.begin(), hits_.end(),
                          [&](const MissingTileHit& hit) { return hit.z == z && hit.col == col && hit.row == row; });
   if (it == hits_.end()) return false;
-  it->refused = true;
+  // Saturating: once the delay is at its cap, more refusals change nothing, and
+  // wrapping to 0 would quietly hand a hopeless tile a fresh 90-second schedule.
+  if (it->refusals < 255) ++it->refusals;
+  it->retryAtMs = nowMs + refusalDelayMs(it->refusals);
+  // Zero is "askable", so a schedule that lands exactly on a wrapped 0 has to
+  // step off it -- one millisecond, once every 49 days of uptime.
+  if (it->retryAtMs == 0) it->retryAtMs = 1;
   return true;
 }
 
-bool MissingTilesStore::isRefused(uint8_t z, uint32_t col, uint32_t row) const {
+bool MissingTilesStore::isRefused(uint8_t z, uint32_t col, uint32_t row, uint32_t nowMs) const {
   auto it = std::find_if(hits_.begin(), hits_.end(),
                          [&](const MissingTileHit& hit) { return hit.z == z && hit.col == col && hit.row == row; });
-  return it != hits_.end() && it->refused;
+  if (it == hits_.end() || it->retryAtMs == 0) return false;
+  // Signed difference, not `nowMs < retryAtMs`: millis() wraps every ~49 days,
+  // and the plain compare would read a wrapped clock as "refused for another 49
+  // days".
+  return static_cast<int32_t>(nowMs - it->retryAtMs) < 0;
 }
 
 bool MissingTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {
