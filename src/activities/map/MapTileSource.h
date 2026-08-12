@@ -5,6 +5,7 @@
 
 #include "IFileSource.h"
 #include "IMapSource.h"
+#include "MapLayerBits.h"
 #include "MapProjection.h"
 #include "MapTileReader.h"
 
@@ -72,7 +73,7 @@ class MapTileSource : public IMapSource {
     // Such a layer is not opened at all and its tile lands on the unavailable
     // mask, so it hatches. Set by a caller re-rendering after a streamed sum
     // came out wrong -- see failedLayerMask().
-    uint64_t knownBadLayers = 0;
+    MapLayerBits knownBadLayers;
   };
 
   // `file` is reused for every tile: opened, streamed, closed, reopened for
@@ -127,7 +128,7 @@ class MapTileSource : public IMapSource {
   uint32_t contentIdAt(uint32_t index) const { return index < kMaxTrackedTiles ? contentIds_[index] : 0; }
 
   // Tile indices contentIdAt() can answer for. Matches unavailableMask()'s own
-  // 32-bit cap; the range is never wider (MapViewport::kMaxTiles is 9).
+  // 32-bit cap; the range is never wider (MapViewport::kMaxTiles is 16).
   static constexpr uint32_t kMaxTrackedTiles = 32;
 
   // Records handed out since begin(), summed across passes. The renderer walks
@@ -204,7 +205,7 @@ class MapTileSource : public IMapSource {
   // back as knownBadLayers. This is how a caller re-renders without the geometry
   // it has just been handed: begin() clears the frame's state, so the mask has to
   // travel back in rather than survive inside.
-  uint64_t failedLayerMask() const { return crc32Failed_; }
+  MapLayerBits failedLayerMask() const { return crc32Failed_; }
 
  private:
   bool startPass(MapTileReader::Layer layer);
@@ -279,20 +280,21 @@ class MapTileSource : public IMapSource {
   bool screenBoxValid_ = false;
 
   // One bit per (tile index, layer id) pair that has passed its crc32 in this
-  // frame. 9 tiles at most (MapViewport::kMaxTiles) and layer ids run 1..6
-  // (MapTileReader::Layer), so 9 x 7 = 63 bits fit one word with a bit to
-  // spare. Cleared in begin(), exactly like unavailableMask_.
+  // frame. 16 tiles at most (MapViewport::kMaxTiles) and layer ids run 1..6
+  // (MapTileReader::Layer), so 16 x 7 = 112 bits -- two words, held by
+  // MapLayerBits, which says why it is not one. Cleared in begin(), exactly
+  // like unavailableMask_.
   //
   // Why it is safe to trust: a file on the card cannot become corrupt between
   // two passes of one viewport reset, and the whole point of the pass-outer
   // walk is that the same layer is opened more than once per frame
   // (MapRenderer::kRoadPasses, plus landuse's built-up and forest walks).
-  uint64_t crc32Validated_ = 0;
+  MapLayerBits crc32Validated_;
   uint32_t crc32Skipped_ = 0;
   // (tile, layer) pairs whose streamed sum failed this frame. Checked before a
   // layer is opened, so the frame that follows the failure does not stream the
   // same garbage a second time.
-  uint64_t crc32Failed_ = 0;
+  MapLayerBits crc32Failed_;
   uint32_t corruptLayers_ = 0;
   uint32_t cellsSkipped_ = 0;
   uint32_t bytesSkippedByIndex_ = 0;

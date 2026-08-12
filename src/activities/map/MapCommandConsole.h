@@ -79,7 +79,7 @@ struct MapTileRangeSnapshot {
 // crc32 in RAM after open(), and contentId() is arithmetic over values already
 // there (docs/tile-freshness.md).
 struct MapHeldTiles {
-  static constexpr size_t kMaxEntries = 9;  // MapViewport::kMaxTiles, a 3x3 worst case
+  static constexpr size_t kMaxEntries = 16;  // MapViewport::kMaxTiles, a 4x4 worst case at rung 6
 
   struct Entry {
     uint8_t z = 0;

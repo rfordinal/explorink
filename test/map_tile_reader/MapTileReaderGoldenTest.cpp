@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "HeapProbe.h"
+#include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPreviewPipeline.h"
 #include "MapTileReader.h"
@@ -219,8 +220,7 @@ TEST(MapTileReader, ContentIdMatchesMapbuilder) {
     StdioFileSource file;
     MapTileReader reader;
     ASSERT_TRUE(reader.open(file, c.path)) << c.path;
-    EXPECT_EQ(reader.contentId(), c.contentId)
-        << c.path << " -- this reader and mapbuilder disagree on content_id";
+    EXPECT_EQ(reader.contentId(), c.contentId) << c.path << " -- this reader and mapbuilder disagree on content_id";
     reader.close();
   }
 
@@ -690,9 +690,78 @@ TEST(MapZoomLadder, EveryStepIsReachableAndMapsToOneLod) {
       EXPECT_GE(MapViewport::kZoomLadder[step - 1].z, rung.z);
     }
   }
-  // Every mode starts on a rung that exists.
+  // Every mode starts on a rung that exists. The two ladders have been
+  // different lengths since 2026-08-12, so each default is checked against its
+  // own -- a marker default checked against the zoom count would pass while
+  // indexing off the marker table.
   for (uint8_t mode = 0; mode < kMapRideModeCount; ++mode) {
     EXPECT_LT(kDefaultZoomStepForMode[mode], MapViewport::kZoomStepCount);
     EXPECT_LT(kDefaultMarkerStepForMode[mode], MapViewport::kMarkerStepCount);
+  }
+}
+
+TEST(MapZoomLadder, CoarseRungsShrinkTheMarkerAndTightenTheMoveFloor) {
+  // Rungs 5 and 6 exist for the regional view (docs/zoom-rungs.md). Two things
+  // must hold down the whole ladder, both for the same reason -- a screen pixel
+  // is worth more ground the further out the rung is:
+  //
+  //   the marker never grows as the ladder goes out (it covers more ground), and
+  //   the move floor never grows either (a fix moves fewer pixels).
+  for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
+    const MapViewport::ZoomStep& rung = MapViewport::kZoomLadder[step];
+    const MapViewport::ZoomStep& prev = MapViewport::kZoomLadder[step - 1];
+    EXPECT_LE(rung.markerScale8, prev.markerScale8) << "step " << step;
+    EXPECT_LE(rung.minMovePx, prev.minMovePx) << "step " << step;
+    EXPECT_GT(rung.markerScale8, 0) << "step " << step;
+    EXPECT_GT(rung.minMovePx, 0) << "step " << step;
+    EXPECT_LE(rung.markerScale8, 8) << "step " << step << ": 8 is full size, not a scale to exceed";
+  }
+  // The coarse rungs are the ones that asked for this: at 45 m/px a full-size
+  // 54 px ring covers 2.4 km of map.
+  EXPECT_LT(MapViewport::kZoomLadder[MapViewport::kZoomStepCount - 1].markerScale8, 8);
+
+  // And the ground a fix must cover before the panel is touched stays in the
+  // same order of magnitude across the ladder, which is the point of making the
+  // floor per rung rather than fixing the pixel count.
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    const MapViewport::ZoomStep& rung = MapViewport::kZoomLadder[step];
+    const double groundM = rung.mpp * rung.minMovePx;
+    EXPECT_GE(groundM, 10.0) << "step " << step;
+    EXPECT_LE(groundM, 150.0) << "step " << step;
+  }
+}
+
+TEST(MapZoomLadder, MarkerMetricsScaleWithTheRungAndStayDrawable) {
+  int previousRing = 1 << 30;
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    const MarkerMetrics m = markerMetricsFor(MapViewport::kZoomLadder[step].markerScale8);
+    // Nothing may round away to nothing: a 0 px stroke or half-width draws no
+    // marker at all, which is the one state the map screen must never reach.
+    EXPECT_GT(m.ring, 0) << "step " << step;
+    EXPECT_GE(m.ringWidth, 2) << "step " << step;
+    EXPECT_GT(m.hikeDot, 0) << "step " << step;
+    EXPECT_GT(m.hikeHandReach, 0) << "step " << step;
+    EXPECT_GT(m.rideTipLen, 0) << "step " << step;
+    EXPECT_GT(m.cycleTipLen, 0) << "step " << step;
+    // Everything the marker draws stays inside the box the patch save/restore
+    // uses, or a move smears a trail across the map. The same condition the
+    // header static_asserts; here it is checked as a value, not a compile.
+    EXPECT_LE(m.hikeHandReach + m.hikeHandHalfW, m.box / 2) << "step " << step;
+    EXPECT_LE(m.rideTipLen, m.box / 2) << "step " << step;
+    EXPECT_LE(m.box, kMarkerMetricsFull.box) << "step " << step << ": the patch buffer is sized for the full marker";
+    EXPECT_LE(m.ring, previousRing) << "step " << step;
+    previousRing = m.ring;
+  }
+  EXPECT_EQ(markerMetricsFor(8).ring, 54) << "rung 0 must still draw exactly the marker it always drew";
+  EXPECT_EQ(markerMetricsFor(8).box, 64);
+}
+
+TEST(MapZoomLadder, ZoomStepAtClampsLikeMarkerYForStep) {
+  // A step arrives as a persisted byte or off a console command, so both
+  // accessors have to survive nonsense rather than index the table with it.
+  EXPECT_EQ(MapViewport::zoomStepAt(-1).mpp, MapViewport::kZoomLadder[0].mpp);
+  EXPECT_EQ(MapViewport::zoomStepAt(99).mpp, MapViewport::kZoomLadder[MapViewport::kZoomStepCount - 1].mpp);
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    EXPECT_EQ(MapViewport::zoomStepAt(step).mpp, MapViewport::kZoomLadder[step].mpp) << "step " << step;
   }
 }

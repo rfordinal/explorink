@@ -22,7 +22,7 @@
 // correct behaviour, not a limitation -- the check is cheap and repeats.
 //
 // Allocates nothing. Fixed arrays sized for a viewport (MapViewport::kMaxTiles
-// is 9), with headroom for a ride crossing a tile boundary between checks.
+// is 16), with headroom for a ride crossing a tile boundary between checks.
 class StaleTilesList {
  public:
   // A viewport's worth several times over. Full means the newest report is

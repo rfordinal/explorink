@@ -34,3 +34,5 @@ lib/EpdFont/scripts/output/
 /sdkconfig.default
 /sdkconfig.defaults
 sdkconfig.sticky
+# ctest scratch, written when ctest runs from the repo root instead of build/test
+Testing/

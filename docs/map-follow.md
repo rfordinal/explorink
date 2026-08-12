@@ -72,17 +72,26 @@ The checks, in order (order is load-bearing -- see below):
    `kMinPartialMovesForHeadingReAnchor`, added 2026-08-08 -- see "Heading
    thrash, round two" below; before that this check fired on drift alone,
    moved or not.
-2. **Marker within 80 px of a screen edge** → `ReAnchor`. `kKeepInMarginPx`, one
-   marker ring plus slack: inside this frame the marker's 64x64 box never
-   straddles the panel edge, and there is still map ahead to look at.
+2. **Marker within the keep-in margin of a screen edge** → `ReAnchor`. One
+   marker ring plus 26 px of slack: inside this frame the marker's box never
+   straddles the panel edge, and there is still map ahead to look at. 80 px
+   while the marker was one size; **per rung since 2026-08-12** (66 at rung 5,
+   59 at rung 6), because the marker shrinks at the coarse rungs -- `zoom-rungs.md`,
+   "Three things that are per rung now". `MapActivity` passes it as
+   `Request::keepInMarginPx`; `kKeepInMarginPx` is now the fallback for callers
+   with no rung in hand.
 3. **12 moves since the last full frame** → `ReAnchor`. Windowed refreshes are
    differential and ghost. `kMaxPartialMoves`, the starting point named in
    the map workspace's
    `firmware-implementation-plan.md`, open decision 4 ("every 10-20
    marker updates, needs on-device tuning"). **Unverified** -- the number that
    fits is whatever real ghosting turns out to allow.
-4. **Movement under 8 px on both axes** → `Skip`. `kMinMovePx`. Below this a
-   waveform buys a marker that visibly did not move.
+4. **Movement under the rung's move floor on both axes** → `Skip`. Below this a
+   waveform buys a marker that visibly did not move. 8 px at every rung until
+   2026-08-12, which was 8 m of ground at rung 0 and 360 m at rung 6; now per
+   rung (12, 10, 8, 8, 6, 3, 2 px), which holds the ground step level instead of
+   the pixel step -- `zoom-rungs.md`. `MapActivity` passes it as
+   `Request::minMovePx`; `kMinMovePx` is the fallback.
 
 Every redraw reason is checked before the movement floor. A rider standing still
 who has turned 90°, or one crawling along with a spent ghosting budget, still
@@ -199,7 +208,8 @@ session patch buffer leaks nothing.
 
 **The keep-in frame never fired.** All 14 re-anchors came from the other two
 checks: 11 from heading drift, 3 from the ghosting budget. At 6 m/px the marker
-would need 3.7 km in one direction to reach the 80 px frame, and the budget
+would need 3.7 km in one direction to reach the 80 px frame (rung 4's margin,
+still 80), and the budget
 always ran out first. The margin is a safety bound, not the governing constant.
 
 ### Heading thrash, and why the fix is not in this firmware
@@ -337,7 +347,8 @@ immediate redraw. That test is now
 (`test/map_follow/MapFollowTest.cpp`) and expects `Skip` instead. A rider who
 turns while genuinely parked or stopped at a junction no longer gets the map
 re-oriented until they move enough to cross the floor -- at 20 m/px that is
-about 320 m (2 x `kMinMovePx` 8 px x 20 m/px), which on these rides is about
+about 320 m (2 x 8 px x 20 m/px, the floor of the day -- rung 4's floor is 6 px
+since 2026-08-12), which on these rides is about
 five packets (median 68 m between sent packets across all three logs) and
 measured out at 3.1 packets per marker move.
 For a device whose whole premise is track-up navigation *while moving*, this

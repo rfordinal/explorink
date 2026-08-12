@@ -246,8 +246,12 @@ TEST(MapCommandParser, OutOfRange) {
   EXPECT_EQ(errorOf("pos 1 2 alt -1001"), MapCommandError::OutOfRange);  // past the Dead Sea's margin
   EXPECT_EQ(errorOf("heading 16"), MapCommandError::OutOfRange);
   EXPECT_EQ(errorOf("heading 255"), MapCommandError::OutOfRange);
-  EXPECT_EQ(errorOf("zoom 5"), MapCommandError::OutOfRange);
+  // Both bounds come off their own ladder, and the two ladders are different
+  // lengths: seven zoom rungs, five marker rungs (MapRideMode.h).
+  EXPECT_EQ(errorOf("zoom 7"), MapCommandError::OutOfRange);
   EXPECT_EQ(errorOf("marker 5"), MapCommandError::OutOfRange);
+  EXPECT_EQ(parseMapCommand("zoom 6").type, MapCommandType::Zoom);
+  EXPECT_EQ(parseMapCommand("zoom 6").zoom, 6u);
 }
 
 TEST(MapCommandParser, BadMode) {

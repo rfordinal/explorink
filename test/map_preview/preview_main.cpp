@@ -173,8 +173,8 @@ int main(int argc, char** argv) {
                  "       map_preview --zoom-ladder\n");
     return 1;
   }
-  if (request.zoom < 0 || request.zoom > 4) {
-    std::fprintf(stderr, "zoom must be 0-4\n");
+  if (request.zoom < 0 || request.zoom >= MapViewport::kZoomStepCount) {
+    std::fprintf(stderr, "zoom must be 0-%d\n", MapViewport::kZoomStepCount - 1);
     return 1;
   }
 

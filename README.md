@@ -80,7 +80,7 @@ not a pull request.
 | Map activity and screen | exists |
 | BLE position receiver (phone sends GPS) | exists |
 | Loading a real map from the SD card | exists |
-| Buttons on the map screen (zoom, marker height) | exists, per mode, saved across power cycles |
+| Buttons on the map screen (zoom, marker height) | exists, per mode, saved across power cycles. Seven zoom rungs, 1 to 45 m/px — the top two are the regional view, added 2026-08-12. The marker, the move floor and the keep-in margin all scale with the rung. See [`docs/zoom-rungs.md`](./docs/zoom-rungs.md) |
 | Command console (serial and BLE), zoom/mode filter | exists — same grammar over USB and BLE |
 | Marker follows the fix without redrawing the map | exists, **verified on hardware 2026-08-05** by replaying a recorded ride — 117 fixes cost 31 skips, 71 windowed marker refreshes and 14 full redraws, ~160 s against the ~1,040 s all-redraws would have cost, heap flat. A fix moves the marker and refreshes one 64x64 rectangle; the map is redrawn only when the marker nears an edge, the rider turns 90°, or the ghosting budget runs out. See [`docs/map-follow.md`](./docs/map-follow.md) |
 | Track-up map | exists — the fix's heading is up on screen and the north indicator rotates to match |

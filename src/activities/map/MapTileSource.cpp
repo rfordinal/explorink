@@ -31,7 +31,7 @@ void MapTileSource::begin(const Config& config) {
   pointsProjected_ = 0;
   waysOffScreen_ = 0;
   ioUs_ = 0;
-  crc32Validated_ = 0;
+  crc32Validated_.clear();
   crc32Skipped_ = 0;
   // Carried in rather than cleared: a caller re-rendering after corruption has to
   // be able to say "not this layer again" (Config::knownBadLayers).
@@ -63,28 +63,26 @@ void MapTileSource::closeCurrentTile() {
     // passes skip the check; Failed marks the tile unavailable so the caller's
     // second attempt hatches it instead of drawing it again.
     const uint32_t bit = crcBitFor(currentTileIndex_, layer_);
-    if (bit < 64) {
-      switch (reader_.layerCheck()) {
-        case MapTileReader::LayerCheck::Passed:
-          // Only a whole-layer read proves the layer's own sum. On the cell path
-          // layerCheck() speaks for the last cell, and marking the layer validated
-          // off that would let a later whole-layer pass skip a check that never
-          // happened (MapTileReader::readingCells).
-          if (!reader_.readingCells()) crc32Validated_ |= (1ull << bit);
-          break;
-        case MapTileReader::LayerCheck::Failed:
-          crc32Failed_ |= (1ull << bit);
-          ++corruptLayers_;
-          ++tilesUnavailable_;
-          if (currentTileIndex_ < 32) unavailableMask_ |= (1u << currentTileIndex_);
-          break;
-        case MapTileReader::LayerCheck::NotFinished:
-        case MapTileReader::LayerCheck::Skipped:
-          // Not finished: the walk stopped before the end of the layer, so
-          // nothing is known and the pair stays unmarked -- the next pass checks
-          // it in full, as before. Skipped: already known good this frame.
-          break;
-      }
+    switch (reader_.layerCheck()) {
+      case MapTileReader::LayerCheck::Passed:
+        // Only a whole-layer read proves the layer's own sum. On the cell path
+        // layerCheck() speaks for the last cell, and marking the layer validated
+        // off that would let a later whole-layer pass skip a check that never
+        // happened (MapTileReader::readingCells).
+        if (!reader_.readingCells()) crc32Validated_.set(bit);
+        break;
+      case MapTileReader::LayerCheck::Failed:
+        crc32Failed_.set(bit);
+        ++corruptLayers_;
+        ++tilesUnavailable_;
+        if (currentTileIndex_ < 32) unavailableMask_ |= (1u << currentTileIndex_);
+        break;
+      case MapTileReader::LayerCheck::NotFinished:
+      case MapTileReader::LayerCheck::Skipped:
+        // Not finished: the walk stopped before the end of the layer, so
+        // nothing is known and the pair stays unmarked -- the next pass checks
+        // it in full, as before. Skipped: already known good this frame.
+        break;
     }
   }
   if (tileOpen_) {
@@ -200,7 +198,7 @@ bool MapTileSource::advanceToNextTile() {
     const uint32_t crcBit = crcBitFor(index, layer_);
     // Known bad from an earlier pass in this same frame: do not stream it again.
     // The tile is already on the unavailable mask, so it hatches.
-    if (crcBit < 64 && (crc32Failed_ & (1ull << crcBit)) != 0) {
+    if (crc32Failed_.test(crcBit)) {
       // Known bad, either from an earlier pass of this frame or handed in by a
       // caller re-rendering after the first attempt drew it. Do not stream it
       // again; hatch the tile instead.
@@ -211,7 +209,7 @@ bool MapTileSource::advanceToNextTile() {
       reader_.close();
       continue;
     }
-    const bool alreadyValidated = crcBit < 64 && (crc32Validated_ & (1ull << crcBit)) != 0;
+    const bool alreadyValidated = crc32Validated_.test(crcBit);
     if (alreadyValidated) ++crc32Skipped_;
     if (!reader_.beginLayer(layer_, alreadyValidated)) {
       // Present per the directory, but its own crc32 failed. hasLayer()
