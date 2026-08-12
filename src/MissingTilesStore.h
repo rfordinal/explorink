@@ -51,6 +51,12 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // account (see record()).
   bool dirty_ = false;
 
+  // Set only by a load that read and parsed the file. Guards against the failure
+  // that costs a rider their whole list: a card that is briefly unavailable (after
+  // a wake, a reseat) makes loadFromFile() fail, the store stays empty, and the
+  // next flush writes that emptiness over a file that was fine.
+  bool loaded_ = false;
+
   // Bounds the JSON file and the RAM behind it. A ride that hits this many
   // distinct missing tiles has bigger problems than this list, so eviction
   // below is about staying bounded, not about losing anything that matters.
@@ -104,6 +110,11 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // already on the list simply getting hit again does not set this -- see
   // the dirty_ comment above.
   bool isDirty() const { return dirty_; }
+
+  // Whether a load actually read the file. False means either no file yet or a
+  // read that failed -- and the two must not be treated alike when saving; see
+  // flushIfDirty().
+  bool wasLoaded() const { return loaded_; }
 
   // Persists the list if the membership changed since the last flush. No-op,
   // and no SD write, when nothing changed.

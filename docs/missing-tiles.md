@@ -807,7 +807,13 @@ Three changes, all in `TileSyncActivity`:
   no map for beats one they have an older copy of.
 - **A stall verdict.** `kStallVerdictMs` (30 s, matching the transfer channel's own
   stalled-transfer reclaim) with nothing in flight and nothing settling ends the
-  run with `STR_TILE_SYNC_NO_ANSWER` instead of leaving rows in limbo. The
+  run with `STR_TILE_SYNC_NO_ANSWER` instead of leaving rows in limbo.
+  **Measured on hardware 2026-08-12** with a deliberately silent central
+  (`tools/blefakephone.py --no-tiles`, which subscribes and ignores the ask):
+  `asked for 17 tiles` at 2306767 ms, `no answer for 30000 ms, 0 landed,
+  0 skipped` at 2336771 ms -- 30,004 ms -- and the panel read *Phone sent nothing
+  / 0 / 17  0 B*. The freshness ask followed the verdict, so the queue's second
+  half is released by a stall as well as by a normal finish. The
   protocol has no "I am done" from the phone and cannot usefully have one -- a
   phone out of range would not send it either -- so silence is the only signal
   there is, and a screen that reads silence as work is a screen that lies.
@@ -818,6 +824,41 @@ Three changes, all in `TileSyncActivity`:
   claim anyone was told to build it: nothing reports these gaps upstream today,
   the map server being static files with no API
   (`../../docs/tile-index-spec.md`).
+
+### A phone that turns up after the run gets asked
+
+`trackPhone()` used to return immediately on `Phase::Finished`, so a screen that
+had finished ignored every later subscribe. The rider who watches a run end with
+nothing, *then* connects their phone, got no ask, no message, and nothing on the
+panel to say the screen had stopped listening. Found on hardware 2026-08-11 while
+setting up the stall-verdict test: a central subscribed to a finished screen
+(`[BLEPOS] command channel subscribed`) and the screen never reacted -- no
+`phone subscribed, asking` line at all.
+
+A finished run now re-arms on a subscribe: `armRun()` re-snapshots the list and
+zeroes everything a run reports, then the ask goes out again. Bounded by connect
+events rather than polling -- it only fires on a false-to-true transition, so a
+phone that stays connected cannot make it loop.
+
+**Measured on hardware 2026-08-12**, by bouncing the phone's Bluetooth against a
+finished screen: `command channel subscribed` at 86184 ms, then
+`phone arrived after the run, asking again (0 tiles)` at 86189 ms, then the
+freshness ask again -- which is also the proof that `armRun()` cleared
+`freshnessAsked_`, since `askAboutFreshness()` returns early otherwise. Before the
+fix the same subscribe produced no log line at all.
+
+**Open:** the re-arm with a *non-empty* list, i.e. `askForTiles()` going out a
+second time and `MapTransferReceiver::resetCounters()` actually zeroing the first
+run's arrivals. The list was empty at test time, so that branch did not run. What
+would settle it: a device with hatched squares, a finished run, then a phone
+arriving.
+
+`armRun()` exists because a second run on one visit needs the same starting state
+a fresh entry has, and one of those pieces is easy to miss:
+`MapTransferReceiver`'s counters are "since the screen opened", so without
+`resetCounters()` the second run would start with the first one's arrivals already
+on the board. That reset refuses while a transfer is in flight, and takes the same
+critical section the publish path uses.
 
 ### The finished screen is a result, not a list
 

@@ -22,6 +22,10 @@ void MissingTilesStore::toJson(JsonDocument& doc) const {
 }
 
 bool MissingTilesStore::fromJson(JsonVariantConst doc) {
+  // Reached only from loadFromFile() after the file was read and parsed
+  // (PersistableStore::loadFromFile), so this is the one place that can honestly
+  // say the list on the card is known.
+  loaded_ = true;
   // Tolerate a missing/invalid 'tiles' key (treat as empty list); only a
   // JSON parse error is fatal, same convention as RecentBooksStore.
   hits_.clear();
@@ -136,10 +140,29 @@ void MissingTilesStore::sortByFetchPriority() {
 
 bool MissingTilesStore::flushIfDirty() {
   if (!dirty_) return true;
+  // Never write an empty list over a file this run never managed to read.
+  //
+  // **Read off the code, not observed.** A load that fails (card briefly
+  // unavailable after a wake or a reseat, unreadable file) leaves hits_ empty and
+  // is indistinguishable here from a card that genuinely has nothing -- and the
+  // next flush would persist that emptiness over a file that was fine. Nothing
+  // has been seen doing this: a 17-to-0 drop on 2026-08-12 looked like it until
+  // the maintainer pointed out he had simply synced those tiles, which removes
+  // them legitimately.
+  //
+  // Kept anyway, because the two costs are not symmetric. Being wrong this way is
+  // silent, permanent, and looks exactly like the feature not working; being wrong
+  // the other way costs one run's worth of entries, which the map records again
+  // the next time it hatches them.
+  if (!loaded_ && hits_.empty()) {
+    LOG_ERR(kLogTag, "refusing to save an empty list: the file was never read this run");
+    return false;
+  }
   if (!saveToFile()) {
     LOG_ERR(kLogTag, "failed to persist missing tile list");
     return false;
   }
   dirty_ = false;
+  LOG_DBG(kLogTag, "missing tile list saved (%u entries)", static_cast<unsigned>(hits_.size()));
   return true;
 }
