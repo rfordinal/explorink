@@ -148,14 +148,14 @@ One trap in that table: a minor tier below 24 px drops to `notosans_8`, so the
 two tiers would come from **different type families** on the same map. Keep both
 tiers on faces of one family -- 24 and 29 are both Ubuntu UI.
 
-**Open.** A purpose-built map face (Source Sans 3 or a small Noto Sans cut, at
-real pixel sizes, Latin plus the Central European diacritics) would be the better
-answer and needs no code change beyond adding it to the candidate list --
-`GfxRendererCanvas::kLabelFontIds` and `PreviewFont`'s `kFaces`. Cost is flash
-(each face is tens of KB) and a run of
-`lib/EpdFont/scripts/convert-builtin-fonts.sh` plus `build-font-ids.sh` (which
-needs `ruby`, absent on the current build host). Noto Sans TTFs are already in
-`lib/EpdFont/builtinFonts/source/NotoSans`; Source Sans 3 is not.
+**Judged good enough on the panel 2026-08-12** -- the maintainer's call after
+looking at the twelve-name rung 6 frame. A purpose-built map face (Source Sans 3
+or a small Noto Sans cut) is still the better answer on shape grounds and is
+written up as a plan rather than queued work: parent repo's
+`docs/place-labels-plan.md`, "Follow-up plan: a map-specific type face". It needs
+no code change beyond one row each in `GfxRendererCanvas::kLabelFontIds` and
+`PreviewFont`'s `kFaces` -- the constraint to carry over is that both tiers must
+come from one family.
 
 ## RAM
 
