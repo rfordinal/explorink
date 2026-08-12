@@ -149,14 +149,15 @@ Verified by eye on the panel 2026-08-12: the left-aligned rows, the black
 value box on the light-grey selected row, and a menu close that puts the map
 straight back. That was the eight-row dialog, before the cap.
 
+The capped, compact, scrolling dialog was flashed and looked at the same day
+and reads correctly on the panel.
+
 Not verified:
 
-- The capped, compact dialog and the scrolling -- built clean, not yet on the
-  panel. Check that a wrap from the last row to the first lands the window
-  back at the top, and that the `n/m` counter does not collide with a long
-  title.
 - The backdrop's real byte size (the log line now prints it) and how close the
-  24 KB reserve comes to refusing a capture in practice.
+  24 KB reserve comes to refusing a capture in practice. Reading it needs a
+  serial monitor, which resets the device on open, so it has not been read
+  yet.
 - The window refresh time for a menu close, against the full redraw it
   replaces.
 - Row labels are still the Settings-screen strings ("Map rotation", "Heading
