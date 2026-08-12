@@ -6,8 +6,9 @@ toggles (`MapActivity::openMapMenu()`, `MapActivity.cpp:1841`). This file
 covers three things changed 2026-08-12: how the rows are laid out, how closing
 the menu got cheap, and why the button hint says "Options".
 
-Status: **read off the code and built clean; not yet verified on hardware.**
-What is open is called out per section.
+Status: **flashed and looked at on the panel 2026-08-12 -- layout, boxed value
+and the fast close all read correctly.** Numbers (backdrop size, refresh time)
+are still unmeasured; those are called out per section.
 
 ## Rows: label left, value boxed on the right
 
@@ -99,10 +100,10 @@ English until translated (`docs/i18n.md`).
 
 ## Open
 
-- Nothing here has been on the panel yet. What to check first: the value box
-  against the selected row's light-grey fill (Lyra draws the selection light,
-  the box black), and whether the dialog got wider than the old centred layout
-  in a way that crowds the screen edges.
+Verified by eye on the panel 2026-08-12: the left-aligned rows, the black
+value box on the light-grey selected row, and a menu close that puts the map
+straight back. Not verified by measurement:
+
 - The backdrop's real byte size and the free heap while the menu is open.
 - The window refresh time for a menu close, against the full redraw it
   replaces.
