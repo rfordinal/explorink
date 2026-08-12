@@ -65,6 +65,11 @@ target_compile_options(crosspoint_test_common INTERFACE
   -pedantic
 )
 
+# The preview canvas draws real text, and the built-in fonts' glyphs are DEFLATE
+# streams (test/map_preview/PreviewFont.cpp). zlib inflates them on the host; the
+# device uses uzlib on the same bytes.
+find_package(ZLIB REQUIRED)
+
 enable_testing()
 include(GoogleTest)
 
@@ -77,6 +82,7 @@ add_subdirectory(opds_filename)
 add_subdirectory(minibidi_arabic)
 add_subdirectory(combining_marks)
 add_subdirectory(map_preview)
+add_subdirectory(map_labels)
 add_subdirectory(map_stroke)
 add_subdirectory(map_area_fill)
 add_subdirectory(map_tile_reader)

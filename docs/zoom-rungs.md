@@ -116,7 +116,7 @@ an explicit 128-bit set, `src/activities/map/MapLayerBits.h`, with a
 `static_assert` against `kMaxTiles` so the next cap raise fails the build
 instead of quietly degrading.
 
-## Three things that are per rung now
+## Four things that are per rung now
 
 All three for the same reason, read in two directions: **a screen pixel is worth
 more ground the further out the rung is** (1 m at rung 0, 45 m at rung 6), and a
@@ -173,7 +173,27 @@ numbers anything measured. The ground-step column is the invariant a test holds
 (`test/map_tile_reader`, `CoarseRungsShrinkTheMarkerAndTightenTheMoveFloor`), not
 the pixel values.
 
-### 3. Keep-in margin -- derived from the marker
+### 3. Place-name ceiling -- `ZoomStep::maxLabels`
+
+Added 2026-08-12, with the labels themselves (`docs/place-labels.md`).
+
+Same reasoning read a third time: how many names the panel deserves follows how
+much *ground* is on it, not how many places happen to be in the tile range. Rung
+0 shows 480 x 800 m -- one settlement, where a dozen names would be a dozen names
+for one village. Rung 6 shows 24 x 40 km, where a dozen names is a map of the
+region and the reason to be at that rung at all.
+
+Per rung: 3, 4, 6, 8, 10, 12, 14. The style's own `max_labels` caps it again and
+the smaller of the two wins -- the rung answers "how many does this much ground
+deserve", the style answers "how many can the renderer afford"
+(`MapLabels::draw`).
+
+Maintainer's call 2026-08-12: "pri z0 urcite je zbytocne mat 12 labelov, pri z6
+to uz moze mat zmysel". **Unverified as a comfort call**, like `minMovePx`. What
+*is* measured is that the cap is not about time: five labels at rung 6 cost 94 ms
+of a 3,793 ms frame.
+
+### 4. Keep-in margin -- derived from the marker
 
 `MapFollow::kKeepInMarginPx` is 80 px: one full-size 54 px ring plus 26 px of
 slack, so the marker is always fully on screen and there is still map ahead of

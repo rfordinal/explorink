@@ -83,6 +83,22 @@ struct ZoomStep {
   // bude vizualne vacsi skok"). Unverified as a comfort call -- it is a number
   // to look at on a ride, not one measured.
   uint8_t minMovePx;
+  // Most place names this rung may draw, capped again by the style's own
+  // `max_labels` (docs/place-labels.md). A per-rung drawing decision, same kind
+  // as the three above.
+  //
+  // Why it varies: a rung's cap should follow how much ground is on the panel,
+  // not how many places happen to be in the tile range. Rung 0 shows 480 x 800 m
+  // -- one settlement, and a dozen names there would be a dozen names for one
+  // village. Rung 6 shows 24 x 40 km, where a dozen names is a map of the region
+  // and the whole reason to be at that rung. Maintainer's call 2026-08-12:
+  // "pri z0 urcite je zbytocne mat 12 labelov, pri z6 to uz moze mat zmysel".
+  //
+  // Unverified as a comfort call, like `minMovePx`: these are numbers to look at
+  // on a ride, not measured ones. What *is* measured is the cost -- 94 ms for
+  // five labels at rung 6 (docs/place-labels.md) -- so the cap is about
+  // legibility, not about time.
+  uint8_t maxLabels;
 };
 
 inline constexpr int kZoomStepCount = kMapZoomStepCount;
@@ -99,14 +115,14 @@ inline constexpr int kZoomStepCount = kMapZoomStepCount;
 // rungs deliberately ship before that work, because the renders held up and the
 // only number still missing is how long the reset takes on the panel.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
-    //  mpp   z  buildings  builtUp  marker/8  minMove
-    {1.0, 13, true, false, 8, 12},  // step 0, detail -- buildings, no wash under them
-    {3.0, 13, false, true, 8, 10},  // step 1, detail -- the wash instead of buildings
-    {6.0, 12, false, true, 8, 8},   // step 2, regional
-    {12.0, 11, false, true, 8, 8},  // step 3, overview
-    {20.0, 11, false, true, 8, 6},  // step 4, overview
-    {32.0, 11, false, true, 6, 3},  // step 5, overview -- z11 past its natural range
-    {45.0, 11, false, true, 5, 2},  // step 6, overview -- 24 x 40 km on the panel
+    //  mpp   z  buildings  builtUp  marker/8  minMove  maxLabels
+    {1.0, 13, true, false, 8, 12, 3},   // step 0, detail -- buildings, no wash under them
+    {3.0, 13, false, true, 8, 10, 4},   // step 1, detail -- the wash instead of buildings
+    {6.0, 12, false, true, 8, 8, 6},    // step 2, regional
+    {12.0, 11, false, true, 8, 8, 8},   // step 3, overview
+    {20.0, 11, false, true, 8, 6, 10},  // step 4, overview
+    {32.0, 11, false, true, 6, 3, 12},  // step 5, overview -- z11 past its natural range
+    {45.0, 11, false, true, 5, 2, 14},  // step 6, overview -- 24 x 40 km on the panel
 };
 
 // The ladder rung for a step, clamped -- same contract as markerYForStep(): a

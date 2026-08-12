@@ -375,6 +375,54 @@ def place_dot_diameter(style):
     return diameter
 
 
+def place_labels(style):
+    """Everything layers.places says about labels, as one dict of C values.
+
+    Two tiers keyed off the place rank the tile carries (city/town vs the rest,
+    see docs/place-labels.md), plus the declutter numbers the placer needs.
+    Disabled layer means no labels at all -- the renderer never opens the layer
+    for drawing in that case anyway.
+    """
+    places = style.get("layers", {}).get("places") or {}
+    enabled = places.get("enabled", True)
+    out = {
+        "px": _round_px(places.get("label_px", 0), "layers.places.label_px") if enabled else 0,
+        "bold": bool(places.get("label_bold", True)),
+        "minor_px": _round_px(places.get("label_minor_px", 0),
+                              "layers.places.label_minor_px") if enabled else 0,
+        "minor_bold": bool(places.get("label_minor_bold", False)),
+        "offset": _round_px(places.get("label_offset_px", 0), "layers.places.label_offset_px"),
+        "bg": bool(places.get("label_bg", False)),
+        "bg_pad": _round_px(places.get("label_bg_pad_px", 0), "layers.places.label_bg_pad_px"),
+        "bg_border": _round_px(places.get("label_bg_border_px", 0), "layers.places.label_bg_border_px"),
+        "halo": _round_px(places.get("label_halo_px", 0), "layers.places.label_halo_px"),
+        "max_labels": int(places.get("max_labels", 0)) if enabled else 0,
+        "gap": _round_px(places.get("min_label_gap_px", 0), "layers.places.min_label_gap_px"),
+        "route_overlap_pct": int(places.get("max_route_overlap_pct", 0)),
+        "max_width": _round_px(places.get("label_max_width_px", 0), "layers.places.label_max_width_px"),
+    }
+    for name, value, ceiling in (("label_px", out["px"], 255),
+                                 ("label_minor_px", out["minor_px"], 255),
+                                 ("label_offset_px", out["offset"], 255),
+                                 ("label_bg_pad_px", out["bg_pad"], 255),
+                                 ("label_bg_border_px", out["bg_border"], 255),
+                                 ("label_halo_px", out["halo"], 255),
+                                 ("max_labels", out["max_labels"], 255),
+                                 ("min_label_gap_px", out["gap"], 255),
+                                 ("max_route_overlap_pct", out["route_overlap_pct"], 100),
+                                 ("label_max_width_px", out["max_width"], 65535)):
+        if value < 0 or value > ceiling:
+            sys.exit(f"gen_mapstyle.py: layers.places.{name} {value} is outside 0..{ceiling}")
+    if out["max_labels"] == 0 and (out["px"] or out["minor_px"]):
+        print("gen_mapstyle.py: layers.places.max_labels is 0 -- label sizes are set but no label will be drawn")
+    # A halo behind a box is wasted work, and the renderer skips it (MapStyle.h).
+    # Say so at generate time rather than leaving a style that reads as if it had
+    # both.
+    if out["bg"] and out["halo"]:
+        print("gen_mapstyle.py: layers.places has both label_bg and label_halo_px -- the box wins, halo ignored")
+    return out
+
+
 def route(style):
     """(width, arrow_len, arrow_width) for layers.route, in device pixels.
 
@@ -421,8 +469,8 @@ def _array(values, comments):
     return lines
 
 
-def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x, marker_y,
-            puck_px):
+def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, labels, route_px,
+            marker_x, marker_y, puck_px):
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
         "#pragma once",
@@ -514,6 +562,19 @@ def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, lan
         "    .landuseHatchSpacingPx =",
         *_array(l_spacings, landuse_names),
         f"    .placeDotDiameterPx = {dot_diameter},",
+        f"    .placeLabelPx = {labels['px']},",
+        f"    .placeLabelBold = {'true' if labels['bold'] else 'false'},",
+        f"    .placeLabelMinorPx = {labels['minor_px']},",
+        f"    .placeLabelMinorBold = {'true' if labels['minor_bold'] else 'false'},",
+        f"    .placeLabelOffsetPx = {labels['offset']},",
+        f"    .placeLabelBg = {'true' if labels['bg'] else 'false'},",
+        f"    .placeLabelBgPadPx = {labels['bg_pad']},",
+        f"    .placeLabelBgBorderPx = {labels['bg_border']},",
+        f"    .placeLabelHaloPx = {labels['halo']},",
+        f"    .placeMaxLabels = {labels['max_labels']},",
+        f"    .placeLabelGapPx = {labels['gap']},",
+        f"    .placeLabelRouteOverlapPct = {labels['route_overlap_pct']},",
+        f"    .placeLabelMaxWidthPx = {labels['max_width']},",
         f"    .routeWidthPx = {route_px[0]},",
         f"    .routeArrowLenPx = {route_px[1]},",
         f"    .routeArrowWidthPx = {route_px[2]},",
@@ -545,6 +606,7 @@ def main(repo_root, style_path=None, output_path=None):
     water_px = water(style)
     landuse_px = landuse(style)
     dot_diameter = place_dot_diameter(style)
+    labels = place_labels(style)
     route_px = route(style)
     marker_x, marker_y = marker_anchor(style)
     puck_px = puck(style)
@@ -564,6 +626,11 @@ def main(repo_root, style_path=None, output_path=None):
         print(f"gen_mapstyle.py: warning -- route width {route_px[0]}px is not wider than the widest road "
               f"({widest_road}px); width is the only thing telling them apart on 1-bit e-ink")
     print(f"gen_mapstyle.py: route {route_px[0]}px wide, arrow {route_px[1]}x{route_px[2]}px")
+    knockout = "box" if labels["bg"] else "halo {}px".format(labels["halo"])
+    print(f"gen_mapstyle.py: place labels {labels['px']}px{' bold' if labels['bold'] else ''} major / "
+          f"{labels['minor_px']}px{' bold' if labels['minor_bold'] else ''} minor, max {labels['max_labels']}, "
+          f"{knockout}, gap {labels['gap']}px, "
+          f"route overlap <= {labels['route_overlap_pct']}%, width cap {labels['max_width']}px")
     if landuse_px[0]:
         print(f"gen_mapstyle.py: landuse on -- forest tone {landuse_px[2][1]}/hatch {landuse_px[3][1]}, "
               f"built_up tone {landuse_px[2][2]}/hatch {landuse_px[3][2]}")
@@ -571,8 +638,8 @@ def main(repo_root, style_path=None, output_path=None):
         print("gen_mapstyle.py: landuse off")
 
     with open(output_path, "w") as f:
-        f.write(gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, route_px, marker_x,
-                        marker_y, puck_px))
+        f.write(gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, labels,
+                        route_px, marker_x, marker_y, puck_px))
     print(f"gen_mapstyle.py: wrote {output_path}")
 
 

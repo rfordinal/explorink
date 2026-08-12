@@ -40,4 +40,34 @@ class IMapCanvas {
   // The tone's pattern is anchored to screen coordinates, never to the span, so
   // two shapes side by side share one texture.
   virtual void fillSpan(int x1, int x2, int y, MapAreaTone tone) = 0;
+
+  // Text -- the one primitive with a font behind it, and the only one whose two
+  // implementations cannot promise the same pixels: the device draws through
+  // GfxRenderer's real EpdFont, the preview through its own host rasterizer of
+  // the same font data (test/map_preview/PreviewFont.h). Metrics come from the
+  // same font tables in both, so a label that fits here fits there.
+  //
+  // `sizePx` is the nominal size the style asked for (mapstyle.json's
+  // `label_px`), not a guarantee: an implementation snaps it to a font it
+  // actually has and reports what it got through measureText. Layout must
+  // therefore always use the measured box, never sizePx.
+  //
+  // `x`, `y` is the TOP-LEFT of the measured box, not a baseline -- the label
+  // placer works in boxes and nothing above this line knows what an ascender
+  // is.
+  //
+  // measureText returns false when this canvas has no text at all, and the
+  // renderer then draws dots and no labels. It must not draw anything.
+  virtual bool measureText(const char* utf8, int sizePx, bool bold, int& outWidth, int& outHeight) = 0;
+  virtual void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) = 0;
+
+  // The rectangle this canvas will actually accept ink in, in screen pixels.
+  //
+  // Every other primitive here is fire-and-forget: the canvas clips, and a
+  // road half off screen is still a correct road. Labels are the first thing
+  // that has to *decide* where to draw, and a label clipped in half says the
+  // wrong name -- so the placer needs the bounds before it commits. On the
+  // device this is narrower than the panel: the header band is off limits
+  // (docs/map-header-status.md).
+  virtual void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const = 0;
 };

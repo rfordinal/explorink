@@ -3,6 +3,9 @@ add_executable(map_preview
   MapPreviewPipeline.cpp
   HeapProbe.cpp
   PpmCanvas.cpp
+  PreviewFont.cpp
+  ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
+  ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp
   ${REPO_ROOT}/src/activities/map/MapAreaFill.cpp
   ${REPO_ROOT}/src/activities/map/MapProjection.cpp
@@ -14,15 +17,22 @@ add_executable(map_preview
   ${REPO_ROOT}/src/activities/map/MapTileSource.cpp
   ${REPO_ROOT}/src/activities/map/MapViewport.cpp
   ${REPO_ROOT}/src/activities/map/MapHatch.cpp
+  ${REPO_ROOT}/src/activities/map/MapLabels.cpp
   ${REPO_ROOT}/src/activities/map/MapModeMask.cpp
 )
 
 target_include_directories(map_preview PRIVATE
   ${REPO_ROOT}/src/activities/map
+  ${REPO_ROOT}/lib/EpdFont
+  ${REPO_ROOT}/lib/Utf8
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(map_preview PRIVATE crosspoint_test_common)
+# zlib decompresses the built-in fonts' glyph groups (PreviewFont.cpp). The
+# device uses uzlib for the same DEFLATE streams; on the host zlib is already
+# there and needs no vendoring.
+find_package(ZLIB REQUIRED)
+target_link_libraries(map_preview PRIVATE crosspoint_test_common ZLIB::ZLIB)
 
 # MapStyleDefaults.h / MapModeMaskDefaults.h are generated from
 # data/mapstyle.json (test/CMakeLists.txt), so a style edit reaches this
@@ -39,6 +49,9 @@ add_dependencies(map_preview map_generated_headers)
 add_executable(marker_stamp
   marker_stamp_main.cpp
   PpmCanvas.cpp
+  PreviewFont.cpp
+  ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
+  ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp
   ${REPO_ROOT}/src/activities/map/MapAreaFill.cpp
   ${REPO_ROOT}/src/activities/map/MapProjection.cpp
@@ -50,12 +63,15 @@ add_executable(marker_stamp
   ${REPO_ROOT}/src/activities/map/MapTileSource.cpp
   ${REPO_ROOT}/src/activities/map/MapViewport.cpp
   ${REPO_ROOT}/src/activities/map/MapHatch.cpp
+  ${REPO_ROOT}/src/activities/map/MapLabels.cpp
   ${REPO_ROOT}/src/activities/map/MapModeMask.cpp
 )
 target_include_directories(marker_stamp PRIVATE
   ${REPO_ROOT}/src/activities/map
+  ${REPO_ROOT}/lib/EpdFont
+  ${REPO_ROOT}/lib/Utf8
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(marker_stamp PRIVATE crosspoint_test_common)
+target_link_libraries(marker_stamp PRIVATE crosspoint_test_common ZLIB::ZLIB)
 add_dependencies(marker_stamp map_generated_headers)
 

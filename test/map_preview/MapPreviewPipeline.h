@@ -116,6 +116,12 @@ struct MapPreviewResult {
   // gone; each one is a full read of that layer's bytes not paid.
   uint32_t crc32Skipped = 0;
   uint32_t placesDrawn = 0;
+  // Place names actually drawn, and candidates that had no free spot at any of
+  // the four sides of their dot (MapLabels.h). A high `labelsDropped` with a low
+  // `labelsPlaced` means the declutter rules, not the style's cap, are what is
+  // thinning the picture -- which is the intended order.
+  uint8_t labelsPlaced = 0;
+  uint8_t labelsDropped = 0;
   uint8_t lodZoom = 0;
   uint32_t col0 = 0, row0 = 0, col1 = 0, row1 = 0;
   long smallestTileBytes = -1;

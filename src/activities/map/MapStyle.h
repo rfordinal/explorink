@@ -121,6 +121,60 @@ struct MapStyle {
   // not drawn.
   uint8_t placeDotDiameterPx;
 
+  // layers.places label fields (docs/place-labels.md). Two tiers, because a
+  // city and a hamlet are not the same news: `Label` applies to rank <= 1
+  // (city/town), `LabelMinor` to everything above it
+  // (village/suburb/hamlet/farm -- mapbuilder/tilegen/build_config.json's
+  // place_ranks). Weight and size carry the hierarchy; there is no colour to
+  // carry it with, and all-caps was rejected as harder to read at a glance.
+  //
+  // Either size at 0 hides that tier's labels; both at 0 means dots only, which
+  // is what the firmware did before labels existed.
+  uint8_t placeLabelPx;
+  bool placeLabelBold;
+  uint8_t placeLabelMinorPx;
+  bool placeLabelMinorBold;
+
+  // Gap between the dot and its label box, device pixels.
+  uint8_t placeLabelOffsetPx;
+
+  // Two ways to keep a name readable over a road network, and they are
+  // alternatives rather than a stack: an opaque white box under the text
+  // (`placeLabelBg`, the original spec), or a white halo drawn around the
+  // glyphs themselves (`placeLabelHaloPx`). The halo is the compact one -- it
+  // knocks out only the pixels the letters need instead of a rectangle of map --
+  // so it is the default and the box is the fallback for a style that wants the
+  // stronger contrast. With the box on, the halo is not drawn: the box already
+  // separates the text from everything under it, and the halo would only eat
+  // into the box's own white.
+  bool placeLabelBg;
+  uint8_t placeLabelBgPadPx;
+  uint8_t placeLabelBgBorderPx;
+  uint8_t placeLabelHaloPx;
+
+  // Declutter, all device pixels except the last two.
+  //
+  // `placeMaxLabels` is a render-cost backstop, not the declutter mechanism:
+  // labels are placed rank-first and a candidate that collides is dropped, so
+  // the picture is already thinned before this cap is reached
+  // (docs/place-labels.md, "Greedy, not a zoom table").
+  //
+  // `placeLabelGapPx` inflates a label's box before it is tested against the
+  // labels already placed, so two names cannot end up touching.
+  //
+  // `placeLabelRouteOverlapPct` is how much of a label's box may sit over the
+  // route -- 0 forbids any overlap at all. The route is the one thing on screen
+  // a label must not obscure, and forbidding it outright loses names along a
+  // road the rider is following, which is where they are needed most. So a few
+  // per cent are allowed and a name laid across the line is not.
+  //
+  // `placeLabelMaxWidthPx` caps a label's text width; a longer name is
+  // truncated with an ellipsis. 0 means no cap.
+  uint8_t placeMaxLabels;
+  uint8_t placeLabelGapPx;
+  uint8_t placeLabelRouteOverlapPct;
+  uint16_t placeLabelMaxWidthPx;
+
   // layers.route. The route is distinguished from the roads by width alone --
   // there is no colour on 1-bit e-ink -- so this is deliberately wider than any
   // road class. 0 means the route is not drawn even when one is loaded.

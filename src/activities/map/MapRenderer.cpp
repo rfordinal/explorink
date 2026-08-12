@@ -5,6 +5,7 @@
 
 #include "MapAreaClass.h"
 #include "MapAreaFill.h"
+#include "MapLabels.h"
 
 namespace {
 
@@ -125,7 +126,11 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
 // millions of pixels off screen, and the canvas clips per segment, so an honest
 // off-screen coordinate is cheap while a wrapped int16_t one is a line drawn
 // across the middle of the map.
-void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style) {
+// `occupancy`, when given, is marked with every route segment as it is drawn.
+// The label placer needs to know where the route is and there is no second
+// cheap way to find out: the route lives in a file, and walking it again is a
+// second pass over SD (IMapRouteSource.h). So the pass that draws it records it.
+void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style, MapOccupancyGrid* occupancy) {
   if (style.routeWidthPx == 0) return;
   if (!route.beginRoute()) return;
 
@@ -145,6 +150,7 @@ void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style
   while (route.nextRoutePoint(x, y)) {
     canvas.drawLine(static_cast<int>(prevX), static_cast<int>(prevY), static_cast<int>(x), static_cast<int>(y),
                     style.routeWidthPx, MapInk::Black);
+    if (occupancy != nullptr) occupancy->markSegment(prevX, prevY, x, y, style.routeWidthPx / 2);
     tailX = prevX;
     tailY = prevY;
     prevX = x;
@@ -188,7 +194,9 @@ void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style
 }  // namespace
 
 void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
-                         IMapRouteSource* route, MapRenderTiming* timing, MapNearestPlaces* nearestOut) {
+                         IMapRouteSource* route, MapRenderTiming* timing, MapNearestPlaces* nearestOut,
+                         MapLabelScratch* labels) {
+  if (labels != nullptr) labels->reset();
   // Instrumentation only. `mark` holds the last stamp; each layer's field gets
   // the delta since it. With no timing, or no clock in it, both of these are a
   // null check and nothing else -- no clock call, no pixel changed.
@@ -327,7 +335,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // buildings, roads, route, junctions, places"). Over the roads because a
   // route hidden under a casing is not a route; under the dots because a dot on
   // the route is exactly what item 4 of the render spec draws.
-  if (route != nullptr) drawRoute(canvas, *route, style);
+  if (route != nullptr) drawRoute(canvas, *route, style, labels != nullptr ? &labels->route : nullptr);
   if (timing) lap(timing->routeMs, mark);
 
   const int dotDiameter = style.placeDotDiameterPx;
@@ -337,7 +345,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // (village/suburb/hamlet/farm). Opened even with dots hidden
   // (`nearestOut != nullptr` alone opens the layer) -- see MapRenderer.h.
   constexpr uint8_t kCoarseMaxRank = 1;
-  if ((dotDiameter > 0 || nearestOut != nullptr) && source.beginPlaces()) {
+  if ((dotDiameter > 0 || nearestOut != nullptr || labels != nullptr) && source.beginPlaces()) {
     MapPlaceRef place;
     long bestFineDistSq = -1;
     long bestCoarseDistSq = -1;
@@ -346,6 +354,15 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         canvas.fillRoundedRect(place.x - dotDiameter / 2, place.y - dotDiameter / 2, dotDiameter, dotDiameter,
                                dotDiameter / 2, MapInk::Black);
       }
+      // Labels cannot be drawn inside this walk: they are placed rank-first and
+      // each one has to know where the ones before it went, which is not known
+      // until the layer has been walked to the end. So the walk only collects,
+      // and the layout runs after it (MapLabels.h).
+      //
+      // Layout is measured from the viewport anchor, never from state.markerX/Y:
+      // the marker moves between redraws and the map underneath must not
+      // (docs/map-render-spec.md).
+      if (labels != nullptr) MapLabels::offer(*labels, place, style.markerXPx, style.markerYPx);
       if (nearestOut == nullptr || place.name[0] == '\0') continue;
       const long dx = place.x - state.markerX;
       const long dy = place.y - state.markerY;
@@ -364,6 +381,12 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     }
   }
   if (timing) lap(timing->placesMs, mark);
+
+  // Names last, over everything the map drew and under the marker the caller
+  // draws next. A label is the only thing here that is placed rather than
+  // simply drawn, so it has to see the finished picture (MapLabels.h).
+  if (labels != nullptr) MapLabels::draw(canvas, *labels, style, state.maxLabels);
+  if (timing) lap(timing->labelsMs, mark);
 
   // No marker draw here -- MapActivity draws its own mode-specific one (ring +
   // dot/arrow, sized per hike/cycle/ride) after this call returns. Drawing the

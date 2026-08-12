@@ -127,6 +127,14 @@ constexpr int kBusyGlassInset = 8;  // hourglass inset inside the badge box
 // kScaleMarginBottom is the same clearance line kBusyMarginBottom uses --
 // both stacks bottom out flush with each other, one per side, clear of
 // GUI.drawButtonHints' band.
+// Right-edge width the theme's side-button hints occupy. Theme-owned geometry
+// (GUI.drawSideButtonHints, BaseTheme's x4ButtonPositions), so this is a
+// measurement rather than a shared constant: read off a panel screenshot
+// 2026-08-12, the hint box spans the last ~26 px of the row. Rounded up, and
+// used only to keep place labels out of that column -- map geometry still draws
+// under it and gets painted over (GfxRendererCanvas).
+constexpr int kSideHintReservedPx = 30;
+
 constexpr int kScaleMarginLeft = 12;
 constexpr int kScaleMarginBottom = 50;
 constexpr int kScaleBarHeight = 6;
@@ -1393,6 +1401,17 @@ void MapActivity::onEnter() {
   // heap-fragmentation rule), and this is far too big for a stack local. On OOM
   // follow is simply off and every fix redraws in full -- correct picture, slow
   // picture, no crash.
+  // The place-name pass's working set, in the same bracket and for the same
+  // reason: ~3.2 KB is far past the 256-byte stack rule, and a per-frame
+  // allocation of it would fragment the heap on every viewport reset
+  // (MapLabels.h). Allocated only when the compiled style actually draws labels,
+  // so a style with max_labels 0 costs nothing. On OOM the map keeps its place
+  // dots and loses the names -- a correct picture, one layer poorer, no crash.
+  if (kDefaultMapStyle.placeMaxLabels > 0 &&
+      (kDefaultMapStyle.placeLabelPx > 0 || kDefaultMapStyle.placeLabelMinorPx > 0)) {
+    labels_ = makeUniqueNoThrow<MapLabelScratch>();
+    if (!labels_) LOG_ERR(kLogTag, "OOM: label scratch (%u bytes)", static_cast<unsigned>(sizeof(MapLabelScratch)));
+  }
   markerPatch_ = makeUniqueNoThrow<uint8_t[]>(kMarkerPatchBytes);
   markerPatchCapacity_ = markerPatch_ ? kMarkerPatchBytes : 0;
   if (!markerPatch_) LOG_ERR(kLogTag, "OOM: marker patch (%u bytes)", static_cast<unsigned>(kMarkerPatchBytes));
@@ -1511,6 +1530,7 @@ void MapActivity::onExit() {
   route_.reset();
   routeFile_.reset();
   markerPatch_.reset();
+  labels_.reset();
   markerPatchCapacity_ = 0;
   markerPatchValid_ = false;
 
@@ -2478,7 +2498,11 @@ void MapActivity::renderRouteOverview() {
   }
 
   renderer.clearScreen();
-  GfxRendererCanvas canvas(renderer, kMapContentTop);
+  // The two reserved bands keep place labels clear of the button-hint row and
+  // the side hints, both of which are drawn after the map and would cover a name
+  // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
+  // bar and the busy badge already bottom out on.
+  GfxRendererCanvas canvas(renderer, kMapContentTop, kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
   view.markerX = anchorX;
@@ -2487,6 +2511,7 @@ void MapActivity::renderRouteOverview() {
   // Same rule as the follow frame, from the rung the fit chose.
   view.drawBuildings = MapViewport::kZoomLadder[fit.zoomStep].buildings;
   view.drawBuiltUp = MapViewport::kZoomLadder[fit.zoomStep].builtUp;
+  view.maxLabels = MapViewport::kZoomLadder[fit.zoomStep].maxLabels;
 
   const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, {}, &nearestPlaces_);
   // North still rotates with the frame -- the overview is drawn at the fit's
@@ -2576,7 +2601,12 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // The route rides along as a second source, re-read from the card on every
   // reset and never held in RAM (IMapRouteSource.h). nullptr when the rider
   // skipped the picker, and then the route pass costs nothing at all.
-  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing, nearestOut);
+  //
+  // Place names ride along on the same walk. `labels_` is allocated once, in
+  // onEnter(), and is null when the style draws no labels -- in which case
+  // MapRenderer skips the whole pass rather than allocating anything here
+  // (MapLabels.h).
+  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing, nearestOut, labels_.get());
 
   // Hatch after the geometry, because which tiles are missing is only known
   // once the source has tried to open them, and asking up front would cost a
@@ -2699,7 +2729,11 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   }
 
   renderer.clearScreen();
-  GfxRendererCanvas canvas(renderer, kMapContentTop);
+  // The two reserved bands keep place labels clear of the button-hint row and
+  // the side hints, both of which are drawn after the map and would cover a name
+  // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
+  // bar and the busy badge already bottom out on.
+  GfxRendererCanvas canvas(renderer, kMapContentTop, kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
   view.markerX = MapViewport::kAnchorScreenX;
@@ -2713,6 +2747,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // closest rung draws them, and on every other rung the layer is never opened.
   view.drawBuildings = MapViewport::kZoomLadder[zoomStep()].buildings;
   view.drawBuiltUp = MapViewport::kZoomLadder[zoomStep()].builtUp;
+  view.maxLabels = MapViewport::kZoomLadder[zoomStep()].maxLabels;
 
   // Per-layer timing, so a slow reset can be attributed to a layer rather than
   // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one
@@ -2801,15 +2836,15 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // frame, which is the render path's own unit of work; the per-layer times say
   // which layer spent it.
   LOG_DBG(kLogTag,
-          "render %lu ms: landuse %lu, buildings %lu, water %lu, roads %lu, route %lu, places %lu; "
+          "render %lu ms: landuse %lu, buildings %lu, water %lu, roads %lu, route %lu, places %lu, labels %lu; "
           "%lu points projected, %lu ways off screen, %lu ms in the card, %lu crc32 skipped, "
           "%lu cells skipped (%lu KB)",
           static_cast<unsigned long>(timing.landuseMs + timing.buildingsMs + timing.waterMs + timing.roadsMs +
-                                     timing.routeMs + timing.placesMs),
+                                     timing.routeMs + timing.placesMs + timing.labelsMs),
           static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.buildingsMs),
           static_cast<unsigned long>(timing.waterMs), static_cast<unsigned long>(timing.roadsMs),
           static_cast<unsigned long>(timing.routeMs), static_cast<unsigned long>(timing.placesMs),
-          static_cast<unsigned long>(source_->pointsProjected()), static_cast<unsigned long>(source_->waysOffScreen()),
+          static_cast<unsigned long>(timing.labelsMs), static_cast<unsigned long>(source_->pointsProjected()), static_cast<unsigned long>(source_->waysOffScreen()),
           static_cast<unsigned long>(source_->ioUs() / 1000u), static_cast<unsigned long>(source_->crc32Skipped()),
           static_cast<unsigned long>(source_->cellsSkipped()),
           static_cast<unsigned long>(source_->bytesSkippedByIndex() / 1024u));
