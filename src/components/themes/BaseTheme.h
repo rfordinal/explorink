@@ -250,8 +250,18 @@ class BaseTheme {
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
+  // `values` is parallel to `options` and may be shorter or empty -- a row with
+  // no value entry draws label-only. `leftAlign` puts every label at the same
+  // left edge instead of centring each one; a value column only reads as a
+  // column when the labels line up.
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
-                               int selectedIndex) const;
+                               int selectedIndex, const std::vector<std::string>& values = {},
+                               bool leftAlign = false) const;
+  // Padding inside the selected row's value box, both sides. Shared with
+  // OptionPopup's own layout pass so the two width calculations agree.
+  static constexpr int optionPopupValuePadding(int selectionHPadding) {
+    return selectionHPadding / 2 > 4 ? selectionHPadding / 2 : 4;
+  }
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                      std::string title, const int paddingBottom = 0, const int textYOffset = 0,
