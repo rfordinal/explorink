@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <BlePositionServer.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <esp_rom_crc.h>
 
 #include <cstdio>
@@ -30,10 +31,37 @@ constexpr size_t kChunkHeaderBytes = 4;
 // hundreds of MB is a corrupt frame, not a plan.
 constexpr uint32_t kMaxFileBytes = 8u * 1024u * 1024u;
 
-// Read-back buffer for the completion CRC check. Same size FontDownloadActivity
-// uses for the same job -- 128 bytes of stack, well under CLAUDE.md's 256-byte
-// cap on locals.
-constexpr size_t kCrcReadBufferBytes = 128;
+// Read-back buffer for the completion CRC check. One-shot heap allocation,
+// held only for the duration of computePartCrc32() (freed at scope exit,
+// before the OK/ERR status line goes out) -- not a member, so it costs
+// nothing for the rest of the transfer's lifetime.
+//
+// 4096 matches MapTileReader::streamBuffer_ (docs/map-memory.md:138), the
+// buffer size the same HalStorage/SD path is already measured at: 550-608
+// KB/s across every rung, tile and layer mix
+// (firmware/explorink/docs/optimization/01-render-pipeline.md:175-187,
+// "Card versus compute, measured 2026-08-06"). That is a different call site
+// (MapTileReader's streamed layer reads, not this readback), so treat it as
+// an informed estimate for this path, not a measurement of it -- open until
+// someone times computePartCrc32() itself.
+//
+// Arithmetic against the 30 s ATT transaction budget (the final chunk's ATT
+// write response is withheld for this whole completion pass -- ble-fix-plan.md
+// T5.4): kMaxFileBytes (8,388,608 B) / 4096 B = 2048 reads, exact. At the
+// conservative 550 KB/s bound that is 8,388,608 / (550 * 1024) ~= 14.9 s;
+// at the measured upper bound (608 KB/s) ~= 13.5 s. Either way it fits inside
+// the 30 s budget with roughly half the budget (~15 s) to spare, so
+// kMaxFileBytes does not need to shrink. The old 128 B buffer needed 65,536
+// reads for the same 8 MB file -- this removes 32x the mutex/SD-command round
+// trips, which is the actual defect (docs/ble-review-2026-08.md, "CRC
+// readback blocks the host task with a 128 B buffer").
+constexpr size_t kCrcReadBufferBytes = 4096;
+
+// Fallback path when the 4096 B heap allocation above fails (OOM). Kept
+// compiled, not deleted -- ble-fix-plan.md T5.4 requires it stay reachable.
+// Same size FontDownloadActivity uses for the same job -- 128 bytes of stack,
+// well under CLAUDE.md's 256-byte cap on locals.
+constexpr size_t kCrcFallbackReadBufferBytes = 128;
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -522,11 +550,30 @@ bool MapTransferReceiver::computePartCrc32(uint32_t& outCrc) const {
   HalFile file;
   if (!Storage.openFileForRead("MAPXFER", partPath_, file)) return false;
 
-  uint8_t buffer[kCrcReadBufferBytes];
+  // One-shot 4096 B heap buffer for this read loop only -- see the arithmetic
+  // above kCrcReadBufferBytes. makeUniqueNoThrow, not bare new (firmware
+  // CLAUDE.md, heap-discipline skill): this runs on the NimBLE host task,
+  // inside onFrame's inFrame_ window that detach() spins on, and an OOM here
+  // must degrade, not abort() the firmware. `heapBuffer` frees itself at this
+  // function's return, well before the caller sends the OK/ERR status line.
+  auto heapBuffer = makeUniqueNoThrow<uint8_t[]>(kCrcReadBufferBytes);
+  uint8_t fallbackBuffer[kCrcFallbackReadBufferBytes];
+  uint8_t* buffer = heapBuffer.get();
+  size_t bufferBytes = kCrcReadBufferBytes;
+  if (buffer == nullptr) {
+    // Falls back to the old 128 B stack path rather than failing the whole
+    // readback -- correct but slow is better than refusing a transfer for
+    // one failed allocation. kept compiled per ble-fix-plan.md T5.4.
+    LOG_ERR(kLogTag, "OOM: %u B crc readback buffer, falling back to %u B stack buffer",
+            static_cast<unsigned>(kCrcReadBufferBytes), static_cast<unsigned>(kCrcFallbackReadBufferBytes));
+    buffer = fallbackBuffer;
+    bufferBytes = kCrcFallbackReadBufferBytes;
+  }
+
   uint32_t crc = 0;
   size_t total = 0;
   while (file.available()) {
-    const int read = file.read(buffer, sizeof(buffer));
+    const int read = file.read(buffer, bufferBytes);
     if (read <= 0) break;
     crc = esp_rom_crc32_le(crc, buffer, static_cast<uint32_t>(read));
     total += static_cast<size_t>(read);
