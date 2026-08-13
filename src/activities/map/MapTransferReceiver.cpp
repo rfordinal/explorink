@@ -445,12 +445,23 @@ void MapTransferReceiver::abandon(const char* reason) {
   if (file_.isOpen()) file_.close();
   if (partPath_[0] != '\0') Storage.remove(partPath_);
 
+  // Those two calls block on the storage mutex, and detach() is the one caller
+  // that runs them on the activity task. So this is the mirror of handleChunk's
+  // active_ re-checks: if the host task finished the transfer while the two
+  // calls above were queued behind it, it has already sent its own `OK` and
+  // cleared active_. Reporting `ERR screen closed` on top of that OK would be
+  // a second verdict for one transfer and a failed_ count for a file that
+  // landed. Every reason != nullptr caller holds active_ == true on entry
+  // (each is behind an `if (active_)` or handleChunk's "no transfer" gate), so
+  // false here can only mean somebody else ended it.
+  const bool endedElsewhere = !active_;
+
   active_ = false;
   received_ = 0;
   declaredTotal_ = 0;
   activeTileValid_ = false;
 
-  if (reason == nullptr) return;
+  if (reason == nullptr || endedElsewhere) return;
 
   ++failed_;
   char reply[64];
