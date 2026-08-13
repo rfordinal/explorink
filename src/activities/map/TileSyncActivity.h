@@ -128,8 +128,14 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  // Same reason as the map screen: the BLE peripheral is running and a transfer
-  // can take minutes, so the device must not doze off in the middle of one.
+  // Same reason as the map screen while a transfer is actually moving: the
+  // BLE peripheral is running and a transfer can take minutes, so the device
+  // must not doze off in the middle of one. Unlike the map screen, this does
+  // NOT hold the clock for the whole visit -- a screen sitting in Waiting (no
+  // phone) or Finished (rider gone) idles out after kIdleSleepTimeoutMs and
+  // lets the device's normal sleep policy take over. See its .cpp for why a
+  // healthy transfer can never trip that timeout on its own
+  // (docs/ble-map-transfer-brief.md, "Device: sleeping through a sync").
   bool preventAutoSleep() override;
 
   // IMapSkipObserver -- the phone saying it cannot supply one tile.
@@ -197,6 +203,9 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   void leave();
 
   Phase phase_ = Phase::Waiting;
+  // Sets phase_ and stamps phaseEnteredMs_ in one place, so no assignment site
+  // can move the phase and forget the clock that preventAutoSleep() reads.
+  void enterPhase(Phase phase);
   // Sends NEED_TILES and moves to Running. Called when the phone subscribes,
   // and again if it leaves and comes back.
   void askForTiles();
@@ -275,6 +284,14 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // When something last landed or was skipped, for the stall verdict below.
   // Armed by askForTiles(), so a screen that never asked cannot time out.
   uint32_t lastSettleMs_ = 0;
+  // millis() of the last enterPhase() call, plus every tile settle and every
+  // byte of transfer progress while Running -- see preventAutoSleep() and
+  // kIdleSleepTimeoutMs. A screen sitting in Waiting or Finished with nobody
+  // touching it ages this clock untouched; an active sync keeps re-stamping
+  // it at least as often as the existing stall-verdict checks above already
+  // require (kStallVerdictMs), so a healthy transfer can never go 10 minutes
+  // without a reset.
+  uint32_t phaseEnteredMs_ = 0;
   // Whether the panel currently shows a phone or not, so trackPhone() only
   // repaints on a real change.
   bool drawnPhoneListening_ = false;
@@ -411,6 +428,14 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // phone that is genuinely still pushing cannot be quiet for longer than that
   // without the link itself being dead.
   static constexpr uint32_t kStallVerdictMs = 30000;
+
+  // How long preventAutoSleep() keeps holding 160 MHz + no-auto-sleep after
+  // the screen goes quiet (Waiting with no phone, or Finished with the rider
+  // gone). Past this the device's normal idle policy takes over: CPU drops to
+  // power-saving clock, then deep sleep at SETTINGS.getSleepTimeoutMs()
+  // (main.cpp:780-786, :812-818). Docs: docs/ble-map-transfer-brief.md,
+  // "Device: sleeping through a sync".
+  static constexpr uint32_t kIdleSleepTimeoutMs = 10 * 60 * 1000;
 
   // Bytes of the in-flight file last observed, and when that count last moved.
   // Covers the case the silence check above cannot: a phone that ANRs mid-file

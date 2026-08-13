@@ -103,7 +103,7 @@ void TileSyncActivity::onEnter() {
     // below, different string -- STR_TILE_SYNC_NO_ANSWER is a stalled
     // transfer, this is a stack that never came up.
     LOG_ERR(kLogTag, "BlePositionServer.begin() failed");
-    phase_ = Phase::Finished;
+    enterPhase(Phase::Finished);
     verdict_ = StrId::STR_TILE_SYNC_BLE_FAILED;
     renderScreen();
     return;
@@ -113,7 +113,7 @@ void TileSyncActivity::onEnter() {
   transfer_.attach();
 
   if (!armRun()) {
-    phase_ = Phase::Finished;
+    enterPhase(Phase::Finished);
     verdict_ = StrId::STR_MAP_FETCH_NOTHING;
     renderScreen();
     return;
@@ -152,12 +152,12 @@ void TileSyncActivity::onEnter() {
     hadPhone_ = drawnPhoneListening_;
     if (drawnPhoneListening_) {
       askAboutFreshness();
-      phase_ = Phase::Finished;
+      enterPhase(Phase::Finished);
     } else {
       // A phone connecting synchronously with begin() above never happens on
       // real hardware (measured: ~1.8 s). trackPhone() takes it from here,
       // same as the missing-tiles path below -- see its comment.
-      phase_ = Phase::Waiting;
+      enterPhase(Phase::Waiting);
     }
     renderScreen();
     return;
@@ -165,7 +165,7 @@ void TileSyncActivity::onEnter() {
 
   // Advertising now; nothing to ask until a phone subscribes to the command
   // channel. trackPhone() does the asking when one does -- see phoneListening().
-  phase_ = Phase::Waiting;
+  enterPhase(Phase::Waiting);
   verdict_ = StrId::STR_MAP_FETCH_DONE;
   drawnPhoneListening_ = phoneListening();
   hadPhone_ = drawnPhoneListening_;
@@ -327,7 +327,7 @@ void TileSyncActivity::askForTiles() {
     return;
   }
   LOG_INF(kLogTag, "asked for %lu tiles", static_cast<unsigned long>(rowCount_));
-  phase_ = Phase::Running;
+  enterPhase(Phase::Running);
   startedMs_ = millis();
   lastSettleMs_ = startedMs_;
   // Fresh run, fresh stall bookkeeping -- see updateProgress()'s
@@ -392,7 +392,7 @@ void TileSyncActivity::trackPhone() {
       // Nothing to fetch -- the freshness ask above was the only reason this
       // screen was still waiting. Same verdict onEnter() would have shown had
       // the phone been there from t=0.
-      phase_ = Phase::Finished;
+      enterPhase(Phase::Finished);
       renderScreen();
     }
     return;
@@ -401,7 +401,7 @@ void TileSyncActivity::trackPhone() {
   // The phone walked away. Whatever was in flight died with the link, and the
   // screen says so rather than sitting on a bar that will never move again.
   LOG_INF(kLogTag, "phone gone, back to waiting");
-  phase_ = Phase::Waiting;
+  enterPhase(Phase::Waiting);
   renderScreen();
 }
 
@@ -424,7 +424,34 @@ void TileSyncActivity::onExit() {
   Activity::onExit();
 }
 
-bool TileSyncActivity::preventAutoSleep() { return freeink::BlePositionServer::getInstance().isRunning(); }
+void TileSyncActivity::enterPhase(Phase phase) {
+  phase_ = phase;
+  phaseEnteredMs_ = millis();
+}
+
+// Defect: this used to be `return isRunning()`, true for the screen's entire
+// visit -- Waiting with no phone, or Finished with the rider long gone, held
+// 160 MHz + no-auto-sleep exactly as hard as an active transfer
+// (docs/ble-review-2026-08.md, "Power": preventAutoSleep() pins 160 MHz for
+// the whole screen). Fixed by gating on how long ago the screen last had
+// something to show for itself.
+//
+// No separate "transfer is active" check: kStallVerdictMs (30 s) already
+// bounds how long Running can go without a tile settling or a byte of
+// progress before updateProgress() calls enterPhase(Finished) itself, and
+// both of those events also re-stamp phaseEnteredMs_ below -- so a healthy
+// transfer, however many tiles or minutes it takes, can never let this clock
+// reach kIdleSleepTimeoutMs (10 min) on its own. A transfer that genuinely
+// stalls converts to Finished well before 10 minutes and starts that
+// countdown from there, same as any other Finished screen.
+//
+// isRunning() stays as a fast path: no BLE session at all (T3.5's
+// STR_TILE_SYNC_BLE_FAILED Finished screen, begin() never having set
+// begun_) has nothing to hold the clock for regardless of the timeout.
+bool TileSyncActivity::preventAutoSleep() {
+  if (!freeink::BlePositionServer::getInstance().isRunning()) return false;
+  return millis() - phaseEnteredMs_ < kIdleSleepTimeoutMs;
+}
 
 void TileSyncActivity::loop() {
   Activity::loop();
@@ -1078,8 +1105,13 @@ void TileSyncActivity::updateProgress() {
   // moves the bar, so that is a whole frame.
   if (done != drawnDone_ || skipped_ != drawnSkipped_) {
     lastSettleMs_ = millis();
+    // A multi-tile sync with gaps between arrivals must not sleep mid-run:
+    // this is the "still Running, more tiles to go" case, so enterPhase()
+    // below is not reached and preventAutoSleep()'s clock has to be
+    // re-stamped here instead.
+    phaseEnteredMs_ = lastSettleMs_;
     if (phase_ == Phase::Running && done + skipped_ >= rowCount_) {
-      phase_ = Phase::Finished;
+      enterPhase(Phase::Finished);
       verdict_ = StrId::STR_MAP_FETCH_DONE;
       LOG_INF(kLogTag, "done, %lu landed, %lu skipped", static_cast<unsigned long>(done),
               static_cast<unsigned long>(skipped_));
@@ -1101,7 +1133,7 @@ void TileSyncActivity::updateProgress() {
   // 2026-08-11: 20 tiles sat there indefinitely after the phone had given up.
   if (phase_ == Phase::Running && !transfer.active && lastSettleMs_ != 0 &&
       millis() - lastSettleMs_ > kStallVerdictMs) {
-    phase_ = Phase::Finished;
+    enterPhase(Phase::Finished);
     verdict_ = StrId::STR_TILE_SYNC_NO_ANSWER;
     LOG_INF(kLogTag, "no answer for %lu ms, %lu landed, %lu skipped", static_cast<unsigned long>(kStallVerdictMs),
             static_cast<unsigned long>(done), static_cast<unsigned long>(skipped_));
@@ -1124,8 +1156,12 @@ void TileSyncActivity::updateProgress() {
     if (!transferWasActive_ || transfer.received != lastReceivedBytes_) {
       lastReceivedBytes_ = transfer.received;
       lastProgressMs_ = millis();
+      // Same reasoning as the settle event above: bytes are moving, Running
+      // stays Running, so this is the only place that tells preventAutoSleep()
+      // the screen is still doing something.
+      phaseEnteredMs_ = lastProgressMs_;
     } else if (millis() - lastProgressMs_ > kStallVerdictMs) {
-      phase_ = Phase::Finished;
+      enterPhase(Phase::Finished);
       verdict_ = StrId::STR_TILE_SYNC_NO_ANSWER;
       LOG_INF(kLogTag, "stalled mid-transfer for %lu ms, %lu landed, %lu skipped",
               static_cast<unsigned long>(kStallVerdictMs), static_cast<unsigned long>(done),
