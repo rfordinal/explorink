@@ -154,6 +154,21 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     return;
   }
 
+  // A multi-KB push at a 15 B (default MTU 23) payload runs at 1/25th the
+  // airtime a negotiated MTU gives it (docs/ble-review-2026-08.md,
+  // "Performance"). Accepted either way -- this is a diagnostic, not a
+  // policy -- but silent until now, so a misconfigured sender looked like a
+  // slow SD card instead of what it is.
+  //
+  // No LOG_WRN in this tree (Logging.h has only ERR/INF/DBG) -- LOG_ERR is
+  // this file's existing choice for "worth a look but not a refusal" (see
+  // the stale-transfer reclaim below).
+  const uint16_t payloadBytes = freeink::BlePositionServer::getInstance().transferPayloadBytes();
+  if (payloadBytes < 100 && total > 4096) {
+    LOG_ERR(kLogTag, "large transfer (%lu B) on a %u B payload -- misconfigured sender (MTU not negotiated?)",
+            static_cast<unsigned long>(total), static_cast<unsigned>(payloadBytes));
+  }
+
   char rel[kMaxRelPathBytes + 1];
   memcpy(rel, body + kBeginFixedBytes, pathLen);
   rel[pathLen] = '\0';
@@ -251,6 +266,16 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
     abandon("offset");
     return;
   }
+
+  // Offset 0 and received_ == 0 (checked above) can only be the transfer's
+  // first chunk -- logged once per transfer, not once per chunk, which would
+  // itself eat into the airtime this is diagnosing (docs/ble-review-2026-08.md,
+  // "Performance", item 4).
+  if (offset == 0) {
+    LOG_INF("MAPTX", "first chunk payload %u B (mtu %u)", static_cast<unsigned>(payloadLen),
+            static_cast<unsigned>(freeink::BlePositionServer::getInstance().negotiatedMtu()));
+  }
+
   if (received_ + payloadLen > declaredTotal_) {
     abandon("overrun");
     return;
