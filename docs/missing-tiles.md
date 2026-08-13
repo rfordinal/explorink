@@ -827,9 +827,16 @@ send it again once the log settles.
   - The panel's own numbers were wrong twice before they were right, both times
     caught by looking at the screen rather than the code -- see "What the panel
     shows" below.
-- **Still not verified**: a page of 20 `missing` replies over BLE (this run's
-  list was 10, so the indication burst was never near the page size), and a
-  transfer interrupted mid-file by a real link drop.
+- **Still not verified**:
+  - A page of 20 `missing` replies over BLE. This run's list was 10, so the
+    indication burst was never near the page size. `tools/blereplay.py` in the
+    parent repo, against a card carrying a 29-entry list, settles it;
+    `kMissingPageSize` is the knob if a page stalls the map activity's `loop()`
+    for too long.
+  - A transfer interrupted mid-file by a real link drop.
+  - **The SD write.** `flushIfDirty()` runs on a 10-minute timer or on leaving
+    the screen, and no `missing_tiles.json` has ever been read back off a card to
+    confirm what landed in it.
 
 ## What the panel shows, and two mistakes it took to get there
 
@@ -853,73 +860,6 @@ mode worth remembering here:
 Also: a tile the supplier lacks is shown as **"not available"**, not "skipped".
 The wire verb stays `skip` -- that is the protocol -- but from the rider's side
 nothing was skipped, and "skipped" reads as a choice somebody made.
-
-## Getting the file itself off the device
-
-**Not reachable via WebDAV / the WiFi file manager.** `WebDAVHandler::isProtectedPath()`
-rejects any path with a segment starting with `.`, `/.crosspoint/...`
-included (`src/network/WebDAVHandler.cpp:774-782`) -- verified by reading
-the guard, not tested against a live server. So the raw
-`missing_tiles.json` still needs an SD card pull, the same channel already
-used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
-`missing` command above is the over-the-air path and does not need the file.
-
-## Verified vs assumed
-
-- **Verified on hardware, over USB serial (2026-08-06, build
-  `develop-41e1a6e3`).** Gaps were made on purpose by sending `pos` to empty
-  country at three zoom steps, then reading the list back:
-  - `INFO tile_fmt=2` in `info`.
-  - Recording works across viewport resets and across LODs: 7 entries after
-    three resets, 29 after thirteen.
-  - **Priority order is what it claims.** With 7 entries the reply was 4x z12
-    (regional) first, then z11 (overview), then 2x z13 (detail) -- and inside
-    z12, all at count 1, ascending by col then row, which is the total-order
-    tiebreak doing its job.
-  - **Count-descending inside a tier**: after a tile was hatched twice,
-    `missing_13_4496_2826=2` sorted ahead of every count-1 z13 entry.
-  - **Paging**: at 29 entries, page 0 printed exactly 20 and answered
-    `missing_next=20`; `missing 20` printed the remaining 9 and
-    `missing_next=done`. Order held across the page boundary.
-  - **An offset past the end** answers `missing_total=29`,
-    `missing_offset=20`, `missing_next=done`, `OK` -- an empty page, not an
-    error, which is what makes a paging loop's last request harmless.
-- **Verified on the host**: the `unavailable` case, page-0-only ordering, the
-  `skip` verb, its tally and its per-tile observer, the priority policy in isolation and the tile-path
-  parse (`test/map_command_parser/MapCommandParserTest.cpp`,
-  `test/missing_tile_priority/MissingTilePriorityTest.cpp`,
-  `test/map_tile_path/MapTilePathTest.cpp`; 247 tests green across the whole
-  suite, 2026-08-06).
-- **Verified**: compiles clean (`pio run`, default env, 2026-08-05); RAM cost
-  is 200 x `sizeof(MissingTileHit)` (~16 bytes with padding) plus
-  `std::vector` overhead, well inside headroom (build reported 17.6% DRAM
-  used overall). Read off the code, not measured on hardware: the
-  `isProtectedPath` block above, and the throttle's actual behaviour on a
-  real ride.
-- **Not verified.** Everything above went over USB serial. The BLE half and the
-  whole fetch flow have not run, in the order the open questions would bite:
-  - **20 indications back to back on BLE**, each waiting for its ATT confirm,
-    has not been timed. Serial proves the arithmetic, not the channel: on
-    serial a page is one cheap burst, on BLE it is 20 round trips inside the
-    map activity's `loop()`. If a page stalls it long enough to matter,
-    `kMissingPageSize` is the knob. `tools/blereplay.py` in the parent repo
-    against a card with this 29-entry list settles it.
-  - **The sync screen reaches the panel and waits correctly** (2026-08-06,
-    build `develop-70da0b86`): it enters from the home menu, starts BLE, draws
-    29 rows in 45 ms, logs `29 tiles to ask for, waiting for a phone` instead of
-    the false `asked for 29 tiles` the previous build logged into an empty room,
-    and BACK leaves cleanly with the heap returned. **What no phone has yet
-    exercised**: the ask itself, a row's bar moving, the windowed refresh of one
-    row (does its rectangle clip a descender), and whether the row count that
-    fits is the one the geometry predicts.
-  - **`NEED_TILES` reaching a real central.** The mechanism is the one
-    `sendCommandReply()` already uses on hardware, but nothing has subscribed
-    to the command characteristic from a phone yet.
-  - **`forget()` on a real arrival**, and with it the whole clear-on-OK path.
-    No tile has been pushed to this build.
-  - **The SD write.** `flushIfDirty()` is on a 10-minute timer or the screen's
-    exit, and the test above never left the map screen, so no
-    `missing_tiles.json` has been read back off a card yet.
 
 ## One queue on the sync screen, missing tiles first (2026-08-11)
 
