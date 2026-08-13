@@ -211,6 +211,11 @@ void TileSyncActivity::askForTiles() {
   phase_ = Phase::Running;
   startedMs_ = millis();
   lastSettleMs_ = startedMs_;
+  // Fresh run, fresh stall bookkeeping -- see updateProgress()'s
+  // active-but-silent check.
+  lastReceivedBytes_ = 0;
+  lastProgressMs_ = 0;
+  transferWasActive_ = false;
   renderScreen();
 }
 
@@ -743,6 +748,35 @@ void TileSyncActivity::updateProgress() {
     askAboutFreshness();
     renderScreen();
     return;
+  }
+
+  // An active-but-silent transfer: the phone ANR'd mid-file with the GATT link
+  // still held. `active` stays true forever in that case -- the receiver
+  // reclaims a stalled transfer only on the *next* begin
+  // (MapTransferReceiver.cpp:174-183) -- so the silence check above, gated on
+  // `!transfer.active`, is suppressed and the bar would otherwise freeze with
+  // no way out but Back. Same verdict, same kStallVerdictMs budget as that
+  // check, and the same bytes-stopped-moving pattern MapActivity uses for
+  // auto-sync (MapActivity::expireAutoSync(), MapActivity.cpp:870-894): the
+  // timestamp resets on every byte of real movement, not on every repaint, so
+  // a healthy slow transfer never trips it.
+  if (phase_ == Phase::Running && transfer.active) {
+    if (!transferWasActive_ || transfer.received != lastReceivedBytes_) {
+      lastReceivedBytes_ = transfer.received;
+      lastProgressMs_ = millis();
+    } else if (millis() - lastProgressMs_ > kStallVerdictMs) {
+      phase_ = Phase::Finished;
+      verdict_ = StrId::STR_TILE_SYNC_NO_ANSWER;
+      LOG_INF(kLogTag, "stalled mid-transfer for %lu ms, %lu landed, %lu skipped",
+              static_cast<unsigned long>(kStallVerdictMs), static_cast<unsigned long>(done),
+              static_cast<unsigned long>(skipped_));
+      askAboutFreshness();
+      renderScreen();
+      return;
+    }
+    transferWasActive_ = true;
+  } else {
+    transferWasActive_ = false;
   }
 
   if (phase_ != Phase::Running || !transfer.active || !transfer.activeTileValid) return;

@@ -225,6 +225,24 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // without the link itself being dead.
   static constexpr uint32_t kStallVerdictMs = 30000;
 
+  // Bytes of the in-flight file last observed, and when that count last moved.
+  // Covers the case the silence check above cannot: a phone that ANRs mid-file
+  // with the GATT link still held keeps `transfer.active` true forever --
+  // reclaim only happens on the *next* begin (MapTransferReceiver.cpp:174-183)
+  // -- so the `!transfer.active` gate never fires and the bar freezes with no
+  // verdict. Same bytes-stopped-moving pattern as
+  // MapActivity::expireAutoSync() (MapActivity.cpp:870-894), against the same
+  // kStallVerdictMs budget so both paths agree on how long silence gets to
+  // look like work.
+  uint32_t lastReceivedBytes_ = 0;
+  uint32_t lastProgressMs_ = 0;
+  // Edge-detects a transfer starting. `received_` resets to 0 on every begin
+  // (MapTransferReceiver.cpp:216), which can equal the previous file's
+  // last-seen count, so comparing `received` alone cannot tell "still
+  // stalled" from "a fresh file just started". This makes the active
+  // false->true transition always count as progress.
+  bool transferWasActive_ = false;
+
   // Last tileSeq already cleared out of the store. See drainTransferredTiles().
   uint32_t lastClearedTileSeq_ = 0;
 
