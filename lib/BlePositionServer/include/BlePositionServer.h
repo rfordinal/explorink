@@ -116,6 +116,23 @@ class BlePositionServer {
   // the marker the UART needs has no job on this channel.
   bool sendCommandReply(const char* line);
 
+  // Sends an already-composed block of newline-terminated reply lines as **one**
+  // indication. `len` must fit commandPayloadBytes() or the controller drops
+  // the tail; the caller does the packing, because only it knows where a line
+  // boundary is (MapBleConsole).
+  //
+  // One indication per line was the old shape and it is what made a multi-line
+  // reply fragile: every line costs a full round trip to the peer's confirm, so
+  // a five-line listing spent seconds on the link and each hop was a chance to
+  // lose one. A `have` reply for a four-tile viewport fits one 256-byte
+  // indication whole.
+  bool sendCommandBlock(const char* text, size_t len);
+
+  // What fits in one indication on this link: the ATT MTU minus its 3-byte
+  // header. 20 while the MTU is unknown -- the 23-byte default every link
+  // starts at, which is the safe assumption rather than an optimistic one.
+  uint16_t commandPayloadBytes() const { return mtu_ > 3 ? static_cast<uint16_t>(mtu_ - 3) : 20; }
+
   // --- Map file transfer channel --------------------------------------
   //
   // Two more characteristics on the same service: `...0004` takes binary
