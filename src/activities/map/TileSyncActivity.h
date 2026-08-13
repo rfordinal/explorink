@@ -329,11 +329,28 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   static constexpr int kMaxDotPx = 20;
   static constexpr int kMinDotPx = 3;
 
-  // Every tile this screen has something to say about: the missing ones it is
-  // fetching, then the stale ones a freshness check found. One sequence because
-  // the grid window has to cover both -- sizing it on the missing list alone
-  // left a freshness-only visit with no grid at all, which is exactly the
-  // common case (nothing missing, something out of date).
+  // Every tile this screen still owes the rider an answer about, in three
+  // groups, drawn as one grid:
+  //
+  //   [0, rowCount_)                 missing, being fetched      outlined square
+  //   then every unsettled held tile queued for a freshness check    dot
+  //   then every stale tile awaiting its replacement                 dot
+  //
+  // A dot means "not settled yet", whichever half of the work it is waiting on.
+  // It goes out when the phone answers that the tile is current, or -- for one
+  // that came back stale -- when the replacement has actually landed. So the
+  // grid empties as the check works through it, which is the thing worth
+  // watching on this screen.
+  //
+  // The three cannot overlap: a missing tile has no content_id so it is never
+  // in the held store (HeldTilesStore::record ignores content_id 0), and a
+  // stale tile has already been settled in the store by the `checked` that
+  // reported it, so it is no longer pending.
+  //
+  // interestAt() walks the held store to find the nth pending entry, so it is
+  // O(store) per call. chooseWindow()'s O(n^2) placement pass is the only
+  // caller that could feel that, and only on the rare path where the tiles are
+  // spread wider than the window; the common clustered case exits early.
   size_t interestCount() const;
   MapTileCoord interestAt(size_t index) const;
 

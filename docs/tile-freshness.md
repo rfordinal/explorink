@@ -229,12 +229,26 @@ of date, and could-not-check. The last one is deliberately not phrased as good
 news -- `checked unknown` means the phone could not read the index, and the two
 must never read alike.
 
-### A stale tile is a dot, a missing one is an outline
+### The check queue is dots, the fetch queue is outlines
 
-Both are drawn on the same grid, because they answer different questions about
-the same ground: *this square is not on the card* against *this square is on the
-card and out of date*. An outline for one and a solid dot for the other tells
-them apart with no legend.
+One grid, two marks, and each says what the square is waiting on:
+
+| mark | meaning | goes out when |
+|---|---|---|
+| outlined square | not on the card, being fetched | the tile arrives |
+| solid dot | on the card, not settled yet | the phone says it is current, or a stale one's replacement lands |
+
+**A dot is drawn for every tile queued for a check, not only for the ones that
+turn out to be stale.** That is the point of it: the grid starts full of dots
+and empties as the check works through them, so a rider can see the queue
+draining rather than reading a number change. A tile that comes back stale keeps
+its dot -- it is still not settled -- until the replacement actually lands.
+
+The dot set is therefore every unsettled entry in `HeldTilesStore` plus every
+entry in `StaleTilesList`. The three groups cannot overlap: a missing tile has
+no `content_id` so it never enters the held store, and a stale tile was settled
+in the store by the `checked` that reported it, so it is no longer pending
+(`TileSyncActivity::interestAt()`).
 
 The dot scales with the tile's LOD so depth still reads -- `kDotDivisor` of the
 cell, floored at `kMinDotPx` and capped at `kMaxDotPx` -- but it stays well
@@ -248,7 +262,7 @@ side is a disc, and it already clamps the radius to half the smaller side
 
 Two things had to change around it:
 
-- **The grid window is sized on missing *and* stale tiles** (`interestCount()`,
+- **The grid window is sized on every unsettled tile** (`interestCount()`,
   `interestAt()`). It used to be sized on the missing list alone in `armRun()`,
   so a visit with nothing missing had no window at all -- which is exactly the
   common freshness case. `chooseWindow()` therefore runs again from

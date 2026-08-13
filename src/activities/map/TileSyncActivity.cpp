@@ -60,7 +60,6 @@ bool TileSyncActivity::armRun() {
       rows_[i].tile = MapTileCoord{hits[i].z, hits[i].col, hits[i].row};
       rows_[i].unavailable = false;
     }
-    chooseWindow();
   }
 
   // Counters, not just the snapshot. The receiver counts "since the screen
@@ -79,6 +78,12 @@ bool TileSyncActivity::armRun() {
   freshnessStale_ = 0;
   freshnessRound_ = 0;
   lastSettleMs_ = 0;
+  // After staleTiles_.clear(), so the window is placed over what this run will
+  // actually draw. Unconditional rather than inside the rowCount_ > 0 branch
+  // above: a visit with nothing missing still has a grid, made of the tiles
+  // queued for a freshness check, and sizing it on the missing list alone left
+  // that case with no window at all.
+  chooseWindow();
   return true;
 }
 
@@ -510,11 +515,27 @@ void TileSyncActivity::parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t
   pr = static_cast<uint16_t>(tile.row >> down);
 }
 
-size_t TileSyncActivity::interestCount() const { return rowCount_ + staleTiles_.count(); }
+size_t TileSyncActivity::interestCount() const { return rowCount_ + g_heldTiles.pendingCount() + staleTiles_.count(); }
 
 MapTileCoord TileSyncActivity::interestAt(size_t index) const {
   if (index < rowCount_) return rows_[index].tile;
-  const StaleTilesList::Entry& e = staleTiles_.at(index - rowCount_);
+  size_t rest = index - rowCount_;
+
+  const size_t pending = g_heldTiles.pendingCount();
+  if (rest < pending) {
+    // The nth entry that is still unsettled. Walked rather than indexed: the
+    // store keeps pending and settled entries in one array so that re-recording
+    // a tile finds it wherever it sits.
+    for (size_t i = 0; i < g_heldTiles.size(); ++i) {
+      const HeldTileEntry& e = g_heldTiles.at(i);
+      if (e.checked()) continue;
+      if (rest == 0) return MapTileCoord{e.z, e.col, e.row};
+      --rest;
+    }
+  }
+  rest = index - rowCount_ - pending;
+
+  const StaleTilesList::Entry& e = staleTiles_.at(rest);
   return MapTileCoord{e.z, e.col, e.row};
 }
 
@@ -681,12 +702,17 @@ bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_
     renderer.drawRect(fx, fy, fw, fw, thickness, true);
   }
 
-  // The stale tiles, over the same ground and in the same parents. A dot, not
-  // an outline: these squares *are* on the card, so drawing them the way a
-  // missing one is drawn would say the opposite of what is true.
-  for (size_t i = 0; i < staleTiles_.count(); ++i) {
-    const StaleTilesList::Entry& e = staleTiles_.at(i);
-    const MapTileCoord tile{e.z, e.col, e.row};
+  // The check queue, over the same ground and in the same parents: every tile
+  // still waiting on a freshness answer, plus every tile that came back stale
+  // and has not had its replacement land yet. A dot, not an outline -- these
+  // squares *are* on the card, so drawing them the way a missing one is drawn
+  // would say the opposite of what is true.
+  //
+  // A dot goes out when the phone says the tile is current, or when a stale
+  // one's replacement arrives. So the grid empties as the check works through
+  // it, which is the thing worth watching on this screen.
+  for (size_t i = rowCount_; i < interestCount(); ++i) {
+    const MapTileCoord tile = interestAt(i);
     uint16_t tpc = 0, tpr = 0;
     parentOf(tile, tpc, tpr);
     if (tpc != pc || tpr != pr) continue;
