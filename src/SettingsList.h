@@ -261,7 +261,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // Manual: the frame heading freezes at whatever it was when this was
         // switched on, until switched back.
         SettingInfo::Enum(StrId::STR_MAP_HEADING_MODE, &CrossPointSettings::mapHeadingMode,
-                          {StrId::STR_AUTO, StrId::STR_MANUAL}, "mapHeadingMode", StrId::STR_CAT_MAP),
+                          {StrId::STR_AUTO, StrId::STR_MAP_HEADING_FROZEN}, "mapHeadingMode", StrId::STR_CAT_MAP),
         // Off (default): the device never asks whether the tiles it holds have
         // been republished, which is how it behaved before this existed. Sync
         // screen: ask once when that screen opens. Live: ask from the map too,

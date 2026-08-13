@@ -1,10 +1,12 @@
 # The map's CONFIRM menu: layout, and closing it without a redraw
 
-The map screen's CONFIRM button opens one flat popup: Refresh, Mode, Look
-around / Follow mode, Whole route, and the zoom / rotation / heading / debug
-toggles (`MapActivity::openMapMenu()`, `MapActivity.cpp:1841`). This file
-covers three things changed 2026-08-12: how the rows are laid out, how closing
-the menu got cheap, and why the button hint says "Options".
+The map screen's CONFIRM button opens one flat popup, in this order: Look
+around / Follow mode, Whole route, Mode, Rotation, Heading mode, Zoom, Reload
+map, Debug info (`MapActivity::openMapMenu()`, `MapActivity.cpp:1915`). Look
+around and Whole route are conditional rows -- they only show once a fix has
+drawn a frame, or once a route is loaded. This file covers three things
+changed 2026-08-12: how the rows are laid out, how closing the menu got
+cheap, and why the button hint says "Options".
 
 Status: **flashed and looked at on the panel 2026-08-12 -- layout, boxed value
 and the fast close all read correctly.** Numbers (backdrop size, refresh time)
@@ -15,7 +17,7 @@ are still unmeasured; those are called out per section.
 Rows used to be one string, `"Mode: Ride"`, centred. They are two columns now:
 `OptionPopup::showWithValues()` (`OptionPopup.h:63`) takes `options` and a
 parallel `values`, and `MapActivity::openMapMenu()` fills both. An empty value
-means the row is a plain action (Refresh, Whole route).
+means the row is a plain action (Reload map, Whole route, Look around).
 
 `BaseTheme::drawOptionPopup()` (`BaseTheme.cpp:963`) draws it:
 
@@ -160,6 +162,9 @@ Not verified:
   yet.
 - The window refresh time for a menu close, against the full redraw it
   replaces.
-- Row labels are still the Settings-screen strings ("Map rotation", "Heading
+- Row labels are still the Settings-screen strings ("Rotation", "Heading
   mode"). Shorter ones would narrow the dialog further; they are shared keys,
-  so shortening them changes the Settings screen too.
+  so shortening them changes the Settings screen too. Heading mode's value
+  string is not shared, though: `STR_MAP_HEADING_FROZEN` ("Frozen") is its own
+  key, split off from the generic `STR_MANUAL` so renaming it does not also
+  rename Zoom's "Manual" value (`english.yaml`, `SettingsList.h:264`).
