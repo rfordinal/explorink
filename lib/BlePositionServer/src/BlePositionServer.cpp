@@ -140,6 +140,10 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
     self().onConnIntervalChanged(info.getConnInterval());
     self().onConnHandleChanged(info.getConnHandle());
+    // A central got in, so advertising was up whatever the last start() said.
+    // NimBLE stops advertising for the duration of the connection by design,
+    // and that is not a failure to retry.
+    self().onAdvertisingState(true);
     // Interval is in 1.25 ms units.
     LOG_INF("BLEPOS", "connected: interval %u units (%u ms), latency %u, timeout %u",
             static_cast<unsigned>(info.getConnInterval()), static_cast<unsigned>(info.getConnInterval() * 5 / 4),
@@ -172,12 +176,20 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // (out of range, phone Bluetooth toggled) can reconnect without a reboot.
   //
   // start() can fail (e.g. transient "host not synced" right after a link
-  // drop) and this call never checked -- a mid-ride incident showed BLE stop
-  // accepting connections and never recover for the rest of a ride while the
-  // rest of the device stayed responsive (docs/power-management.md, "BLE
-  // stopped accepting connections mid-ride"). A few quick retries turn a
-  // transient failure into a recovered link instead of a silent, permanent
-  // one.
+  // drop) and an unchecked call is how BLE goes silently, permanently deaf --
+  // a mid-ride incident showed exactly that while the rest of the device
+  // stayed responsive (docs/power-management.md, "BLE stopped accepting
+  // connections mid-ride").
+  //
+  // **One attempt, no retry loop, nothing blocking.** This method runs on the
+  // NimBLE host task, and the sync event that clears the most likely failure
+  // cause ("host not synced", NimBLEAdvertising.cpp:189-192) is dispatched on
+  // that same task. The 5x50 ms vTaskDelay loop this replaces therefore
+  // blocked the very event it was waiting for -- all five attempts failed by
+  // construction and nothing retried afterwards, so the radio stayed dead
+  // until the rider left the screen and came back
+  // (docs/ble-review-2026-08.md item 3). A failure is handed to the activity
+  // task instead, via BlePositionServer::serviceAdvertising().
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     // Before advertising again: a file transfer in flight is dead the moment
     // the link drops. Resuming across a reconnect is deliberately not built
@@ -186,20 +198,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     self().onCentralDisconnect();
     self().onTransferSubscribe(false);
 
-    NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
-    constexpr int kMaxAttempts = 5;
-    constexpr uint32_t kRetryDelayMs = 50;
-    bool restarted = false;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      if (advertising->start()) {
-        restarted = true;
-        break;
-      }
-      vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
-    }
-    if (!restarted) {
-      LOG_ERR("BLEPOS", "advertising restart failed after disconnect (%d attempts)", kMaxAttempts);
-    }
+    self().onAdvertisingState(NimBLEDevice::getAdvertising()->start());
   }
 };
 
@@ -328,6 +327,11 @@ bool BlePositionServer::begin(const char* deviceName) {
   portEXIT_CRITICAL(&g_mux);
   transferSubscribed_ = false;
   commandSubscribed_ = false;
+  // Advertising is up as of the start() above, so no retry is owed. Cleared
+  // here rather than trusted from the last session: end() and begin() can be
+  // seconds apart across a screen exit and re-entry.
+  advertisingDown_ = false;
+  lastAdvertisingAttemptMs_ = 0;
 
   begun_ = true;
   const uint32_t heapAfterBegin = esp_get_free_heap_size();
@@ -359,6 +363,10 @@ void BlePositionServer::end() {
   portEXIT_CRITICAL(&g_mux);
   transferSubscribed_ = false;
   commandSubscribed_ = false;
+  // Nothing is advertising once the stack is down, so there is nothing to be
+  // down about. Left set, the flag would be the first thing a re-entered
+  // screen acted on -- against a stack that had not been built yet.
+  advertisingDown_ = false;
 
   // Return the NimBLE host + BT controller RAM to the heap. Retry once if
   // the stack didn't fully tear down, same pattern as BleKeyboardHost::end().
@@ -593,6 +601,52 @@ void BlePositionServer::onCentralDisconnect() {
   if (hooks.onDisconnect) hooks.onDisconnect(hooks.ctx);
 }
 
+void BlePositionServer::onAdvertisingState(bool up) {
+  const bool wasDown = advertisingDown_.exchange(!up);
+  if (up) return;
+
+  // Stamped here so serviceAdvertising()'s first retry lands a full
+  // kAdvertisingRetryMs after this failed attempt, not on the next loop() tick.
+  lastAdvertisingAttemptMs_ = millis();
+  // Once per failure, not once per retry. retryAdvertising() logs its own
+  // failures at DBG, so a radio that is dead for good costs one line, not one
+  // line per second for the rest of the ride.
+  if (!wasDown) {
+    LOG_ERR("BLEPOS", "advertising restart failed; the activity task will retry every %lu ms",
+            static_cast<unsigned long>(kAdvertisingRetryMs));
+  }
+}
+
+void BlePositionServer::retryAdvertising() {
+  if (!begun_ || !advertisingDown_) return;
+
+  const uint32_t now = millis();
+  // Unsigned wrap is the intended arithmetic: millis() rolls over after ~49
+  // days and the difference stays correct across the roll.
+  if (now - lastAdvertisingAttemptMs_ < kAdvertisingRetryMs) return;
+  lastAdvertisingAttemptMs_ = now;
+
+  if (!NimBLEDevice::getAdvertising()->start()) {
+    LOG_DBG("BLEPOS", "advertising retry failed, trying again in %lu ms",
+            static_cast<unsigned long>(kAdvertisingRetryMs));
+    return;
+  }
+  onAdvertisingState(true);
+  LOG_INF("BLEPOS", "advertising restarted from the activity task");
+}
+
+void BlePositionServer::serviceAdvertising() {
+  if (!begun_) return;
+  // A live link means advertising already did its job, and NimBLE stops it
+  // while a central is connected by design -- retrying into a connection would
+  // be restarting something that is deliberately off. connIntervalUnits_ is
+  // the same "is the phone there" test the map header draws with
+  // (src/activities/map/MapActivity.cpp:914, :1194): set in onConnect, zeroed in
+  // onCentralDisconnect. No second connection-state flag for this.
+  if (connIntervalUnits_ != 0) return;
+  if (advertisingDown_) retryAdvertising();
+}
+
 bool BlePositionServer::sendTransferStatus(const char* line) {
   if (!begun_ || g_transferStatusChar == nullptr || line == nullptr) return false;
 
@@ -642,6 +696,9 @@ void BlePositionServer::onMtuChanged(uint16_t) {}
 void BlePositionServer::onConnIntervalChanged(uint16_t) {}
 void BlePositionServer::onConnHandleChanged(uint16_t) {}
 void BlePositionServer::onCentralDisconnect() {}
+void BlePositionServer::onAdvertisingState(bool) {}
+void BlePositionServer::retryAdvertising() {}
+void BlePositionServer::serviceAdvertising() {}
 int8_t BlePositionServer::rssi() const { return 0; }
 
 }  // namespace freeink

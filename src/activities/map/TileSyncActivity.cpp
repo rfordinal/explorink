@@ -311,6 +311,13 @@ void TileSyncActivity::loop() {
   // something on a map screen that is not up -- nothing to redraw here.
   ble_.poll();
 
+  // Advertising state, once per tick. Same reason MapActivity::loop() does it:
+  // a restart that failed inside the NimBLE disconnect callback cannot be
+  // retried on that task (BlePositionServer.h, "Advertising state"), and this
+  // screen is the other one that runs the BLE server -- a link dropped here
+  // must come back without leaving the screen.
+  freeink::BlePositionServer::getInstance().serviceAdvertising();
+
   trackPhone();
   drainTransferredTiles();
   updateProgress();
