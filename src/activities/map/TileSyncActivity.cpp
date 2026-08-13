@@ -240,10 +240,21 @@ bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
 }
 
 void TileSyncActivity::onTileStale(uint8_t z, uint32_t col, uint32_t row) {
-  if (staleTiles_.add(z, col, row)) {
-    LOG_INF(kLogTag, "freshness: z%u %lu/%lu is out of date", static_cast<unsigned>(z), static_cast<unsigned long>(col),
-            static_cast<unsigned long>(row));
-  }
+  if (!staleTiles_.add(z, col, row)) return;
+  LOG_INF(kLogTag, "freshness: z%u %lu/%lu is out of date", static_cast<unsigned>(z), static_cast<unsigned long>(col),
+          static_cast<unsigned long>(row));
+  // **The mark just changed and the panel has to be told.** This tile stops
+  // being a dot and becomes a frame right here -- it has gone from waiting on
+  // an answer to waiting on bytes -- and without this the screen held the last
+  // frame until the round's closing `checked` arrived. Measured on hardware
+  // 2026-08-13: a real 42-tile check repainted only between rounds, so the
+  // transition this grid exists to show was never actually drawn while it
+  // happened.
+  //
+  // A flag, not a repaint: this runs inside the console's dispatch of `stale`,
+  // before its terminating OK, which is the one place work must not be started
+  // (see freshnessRedrawPending_'s declaration).
+  freshnessRedrawPending_ = true;
 }
 
 void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
@@ -553,26 +564,31 @@ void TileSyncActivity::parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t
 
 size_t TileSyncActivity::interestCount() const { return rowCount_ + g_heldTiles.pendingCount() + staleTiles_.count(); }
 
+size_t TileSyncActivity::downloadCount() const { return rowCount_ + staleTiles_.count(); }
+
 MapTileCoord TileSyncActivity::interestAt(size_t index) const {
+  // [0, rowCount_) missing, then the stale ones -- together the download queue,
+  // drawn as frames -- then the tiles still waiting on a check, drawn as dots.
+  // Contiguous in that order so drawParent() can walk one range per mark.
   if (index < rowCount_) return rows_[index].tile;
   size_t rest = index - rowCount_;
 
-  const size_t pending = g_heldTiles.pendingCount();
-  if (rest < pending) {
-    // The nth entry that is still unsettled. Walked rather than indexed: the
-    // store keeps pending and settled entries in one array so that re-recording
-    // a tile finds it wherever it sits.
-    for (size_t i = 0; i < g_heldTiles.size(); ++i) {
-      const HeldTileEntry& e = g_heldTiles.at(i);
-      if (e.checked()) continue;
-      if (rest == 0) return MapTileCoord{e.z, e.col, e.row};
-      --rest;
-    }
+  if (rest < staleTiles_.count()) {
+    const StaleTilesList::Entry& e = staleTiles_.at(rest);
+    return MapTileCoord{e.z, e.col, e.row};
   }
-  rest = index - rowCount_ - pending;
+  rest -= staleTiles_.count();
 
-  const StaleTilesList::Entry& e = staleTiles_.at(rest);
-  return MapTileCoord{e.z, e.col, e.row};
+  // The nth entry that is still unsettled. Walked rather than indexed: the
+  // store keeps pending and settled entries in one array so that re-recording
+  // a tile finds it wherever it sits.
+  for (size_t i = 0; i < g_heldTiles.size(); ++i) {
+    const HeldTileEntry& e = g_heldTiles.at(i);
+    if (e.checked()) continue;
+    if (rest == 0) return MapTileCoord{e.z, e.col, e.row};
+    --rest;
+  }
+  return MapTileCoord{};
 }
 
 void TileSyncActivity::chooseWindow() {
@@ -682,14 +698,23 @@ bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_
   const int leaf = size / kLeavesPerParent;
   bool any = false;
 
-  for (uint32_t i = 0; i < rowCount_; ++i) {
-    uint32_t received = 0;
-    uint32_t total = 0;
-    // The one question the grid asks. Waiting, on the wire and refused all draw
-    // the same square: it is not on the card yet.
-    if (stateOf(static_cast<int>(i), received, total) == RowState::Done) continue;
+  // **The download queue: missing tiles and stale ones alike.** The mark says
+  // what the device is waiting on, not why it is waiting. A tile that came back
+  // stale has stopped waiting on an answer and started waiting on bytes, which
+  // is exactly what a missing tile is doing, so it stops being a dot and
+  // becomes a frame. Watching dots turn into frames and frames then vanish is
+  // the whole progress story of this screen in two marks.
+  for (size_t i = 0; i < downloadCount(); ++i) {
+    if (i < rowCount_) {
+      uint32_t received = 0;
+      uint32_t total = 0;
+      // The one question the grid asks. Waiting, on the wire and refused all
+      // draw the same square: it is not on the card yet. Stale entries have no
+      // row state -- they leave the list when the replacement lands.
+      if (stateOf(static_cast<int>(i), received, total) == RowState::Done) continue;
+    }
 
-    const MapTileCoord& tile = rows_[i].tile;
+    const MapTileCoord tile = interestAt(i);
     uint16_t tpc = 0, tpr = 0;
     parentOf(tile, tpc, tpr);
     if (tpc != pc || tpr != pr) continue;
@@ -738,16 +763,15 @@ bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_
     renderer.drawRect(fx, fy, fw, fw, thickness, true);
   }
 
-  // The check queue, over the same ground and in the same parents: every tile
-  // still waiting on a freshness answer, plus every tile that came back stale
-  // and has not had its replacement land yet. A dot, not an outline -- these
-  // squares *are* on the card, so drawing them the way a missing one is drawn
-  // would say the opposite of what is true.
+  // The check queue: tiles on the card that no answer covers yet. A dot, not an
+  // outline -- these are not missing, and drawing them the way a missing one is
+  // drawn would say the opposite of what is true.
   //
-  // A dot goes out when the phone says the tile is current, or when a stale
-  // one's replacement arrives. So the grid empties as the check works through
-  // it, which is the thing worth watching on this screen.
-  for (size_t i = rowCount_; i < interestCount(); ++i) {
+  // A dot leaves in one of two ways, and they read differently on purpose: the
+  // phone says the tile is current and it simply goes, or the phone says it is
+  // stale and it turns into a frame, because it has stopped waiting on an
+  // answer and started waiting on bytes.
+  for (size_t i = downloadCount(); i < interestCount(); ++i) {
     const MapTileCoord tile = interestAt(i);
     uint16_t tpc = 0, tpr = 0;
     parentOf(tile, tpc, tpr);
@@ -858,7 +882,7 @@ void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
   const uint32_t elapsedMs = startedMs_ != 0 ? millis() - startedMs_ : 0;
   if (transfer.completed == 0 || elapsedMs < 1000) {
     snprintf(out, outSize, "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
-             static_cast<unsigned long>(rowCount_), unavailable, moved);
+             static_cast<unsigned long>(transferTotal()), unavailable, moved);
     return;
   }
 
@@ -877,11 +901,12 @@ void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
 
   if (eta[0] != '\0') {
     snprintf(out, outSize, "%lu / %lu%s   %s  %lu.%lu kB/s  %s %s", static_cast<unsigned long>(transfer.completed),
-             static_cast<unsigned long>(rowCount_), unavailable, moved, static_cast<unsigned long>(rateBps / 1000),
-             static_cast<unsigned long>((rateBps % 1000) / 100), eta, tr(STR_TILE_SYNC_LEFT));
+             static_cast<unsigned long>(transferTotal()), unavailable, moved,
+             static_cast<unsigned long>(rateBps / 1000), static_cast<unsigned long>((rateBps % 1000) / 100), eta,
+             tr(STR_TILE_SYNC_LEFT));
   } else {
     snprintf(out, outSize, "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
-             static_cast<unsigned long>(rowCount_), unavailable, moved);
+             static_cast<unsigned long>(transferTotal()), unavailable, moved);
   }
 }
 
@@ -937,7 +962,7 @@ void TileSyncActivity::renderScreen() {
         snprintf(status, sizeof(status), "%s", moved);
       } else {
         snprintf(status, sizeof(status), "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
-                 static_cast<unsigned long>(rowCount_), unavailable, moved);
+                 static_cast<unsigned long>(transferTotal()), unavailable, moved);
       }
       break;
     }
