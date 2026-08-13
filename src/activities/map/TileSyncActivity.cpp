@@ -337,7 +337,15 @@ void TileSyncActivity::leave() {
     // this end. The transfer channel's abort opcode (0x03) is a frame the
     // *central* writes, so a peripheral's only cancel is a word on the command
     // channel.
-    if (!freeink::BlePositionServer::getInstance().sendCommandReply("FETCH_CANCEL")) {
+    //
+    // Skip it if the last reply already went unconfirmed: a peer that stopped
+    // confirming indications will not hear this one either, and the 3 s wait
+    // for a confirm that was never coming is exactly the freeze this exists to
+    // avoid (docs/ble-review-2026-08.md, "Console flush can freeze the
+    // activity task").
+    if (freeink::BlePositionServer::getInstance().lastConfirmTimedOut()) {
+      LOG_ERR(kLogTag, "FETCH_CANCEL skipped: last confirm already timed out");
+    } else if (!freeink::BlePositionServer::getInstance().sendCommandReply("FETCH_CANCEL")) {
       LOG_ERR(kLogTag, "FETCH_CANCEL not delivered");
     }
     LOG_INF(kLogTag, "cancelled by rider");

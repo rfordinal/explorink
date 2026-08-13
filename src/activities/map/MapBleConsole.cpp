@@ -68,6 +68,7 @@ void MapBleConsole::appendReply(const char* line) {
   if (lineLen + 1 > budget) {
     flushReplies();
     ble.sendCommandReply(line);
+    ++blocksSentThisPoll_;
     return;
   }
 
@@ -83,23 +84,36 @@ bool MapBleConsole::flushReplies() {
   // Cleared before the send, not after: an unconfirmed indication must not
   // leave the same bytes queued to go out again on the next flush.
   batchLen_ = 0;
+  ++blocksSentThisPoll_;
   return freeink::BlePositionServer::getInstance().sendCommandBlock(batch_, len);
 }
 
 bool MapBleConsole::poll() {
   BatchingReplyWriter out(*this);
   bool redraw = false;
+  blocksSentThisPoll_ = 0;
 
-  char buffer[kBytesPerPoll];
-  const size_t count = freeink::BlePositionServer::getInstance().readCommandBytes(buffer, sizeof(buffer));
-  for (size_t i = 0; i < count; ++i) {
-    if (console_.feed(buffer[i], out)) redraw = true;
+  // One byte at a time, not the old bulk read of up to kBytesPerPoll: a byte
+  // pulled off BlePositionServer's ring is gone, so once the block cap below
+  // is hit the loop has to stop *before* taking the next byte, not after, or
+  // the bytes behind it would be lost instead of staying queued for the next
+  // tick (docs/ble-review-2026-08.md, "Console flush can freeze the activity
+  // task"). kBytesPerPoll remains the outer bound for a healthy link where the
+  // cap never triggers.
+  auto& ble = freeink::BlePositionServer::getInstance();
+  char c;
+  for (size_t i = 0; i < kBytesPerPoll; ++i) {
+    if (blocksSentThisPoll_ >= kMaxBlocksPerPoll) break;  // rest stays queued in the ring, in order
+    if (ble.readCommandBytes(&c, 1) == 0) break;          // nothing more waiting
+    if (console_.feed(c, out)) redraw = true;
   }
 
   // Whatever the last command produced and did not fill a batch with. Done
   // here rather than per command so a reply of five short lines is one
-  // indication, which is the whole point.
-  flushReplies();
+  // indication, which is the whole point. Skipped once the cap is already
+  // spent -- batchLen_ is a member, so what's buffered rides into the next
+  // poll() call instead of becoming a 3rd send this tick.
+  if (blocksSentThisPoll_ < kMaxBlocksPerPoll) flushReplies();
 
   return redraw;
 }

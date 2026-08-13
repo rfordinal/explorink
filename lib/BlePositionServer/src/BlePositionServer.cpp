@@ -529,6 +529,11 @@ bool BlePositionServer::sendCommandBlock(const char* text, size_t len) {
         // whole point is a count that adds up.
         LOG_ERR("BLEPOS", "reply unconfirmed after %lu ms, %u bytes dropped",
                 static_cast<unsigned long>(kConfirmTimeoutMs), static_cast<unsigned>(len));
+        // A peer that let a confirm expire is exactly the peer that will not
+        // hear a later FETCH_CANCEL either -- callers on their way out check
+        // this and skip that doomed send (docs/ble-review-2026-08.md,
+        // "Console flush can freeze the activity task").
+        lastConfirmTimedOut_ = true;
         return false;
       }
       const uint32_t waitedMs = millis() - startedMs;
@@ -536,6 +541,10 @@ bool BlePositionServer::sendCommandBlock(const char* text, size_t len) {
         LOG_DBG("BLEPOS", "reply confirm took %lu ms for %u bytes", static_cast<unsigned long>(waitedMs),
                 static_cast<unsigned>(len));
       }
+      // A confirm did arrive, so whatever the last attempt was, the peer is
+      // hearing us again -- clear the flag so a stale timeout from an earlier
+      // reply does not keep suppressing FETCH_CANCEL forever.
+      lastConfirmTimedOut_ = false;
       return true;
     }
     vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
