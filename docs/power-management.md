@@ -73,10 +73,20 @@ claims:
 
 **`rssi()` returns 0 on a live link.** The `INFO rssi_dbm=` line was absent
 from a `stats` answered over BLE, i.e. with a central definitely connected and
-the handle set (`BlePositionServer.cpp:516-520` returns 0 when
+the handle set (`BlePositionServer.cpp:601-605` returns 0 when
 `ble_gap_conn_rssi()` fails). So either that HCI path is unavailable on this
 build or the call errors for another reason. Pre-existing -- `rssi()` had no
 caller before `stats` -- and not yet chased. Open.
+
+The header status row consumed this value directly and, on a failure,
+rendered it as full signal (0 passes every `bleBarsForRssi` threshold) --
+fixed on the consumer side, 2026-08-13: `MapActivity::resolveBleBars()` now
+holds the last bar count a non-zero reading produced instead of remapping a
+0. See `docs/map-header-status.md`, "A failed rssi() read must not draw full
+signal". This does not touch `ble_gap_conn_rssi()` itself -- if the HCI call
+is failing every time on this build, the bars will sit at whatever they were
+on the last connect and never move, which is still wrong, just a different
+wrong. That underlying failure is still open, still here.
 
 ## Charging cannot be turned off in software (X4)
 

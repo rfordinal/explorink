@@ -1030,6 +1030,19 @@ void MapActivity::expireAutoSync() {
   autoSyncDeadlineMs_ = 0;
 }
 
+// rssi() answers 0 on failure (BlePositionServer.cpp:601-605), not a real
+// reading -- BlePositionServer.h:325 says 0 dBm never happens on a live link
+// -- and bleBarsForRssi(0) clears every negative threshold, so a failed read
+// used to draw full signal (4 bars) instead of no signal. Hold the last bar
+// count a real reading produced instead of remapping the failure value.
+// lastKnownBleBars_ starts at, and is reset to, 0 -- "no reading has
+// succeeded yet" draws identically to "0 bars", which is the right picture
+// either way.
+int MapActivity::resolveBleBars(int8_t rssi) {
+  if (rssi != 0) lastKnownBleBars_ = bleBarsForRssi(rssi);
+  return lastKnownBleBars_;
+}
+
 void MapActivity::updateHeaderStatus() {
   // Nothing to update before there is a frame to update: the waiting banner
   // draws no header row at all, and painting one onto it would leave a floating
@@ -1049,7 +1062,7 @@ void MapActivity::updateHeaderStatus() {
   // Same test drawHeaderStatusStrip() uses, and the comment there says why it is
   // the interval rather than the MTU.
   const bool connected = ble.connIntervalMs() != 0;
-  const int bars = connected ? bleBarsForRssi(ble.rssi()) : 0;
+  const int bars = connected ? resolveBleBars(ble.rssi()) : 0;
 
   // Two classes of change, and they earn different urgency.
   //
@@ -1338,10 +1351,12 @@ void MapActivity::drawHeaderStatusStrip() {
     renderer.drawLine(barsLeft, iconTop, barsLeft + kHeaderBleBarsWidth, iconBottom, 2, true);
     renderer.drawLine(barsLeft, iconBottom, barsLeft + kHeaderBleBarsWidth, iconTop, 2, true);
     drawnBleBars_ = 0;
+    // A new connection starts owing nothing to the last one's signal.
+    lastKnownBleBars_ = 0;
     return;
   }
 
-  const int bars = bleBarsForRssi(ble.rssi());
+  const int bars = resolveBleBars(ble.rssi());
   drawnBleBars_ = bars;
   for (int i = 0; i < kHeaderBleBarCount; ++i) {
     const int barHeight = (i + 1) * kHeaderIconHeight / kHeaderBleBarCount;
@@ -1481,6 +1496,7 @@ void MapActivity::onEnter() {
   transferIconShown_ = false;
   drawnLinkConnected_ = false;
   drawnBleBars_ = -1;
+  lastKnownBleBars_ = 0;
   nextHeaderPollMs_ = 0;
   nextBarsRepaintMs_ = 0;
 

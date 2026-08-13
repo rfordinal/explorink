@@ -14,7 +14,7 @@ has a wireless link worth showing.
 | Part | Source | Meaning |
 |---|---|---|
 | Battery | `GUI.drawHeader()` | same as every other screen |
-| Signal bars | `bleBarsForRssi(ble.rssi())` | link quality to the phone |
+| Signal bars | `resolveBleBars(ble.rssi())` | link quality to the phone |
 | X over the bar slot | `connIntervalMs() == 0` | no central connected |
 | Bluetooth logo | always | what the bars are about |
 | Globe | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data |
@@ -113,6 +113,48 @@ client that did not, which is why the morning's bug report was about the bars no
 
 `info`'s own `mtu` line stays gated on the MTU being non-zero. That one is about
 the MTU, so omitting it when there is none is correct, not the same bug.
+
+## A failed rssi() read must not draw full signal
+
+**Fixed 2026-08-13.** `BlePositionServer::rssi()` returns `0` when
+`ble_gap_conn_rssi()` fails (`lib/BlePositionServer/src/BlePositionServer.cpp:601-605`;
+`BlePositionServer.h:323-327` documents 0 dBm as never a real reading on a
+live link -- `docs/power-management.md` records this failing on this build).
+`bleBarsForRssi()`'s thresholds are all negative (`MapActivity.cpp:478`), so a
+failed read passed every one of them and drew 4 bars -- a dead RSSI read
+looked identical to a perfect link.
+
+`MapActivity::resolveBleBars(int8_t rssi)` (`MapActivity.cpp`, next to
+`updateHeaderStatus()`) is the fix: it only updates `lastKnownBleBars_` when
+`rssi != 0`, and always returns `lastKnownBleBars_` rather than
+`bleBarsForRssi(rssi)` directly. Both call sites that used to call
+`bleBarsForRssi(ble.rssi())` -- `updateHeaderStatus()`'s own change check and
+`drawHeaderStatusStrip()`'s draw -- now go through it, so the two agree.
+
+`lastKnownBleBars_` starts at, and is reset to, `0` in three places: the
+member initializer, `onEnter()`, and the `!connected` branch of
+`drawHeaderStatusStrip()`. That last one matters most -- it is what stops a
+new connection from inheriting the previous one's signal, since the member is
+otherwise held across reconnects within the same activity instance (a rider
+who leaves the map screen up while the phone's app drops and reconnects).
+
+Net behaviour:
+
+| Case | Bars shown |
+|---|---|
+| First poll after connect fails (`rssi()` returns 0) | none (0, same picture as "no signal") |
+| Mid-ride poll fails after an earlier good reading | the last good count, held |
+| Next poll succeeds | live bars again |
+| Disconnect, then a new connection | starts from 0 again, not the old connection's count |
+
+**Read off the code, not measured on hardware.** No device access in this
+change (firmware-task rule). `docs/power-management.md`'s open question --
+whether `ble_gap_conn_rssi()` fails on every call on this build or only
+sometimes -- decides how visible this fix is in practice: if it fails always,
+the bars will sit wherever they were at connect time and never move again,
+which is a real limitation of holding-last-known and not something this fix
+can address without the underlying HCI call working at least once per
+connection.
 
 ## The repaint policy
 
@@ -266,3 +308,9 @@ same offset still reads right.
 - **Not yet checked**: the truncation path (no name seen so far has been
   close to running into the icon cluster) and every other zoom rung's places
   walk.
+- **Read off the code, not measured on hardware, 2026-08-13**: the
+  `resolveBleBars()` fix above (0-renders-as-4-bars) traced through
+  `pio run` and the source, not through a device screenshot -- see "A failed
+  rssi() read must not draw full signal". What would settle it: a build with
+  a logging shim that forces `ble_gap_conn_rssi()` to fail on demand, watched
+  over `CMD:SCREENSHOT` through a connect / forced-fail / recovery cycle.
