@@ -468,8 +468,6 @@ bool BlePositionServer::sendCommandReply(const char* line) {
 bool BlePositionServer::sendCommandBlock(const char* text, size_t len) {
   if (!begun_ || g_commandChar == nullptr || text == nullptr || len == 0) return false;
 
-  g_commandChar->setValue(reinterpret_cast<const uint8_t*>(text), len);
-
   // Confirmed on real hardware: indicate() returning true only means this
   // indication was accepted into NimBLE's single-slot pending queue, not
   // that the peer received it -- a burst of 18 back-to-back indicate()
@@ -504,7 +502,12 @@ bool BlePositionServer::sendCommandBlock(const char* text, size_t len) {
     // its own wait already timed out) so this wait can't return instantly
     // on a signal that isn't for this indication.
     xSemaphoreTake(g_indicateAckSem, 0);
-    if (g_commandChar->indicate()) {
+    // indicate(data, len) copies into NimBLE's own indication buffer; the
+    // no-arg indicate() sends m_value, which this characteristic is also
+    // peer-writable into, so a command crossing the reply between
+    // setValue() and indicate() would replace it (review doc
+    // docs/ble-review-2026-08.md item 6).
+    if (g_commandChar->indicate(reinterpret_cast<const uint8_t*>(text), len)) {
       const uint32_t startedMs = millis();
       if (xSemaphoreTake(g_indicateAckSem, pdMS_TO_TICKS(kConfirmTimeoutMs)) != pdTRUE) {
         // Not retried: the peer may still be about to take this one, and
