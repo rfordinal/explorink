@@ -12,7 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "GfxRendererCanvas.h"
-#include "LastHeldTiles.h"
+#include "HeldTilesStore.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
 #include "MapMarkerMetrics.h"
@@ -820,10 +820,13 @@ void MapActivity::maybeCheckTileFreshness() {
     }
     return;
   }
-  // Nothing drawn yet means nothing to ask about.
-  if (heldTiles_.count == 0) {
+  // Nothing drawn yet, or everything already answered for. The second case is
+  // the steady state on a ride that stays in one place: the store drains as the
+  // phone answers, so a device with nothing new to ask about stops asking
+  // instead of re-sending the same screenful every ten minutes.
+  if (g_heldTiles.pendingCount() == 0) {
     if (logGate) {
-      LOG_DBG(kLogTag, "freshness: no tiles held, nothing to ask about");
+      LOG_DBG(kLogTag, "freshness: nothing pending, nothing to ask about");
       freshnessLastGateLogMs_ = now;
     }
     return;
@@ -852,9 +855,18 @@ void MapActivity::maybeCheckTileFreshness() {
   // FreshnessChecker's format defaulted to CdnTileSource's stale constant and
   // compared against the wrong /v<N>/ index tree, one version behind, for
   // every check.
+  //
+  // The count is advisory, not a contract: the phone trusts `have_total` and
+  // the lines it actually receives, and a render landing between this line and
+  // the phone's `have` can add a pending tile (FreshnessChecker's HaveReader).
+  // One round's worth, matching what `have` will actually list -- a listing
+  // runs its blocks back to back on this task and each waits on the peer's
+  // confirm (HeldTilesStore::kMaxPerListing). The rest keeps for the next
+  // cooldown, which is what the store draining is for.
+  const unsigned long pending = static_cast<unsigned long>(g_heldTiles.pendingCount());
+  const unsigned long round = pending < HeldTilesStore::kMaxPerListing ? pending : HeldTilesStore::kMaxPerListing;
   char line[48];
-  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", static_cast<unsigned long>(heldTiles_.count),
-           static_cast<unsigned>(MapTileReader::kFormatVersion));
+  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", round, static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "freshness: CHECK_TILES not delivered");
     return;
@@ -864,7 +876,8 @@ void MapActivity::maybeCheckTileFreshness() {
   // From the ask, not from the answer: the cap is on how often the device may
   // start a conversation.
   freshnessNextAskMs_ = now + kFreshnessIntervalMs;
-  LOG_INF(kLogTag, "freshness: asked about %lu tile(s) on screen", static_cast<unsigned long>(heldTiles_.count));
+  LOG_INF(kLogTag, "freshness: asked about %lu of %lu pending, %lu held", round, pending,
+          static_cast<unsigned long>(g_heldTiles.size()));
 }
 
 void MapActivity::expireAutoSync() {
@@ -1368,6 +1381,10 @@ void MapActivity::onEnter() {
   // this list, and `stale`/`checked` land on this activity.
   consoleState_.setStaleTiles(&staleTiles_);
   consoleState_.setStaleObserver(this);
+  // What `have` lists and `checked` settles. Wired once, not per reset: the
+  // store outlives both this activity and the sync screen, which is the whole
+  // reason the accumulation survives leaving the map (HeldTilesStore).
+  consoleState_.setHeldTilesStore(&g_heldTiles);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -2907,26 +2924,16 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // header parse already put in RAM. This is the only moment on the device where
   // it is free, so the freshness check reads it off the render rather than
   // opening every tile again (docs/tile-freshness.md).
-  heldTiles_ = MapHeldTiles{};
-  heldTiles_.valid = true;
-  for (uint32_t index = 0; index < range.count() && index < MapHeldTiles::kMaxEntries; ++index) {
+  // Recorded, not replaced. The store accumulates across resets and drains as
+  // the phone answers, so a rider who pans across a city can have all of it
+  // checked rather than only the last screenful (HeldTilesStore).
+  for (uint32_t index = 0; index < range.count(); ++index) {
     // A tile that did not open has no content to compare, and saying it is
     // held at content 0 would have the phone report it stale forever. It is
     // already on the missing path, which is where it belongs.
     if ((missing & (1u << index)) != 0) continue;
-    const uint32_t contentId = source_->contentIdAt(index);
-    if (contentId == 0) continue;
-    MapHeldTiles::Entry& e = heldTiles_.entries[heldTiles_.count++];
-    e.z = range.z;
-    e.col = range.colAt(index);
-    e.row = range.rowAt(index);
-    e.contentId = contentId;
+    g_heldTiles.record(range.z, range.colAt(index), range.rowAt(index), source_->contentIdAt(index));
   }
-  consoleState_.setHeldTiles(heldTiles_);
-  // Left where the tile sync screen can find it: that screen is where a rider
-  // deliberately spends data, and it has no viewport of its own to read a
-  // content_id from (LastHeldTiles.h).
-  g_lastHeldTiles = heldTiles_;
   consoleState_.setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted(),
                                source_->bytesRead(), source_->waysFiltered());
   consoleState_.setZoomInfo(zoomStep(), range.z, MapViewport::kZoomLadder[zoomStep()].mpp);

@@ -211,6 +211,12 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // spending the phone's data belongs, which is why this mode exists separately
   // from the map screen's live one.
   void askAboutFreshness();
+  // Writes the one line that says what the freshness check is doing, or
+  // returns false when there is nothing to say (Freshness::Idle). Separate from
+  // the fetch's own status line because the two answer different questions --
+  // "did the tiles I lack arrive" and "are the tiles I have still right" -- and
+  // a rider who cannot tell them apart reads a check as a download.
+  bool formatFreshness(char* out, size_t size) const;
 
   // Snapshots the missing list and zeroes everything one run reports, so a second
   // run on the same visit starts where a fresh entry would. False means the
@@ -226,9 +232,45 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // Stale tiles this visit, for the ping-pong guard and the log. Not persisted
   // and not this screen's row list -- see StaleTilesList.
   StaleTilesList staleTiles_;
-  // True once CHECK_TILES has gone out this visit. One check per visit: the
-  // held-tile snapshot does not change while this screen is up.
+  // True once CHECK_TILES has gone out this visit. One check per visit: this
+  // screen draws no map, so nothing adds to the held-tile store while it is up.
   bool freshnessAsked_ = false;
+
+  // What the screen says about the check, so a rider can tell a freshness pass
+  // from a plain fetch. It could not before: the check ran, tiles moved over
+  // BLE, and the only evidence was the serial log -- so the data spend read as
+  // a download of missing tiles and nothing named it (docs/tile-freshness.md).
+  enum class Freshness : uint8_t {
+    Idle,     // not asked -- mode Off, nothing held, or the fetch is still running
+    Asking,   // CHECK_TILES is out, waiting for `checked`
+    Current,  // the phone compared them all and none had moved
+    Stale,    // freshnessStale_ tiles were out of date; the phone is pushing them
+    Unknown,  // `checked unknown` -- the phone could not read the index
+  };
+  Freshness freshnessState_ = Freshness::Idle;
+  // Cumulative over the visit: how many tiles have been checked and how many of
+  // them were out of date. A visit asks in rounds (HeldTilesStore::
+  // kMaxPerListing), and the rider wants one number, not one per round.
+  uint32_t freshnessAskedCount_ = 0;
+  uint32_t freshnessStale_ = 0;
+  // What the round currently on the wire covers, folded into the total when
+  // `checked` closes it.
+  uint32_t freshnessRound_ = 0;
+
+  // Set by onCheckFinished(), consumed by loop(). **Neither may be acted on
+  // where they are set.** That observer runs inside MapConsoleState::handle()'s
+  // dispatch of `checked`, on the activity task, before the terminating `OK`
+  // the phone is still waiting for -- so a repaint (500-1700 ms of e-ink) or a
+  // sendCommandReply() confirm wait (up to 3 s) started there delays that reply
+  // and can deadlock against a peer that will not confirm a new indication
+  // while its own command is open.
+  //
+  // The console already has the pattern: handle() returns a redraw flag,
+  // poll() aggregates it, the caller acts once poll() has returned
+  // (MapBleConsole::poll). These two are that pattern, for the two things this
+  // screen needs after a check settles.
+  bool freshnessAskPending_ = false;
+  bool freshnessRedrawPending_ = false;
 
   // When something last landed or was skipped, for the stall verdict below.
   // Armed by askForTiles(), so a screen that never asked cannot time out.
@@ -286,6 +328,46 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // Gap between a square and its neighbour, so blocks read as separate squares
   // rather than one blot. Drawn as an inset on the fill.
   static constexpr int kTileInset = 2;
+
+  // A stale tile is a dot, not an outlined square, and the two are drawn on the
+  // same grid on purpose: they answer different questions about the same ground
+  // -- "this square is not on the card" against "this square is on the card and
+  // out of date" -- and a rider needs to tell them apart at a glance. An
+  // outline for one and a solid dot for the other does that with no legend.
+  //
+  // The dot scales with the tile's LOD so depth still reads (a z11 dot is
+  // bigger than a z13 one), but it is capped well under the cell: a disc that
+  // fills its square stops looking like a mark on a map and starts looking like
+  // a filled tile, which is the thing the outline decision above already
+  // rejected for being all ink and no information.
+  static constexpr int kDotDivisor = 4;
+  static constexpr int kMaxDotPx = 20;
+  static constexpr int kMinDotPx = 3;
+
+  // Every tile this screen still owes the rider an answer about, in three
+  // groups, drawn as one grid:
+  //
+  //   [0, rowCount_)                 missing, being fetched      outlined square
+  //   then every unsettled held tile queued for a freshness check    dot
+  //   then every stale tile awaiting its replacement                 dot
+  //
+  // A dot means "not settled yet", whichever half of the work it is waiting on.
+  // It goes out when the phone answers that the tile is current, or -- for one
+  // that came back stale -- when the replacement has actually landed. So the
+  // grid empties as the check works through it, which is the thing worth
+  // watching on this screen.
+  //
+  // The three cannot overlap: a missing tile has no content_id so it is never
+  // in the held store (HeldTilesStore::record ignores content_id 0), and a
+  // stale tile has already been settled in the store by the `checked` that
+  // reported it, so it is no longer pending.
+  //
+  // interestAt() walks the held store to find the nth pending entry, so it is
+  // O(store) per call. chooseWindow()'s O(n^2) placement pass is the only
+  // caller that could feel that, and only on the rare path where the tiles are
+  // spread wider than the window; the common clustered case exits early.
+  size_t interestCount() const;
+  MapTileCoord interestAt(size_t index) const;
 
   // Tiles the phone has given up on. Counted here as well as in the console's
   // tally because a `skip` for a tile that is not on this snapshot (a stale

@@ -95,26 +95,238 @@ chooses it deliberately or it does not happen.
 | mode | when the device asks |
 |---|---|
 | `Off` | never. No `CHECK_TILES` is ever sent, and the code path costs one compare per `loop()`. |
-| `SyncScreen` | once when the tile sync screen opens (`TileSyncActivity::askAboutFreshness()`). Preparation at home, which is where spending data belongs. |
-| `Live` | that, plus from the map screen on a cooldown (`MapActivity::maybeCheckTileFreshness()`, `kFreshnessIntervalMs`, 10 minutes). |
+| `SyncScreen` | once per visit to the tile sync screen (`TileSyncActivity::askAboutFreshness()`), **after that visit's fetch has settled** -- see "Two asks on one channel". Preparation at home, which is where spending data belongs. |
+| `Live` | that, plus from the map screen on a cooldown (`MapActivity::maybeCheckTileFreshness()`, `kFreshnessIntervalMs`, 10 minutes), which is what drains the held-tile store in the background. |
 
 Ten minutes rather than the autosync's one: the answer changes when somebody
 rebuilds an area -- hours or weeks apart -- not when the rider moves.
 
-## The sync screen has no viewport, so the map leaves it one
+## The list accumulates as you ride, and drains as it is answered
 
 `content_id` is free only where a tile is already open, and only the map screen
 opens tiles. The sync screen is where a rider deliberately spends data, and it
-draws no map at all.
+draws no map at all. So the map fills a store and the sync screen spends data
+emptying it: `HeldTilesStore`, `src/activities/map/HeldTilesStore.h`, one global
+instance both screens wire into their console state.
 
-So `MapActivity` writes its last viewport snapshot to `g_lastHeldTiles`
-(`src/activities/map/LastHeldTiles.h`) after every reset, and `TileSyncActivity`
-answers `have` from it. In memory, one snapshot, never persisted -- it changes
-every frame, and writing it would be an SD write per frame for a value whose
-whole worth is being current.
+**It used to be a single-viewport snapshot, and that was the wrong shape**
+(`LastHeldTiles.h`, deleted 2026-08-13). That version held one render's worth of
+tiles -- 16 at the 4x4 worst case -- and `MapActivity::renderViewport()` rebuilt
+it from scratch on every viewport reset. So a rider could pan across a city and
+still only ever have the last screenful checked, while `MissingTilesStore` was
+accumulating the tiles that were *absent* the whole time. Riding is how a device
+accumulates tiles worth checking, so the list has to accumulate the same way.
 
-Empty until the map has drawn once, which reads correctly: there is nothing to
-check. The sync screen says so and sends no `CHECK_TILES`.
+Four rules, all in `HeldTilesStore.cpp` and covered by `HeldTilesStore.*` tests
+in `test/map_command_parser/MapCommandParserTest.cpp`:
+
+- **`record()` on every render, per tile.** Same coordinates and the **same**
+  `content_id` changes nothing -- every reset walks tiles the last one already
+  had, and re-arming there would mean the list never drains. A **different**
+  `content_id` re-arms the entry: the card holds something the phone has not
+  seen. `content_id == 0` is not recorded at all; a tile that did not open has
+  no content to vouch for and is already on the missing path.
+- **`have` lists only what is pending, and stamps what it listed.** A tile
+  recorded between the listing and the phone's answer is pending but not asked,
+  so `checked` cannot settle a tile the phone was never told about.
+- **`checked <n>` settles the whole listed batch**, stale or not. A stale tile is
+  settled too: the phone is already pushing the replacement, and the new copy
+  re-arms this entry through `record()` when it is next drawn. That closes the
+  loop and cannot spin, because the second answer agrees.
+- **`checked unknown` settles nothing.** The phone could not read the index and
+  is claiming nothing.
+
+**This is why `Live` mode looks like it works a backlog down** -- it does. The
+map screen's ten-minute check empties the store in the background, and the sync
+screen's check is the same queue emptied on demand rather than a second,
+parallel mechanism. A device with nothing pending stops asking entirely
+(`MapActivity::maybeCheckTileFreshness()`, the `pendingCount() == 0` gate)
+instead of re-sending the same screenful every ten minutes.
+
+### The store holds 64, one listing sends 12
+
+Two different caps, and conflating them is a freeze.
+
+`MapBleConsole` bounds itself at `kMaxBlocksPerPoll` (2) indications per
+`poll()`, so a hung-but-subscribed peer cannot chain 3-second confirm waits on
+the activity task. **That cap is checked before reading the next command byte,
+not while one command is emitting replies** (`MapBleConsole::poll()`). So a
+single `have` runs to however many blocks its listing needs, back to back, and
+the cap does not see it. A 64-entry listing is ~10 blocks: about 11 s of dead
+buttons on a healthy link and up to 30 s against a peer that has stopped
+confirming -- exactly the freeze the block cap exists to prevent, through a
+different door.
+
+So `HeldTilesStore::kMaxPerListing = 12`: a ~32-byte line packs seven to a
+253-byte indication, so twelve entries plus the total line stay inside two
+blocks. Nothing is lost, because the store drains -- the sync screen asks again
+while anything is still pending, so a visit still empties the store, in rounds.
+It cannot spin: `markAskedChecked()` settles the round before the next ask, so
+`pendingCount()` strictly shrinks. It re-asks only on a `known` answer; `checked
+unknown` settles nothing, so re-asking on that would loop forever against a
+phone that cannot read the index. The map screen does not re-ask -- its next
+cooldown is the next round, which is what a background drain should look like.
+
+**The round cap alone does not bound the freeze, and the first version of this
+got that wrong.** Capping the listing bounds one `have`. It does nothing about
+*where the next round is started from*, and the first version started it
+straight out of `onCheckFinished()` -- inside `MapConsoleState::handle()`'s
+dispatch of `checked`, on the activity task, before the terminating `OK` the
+phone was still waiting for. That put an e-ink repaint (500-1700 ms) and a
+`sendCommandReply()` confirm wait (up to 3 s) in front of that reply: ~6.4 s per
+round, six rounds for a full store, and a plausible deadlock against a peer that
+will not confirm a new indication while its own command is open.
+
+Suspected cause of a solid hang on real hardware 2026-08-13 -- buttons dead,
+`CMD:SCREENSHOT` returning zero bytes, the device recovering on a plain reset.
+**Read off the code, not proven:** no serial log was captured from the hang, and
+it is not known whether that visit had more than one round's worth pending, so
+whether the re-ask fired at all is open. A monitor attached from boot through a
+reproduction would settle it -- the question is whether a second `freshness:
+asked about ...` line precedes the silence.
+
+The ask now goes through `freshnessAskPending_`, consumed in `loop()`, which is
+the pattern the console already had. See below.
+
+### Never work inside a console dispatch
+
+`MapConsoleState::handle()` runs on the activity task, one command at a time,
+and the phone is waiting for that command's terminating `OK`. Anything slow
+started from an observer it calls -- an e-ink repaint, a `sendCommandReply()`
+confirm wait, a fetch -- delays that `OK`, and can deadlock against a peer that
+will not confirm a new indication while its own command is open.
+
+The console already provides the way out, and it is worth copying rather than
+inventing: `handle()` returns a redraw flag, `poll()` aggregates it, and the
+activity acts once `poll()` has returned (`MapBleConsole::poll`). **Set a member
+flag in the observer; do the work in `loop()`.** `TileSyncActivity` does this
+with `freshnessAskPending_` and `freshnessRedrawPending_`.
+
+A second thing fell out of the same fix: `askAboutFreshness()` used to repaint
+before returning, and every one of its callers already repaints immediately
+after it -- two e-ink refreshes per ask. It now sets the redraw flag like
+everything else, so a round costs one.
+
+`CHECK_TILES <count>` states the round, not the backlog, so the number matches
+what `have` is about to list.
+
+**Found by rebasing onto `7ca2ea36`, not on hardware.** The interaction is read
+off the two code paths; the 11 s and 30 s figures are that arithmetic against
+the measured confirm range below, not timings anybody took.
+
+### Why the store holds 64
+
+`HeldTilesStore::kMaxEntries = 64`, a fixed array -- 1 KB of static DRAM, no
+heap, no fragmentation risk. The RAM is not the constraint; the reply channel
+is. A `have` line is ~32 bytes, seven fit in one 253-byte indication at MTU 256,
+and every indication waits for the peer's ATT confirm before the next goes out.
+Confirms measure **688-1503 ms** on the current Android build (see "The reply
+channel dropped lines" below), so 64 entries cost about ten confirms.
+
+**Computed from those measured confirms, not measured at that scale:**
+
+| pending tiles | indications | rough wait |
+|---|---|---|
+| 64 | 10 | ~11 s |
+| 100 | 15 | ~16 s |
+| 256 | 37 | ~41 s |
+
+A bigger store would not finish sooner -- it would take more rounds to empty --
+so the cap is where a rider still waits through one check. **Open:** none of
+these has been timed end to end on hardware; a single run with a full store and
+timestamps on the first and last confirm would settle the whole column.
+
+Bounded by eviction rather than refusal: a settled entry goes first, because the
+map re-records it the next time it draws that ground. With nothing settled the
+oldest goes, because the tiles worth checking are the ones near where the rider
+now is.
+
+**In memory, never persisted**, unlike `MissingTilesStore` -- and the difference
+is real rather than an omission. That store exists so somebody *else* can fill
+the gaps; a laptop tool reads the file off the card (`missing-tiles.md`).
+Nothing off-device reads this list, and a `content_id` is only trustworthy while
+it matches the bytes on the card, which a reboot cannot promise. A reboot costs
+the accumulation and the map rebuilds it by drawing.
+
+Empty before the map has drawn once, which reads correctly: there is nothing to
+check. `have` answers `have=none` and the sync screen sends no `CHECK_TILES`.
+
+## The screen says which one it is doing
+
+**Added 2026-08-13, after a rider could not tell a check from a download.** The
+check ran on the sync screen, moved real tiles over BLE, and the only evidence
+it had happened at all was the serial log: `onTileStale()` and
+`onCheckFinished()` logged and returned without a repaint, and a replaced tile
+does not touch the grid either -- `drainTransferredTiles()` calls
+`MISSING_TILES.forget()`, which returns false for a tile that was never missing.
+So the panel showed the fetch's own verdict throughout and the data spend read
+as a download of missing tiles.
+
+`TileSyncActivity::formatFreshness()` now draws one line under the fetch's
+numbers, in five states: idle (nothing drawn), asking, all current, N of M out
+of date, and could-not-check. The last one is deliberately not phrased as good
+news -- `checked unknown` means the phone could not read the index, and the two
+must never read alike.
+
+### The check queue is dots, the fetch queue is outlines
+
+One grid, two marks, and each says what the square is waiting on:
+
+| mark | meaning | goes out when |
+|---|---|---|
+| outlined square, inside a framed parent | not on the card, being fetched | the tile arrives |
+| solid dot, no frame | on the card, not settled yet | the phone says it is current, or a stale one's replacement lands |
+
+**The frames belong to the missing tiles only.** The z11 parent frame and the
+z12 quadrant frame are scaffolding for a hatched square -- they say how deep it
+sits. A dot already carries its depth in its size, so a parent holding nothing
+but dots is drawn bare: framing it spends ink on nothing and buries the one
+thing worth watching, which is the dots going out one at a time. A parent
+holding both still gets its frame, from the missing-tile pass, because
+something in it really is missing.
+
+**A dot is drawn for every tile queued for a check, not only for the ones that
+turn out to be stale.** That is the point of it: the grid starts full of dots
+and empties as the check works through them, so a rider can see the queue
+draining rather than reading a number change. A tile that comes back stale keeps
+its dot -- it is still not settled -- until the replacement actually lands.
+
+The dot set is therefore every unsettled entry in `HeldTilesStore` plus every
+entry in `StaleTilesList`. The three groups cannot overlap: a missing tile has
+no `content_id` so it never enters the held store, and a stale tile was settled
+in the store by the `checked` that reported it, so it is no longer pending
+(`TileSyncActivity::interestAt()`).
+
+The dot scales with the tile's LOD so depth still reads -- `kDotDivisor` of the
+cell, floored at `kMinDotPx` and capped at `kMaxDotPx` -- but it stays well
+under the cell on purpose. A disc that fills its square stops reading as a mark
+on a map and starts reading as a filled tile, which is the thing the outline
+decision already rejected for being all ink and no information.
+
+No new renderer primitive: `fillRoundedRect()` with a corner radius of half the
+side is a disc, and it already clamps the radius to half the smaller side
+(`lib/GfxRenderer/GfxRenderer.cpp`).
+
+Two things had to change around it:
+
+- **The grid window is sized on every unsettled tile** (`interestCount()`,
+  `interestAt()`). It used to be sized on the missing list alone in `armRun()`,
+  so a visit with nothing missing had no window at all -- which is exactly the
+  common freshness case. `chooseWindow()` therefore runs again from
+  `onCheckFinished()`, the first moment every `stale` line has landed.
+- **`staleTiles_.onArrived()` is now called on the sync screen.** It never was:
+  `drainTransferredTiles()` only called `MISSING_TILES.forget()`, which returns
+  false for a tile that was never missing. So a replaced tile kept its entry for
+  the rest of the visit -- now visible as a dot that would never go out -- and
+  the ping-pong guard was never armed on this screen, meaning a cache serving
+  the old copy could be fetched repeatedly. The map screen had always done this
+  (`MapActivity::drainTransferredTiles()`); the sync screen now matches.
+
+**Not yet on hardware.** Builds clean and the geometry is read off the code; how
+a 3-20 px dot resolves on the panel next to a 2 px outline is a tone question
+and this project does not settle those from a laptop render
+(`docs/eink-grayscale.md`, and the `CMD:SHOWIMAGE` path exists for exactly
+this).
 
 ## How the check works
 
@@ -124,11 +336,13 @@ world-sized index mirrored onto one SD card, for a check the phone can already
 do. Same division of labour the missing-tile fetch already uses -- the device
 asks, the phone fetches from the CDN.
 
-1. Device sends `CHECK_TILES <count>`. The phone reads the list with `have`, and
-   the device answers `(z, col, row, content_id)` per tile from the snapshot the
-   last render left behind. The content ids were collected where
-   `MapTileSource` already opens each tile (`contentIdAt()`) -- no extra I/O,
-   the same trick `MissingTilesStore` plays for absent tiles.
+1. Device sends `CHECK_TILES <count> fmt <version>`. The phone reads the list
+   with `have`, and the device answers `(z, col, row, content_id)` for every
+   tile in `HeldTilesStore` that no check has settled yet. The content ids were
+   collected where `MapTileSource` already opens each tile (`contentIdAt()`) --
+   no extra I/O, the same trick `MissingTilesStore` plays for absent tiles.
+   The count is advisory: the phone trusts `have_total` and the lines it
+   actually receives, so a render landing between the two cannot break it.
 2. Phone byte-range reads the matching slots out of the CDN's `.idx` and answers
    `stale <z> <col> <row>` per differing tile, then `checked <n>`. One range
    request per zoom plane, not one per tile: the slots are contiguous in the
@@ -270,15 +484,22 @@ thing inside the function), so a second subscribe within the same screen visit
 was always going to be a no-op — the fix only needed to give the guarded call
 a second, later place to be reached from.
 
-Reverified on hardware after the fix, same firmware rebuild, real Android app:
+Reverified on hardware after the fix, same firmware rebuild, real Android app.
 
-- Entered `TileSync` before ever opening the Map screen this boot (so
-  `g_lastHeldTiles` was empty): `phone subscribed, asking` at `65554`, and in
+**Read the ask ordering below as history, not as current behaviour.** These runs
+sent the freshness ask first and the missing-tile ask second, 9-15 ms apart.
+That was reversed on 2026-08-11 -- two conversations on one command channel end
+each other's listings -- so today the sync screen sends `NEED_TILES` alone and
+holds `CHECK_TILES` until the fetch settles. See "Two asks on one channel" below.
+Everything else in these runs still stands.
+
+- Entered `TileSync` before ever opening the Map screen this boot (so the
+  held-tile list was empty): `phone subscribed, asking` at `65554`, and in
   the same call, `freshness: no tiles drawn yet, nothing to check` — the honest
   no-op, not silence and not a crash. `asked for 17 tiles` (the missing-tile
   ask) followed immediately after, proving the ordering and the fact that a
   freshness no-op does not block the rest of the visit.
-- Visited Map (populating `g_lastHeldTiles` with 2 tiles), then entered
+- Visited Map (populating the held-tile list with 2 tiles), then entered
   `TileSync` again: `phone subscribed, asking` at `178636`, `freshness: asked
   about 2 tile(s)` 9 ms later at `178645`, `asked for 17 tiles` at `178660` —
   freshness first, missing-tiles ask second, exactly the fixed order. Both
@@ -378,6 +599,41 @@ in flight was attempted this pass and blocked on a flaky `bleak` connect in
 this environment, not retried — the wire format is unchanged from
 `NEED_TILES`'s already-proven `fmt <version>` grammar, so this is a real gap
 in *this specific verification*, not in confidence about the fix's shape.
+
+## Two asks on one channel -- found and fixed 2026-08-11
+
+**The sync screen sends `NEED_TILES` first and alone, and holds `CHECK_TILES`
+until the fetch settles.** Not the other way round, and not both at once. This
+reverses what the 2026-08-09 runs above describe.
+
+Measured on hardware. The screen fired both 15 ms apart, the phone answered each
+with a command on the same channel, and a reply listing on that channel ends
+with a plain `OK` -- so either conversation could be closed by the other's
+terminator:
+
+```
+[786768] [MAPBLE] rx: have      <- freshness conversation opens
+[786888] [MAPBLE] rx: missing   <- fetch conversation opens, `have` still open
+```
+
+The phone read the 20-tile missing list as empty, pushed nothing, sent no skips,
+and all 20 rows sat at "waiting" indefinitely with both sides reporting success.
+
+So `TileSyncActivity::askForTiles()` goes out alone, and `askAboutFreshness()`
+is called from whichever of these happens first
+(`TileSyncActivity.cpp`, `updateProgress()`):
+
+- every tile settled -- landed or skipped;
+- 30 s with nothing in flight and nothing settling (`kStallVerdictMs`), the
+  stall verdict;
+- 30 s of an active-but-silent transfer, the phone-ANR'd case;
+- nothing to fetch at all, straight from `onEnter()` or `trackPhone()`.
+
+**Consequence worth knowing before testing this by hand:** on a visit with
+missing tiles, the freshness check does not run until the fetch is over. A
+rider who leaves the screen while tiles are still arriving never sees it. That
+is not a bug, but it is the reason a `SyncScreen`-mode check can look like it
+never fires.
 
 ## The reply channel dropped lines -- found and fixed 2026-08-13
 

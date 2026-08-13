@@ -7,7 +7,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
-#include "LastHeldTiles.h"
+#include "HeldTilesStore.h"
 #include "MapByteFormat.h"
 #include "MapMissingAnchor.h"
 #include "MapPowerStatsProvider.h"
@@ -60,7 +60,6 @@ bool TileSyncActivity::armRun() {
       rows_[i].tile = MapTileCoord{hits[i].z, hits[i].col, hits[i].row};
       rows_[i].unavailable = false;
     }
-    chooseWindow();
   }
 
   // Counters, not just the snapshot. The receiver counts "since the screen
@@ -74,7 +73,22 @@ bool TileSyncActivity::armRun() {
   lastClearedTileSeq_ = transfer_.status().tileSeq;
   staleTiles_.clear();
   freshnessAsked_ = false;
+  freshnessState_ = Freshness::Idle;
+  freshnessAskedCount_ = 0;
+  freshnessStale_ = 0;
+  freshnessRound_ = 0;
+  // A run that ended with work flagged must not have the next one act on it:
+  // armRun() is also the re-entry path when a phone comes back after a
+  // finished run (trackPhone).
+  freshnessAskPending_ = false;
+  freshnessRedrawPending_ = false;
   lastSettleMs_ = 0;
+  // After staleTiles_.clear(), so the window is placed over what this run will
+  // actually draw. Unconditional rather than inside the rowCount_ > 0 branch
+  // above: a visit with nothing missing still has a grid, made of the tiles
+  // queued for a freshness check, and sizing it on the missing list alone left
+  // that case with no window at all.
+  chooseWindow();
   return true;
 }
 
@@ -95,11 +109,11 @@ void TileSyncActivity::onEnter() {
 
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   consoleState_.setSkipObserver(this);
-  // What `have` answers from: the tiles the map screen last drew, with the
-  // content_id each was opened at. This screen has no viewport of its own, and
-  // reading a content_id anywhere else on the device would mean opening tiles
-  // for no other reason (LastHeldTiles.h).
-  consoleState_.setHeldTiles(g_lastHeldTiles);
+  // What `have` answers from: every tile the map has drawn since boot that no
+  // check has settled yet. This screen has no viewport of its own, and reading
+  // a content_id anywhere else on the device would mean opening tiles for no
+  // other reason (HeldTilesStore).
+  consoleState_.setHeldTilesStore(&g_heldTiles);
   consoleState_.setStaleTiles(&staleTiles_);
   consoleState_.setStaleObserver(this);
   consoleState_.setLinkMtuProvider(
@@ -153,18 +167,76 @@ void TileSyncActivity::askAboutFreshness() {
   if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return;
   // Nothing drawn since boot means no content_id to offer, and `have` would
   // answer `have=none` anyway. Saying nothing is the honest version of that.
-  if (!g_lastHeldTiles.valid || g_lastHeldTiles.count == 0) {
-    LOG_INF(kLogTag, "freshness: no tiles drawn yet, nothing to check");
+  //
+  // Nothing *pending* is the other silent case, and it is the good one: every
+  // tile the map has drawn has already been compared, either by an earlier
+  // visit here or by the map screen's own Live check (HeldTilesStore drains).
+  const uint32_t pending = static_cast<uint32_t>(g_heldTiles.pendingCount());
+  if (!g_heldTiles.valid() || pending == 0) {
+    LOG_INF(kLogTag, "freshness: nothing pending of %lu held, nothing to check",
+            static_cast<unsigned long>(g_heldTiles.size()));
     return;
   }
-  char line[32];
-  snprintf(line, sizeof(line), "CHECK_TILES %lu", static_cast<unsigned long>(g_lastHeldTiles.count));
+  // One round's worth, not the whole store. A listing runs its blocks back to
+  // back on the activity task and each waits on the peer's confirm, so an
+  // unbounded one freezes the buttons -- see HeldTilesStore::kMaxPerListing.
+  // onCheckFinished() asks again while anything is still pending, so a visit
+  // still drains the store; it just does it in rounds.
+  const uint32_t round =
+      pending < HeldTilesStore::kMaxPerListing ? pending : static_cast<uint32_t>(HeldTilesStore::kMaxPerListing);
+  // `fmt <version>` for the same reason the map screen sends it: a device with
+  // nothing missing never sends NEED_TILES, so without this the phone falls
+  // back to a stale default and compares against the wrong /v<N>/ index tree
+  // (docs/tile-freshness.md).
+  char line[48];
+  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", static_cast<unsigned long>(round),
+           static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "CHECK_TILES not delivered");
     return;
   }
   freshnessAsked_ = true;
-  LOG_INF(kLogTag, "freshness: asked about %lu tile(s)", static_cast<unsigned long>(g_lastHeldTiles.count));
+  freshnessRound_ = round;
+  freshnessState_ = Freshness::Asking;
+  LOG_INF(kLogTag, "freshness: asked about %lu of %lu pending, %lu held", static_cast<unsigned long>(round),
+          static_cast<unsigned long>(pending), static_cast<unsigned long>(g_heldTiles.size()));
+  // The rider is watching a screen that has just stopped fetching, and the
+  // panel would otherwise keep showing the fetch's own verdict. Flagged, not
+  // painted: every other caller already repaints immediately after this
+  // returns, so painting here made it two e-ink refreshes per ask.
+  freshnessRedrawPending_ = true;
+}
+
+bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
+  switch (freshnessState_) {
+    case Freshness::Idle:
+      return false;
+    case Freshness::Asking:
+      // What this visit will have covered once the round on the wire lands, not
+      // the round on its own -- a rider watching rounds tick by wants the total
+      // going up, not a number that resets to 12 each time.
+      snprintf(out, size, tr(STR_TILE_SYNC_CHECKING), static_cast<int>(freshnessAskedCount_ + freshnessRound_));
+      return true;
+    case Freshness::Current:
+      snprintf(out, size, tr(STR_TILE_SYNC_ALL_CURRENT), static_cast<int>(freshnessAskedCount_));
+      return true;
+    case Freshness::Stale:
+      // "downloading" is only true while something is still owed. Every stale
+      // tile leaves staleTiles_ when its replacement lands
+      // (drainTransferredTiles), so an empty list means the work is done --
+      // without this the line sat on "downloading" after the last tile had
+      // already arrived, seen on the panel 2026-08-13 next to a summary that
+      // said 35 kB had moved.
+      snprintf(out, size, I18N.get(staleTiles_.count() > 0 ? StrId::STR_TILE_SYNC_STALE : StrId::STR_TILE_SYNC_UPDATED),
+               static_cast<int>(freshnessStale_), static_cast<int>(freshnessAskedCount_));
+      return true;
+    case Freshness::Unknown:
+      // Deliberately not "everything is current". The phone could not read the
+      // index, so it is claiming nothing, and the two must never read alike.
+      snprintf(out, size, "%s", tr(STR_TILE_SYNC_CHECK_UNKNOWN));
+      return true;
+  }
+  return false;
 }
 
 void TileSyncActivity::onTileStale(uint8_t z, uint32_t col, uint32_t row) {
@@ -177,11 +249,39 @@ void TileSyncActivity::onTileStale(uint8_t z, uint32_t col, uint32_t row) {
 void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
   if (!known) {
     // The phone could not read the index. Not the same as nothing being out of
-    // date, and not reported as such.
+    // date, and not reported as such -- on screen either.
     LOG_INF(kLogTag, "freshness: phone could not check (no index)");
+    freshnessState_ = Freshness::Unknown;
+    freshnessRedrawPending_ = true;
     return;
   }
-  LOG_INF(kLogTag, "freshness: %u tile(s) out of date, phone is pushing them", static_cast<unsigned>(staleCount));
+  // Cumulative over the visit, not per round: the rider is told how much of
+  // their card has been checked, which is one fact however many listings it
+  // took to ask about it.
+  freshnessAskedCount_ += freshnessRound_;
+  freshnessStale_ += staleCount;
+  freshnessState_ = freshnessStale_ > 0 ? Freshness::Stale : Freshness::Current;
+  LOG_INF(kLogTag, "freshness: %u out of date this round, %lu of %lu checked so far", static_cast<unsigned>(staleCount),
+          static_cast<unsigned long>(freshnessAskedCount_), static_cast<unsigned long>(g_heldTiles.size()));
+  // Every `stale` line has landed by now -- `checked` is what closes the
+  // listing -- so this is the first moment the grid window can cover them. It
+  // was sized on the missing list alone in armRun(), which on a visit with
+  // nothing missing meant no window at all. Pure arithmetic over lists already
+  // in RAM, so it is safe to do here; the repaint it feeds is not.
+  chooseWindow();
+  freshnessRedrawPending_ = true;
+
+  // Next round, if the store still holds anything unanswered. **Flagged, not
+  // done here** -- see the flag's declaration: this runs inside the dispatch of
+  // `checked`, before its terminating `OK`, and asking from here put a confirm
+  // wait and a repaint in front of a reply the phone was still waiting for.
+  //
+  // Bounded and cannot spin: markAskedChecked() has already settled this
+  // round's entries, so pendingCount() is strictly smaller each time and
+  // reaches zero. Only on a `known` answer -- `checked unknown` settles
+  // nothing, so re-asking on it would loop forever against a phone that cannot
+  // read the index.
+  if (g_heldTiles.pendingCount() > 0) freshnessAskPending_ = true;
 }
 
 bool TileSyncActivity::phoneListening() const {
@@ -311,6 +411,25 @@ void TileSyncActivity::loop() {
   // something on a map screen that is not up -- nothing to redraw here.
   ble_.poll();
 
+  // The freshness check's follow-up work, out here rather than in the observer
+  // that decided on it. onCheckFinished() runs inside the console's dispatch of
+  // `checked`, before the terminating `OK`; starting a 3 s confirm wait or a
+  // 500-1700 ms e-ink repaint there delays a reply the phone is waiting for.
+  // Same shape as the console's own redraw flag: signal in, act after poll().
+  //
+  // Ask before repaint, so one round costs one e-ink refresh: the ask sets the
+  // redraw flag itself, and the repaint below then shows the round it just
+  // started rather than the one that finished.
+  if (freshnessAskPending_) {
+    freshnessAskPending_ = false;
+    freshnessAsked_ = false;
+    askAboutFreshness();
+  }
+  if (freshnessRedrawPending_) {
+    freshnessRedrawPending_ = false;
+    renderScreen();
+  }
+
   // Advertising state, once per tick. Same reason MapActivity::loop() does it:
   // a restart that failed inside the NimBLE disconnect callback cannot be
   // retried on that task (BlePositionServer.h, "Advertising state"), and this
@@ -372,6 +491,19 @@ void TileSyncActivity::drainTransferredTiles() {
   if (!transfer.lastTileValid || transfer.tileSeq == lastClearedTileSeq_) return;
   lastClearedTileSeq_ = transfer.tileSeq;
 
+  // A stale tile's replacement lands here too, and it is not on the missing
+  // list -- it never was. Clearing it here rubs its dot off the grid and arms
+  // the ping-pong guard, so a cache that keeps serving the old copy is given up
+  // on rather than fetched forever (StaleTilesList::add). The map screen has
+  // always done this (MapActivity::drainTransferredTiles); this screen did not,
+  // which left a replaced tile marked out of date for the rest of the visit.
+  if (staleTiles_.contains(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row)) {
+    staleTiles_.onArrived(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row);
+    LOG_INF(kLogTag, "freshness: z%u %lu/%lu replaced", static_cast<unsigned>(transfer.lastTile.z),
+            static_cast<unsigned long>(transfer.lastTile.col), static_cast<unsigned long>(transfer.lastTile.row));
+    renderScreen();
+  }
+
   if (!MISSING_TILES.forget(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row)) {
     // A tile the device never hatched -- a corridor update pushed ahead of a
     // ride, say. Nothing to clear, and not an error.
@@ -417,13 +549,38 @@ void TileSyncActivity::parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t
   pr = static_cast<uint16_t>(tile.row >> down);
 }
 
+size_t TileSyncActivity::interestCount() const { return rowCount_ + g_heldTiles.pendingCount() + staleTiles_.count(); }
+
+MapTileCoord TileSyncActivity::interestAt(size_t index) const {
+  if (index < rowCount_) return rows_[index].tile;
+  size_t rest = index - rowCount_;
+
+  const size_t pending = g_heldTiles.pendingCount();
+  if (rest < pending) {
+    // The nth entry that is still unsettled. Walked rather than indexed: the
+    // store keeps pending and settled entries in one array so that re-recording
+    // a tile finds it wherever it sits.
+    for (size_t i = 0; i < g_heldTiles.size(); ++i) {
+      const HeldTileEntry& e = g_heldTiles.at(i);
+      if (e.checked()) continue;
+      if (rest == 0) return MapTileCoord{e.z, e.col, e.row};
+      --rest;
+    }
+  }
+  rest = index - rowCount_ - pending;
+
+  const StaleTilesList::Entry& e = staleTiles_.at(rest);
+  return MapTileCoord{e.z, e.col, e.row};
+}
+
 void TileSyncActivity::chooseWindow() {
-  if (rowCount_ == 0) return;
+  const size_t interest = interestCount();
+  if (interest == 0) return;
 
   uint16_t minCol = 0xFFFF, maxCol = 0, minRow = 0xFFFF, maxRow = 0;
-  for (uint32_t i = 0; i < rowCount_; ++i) {
+  for (size_t i = 0; i < interest; ++i) {
     uint16_t pc = 0, pr = 0;
-    parentOf(rows_[i].tile, pc, pr);
+    parentOf(interestAt(i), pc, pr);
     if (pc < minCol) minCol = pc;
     if (pc > maxCol) maxCol = pc;
     if (pr < minRow) minRow = pr;
@@ -449,18 +606,19 @@ void TileSyncActivity::chooseWindow() {
   //
   // Only occupied parents are tried as the top-left corner: a window whose corner
   // holds nothing can always be slid onto one that does without losing a tile, so
-  // the best corner is among them. That makes this O(rowCount_^2) -- 40,000
-  // compares at the 200-entry cap (MissingTilesStore::kMaxEntries), once per run.
+  // the best corner is among them. That makes this O(interestCount()^2) -- 50,000
+  // compares at the 200-entry missing cap (MissingTilesStore::kMaxEntries) plus
+  // the 24-entry stale one (StaleTilesList), once per run.
   uint32_t best = 0;
   windowCol_ = minCol;
   windowRow_ = minRow;
-  for (uint32_t i = 0; i < rowCount_; ++i) {
+  for (size_t i = 0; i < interest; ++i) {
     uint16_t oc = 0, orr = 0;
-    parentOf(rows_[i].tile, oc, orr);
+    parentOf(interestAt(i), oc, orr);
     uint32_t inside = 0;
-    for (uint32_t j = 0; j < rowCount_; ++j) {
+    for (size_t j = 0; j < interest; ++j) {
       uint16_t pc = 0, pr = 0;
-      parentOf(rows_[j].tile, pc, pr);
+      parentOf(interestAt(j), pc, pr);
       if (pc >= oc && pc < oc + kMaxWindowCols && pr >= orr && pr < orr + kMaxWindowRows) ++inside;
     }
     if (inside > best) {
@@ -473,9 +631,9 @@ void TileSyncActivity::chooseWindow() {
   // distant outlier keeps the full 6 x 8 cap, and three occupied parents get
   // drawn tiny in the corner of a mostly empty grid.
   uint16_t inCol = 0xFFFF, inMaxCol = 0, inRow = 0xFFFF, inMaxRow = 0;
-  for (uint32_t i = 0; i < rowCount_; ++i) {
+  for (size_t i = 0; i < interest; ++i) {
     uint16_t pc = 0, pr = 0;
-    parentOf(rows_[i].tile, pc, pr);
+    parentOf(interestAt(i), pc, pr);
     if (pc < windowCol_ || pc >= windowCol_ + kMaxWindowCols) continue;
     if (pr < windowRow_ || pr >= windowRow_ + kMaxWindowRows) continue;
     if (pc < inCol) inCol = pc;
@@ -487,10 +645,10 @@ void TileSyncActivity::chooseWindow() {
   windowRow_ = inRow;
   windowCols_ = static_cast<uint8_t>(inMaxCol - inCol + 1);
   windowRows_ = static_cast<uint8_t>(inMaxRow - inRow + 1);
-  offWindow_ = rowCount_ - best;
+  offWindow_ = static_cast<uint32_t>(interest - best);
   LOG_INF(kLogTag, "grid window at z11 %u/%u, %lu of %lu tiles outside it", static_cast<unsigned>(windowCol_),
           static_cast<unsigned>(windowRow_), static_cast<unsigned long>(offWindow_),
-          static_cast<unsigned long>(rowCount_));
+          static_cast<unsigned long>(interest));
 }
 
 void TileSyncActivity::summaryRect(int& x, int& y, int& w, int& h) const {
@@ -578,6 +736,47 @@ bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_
     renderer.drawRect(fx, fy, fw, fw, thickness, true);
   }
 
+  // The check queue, over the same ground and in the same parents: every tile
+  // still waiting on a freshness answer, plus every tile that came back stale
+  // and has not had its replacement land yet. A dot, not an outline -- these
+  // squares *are* on the card, so drawing them the way a missing one is drawn
+  // would say the opposite of what is true.
+  //
+  // A dot goes out when the phone says the tile is current, or when a stale
+  // one's replacement arrives. So the grid empties as the check works through
+  // it, which is the thing worth watching on this screen.
+  for (size_t i = rowCount_; i < interestCount(); ++i) {
+    const MapTileCoord tile = interestAt(i);
+    uint16_t tpc = 0, tpr = 0;
+    parentOf(tile, tpc, tpr);
+    if (tpc != pc || tpr != pr) continue;
+
+    // **No parent frame here.** The frames belong to the missing tiles: they
+    // are the scaffolding that says how deep a hatched square sits. A dot
+    // already carries its own depth in its size, so framing a parent that
+    // holds nothing but dots spends ink on nothing and buries the one thing
+    // worth watching -- the dots going out one by one. A parent that holds
+    // both gets its frame from the loop above, which is correct: something in
+    // it really is missing.
+    const int down = tile.z < 13 ? 13 - tile.z : 0;
+    const int span = 1 << down;
+    const int lx = static_cast<int>((tile.col << down) & (kLeavesPerParent - 1));
+    const int ly = static_cast<int>((tile.row << down) & (kLeavesPerParent - 1));
+
+    // Centred in the tile's own cell, sized from that cell so the LOD still
+    // reads, capped so it stays a mark rather than a filled square.
+    const int cellPx = span * leaf;
+    int dot = cellPx / kDotDivisor;
+    if (dot > kMaxDotPx) dot = kMaxDotPx;
+    if (dot < kMinDotPx) dot = kMinDotPx;
+    const int cx = px + lx * leaf + cellPx / 2;
+    const int cy = py + ly * leaf + cellPx / 2;
+    // A rounded rect whose corner radius is half its side is a disc, so this
+    // needs no new renderer primitive -- fillRoundedRect() already clamps the
+    // radius to half the smaller side (GfxRenderer.cpp).
+    renderer.fillRoundedRect(cx - dot / 2, cy - dot / 2, dot, dot, dot / 2, Color::Black);
+  }
+
   return any;
 }
 
@@ -593,7 +792,10 @@ void TileSyncActivity::drawGrid(int top) {
   if (gh <= 0) return;
   renderer.fillRect(gx, gy, gw, gh, false);
 
-  if (rowCount_ == 0) {
+  // Nothing missing *and* nothing stale. A freshness-only visit still draws a
+  // grid -- the dots are the whole point of it -- so this is the empty case for
+  // both, not just for the fetch.
+  if (interestCount() == 0) {
     renderer.drawCenteredText(UI_10_FONT_ID, gy + gh / 2, I18N.get(verdict_));
     return;
   }
@@ -723,8 +925,18 @@ void TileSyncActivity::renderScreen() {
       // No verdict word here: the finished screen draws it on its own line, at
       // UI_12, right above this one. Printing it in both put "Fetch finished"
       // on the panel twice -- seen on the panel, not readable from the code.
-      snprintf(status, sizeof(status), "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
-               static_cast<unsigned long>(rowCount_), unavailable, moved);
+      //
+      // With nothing missing there is no ratio to state, and printing one
+      // anyway reads as an error: a stale tile's replacement lands in
+      // transfer.completed too, so a freshness-only visit showed "1 / 0"
+      // (seen on the panel 2026-08-13). Just the bytes in that case -- the
+      // freshness line below says what they were.
+      if (rowCount_ == 0) {
+        snprintf(status, sizeof(status), "%s", moved);
+      } else {
+        snprintf(status, sizeof(status), "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
+                 static_cast<unsigned long>(rowCount_), unavailable, moved);
+      }
       break;
     }
   }
@@ -743,7 +955,17 @@ void TileSyncActivity::renderScreen() {
     renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, I18N.get(verdict_), true);
     y += bigLine;
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
-    y += lineHeight + bigLine / 2;
+    y += lineHeight;
+    // The freshness check's own line, under the fetch's numbers and before the
+    // not-built explanation. This is where a rider finds out that the data the
+    // screen just spent was a check rather than a download -- the state it
+    // reports had no representation on the panel at all until now.
+    char freshness[64];
+    if (formatFreshness(freshness, sizeof(freshness))) {
+      renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, freshness, true);
+      y += lineHeight;
+    }
+    y += bigLine / 2;
     if (skipped_ > 0) {
       // Not "failed". The server does not have this square yet, the device has
       // it written down, and it will ask again -- two short lines because one
@@ -758,12 +980,22 @@ void TileSyncActivity::renderScreen() {
       y += bigLine;
     }
     // Below whatever the verdict needed, not at the running screen's fixed top.
-    // Skipped when the run had nothing to draw in the first place -- drawGrid()
-    // would centre the verdict a second time.
-    if (rowCount_ > 0) drawGrid(y + metrics.verticalSpacing);
+    // Skipped when there is nothing to draw in the first place -- drawGrid()
+    // would centre the verdict a second time. Stale tiles count: a visit with
+    // nothing missing and something out of date is a grid of dots and no
+    // squares, which is the case this screen could not show at all before.
+    if (interestCount() > 0) drawGrid(y + metrics.verticalSpacing);
   } else {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
     y += lineHeight;
+
+    // Same line on a screen that is still running: a check can be in flight
+    // while the fetch's own bar is up, and it must not look like part of it.
+    char freshness[64];
+    if (formatFreshness(freshness, sizeof(freshness))) {
+      renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, freshness, true);
+      y += lineHeight;
+    }
 
     // While waiting, say what would make it start. A screen that only says
     // "waiting" leaves the rider with nothing to try.

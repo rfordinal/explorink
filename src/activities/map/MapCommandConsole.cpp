@@ -155,6 +155,20 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
 
     case MapCommandType::Checked:
+      // Settle the listing here rather than in each screen: both the map and
+      // the sync screen ask from the same store, and a drain that only one of
+      // them performed would have the other re-ask tiles already answered for.
+      if (heldTiles_ != nullptr) {
+        if (cmd.checkedKnown) {
+          heldTiles_->markAskedChecked();
+        } else {
+          // `checked unknown` -- the phone could not read the index and is
+          // claiming nothing. The entries go back to pending, because treating
+          // this as a clean bill of health is precisely the bug the distinction
+          // exists to prevent.
+          heldTiles_->clearAsked();
+        }
+      }
       if (staleObserver_ != nullptr) staleObserver_->onCheckFinished(cmd.checkedKnown, cmd.checkedCount);
       out.reply("OK");
       return false;
@@ -397,8 +411,8 @@ void MapConsoleState::writeTiles(IMapReplyWriter& out) const {
   }
 }
 
-void MapConsoleState::writeHave(IMapReplyWriter& out) const {
-  if (!held_.valid) {
+void MapConsoleState::writeHave(IMapReplyWriter& out) {
+  if (heldTiles_ == nullptr || !heldTiles_->valid()) {
     // No viewport yet -- no fix and no pos command since the device started.
     // Distinct from an empty list on purpose, exactly like `tiles=none`:
     // "cannot answer" must never read as "everything is current".
@@ -406,15 +420,27 @@ void MapConsoleState::writeHave(IMapReplyWriter& out) const {
     return;
   }
 
+  // Stamps the pending entries as being on the wire and counts them in the same
+  // pass, so have_total and the lines below cannot disagree -- which is exactly
+  // what the phone checks before it trusts a listing (FreshnessChecker, "a have
+  // listing that lost lines is answered unknown").
+  const size_t pending = heldTiles_->beginListing();
+
   char line[kReplyBuf];
-  snprintf(line, sizeof(line), "INFO have_total=%lu", static_cast<unsigned long>(held_.count));
+  snprintf(line, sizeof(line), "INFO have_total=%lu", static_cast<unsigned long>(pending));
   out.reply(line);
 
+  // Only what is still pending. A settled tile is left out rather than listed
+  // as current: the phone would have to range-read its slot to find out, which
+  // is the whole cost this check is trying to spend once per tile instead of
+  // once per screenful (HeldTilesStore).
+  //
   // Lowercase hex, no 0x -- the same way mapbuilder prints a content_id and the
   // same way this build logs it, so a freshness bug can be read across all
   // three by eye.
-  for (size_t i = 0; i < held_.count && i < MapHeldTiles::kMaxEntries; ++i) {
-    const MapHeldTiles::Entry& e = held_.entries[i];
+  for (size_t i = 0; i < heldTiles_->size(); ++i) {
+    const HeldTileEntry& e = heldTiles_->at(i);
+    if (!e.asked()) continue;
     snprintf(line, sizeof(line), "INFO have_%u_%lu_%lu=%08lx", static_cast<unsigned>(e.z),
              static_cast<unsigned long>(e.col), static_cast<unsigned long>(e.row),
              static_cast<unsigned long>(e.contentId));
