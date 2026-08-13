@@ -1704,13 +1704,21 @@ void MapActivity::loop() {
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
 
-  // Advertising state, once per tick. A restart that failed inside the NimBLE
-  // disconnect callback cannot be retried there -- that callback runs on the
-  // host task, and the event that clears the usual failure cause is queued on
-  // the same task (BlePositionServer.h, "Advertising state"). This task is a
-  // different one, so its retry can actually succeed. Costs one bool read when
-  // there is nothing to do.
-  freeink::BlePositionServer::getInstance().serviceAdvertising();
+  // Advertising state and connection parameter requests, once per tick. A
+  // restart that failed inside the NimBLE disconnect callback cannot be
+  // retried there -- that callback runs on the host task, and the event that
+  // clears the usual failure cause is queued on the same task
+  // (BlePositionServer.h, "Advertising state"). This task is a different one,
+  // so its retry can actually succeed. Costs one bool read when there is
+  // nothing to do.
+  //
+  // transfer_.status().active is read fresh here (drainTransferredTiles()'s
+  // own read above is not reused -- it ran before autosync could have started
+  // a new transfer this same tick) and is this method's only view into
+  // whether a file transfer is moving bytes: the BLE library carries bytes
+  // only and does not know MapTransferReceiver exists (BlePositionServer.h,
+  // TransferHooks), so the activity answers.
+  freeink::BlePositionServer::getInstance().serviceAdvertising(transfer_.status().active);
 
   // A transfer status line (`RDY`, `OK`, `ERR`) that found the connection's one
   // indication slot held by a command-channel reply. Same task-ownership reason
