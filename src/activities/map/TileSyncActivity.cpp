@@ -25,11 +25,6 @@ constexpr const char* kLogTag = "TILESYNC";
 // Same card root the map's tile paths are built against (MapActivity.cpp).
 constexpr const char* kTileRoot = "/trailink";
 
-// Row geometry. The bar sits under the coordinate rather than beside it: at 480
-// px wide a bar long enough to read anything off leaves no room for a label.
-constexpr int kRowBarHeight = 6;
-constexpr int kRowGap = 6;
-
 }  // namespace
 
 // Stateless view onto MISSING_TILES for the `missing` command.
@@ -65,6 +60,7 @@ bool TileSyncActivity::armRun() {
       rows_[i].tile = MapTileCoord{hits[i].z, hits[i].col, hits[i].row};
       rows_[i].unavailable = false;
     }
+    chooseWindow();
   }
 
   // Counters, not just the snapshot. The receiver counts "since the screen
@@ -389,17 +385,109 @@ TileSyncActivity::RowState TileSyncActivity::stateOf(int index, uint32_t& receiv
   return stillMissing(row.tile) ? RowState::Waiting : RowState::Done;
 }
 
-void TileSyncActivity::listRect(int& x, int& y, int& w, int& h) const {
+void TileSyncActivity::parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t& pr) {
+  // z11 is the coarsest LOD the map reads and z13 the finest (docs/zoom-rungs.md,
+  // "The ladder"), so the shift is 0..2 and never negative. Clamped rather than
+  // asserted: a tile recorded by an older firmware with a coarser LOD would
+  // otherwise shift by a negative amount, which is undefined behaviour, and
+  // landing in the wrong cell of a toy is not worth a crash.
+  const int down = tile.z > 11 ? tile.z - 11 : 0;
+  pc = static_cast<uint16_t>(tile.col >> down);
+  pr = static_cast<uint16_t>(tile.row >> down);
+}
+
+void TileSyncActivity::chooseWindow() {
+  if (rowCount_ == 0) return;
+
+  uint16_t minCol = 0xFFFF, maxCol = 0, minRow = 0xFFFF, maxRow = 0;
+  for (uint32_t i = 0; i < rowCount_; ++i) {
+    uint16_t pc = 0, pr = 0;
+    parentOf(rows_[i].tile, pc, pr);
+    if (pc < minCol) minCol = pc;
+    if (pc > maxCol) maxCol = pc;
+    if (pr < minRow) minRow = pr;
+    if (pr > maxRow) maxRow = pr;
+  }
+
+  const uint32_t spanCols = static_cast<uint32_t>(maxCol - minCol) + 1;
+  const uint32_t spanRows = static_cast<uint32_t>(maxRow - minRow) + 1;
+
+  // Everything fits: the whole spread is the viewport, and a run whose tiles sit
+  // in one parent gets that parent filling the screen.
+  if (spanCols <= kMaxWindowCols && spanRows <= kMaxWindowRows) {
+    windowCol_ = minCol;
+    windowRow_ = minRow;
+    windowCols_ = static_cast<uint8_t>(spanCols);
+    windowRows_ = static_cast<uint8_t>(spanRows);
+    offWindow_ = 0;
+    return;
+  }
+
+  // Too spread out to draw honestly. Put the window where the most tiles are and
+  // let the rest fall outside it -- the bar is what says how much is left.
+  //
+  // Only occupied parents are tried as the top-left corner: a window whose corner
+  // holds nothing can always be slid onto one that does without losing a tile, so
+  // the best corner is among them. That makes this O(rowCount_^2) -- 40,000
+  // compares at the 200-entry cap (MissingTilesStore::kMaxEntries), once per run.
+  uint32_t best = 0;
+  windowCol_ = minCol;
+  windowRow_ = minRow;
+  for (uint32_t i = 0; i < rowCount_; ++i) {
+    uint16_t oc = 0, orr = 0;
+    parentOf(rows_[i].tile, oc, orr);
+    uint32_t inside = 0;
+    for (uint32_t j = 0; j < rowCount_; ++j) {
+      uint16_t pc = 0, pr = 0;
+      parentOf(rows_[j].tile, pc, pr);
+      if (pc >= oc && pc < oc + kMaxWindowCols && pr >= orr && pr < orr + kMaxWindowRows) ++inside;
+    }
+    if (inside > best) {
+      best = inside;
+      windowCol_ = oc;
+      windowRow_ = orr;
+    }
+  }
+  // Shrink onto what the window actually caught. Without this a set with one
+  // distant outlier keeps the full 6 x 8 cap, and three occupied parents get
+  // drawn tiny in the corner of a mostly empty grid.
+  uint16_t inCol = 0xFFFF, inMaxCol = 0, inRow = 0xFFFF, inMaxRow = 0;
+  for (uint32_t i = 0; i < rowCount_; ++i) {
+    uint16_t pc = 0, pr = 0;
+    parentOf(rows_[i].tile, pc, pr);
+    if (pc < windowCol_ || pc >= windowCol_ + kMaxWindowCols) continue;
+    if (pr < windowRow_ || pr >= windowRow_ + kMaxWindowRows) continue;
+    if (pc < inCol) inCol = pc;
+    if (pc > inMaxCol) inMaxCol = pc;
+    if (pr < inRow) inRow = pr;
+    if (pr > inMaxRow) inMaxRow = pr;
+  }
+  windowCol_ = inCol;
+  windowRow_ = inRow;
+  windowCols_ = static_cast<uint8_t>(inMaxCol - inCol + 1);
+  windowRows_ = static_cast<uint8_t>(inMaxRow - inRow + 1);
+  offWindow_ = rowCount_ - best;
+  LOG_INF(kLogTag, "grid window at z11 %u/%u, %lu of %lu tiles outside it", static_cast<unsigned>(windowCol_),
+          static_cast<unsigned>(windowRow_), static_cast<unsigned long>(offWindow_),
+          static_cast<unsigned long>(rowCount_));
+}
+
+void TileSyncActivity::summaryRect(int& x, int& y, int& w, int& h) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  x = metrics.contentSidePadding;
+  w = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
+  y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing / 2;
+  h = renderer.getLineHeight(UI_10_FONT_ID);
+}
+
+void TileSyncActivity::gridRect(int& x, int& y, int& w, int& h) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  // Below the header and the two text lines renderScreen() puts there (status,
-  // and the hint while waiting). Reserved whether or not the hint is drawn, so
-  // the list does not jump up and down as the phase changes.
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
   // Below the header, the summary line, the overall bar and the percentage
   // GUI.drawProgressBar centres 15 px under it. Reserved whether or not the bar
-  // is drawn, so the list does not jump as the phase changes.
+  // is drawn, so the grid does not jump as the phase changes.
   const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + lineHeight +
                   metrics.progressBarHeight + 15 + lineHeight;
 
@@ -409,136 +497,106 @@ void TileSyncActivity::listRect(int& x, int& y, int& w, int& h) const {
   h = pageHeight - top - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
 }
 
-int TileSyncActivity::visibleRowCount() const {
-  int lx, ly, lw, lh;
-  listRect(lx, ly, lw, lh);
-  const int rowHeight = renderer.getLineHeight(UI_10_FONT_ID) + kRowBarHeight + kRowGap;
-  const int fits = rowHeight > 0 ? lh / rowHeight : 0;
-  return fits < 1 ? 1 : fits;
-}
+bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_t pr) {
+  const int leaf = size / kLeavesPerParent;
+  bool any = false;
 
-int TileSyncActivity::firstVisibleRow() const {
-  const int fits = visibleRowCount();
-  if (static_cast<int>(rowCount_) <= fits) return 0;
-
-  // Follow the first row that has not settled -- the one the phone is on, or the
-  // one it is about to reach. Keeps the moving bar on screen without scrolling
-  // on every arrival.
-  int firstUnsettled = static_cast<int>(rowCount_);
   for (uint32_t i = 0; i < rowCount_; ++i) {
     uint32_t received = 0;
     uint32_t total = 0;
-    const RowState state = stateOf(static_cast<int>(i), received, total);
-    if (state == RowState::Waiting || state == RowState::Active) {
-      firstUnsettled = static_cast<int>(i);
-      break;
+    // The one question the grid asks. Waiting, on the wire and refused all draw
+    // the same square: it is not on the card yet.
+    if (stateOf(static_cast<int>(i), received, total) == RowState::Done) continue;
+
+    const MapTileCoord& tile = rows_[i].tile;
+    uint16_t tpc = 0, tpr = 0;
+    parentOf(tile, tpc, tpr);
+    if (tpc != pc || tpr != pr) continue;
+
+    if (!any) {
+      // The parent's own frame, drawn once something inside it survives. An empty
+      // parent gets nothing at all, which is how a finished corner of the grid
+      // clears itself.
+      renderer.drawRect(px, py, size, size);
+      any = true;
     }
-  }
-  // Keep it a couple of rows down from the top, so what just finished stays
-  // visible above it.
-  int first = firstUnsettled - 2;
-  const int maxFirst = static_cast<int>(rowCount_) - fits;
-  if (first > maxFirst) first = maxFirst;
-  return first < 0 ? 0 : first;
-}
 
-void TileSyncActivity::rowRect(int index, int& x, int& y, int& w, int& h) const {
-  int lx, ly, lw, lh;
-  listRect(lx, ly, lw, lh);
-  const int rowHeight = renderer.getLineHeight(UI_10_FONT_ID) + kRowBarHeight + kRowGap;
-  x = lx;
-  w = lw;
-  h = rowHeight;
-  y = ly + (index - firstVisibleRow()) * rowHeight;
-}
+    // Position inside the parent, in z13 leaves. z11 spans all four, z12 two,
+    // z13 one -- so one expression covers every LOD the map reads.
+    const int down = tile.z < 13 ? 13 - tile.z : 0;
+    const int span = 1 << down;
+    const int lx = static_cast<int>((tile.col << down) & (kLeavesPerParent - 1));
+    const int ly = static_cast<int>((tile.row << down) & (kLeavesPerParent - 1));
 
-void TileSyncActivity::drawRow(int index, int y, int rowHeight) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  int lx, ly, lw, lh;
-  listRect(lx, ly, lw, lh);
-
-  // Opaque: a row repaints over its own last contents.
-  renderer.fillRect(lx, y, lw, rowHeight, false);
-
-  uint32_t received = 0;
-  uint32_t total = 0;
-  const RowState state = stateOf(index, received, total);
-  const MapTileCoord& tile = rows_[index].tile;
-
-  char label[48];
-  snprintf(label, sizeof(label), "z%u %lu/%lu", static_cast<unsigned>(tile.z), static_cast<unsigned long>(tile.col),
-           static_cast<unsigned long>(tile.row));
-  renderer.drawText(UI_10_FONT_ID, lx, y, label, true);
-
-  // Right-aligned status word, so the eye can scan one column for trouble.
-  const char* right = nullptr;
-  char bytes[32];
-  switch (state) {
-    case RowState::Active: {
-      char got[16], want[16];
-      formatBytes(received, got, sizeof(got));
-      formatBytes(total, want, sizeof(want));
-      snprintf(bytes, sizeof(bytes), "%s / %s", got, want);
-      right = bytes;
-      break;
+    // The z12 quadrant this tile lives in, when the tile is smaller than one.
+    // Structure the eye can read: without it a lone z13 square floats in an empty
+    // parent with nothing to say how deep it is.
+    if (span < kLeavesPerParent) {
+      const int qx = px + (lx & ~1) * leaf;
+      const int qy = py + (ly & ~1) * leaf;
+      renderer.drawRect(qx, qy, leaf * 2, leaf * 2);
     }
-    case RowState::Done:
-      right = tr(STR_TILE_SYNC_ROW_DONE);
-      break;
-    case RowState::Missing:
-      right = tr(STR_TILE_SYNC_ROW_MISSING);
-      break;
-    case RowState::Waiting:
-      right = tr(STR_TILE_SYNC_ROW_WAITING);
-      break;
-  }
-  if (right != nullptr) {
-    const int rightWidth = renderer.getTextWidth(UI_10_FONT_ID, right);
-    renderer.drawText(UI_10_FONT_ID, lx + lw - rightWidth, y, right, true);
+
+    // The tile itself. Inset so neighbouring squares stay separate squares
+    // instead of merging into one blot.
+    const int fx = px + lx * leaf + kTileInset;
+    const int fy = py + ly * leaf + kTileInset;
+    const int fw = span * leaf - kTileInset * 2;
+    if (fw <= 0) continue;
+
+    // An outline, never a fill. Tried filled first and checked it against real
+    // device data (30 tiles hatched off an unbuilt area, 2026-08-13): riders at
+    // rungs 3-6 read z11, so a run collects whole missing z11 parents, and
+    // filling those painted eight solid 128 px squares -- most of the panel
+    // black. A lot of ink for a screen that redraws per tile, and the nesting
+    // buried underneath. Filling an area says nothing its outline does not.
+    //
+    // Thicker than the scaffolding frames around it, and scaled to the cell, so
+    // the tile that is actually missing stays the strongest line on screen.
+    const int thickness = leaf / 8 < 2 ? 2 : leaf / 8;
+    renderer.drawRect(fx, fy, fw, fw, thickness, true);
   }
 
-  // The row's own bar. Full for a landed tile, the real fraction for the one on
-  // the wire, empty otherwise -- a skipped row keeps an empty bar rather than a
-  // full one, because nothing was transferred.
-  const int barY = y + renderer.getLineHeight(UI_10_FONT_ID);
-  size_t barValue = 0;
-  size_t barMax = 1;
-  if (state == RowState::Done) {
-    barValue = 1;
-  } else if (state == RowState::Active && total > 0) {
-    barValue = received;
-    barMax = total;
-  }
-  // Drawn here rather than through GUI.drawProgressBar, which always writes a
-  // centred percentage 15 px below its bar. That is right for the one big bar it
-  // was built for (FontDownloadActivity) and wrong for a list: ten 6-pixel row
-  // bars produced ten labels, each landing on the next row's text, each erased
-  // by the next row's fill -- leaving one stray number under the list that read
-  // as overall progress and was actually the last row's state. A 6-pixel bar has
-  // no room for a label anyway.
-  renderer.drawRect(lx, barY, lw, kRowBarHeight);
-  if (barValue > 0) {
-    const int fill = static_cast<int>((lw - 4) * barValue / barMax);
-    if (fill > 0) renderer.fillRect(lx + 2, barY + 2, fill, kRowBarHeight - 4);
-  }
-  (void)metrics;
+  return any;
 }
 
-void TileSyncActivity::drawList() {
-  int lx, ly, lw, lh;
-  listRect(lx, ly, lw, lh);
-  renderer.fillRect(lx, ly, lw, lh, false);
+void TileSyncActivity::drawGrid(int top) {
+  int gx, gy, gw, gh;
+  gridRect(gx, gy, gw, gh);
+  // The finished screen writes more above the grid than the running one does, so
+  // it passes its own floor rather than letting the squares land under the text.
+  if (top > gy) {
+    gh -= top - gy;
+    gy = top;
+  }
+  if (gh <= 0) return;
+  renderer.fillRect(gx, gy, gw, gh, false);
 
   if (rowCount_ == 0) {
-    renderer.drawCenteredText(UI_10_FONT_ID, ly + lh / 2, I18N.get(verdict_));
+    renderer.drawCenteredText(UI_10_FONT_ID, gy + gh / 2, I18N.get(verdict_));
     return;
   }
 
-  const int rowHeight = renderer.getLineHeight(UI_10_FONT_ID) + kRowBarHeight + kRowGap;
-  const int first = firstVisibleRow();
-  const int fits = visibleRowCount();
-  for (int i = first; i < static_cast<int>(rowCount_) && i < first + fits; ++i) {
-    drawRow(i, ly + (i - first) * rowHeight, rowHeight);
+  // Square cells, whichever axis runs out first, centred in what is left. Rounded
+  // down to a multiple of the leaf count so a z13 leaf lands on whole pixels --
+  // an off-by-one there shows up as frames that do not meet.
+  int cell = gw / windowCols_;
+  const int byHeight = gh / windowRows_;
+  if (byHeight < cell) cell = byHeight;
+  if (cell > kMaxCellPx) cell = kMaxCellPx;
+  cell -= cell % kLeavesPerParent;
+  if (cell < kLeavesPerParent) return;  // nothing legible to draw
+
+  const int originX = gx + (gw - cell * windowCols_) / 2;
+  const int originY = gy + (gh - cell * windowRows_) / 2;
+
+  for (int r = 0; r < windowRows_; ++r) {
+    for (int c = 0; c < windowCols_; ++c) {
+      // North up, east right: the slippy-tile row grows south and the column
+      // grows east, which is already the screen's own axes. No transform.
+      drawParent(originX + c * cell, originY + r * cell, cell, static_cast<uint16_t>(windowCol_ + c),
+                 static_cast<uint16_t>(windowRow_ + r));
+    }
   }
 }
 
@@ -649,11 +707,16 @@ void TileSyncActivity::renderScreen() {
       break;
     }
   }
-  // A finished run is a result, not a live view. The row list is what the rider
-  // watches while it works and is irrelevant the moment it stops -- what they
-  // came for is one answer, so on this screen the answer is the screen: verdict
-  // big, the numbers under it, and for squares that did not arrive the reason
-  // stated plainly rather than as a footnote. No list, no bar.
+  // A finished run leads with the answer: verdict big, the numbers under it, and
+  // for squares that did not arrive the reason stated plainly rather than as a
+  // footnote. No bar -- a bar that will not move again is furniture.
+  //
+  // **The grid stays.** It used to be dropped here on the reasoning that a
+  // finished run is a result and not a live view, and that was wrong: on a run
+  // the supplier could not fill, the squares still standing are exactly which
+  // ground is still missing, which is the one thing the verdict line cannot say.
+  // Seen on hardware 2026-08-13 -- "Fetch finished 19 / 25, 6 queued" over an
+  // empty half-screen, with nothing to say which six.
   if (phase_ == Phase::Finished) {
     const int bigLine = renderer.getLineHeight(UI_12_FONT_ID);
     renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, I18N.get(verdict_), true);
@@ -671,7 +734,12 @@ void TileSyncActivity::renderScreen() {
       renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_NOT_BUILT), true);
       y += bigLine;
       renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_NOT_BUILT_2), true);
+      y += bigLine;
     }
+    // Below whatever the verdict needed, not at the running screen's fixed top.
+    // Skipped when the run had nothing to draw in the first place -- drawGrid()
+    // would centre the verdict a second time.
+    if (rowCount_ > 0) drawGrid(y + metrics.verticalSpacing);
   } else {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
     y += lineHeight;
@@ -681,10 +749,10 @@ void TileSyncActivity::renderScreen() {
     if (phase_ == Phase::Waiting) {
       renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_TILE_SYNC_WAITING_HINT), true);
     } else {
-      // The one bar that is about the whole run, and the one place a percentage
-      // belongs. GUI.drawProgressBar writes that percentage itself, centred
-      // below the bar, which is exactly what is wanted here and exactly what
-      // made it wrong for the rows.
+      // The one bar that is about the whole run, and **the indicator this screen
+      // is read for**. The grid below is a picture of what is left, drawn over a
+      // window that can leave outliers out (see the header comment); the bar is
+      // the number, and it counts every tile of the run.
       //
       // It counts **arrivals**, not settled tiles. A tile the supplier does not
       // have settles the run too, but filling the bar with it tells the rider
@@ -698,7 +766,7 @@ void TileSyncActivity::renderScreen() {
           transfer.completed, rowCount_ > 0 ? rowCount_ : 1);
     }
 
-    drawList();
+    drawGrid(0);
   }
 
   const auto labels = mappedInput.mapLabels(phase_ == Phase::Running ? tr(STR_CANCEL) : tr(STR_BACK), "", "", "");
@@ -714,8 +782,8 @@ void TileSyncActivity::updateProgress() {
   const MapTransferReceiver::Status transfer = transfer_.status();
   const uint32_t done = transfer.completed;
 
-  // A tile settling -- landed or skipped -- changes the summary line, one row's
-  // state and possibly the window, so that is a whole frame.
+  // A tile settling -- landed or skipped -- rubs a square out of the grid and
+  // moves the bar, so that is a whole frame.
   if (done != drawnDone_ || skipped_ != drawnSkipped_) {
     lastSettleMs_ = millis();
     if (phase_ == Phase::Running && done + skipped_ >= rowCount_) {
@@ -736,9 +804,9 @@ void TileSyncActivity::updateProgress() {
   // The protocol has no "I am done" from the phone, and it cannot have a useful
   // one -- a phone that walked out of range would not send it either. So silence
   // is the only signal, and a screen that treats silence as "still working"
-  // leaves a rider watching rows marked "waiting" with no way to tell a slow
-  // fetch from a finished one. Measured on hardware 2026-08-11: 20 rows sat
-  // there indefinitely after the phone had already given up.
+  // leaves a rider watching a grid that will never lose another square with no
+  // way to tell a slow fetch from a finished one. Measured on hardware
+  // 2026-08-11: 20 tiles sat there indefinitely after the phone had given up.
   if (phase_ == Phase::Running && !transfer.active && lastSettleMs_ != 0 &&
       millis() - lastSettleMs_ > kStallVerdictMs) {
     phase_ = Phase::Finished;
@@ -781,28 +849,22 @@ void TileSyncActivity::updateProgress() {
 
   if (phase_ != Phase::Running || !transfer.active || !transfer.activeTileValid) return;
 
-  // The bytes of the transfer in flight climb continuously and every repaint is
-  // a real waveform pass, so the moving bar is rate-capped and repaints only its
-  // own row, not the list.
+  // Between arrivals the grid has nothing to say -- a square is there or it is
+  // gone -- so the live part of this screen is the summary line: bytes moved,
+  // rate, ETA. Rate-capped, because every repaint is a real waveform pass, and
+  // windowed to that one line so the grid is not redrawn for a number.
   const uint32_t now = millis();
-  if (now - lastActiveDrawMs_ < kActiveRowRefreshMs) return;
+  if (now - lastActiveDrawMs_ < kSummaryRefreshMs) return;
   lastActiveDrawMs_ = now;
 
-  const int first = firstVisibleRow();
-  const int fits = visibleRowCount();
-  for (uint32_t i = 0; i < rowCount_; ++i) {
-    if (rows_[i].tile.z != transfer.activeTile.z || rows_[i].tile.col != transfer.activeTile.col ||
-        rows_[i].tile.row != transfer.activeTile.row) {
-      continue;
-    }
-    const int index = static_cast<int>(i);
-    if (index < first || index >= first + fits) return;  // scrolled out of sight
-    int rx, ry, rw, rh;
-    rowRect(index, rx, ry, rw, rh);
-    drawRow(index, ry, rh);
-    if (!renderer.displayBufferWindow(rx, ry, rw, rh)) {
-      LOG_ERR(kLogTag, "row window rejected: %d,%d %dx%d", rx, ry, rw, rh);
-    }
-    return;
+  char status[112];
+  formatSummary(status, sizeof(status));
+
+  int sx, sy, sw, sh;
+  summaryRect(sx, sy, sw, sh);
+  renderer.fillRect(sx, sy, sw, sh, false);
+  renderer.drawText(UI_10_FONT_ID, sx, sy, status, true);
+  if (!renderer.displayBufferWindow(sx, sy, sw, sh)) {
+    LOG_ERR(kLogTag, "summary window rejected: %d,%d %dx%d", sx, sy, sw, sh);
   }
 }

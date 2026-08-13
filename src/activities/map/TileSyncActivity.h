@@ -11,8 +11,8 @@
 #include "MapTransferReceiver.h"
 #include "activities/Activity.h"
 
-// Asks the phone for the map tiles the device is missing, and shows one row per
-// tile with its own progress bar. Entered from the home menu.
+// Asks the phone for the map tiles the device is missing, and shows them as the
+// squares they are on the map. Entered from the home menu.
 //
 // ## Why this is not part of the map screen
 //
@@ -32,26 +32,73 @@
 // (`MissingTilesStore`). Record on the trail, fetch at home; the two never need
 // to be on screen together.
 //
-// ## One bar per tile, not one bar for the batch
+// ## The grid, not a list
 //
-// A batch bar hides everything worth seeing: which tile is moving, which one is
-// stuck, which ones the phone refused. A row per tile shows all of it, and it is
-// the shape parallel transfers would need anyway -- more than one row simply
-// shows movement at once, with no redesign.
+// This screen used to be one row per tile: `z12 1105/711`, a status word and a
+// little bar. That names nothing a rider knows. The coordinates are internal,
+// the order is the fetch order, and reading the list tells nobody where on the
+// map the holes are.
 //
-// **Row state is derived, not accounted for.** Keeping a second ledger in step
-// with the store is how the two drift apart, so instead each row asks:
+// So the tiles are drawn where they actually are. Squares in their real relative
+// positions, north up, nested the way the tile pyramid nests: a z11 parent frame
+// holds four z12 quadrant frames, each of those holds four z13 leaves. A square
+// on screen means that tile is still missing. A tile that arrives is **rubbed
+// out**, and its frames go with it once they are empty. The screen empties as
+// the sync runs.
 //
-// - the receiver's `activeTile` says this row is on the wire, and `received`
-//   over `total` is its bar (`MapTransferReceiver::Status`)
+// It stays up when the run ends. On a run the supplier could not fill, the
+// squares still standing are exactly which ground is still missing -- the one
+// thing the verdict line cannot say.
+//
+// Squares are drawn as outlines, never filled. Riders at rungs 3-6 read z11, so
+// a run collects whole missing z11 parents, and filling those paints most of the
+// panel black (seen against real device data, 2026-08-13). Filling an area says
+// nothing its outline does not.
+//
+// That is the whole design. There is no "downloading" state, no "done" state and
+// no legend, because there is nothing to tell apart: present means missing. It
+// is a toy to watch while a fetch that takes minutes runs, and the numbers that
+// actually answer questions -- how many, how fast, how long left -- are in the
+// summary line above it, which is where they always were.
+//
+// A tile the supplier answered `skip` for stays drawn. Nothing arrived, the
+// device still does not have it, and rubbing it out would say otherwise.
+//
+// ## The viewport sits on the densest area, and that is all it does
+//
+// Missing tiles accumulate across rides (`MissingTilesStore`), so the set can be
+// a dense cluster plus one square 40 km away. Drawn to true scale that would
+// collapse the cluster to a dot.
+//
+// So the grid does not draw all of them. It is a window of at most
+// `kMaxWindowCols` x `kMaxWindowRows` z11 parents, placed where the most missing
+// tiles are, and anything outside it is simply not drawn. Inside the window the
+// geometry is true -- real relative positions, real nesting, no compression.
+//
+// Nothing is lost by that, because **the progress bar is the indicator**. The
+// grid answers "what is left, roughly where" and nothing else; the bar and the
+// summary line answer how many, how fast and how long. A window that showed
+// every last outlier would be a worse toy and no better instrument.
+//
+// The window is chosen once, in `armRun()`, and never moves -- a viewport that
+// re-centred as tiles landed would make squares jump under the rider's eyes.
+//
+// **Tile state is derived, not accounted for.** Keeping a second ledger in step
+// with the store is how the two drift apart, so instead each tile asks:
+//
+// - the receiver's `activeTile` says this tile is on the wire, and `received`
+//   over `total` is what the summary line reports (`MapTransferReceiver::Status`)
 // - `skipped_` says the phone gave up on it (`IMapSkipObserver`)
 // - otherwise, gone from `MissingTilesStore` means it arrived -- `forget()` is
 //   what removes it, and only an arrival calls that
 // - still in the store means still waiting
 //
-// The one thing that must be remembered is the **order**, because the store
-// shrinks as tiles land: `rows_` is a snapshot of the fetch-priority order taken
-// when the sync starts, so a row never moves under the rider's eyes.
+// The grid only asks one question of that: did it land. Everything else draws
+// the same square.
+//
+// The thing that must be remembered is the **set**, because the store shrinks as
+// tiles land: `rows_` is a snapshot taken when the sync starts, so the grid
+// keeps its shape and squares vanish out of a layout that does not reflow.
 //
 // ## What it owns while it is up
 //
@@ -122,17 +169,19 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   static void formatDuration(uint32_t seconds, char* out, size_t outSize);
   // Writes the summary line: done/total, percent, transferred, rate, ETA.
   void formatSummary(char* out, size_t outSize) const;
-  // Repaints what changed: the whole list when a tile settles, or just the
-  // active row while its bytes climb.
+  // Repaints what changed: the whole grid when a tile settles, or just the
+  // summary line while the bytes of the tile in flight climb.
   void updateProgress();
-  void drawList();
-  void drawRow(int index, int y, int rowHeight);
   RowState stateOf(int index, uint32_t& received, uint32_t& total) const;
-  // Rows that fit, and the first one shown -- the window follows the active row.
-  int visibleRowCount() const;
-  int firstVisibleRow() const;
-  void listRect(int& x, int& y, int& w, int& h) const;
-  void rowRect(int index, int& x, int& y, int& w, int& h) const;
+  void gridRect(int& x, int& y, int& w, int& h) const;
+  void summaryRect(int& x, int& y, int& w, int& h) const;
+  // The whole grid, cleared and redrawn. Every square that is still missing,
+  // nothing for the ones that landed. `top` is the floor to start at, or 0 for
+  // the running screen's own -- the finished screen writes more above it.
+  void drawGrid(int top);
+  // One z11 parent and everything of it that has not arrived. Returns false
+  // when the parent is empty, so the caller can leave its frame off too.
+  bool drawParent(int px, int py, int size, uint16_t pc, uint16_t pr);
 
   // Clears MissingTilesStore entries for tiles that have landed.
   //
@@ -167,6 +216,13 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // run on the same visit starts where a fresh entry would. False means the
   // snapshot could not be allocated.
   bool armRun();
+  // The z11 parent a tile sits in. z11/z12/z13 are the only LODs the map reads
+  // (docs/zoom-rungs.md), so this is a shift down, never up.
+  static void parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t& pr);
+  // Places the viewport over the densest patch of the snapshot. Called once per
+  // run, from armRun() -- see the header comment.
+  void chooseWindow();
+
   // Stale tiles this visit, for the ping-pong guard and the log. Not persisted
   // and not this screen's row list -- see StaleTilesList.
   StaleTilesList staleTiles_;
@@ -201,6 +257,36 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   std::unique_ptr<Row[]> rows_;
   uint32_t rowCount_ = 0;
 
+  // The drawn viewport, in z11 parent coordinates: top-left corner and extent.
+  // Set by chooseWindow(), read only by the grid. Four scalars rather than a
+  // second snapshot -- the tiles themselves are already in rows_.
+  uint16_t windowCol_ = 0;
+  uint16_t windowRow_ = 0;
+  uint8_t windowCols_ = 1;
+  uint8_t windowRows_ = 1;
+  // How many of rowCount_ fall outside the window. Logged, not drawn: the count
+  // the rider watches is the summary line's, which counts all of them.
+  uint32_t offWindow_ = 0;
+
+  // The viewport cap, in z11 parents. Sized against the drawable area: at
+  // 440 x 552 px (Lyra metrics, 480x800 panel) a 6 x 8 window gives a 69 px
+  // parent and a 17 px z13 leaf, which is the smallest square still worth
+  // drawing a frame around. The ratio also matches the area, so neither axis
+  // wastes room.
+  static constexpr uint8_t kMaxWindowCols = 6;
+  static constexpr uint8_t kMaxWindowRows = 8;
+  // A z11 parent is 4 z13 tiles across -- the leaf grid inside one cell.
+  static constexpr int kLeavesPerParent = 4;
+  // How big a cell is allowed to get. Without it a run whose tiles sit in one
+  // parent scales that parent to the full 440 px and its z13 leaves to 110 px
+  // each, which paints most of the panel solid black -- a lot of ink and a blot
+  // rather than a picture. 128 px caps a leaf at 32 px, close to the parents in
+  // the design sketch. The grid is centred in whatever is left over.
+  static constexpr int kMaxCellPx = 128;
+  // Gap between a square and its neighbour, so blocks read as separate squares
+  // rather than one blot. Drawn as an inset on the fill.
+  static constexpr int kTileInset = 2;
+
   // Tiles the phone has given up on. Counted here as well as in the console's
   // tally because a `skip` for a tile that is not on this snapshot (a stale
   // phone-side list) still has to count toward finishing.
@@ -213,11 +299,15 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // millis() when the ask went out. The clock the rate and the ETA are built
   // on -- both are meaningless before the phone actually starts sending.
   uint32_t startedMs_ = 0;
-  // millis() of the last active-row repaint. The bytes of a transfer in flight
-  // change constantly and each repaint is a real waveform pass, so the moving
-  // bar is rate-capped rather than drawn per chunk.
+  // millis() of the last summary-line repaint. The bytes of a transfer in flight
+  // change constantly and each repaint is a real waveform pass, so the live
+  // numbers are rate-capped rather than drawn per chunk.
+  //
+  // It is the summary line and not the grid because the grid has nothing to say
+  // between arrivals: a square is there or it is gone. Without this the screen
+  // would hold completely still for the whole of a slow tile.
   uint32_t lastActiveDrawMs_ = 0;
-  static constexpr uint32_t kActiveRowRefreshMs = 2000;
+  static constexpr uint32_t kSummaryRefreshMs = 2000;
 
   // How long silence is allowed to look like work. The transfer channel reclaims
   // a stalled transfer after 30 s (docs/ble-map-transfer-protocol.md), so a
