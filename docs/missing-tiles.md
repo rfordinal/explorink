@@ -619,44 +619,132 @@ The console state is deliberately **not** shared with the map's. Two screens are
 never up at once, and sharing would put this screen's skip tally and the map's
 zoom in one object for no reason.
 
-### One bar per tile
+### The grid: squares where the tiles are
 
-A single bar for the batch hides what matters: which tile is moving, which is
-stuck, which ones the phone refused. So the screen is a list, one row per tile,
-each with its own progress bar, in the fetch-priority order the device sent. It
-is also the shape parallel transfers would want -- more than one row simply
-shows movement at once.
+The screen used to be a list, one row per tile: `z12 1105/711`, a status word
+and a little bar. That names nothing a rider knows -- the coordinates are
+internal, the order is the fetch order, and the list never says where on the map
+the holes are.
 
-**Row state is derived, not accounted for.** A second ledger kept in step with
-the store is how the two drift apart, so each row asks:
+So the tiles are drawn as the squares they are. A z11 parent frame holds four
+z12 quadrant frames, each of those holds four z13 leaves -- the tile pyramid,
+drawn (`TileSyncActivity::drawParent()`). North up and east right with no
+transform: the slippy-tile row grows south and the column grows east, which is
+already the screen's own axes.
 
-- the receiver's `Status::activeTile` says this row is on the wire, and
-  `received` over `total` is its bar
+**A square on screen means that tile is still missing.** A tile that arrives is
+rubbed out, and its frames go with it once nothing inside them is left. The grid
+empties as the sync runs. There is no "downloading" square and no "done" square,
+so there is no legend: present means missing.
+
+**It stays up when the run ends**, below the verdict rather than at the running
+screen's fixed top (`drawGrid(int top)`). It used to be dropped on the reasoning
+that a finished run is a result and not a live view, and that was wrong: on a run
+the supplier could not fill, the squares still standing are exactly which ground
+is still missing. Seen on hardware 2026-08-13 -- `Fetch finished  19 / 25
+6 queued  524 kB` over an empty half-screen, with nothing to say which six.
+
+A tile the supplier answered `skip` for stays drawn. Nothing arrived and the
+device still does not have it.
+
+**Outlines, never fills.** Filled squares were tried first and rendered from real
+device coordinates -- 30 tiles hatched off an unbuilt area on hardware, read back
+with `missing`, drawn by a host replica of the layout (never on the panel).
+2026-08-13. Riders at
+rungs 3-6 read z11, so a run collects whole missing z11 *parents*, and filling
+those painted eight solid 128 px blocks: most of the panel black, a lot of ink
+for a screen that redraws once per arrival, and the nesting buried underneath.
+Filling an area says nothing its outline does not. The tile's own outline is
+drawn thicker than the scaffolding frames around it (`leaf / 8`, floor 2 px), so
+what is actually missing stays the strongest line on screen.
+
+**Tile state is derived, not accounted for.** A second ledger kept in step with
+the store is how the two drift apart, so each tile asks:
+
+- the receiver's `Status::activeTile` says this tile is on the wire, and
+  `received` over `total` is what the summary line reports
 - the skip observer (`IMapSkipObserver`, called synchronously from
   `MapConsoleState::execute()`) says the phone gave up on it
 - otherwise, gone from `MissingTilesStore` means it arrived -- `forget()` is the
   only thing that removes an entry, and only an arrival calls it
 - still in the store means still waiting
 
-The one thing that has to be remembered is the **order**, because the store
-shrinks as tiles land. `rows_` is a snapshot of the priority order taken when
-the sync starts, so a row never moves under the rider's eyes. Heap-allocated
+The grid asks only the last question of that. Everything else draws the square.
+
+What has to be remembered is the **set**, because the store shrinks as tiles
+land. `rows_` is a snapshot taken when the sync starts, so the layout does not
+reflow and squares vanish out of a picture that holds still. Heap-allocated
 (~2.4 KB at the 200-entry cap) and freed in `onExit()`; this screen allocates no
 `MapTileSource`, so it is still the cheaper of the two map-side screens.
 
 `skip` needs a per-tile callback rather than the `MapSkipTally` snapshot: two
-skips between two polls would leave a row stuck on "waiting" forever.
+skips between two polls would leave a tile drawn forever.
+
+### The viewport sits on the densest area
+
+Missing tiles accumulate across rides, so a set can be a dense cluster plus one
+square 40 km away. Drawn to true scale that would collapse the cluster to a dot.
+
+`TileSyncActivity::chooseWindow()` therefore draws a window of at most 6 x 8 z11
+parents, and anything outside it is not drawn at all. Inside the window the
+geometry is true -- real relative positions, real nesting, no compression.
+
+- Bounding box within the cap: the box **is** the window, so a run whose tiles
+  sit in one parent gets that parent filling the screen.
+- Wider than the cap: every occupied parent is tried as the top-left corner and
+  the one catching the most tiles wins. A window whose corner holds nothing can
+  always be slid onto one that does without losing a tile, so the best corner is
+  among the occupied ones. That is O(n^2) -- 40,000 compares at the 200-entry
+  cap, once per run.
+- Then it **shrinks onto what it caught**. Without that step one distant outlier
+  keeps the full 6 x 8 cap and three occupied parents get drawn tiny in the
+  corner of a mostly empty grid.
+
+The window is chosen once per run and never moves. A viewport that re-centred as
+tiles landed would make squares jump under the rider's eyes.
+
+Nothing is lost by the omission, because **the progress bar is the indicator**.
+The grid answers "what is left, roughly where"; the bar and the summary line
+answer how many, how fast and how long, and they count every tile of the run.
+The count left outside is logged (`grid window at z11 ...`), not drawn.
+
+Cell sizes, read off `gridRect()` against Lyra metrics on a 480x800 panel
+(440 x 552 px drawable): the 6x8 cap gives a 68 px parent and a 17 px z13 leaf,
+3x6 gives 92 / 23 px, and anything smaller hits `kMaxCellPx` at 128 / 32 px.
+That cap matters -- without it a 1x1 window scales one parent to 440 px and its
+leaves to 110 px each. Cell size is then rounded down to a multiple of 4 so
+leaves land on whole pixels; otherwise frames do not meet.
+
+The cost of the cap is that a small missing set draws a small island in a large
+empty area. That is honest -- there is little missing -- but if it reads as
+broken, the fix is scaffolding: draw the parent frame for every cell of the
+window whether or not it holds anything, so squares vanish out of a stable grid
+instead of a void. Not done, because "a square means a missing tile and nothing
+else is drawn" is the simpler rule.
+
+**Layout verified against real device data** (2026-08-13): 30 tiles hatched on
+hardware off an unbuilt area, read back with `missing`, run through a host
+replica of the layout. That is what caught the filled-block problem above.
+
+**The screen itself was confirmed on the panel** the same day -- flashed, run
+against a phone (19 of 25 tiles delivered, 6 refused), and judged by the
+maintainer. No shot was archived: the panel was grabbed only after the rider had
+left the screen.
+
+Still open: the 6x8 window cap has never been exercised on hardware -- the real
+run was 3x4. A set spanning more than six z11 parents east-west would settle it.
 
 ### Refresh cadence
 
-A tile settling -- landed or skipped -- repaints the whole frame: the summary
-line, one row's state and possibly the window all change.
+A tile settling -- landed or skipped -- repaints the whole frame: a square
+disappears and the bar moves.
 
-The bytes of the transfer in flight climb continuously, and every repaint is a
-real waveform pass. So the moving bar is rate-capped at
-`kActiveRowRefreshMs` (2 s) and repaints **only its own row's rectangle**
-through `renderer.displayBufferWindow()`, the same mechanism as the map's busy
-badge. Per chunk would spend the transfer refreshing instead of receiving.
+Between arrivals the grid has nothing to say, so the live part of the screen is
+the **summary line** -- bytes moved, rate, ETA. Rate-capped at
+`kSummaryRefreshMs` (2 s) and repainted through `renderer.displayBufferWindow()`
+over that one line, the same mechanism as the map's busy badge. Without it the
+screen would hold completely still for the whole of a slow tile; per chunk would
+spend the transfer refreshing instead of receiving.
 
 BACK cancels. The device cannot stop the phone from its end -- the transfer
 protocol's abort opcode (`0x03`) is a frame the *central* writes -- so the
@@ -673,6 +761,24 @@ used for a full base-map preload (`docs/roadmap.md`, "three channels"). The
 `missing` command above is the over-the-air path and does not need the file.
 
 ## Verified vs assumed
+
+### Making gaps on purpose
+
+One serial session, port held open -- the device is on `/dev/ttyACM1` whenever a
+phone occupies ACM0. `CMD:GOTO_MAP` first: the map console only answers while the
+map screen is up. Then `zoom <rung>` and `pos <lat> <lon>` per gap, about 5 s
+apart so each viewport reset finishes before the next.
+
+Rung 1 hatches z13, rung 2 hatches z12, rung 4 hatches z11 -- one run at each
+gives a set with all three levels, which is what the sync screen's nesting needs
+to be worth looking at. Pick ground outside every bbox in the parent repo's
+`mapbuilder/builds.json`, or the tiles are simply there and nothing hatches.
+
+Read it back with `missing [<offset>]`, 20 entries per page.
+
+The first port open can reset the device. A command sent into a boot is lost, so
+send it again once the log settles.
+
 
 - **Verified on hardware, over USB serial (2026-08-06, build
   `develop-41e1a6e3`).** Gaps were made on purpose by sending `pos` to empty
@@ -736,7 +842,8 @@ mode worth remembering here:
    6-pixel row bars produced ten labels, each landing on the next row's text and
    each erased by the next row's fill, leaving one number under the list that
    read as overall progress and was actually the last row's state. It sat at 0%
-   for a whole run. Rows now draw their own outline and fill, with no label.
+   for a whole run. The rows are gone entirely now (see "The grid" above), so
+   the one bar the screen draws is the only one that writes a percentage.
 2. **A full bar on a run that transferred nothing.** The overall bar counted
    *settled* tiles, and a tile the supplier does not have settles the run -- so
    0 landed of 5 read as 100%. It counts arrivals now, and the unavailable count
