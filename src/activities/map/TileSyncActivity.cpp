@@ -318,6 +318,12 @@ void TileSyncActivity::loop() {
   // must come back without leaving the screen.
   freeink::BlePositionServer::getInstance().serviceAdvertising();
 
+  // The other half of the same deal: a transfer status line parked because the
+  // command channel held the connection's single indication slot. This screen
+  // is exactly where that collides -- `missing`/`have` replies and file pushes
+  // on one link (BlePositionServer.h, sendTransferStatus).
+  freeink::BlePositionServer::getInstance().flushTransferStatus();
+
   trackPhone();
   drainTransferredTiles();
   updateProgress();

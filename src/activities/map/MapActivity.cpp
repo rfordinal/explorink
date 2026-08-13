@@ -1688,6 +1688,15 @@ void MapActivity::loop() {
   // there is nothing to do.
   freeink::BlePositionServer::getInstance().serviceAdvertising();
 
+  // A transfer status line (`RDY`, `OK`, `ERR`) that found the connection's one
+  // indication slot held by a command-channel reply. Same task-ownership reason
+  // as serviceAdvertising above -- the host task cannot wait for the confirm
+  // that frees the slot, because it is the task that delivers it
+  // (BlePositionServer.h, sendTransferStatus). A separate call, not folded into
+  // serviceAdvertising: that one owns advertising, this is the indication slot.
+  // Costs one counter compare per tick when nothing is parked.
+  freeink::BlePositionServer::getInstance().flushTransferStatus();
+
   const uint32_t now = millis();
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
     redrawDueMs_ = 0;

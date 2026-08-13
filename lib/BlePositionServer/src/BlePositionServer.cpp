@@ -324,6 +324,10 @@ bool BlePositionServer::begin(const char* deviceName) {
   latest_ = PositionUpdate{};
   commandHead_ = 0;
   commandTail_ = 0;
+  // A status line parked by the last session belongs to a transfer whose peer
+  // is long gone. Same reasoning as the command ring above.
+  pendingStatusHead_ = 0;
+  pendingStatusTail_ = 0;
   portEXIT_CRITICAL(&g_mux);
   transferSubscribed_ = false;
   commandSubscribed_ = false;
@@ -380,6 +384,8 @@ void BlePositionServer::end() {
   hasUpdate_ = false;
   commandHead_ = 0;
   commandTail_ = 0;
+  pendingStatusHead_ = 0;
+  pendingStatusTail_ = 0;
   portEXIT_CRITICAL(&g_mux);
 
   const uint32_t heapAfterEnd = esp_get_free_heap_size();
@@ -596,6 +602,10 @@ void BlePositionServer::onCentralDisconnect() {
 
   portENTER_CRITICAL(&g_mux);
   const TransferHooks hooks = transferHooks_;
+  // A parked status line is addressed to the peer that just left. Held, it
+  // would go out on the next link, about a transfer that connection never made.
+  pendingStatusHead_ = 0;
+  pendingStatusTail_ = 0;
   portEXIT_CRITICAL(&g_mux);
 
   if (hooks.onDisconnect) hooks.onDisconnect(hooks.ctx);
@@ -658,19 +668,72 @@ bool BlePositionServer::sendTransferStatus(const char* line) {
   if (written <= 0) return false;
   const size_t length = static_cast<size_t>(written) < sizeof(buf) ? static_cast<size_t>(written) : sizeof(buf) - 1;
 
-  // No confirm wait -- see the header. A retry still helps: indicate()
-  // returns false while some other indication is pending, and the only other
-  // indicating characteristic is the command channel, which a script that is
-  // pushing a file is not using at that moment.
-  constexpr int kMaxAttempts = 8;
-  constexpr uint32_t kRetryDelayMs = 25;
-  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-    if (g_transferStatusChar->indicate(reinterpret_cast<const uint8_t*>(buf), length)) return true;
-    vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+  // One attempt, then park -- see the header. No wait and no retry loop of any
+  // kind: this runs on the NimBLE host task, and that is the task that
+  // processes the confirm which would free the slot, so every millisecond
+  // spent waiting here is a millisecond the thing being waited for cannot
+  // happen. The old 8x25 ms loop was both too short to outlast a 3000 ms
+  // command-channel confirm and 200 ms of host task held for nothing.
+  if (g_transferStatusChar->indicate(reinterpret_cast<const uint8_t*>(buf), length)) return true;
+
+  // Busy: the command channel is holding the connection's one indication slot.
+  // Park the line for flushTransferStatus() on the activity task.
+  portENTER_CRITICAL(&g_mux);
+  bool dropped = false;
+  if (pendingStatusHead_ - pendingStatusTail_ >= kPendingStatusSlots) {
+    // Full. Drop the OLDEST -- a third line means the first is two verdicts
+    // stale, and the newest is the one the phone still needs. Never block, and
+    // never refuse the new line: this path is a write callback.
+    ++pendingStatusTail_;
+    dropped = true;
   }
-  LOG_ERR("BLEPOS", "transfer status indicate failed after %d attempts: %.*s", kMaxAttempts, static_cast<int>(length),
-          buf);
+  const size_t slot = pendingStatusHead_ % kPendingStatusSlots;
+  memcpy(pendingStatus_[slot], buf, length);
+  pendingStatusLen_[slot] = static_cast<uint8_t>(length);
+  ++pendingStatusHead_;
+  portEXIT_CRITICAL(&g_mux);
+
+  // Outside the critical section: a log line is a serial write, not something
+  // to do with interrupts off. LOG_ERR from the host task is what the
+  // advertising failure path already does (onAdvertisingState).
+  if (dropped) {
+    LOG_ERR("BLEPOS", "transfer status buffer full, oldest line dropped; parked: %.*s", static_cast<int>(length), buf);
+  } else {
+    LOG_DBG("BLEPOS", "indication slot busy, parked transfer status: %.*s", static_cast<int>(length), buf);
+  }
   return false;
+}
+
+void BlePositionServer::flushTransferStatus() {
+  if (!begun_ || g_transferStatusChar == nullptr) return;
+
+  // Copied out under the lock and sent outside it: indicate() reaches into the
+  // NimBLE host's own locking, and taking a lock inside a critical section is a
+  // crash (same rule onTransferIngest's hook copy follows).
+  char buf[kPendingStatusBytes];
+  size_t length = 0;
+  uint32_t slot = 0;
+  portENTER_CRITICAL(&g_mux);
+  if (pendingStatusHead_ != pendingStatusTail_) {
+    slot = pendingStatusTail_;
+    length = pendingStatusLen_[slot % kPendingStatusSlots];
+    memcpy(buf, pendingStatus_[slot % kPendingStatusSlots], length);
+  }
+  portEXIT_CRITICAL(&g_mux);
+  if (length == 0) return;
+
+  // Still busy: nothing to do about it here. One attempt per call, and the next
+  // loop() tick is milliseconds away -- this must not turn into a wait on the
+  // activity task either, which is what makes the buttons go dead
+  // (docs/ble-review-2026-08.md, "Console flush can freeze the activity task").
+  if (!g_transferStatusChar->indicate(reinterpret_cast<const uint8_t*>(buf), length)) return;
+
+  portENTER_CRITICAL(&g_mux);
+  // Only if it is still the line that was sent -- an overflow drop on the host
+  // task moves the tail while the indicate above is in flight (see the header).
+  if (pendingStatusTail_ == slot) ++pendingStatusTail_;
+  portEXIT_CRITICAL(&g_mux);
+  LOG_DBG("BLEPOS", "parked transfer status sent: %.*s", static_cast<int>(length), buf);
 }
 
 }  // namespace freeink
@@ -689,6 +752,7 @@ bool BlePositionServer::sendCommandReply(const char*) { return false; }
 bool BlePositionServer::sendCommandBlock(const char*, size_t) { return false; }
 void BlePositionServer::setTransferHooks(const TransferHooks&) {}
 bool BlePositionServer::sendTransferStatus(const char*) { return false; }
+void BlePositionServer::flushTransferStatus() {}
 void BlePositionServer::onTransferIngest(const uint8_t*, size_t) {}
 void BlePositionServer::onTransferSubscribe(bool) {}
 void BlePositionServer::onCommandSubscribe(bool) {}
