@@ -215,8 +215,14 @@ bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
       snprintf(out, size, tr(STR_TILE_SYNC_ALL_CURRENT), static_cast<int>(freshnessAskedCount_));
       return true;
     case Freshness::Stale:
-      snprintf(out, size, tr(STR_TILE_SYNC_STALE), static_cast<int>(freshnessStale_),
-               static_cast<int>(freshnessAskedCount_));
+      // "downloading" is only true while something is still owed. Every stale
+      // tile leaves staleTiles_ when its replacement lands
+      // (drainTransferredTiles), so an empty list means the work is done --
+      // without this the line sat on "downloading" after the last tile had
+      // already arrived, seen on the panel 2026-08-13 next to a summary that
+      // said 35 kB had moved.
+      snprintf(out, size, I18N.get(staleTiles_.count() > 0 ? StrId::STR_TILE_SYNC_STALE : StrId::STR_TILE_SYNC_UPDATED),
+               static_cast<int>(freshnessStale_), static_cast<int>(freshnessAskedCount_));
       return true;
     case Freshness::Unknown:
       // Deliberately not "everything is current". The phone could not read the
@@ -889,8 +895,18 @@ void TileSyncActivity::renderScreen() {
       // No verdict word here: the finished screen draws it on its own line, at
       // UI_12, right above this one. Printing it in both put "Fetch finished"
       // on the panel twice -- seen on the panel, not readable from the code.
-      snprintf(status, sizeof(status), "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
-               static_cast<unsigned long>(rowCount_), unavailable, moved);
+      //
+      // With nothing missing there is no ratio to state, and printing one
+      // anyway reads as an error: a stale tile's replacement lands in
+      // transfer.completed too, so a freshness-only visit showed "1 / 0"
+      // (seen on the panel 2026-08-13). Just the bytes in that case -- the
+      // freshness line below says what they were.
+      if (rowCount_ == 0) {
+        snprintf(status, sizeof(status), "%s", moved);
+      } else {
+        snprintf(status, sizeof(status), "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
+                 static_cast<unsigned long>(rowCount_), unavailable, moved);
+      }
       break;
     }
   }
