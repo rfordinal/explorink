@@ -199,14 +199,37 @@ class BlePositionServer {
   // Sends one status line as an indication, newline included -- same
   // reasoning as sendCommandReply's indication-over-notification.
   //
-  // Unlike sendCommandReply this does **not** wait for the peer's confirm:
-  // it is called from inside the transfer write callback, i.e. on the NimBLE
-  // host task, and that same task is the one that delivers the confirm.
-  // Waiting for it there would deadlock. Safe because the protocol never
-  // sends two status lines back to back -- one "ready", then one verdict,
-  // seconds of file transfer apart. That is the opposite of the 18-lines-in-
-  // 3ms burst that made the command channel need the confirm wait.
+  // Unlike sendCommandReply this **never waits** for anything: it is called
+  // from inside the transfer write callback, i.e. on the NimBLE host task, and
+  // that same task is the one that delivers the confirm which frees the
+  // indication slot. Any wait here -- for the confirm, or a retry loop with a
+  // vTaskDelay in it -- blocks the task that would end the wait, so it
+  // deadlocks by construction.
+  //
+  // There is **one indication slot per connection**, shared with the command
+  // channel, so a line can find it busy. The old justification ("the command
+  // channel is not in use while a file is being pushed") was wrong from the
+  // day the map screen started running freshness listings and stale-tile
+  // pushes together: a `have` listing can hold the slot for up to
+  // kConfirmTimeoutMs = 3000 ms (BlePositionServer.cpp, sendCommandBlock),
+  // against which any retry budget short enough not to stall the host task
+  // loses. So a busy slot parks the line in a tiny pending buffer instead of
+  // being retried or dropped, and the activity task sends it later --
+  // flushTransferStatus() below.
+  //
+  // Returns true when the line went out immediately, false when it was parked
+  // or could not be composed. A parked line is not a failure: `false` here
+  // means "not on the link yet", and no caller retries on it.
   bool sendTransferStatus(const char* line);
+
+  // Sends one parked status line if the indication slot is free now.
+  //
+  // **Call from an activity task, never from a NimBLE callback** -- same rule
+  // as retryAdvertising(), same reason: the host task cannot wait on itself.
+  // One attempt per call, no wait of any kind; loop() comes back in
+  // milliseconds and the buffer holds at most two lines, so there is nothing
+  // to drain in a hurry.
+  void flushTransferStatus();
 
   // True once a central has subscribed to the **command** characteristic --
   // i.e. somebody is actually listening for `NEED_TILES` and will answer it.
@@ -289,6 +312,27 @@ class BlePositionServer {
   char commandRing_[kCommandRingBytes] = {};
   volatile size_t commandHead_ = 0;  // write index, BLE task
   volatile size_t commandTail_ = 0;  // read index, activity task
+
+  // Status lines that found the indication slot busy, waiting for the activity
+  // task to put them on the link (flushTransferStatus). Fixed size, no heap --
+  // this is written from the NimBLE host task, where an allocation is the last
+  // thing wanted, and the realistic worst case is exactly two lines: the `RDY`
+  // that opens a transfer and the `OK`/`ERR` that closes it. 64 bytes is
+  // sendTransferStatus's own compose buffer, so nothing can be parked that
+  // would not have fitted on the link.
+  //
+  // Head and tail are monotonic counters, not indices, and that is
+  // load-bearing: the activity task copies the line at `tail` out, sends it
+  // outside the critical section, and only then advances the tail *if it is
+  // still the same one*. An overflow drop on the host task in that window
+  // moves the tail, the compare fails, and the next line is not eaten by a
+  // send that was not about it.
+  static constexpr size_t kPendingStatusSlots = 2;
+  static constexpr size_t kPendingStatusBytes = 64;
+  char pendingStatus_[kPendingStatusSlots][kPendingStatusBytes] = {};
+  uint8_t pendingStatusLen_[kPendingStatusSlots] = {};
+  volatile uint32_t pendingStatusHead_ = 0;  // next write, host task
+  volatile uint32_t pendingStatusTail_ = 0;  // next send, activity task
 
   BlePositionServer() = default;
   BlePositionServer(const BlePositionServer&) = delete;

@@ -459,3 +459,66 @@ still land, and the app's own reply timeout (`TileFetcher.REPLY_TIMEOUT_MS`,
 correctness. Not chased in this pass -- needs a per-chunk timestamp on one
 transfer to say whether the wait is the SD write, the connection interval or
 the app's queue.
+
+## The status channel loses that slot -- fixed 2026-08-13
+
+**Read off the code, not measured.** A consequence of the fix above, found in
+the BLE review (`../../docs/ble-review-2026-08.md`, "Stability -- firmware"
+item 1) and fixed in the same week.
+
+**There is one indication slot per connection, not one per characteristic.**
+The command channel (`...0003`) and the transfer status channel (`...0005`)
+both indicate on the same link, so only one of them can have an indication
+unconfirmed at a time. NimBLE's `indicate()` returns false for the other one.
+
+The two now run at the same time by design. The map screen sends a `have`
+listing and pushes stale tiles in the same session (this doc, "How the check
+works"), and one listing can hold the slot for the whole confirm budget --
+`kConfirmTimeoutMs = 3000` (`lib/BlePositionServer/src/BlePositionServer.cpp:509`),
+against measured confirms of 688-1503 ms.
+
+`sendTransferStatus()` retried 8x25 ms = 200 ms and then dropped the line. So
+the `RDY` that opens a transfer, or the `OK`/`ERR` that closes it, was lost
+whenever a listing was in flight -- and the phone, which waits for those lines,
+timed the tile out and asked for it again later.
+
+**A longer retry cannot fix it.** `sendTransferStatus()` runs inside the
+transfer write callback, i.e. on the NimBLE host task
+(`src/activities/map/MapTransferReceiver.cpp:297`, `:432`), and that is the same
+task that processes the peer's confirm and frees the slot. Waiting there blocks
+the event being waited for: every attempt fails by construction. Exactly the
+shape of the advertising-restart bug (`ble-advertising.md`, "A failed restart is
+the activity task's problem").
+
+So it is a queue, not a bigger loop:
+
+- **One attempt, then park.** `sendTransferStatus()` calls `indicate()` once. On
+  busy it copies the line into a 2 x 64 byte pending buffer under the existing
+  `g_mux` critical section and returns false
+  (`lib/BlePositionServer/src/BlePositionServer.cpp:671-704`). No wait, no
+  `vTaskDelay`, nothing on the host task. Two slots because the realistic worst
+  case is two lines: one `RDY`, one verdict. Fixed size, no heap -- an
+  allocation on the host task is the last thing wanted.
+- **The activity task drains it.** `flushTransferStatus()`
+  (`:707`) copies the front line out under the lock, `indicate()`s it outside
+  the lock, and advances the tail only on success. One attempt per call; both
+  screens call it once per tick (`src/activities/map/MapActivity.cpp:1698`,
+  `src/activities/map/TileSyncActivity.cpp:325`), next to
+  `serviceAdvertising()` and for the same task-ownership reason.
+- **Overflow drops the oldest and logs.** A third line means the first is two
+  verdicts stale (`:683`). Never blocks, never refuses the new line.
+- **A parked line dies with its connection.** `onCentralDisconnect()`,
+  `begin()` and `end()` clear the buffer -- the peer that would read it is gone,
+  and a verdict about a transfer the *next* connection never made is worse than
+  silence.
+
+`false` from `sendTransferStatus()` therefore means "not on the link yet", not
+"lost". No caller retries on it (`MapTransferReceiver.cpp:297`, `:432`, `:469`,
+`:477` all ignore the return), which is why the meaning could change without
+touching them.
+
+**Open -- needs hardware.** The scenario to watch: start a freshness listing,
+push a tile while it is unconfirmed, and expect
+`BLEPOS: indication slot busy, parked transfer status: RDY ...` followed within
+a tick or two by `parked transfer status sent: RDY ...`, with the phone
+proceeding to chunks. Nothing has been on the glass yet.
