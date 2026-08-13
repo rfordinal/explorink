@@ -679,7 +679,7 @@ void BlePositionServer::retryAdvertising() {
   LOG_INF("BLEPOS", "advertising restarted from the activity task");
 }
 
-void BlePositionServer::serviceAdvertising() {
+void BlePositionServer::serviceAdvertising(bool transferActive) {
   if (!begun_) return;
   // A live link means advertising already did its job, and NimBLE stops it
   // while a central is connected by design -- retrying into a connection would
@@ -687,12 +687,115 @@ void BlePositionServer::serviceAdvertising() {
   // the same "is the phone there" test the map header draws with
   // (src/activities/map/MapActivity.cpp:914, :1194): set in onConnect, zeroed in
   // onCentralDisconnect. No second connection-state flag for this.
-  if (connIntervalUnits_ != 0) return;
+  //
+  // Connection parameter requests are the opposite: meaningless with nobody
+  // connected (there is no handle to request against), and the only thing
+  // this method has to do *while* connected -- advertising is off for the
+  // duration either way. So the two are mutually exclusive branches of the
+  // same connIntervalUnits_ check rather than two independent early-returns.
+  if (connIntervalUnits_ != 0) {
+    serviceConnParams(transferActive);
+    return;
+  }
   if (advertisingDown_) {
     retryAdvertising();
     return;
   }
   maybeEnterSlowAdvertising();
+}
+
+// Requests one of two connection parameter sets from the central, depending
+// on whether a file transfer is moving bytes right now. Both are requests,
+// not commands -- the central (Android, in practice) can ignore or override
+// either, and onConnParamsUpdate() (ServerCallbacks above) logs whatever
+// actually lands. docs/ble-review-2026-08.md, "Power":  "device never
+// requests connection parameters... often honoured despite the header's
+// pessimism; free when ignored" -- this is that request.
+//
+// **Never called from a NimBLE callback.** serviceAdvertising() is the only
+// caller, and every activity that runs this BLE server calls it from loop()
+// on the activity task, never from ServerCallbacks -- same reasoning as
+// retryAdvertising()/maybeEnterSlowAdvertising() (BlePositionServer.h,
+// "Advertising state" / T1.3). updateConnParams() itself does nothing
+// blocking -- it queues an L2CAP signalling request and returns -- but the
+// point still holds: a NimBLE callback runs on the host task, and any of this
+// method's bookkeeping racing that task's own writes to connHandle_ would be
+// the same class of bug this whole file's locking discipline exists to avoid.
+//
+// Position packets are writes FROM the phone, so slave latency does not delay
+// them: the peripheral (this device) may skip a listening event, but the
+// central's stack holds a pending write until the next event it actually
+// keeps, not until this side happens to be listening. At 1 Hz and the idle
+// set's latency of 9 (worst case ~(1+9)*50 ms = 500 ms between mandatory
+// listens, computed below), the most a position write is ever delayed is
+// under half a second -- invisible against the map's own redraw cadence,
+// which is on the order of a second even for a small partial refresh
+// (docs/eink-grayscale.md).
+void BlePositionServer::serviceConnParams(bool transferActive) {
+  const uint16_t handle = connHandle_;
+  const uint32_t now = millis();
+
+  if (handle != connParamsLastHandle_) {
+    // A new connection (this only runs while connIntervalUnits_ != 0, so
+    // "new" here means a different handle, not "no connection" -- that case
+    // is the early return above). The previous connection's bookkeeping does
+    // not apply; the quiet clock starts now, same as if this were a fresh
+    // connect with no transfer yet.
+    connParamsLastHandle_ = handle;
+    connParamsQuietSinceMs_ = now;
+    connParamsIdleRequested_ = false;
+    connParamsTransferWasActive_ = false;
+  }
+
+  if (transferActive) {
+    if (!connParamsTransferWasActive_) {
+      // Transfer begin: fast link, no latency, while it runs. Supervision
+      // timeout check: (1 + latency) * maxInterval * 2 = (1+0) * 30 ms * 2 =
+      // 60 ms, against a 4 s (400 * 10 ms) timeout -- clears with room to
+      // spare, same as the idle set below but by a much wider margin since
+      // latency is 0 here.
+      g_server->updateConnParams(handle, kConnParamsFastMinUnits, kConnParamsFastMaxUnits, kConnParamsFastLatency,
+                                  kConnParamsFastTimeoutUnits);
+      LOG_INF("BLEPOS", "conn params: requested fast set (12-24 units, latency 0) for a transfer in flight");
+      // The idle set will need to be asked for again once this transfer
+      // ends -- clearing it here rather than waiting for the end transition
+      // means a transfer that starts before the previous quiet window
+      // finished still gets a correct re-request afterwards.
+      connParamsIdleRequested_ = false;
+    }
+    connParamsTransferWasActive_ = true;
+    return;
+  }
+
+  if (connParamsTransferWasActive_) {
+    // Transfer end (complete or abandoned): restart the quiet window rather
+    // than reverting immediately -- autosync can ask again within the same
+    // visit, and flipping the link twice for a few seconds of gap buys
+    // nothing but two more L2CAP round trips.
+    connParamsQuietSinceMs_ = now;
+    connParamsTransferWasActive_ = false;
+  }
+
+  if (connParamsIdleRequested_) return;
+  if (now - connParamsQuietSinceMs_ < kConnParamsIdleDelayMs) return;
+
+  // Idle set: 24-40 units (30-50 ms) interval, slave latency 9 -- the
+  // peripheral may skip up to 9 listening events between ones it actually
+  // keeps, so the effective gap between mandatory listens is (1 + 9) * the
+  // interval the central actually picks: 300 ms at the 30 ms bound, 500 ms
+  // at the 50 ms bound (not the narrower "300-400 ms" the review doc's
+  // Power bullet estimated -- that bullet under-counted the top of the
+  // requested interval range; this comment is the corrected arithmetic).
+  //
+  // Supervision timeout check, worst case: (1 + latency) * maxInterval * 2 =
+  // (1 + 9) * 50 ms * 2 = 1000 ms, against the 6 s (600 * 10 ms) timeout
+  // requested below -- clears with a 6x margin, so a listen or two getting
+  // lost does not tear the link down.
+  g_server->updateConnParams(handle, kConnParamsIdleMinUnits, kConnParamsIdleMaxUnits, kConnParamsIdleLatency,
+                              kConnParamsIdleTimeoutUnits);
+  LOG_INF("BLEPOS", "conn params: requested idle set (24-40 units, latency 9) after %lu ms quiet",
+          static_cast<unsigned long>(now - connParamsQuietSinceMs_));
+  connParamsIdleRequested_ = true;
 }
 
 void BlePositionServer::resetAdvertisingPhase() {
@@ -839,7 +942,7 @@ void BlePositionServer::onCentralDisconnect() {}
 void BlePositionServer::onAdvertisingState(bool) {}
 void BlePositionServer::resetAdvertisingPhase() {}
 void BlePositionServer::retryAdvertising() {}
-void BlePositionServer::serviceAdvertising() {}
+void BlePositionServer::serviceAdvertising(bool) {}
 int8_t BlePositionServer::rssi() const { return 0; }
 
 }  // namespace freeink

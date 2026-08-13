@@ -177,6 +177,32 @@ expensive event the device has and nothing has measured it in mA or in joules.
 comment says. `PowerTelemetry`'s `ref_*` and `panel_busy_ms` counters now make
 the *frequency* half of this measurable per ride.
 
+## Connection parameter requests while connected -- fix, unmeasured (T6.2, 2026-08-13)
+
+**Code change, not yet measured on hardware.** Item 5 above is about
+advertising with nobody connected; this is its cousin for the connected-idle
+case docs/ble-review-2026-08.md's "Power" bullet flagged: "device never
+requests connection parameters... connected-idle runs at the phone's 30 ms
+interval to carry 1 write/s -- ~33 radio events/s". `serviceAdvertising()`
+(`lib/BlePositionServer/include/BlePositionServer.h:154`) now takes a
+`transferActive` bool and calls `serviceConnParams()`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:734`) whenever a phone is
+connected:
+
+- **Idle set** -- 24-40 units (30-50 ms), latency 9, timeout 600 units (6 s).
+  Requested 5 s after connect, or 5 s after a transfer ends, whichever the
+  code is timing (`connParamsQuietSinceMs_`).
+- **Fast set** -- 12-24 units (15-30 ms), latency 0, timeout 400 units (4 s).
+  Requested the tick a file transfer begins (`MapTransferReceiver`'s
+  `active_` flag, read via `Status::active`).
+
+Both are requests, not commands: `onConnParamsUpdate()`
+(`BlePositionServer.cpp:164-169`) logs whatever interval/latency/timeout the
+phone actually granted, which may match neither set. **Open, needs a ride
+with the Android app:** whether either request is honoured at all, and what
+connected-idle current draw looks like before/after -- exactly the number
+`power.csv`/`stats` above can catch once one is run with this code on.
+
 ## Power-saving mode drops CPU frequency after idle
 
 `main.cpp:638` calls `powerManager.setPowerSaving(true)` after the device has

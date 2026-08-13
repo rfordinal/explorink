@@ -115,8 +115,15 @@ class BlePositionServer {
   // The single per-tick advertising owner. Every activity that runs the BLE
   // server calls exactly this one line from its loop(); anything the activity
   // task has to do about advertising state belongs in here, not as a second
-  // call bolted on next to it. Today that is the failed-restart retry and the
-  // fast->slow interval switch below.
+  // call bolted on next to it. Today that is the failed-restart retry, the
+  // fast->slow interval switch below and the connection parameter requests
+  // (T6.2) further down.
+  //
+  // `transferActive` is the caller's own MapTransferReceiver::status().active
+  // -- this library carries bytes only and does not know MapTransferReceiver
+  // exists (see TransferHooks below), so the activity passes the answer in
+  // rather than this class reaching for it. Cheap either way: the caller
+  // already reads that Status every tick for its own progress UI.
 
   // --- Two-phase advertising interval -----------------------------------
   //
@@ -132,7 +139,19 @@ class BlePositionServer {
   // disconnect -- reconnect UX stays snappy, which matters more right after
   // the rider was just connected than it does after 30 s of nobody around.
   // Slow once that window elapses with nothing connected.
-  void serviceAdvertising();
+  //
+  // --- Connection parameters while connected (T6.2) ---------------------
+  //
+  // Advertising above is about being found; this is about what happens once
+  // a phone is on the link. Connected-idle otherwise runs at whatever
+  // interval the phone chose to connect with -- often its ~30 ms default --
+  // to carry a single 1 Hz position write, ~33 radio events/s for one write
+  // (docs/ble-review-2026-08.md, "Power": "device never requests connection
+  // parameters"). serviceAdvertising() now also asks the central to relax
+  // that, and to tighten it back up while a file transfer is actually moving
+  // bytes. See BlePositionServer.cpp, serviceConnParams(), for the two
+  // parameter sets and the arithmetic behind the supervision timeouts.
+  void serviceAdvertising(bool transferActive);
 
   // Copies the most recently received update. Returns false if nothing has
   // been received yet since begin().
@@ -289,9 +308,13 @@ class BlePositionServer {
   // **This, not the MTU, is what caps a tile transfer.** A chunk is written
   // with-response, so it spends one interval going out and one coming back: at
   // 50 ms and a 248-byte payload that is 2.4 kB/s, which is exactly what the
-  // first real fetch measured. The central owns this number -- a peripheral's
-  // request for faster parameters is usually ignored by Android -- so the phone
-  // asks for a fast link while a sync runs, and this is how the device can tell
+  // first real fetch measured. The central owns this number, so a peripheral's
+  // request can be ignored or overridden outright -- request it anyway and log
+  // the outcome (docs/ble-review-2026-08.md, "Power": "device never requests
+  // connection parameters... often honoured despite the header's pessimism;
+  // free when ignored"). The phone also asks for a fast link while a sync
+  // runs, on top of whatever this device requested, and this is how the
+  // device can tell
   // whether it got one.
   uint16_t connIntervalUnits() const { return connIntervalUnits_; }
   // The same in milliseconds, rounded down. 0 while nothing is connected.
@@ -445,6 +468,67 @@ class BlePositionServer {
   // this and retryAdvertising() are the only two places that touch
   // advertising state from the activity task, so there is exactly one owner.
   void maybeEnterSlowAdvertising();
+
+  // --- Connection parameter requests (T6.2), state for serviceConnParams()
+  //
+  // Every field below is read and written only inside serviceConnParams(),
+  // called only from serviceAdvertising() on the activity task -- same house
+  // rule as phaseStartMs_/advertisingSlow_ above, opposite conclusion: a
+  // plain member is correct here because *no other task ever touches these*,
+  // where phaseStartMs_/advertisingSlow_ are atomic because the host task
+  // writes them too. connHandle_ and connIntervalUnits_ (below) are the only
+  // cross-task reads serviceConnParams() does, and both are pre-existing.
+  //
+  // A new connHandle_ (including the transition to/from
+  // BLE_HS_CONN_HANDLE_NONE) means the previous connection's request
+  // bookkeeping does not apply -- 0xFFFF here is that sentinel, spelled out
+  // rather than including the NimBLE header this class is deliberately free
+  // of (BlePositionServer.h's own top-of-file comment).
+  uint16_t connParamsLastHandle_ = 0xFFFF;
+  // Start of the current "quiet" window: set at a new connection and again
+  // every time a transfer ends. The idle set is requested once this window
+  // has run kConnParamsIdleDelayMs with no transfer active.
+  uint32_t connParamsQuietSinceMs_ = 0;
+  // Whether the idle set has already been requested for the current window,
+  // so a tick that changes nothing does not call updateConnParams() again
+  // every 10-30 ms -- NimBLE has no "already at this value" short circuit of
+  // its own to rely on here. The fast set has no equivalent flag: it is
+  // requested exactly once per transfer, on the begin edge that
+  // connParamsTransferWasActive_ below detects, so there is nothing further
+  // to gate on a later tick.
+  bool connParamsIdleRequested_ = false;
+  // transferActive as of the previous call, so a begin/end is a detected edge
+  // rather than something re-fired every tick a transfer happens to still be
+  // running (begin) or still be quiet (end already handled by the quiet-window
+  // check above).
+  bool connParamsTransferWasActive_ = false;
+
+  // 5 s after connect, or 5 s after the last transfer's end, whichever the
+  // clock above is timing -- long enough that a transfer that is about to
+  // start (autosync asking again within the same visit) does not bounce the
+  // link between the two sets, short enough that "phone connected, nothing
+  // moving" settles onto the cheap interval well inside one map redraw.
+  static constexpr uint32_t kConnParamsIdleDelayMs = 5000;
+
+  // Connected-idle set: 30-50 ms interval, slave latency 9. See
+  // BlePositionServer.cpp, serviceConnParams(), for why the supervision
+  // timeout below clears this pair's worst-case silence with room to spare.
+  static constexpr uint16_t kConnParamsIdleMinUnits = 24;   // 24 * 1.25 ms = 30 ms
+  static constexpr uint16_t kConnParamsIdleMaxUnits = 40;   // 40 * 1.25 ms = 50 ms
+  static constexpr uint16_t kConnParamsIdleLatency = 9;
+  static constexpr uint16_t kConnParamsIdleTimeoutUnits = 600;  // 600 * 10 ms = 6 s
+
+  // Transfer-active set: fast, no latency, while bytes are actually moving.
+  static constexpr uint16_t kConnParamsFastMinUnits = 12;  // 12 * 1.25 ms = 15 ms
+  static constexpr uint16_t kConnParamsFastMaxUnits = 24;  // 24 * 1.25 ms = 30 ms
+  static constexpr uint16_t kConnParamsFastLatency = 0;
+  static constexpr uint16_t kConnParamsFastTimeoutUnits = 400;  // 400 * 10 ms = 4 s
+
+  // The one place either set is ever requested. Called only from
+  // serviceAdvertising(), which is itself activity-task-only -- so, like
+  // retryAdvertising()/maybeEnterSlowAdvertising(), never from a NimBLE
+  // callback.
+  void serviceConnParams(bool transferActive);
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;

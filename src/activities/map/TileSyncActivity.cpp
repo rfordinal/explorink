@@ -430,12 +430,14 @@ void TileSyncActivity::loop() {
     renderScreen();
   }
 
-  // Advertising state, once per tick. Same reason MapActivity::loop() does it:
-  // a restart that failed inside the NimBLE disconnect callback cannot be
-  // retried on that task (BlePositionServer.h, "Advertising state"), and this
-  // screen is the other one that runs the BLE server -- a link dropped here
-  // must come back without leaving the screen.
-  freeink::BlePositionServer::getInstance().serviceAdvertising();
+  // Advertising state and connection parameter requests, once per tick. Same
+  // reason MapActivity::loop() does it: a restart that failed inside the
+  // NimBLE disconnect callback cannot be retried on that task
+  // (BlePositionServer.h, "Advertising state"), and this screen is the other
+  // one that runs the BLE server -- a link dropped here must come back
+  // without leaving the screen. transfer_.status().active is this screen's
+  // own transfer receiver, same as MapActivity's.
+  freeink::BlePositionServer::getInstance().serviceAdvertising(transfer_.status().active);
 
   // The other half of the same deal: a transfer status line parked because the
   // command channel held the connection's single indication slot. This screen
