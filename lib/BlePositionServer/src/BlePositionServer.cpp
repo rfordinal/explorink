@@ -433,7 +433,7 @@ void BlePositionServer::onWriteIngest(const uint8_t* data, size_t len) {
   // Fixed 21-byte payload (see BlePositionServer.h) -- ignore anything else
   // rather than guess at a partial/malformed write. A 12-byte or 19-byte
   // packet from an older format lands here and is dropped, deliberately.
-  if (!data || len < kPositionPacketBytes) return;
+  if (!data || len != kPositionPacketBytes) return;
 
   // memcpy for every multi-byte field: `data` is a NimBLE attribute buffer
   // with no alignment guarantee, and the ESP32-C3 faults on an unaligned
