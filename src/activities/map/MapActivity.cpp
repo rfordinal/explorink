@@ -1680,6 +1680,14 @@ void MapActivity::loop() {
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
 
+  // Advertising state, once per tick. A restart that failed inside the NimBLE
+  // disconnect callback cannot be retried there -- that callback runs on the
+  // host task, and the event that clears the usual failure cause is queued on
+  // the same task (BlePositionServer.h, "Advertising state"). This task is a
+  // different one, so its retry can actually succeed. Costs one bool read when
+  // there is nothing to do.
+  freeink::BlePositionServer::getInstance().serviceAdvertising();
+
   const uint32_t now = millis();
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
     redrawDueMs_ = 0;
@@ -2857,9 +2865,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
           static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.buildingsMs),
           static_cast<unsigned long>(timing.waterMs), static_cast<unsigned long>(timing.roadsMs),
           static_cast<unsigned long>(timing.routeMs), static_cast<unsigned long>(timing.placesMs),
-          static_cast<unsigned long>(timing.labelsMs), static_cast<unsigned long>(source_->pointsProjected()), static_cast<unsigned long>(source_->waysOffScreen()),
-          static_cast<unsigned long>(source_->ioUs() / 1000u), static_cast<unsigned long>(source_->crc32Skipped()),
-          static_cast<unsigned long>(source_->cellsSkipped()),
+          static_cast<unsigned long>(timing.labelsMs), static_cast<unsigned long>(source_->pointsProjected()),
+          static_cast<unsigned long>(source_->waysOffScreen()), static_cast<unsigned long>(source_->ioUs() / 1000u),
+          static_cast<unsigned long>(source_->crc32Skipped()), static_cast<unsigned long>(source_->cellsSkipped()),
           static_cast<unsigned long>(source_->bytesSkippedByIndex() / 1024u));
   LOG_DBG(kLogTag, "heap: %lu before tile load, %lu after, delta %ld; framebuffer ready in %lu ms",
           static_cast<unsigned long>(heapBefore), static_cast<unsigned long>(heapAfter),

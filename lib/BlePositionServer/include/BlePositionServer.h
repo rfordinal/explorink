@@ -11,6 +11,7 @@
 // NimBLE-free. See docs/architecture-plan.md (parent xteink repo) for the
 // wire format and protocol rationale.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -84,6 +85,38 @@ class BlePositionServer {
   void end();
 
   bool isRunning() const { return begun_; }
+
+  // --- Advertising state, and why it is the activity task's problem ------
+  //
+  // NimBLE stops advertising when a central connects and does not resume it,
+  // so the disconnect callback restarts it. That restart can fail, and the
+  // most likely cause right after a link drop is "host not synced"
+  // (NimBLEAdvertising.cpp:189-192).
+  //
+  // **A failed restart must not be retried inside the callback.** The
+  // disconnect callback runs on the NimBLE host task, and the sync event that
+  // clears "host not synced" is dispatched on that same task. A retry loop
+  // with a delay in it therefore blocks the event it is waiting for: every
+  // attempt fails by construction and the radio stays deaf until the screen
+  // is left and re-entered. That is exactly what the old 5x50 ms
+  // vTaskDelay loop did (docs/ble-review-2026-08.md item 3).
+  //
+  // So: one attempt in the callback, and on failure this flag. The retry runs
+  // on the activity task, which is a different task and cannot block the host.
+
+  // True while advertising is believed to be off with nothing connected.
+  bool advertisingDown() const { return advertisingDown_; }
+
+  // One restart attempt, rate-limited to kAdvertisingRetryMs so a permanently
+  // dead radio costs one call per second instead of one per loop() tick.
+  // **Call from an activity task, never from a NimBLE callback.**
+  void retryAdvertising();
+
+  // The single per-tick advertising owner. Every activity that runs the BLE
+  // server calls exactly this one line from its loop(); anything the activity
+  // task has to do about advertising state belongs in here, not as a second
+  // call bolted on next to it. Today that is the failed-restart retry.
+  void serviceAdvertising();
 
   // Copies the most recently received update. Returns false if nothing has
   // been received yet since begin().
@@ -241,6 +274,10 @@ class BlePositionServer {
   void onTransferSubscribe(bool subscribed);
   void onCommandSubscribe(bool subscribed);
   void onCentralDisconnect();
+  // Internal: the result of an advertising->start() call. `true` from the
+  // connect callback too -- a central that connected is proof advertising did
+  // its job, and NimBLE stops it while connected by design.
+  void onAdvertisingState(bool up);
 
  private:
   // Bytes of command text buffered between the BLE callback and the next
@@ -266,6 +303,20 @@ class BlePositionServer {
   volatile uint16_t mtu_ = 0;
   volatile uint16_t connIntervalUnits_ = 0;
   volatile uint16_t connHandle_ = 0xFFFF;  // BLE_HS_CONN_HANDLE_NONE, kept out of this NimBLE-free header
+
+  // Minimum gap between advertising restart attempts from the activity task.
+  // A loop() tick is milliseconds; a start() that failed on host state fails
+  // again immediately and nothing this task does can hurry the host along.
+  static constexpr uint32_t kAdvertisingRetryMs = 1000;
+
+  // Written by the NimBLE host task (onDisconnect/onConnect) and by the
+  // activity task (retryAdvertising), read by both. Atomic rather than
+  // volatile because two tasks write it -- the C3 is single-core, so a bool
+  // store is already indivisible, but this states the requirement instead of
+  // depending on the core count.
+  std::atomic<bool> advertisingDown_{false};
+  // Stamped by whichever task last tried a start(). Same two writers.
+  std::atomic<uint32_t> lastAdvertisingAttemptMs_{0};
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;
