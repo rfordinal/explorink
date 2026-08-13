@@ -77,6 +77,11 @@ bool TileSyncActivity::armRun() {
   freshnessAskedCount_ = 0;
   freshnessStale_ = 0;
   freshnessRound_ = 0;
+  // A run that ended with work flagged must not have the next one act on it:
+  // armRun() is also the re-entry path when a phone comes back after a
+  // finished run (trackPhone).
+  freshnessAskPending_ = false;
+  freshnessRedrawPending_ = false;
   lastSettleMs_ = 0;
   // After staleTiles_.clear(), so the window is placed over what this run will
   // actually draw. Unconditional rather than inside the rowCount_ > 0 branch
@@ -195,10 +200,11 @@ void TileSyncActivity::askAboutFreshness() {
   freshnessState_ = Freshness::Asking;
   LOG_INF(kLogTag, "freshness: asked about %lu of %lu pending, %lu held", static_cast<unsigned long>(round),
           static_cast<unsigned long>(pending), static_cast<unsigned long>(g_heldTiles.size()));
-  // The rider is watching a screen that has just stopped fetching. Without this
-  // repaint the check runs, spends data and finishes with the panel still
-  // showing the fetch's own verdict.
-  renderScreen();
+  // The rider is watching a screen that has just stopped fetching, and the
+  // panel would otherwise keep showing the fetch's own verdict. Flagged, not
+  // painted: every other caller already repaints immediately after this
+  // returns, so painting here made it two e-ink refreshes per ask.
+  freshnessRedrawPending_ = true;
 }
 
 bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
@@ -246,7 +252,7 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
     // date, and not reported as such -- on screen either.
     LOG_INF(kLogTag, "freshness: phone could not check (no index)");
     freshnessState_ = Freshness::Unknown;
-    renderScreen();
+    freshnessRedrawPending_ = true;
     return;
   }
   // Cumulative over the visit, not per round: the rider is told how much of
@@ -260,19 +266,22 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
   // Every `stale` line has landed by now -- `checked` is what closes the
   // listing -- so this is the first moment the grid window can cover them. It
   // was sized on the missing list alone in armRun(), which on a visit with
-  // nothing missing meant no window at all.
+  // nothing missing meant no window at all. Pure arithmetic over lists already
+  // in RAM, so it is safe to do here; the repaint it feeds is not.
   chooseWindow();
-  renderScreen();
+  freshnessRedrawPending_ = true;
 
-  // Next round, if the store still holds anything unanswered. Bounded and
-  // cannot spin: markAskedChecked() has already settled this round's entries,
-  // so pendingCount() is strictly smaller each time and reaches zero. Only on
-  // a `known` answer -- `checked unknown` settles nothing, so re-asking on it
-  // would loop forever against a phone that cannot read the index.
-  if (g_heldTiles.pendingCount() > 0) {
-    freshnessAsked_ = false;
-    askAboutFreshness();
-  }
+  // Next round, if the store still holds anything unanswered. **Flagged, not
+  // done here** -- see the flag's declaration: this runs inside the dispatch of
+  // `checked`, before its terminating `OK`, and asking from here put a confirm
+  // wait and a repaint in front of a reply the phone was still waiting for.
+  //
+  // Bounded and cannot spin: markAskedChecked() has already settled this
+  // round's entries, so pendingCount() is strictly smaller each time and
+  // reaches zero. Only on a `known` answer -- `checked unknown` settles
+  // nothing, so re-asking on it would loop forever against a phone that cannot
+  // read the index.
+  if (g_heldTiles.pendingCount() > 0) freshnessAskPending_ = true;
 }
 
 bool TileSyncActivity::phoneListening() const {
@@ -401,6 +410,25 @@ void TileSyncActivity::loop() {
   // a tile it cannot supply. poll() returning true would mean a command changed
   // something on a map screen that is not up -- nothing to redraw here.
   ble_.poll();
+
+  // The freshness check's follow-up work, out here rather than in the observer
+  // that decided on it. onCheckFinished() runs inside the console's dispatch of
+  // `checked`, before the terminating `OK`; starting a 3 s confirm wait or a
+  // 500-1700 ms e-ink repaint there delays a reply the phone is waiting for.
+  // Same shape as the console's own redraw flag: signal in, act after poll().
+  //
+  // Ask before repaint, so one round costs one e-ink refresh: the ask sets the
+  // redraw flag itself, and the repaint below then shows the round it just
+  // started rather than the one that finished.
+  if (freshnessAskPending_) {
+    freshnessAskPending_ = false;
+    freshnessAsked_ = false;
+    askAboutFreshness();
+  }
+  if (freshnessRedrawPending_) {
+    freshnessRedrawPending_ = false;
+    renderScreen();
+  }
 
   // Advertising state, once per tick. Same reason MapActivity::loop() does it:
   // a restart that failed inside the NimBLE disconnect callback cannot be

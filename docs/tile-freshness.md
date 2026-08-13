@@ -159,14 +159,53 @@ different door.
 
 So `HeldTilesStore::kMaxPerListing = 12`: a ~32-byte line packs seven to a
 253-byte indication, so twelve entries plus the total line stay inside two
-blocks. Nothing is lost, because the store drains --
-`TileSyncActivity::onCheckFinished()` asks again while anything is still
-pending, so a visit still empties the store, in rounds. It cannot spin:
-`markAskedChecked()` settles the round before the next ask, so `pendingCount()`
-strictly shrinks. It re-asks only on a `known` answer; `checked unknown` settles
-nothing, so re-asking on that would loop forever against a phone that cannot
-read the index. The map screen does not re-ask -- its next cooldown is the next
-round, which is what a background drain should look like.
+blocks. Nothing is lost, because the store drains -- the sync screen asks again
+while anything is still pending, so a visit still empties the store, in rounds.
+It cannot spin: `markAskedChecked()` settles the round before the next ask, so
+`pendingCount()` strictly shrinks. It re-asks only on a `known` answer; `checked
+unknown` settles nothing, so re-asking on that would loop forever against a
+phone that cannot read the index. The map screen does not re-ask -- its next
+cooldown is the next round, which is what a background drain should look like.
+
+**The round cap alone does not bound the freeze, and the first version of this
+got that wrong.** Capping the listing bounds one `have`. It does nothing about
+*where the next round is started from*, and the first version started it
+straight out of `onCheckFinished()` -- inside `MapConsoleState::handle()`'s
+dispatch of `checked`, on the activity task, before the terminating `OK` the
+phone was still waiting for. That put an e-ink repaint (500-1700 ms) and a
+`sendCommandReply()` confirm wait (up to 3 s) in front of that reply: ~6.4 s per
+round, six rounds for a full store, and a plausible deadlock against a peer that
+will not confirm a new indication while its own command is open.
+
+Suspected cause of a solid hang on real hardware 2026-08-13 -- buttons dead,
+`CMD:SCREENSHOT` returning zero bytes, the device recovering on a plain reset.
+**Read off the code, not proven:** no serial log was captured from the hang, and
+it is not known whether that visit had more than one round's worth pending, so
+whether the re-ask fired at all is open. A monitor attached from boot through a
+reproduction would settle it -- the question is whether a second `freshness:
+asked about ...` line precedes the silence.
+
+The ask now goes through `freshnessAskPending_`, consumed in `loop()`, which is
+the pattern the console already had. See below.
+
+### Never work inside a console dispatch
+
+`MapConsoleState::handle()` runs on the activity task, one command at a time,
+and the phone is waiting for that command's terminating `OK`. Anything slow
+started from an observer it calls -- an e-ink repaint, a `sendCommandReply()`
+confirm wait, a fetch -- delays that `OK`, and can deadlock against a peer that
+will not confirm a new indication while its own command is open.
+
+The console already provides the way out, and it is worth copying rather than
+inventing: `handle()` returns a redraw flag, `poll()` aggregates it, and the
+activity acts once `poll()` has returned (`MapBleConsole::poll`). **Set a member
+flag in the observer; do the work in `loop()`.** `TileSyncActivity` does this
+with `freshnessAskPending_` and `freshnessRedrawPending_`.
+
+A second thing fell out of the same fix: `askAboutFreshness()` used to repaint
+before returning, and every one of its callers already repaints immediately
+after it -- two e-ink refreshes per ask. It now sets the redraw flag like
+everything else, so a round costs one.
 
 `CHECK_TILES <count>` states the round, not the backlog, so the number matches
 what `have` is about to list.

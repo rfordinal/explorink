@@ -257,6 +257,21 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // `checked` closes it.
   uint32_t freshnessRound_ = 0;
 
+  // Set by onCheckFinished(), consumed by loop(). **Neither may be acted on
+  // where they are set.** That observer runs inside MapConsoleState::handle()'s
+  // dispatch of `checked`, on the activity task, before the terminating `OK`
+  // the phone is still waiting for -- so a repaint (500-1700 ms of e-ink) or a
+  // sendCommandReply() confirm wait (up to 3 s) started there delays that reply
+  // and can deadlock against a peer that will not confirm a new indication
+  // while its own command is open.
+  //
+  // The console already has the pattern: handle() returns a redraw flag,
+  // poll() aggregates it, the caller acts once poll() has returned
+  // (MapBleConsole::poll). These two are that pattern, for the two things this
+  // screen needs after a check settles.
+  bool freshnessAskPending_ = false;
+  bool freshnessRedrawPending_ = false;
+
   // When something last landed or was skipped, for the stall verdict below.
   // Armed by askForTiles(), so a screen that never asked cannot time out.
   uint32_t lastSettleMs_ = 0;
