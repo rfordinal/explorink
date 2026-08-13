@@ -269,6 +269,25 @@ MapCommand parseSkip(const Tokens& tokens) {
 
 // `stale <z> <col> <row>`. The phone saying the CDN has different content for a
 // tile the device already holds.
+// `fake <missing> <held>` -- seed a grid worth looking at. Both counts are
+// capped by the stores that receive them, so an absurd number is not an error
+// here; it just fills them.
+MapCommand parseFake(const Tokens& tokens) {
+  if (tokens.n != 3) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Fake;
+
+  uint32_t missing = 0;
+  uint32_t held = 0;
+  if (!parseUint(tokens.t[1], missing) || !parseUint(tokens.t[2], held)) {
+    return fail(MapCommandError::BadNumber);
+  }
+  if (missing > 0xFFFF || held > 0xFFFF) return fail(MapCommandError::OutOfRange);
+  cmd.fakeMissing = static_cast<uint16_t>(missing);
+  cmd.fakeHeld = static_cast<uint16_t>(held);
+  return cmd;
+}
+
 MapCommand parseStale(const Tokens& tokens) {
   if (tokens.n != 4) return fail(MapCommandError::BadArity);
   MapCommand cmd;
@@ -347,6 +366,7 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "checked") return parseChecked(tokens);
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   if (name == "stats") return parseBare(tokens, MapCommandType::Stats);
+  if (name == "fake") return parseFake(tokens);
   return fail(MapCommandError::UnknownCommand);
 }
 

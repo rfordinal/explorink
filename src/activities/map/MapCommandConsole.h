@@ -71,6 +71,29 @@ struct MapTileRangeSnapshot {
   uint32_t unavailableMask = 0;
 };
 
+// Seeds synthetic tiles so the tile sync screen's grid can be looked at.
+//
+// **A layout affordance, not a protocol one.** The grid's marks -- an outlined
+// square for a tile that is not on the card, a dot for one queued for a
+// freshness check -- are a design decision that can only be judged on the
+// panel, and until this existed the only way to see a populated one was a card
+// that happened to have the right holes in it and a ride that happened to touch
+// the right tiles. So it was never looked at deliberately, which is how a layout
+// stays unreviewed.
+//
+// Implemented by MapActivity, which is the half that has the projection and the
+// missing-tile store; this half must include neither.
+class IMapFakeSink {
+ public:
+  virtual ~IMapFakeSink() = default;
+  // Seeds up to [missing] synthetic missing tiles and up to [held] synthetic
+  // held tiles near the rider's last known position, and reports how many of
+  // each it actually took -- the receiving stores have their own caps, and a
+  // reply that claimed more than landed would be the kind of lie this console
+  // is used to catch.
+  virtual void seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) = 0;
+};
+
 // Told about each `stale` line as it lands, so the screen that asked can put the
 // tile on its fetch list. Synchronous, same contract as IMapSkipObserver: the
 // observer runs on the activity task draining the console and cannot miss one.
@@ -300,6 +323,11 @@ class MapConsoleState {
   // Non-const because a listing stamps what it listed (beginListing()).
   void setHeldTilesStore(HeldTilesStore* store) { heldTiles_ = store; }
 
+  // Where `fake` goes. Not owned; must outlive this state. Left unset (the
+  // default, and the case on every screen but the map) `fake` answers
+  // `INFO fake=unavailable` rather than silently doing nothing.
+  void setFakeSink(IMapFakeSink* sink) { fakeSink_ = sink; }
+
   // Which tiles the phone has already reported stale, so `tiles` can flag them.
   // Not owned; must outlive this state. Left unset, no tile is ever flagged
   // stale and the reply is exactly what it was before this existed.
@@ -378,6 +406,7 @@ class MapConsoleState {
   HeldTilesStore* heldTiles_ = nullptr;
   const StaleTilesList* staleTiles_ = nullptr;
   IMapStaleObserver* staleObserver_ = nullptr;
+  IMapFakeSink* fakeSink_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;

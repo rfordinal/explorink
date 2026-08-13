@@ -713,9 +713,12 @@ void loop() {
         key.trim();
         value.trim();
         uint8_t* target = nullptr;
-        if (key == "mapAutoSyncTiles") target = &SETTINGS.mapAutoSyncTiles;
-        else if (key == "mapTileFreshnessMode") target = &SETTINGS.mapTileFreshnessMode;
-        else if (key == "mapDebugInfo") target = &SETTINGS.mapDebugInfo;
+        if (key == "mapAutoSyncTiles")
+          target = &SETTINGS.mapAutoSyncTiles;
+        else if (key == "mapTileFreshnessMode")
+          target = &SETTINGS.mapTileFreshnessMode;
+        else if (key == "mapDebugInfo")
+          target = &SETTINGS.mapDebugInfo;
         if (target == nullptr) {
           logSerial.printf("SETTING_ERR:unknown\n");
         } else if (value.length() == 0) {
@@ -755,6 +758,21 @@ void loop() {
         }
         LOG_DBG("MAIN", "goToMap() returned");
         logSerial.printf("GOTO_MAP_OK\n");
+      } else if (cmd == "GOTO_TILESYNC") {
+        // The sync screen was the one screen a host could not reach. Its grid --
+        // outlined squares for missing tiles, dots for the freshness check queue
+        // -- is a layout decision that has to be judged on the panel, and the
+        // only way onto it was pressing buttons. So every look at it cost a
+        // person standing at the device, which is how a layout ends up
+        // unreviewed (docs/tile-freshness.md, "The check queue is dots").
+        //
+        // Same power-saving reason as GOTO_MAP above: this screen also calls
+        // BlePositionServer::begin(), and NimBLEDevice::init() hangs solid if
+        // entered while still in power-saving mode.
+        LOG_DBG("MAIN", "CMD:GOTO_TILESYNC received, calling goToTileSync()");
+        activityManager.goToTileSync();
+        LOG_DBG("MAIN", "goToTileSync() returned");
+        logSerial.printf("GOTO_TILESYNC_OK\n");
       }
     }
   }

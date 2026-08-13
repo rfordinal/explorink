@@ -188,6 +188,52 @@ asked about ...` line precedes the silence.
 The ask now goes through `freshnessAskPending_`, consumed in `loop()`, which is
 the pattern the console already had. See below.
 
+### Seeding a grid to look at
+
+The grid's two marks are a layout decision, and a layout decision on this device
+can only be settled on the panel. Until 2026-08-13 there was no way to put a
+*populated* one there deliberately: the squares need a card with holes in the
+right places and the dots need a ride that happened to touch the right tiles. So
+the grid shipped without anyone having looked at a full one, which is how the
+frames-around-dots problem survived to the second flash.
+
+Three pieces close that, all on the device so what comes back is device output
+rather than a laptop render of what the layout ought to be:
+
+- **`fake <missing> <held>`**, a map-console command (`MapCommandType::Fake`,
+  `IMapFakeSink`). Seeds synthetic entries into `MISSING_TILES` and
+  `g_heldTiles` around the persisted last fix -- the same origin the sync
+  screen's fetch order uses, so they land where its grid window will look. On
+  the map screen only: that is the half with the projection and the missing-tile
+  store. Elsewhere it answers `INFO fake=unavailable`, which is not the same as
+  seeding zero.
+  - **Deterministic, not random.** Two runs with the same counts must give the
+    same picture, or comparing one dot size against another compares two
+    layouts as well.
+  - **Spread over z11/z12/z13 in rotation.** Dot size derives from the tile's
+    LOD, so a grid of one LOD says nothing about whether the three are still
+    distinguishable.
+  - The reply states what actually landed, not what was asked for -- the stores
+    have their own caps.
+- **`CMD:GOTO_TILESYNC`** (`main.cpp`), mirroring `CMD:GOTO_MAP`. The sync
+  screen was the one screen a host could not reach, so every look at it cost a
+  person standing at the device.
+- **`tools/tile_grid_shot.py`** in the parent repo, which chains the lot: set
+  the mode, go to the map, seed, go to the sync screen, grab the framebuffer.
+  One BMP per run.
+
+**Stale dots are not seedable this way.** A `stale` report has to reach the sync
+screen, and that screen runs a BLE console only -- `TileSyncActivity` holds a
+`MapBleConsole` and no serial one. Use `tools/mapcmd.py --ble stale <z> <col>
+<row>` with the screen already up. The dots `fake` seeds are the other half of
+the same set anyway (queued, not yet answered for), and both marks draw
+identically, because both mean "not settled yet".
+
+A debug command in shipped firmware is deliberate here rather than sloppy: the
+map console **is** this fork's debug surface (`have`, `tiles`, `stats`,
+`CMD:SHOWIMAGE`), so this follows the existing pattern instead of adding a new
+one.
+
 ### Never work inside a console dispatch
 
 `MapConsoleState::handle()` runs on the activity task, one command at a time,

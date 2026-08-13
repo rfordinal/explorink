@@ -15,7 +15,11 @@
 #include "HeldTilesStore.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
+// missingTileAnchorFromLastFix(), for `fake` -- it seeds around the same origin
+// the sync screen's fetch order uses, so the seeded tiles land where that
+// screen's grid window will look for them.
 #include "MapMarkerMetrics.h"
+#include "MapMissingAnchor.h"
 #include "MapPowerStatsProvider.h"
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
@@ -794,6 +798,60 @@ void MapActivity::onCheckFinished(bool known, uint16_t staleCount) {
   LOG_INF(kLogTag, "freshness: %u tile(s) out of date", static_cast<unsigned>(staleCount));
 }
 
+void MapActivity::seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) {
+  seededMissing = 0;
+  seededHeld = 0;
+
+  // Anchored on the persisted last fix, the same origin the sync screen's fetch
+  // order uses, so the seeded tiles land where that screen's grid window will
+  // look for them (MapMissingAnchor.h). No fix ever means no sensible place to
+  // put them.
+  const MissingTileAnchor anchor = missingTileAnchorFromLastFix();
+  if (!anchor.valid) {
+    LOG_ERR(kLogTag, "fake: no last fix, nothing to anchor on");
+    return;
+  }
+
+  // Deterministic, not random: two runs with the same counts must produce the
+  // same picture, or comparing one dot size against another means comparing two
+  // different layouts as well.
+  //
+  // Spread over all three LODs in rotation, because the dot size is derived
+  // from the tile's LOD and a grid of one LOD says nothing about whether the
+  // three are still distinguishable (TileSyncActivity::kDotDivisor).
+  static constexpr uint8_t kSeedZ[] = {11, 12, 13};
+
+  for (uint16_t i = 0; i < held; ++i) {
+    const uint8_t z = kSeedZ[i % 3];
+    const uint8_t rank = missingTileTierRank(z);
+    // A widening square walk out from the anchor, so a small count clusters
+    // tightly and a large one still fits a window rather than striping off one
+    // edge.
+    const uint16_t ring = static_cast<uint16_t>(i / 3);
+    const uint32_t col = anchor.col[rank] + (ring % 4);
+    const uint32_t row = anchor.row[rank] + (ring / 4);
+    // A content_id that is never 0 -- record() drops those, correctly, because
+    // a tile that did not open has no content to vouch for.
+    g_heldTiles.record(z, col, row, 0xF0000000u + i);
+    ++seededHeld;
+  }
+
+  for (uint16_t i = 0; i < missing; ++i) {
+    const uint8_t z = kSeedZ[i % 3];
+    const uint8_t rank = missingTileTierRank(z);
+    // Offset off the held ones so the squares and the dots do not land on the
+    // same cells -- the whole point is seeing the two marks side by side.
+    const uint16_t ring = static_cast<uint16_t>(i / 3);
+    const uint32_t col = anchor.col[rank] + 2 + (ring % 3);
+    const uint32_t row = anchor.row[rank] + 2 + (ring / 3);
+    MISSING_TILES.record(z, col, row);
+    ++seededMissing;
+  }
+
+  LOG_INF(kLogTag, "fake: seeded %u missing, %u held (%lu held total)", static_cast<unsigned>(seededMissing),
+          static_cast<unsigned>(seededHeld), static_cast<unsigned long>(g_heldTiles.size()));
+}
+
 void MapActivity::maybeCheckTileFreshness() {
   if (SETTINGS.mapTileFreshnessMode != CrossPointSettings::MAP_TILE_FRESHNESS_LIVE) return;
   if (freshnessPending_) {
@@ -1385,6 +1443,9 @@ void MapActivity::onEnter() {
   // store outlives both this activity and the sync screen, which is the whole
   // reason the accumulation survives leaving the map (HeldTilesStore).
   consoleState_.setHeldTilesStore(&g_heldTiles);
+  // Where `fake` lands. Only this screen offers it -- it is the one with the
+  // projection and MISSING_TILES.
+  consoleState_.setFakeSink(this);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -1536,6 +1597,7 @@ void MapActivity::onExit() {
   consoleState_.setSkipObserver(nullptr);
   consoleState_.setStaleObserver(nullptr);
   consoleState_.setStaleTiles(nullptr);
+  consoleState_.setFakeSink(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this
