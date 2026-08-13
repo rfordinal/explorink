@@ -173,6 +173,31 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       out.reply("OK");
       return false;
 
+    case MapCommandType::Fake: {
+      if (fakeSink_ == nullptr) {
+        // Distinct from seeding zero, and for the same reason
+        // `missing=unavailable` is: a host must not read "the device has no
+        // room for fakes" out of a screen that simply cannot seed them.
+        out.reply("INFO fake=unavailable");
+        out.reply("OK");
+        return false;
+      }
+      uint16_t seededMissing = 0;
+      uint16_t seededHeld = 0;
+      fakeSink_->seedFakeTiles(cmd.fakeMissing, cmd.fakeHeld, seededMissing, seededHeld);
+      char line[kReplyBuf];
+      snprintf(line, sizeof(line), "INFO fake_missing=%u", static_cast<unsigned>(seededMissing));
+      out.reply(line);
+      snprintf(line, sizeof(line), "INFO fake_held=%u", static_cast<unsigned>(seededHeld));
+      out.reply(line);
+      out.reply("OK");
+      // No redraw: a synthetic missing-list entry does not hatch anything. The
+      // map hatches what MapTileSource could not open, which is a fact about
+      // the card, and this command deliberately does not touch that. The grid
+      // that changed is on the tile sync screen.
+      return false;
+    }
+
     case MapCommandType::Zoom:
       // The parser already rejected anything outside 0-4, so the ladder is
       // never indexed off its end from here.

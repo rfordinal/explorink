@@ -1255,6 +1255,76 @@ TEST(MapCommandConsole, HaveSaysNoneBeforeAnythingIsDrawn) {
   EXPECT_EQ(out.lines[1], "OK");
 }
 
+namespace {
+
+// Records what `fake` asked for, and reports back fewer than asked so the
+// reply's honesty can be checked.
+struct RecordingFakeSink : IMapFakeSink {
+  bool called = false;
+  uint16_t askedMissing = 0;
+  uint16_t askedHeld = 0;
+  uint16_t giveMissing = 0;
+  uint16_t giveHeld = 0;
+
+  void seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) override {
+    called = true;
+    askedMissing = missing;
+    askedHeld = held;
+    seededMissing = giveMissing;
+    seededHeld = giveHeld;
+  }
+};
+
+}  // namespace
+
+TEST(MapCommandParser, FakeTakesTwoCounts) {
+  const MapCommand cmd = parseMapCommand("fake 6 20");
+  ASSERT_EQ(cmd.type, MapCommandType::Fake);
+  EXPECT_EQ(cmd.fakeMissing, 6u);
+  EXPECT_EQ(cmd.fakeHeld, 20u);
+}
+
+TEST(MapCommandParser, FakeRejectsWrongArityAndBadNumbers) {
+  EXPECT_EQ(parseMapCommand("fake 6").error, MapCommandError::BadArity);
+  EXPECT_EQ(parseMapCommand("fake 6 20 3").error, MapCommandError::BadArity);
+  EXPECT_EQ(parseMapCommand("fake six 20").error, MapCommandError::BadNumber);
+}
+
+// The reply states what actually landed, not what was asked for: the receiving
+// stores have their own caps, and a console used to catch lies must not tell
+// one.
+TEST(MapCommandConsole, FakeReportsWhatTheSinkTook) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  RecordingFakeSink sink;
+  sink.giveMissing = 4;
+  sink.giveHeld = 12;
+  state.setFakeSink(&sink);
+
+  feedLine(console, out, "fake 6 20");
+  EXPECT_TRUE(sink.called);
+  EXPECT_EQ(sink.askedMissing, 6u);
+  EXPECT_EQ(sink.askedHeld, 20u);
+  ASSERT_EQ(out.lines.size(), 3u);
+  EXPECT_EQ(out.lines[0], "INFO fake_missing=4");
+  EXPECT_EQ(out.lines[1], "INFO fake_held=12");
+  EXPECT_EQ(out.lines[2], "OK");
+}
+
+// No sink means the screen cannot seed, which must not read as "seeded zero" --
+// same distinction `missing=unavailable` makes.
+TEST(MapCommandConsole, FakeSaysUnavailableWithNoSink) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "fake 6 20");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO fake=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
 TEST(MapCommandConsole, StaleAndCheckedReachTheObserver) {
   MapConsoleState state;
   MapCommandConsole console(state);

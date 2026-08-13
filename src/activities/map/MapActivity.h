@@ -125,7 +125,7 @@
 //   (../../../docs/tile-autobuild.md) -- rather than "nobody will ever have it".
 // - **One ask per kAutoSyncIntervalMs.** A rate cap, not a settle timer: the
 //   next ask is not pushed further out by more hatching.
-class MapActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver {
+class MapActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver, public IMapFakeSink {
  public:
   // `routePath` is an absolute card path to a .tir route, or nullptr for none.
   // RouteSelectActivity passes what the rider picked; every other caller --
@@ -151,6 +151,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // the rate cap and the link state live (docs/tile-freshness.md).
   void onTileStale(uint8_t z, uint32_t col, uint32_t row) override;
   void onCheckFinished(bool known, uint16_t staleCount) override;
+
+  // IMapFakeSink -- seeds a grid for the tile sync screen to draw. This screen
+  // is the one that has the projection and MISSING_TILES, which is why the sink
+  // lives here rather than on the screen that shows the result.
+  void seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) override;
 
  private:
   void renderWaiting();

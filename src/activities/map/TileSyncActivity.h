@@ -340,9 +340,13 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // fills its square stops looking like a mark on a map and starts looking like
   // a filled tile, which is the thing the outline decision above already
   // rejected for being all ink and no information.
-  static constexpr int kDotDivisor = 4;
-  static constexpr int kMaxDotPx = 20;
-  static constexpr int kMinDotPx = 3;
+  // Measured on the panel 2026-08-13 at a ~85 px cell: a divisor of 4 gave
+  // 20/10/5 px for z11/z12/z13, and the 5 px ones read as dirt rather than
+  // marks, especially where they clustered next to a frame. Compressed to
+  // roughly 16/12/8 -- the LOD is still legible, the smallest is still a dot.
+  static constexpr int kDotDivisor = 5;
+  static constexpr int kMaxDotPx = 16;
+  static constexpr int kMinDotPx = 8;
 
   // Every tile this screen still owes the rider an answer about, in three
   // groups, drawn as one grid:
@@ -367,6 +371,17 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // caller that could feel that, and only on the rare path where the tiles are
   // spread wider than the window; the common clustered case exits early.
   size_t interestCount() const;
+  // The head of that sequence: missing tiles then stale ones, i.e. everything
+  // waiting on bytes rather than on an answer. Drawn as frames; the rest as
+  // dots.
+  size_t downloadCount() const;
+  // The denominator of the "N / M" line: every tile this visit will pull down.
+  // **Not rowCount_.** A stale tile's replacement lands in transfer.completed
+  // exactly like a missing tile's does, but only the missing ones were ever in
+  // rowCount_ -- so a visit that replaced 24 stale tiles against 12 missing
+  // ones printed "24 / 12", a ratio above one, on the panel 2026-08-13. The
+  // earlier fix only covered rowCount_ == 0 and left this.
+  uint32_t transferTotal() const { return rowCount_ + freshnessStale_; }
   MapTileCoord interestAt(size_t index) const;
 
   // Tiles the phone has given up on. Counted here as well as in the console's

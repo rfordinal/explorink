@@ -87,6 +87,7 @@ enum class MapCommandType : uint8_t {
   Checked,
   Info,
   Stats,
+  Fake,
   Error,  // see MapCommand::error
 };
 
@@ -126,6 +127,13 @@ struct MapCommand {
   // and is claiming nothing, which is a different answer from `checked 0`.
   uint16_t checkedCount = 0;
   bool checkedKnown = false;
+  // Fake: how many synthetic missing tiles and how many synthetic held tiles to
+  // seed around the current viewport. A layout affordance, not a protocol one --
+  // it exists so the tile sync screen's grid can be looked at on the panel
+  // without a card that happens to have the right holes in it
+  // (docs/tile-freshness.md, "Seeding a grid to look at").
+  uint16_t fakeMissing = 0;
+  uint16_t fakeHeld = 0;
   // Copied out of the line, not a view into it: a MapCommand outliving the
   // buffer it was parsed from is a use-after-free waiting to happen, and a
   // string_view here would invite exactly that. Truncated rather than

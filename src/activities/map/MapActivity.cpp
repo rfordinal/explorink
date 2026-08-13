@@ -15,7 +15,11 @@
 #include "HeldTilesStore.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
+// missingTileAnchorFromLastFix(), for `fake` -- it seeds around the same origin
+// the sync screen's fetch order uses, so the seeded tiles land where that
+// screen's grid window will look for them.
 #include "MapMarkerMetrics.h"
+#include "MapMissingAnchor.h"
 #include "MapPowerStatsProvider.h"
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
@@ -794,6 +798,126 @@ void MapActivity::onCheckFinished(bool known, uint16_t staleCount) {
   LOG_INF(kLogTag, "freshness: %u tile(s) out of date", static_cast<unsigned>(staleCount));
 }
 
+void MapActivity::seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) {
+  seededMissing = 0;
+  seededHeld = 0;
+
+  // Anchored on the persisted last fix, the same origin the sync screen's fetch
+  // order uses, so the seeded tiles land where that screen's grid window will
+  // look for them (MapMissingAnchor.h). No fix ever means no sensible place to
+  // put them.
+  const MissingTileAnchor anchor = missingTileAnchorFromLastFix();
+  if (!anchor.valid) {
+    LOG_ERR(kLogTag, "fake: no last fix, nothing to anchor on");
+    return;
+  }
+
+  // **Both lists are emptied first, and that is destructive on purpose.**
+  // Without it `fake` only adds, so a second run draws its own tiles on top of
+  // the first run's and two runs with the same counts give different pictures
+  // -- which defeats the whole point of comparing one layout against another.
+  // Worse, MissingTilesStore persists to the card, so leftovers survive a
+  // reboot and a reflash: a stale seeding bug was still on screen two flashes
+  // later (seen on the panel 2026-08-13).
+  //
+  // The cost is that a rider's real missing-tile list goes with it. Acceptable
+  // for a command whose only purpose is dressing the screen for a photograph,
+  // and the list rebuilds itself the next time the map hatches anything.
+  //
+  // forget() one at a time because MissingTilesStore has no clear(): its
+  // eviction is by hit count and nothing else ever wanted the whole list gone.
+  while (!MISSING_TILES.hits().empty()) {
+    const MissingTileHit& h = MISSING_TILES.hits().front();
+    MISSING_TILES.forget(h.z, h.col, h.row);
+  }
+  g_heldTiles.clear();
+
+  // Deterministic, not random: two runs with the same counts must produce the
+  // same picture, or comparing one dot size against another means comparing two
+  // different layouts as well. The clear above is what makes that true.
+  //
+  // Spread over all three LODs in rotation, because the dot size is derived
+  // from the tile's LOD and a grid of one LOD says nothing about whether the
+  // three are still distinguishable (TileSyncActivity::kDotDivisor).
+  static constexpr uint8_t kSeedZ[] = {11, 12, 13};
+  // Everything is placed in **z11 parent units and then converted down**, not
+  // offset in each LOD's own tile units. The first version did the latter, and
+  // the picture came back scattered: `+1` at z11 is a whole parent of ground
+  // while `+1` at z13 is a sixteenth of one, so the three LODs spread over
+  // wildly different areas and the grid was not representative of anything a
+  // ride would produce (seen on the panel 2026-08-13).
+  const uint8_t z11rank = missingTileTierRank(11);
+  const uint32_t baseCol = anchor.col[z11rank];
+  const uint32_t baseRow = anchor.row[z11rank];
+
+  // **A ride, not a block.** A rider does not collect a rectangle of tiles;
+  // they collect a corridor along a road, and the grid window is placed and
+  // shrunk around whatever shape that is (chooseWindow). A block never
+  // exercised that, and the picture it produced said nothing about what the
+  // screen looks like after an actual trip.
+  //
+  // A bending corridor of z11 parents, inside the 6x8 window cap
+  // (kMaxWindowCols/kMaxWindowRows) so the whole ride stays drawable. Hand-laid
+  // rather than computed: a formula that looks like a road is more code than
+  // sixteen pairs, and these can be read off the page.
+  static constexpr uint8_t kRideCol[] = {0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 5, 4, 4, 3, 3, 2};
+  static constexpr uint8_t kRideRow[] = {0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6, 6, 7, 7, 6, 6};
+  static constexpr uint32_t kRideLen = sizeof(kRideCol);
+
+  // **The road is split, not shared.** The near stretch is ground the rider
+  // covered and the card holds; the far stretch is where they rode off the edge
+  // of what was synced. A fixed split rather than one derived from the counts:
+  // the first version started the missing tiles at `held / 3` waypoints in,
+  // which wrapped straight back to 0 as soon as the held count covered the
+  // whole road -- so `--held 48` put every frame on top of the first dots
+  // instead of past the last (seen on the panel 2026-08-13).
+  constexpr uint32_t kHeldWaypoints = kRideLen * 2 / 3;
+
+  // Three tiles per waypoint, one per LOD. A count therefore packs the stretch
+  // denser rather than stretching it thinner, and the two stretches cannot
+  // reach each other whatever the counts are.
+  auto seedAt = [&](uint16_t i, uint32_t fromWaypoint, uint32_t span, uint8_t& z, uint32_t& col, uint32_t& row) {
+    z = kSeedZ[i % 3];
+    const uint32_t wp = fromWaypoint + ((i / 3) % span);
+    const uint32_t pc = baseCol + kRideCol[wp];
+    const uint32_t pr = baseRow + kRideRow[wp];
+    // z11 is the parent itself; z12 and z13 sit inside it, so shift down and
+    // pick a sub-cell that varies with i, or every tile of one LOD would land
+    // on the same spot and hide the others.
+    const uint32_t down = z - 11;
+    col = (pc << down) + (down ? (i % (1u << down)) : 0u);
+    row = (pr << down) + (down ? ((i / 2) % (1u << down)) : 0u);
+  };
+
+  for (uint16_t i = 0; i < held; ++i) {
+    uint8_t z = 0;
+    uint32_t col = 0;
+    uint32_t row = 0;
+    seedAt(i, 0, kHeldWaypoints, z, col, row);
+    // A content_id that is never 0 -- record() drops those, correctly, because
+    // a tile that did not open has no content to vouch for.
+    g_heldTiles.record(z, col, row, 0xF0000000u + i);
+    ++seededHeld;
+  }
+
+  // The far end of the same road. A ride that ran off the edge of what was
+  // synced is the realistic way both marks appear at once -- the near stretch
+  // is on the card and being checked, the far stretch is not there at all --
+  // and it puts them on neighbouring ground rather than in two unrelated
+  // corners.
+  for (uint16_t i = 0; i < missing; ++i) {
+    uint8_t z = 0;
+    uint32_t col = 0;
+    uint32_t row = 0;
+    seedAt(i, kHeldWaypoints, kRideLen - kHeldWaypoints, z, col, row);
+    MISSING_TILES.record(z, col, row);
+    ++seededMissing;
+  }
+
+  LOG_INF(kLogTag, "fake: seeded %u missing, %u held (%lu held total)", static_cast<unsigned>(seededMissing),
+          static_cast<unsigned>(seededHeld), static_cast<unsigned long>(g_heldTiles.size()));
+}
+
 void MapActivity::maybeCheckTileFreshness() {
   if (SETTINGS.mapTileFreshnessMode != CrossPointSettings::MAP_TILE_FRESHNESS_LIVE) return;
   if (freshnessPending_) {
@@ -1385,6 +1509,9 @@ void MapActivity::onEnter() {
   // store outlives both this activity and the sync screen, which is the whole
   // reason the accumulation survives leaving the map (HeldTilesStore).
   consoleState_.setHeldTilesStore(&g_heldTiles);
+  // Where `fake` lands. Only this screen offers it -- it is the one with the
+  // projection and MISSING_TILES.
+  consoleState_.setFakeSink(this);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -1536,6 +1663,7 @@ void MapActivity::onExit() {
   consoleState_.setSkipObserver(nullptr);
   consoleState_.setStaleObserver(nullptr);
   consoleState_.setStaleTiles(nullptr);
+  consoleState_.setFakeSink(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this
