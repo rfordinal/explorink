@@ -23,14 +23,21 @@ So the railway/tram fix -- a classification bug that drew a tram line as a
 mainline railway -- was fixed, the area was rebuilt and republished, and every
 device that had already synced kept the wrong tile. Permanently.
 
-Seen again on hardware 2026-08-12, freshness mode still `Off`: trams drawn
-along a city street at zoom rungs 3-6, a fix that had shipped weeks earlier.
-**The map header's debug line is the cheapest way to spot it** -- it prints the
-tile and way counts (`4t 4151w`, `src/activities/map/MapActivity.cpp:2818`), and the same viewport
-rendered on the laptop from the current mirror reported 1043 ways. Four times
-the geometry means the card, not the builder. Nothing on the device reads a
-tile's `build_epoch` back out, so the exact age of what is on the card cannot
-be asked for -- open.
+Seen again on hardware 2026-08-12, and that time the mode was **`Live`**, not
+`Off`: trams drawn along a city street at zoom rungs 3-6 from a card nine days
+old, while the check ran every ten minutes and answered "nothing stale" each
+time. The cause was on the reply channel -- see "The reply channel dropped
+lines" below.
+
+**How to tell a stale card in one number:** ask the map console `have`. It lists
+every tile of the current viewport with the `content_id` the device computed for
+it, which is the same value the CDN's index publishes per slot, so one command
+compares the card against what is published. The way counts in the header
+(`4t 4151w`, `src/activities/map/MapActivity.cpp:2818`) are **not** usable for
+this: they are raw `waysEmitted()`, the host preview reports that divided by
+`MapRenderer::kRoadPasses`, and the two still did not reconcile after allowing
+for it (4151 against 2086 on 2026-08-13) -- open, and no reason to wait for it
+now that `have` answers the question directly.
 
 ## The signal: `contentId()`
 
