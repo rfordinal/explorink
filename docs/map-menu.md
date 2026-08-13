@@ -1,10 +1,13 @@
 # The map's CONFIRM menu: layout, and closing it without a redraw
 
 The map screen's CONFIRM button opens one flat popup, in this order: Look
-around / Follow mode, Whole route, Mode, Rotation, Heading mode, Zoom, Reload
-map, Debug info (`MapActivity::openMapMenu()`, `MapActivity.cpp:1915`). Look
-around and Whole route are conditional rows -- they only show once a fix has
-drawn a frame, or once a route is loaded. This file covers three things
+around / Follow mode, Zoom in, Zoom out, Whole route, Mode, Rotation, Heading
+mode, Zoom, Reload map, Debug info (`MapActivity::openMapMenu()`,
+`MapActivity.cpp:2126`). Look around and Whole route are conditional rows --
+they only show once a fix has drawn a frame, or once a route is loaded. Zoom
+in / Zoom out are conditional too: observation mode only, and each hides at its
+end of the ladder (`docs/map-observation-mode.md`, "Zoom while observing"),
+which is what makes the list ten rows at most. This file covers three things
 changed 2026-08-12: how the rows are laid out, how closing the menu got
 cheap, and why the button hint says "Options".
 
@@ -127,7 +130,9 @@ untouched -- it costs one column, not one per row.
 
 Numbers for the map menu, computed from the Lyra metrics (not measured): row
 height 48 -> 36, dialog height 529 -> ~306 px, width ~289 -> ~233 px. The
-eight rows still exist; six are on screen.
+eight rows still exist; six are on screen. Observation mode's two zoom rows
+(2026-08-13) make it ten at most, still six on screen -- the window scrolls,
+the dialog does not grow.
 
 Both caps apply to every popup in the firmware, not just the map's. Nothing
 else builds a list long enough to hit them today, except the font-family

@@ -59,6 +59,18 @@ constexpr uint32_t kButtonSettleMs = 500;
 // save must never be the thing standing between a press and the picture.
 constexpr uint32_t kSaveSettleMs = 4000;
 
+// How long Up/Down must be held in Observe before the press stops meaning a
+// pan and starts meaning a zoom step. The map screen has no spare button
+// (MapActivity.h, "There is no spare button"), so the zoom ladder Observe
+// gave up to the direction pad comes back on a hold of the same two buttons
+// that carry it in Follow -- Up in, Down out, in both modes.
+//
+// 600 ms sits between the two long-press thresholds this firmware already
+// uses -- KeyboardEntryActivity.h:122's 500 ms and RecentBooksActivity.cpp:18's
+// 1000 ms. Picked, not measured: open until a hand on the device says whether
+// a pan feels sticky at this value or a zoom fires by accident.
+constexpr uint32_t kObserveZoomHoldMs = 600;
+
 // MissingTilesStore's own, much longer interval -- a coverage gap can keep
 // producing new missing tiles for minutes at a stretch, and this is a rate
 // cap, not a settle delay: at most one SD write per this many milliseconds,
@@ -1491,6 +1503,7 @@ void MapActivity::onEnter() {
   markerPatchValid_ = false;
   partialMoves_ = 0;
   screenMode_ = MapScreenMode::Follow;
+  observeHoldZoomed_ = false;
 
   // Autosync starts from nothing every time this screen opens. The rate cap in
   // particular is per session on purpose: a rider who left the map and came
@@ -1950,10 +1963,54 @@ void MapActivity::handleButtons() {
       if (mappedInput.wasPressed(MappedInputManager::Button::Right)) stepMarker(+1);
       break;
     case MapScreenMode::Observe:
-      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) panBy(PanDirection::Up);
-      if (mappedInput.wasPressed(MappedInputManager::Button::Down)) panBy(PanDirection::Down);
-      if (mappedInput.wasPressed(MappedInputManager::Button::Left)) panBy(PanDirection::Left);
-      if (mappedInput.wasPressed(MappedInputManager::Button::Right)) panBy(PanDirection::Right);
+      // Pan fires on **release**, not on press, because the same two side
+      // buttons carry a second meaning here: held past kObserveZoomHoldMs,
+      // Up/Down step the zoom ladder instead of panning. A press cannot be
+      // read as a pan until it is over, or every zoom would pan first.
+      //
+      // Left/Right have no hold meaning and could still fire on press, but
+      // they do not: half a direction pad answering on press and the other
+      // half on release is a difference the hand feels and no comment can
+      // explain away.
+      //
+      // One zoom step per hold, not a repeat. Keeping the button down does
+      // nothing more -- the step arms a redraw that blocks loop() for the
+      // better part of two seconds anyway (armRedraw()), so a repeat rate
+      // would be a fiction, and the ladder is only five rungs wide
+      // (MapViewport::kZoomStepCount).
+      if (!observeHoldZoomed_ && mappedInput.getHeldTime() >= kObserveZoomHoldMs) {
+        if (mappedInput.isPressed(MappedInputManager::Button::Up)) {
+          observeHoldZoomed_ = true;
+          LOG_DBG(kLogTag, "observe: hold zoom in");
+          stepZoom(-1);
+        } else if (mappedInput.isPressed(MappedInputManager::Button::Down)) {
+          observeHoldZoomed_ = true;
+          LOG_DBG(kLogTag, "observe: hold zoom out");
+          stepZoom(+1);
+        }
+      }
+      // The release that ends a hold-zoom belongs to the zoom, not to a pan --
+      // same idiom as suppressConfirmRelease_ below. Only Up/Down can have
+      // zoomed, so only their release is swallowed; a Left/Right tap while
+      // Up is still down is an ordinary pan and stays one.
+      if (observeHoldZoomed_) {
+        if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
+            mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+          observeHoldZoomed_ = false;
+          break;
+        }
+        // Nothing left to release: the latch has outlived its press (a
+        // release event that never arrived, an activity re-entry mid-hold).
+        // Clearing it here costs nothing and stops it eating the next pan.
+        if (!mappedInput.isPressed(MappedInputManager::Button::Up) &&
+            !mappedInput.isPressed(MappedInputManager::Button::Down) && !mappedInput.wasAnyReleased()) {
+          observeHoldZoomed_ = false;
+        }
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Up)) panBy(PanDirection::Up);
+      if (mappedInput.wasReleased(MappedInputManager::Button::Down)) panBy(PanDirection::Down);
+      if (mappedInput.wasReleased(MappedInputManager::Button::Left)) panBy(PanDirection::Left);
+      if (mappedInput.wasReleased(MappedInputManager::Button::Right)) panBy(PanDirection::Right);
       break;
   }
 
@@ -2086,8 +2143,8 @@ void MapActivity::openMapMenu() {
   // an empty value is a plain action.
   std::vector<std::string> options;
   std::vector<std::string> values;
-  options.reserve(8);
-  values.reserve(8);
+  options.reserve(10);
+  values.reserve(10);
   // Only once a fix has actually drawn a frame -- same "no row that cannot do
   // anything" rule as Whole route below. A rider with nothing on screen yet
   // has nothing to look around in.
@@ -2097,6 +2154,28 @@ void MapActivity::openMapMenu() {
     options.push_back(
         I18N.get(screenMode_ == MapScreenMode::Observe ? StrId::STR_MAP_FOLLOW_MODE : StrId::STR_MAP_OBSERVE_MODE));
     values.emplace_back();
+  }
+  // Observe only. In Follow the two side buttons *are* the zoom ladder and a
+  // menu row for them would be a second way to press a button the rider is
+  // already holding; in Observe those buttons pan, and the ladder is only
+  // reachable by holding them (kObserveZoomHoldMs) -- which nothing on the
+  // panel says. These rows are where a rider finds out zoom still exists.
+  //
+  // Hidden at the ends of the ladder rather than shown doing nothing, same
+  // rule as Whole route below and the same hard stops stepZoom() enforces.
+  int zoomInIdx = -1;
+  int zoomOutIdx = -1;
+  if (screenMode_ == MapScreenMode::Observe) {
+    if (zoomStep() > 0) {
+      zoomInIdx = static_cast<int>(options.size());
+      options.push_back(tr(STR_MAP_ZOOM_IN));
+      values.emplace_back();
+    }
+    if (zoomStep() + 1 < MapViewport::kZoomStepCount) {
+      zoomOutIdx = static_cast<int>(options.size());
+      options.push_back(tr(STR_MAP_ZOOM_OUT));
+      values.emplace_back();
+    }
   }
   // Only with a route loaded. A row that cannot do anything is worse than no
   // row: it reads as a feature that is broken rather than one that needs a route
@@ -2138,7 +2217,7 @@ void MapActivity::openMapMenu() {
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
       StrId::STR_MAP, options, values, 0,
-      [this, observeIdx, wholeRouteIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx,
+      [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx,
        debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
         // that change nothing on it (zoom mode) put it back
@@ -2148,6 +2227,16 @@ void MapActivity::openMapMenu() {
         if (idx != zoomModeIdx) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
+        } else if (idx == zoomInIdx || idx == zoomOutIdx) {
+          // The ladder step itself, then render now rather than on
+          // stepZoom()'s settle timer: the settle exists to collapse a burst
+          // of button presses, and a menu row cannot be pressed in a burst --
+          // the popup is gone. Same reasoning as switchMode()'s own redraw.
+          // The pixels the popup left behind need that frame anyway.
+          stepZoom(idx == zoomInIdx ? -1 : +1);
+          redrawDueMs_ = 0;
+          showBusy();
+          renderCurrent();
         } else if (idx == wholeRouteIdx) {
           // Back to the whole route, at any point in a ride. Costs one full refresh
           // and one pass over the route file, the same as the frame the picker drew.
