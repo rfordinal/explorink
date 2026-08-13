@@ -1922,10 +1922,6 @@ void MapActivity::openMapMenu() {
   std::vector<std::string> values;
   options.reserve(8);
   values.reserve(8);
-  options.push_back(tr(STR_REFRESH));
-  values.emplace_back();
-  options.push_back(tr(STR_MAP_MODE));
-  values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
   // Only once a fix has actually drawn a frame -- same "no row that cannot do
   // anything" rule as Whole route below. A rider with nothing on screen yet
   // has nothing to look around in.
@@ -1946,15 +1942,14 @@ void MapActivity::openMapMenu() {
     options.push_back(tr(STR_MAP_WHOLE_ROUTE));
     values.emplace_back();
   }
+  const int modeIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_MODE));
+  values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
   // Quick toggles for settings the rider wants to flip mid-ride without
   // leaving the map -- zoom/rotation/heading mode. The Settings screen
   // entries for the same three fields (SettingsList.h) decide what the map
   // opens with, next time; this menu changes the same CrossPointSettings
   // fields live, so the two never disagree about the current value.
-  const int zoomModeIdx = static_cast<int>(options.size());
-  options.push_back(tr(STR_MAP_ZOOM_MODE));
-  values.push_back(
-      I18N.get(SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_AUTO ? StrId::STR_AUTO : StrId::STR_MANUAL));
   const int rotationIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_ROTATION_MODE));
   values.push_back(I18N.get(SETTINGS.mapRotationMode == CrossPointSettings::MAP_ROTATION_NORTH_UP
@@ -1962,32 +1957,30 @@ void MapActivity::openMapMenu() {
                                 : StrId::STR_MAP_ROTATION_HEADING_UP));
   const int headingIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_HEADING_MODE));
-  values.push_back(I18N.get(SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL ? StrId::STR_MANUAL
-                                                                                              : StrId::STR_AUTO));
+  values.push_back(I18N.get(SETTINGS.mapHeadingMode == CrossPointSettings::MAP_HEADING_MANUAL
+                                ? StrId::STR_MAP_HEADING_FROZEN
+                                : StrId::STR_AUTO));
+  const int zoomModeIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_ZOOM_MODE));
+  values.push_back(
+      I18N.get(SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_AUTO ? StrId::STR_AUTO : StrId::STR_MANUAL));
+  const int reloadIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_REFRESH));
+  values.emplace_back();
   const int debugInfoIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_DEBUG_INFO));
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
       StrId::STR_MAP, options, values, 0,
-      [this, observeIdx, wholeRouteIdx, zoomModeIdx, rotationIdx, headingIdx, debugInfoIdx](int idx) {
+      [this, observeIdx, wholeRouteIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx,
+       debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
         // that change nothing on it (zoom mode) put it back
         // instead of re-rendering, and so does a plain dismiss
         // (loop()). Freed first for every redraw row, so the
         // buffer is not held across a tile read.
         if (idx != zoomModeIdx) dropMenuBackdrop();
-        if (idx == 0) {
-          redrawDueMs_ = 0;
-          showBusy();  // Refresh is the slowest thing on this screen; acknowledge it
-          renderCurrent();
-        } else if (idx == 1) {
-          // One Select steps ride->hike->cycle->ride and closes, same as every
-          // other row -- picking a mode is a deliberate, one-shot choice, not the
-          // start of a cycling gesture. A rider who wants to step again presses
-          // CONFIRM again. mapRideModeName()'s array order.
-          const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
-          switchMode(static_cast<MapRideMode>(next));
-        } else if (idx == observeIdx) {
+        if (idx == observeIdx) {
           toggleObserveMode();
         } else if (idx == wholeRouteIdx) {
           // Back to the whole route, at any point in a ride. Costs one full refresh
@@ -1995,6 +1988,13 @@ void MapActivity::openMapMenu() {
           redrawDueMs_ = 0;
           showBusy();
           renderRouteOverview();
+        } else if (idx == modeIdx) {
+          // One Select steps ride->hike->cycle->ride and closes, same as every
+          // other row -- picking a mode is a deliberate, one-shot choice, not the
+          // start of a cycling gesture. A rider who wants to step again presses
+          // CONFIRM again. mapRideModeName()'s array order.
+          const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
+          switchMode(static_cast<MapRideMode>(next));
         } else if (idx == zoomModeIdx) {
           // No new frame: the setting has no runtime effect yet (auto zoom is
           // not wired up, docs/map-data-spec.md), so the map underneath is
@@ -2030,6 +2030,10 @@ void MapActivity::openMapMenu() {
           SETTINGS.saveToFile();
           redrawDueMs_ = 0;
           showBusy();
+          renderCurrent();
+        } else if (idx == reloadIdx) {
+          redrawDueMs_ = 0;
+          showBusy();  // Reload is the slowest thing on this screen; acknowledge it
           renderCurrent();
         } else if (idx == debugInfoIdx) {
           SETTINGS.mapDebugInfo = SETTINGS.mapDebugInfo ? 0 : 1;
