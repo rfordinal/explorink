@@ -26,5 +26,27 @@ class MapBleConsole {
   bool poll();
 
  private:
+  friend class BatchingReplyWriter;
+
+  // Reply lines are packed into one indication each time they fill this, and
+  // whatever is left goes out at the end of poll(). Sized to the biggest ATT
+  // payload this link can carry (MTU 256 -> 253 bytes); the actual budget is
+  // read per flush from BlePositionServer::commandPayloadBytes(), so a link
+  // that never got past the 23-byte default still sends legal indications.
+  //
+  // A class member, not a local in poll(): the NimBLE host task's stack is
+  // 4 KB and firmware CLAUDE.md caps a function's locals at 256 bytes, which
+  // poll()'s own 128-byte read buffer already half spends.
+  static constexpr size_t kBatchBytes = 253;
+
+  // Appends one reply line (a '\n' is added), flushing first if it no longer
+  // fits. A line longer than the budget goes out on its own.
+  void appendReply(const char* line);
+
+  // Sends whatever is buffered. Nothing to send is success.
+  bool flushReplies();
+
   MapCommandConsole console_;
+  char batch_[kBatchBytes] = {};
+  size_t batchLen_ = 0;
 };

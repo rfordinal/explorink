@@ -454,16 +454,21 @@ size_t BlePositionServer::readCommandBytes(char* out, size_t max) {
 }
 
 bool BlePositionServer::sendCommandReply(const char* line) {
-  if (!begun_ || g_commandChar == nullptr || line == nullptr) return false;
+  if (line == nullptr) return false;
 
-  // One indication per line, newline included so a receiver that
-  // concatenates them gets the same stream the UART produces.
+  // Newline included so a receiver that concatenates indications gets the same
+  // stream the UART produces.
   char buf[128];
   const int written = snprintf(buf, sizeof(buf), "%s\n", line);
   if (written <= 0) return false;
   const size_t length = static_cast<size_t>(written) < sizeof(buf) ? static_cast<size_t>(written) : sizeof(buf) - 1;
+  return sendCommandBlock(buf, length);
+}
 
-  g_commandChar->setValue(reinterpret_cast<const uint8_t*>(buf), length);
+bool BlePositionServer::sendCommandBlock(const char* text, size_t len) {
+  if (!begun_ || g_commandChar == nullptr || text == nullptr || len == 0) return false;
+
+  g_commandChar->setValue(reinterpret_cast<const uint8_t*>(text), len);
 
   // Confirmed on real hardware: indicate() returning true only means this
   // indication was accepted into NimBLE's single-slot pending queue, not
@@ -475,21 +480,50 @@ bool BlePositionServer::sendCommandReply(const char* line) {
   // of band, via CommandCharCallbacks::onStatus -- so wait for that
   // signal before returning, which serializes replies at the pace the
   // link can really deliver them instead of the pace we can call indicate().
+  //
+  // **A confirm that does not arrive is a failure, not a pause.** The wait used
+  // to be 500 ms and returned `true` either way, which put the clobbering
+  // straight back: the next line overwrote a slot the peer had not drained.
+  // Measured 2026-08-13 against the Android app -- a five-line `have` reply
+  // took 3.9 s (six waits timing out at 500 ms each) and the phone received
+  // one of the four tile lines. It then reported "0 stale of 1" for a viewport
+  // holding two tiles that were out of date, and the freshness check had been
+  // silently answering about a fraction of the screen ever since.
   constexpr int kMaxAttempts = 40;
   constexpr uint32_t kRetryDelayMs = 25;
-  constexpr uint32_t kConfirmTimeoutMs = 500;
+  // Long enough for a phone that is also servicing position writes and a tile
+  // transfer on the same link. The old 500 ms was under what this Android
+  // build actually takes.
+  constexpr uint32_t kConfirmTimeoutMs = 3000;
+  // Above this, say so: the number is a link property nothing else reports,
+  // and the batching below is sized against it.
+  constexpr uint32_t kSlowConfirmMs = 300;
+
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
     // Drain any stale give() (e.g. a previous reply's confirm landing after
     // its own wait already timed out) so this wait can't return instantly
     // on a signal that isn't for this indication.
     xSemaphoreTake(g_indicateAckSem, 0);
     if (g_commandChar->indicate()) {
-      xSemaphoreTake(g_indicateAckSem, pdMS_TO_TICKS(kConfirmTimeoutMs));
+      const uint32_t startedMs = millis();
+      if (xSemaphoreTake(g_indicateAckSem, pdMS_TO_TICKS(kConfirmTimeoutMs)) != pdTRUE) {
+        // Not retried: the peer may still be about to take this one, and
+        // sending it again would put a duplicate line into a listing whose
+        // whole point is a count that adds up.
+        LOG_ERR("BLEPOS", "reply unconfirmed after %lu ms, %u bytes dropped",
+                static_cast<unsigned long>(kConfirmTimeoutMs), static_cast<unsigned>(len));
+        return false;
+      }
+      const uint32_t waitedMs = millis() - startedMs;
+      if (waitedMs >= kSlowConfirmMs) {
+        LOG_DBG("BLEPOS", "reply confirm took %lu ms for %u bytes", static_cast<unsigned long>(waitedMs),
+                static_cast<unsigned>(len));
+      }
       return true;
     }
     vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
   }
-  LOG_ERR("BLEPOS", "reply indicate failed after %d attempts: %.*s", kMaxAttempts, static_cast<int>(length), buf);
+  LOG_ERR("BLEPOS", "reply indicate failed after %d attempts: %.*s", kMaxAttempts, static_cast<int>(len), text);
   return false;
 }
 
@@ -595,6 +629,7 @@ void BlePositionServer::onWriteIngest(const uint8_t*, size_t) {}
 void BlePositionServer::onCommandIngest(const uint8_t*, size_t) {}
 size_t BlePositionServer::readCommandBytes(char*, size_t) { return 0; }
 bool BlePositionServer::sendCommandReply(const char*) { return false; }
+bool BlePositionServer::sendCommandBlock(const char*, size_t) { return false; }
 void BlePositionServer::setTransferHooks(const TransferHooks&) {}
 bool BlePositionServer::sendTransferStatus(const char*) { return false; }
 void BlePositionServer::onTransferIngest(const uint8_t*, size_t) {}

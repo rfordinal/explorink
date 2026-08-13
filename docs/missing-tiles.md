@@ -152,12 +152,20 @@ OK
 One entry per line, `missing_<z>_<col>_<row>=<count>`. `missing_next` is where
 the next command should start, or `done`.
 
-**Paged at 20 entries** (`MapConsoleState::kMissingPageSize`). Every reply
-line is one BLE indication and each one waits for the peer's ATT confirm
-before the next goes out (`BlePositionServer::sendCommandReply()`), so 200
-lines from a single command would hold the map activity's `loop()` for
-minutes. An offset past the end is an empty page, not an error -- that is what
-makes a paging loop's last request harmless.
+**Paged at 20 entries** (`MapConsoleState::kMissingPageSize`). Reply lines go
+out as **batched** indications -- `MapBleConsole` packs as many whole lines as
+the ATT payload holds (253 bytes at MTU 256) and each indication waits for the
+peer's ATT confirm before the next goes out
+(`BlePositionServer::sendCommandBlock()`). A confirm costs 0.7-1.5 s against
+the Android app (measured 2026-08-13), so 200 lines one-per-indication would
+hold the map activity's `loop()` for minutes; batched, a 20-entry page is two
+or three indications. An offset past the end is an empty page, not an error --
+that is what makes a paging loop's last request harmless.
+
+One line per indication is what the code did until 2026-08-13, and it lost
+lines rather than merely being slow -- `tile-freshness.md`, "The reply channel
+dropped lines", has the measurement and why the confirm wait alone did not
+save it.
 
 `INFO missing=unavailable` means no store was wired to the console, which is
 deliberately distinct from `missing_total=0`: a reader must not mistake a

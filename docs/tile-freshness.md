@@ -371,3 +371,84 @@ in flight was attempted this pass and blocked on a flaky `bleak` connect in
 this environment, not retried — the wire format is unchanged from
 `NEED_TILES`'s already-proven `fmt <version>` grammar, so this is a real gap
 in *this specific verification*, not in confidence about the fix's shape.
+
+## The reply channel dropped lines -- found and fixed 2026-08-13
+
+The whole check ran correctly and still answered about a fraction of the
+screen. Measured on hardware, one map viewport holding four z11 tiles:
+
+```
+X4:      freshness: asked about 4 tile(s) on screen
+X4:      rx: have
+phone:   device wants 4 tile(s) checked, format 3
+phone:   checking 1 tile(s) in 1 range read(s)      <-- one, not four
+phone:   check finished: 0 stale of 1
+X4:      rx: checked 0  ->  "0 tile(s) out of date"
+```
+
+Two of those four tiles were out of date on the card -- a build from 2026-08-04,
+still drawing trams as mainline railway, still carrying the `track` class the
+overview LOD dropped on 2026-08-08. The device had been asking every ten
+minutes for days and being told everything was current.
+
+**The `have` reply was fine; the link lost it.** The same command over USB
+serial returns all five lines every time, and so does a laptop BLE client
+(`tools/mapcmd.py --ble have`, 3 of 3 runs, all five lines). Only the phone saw
+one.
+
+**Cause: one indication per line, and a confirm wait that gave up too early.**
+`sendCommandReply()` waited for `CommandCharCallbacks::onStatus` before
+returning, which is the right idea -- NimBLE's `indicate()` only means the line
+reached a one-slot queue, and the next call overwrites whatever is still in it.
+But the wait was 500 ms and **returned `true` on timeout**, so a slow peer put
+the clobbering straight back. Confirms from this Android build measure
+**688-1503 ms** (`BLEPOS: reply confirm took N ms`, added in the same pass),
+i.e. always over the old budget. Six lines took 3.9 s and four of them died in
+the queue.
+
+Fixed in two places, both needed:
+
+- **Batching.** `MapBleConsole` packs whole lines into one indication up to the
+  ATT payload (253 bytes at MTU 256) and flushes at the end of `poll()`;
+  `BlePositionServer::sendCommandBlock()` sends the block. A four-tile `have`
+  is 83 bytes -- one indication, one confirm. Compatible with every existing
+  reader by construction: both the app (`BleLink.handleIndication`) and
+  `tools/mapcmd.py` already reassemble by newline rather than assuming one
+  indication is one line.
+- **A missing confirm is a failure.** The wait is now 3 s and returns `false`,
+  logging `reply unconfirmed after N ms`. Not retried: the peer may still take
+  the first copy, and a duplicate line in a listing whose point is a count that
+  adds up is worse than a short one.
+
+The phone stopped trusting a short listing in the same pass: `HaveReader`
+compares the tile lines it got against `have_total`, and `FreshnessChecker`
+answers `checked unknown` instead of a verdict when they disagree
+(`FreshnessCheckerTest`, "a have listing that lost lines is answered unknown,
+never checked"). Belt and braces on purpose -- the batching removes today's
+loss, the count check makes tomorrow's loud.
+
+**Verified end to end on hardware 2026-08-13**, same viewport that produced the
+failure above:
+
+```
+freshness: asked about 2 tile(s) on screen
+BLEPOS: reply confirm took 1487 ms for 83 bytes    <-- the whole listing, one indication
+rx: stale 11 1120 710   ->  z11 1120/710 is out of date
+rx: stale 11 1121 710   ->  z11 1121/710 is out of date
+rx: checked 2           ->  2 tile(s) out of date
+MAPXFER begin /trailink/base/11/1120/710.tib, 48864 bytes, crc 6c938098
+MAPXFER done  /trailink/base/11/1120/710.tib, 48864 bytes, crc 6c938098
+freshness: z11 1120/710 replaced
+```
+
+The card's `content_id` for that tile went `ec483e47` -> `c0f79ee0`, which is
+what the CDN's index publishes for it. First time the check has replaced
+anything.
+
+**Open: the push is slow.** 48864 bytes took 119 s, i.e. ~410 B/s, against the
+2.6 kB/s `docs/optimization/03-ble-link.md` measured for a fetch. Both tiles
+still land, and the app's own reply timeout (`TileFetcher.REPLY_TIMEOUT_MS`,
+15 s) is per frame rather than per file, so this costs minutes rather than
+correctness. Not chased in this pass -- needs a per-chunk timestamp on one
+transfer to say whether the wait is the SD write, the connection interval or
+the app's queue.
