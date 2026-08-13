@@ -555,6 +555,17 @@ find src -name "*.cpp" -o -name "*.h" | xargs clang-format -i
 clang-format -i src/**/*.cpp src/**/*.h
 ```
 
+**Format only the files you changed:**
+
+```bash
+git diff --name-only | grep -E '\.(cpp|h)$' | xargs clang-format -i
+```
+
+Running it over all of `src/` reformats files that carry pre-existing drift and
+buries the real diff in churn. Never undo that churn with an inverse-grep
+`git checkout --` -- it silently reverts your own edits in every file the grep
+did not happen to name.
+
 ### Debugging Crashes
 
 **Common Crash Causes**:
