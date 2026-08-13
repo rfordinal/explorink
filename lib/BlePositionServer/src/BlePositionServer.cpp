@@ -619,7 +619,17 @@ void BlePositionServer::onTransferIngest(const uint8_t* data, size_t len) {
   const TransferHooks hooks = transferHooks_;
   portEXIT_CRITICAL(&g_mux);
 
-  if (hooks.onFrame) hooks.onFrame(hooks.ctx, data, len);
+  if (hooks.onFrame) {
+    hooks.onFrame(hooks.ctx, data, len);
+  } else {
+    // The begin-before-attach window: the phone's write beat
+    // MapTransferReceiver::attach() to the mutex, or the activity is
+    // between screens. Self-healing (the phone retries, or the next
+    // attach() covers the next frame) -- LOG_DBG, not LOG_ERR, but silent
+    // drops with no line at all are exactly the kind of gap that stops
+    // looking self-healing when a frame keeps missing anyway.
+    LOG_DBG("BLEPOS", "transfer frame dropped, no hook attached (%u bytes)", static_cast<unsigned>(len));
+  }
 }
 
 void BlePositionServer::onCentralDisconnect() {
