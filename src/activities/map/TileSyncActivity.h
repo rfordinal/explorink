@@ -248,10 +248,14 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
     Unknown,  // `checked unknown` -- the phone could not read the index
   };
   Freshness freshnessState_ = Freshness::Idle;
-  // How many tiles the ask covered, and how many came back stale. Both are for
-  // the line on screen, which is why they survive past the ask.
+  // Cumulative over the visit: how many tiles have been checked and how many of
+  // them were out of date. A visit asks in rounds (HeldTilesStore::
+  // kMaxPerListing), and the rider wants one number, not one per round.
   uint32_t freshnessAskedCount_ = 0;
   uint32_t freshnessStale_ = 0;
+  // What the round currently on the wire covers, folded into the total when
+  // `checked` closes it.
+  uint32_t freshnessRound_ = 0;
 
   // When something last landed or was skipped, for the stall verdict below.
   // Armed by askForTiles(), so a screen that never asked cannot time out.

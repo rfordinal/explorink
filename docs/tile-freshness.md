@@ -143,7 +143,39 @@ parallel mechanism. A device with nothing pending stops asking entirely
 (`MapActivity::maybeCheckTileFreshness()`, the `pendingCount() == 0` gate)
 instead of re-sending the same screenful every ten minutes.
 
-### 64 entries, and the wire is what chose the number
+### The store holds 64, one listing sends 12
+
+Two different caps, and conflating them is a freeze.
+
+`MapBleConsole` bounds itself at `kMaxBlocksPerPoll` (2) indications per
+`poll()`, so a hung-but-subscribed peer cannot chain 3-second confirm waits on
+the activity task. **That cap is checked before reading the next command byte,
+not while one command is emitting replies** (`MapBleConsole::poll()`). So a
+single `have` runs to however many blocks its listing needs, back to back, and
+the cap does not see it. A 64-entry listing is ~10 blocks: about 11 s of dead
+buttons on a healthy link and up to 30 s against a peer that has stopped
+confirming -- exactly the freeze the block cap exists to prevent, through a
+different door.
+
+So `HeldTilesStore::kMaxPerListing = 12`: a ~32-byte line packs seven to a
+253-byte indication, so twelve entries plus the total line stay inside two
+blocks. Nothing is lost, because the store drains --
+`TileSyncActivity::onCheckFinished()` asks again while anything is still
+pending, so a visit still empties the store, in rounds. It cannot spin:
+`markAskedChecked()` settles the round before the next ask, so `pendingCount()`
+strictly shrinks. It re-asks only on a `known` answer; `checked unknown` settles
+nothing, so re-asking on that would loop forever against a phone that cannot
+read the index. The map screen does not re-ask -- its next cooldown is the next
+round, which is what a background drain should look like.
+
+`CHECK_TILES <count>` states the round, not the backlog, so the number matches
+what `have` is about to list.
+
+**Found by rebasing onto `7ca2ea36`, not on hardware.** The interaction is read
+off the two code paths; the 11 s and 30 s figures are that arithmetic against
+the measured confirm range below, not timings anybody took.
+
+### Why the store holds 64
 
 `HeldTilesStore::kMaxEntries = 64`, a fixed array -- 1 KB of static DRAM, no
 heap, no fragmentation risk. The RAM is not the constraint; the reply channel

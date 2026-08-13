@@ -859,9 +859,14 @@ void MapActivity::maybeCheckTileFreshness() {
   // The count is advisory, not a contract: the phone trusts `have_total` and
   // the lines it actually receives, and a render landing between this line and
   // the phone's `have` can add a pending tile (FreshnessChecker's HaveReader).
+  // One round's worth, matching what `have` will actually list -- a listing
+  // runs its blocks back to back on this task and each waits on the peer's
+  // confirm (HeldTilesStore::kMaxPerListing). The rest keeps for the next
+  // cooldown, which is what the store draining is for.
   const unsigned long pending = static_cast<unsigned long>(g_heldTiles.pendingCount());
+  const unsigned long round = pending < HeldTilesStore::kMaxPerListing ? pending : HeldTilesStore::kMaxPerListing;
   char line[48];
-  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", pending, static_cast<unsigned>(MapTileReader::kFormatVersion));
+  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", round, static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "freshness: CHECK_TILES not delivered");
     return;
@@ -871,7 +876,7 @@ void MapActivity::maybeCheckTileFreshness() {
   // From the ask, not from the answer: the cap is on how often the device may
   // start a conversation.
   freshnessNextAskMs_ = now + kFreshnessIntervalMs;
-  LOG_INF(kLogTag, "freshness: asked about %lu unchecked tile(s) of %lu held", pending,
+  LOG_INF(kLogTag, "freshness: asked about %lu of %lu pending, %lu held", round, pending,
           static_cast<unsigned long>(g_heldTiles.size()));
 }
 

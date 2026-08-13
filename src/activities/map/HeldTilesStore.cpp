@@ -70,7 +70,7 @@ bool HeldTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {
 
 size_t HeldTilesStore::beginListing() {
   size_t asked = 0;
-  for (size_t i = 0; i < count_; ++i) {
+  for (size_t i = 0; i < count_ && asked < kMaxPerListing; ++i) {
     if (entries_[i].checked()) continue;
     entries_[i].flags |= HeldTileEntry::kAsked;
     ++asked;

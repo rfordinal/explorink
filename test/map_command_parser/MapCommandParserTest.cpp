@@ -1134,6 +1134,28 @@ TEST(HeldTilesStore, AFullUnsettledStoreDropsTheOldest) {
   EXPECT_EQ(store.at(store.size() - 1).col, 9999u);
 }
 
+// One listing is bounded by the console's per-poll() block budget, not by the
+// store. Without this a full store emits ~10 indications back to back, each
+// waiting on the peer's confirm, and the buttons die for the duration.
+TEST(HeldTilesStore, AListingIsCappedAndTheRestKeeps) {
+  HeldTilesStore store;
+  for (uint32_t i = 0; i < HeldTilesStore::kMaxEntries; ++i) store.record(13, 4482, i, 0x1000u + i);
+
+  EXPECT_EQ(store.beginListing(), HeldTilesStore::kMaxPerListing);
+  store.markAskedChecked();
+  EXPECT_EQ(store.pendingCount(), HeldTilesStore::kMaxEntries - HeldTilesStore::kMaxPerListing);
+
+  // Rounds strictly shrink the backlog, so a caller that re-asks terminates.
+  size_t rounds = 0;
+  while (store.pendingCount() > 0) {
+    const size_t asked = store.beginListing();
+    ASSERT_GT(asked, 0u);
+    store.markAskedChecked();
+    ASSERT_LT(++rounds, 100u);
+  }
+  EXPECT_EQ(store.pendingCount(), 0u);
+}
+
 // `have` is what the phone reads to know which tiles to look up in the CDN's
 // index. Lowercase hex with no 0x, the same way mapbuilder prints a content_id.
 TEST(MapCommandConsole, HaveReportsTheHeldContentIds) {

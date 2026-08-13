@@ -77,6 +77,7 @@ bool TileSyncActivity::armRun() {
   freshnessState_ = Freshness::Idle;
   freshnessAskedCount_ = 0;
   freshnessStale_ = 0;
+  freshnessRound_ = 0;
   lastSettleMs_ = 0;
   return true;
 }
@@ -166,22 +167,29 @@ void TileSyncActivity::askAboutFreshness() {
             static_cast<unsigned long>(g_heldTiles.size()));
     return;
   }
+  // One round's worth, not the whole store. A listing runs its blocks back to
+  // back on the activity task and each waits on the peer's confirm, so an
+  // unbounded one freezes the buttons -- see HeldTilesStore::kMaxPerListing.
+  // onCheckFinished() asks again while anything is still pending, so a visit
+  // still drains the store; it just does it in rounds.
+  const uint32_t round =
+      pending < HeldTilesStore::kMaxPerListing ? pending : static_cast<uint32_t>(HeldTilesStore::kMaxPerListing);
   // `fmt <version>` for the same reason the map screen sends it: a device with
   // nothing missing never sends NEED_TILES, so without this the phone falls
   // back to a stale default and compares against the wrong /v<N>/ index tree
   // (docs/tile-freshness.md).
   char line[48];
-  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", static_cast<unsigned long>(pending),
+  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", static_cast<unsigned long>(round),
            static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "CHECK_TILES not delivered");
     return;
   }
   freshnessAsked_ = true;
-  freshnessAskedCount_ = pending;
+  freshnessRound_ = round;
   freshnessState_ = Freshness::Asking;
-  LOG_INF(kLogTag, "freshness: asked about %lu tile(s) of %lu held", static_cast<unsigned long>(pending),
-          static_cast<unsigned long>(g_heldTiles.size()));
+  LOG_INF(kLogTag, "freshness: asked about %lu of %lu pending, %lu held", static_cast<unsigned long>(round),
+          static_cast<unsigned long>(pending), static_cast<unsigned long>(g_heldTiles.size()));
   // The rider is watching a screen that has just stopped fetching. Without this
   // repaint the check runs, spends data and finishes with the panel still
   // showing the fetch's own verdict.
@@ -193,7 +201,10 @@ bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
     case Freshness::Idle:
       return false;
     case Freshness::Asking:
-      snprintf(out, size, tr(STR_TILE_SYNC_CHECKING), static_cast<int>(freshnessAskedCount_));
+      // What this visit will have covered once the round on the wire lands, not
+      // the round on its own -- a rider watching rounds tick by wants the total
+      // going up, not a number that resets to 12 each time.
+      snprintf(out, size, tr(STR_TILE_SYNC_CHECKING), static_cast<int>(freshnessAskedCount_ + freshnessRound_));
       return true;
     case Freshness::Current:
       snprintf(out, size, tr(STR_TILE_SYNC_ALL_CURRENT), static_cast<int>(freshnessAskedCount_));
@@ -227,16 +238,30 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
     renderScreen();
     return;
   }
-  freshnessStale_ = staleCount;
-  freshnessState_ = staleCount > 0 ? Freshness::Stale : Freshness::Current;
-  LOG_INF(kLogTag, "freshness: %u tile(s) out of date of %lu checked", static_cast<unsigned>(staleCount),
-          static_cast<unsigned long>(freshnessAskedCount_));
+  // Cumulative over the visit, not per round: the rider is told how much of
+  // their card has been checked, which is one fact however many listings it
+  // took to ask about it.
+  freshnessAskedCount_ += freshnessRound_;
+  freshnessStale_ += staleCount;
+  freshnessState_ = freshnessStale_ > 0 ? Freshness::Stale : Freshness::Current;
+  LOG_INF(kLogTag, "freshness: %u out of date this round, %lu of %lu checked so far", static_cast<unsigned>(staleCount),
+          static_cast<unsigned long>(freshnessAskedCount_), static_cast<unsigned long>(g_heldTiles.size()));
   // Every `stale` line has landed by now -- `checked` is what closes the
   // listing -- so this is the first moment the grid window can cover them. It
   // was sized on the missing list alone in armRun(), which on a visit with
   // nothing missing meant no window at all.
   chooseWindow();
   renderScreen();
+
+  // Next round, if the store still holds anything unanswered. Bounded and
+  // cannot spin: markAskedChecked() has already settled this round's entries,
+  // so pendingCount() is strictly smaller each time and reaches zero. Only on
+  // a `known` answer -- `checked unknown` settles nothing, so re-asking on it
+  // would loop forever against a phone that cannot read the index.
+  if (g_heldTiles.pendingCount() > 0) {
+    freshnessAsked_ = false;
+    askAboutFreshness();
+  }
 }
 
 bool TileSyncActivity::phoneListening() const {

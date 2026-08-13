@@ -90,8 +90,24 @@ class HeldTilesStore {
   // to draw it again.
   bool forget(uint8_t z, uint32_t col, uint32_t row);
 
-  // Marks every pending entry as being on the wire and reports how many. The
-  // caller is starting a listing; markAskedChecked() or clearAsked() closes it.
+  // How many entries one `have` may list. **Not a limit on the store** -- it is
+  // how many replies fit in the console's per-poll() block budget.
+  //
+  // MapBleConsole caps itself at kMaxBlocksPerPoll blocks per poll(), but that
+  // cap is checked before reading the next command byte, not while one command
+  // is emitting replies (MapBleConsole::poll()). So a single listing runs to
+  // however many blocks it needs, back to back, each waiting up to 3 s for the
+  // peer's confirm on the activity task -- the exact freeze the block cap
+  // exists to bound. A ~32-byte line packs seven to a 253-byte indication, so
+  // twelve entries plus the total line stay inside two blocks.
+  //
+  // The rest is not lost: the store drains, so the next round lists what this
+  // one did not, and TileSyncActivity re-asks until nothing is pending.
+  static constexpr size_t kMaxPerListing = 12;
+
+  // Marks up to kMaxPerListing pending entries as being on the wire and reports
+  // how many. The caller is starting a listing; markAskedChecked() or
+  // clearAsked() closes it.
   //
   // Stamping rather than counting is what keeps a render that lands mid-check
   // honest: a tile recorded after this call is pending but not asked, so the
