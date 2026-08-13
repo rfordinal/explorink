@@ -858,6 +858,29 @@ Three changes, all in `TileSyncActivity`:
   protocol has no "I am done" from the phone and cannot usefully have one -- a
   phone out of range would not send it either -- so silence is the only signal
   there is, and a screen that reads silence as work is a screen that lies.
+- **The same verdict for an active-but-silent transfer.** The stall verdict
+  above is gated on `!transfer.active`
+  (`src/activities/map/TileSyncActivity.cpp:742`), which misses the case a
+  phone ANR mid-file: the app freezes with the GATT link still held, so
+  `active` never goes back to false and bytes stop moving. The transfer
+  channel itself only reclaims a stalled transfer on the *next* `begin`
+  (`src/activities/map/MapTransferReceiver.cpp:174-183`), which never arrives
+  while the phone is wedged -- so before this fix the bar froze forever, Back
+  the only way out. `updateProgress()` now tracks `transfer.received` and the
+  time it last changed (`lastReceivedBytes_`, `lastProgressMs_`,
+  `src/activities/map/TileSyncActivity.cpp:753-780`); no movement for
+  `kStallVerdictMs` while `transfer.active` is still true ends the run with
+  the same `STR_TILE_SYNC_NO_ANSWER` verdict. Same pattern
+  `MapActivity::expireAutoSync()` uses for auto-sync
+  (`src/activities/map/MapActivity.cpp:870-894`), against the same 30 s
+  budget so both paths agree on how long silence gets to look like work. The
+  active false->true transition always counts as progress
+  (`transferWasActive_`), because `received` resets to 0 on every `begin`
+  (`src/activities/map/MapTransferReceiver.cpp:216`) and can coincide with the
+  previous file's last-seen count. **Read off the code, not yet measured on
+  hardware** -- reproducing an app-side ANR needs a deliberately-hung fake
+  phone, which `tools/blefakephone.py` does not do today (it can go silent,
+  not wedge mid-chunk with the link held).
 - **`queued`, not `not available`.** A square the supplier does not have is
   written down and asked for again -- the list is persisted (`missing_tiles.json`)
   and survives a reboot. The run states it once, in `STR_TILE_SYNC_NOT_BUILT`:
