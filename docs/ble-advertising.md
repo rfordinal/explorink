@@ -89,6 +89,70 @@ would settle it: force a failure (drop the link while the host is resetting, or
 temporarily make `onDisconnect` pass a bogus start) and watch for the `LOG_ERR`
 followed by the `advertising restarted from the activity task` `LOG_INF`.
 
+## Two-phase interval: fast for 30 s, then slow
+
+Before 2026-08-13 the interval was never set, so the NimBLE host always
+substituted its fast default (30–60 ms, next section) — for the whole time the
+map screen is open, phone in range or not. A map screen left up with nobody
+around advertises at that rate indefinitely, roughly 10x the TX events a
+200–300 ms interval costs for the same "is anybody there" signal
+(`docs/ble-review-2026-08.md`, "Power").
+
+**Fast for the first 30 s, slow after.** `kFastAdvertisingMs` = 30000
+(`BlePositionServer.h:420`). The window restarts — not just continues — at
+three points, each one "advertising just started mattering again":
+
+- `begin()` (`BlePositionServer.cpp:363`) — a freshly opened map screen gets
+  the snappy interval.
+- `ServerCallbacks::onConnect` (`BlePositionServer.cpp:152`) — a phone that
+  connects, then drops again a few seconds later, gets a full fresh window on
+  the way back out rather than resuming wherever the interrupted one left off.
+- `ServerCallbacks::onDisconnect` (`BlePositionServer.cpp:199-219`) — reconnect
+  UX stays snappy after any drop, whether the link had been idle 5 s or 5 min
+  before it dropped.
+
+`resetAdvertisingPhase()` (`BlePositionServer.cpp:698-701`) is the one place
+that does this: stamps `phaseStartMs_` to `millis()` and clears
+`advertisingSlow_`. `onDisconnect` also explicitly resets the NimBLE-level
+bounds to `0`/`0` (`BlePositionServer.cpp:213-216`) before restarting —
+`m_advParams` is set once on the advertising object and only ever touched
+again by the slow-phase switch below or here, so a link that drops while slow
+needs the fast bounds put back explicitly; there is no "restore defaults" call
+in NimBLE-Arduino.
+
+**The switch itself runs from `serviceAdvertising()`**
+(`BlePositionServer.cpp:682-696`), the same per-tick hook that owns the
+failed-restart retry above — one owner of advertising state, not two timers.
+When nothing is connected and the fast window has elapsed,
+`maybeEnterSlowAdvertising()` (`BlePositionServer.cpp:703-733`) sets
+`setMinInterval(0x140)` / `setMaxInterval(0x1E0)` — 320 x 0.625 ms = 200 ms to
+480 x 0.625 ms = 300 ms, the controller's advertising-interval field being in
+0.625 ms units — then `stop()`s and `start()`s the advertising object, because
+`NimBLEAdvertising::start()` is a no-op success while already advertising
+(`NimBLEAdvertising.cpp:194-197`) and will not pick up new bounds without a
+stop first. `advertisingSlow_` goes up before that restart is attempted, not
+after, so a `start()` that fails here (the same transient "host not synced"
+case the section above covers) falls through to the ordinary
+`advertisingDown_`/`retryAdvertising()` path instead of retrying the whole
+stop/set/start cycle every tick — and that ordinary retry already carries the
+slow bounds, since nothing resets them until the next connect or disconnect.
+
+**The wake-latency trade.** The signal the phone's background scan is waiting
+for (`docs/ble-app-wake.md`) still has to land within a scan window once it
+switches to the slow interval. Android's own docs for
+`ScanSettings.SCAN_MODE_LOW_POWER` (the mode a background/opportunistic scan
+uses) describe a duty cycle on the order of a few seconds on, tens of seconds
+off — cited here as **read off Android's public scan-mode documentation, not
+measured against this app's actual `CompanionDeviceManager` presence path**,
+which does not expose its scan parameters to the app at all. A 200–300 ms
+advertiser sends roughly 15-25 advertisements inside a several-second scan
+window, which reads as comfortably enough to be caught — but "comfortably
+enough" is a read of someone else's docs about a different scan mechanism, not
+a number for this pairing. **Open — needs measurement**: map-open-to-`X4
+appeared` latency once the device is actually advertising at the slow
+interval. That is `docs/ble-fix-plan.md`'s H2 — phone paired, app killed, map
+opened, five trials, median compared against 10 s.
+
 ## What is in the payload
 
 Read off the code, 2026-08-11. Advertisement:
@@ -112,11 +176,11 @@ therefore advertised **no name at all**, and the phone app's
 `ScanFilter.setDeviceName("XteinkX4Map")` filter could never match — only its
 service-UUID filter did. Nothing looked broken because the two filters are OR'd.
 
-Advertising interval: **30–60 ms**, not set here. `m_advParams` is
-zero-initialised and the NimBLE host substitutes `BLE_GAP_ADV_FAST_INTERVAL1`
-when both bounds are 0 (`ble_gap.c:3401`, `ble_gap.h:59`). Fast enough for a
-phone-side low-power scan to notice within seconds; measuring the actual
-discovery latency is open.
+Advertising interval: **30–60 ms for the first 30 s, 200–300 ms after** — see
+"Two-phase interval" above for the full mechanism. The fast number comes from
+leaving both bounds at `0`, which makes the NimBLE host substitute
+`BLE_GAP_ADV_FAST_INTERVAL1` (`ble_gap.c:3401`, `ble_gap.h:59`); the slow
+number is `setMinInterval(0x140)`/`setMaxInterval(0x1E0)` explicitly.
 
 Connection mode is undirected connectable, general discoverable, no pairing and
 no bonding (`BlePositionServer.cpp:248`).

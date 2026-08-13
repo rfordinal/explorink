@@ -115,7 +115,23 @@ class BlePositionServer {
   // The single per-tick advertising owner. Every activity that runs the BLE
   // server calls exactly this one line from its loop(); anything the activity
   // task has to do about advertising state belongs in here, not as a second
-  // call bolted on next to it. Today that is the failed-restart retry.
+  // call bolted on next to it. Today that is the failed-restart retry and the
+  // fast->slow interval switch below.
+
+  // --- Two-phase advertising interval -----------------------------------
+  //
+  // NimBLE's fast default (BLE_GAP_ADV_FAST_INTERVAL1, 30-60 ms) is right for
+  // the "just opened the map, phone should notice fast" moment, and wasteful
+  // forever after: a map screen left open with no phone in range advertises
+  // at that rate indefinitely, ~10x the TX events a 200-300 ms interval would
+  // cost for the same "is anybody there" job
+  // (docs/ble-review-2026-08.md, "Power"). docs/ble-advertising.md (parent
+  // repo) has the interval numbers and the wake-latency trade.
+  //
+  // Fast for the first kFastAdvertisingMs after begin() and after every
+  // disconnect -- reconnect UX stays snappy, which matters more right after
+  // the rider was just connected than it does after 30 s of nobody around.
+  // Slow once that window elapses with nothing connected.
   void serviceAdvertising();
 
   // Copies the most recently received update. Returns false if nothing has
@@ -312,6 +328,11 @@ class BlePositionServer {
   // connect callback too -- a central that connected is proof advertising did
   // its job, and NimBLE stops it while connected by design.
   void onAdvertisingState(bool up);
+  // Internal: called on connect and on disconnect (the latter after the
+  // NimBLE-level interval is reset back to fast). Restarts the fast-phase
+  // window -- "advertising just mattered again" resets the clock rather than
+  // resuming a countdown that was already most of the way to slow.
+  void resetAdvertisingPhase();
 
  private:
   // Bytes of command text buffered between the BLE callback and the next
@@ -392,6 +413,38 @@ class BlePositionServer {
   std::atomic<bool> advertisingDown_{false};
   // Stamped by whichever task last tried a start(). Same two writers.
   std::atomic<uint32_t> lastAdvertisingAttemptMs_{0};
+
+  // --- Two-phase advertising interval, state for the header comment above
+  //
+  // 30 s of fast advertising, then slow until the next connect/disconnect.
+  static constexpr uint32_t kFastAdvertisingMs = 30000;
+  // 320 units * 0.625 ms = 200 ms .. 480 units * 0.625 ms = 300 ms (the
+  // controller's advertising interval field is in 0.625 ms units, same as
+  // BLE_GAP_ADV_FAST_INTERVAL1/2 in the vendored NimBLE's ble_gap.h).
+  static constexpr uint16_t kSlowMinIntervalUnits = 0x140;
+  static constexpr uint16_t kSlowMaxIntervalUnits = 0x1E0;
+
+  // Start of the current fast-phase window, in millis(). Reset at begin(),
+  // at connect and at disconnect (resetAdvertisingPhase()) -- each is
+  // "advertising just mattered again" and earns a fresh kFastAdvertisingMs
+  // rather than picking up wherever the last window left off. Read by
+  // serviceAdvertising() on the activity task; written from there too
+  // (begin()) and from the NimBLE host task (onConnect/onDisconnect), so
+  // atomic, same reasoning as lastAdvertisingAttemptMs_ above.
+  std::atomic<uint32_t> phaseStartMs_{0};
+  // True once the radio has actually been switched to the slow interval for
+  // the current phase window. Sits alongside phaseStartMs_ so
+  // maybeEnterSlowAdvertising() only issues the stop()/setInterval/start()
+  // sequence once per window instead of every tick past kFastAdvertisingMs.
+  // Same two writers as phaseStartMs_ (activity task sets it true, the host
+  // task's resetAdvertisingPhase() sets it back false), so atomic too.
+  std::atomic<bool> advertisingSlow_{false};
+
+  // Switches the radio to the slow interval once kFastAdvertisingMs has
+  // elapsed with nothing connected. Called only from serviceAdvertising() --
+  // this and retryAdvertising() are the only two places that touch
+  // advertising state from the activity task, so there is exactly one owner.
+  void maybeEnterSlowAdvertising();
 
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;

@@ -144,6 +144,12 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     // NimBLE stops advertising for the duration of the connection by design,
     // and that is not a failure to retry.
     self().onAdvertisingState(true);
+    // A connect is "advertising just mattered again" same as a disconnect --
+    // reset the fast-phase window so a phone that connects right at the edge
+    // of the slow phase and then drops a few seconds later gets a full fresh
+    // 30 s of fast advertising, not whatever was left of the window it
+    // interrupted (BlePositionServer.h, "Two-phase advertising interval").
+    self().resetAdvertisingPhase();
     // Interval is in 1.25 ms units.
     LOG_INF("BLEPOS", "connected: interval %u units (%u ms), latency %u, timeout %u",
             static_cast<unsigned>(info.getConnInterval()), static_cast<unsigned>(info.getConnInterval() * 5 / 4),
@@ -198,7 +204,21 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     self().onCentralDisconnect();
     self().onTransferSubscribe(false);
 
-    self().onAdvertisingState(NimBLEDevice::getAdvertising()->start());
+    // Reconnect UX stays snappy: back to the fast interval whether or not
+    // the slow phase had already kicked in before this disconnect.
+    // NimBLEAdvertising's m_advParams is set once when the advertising
+    // object is created and only ever touched again by
+    // maybeEnterSlowAdvertising() and here -- there is no "restore defaults"
+    // call, so a link that dropped while slow needs 0/0 set explicitly
+    // rather than assumed. 0 on both bounds is what makes the host
+    // substitute BLE_GAP_ADV_FAST_INTERVAL1 (ble_gap.c:3401,
+    // docs/ble-advertising.md).
+    NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+    advertising->setMinInterval(0);
+    advertising->setMaxInterval(0);
+    self().resetAdvertisingPhase();
+
+    self().onAdvertisingState(advertising->start());
   }
 };
 
@@ -336,6 +356,11 @@ bool BlePositionServer::begin(const char* deviceName) {
   // seconds apart across a screen exit and re-entry.
   advertisingDown_ = false;
   lastAdvertisingAttemptMs_ = 0;
+  // The advertising object was just (re)created above with default (fast)
+  // interval bounds -- start the fast-phase clock fresh so a map screen just
+  // opened gets the snappy interval, not whatever was left of a previous
+  // session's window.
+  resetAdvertisingPhase();
 
   begun_ = true;
   const uint32_t heapAfterBegin = esp_get_free_heap_size();
@@ -663,7 +688,49 @@ void BlePositionServer::serviceAdvertising() {
   // (src/activities/map/MapActivity.cpp:914, :1194): set in onConnect, zeroed in
   // onCentralDisconnect. No second connection-state flag for this.
   if (connIntervalUnits_ != 0) return;
-  if (advertisingDown_) retryAdvertising();
+  if (advertisingDown_) {
+    retryAdvertising();
+    return;
+  }
+  maybeEnterSlowAdvertising();
+}
+
+void BlePositionServer::resetAdvertisingPhase() {
+  phaseStartMs_ = millis();
+  advertisingSlow_ = false;
+}
+
+void BlePositionServer::maybeEnterSlowAdvertising() {
+  if (advertisingSlow_) return;  // already switched for this window
+
+  const uint32_t now = millis();
+  // Unsigned wrap is the intended arithmetic, same as retryAdvertising()'s.
+  if (now - phaseStartMs_ < kFastAdvertisingMs) return;
+
+  NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+  advertising->setMinInterval(kSlowMinIntervalUnits);
+  advertising->setMaxInterval(kSlowMaxIntervalUnits);
+  // start() is a no-op success while already advertising
+  // (NimBLEAdvertising.cpp:194-197 in the vendored lib) -- it will not pick
+  // up the new bounds without a stop() first.
+  advertising->stop();
+
+  // Set before the restart attempt, not after: a failed start() here is the
+  // same transient "host not synced" case onDisconnect's restart already
+  // guards against, and the existing advertisingDown_/retryAdvertising()
+  // path (activity task, above) recovers it -- *with* the slow bounds,
+  // since setMinInterval/setMaxInterval already changed them and
+  // retryAdvertising() never touches them again. Leaving this false until
+  // start() succeeds would instead retry this whole stop()/start() cycle
+  // every tick for as long as the radio stays down.
+  advertisingSlow_ = true;
+
+  const bool started = advertising->start();
+  onAdvertisingState(started);
+  if (started) {
+    LOG_INF("BLEPOS", "advertising: switched to slow interval (200-300 ms) after %lu ms with no phone",
+            static_cast<unsigned long>(kFastAdvertisingMs));
+  }
 }
 
 bool BlePositionServer::sendTransferStatus(const char* line) {
@@ -770,6 +837,7 @@ void BlePositionServer::onConnIntervalChanged(uint16_t) {}
 void BlePositionServer::onConnHandleChanged(uint16_t) {}
 void BlePositionServer::onCentralDisconnect() {}
 void BlePositionServer::onAdvertisingState(bool) {}
+void BlePositionServer::resetAdvertisingPhase() {}
 void BlePositionServer::retryAdvertising() {}
 void BlePositionServer::serviceAdvertising() {}
 int8_t BlePositionServer::rssi() const { return 0; }
