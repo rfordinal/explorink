@@ -211,6 +211,12 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // spending the phone's data belongs, which is why this mode exists separately
   // from the map screen's live one.
   void askAboutFreshness();
+  // Writes the one line that says what the freshness check is doing, or
+  // returns false when there is nothing to say (Freshness::Idle). Separate from
+  // the fetch's own status line because the two answer different questions --
+  // "did the tiles I lack arrive" and "are the tiles I have still right" -- and
+  // a rider who cannot tell them apart reads a check as a download.
+  bool formatFreshness(char* out, size_t size) const;
 
   // Snapshots the missing list and zeroes everything one run reports, so a second
   // run on the same visit starts where a fresh entry would. False means the
@@ -226,9 +232,26 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // Stale tiles this visit, for the ping-pong guard and the log. Not persisted
   // and not this screen's row list -- see StaleTilesList.
   StaleTilesList staleTiles_;
-  // True once CHECK_TILES has gone out this visit. One check per visit: the
-  // held-tile snapshot does not change while this screen is up.
+  // True once CHECK_TILES has gone out this visit. One check per visit: this
+  // screen draws no map, so nothing adds to the held-tile store while it is up.
   bool freshnessAsked_ = false;
+
+  // What the screen says about the check, so a rider can tell a freshness pass
+  // from a plain fetch. It could not before: the check ran, tiles moved over
+  // BLE, and the only evidence was the serial log -- so the data spend read as
+  // a download of missing tiles and nothing named it (docs/tile-freshness.md).
+  enum class Freshness : uint8_t {
+    Idle,     // not asked -- mode Off, nothing held, or the fetch is still running
+    Asking,   // CHECK_TILES is out, waiting for `checked`
+    Current,  // the phone compared them all and none had moved
+    Stale,    // freshnessStale_ tiles were out of date; the phone is pushing them
+    Unknown,  // `checked unknown` -- the phone could not read the index
+  };
+  Freshness freshnessState_ = Freshness::Idle;
+  // How many tiles the ask covered, and how many came back stale. Both are for
+  // the line on screen, which is why they survive past the ask.
+  uint32_t freshnessAskedCount_ = 0;
+  uint32_t freshnessStale_ = 0;
 
   // When something last landed or was skipped, for the stall verdict below.
   // Armed by askForTiles(), so a screen that never asked cannot time out.

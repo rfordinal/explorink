@@ -1044,22 +1044,105 @@ class RecordingStaleObserver final : public IMapStaleObserver {
   }
 };
 
-MapHeldTiles heldOf(std::initializer_list<MapHeldTiles::Entry> entries) {
-  MapHeldTiles held;
-  held.valid = true;
-  for (const auto& e : entries) held.entries[held.count++] = e;
-  return held;
+struct HeldTileSeed {
+  uint8_t z;
+  uint32_t col;
+  uint32_t row;
+  uint32_t contentId;
+};
+
+void seedHeld(HeldTilesStore& store, std::initializer_list<HeldTileSeed> entries) {
+  for (const auto& e : entries) store.record(e.z, e.col, e.row, e.contentId);
 }
 
 }  // namespace
 
+// Re-recording the same bytes must not undo a check, or the list never drains
+// -- every viewport reset walks tiles the last one already had.
+TEST(HeldTilesStore, ReRecordingTheSameContentIdKeepsItSettled) {
+  HeldTilesStore store;
+  store.record(13, 4482, 2839, 0xABB60454u);
+  store.beginListing();
+  store.markAskedChecked();
+  ASSERT_EQ(store.pendingCount(), 0u);
+
+  store.record(13, 4482, 2839, 0xABB60454u);
+  EXPECT_EQ(store.pendingCount(), 0u);
+  EXPECT_EQ(store.size(), 1u);
+}
+
+// A moved content_id is what a replaced tile looks like from here. It re-arms,
+// which is how the loop closes after a stale fetch: the new copy is checked
+// once, agrees, and settles.
+TEST(HeldTilesStore, AMovedContentIdRearmsTheEntry) {
+  HeldTilesStore store;
+  store.record(13, 4482, 2839, 0xABB60454u);
+  store.beginListing();
+  store.markAskedChecked();
+  ASSERT_EQ(store.pendingCount(), 0u);
+
+  store.record(13, 4482, 2839, 0xC0F79EE0u);
+  EXPECT_EQ(store.pendingCount(), 1u);
+  EXPECT_EQ(store.size(), 1u);
+  EXPECT_EQ(store.at(0).contentId, 0xC0F79EE0u);
+}
+
+// A tile that did not open has no content to vouch for. Recording it at
+// content 0 would have the phone report it stale forever.
+TEST(HeldTilesStore, ContentIdZeroIsNotRecorded) {
+  HeldTilesStore store;
+  store.record(13, 4482, 2839, 0u);
+  EXPECT_EQ(store.size(), 0u);
+  EXPECT_FALSE(store.valid());
+}
+
+// Full store: a settled entry is the cheapest thing to lose, because the map
+// re-records it the next time it draws that ground.
+TEST(HeldTilesStore, EvictionPrefersASettledEntry) {
+  HeldTilesStore store;
+  for (uint32_t i = 0; i < HeldTilesStore::kMaxEntries; ++i) store.record(13, 4482, i, 0x1000u + i);
+  ASSERT_EQ(store.size(), HeldTilesStore::kMaxEntries);
+
+  // Settle the first one only, then overflow by one.
+  store.beginListing();
+  store.markAskedChecked();
+  store.record(13, 4482, 7, 0x2000u);  // moves one entry back to pending
+  store.record(13, 9999, 1, 0x3000u);  // the overflow
+
+  EXPECT_EQ(store.size(), HeldTilesStore::kMaxEntries);
+  // The newcomer is on the list and row 0 -- a settled entry -- is the one that
+  // made room for it.
+  bool hasNewcomer = false;
+  bool hasRowZero = false;
+  for (size_t i = 0; i < store.size(); ++i) {
+    if (store.at(i).col == 9999) hasNewcomer = true;
+    if (store.at(i).col == 4482 && store.at(i).row == 0) hasRowZero = true;
+  }
+  EXPECT_TRUE(hasNewcomer);
+  EXPECT_FALSE(hasRowZero);
+}
+
+// Nothing settled and the store is full: the oldest goes, because the tiles
+// worth checking are the ones near where the rider now is.
+TEST(HeldTilesStore, AFullUnsettledStoreDropsTheOldest) {
+  HeldTilesStore store;
+  for (uint32_t i = 0; i < HeldTilesStore::kMaxEntries; ++i) store.record(13, 4482, i, 0x1000u + i);
+  store.record(13, 9999, 1, 0x3000u);
+
+  EXPECT_EQ(store.size(), HeldTilesStore::kMaxEntries);
+  EXPECT_EQ(store.at(0).row, 1u);
+  EXPECT_EQ(store.at(store.size() - 1).col, 9999u);
+}
+
 // `have` is what the phone reads to know which tiles to look up in the CDN's
 // index. Lowercase hex with no 0x, the same way mapbuilder prints a content_id.
-TEST(MapCommandConsole, HaveReportsTheViewportsContentIds) {
+TEST(MapCommandConsole, HaveReportsTheHeldContentIds) {
   MapConsoleState state;
   MapCommandConsole console(state);
   CollectingWriter out;
-  state.setHeldTiles(heldOf({{13, 4482, 2839, 0xABB60454u}, {13, 4482, 2840, 0x00000001u}}));
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}, {13, 4482, 2840, 0x00000001u}});
+  state.setHeldTilesStore(&held);
 
   feedLine(console, out, "have");
   ASSERT_EQ(out.lines.size(), 4u);
@@ -1067,6 +1150,74 @@ TEST(MapCommandConsole, HaveReportsTheViewportsContentIds) {
   EXPECT_EQ(out.lines[1], "INFO have_13_4482_2839=abb60454");
   EXPECT_EQ(out.lines[2], "INFO have_13_4482_2840=00000001");
   EXPECT_EQ(out.lines[3], "OK");
+}
+
+// The drain. A tile the phone has already answered about is not listed again,
+// which is what lets Live mode work a backlog down instead of re-sending the
+// same screenful every ten minutes.
+TEST(MapCommandConsole, HaveDropsTilesAlreadyChecked) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}, {13, 4482, 2840, 0x00000001u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "have");
+  out.lines.clear();
+  feedLine(console, out, "checked 0");
+  out.lines.clear();
+
+  // Everything settled, so the listing is empty -- but the store is still
+  // valid, so this is "nothing left to check", not "cannot answer".
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=0");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+// `checked unknown` means the phone could not read the index. Settling the
+// listing on it would bury exactly the bug the distinction exists to catch.
+TEST(MapCommandConsole, CheckedUnknownLeavesTilesPending) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "have");
+  out.lines.clear();
+  feedLine(console, out, "checked unknown");
+  out.lines.clear();
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 3u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=1");
+  EXPECT_EQ(out.lines[1], "INFO have_13_4482_2839=abb60454");
+}
+
+// A tile recorded while a listing is on the wire was never sent, so the answer
+// that comes back must not settle it.
+TEST(MapCommandConsole, CheckedOnlySettlesWhatWasListed) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "have");
+  out.lines.clear();
+  // The map drew another tile between the listing and the phone's answer.
+  held.record(13, 4482, 2840, 0x00000001u);
+  feedLine(console, out, "checked 0");
+  out.lines.clear();
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 3u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=1");
+  EXPECT_EQ(out.lines[1], "INFO have_13_4482_2840=00000001");
 }
 
 // "Cannot answer" must never read as "everything is current" -- the same

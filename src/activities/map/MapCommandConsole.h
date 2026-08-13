@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "HeldTilesStore.h"
 #include "MapCommandParser.h"
 #include "StaleTilesList.h"
 
@@ -68,29 +69,6 @@ struct MapTileRangeSnapshot {
   uint32_t col1 = 0;
   uint32_t row1 = 0;
   uint32_t unavailableMask = 0;
-};
-
-// The viewport's tiles and the content_id each is held at, as the `have`
-// command prints them. Pushed by MapActivity right after every viewport reset,
-// exactly like MapTileRangeSnapshot and for the same reason: this half knows
-// nothing about tiles on a card.
-//
-// content_id costs nothing to collect -- MapTileReader keeps every layer's
-// crc32 in RAM after open(), and contentId() is arithmetic over values already
-// there (docs/tile-freshness.md).
-struct MapHeldTiles {
-  static constexpr size_t kMaxEntries = 16;  // MapViewport::kMaxTiles, a 4x4 worst case at rung 6
-
-  struct Entry {
-    uint8_t z = 0;
-    uint32_t col = 0;
-    uint32_t row = 0;
-    uint32_t contentId = 0;
-  };
-
-  bool valid = false;  // false until the first reset
-  size_t count = 0;
-  Entry entries[kMaxEntries];
 };
 
 // Told about each `stale` line as it lands, so the screen that asked can put the
@@ -308,9 +286,19 @@ class MapConsoleState {
   // Pushed alongside setRenderStats() by the same reset. `tiles` reads this.
   void setTileRange(const MapTileRangeSnapshot& range) { tileRange_ = range; }
 
-  // Pushed by the same reset. `have` reads this, and `tiles` uses it only to
-  // know which entries exist.
-  void setHeldTiles(const MapHeldTiles& held) { held_ = held; }
+  // Where `have` reads its list from, and what `checked` settles. Not owned;
+  // must outlive this state. Left unset (the default) `have` answers
+  // `INFO have=none`, which is what a native test with no map behind it should
+  // see.
+  //
+  // Pull, not push -- the opposite of setTileRange() above, and for the same
+  // reason as the missing list: the viewport snapshot is 7 words, while this
+  // one is up to HeldTilesStore::kMaxEntries and accumulates across renders.
+  // Pushing it would copy a kilobyte per viewport reset and the copy would be
+  // the thing `checked` had to settle, which is the wrong object.
+  //
+  // Non-const because a listing stamps what it listed (beginListing()).
+  void setHeldTilesStore(HeldTilesStore* store) { heldTiles_ = store; }
 
   // Which tiles the phone has already reported stale, so `tiles` can flag them.
   // Not owned; must outlive this state. Left unset, no tile is ever flagged
@@ -357,7 +345,10 @@ class MapConsoleState {
   void writeInfo(IMapReplyWriter& out) const;
   void writeStats(IMapReplyWriter& out) const;
   void writeTiles(IMapReplyWriter& out) const;
-  void writeHave(IMapReplyWriter& out) const;
+  // Non-const: listing is also what puts the entries on the wire, and the
+  // store has to know which ones so a later `checked` settles those and not a
+  // tile recorded since (HeldTilesStore::beginListing).
+  void writeHave(IMapReplyWriter& out);
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
 
   bool hasPosition_ = false;
@@ -384,7 +375,7 @@ class MapConsoleState {
   uint32_t waysFiltered_ = 0;
   uint32_t bytesRead_ = 0;
   MapTileRangeSnapshot tileRange_;
-  MapHeldTiles held_;
+  HeldTilesStore* heldTiles_ = nullptr;
   const StaleTilesList* staleTiles_ = nullptr;
   IMapStaleObserver* staleObserver_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;

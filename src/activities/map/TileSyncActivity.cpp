@@ -7,7 +7,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
-#include "LastHeldTiles.h"
+#include "HeldTilesStore.h"
 #include "MapByteFormat.h"
 #include "MapMissingAnchor.h"
 #include "MapPowerStatsProvider.h"
@@ -74,6 +74,9 @@ bool TileSyncActivity::armRun() {
   lastClearedTileSeq_ = transfer_.status().tileSeq;
   staleTiles_.clear();
   freshnessAsked_ = false;
+  freshnessState_ = Freshness::Idle;
+  freshnessAskedCount_ = 0;
+  freshnessStale_ = 0;
   lastSettleMs_ = 0;
   return true;
 }
@@ -95,11 +98,11 @@ void TileSyncActivity::onEnter() {
 
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   consoleState_.setSkipObserver(this);
-  // What `have` answers from: the tiles the map screen last drew, with the
-  // content_id each was opened at. This screen has no viewport of its own, and
-  // reading a content_id anywhere else on the device would mean opening tiles
-  // for no other reason (LastHeldTiles.h).
-  consoleState_.setHeldTiles(g_lastHeldTiles);
+  // What `have` answers from: every tile the map has drawn since boot that no
+  // check has settled yet. This screen has no viewport of its own, and reading
+  // a content_id anywhere else on the device would mean opening tiles for no
+  // other reason (HeldTilesStore).
+  consoleState_.setHeldTilesStore(&g_heldTiles);
   consoleState_.setStaleTiles(&staleTiles_);
   consoleState_.setStaleObserver(this);
   consoleState_.setLinkMtuProvider(
@@ -153,18 +156,59 @@ void TileSyncActivity::askAboutFreshness() {
   if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return;
   // Nothing drawn since boot means no content_id to offer, and `have` would
   // answer `have=none` anyway. Saying nothing is the honest version of that.
-  if (!g_lastHeldTiles.valid || g_lastHeldTiles.count == 0) {
-    LOG_INF(kLogTag, "freshness: no tiles drawn yet, nothing to check");
+  //
+  // Nothing *pending* is the other silent case, and it is the good one: every
+  // tile the map has drawn has already been compared, either by an earlier
+  // visit here or by the map screen's own Live check (HeldTilesStore drains).
+  const uint32_t pending = static_cast<uint32_t>(g_heldTiles.pendingCount());
+  if (!g_heldTiles.valid() || pending == 0) {
+    LOG_INF(kLogTag, "freshness: nothing pending of %lu held, nothing to check",
+            static_cast<unsigned long>(g_heldTiles.size()));
     return;
   }
-  char line[32];
-  snprintf(line, sizeof(line), "CHECK_TILES %lu", static_cast<unsigned long>(g_lastHeldTiles.count));
+  // `fmt <version>` for the same reason the map screen sends it: a device with
+  // nothing missing never sends NEED_TILES, so without this the phone falls
+  // back to a stale default and compares against the wrong /v<N>/ index tree
+  // (docs/tile-freshness.md).
+  char line[48];
+  snprintf(line, sizeof(line), "CHECK_TILES %lu fmt %u", static_cast<unsigned long>(pending),
+           static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "CHECK_TILES not delivered");
     return;
   }
   freshnessAsked_ = true;
-  LOG_INF(kLogTag, "freshness: asked about %lu tile(s)", static_cast<unsigned long>(g_lastHeldTiles.count));
+  freshnessAskedCount_ = pending;
+  freshnessState_ = Freshness::Asking;
+  LOG_INF(kLogTag, "freshness: asked about %lu tile(s) of %lu held", static_cast<unsigned long>(pending),
+          static_cast<unsigned long>(g_heldTiles.size()));
+  // The rider is watching a screen that has just stopped fetching. Without this
+  // repaint the check runs, spends data and finishes with the panel still
+  // showing the fetch's own verdict.
+  renderScreen();
+}
+
+bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
+  switch (freshnessState_) {
+    case Freshness::Idle:
+      return false;
+    case Freshness::Asking:
+      snprintf(out, size, tr(STR_TILE_SYNC_CHECKING), static_cast<int>(freshnessAskedCount_));
+      return true;
+    case Freshness::Current:
+      snprintf(out, size, tr(STR_TILE_SYNC_ALL_CURRENT), static_cast<int>(freshnessAskedCount_));
+      return true;
+    case Freshness::Stale:
+      snprintf(out, size, tr(STR_TILE_SYNC_STALE), static_cast<int>(freshnessStale_),
+               static_cast<int>(freshnessAskedCount_));
+      return true;
+    case Freshness::Unknown:
+      // Deliberately not "everything is current". The phone could not read the
+      // index, so it is claiming nothing, and the two must never read alike.
+      snprintf(out, size, "%s", tr(STR_TILE_SYNC_CHECK_UNKNOWN));
+      return true;
+  }
+  return false;
 }
 
 void TileSyncActivity::onTileStale(uint8_t z, uint32_t col, uint32_t row) {
@@ -177,11 +221,17 @@ void TileSyncActivity::onTileStale(uint8_t z, uint32_t col, uint32_t row) {
 void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
   if (!known) {
     // The phone could not read the index. Not the same as nothing being out of
-    // date, and not reported as such.
+    // date, and not reported as such -- on screen either.
     LOG_INF(kLogTag, "freshness: phone could not check (no index)");
+    freshnessState_ = Freshness::Unknown;
+    renderScreen();
     return;
   }
-  LOG_INF(kLogTag, "freshness: %u tile(s) out of date, phone is pushing them", static_cast<unsigned>(staleCount));
+  freshnessStale_ = staleCount;
+  freshnessState_ = staleCount > 0 ? Freshness::Stale : Freshness::Current;
+  LOG_INF(kLogTag, "freshness: %u tile(s) out of date of %lu checked", static_cast<unsigned>(staleCount),
+          static_cast<unsigned long>(freshnessAskedCount_));
+  renderScreen();
 }
 
 bool TileSyncActivity::phoneListening() const {
@@ -743,7 +793,17 @@ void TileSyncActivity::renderScreen() {
     renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, I18N.get(verdict_), true);
     y += bigLine;
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
-    y += lineHeight + bigLine / 2;
+    y += lineHeight;
+    // The freshness check's own line, under the fetch's numbers and before the
+    // not-built explanation. This is where a rider finds out that the data the
+    // screen just spent was a check rather than a download -- the state it
+    // reports had no representation on the panel at all until now.
+    char freshness[64];
+    if (formatFreshness(freshness, sizeof(freshness))) {
+      renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, freshness, true);
+      y += lineHeight;
+    }
+    y += bigLine / 2;
     if (skipped_ > 0) {
       // Not "failed". The server does not have this square yet, the device has
       // it written down, and it will ask again -- two short lines because one
@@ -764,6 +824,14 @@ void TileSyncActivity::renderScreen() {
   } else {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
     y += lineHeight;
+
+    // Same line on a screen that is still running: a check can be in flight
+    // while the fetch's own bar is up, and it must not look like part of it.
+    char freshness[64];
+    if (formatFreshness(freshness, sizeof(freshness))) {
+      renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, freshness, true);
+      y += lineHeight;
+    }
 
     // While waiting, say what would make it start. A screen that only says
     // "waiting" leaves the rider with nothing to try.

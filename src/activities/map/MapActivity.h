@@ -602,9 +602,6 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // In memory and never persisted -- see StaleTilesList for why this is not
   // MissingTilesStore.
   StaleTilesList staleTiles_;
-  // The viewport's tiles and the content_id each was opened at, refreshed by
-  // every reset. What `have` answers from, and what CHECK_TILES counts.
-  MapHeldTiles heldTiles_;
   // The header's place-name lookup, refreshed by drawMapLayers() every reset
   // (MapRenderer.h, MapNearestPlaces) and read back by drawHeaderStatus() --
   // set here rather than passed as a return value because drawMapLayers()
