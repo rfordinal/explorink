@@ -46,6 +46,22 @@ uint32_t readU32(const uint8_t* p) {
   return value;
 }
 
+// Holds MapTransferReceiver::inFrame_ true for the lifetime of the frame
+// callback, so detach() on the activity task can wait the frame out.
+//
+// A guard object rather than a set/clear pair, even though onFrame has a single
+// exit today: a clear left behind by a later early `return` would leave
+// inFrame_ stuck true, and a stuck-true flag makes every later detach() burn
+// its whole kDetachWaitMs bound and log a failure that did not happen. A
+// destructor cannot be skipped.
+struct FrameGuard {
+  std::atomic<bool>& flag;
+  explicit FrameGuard(std::atomic<bool>& f) : flag(f) { flag.store(true, std::memory_order_relaxed); }
+  ~FrameGuard() { flag.store(false, std::memory_order_release); }
+  FrameGuard(const FrameGuard&) = delete;
+  FrameGuard& operator=(const FrameGuard&) = delete;
+};
+
 }  // namespace
 
 MapTransferReceiver::MapTransferReceiver(const char* rootDir) : rootDir_(rootDir) {}
@@ -80,12 +96,38 @@ void MapTransferReceiver::attach() {
 }
 
 void MapTransferReceiver::detach() {
-  // Flag first, hooks second: a frame already inside the callback when this
-  // runs sees attached_ == false and returns without opening anything. The
-  // frame that is mid-SD-write finishes, which is fine -- it holds no
-  // reference past its own call.
+  // Flag first, hooks second: a frame that has not reached the attached_ check
+  // yet sees false and returns without opening anything, and clearing the
+  // hooks stops any further frame from arriving at all.
   attached_ = false;
   freeink::BlePositionServer::getInstance().setTransferHooks(freeink::BlePositionServer::TransferHooks{});
+
+  // A frame already *past* that check is the one that matters, and it is the
+  // normal case: a Back press mid-transfer lands here while the host task sits
+  // in file_.write() on the card. abandon() below closes file_, deletes the
+  // .part and zeroes active_/received_/declaredTotal_ -- all of it state that
+  // frame reads and writes when its write returns. Two tasks, no lock, so wait
+  // the frame out instead.
+  //
+  // vTaskDelay, not a busy spin: this runs on the activity task, which is
+  // priority 1 against the NimBLE host task's configMAX_PRIORITIES - 4
+  // (nimble_port_freertos.c:44). A busy spin would still be preempted, it
+  // would just burn the CPU the frame needs to finish.
+  const uint32_t waitStart = millis();
+  while (inFrame_.load(std::memory_order_acquire)) {
+    if (millis() - waitStart >= kDetachWaitMs) {
+      // The completion pass reads a whole tile back off the card and can
+      // outlast the bound (MapTransferReceiver.h, kDetachWaitMs). Proceeding
+      // is deliberate: a stuck card would otherwise hold the screen on a Back
+      // press for as long as it stays stuck. handleChunk re-checks active_
+      // after every blocking call and bails, so the frame notices.
+      LOG_ERR(kLogTag, "detach: frame still in flight after %lu ms, proceeding",
+              static_cast<unsigned long>(kDetachWaitMs));
+      break;
+    }
+    vTaskDelay(1);
+  }
+
   if (active_) abandon("screen closed");
 }
 
@@ -107,6 +149,22 @@ void MapTransferReceiver::disconnectTrampoline(void* ctx) {
 
 void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
   if (!attached_ || data == nullptr || len == 0) return;
+
+  // Everything below can touch transfer state, so from here on detach() must
+  // wait for this call to return. Declared before the dispatch and never
+  // cleared by hand.
+  //
+  // Today every switch case `break`s into the shared lastFrameMs_/publish()
+  // tail, so there is exactly one exit past this line -- falling off the end.
+  // The guard is still a guard and not a clear-at-the-bottom, because the next
+  // person to add an early `return` inside the switch will not come back up
+  // here to add the clear.
+  //
+  // The gap between the attached_ read above and this store is not a hole on
+  // this hardware: the ESP32-C3 is single core and the host task outranks the
+  // activity task (see detach()), so the activity task cannot run between two
+  // adjacent instructions of this task. It never gets to observe the gap.
+  FrameGuard guard(inFrame_);
 
   const uint8_t opcode = data[0];
   switch (opcode) {
@@ -286,9 +344,22 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // callback returns is therefore "the bytes are on the card", which is what
   // makes it usable as flow control (MapTransferReceiver.h, Threading).
   if (file_.write(payload, payloadLen) != payloadLen) {
+    if (!active_) return;
     abandon("write failed");
     return;
   }
+  // Every blocking call below is a place detach() can have run its full wait,
+  // given up, and abandoned this transfer underneath us -- file closed, .part
+  // deleted, counters zeroed. Re-checking active_ after each one turns that
+  // from a bogus completion pass (spurious ERR to the phone, double-counted
+  // failed_) into a silent bail, which is the correct answer: the screen this
+  // transfer belonged to is gone.
+  //
+  // A plain read of a plain bool is enough. Single core, so no cache
+  // coherence to worry about, and each check sits directly after a call into
+  // another translation unit (HalStorage, no LTO in platformio.ini), so the
+  // compiler must reload the member rather than reuse a cached copy.
+  if (!active_) return;
   received_ += payloadLen;
 
   if (received_ < declaredTotal_) return;
@@ -298,9 +369,14 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // and reopened for read (firmware CLAUDE.md, DESTRUCTOR_CLOSES_FILE), and
   // the rename below needs the handle gone too.
   file_.close();
+  if (!active_) return;
 
   uint32_t actualCrc = 0;
   if (!computePartCrc32(actualCrc)) {
+    // Checked before the verdict, not after: the readback failing *because*
+    // detach() deleted the .part out from under it is exactly the spurious
+    // `ERR readback failed` this whole change exists to stop.
+    if (!active_) return;
     abandon("readback failed");
     return;
   }
@@ -314,13 +390,21 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // SdFat's rename fails onto an existing name, and re-pushing a tile that is
   // already there is the normal case for a corridor update.
   if (Storage.exists(finalPath_) && !Storage.remove(finalPath_)) {
+    if (!active_) return;
     abandon("replace failed");
     return;
   }
   if (!Storage.rename(partPath_, finalPath_)) {
+    if (!active_) return;
     abandon("rename failed");
     return;
   }
+  // The rename succeeded, so a complete, CRC-checked file *is* on the card --
+  // but if detach() ran, the counters below belong to a screen that is gone and
+  // sendTransferStatus would indicate into a server about to be end()ed. Say
+  // nothing; the phone times this tile out and asks again, which costs one
+  // re-push and risks nothing.
+  if (!active_) return;
 
   const uint32_t bytes = received_;
   active_ = false;

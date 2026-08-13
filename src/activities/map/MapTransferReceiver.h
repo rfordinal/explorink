@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -59,6 +60,20 @@
 // there is no worker task: a chunk is written where it arrives, which is also
 // what makes the ATT write response mean "on the card".
 //
+// detach() is the one exception -- it runs on the activity task and it *does*
+// write transfer state, because its whole job is to tear a transfer down. So
+// it waits the host task out first: inFrame_ says whether a frame is inside
+// the callback right now, and detach() spins on it before touching anything
+// (see detach() below for the bound and what happens if it is exceeded).
+// Without that wait, a frame that already passed the attached_ gate and is
+// blocked in file_.write() resumes into state abandon() has already reset,
+// and runs a completion pass on a file that is closed and deleted.
+//
+// The storage mutex (HalStorage.cpp:34) does not solve this on its own: it
+// serializes each individual file operation, not the sequence of them, so it
+// keeps the card consistent while the *counters* and the open handle still get
+// mutated by two tasks.
+//
 // One transfer at a time. A begin frame while one is in progress is an ERR,
 // not a queued job -- unless the one in progress has gone quiet for
 // kStaleTransferMs, in which case it is reclaimed. That reclaim is the only
@@ -89,6 +104,11 @@ class MapTransferReceiver {
   // Unregisters them and abandons any transfer in flight, deleting its .part
   // file. Call **before** BlePositionServer::end(): a hook still registered
   // when the activity is deleted is a callback that outlives its owner.
+  //
+  // Blocks for up to kDetachWaitMs waiting for a frame already inside the
+  // callback to leave it, because that frame and this call would otherwise
+  // mutate the same state from two tasks. A normal Back press mid-transfer
+  // hits this, so it is the common case and not an error path.
   void detach();
 
   // Counters for the map screen's debug readout. Activity task.
@@ -145,6 +165,15 @@ class MapTransferReceiver {
   // allowed to reclaim it. Long enough that a slow card or a busy phone is
   // not mistaken for a dead sender.
   static constexpr uint32_t kStaleTransferMs = 30000;
+
+  // How long detach() waits for the host task to leave the frame callback.
+  // Covers a single chunk's SD write with room for a card doing an internal
+  // erase cycle; it does **not** cover the completion pass, which reads the
+  // whole .part back to check the CRC and takes seconds on a 75 KB tile. The
+  // bound is a bound, not a guarantee -- exceeding it is handled rather than
+  // waited out, because a wedged card must not wedge the UI. handleChunk's
+  // active_ re-checks are what make the exceeded case safe.
+  static constexpr uint32_t kDetachWaitMs = 500;
 
  private:
   // BLE hook trampolines -- plain functions, so no std::function anywhere on
@@ -207,7 +236,18 @@ class MapTransferReceiver {
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;
 
-  // Checked at the top of every frame so a frame already inside the callback
-  // when detach() ran cannot open a new file behind it.
+  // Checked at the top of every frame so a frame that has not entered the
+  // callback yet when detach() ran cannot open a new file behind it. It says
+  // nothing about a frame already past that check -- inFrame_ below is for
+  // that one.
   volatile bool attached_ = false;
+
+  // True for exactly as long as the host task is inside onFrame. Set by an
+  // RAII guard, so every return path clears it, including the ones added
+  // later by somebody who never read this comment.
+  //
+  // The handshake with detach(): release on the clear, acquire on detach()'s
+  // load, so seeing false also means every write the frame made to active_,
+  // received_, declaredTotal_ and file_ is visible to the activity task.
+  std::atomic<bool> inFrame_{false};
 };
