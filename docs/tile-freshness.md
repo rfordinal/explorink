@@ -522,3 +522,65 @@ push a tile while it is unconfirmed, and expect
 `BLEPOS: indication slot busy, parked transfer status: RDY ...` followed within
 a tick or two by `parked transfer status sent: RDY ...`, with the phone
 proceeding to chunks. Nothing has been on the glass yet.
+
+## Console flush could freeze the activity task for seconds -- fixed 2026-08-13
+
+**Read off the code, not measured.** Found in the BLE review
+(`../../docs/ble-review-2026-08.md`, "Stability -- firmware" item 4).
+
+Each block `MapBleConsole` hands to `sendCommandBlock()` can cost up to
+`kConfirmTimeoutMs = 3000` ms waiting for the peer's confirm
+(`lib/BlePositionServer/src/BlePositionServer.cpp:509`), and that wait runs on
+the activity task -- the same task that services buttons and redraws. Before
+this fix, `MapBleConsole::poll()` (`src/activities/map/MapBleConsole.cpp`)
+drained the whole command ring and flushed every batch that filled up in one
+call, so a paged listing (several commands queued back to back, e.g. a script
+issuing many `tiles`/`missing` asks) against a hung-but-subscribed phone could
+chain an unbounded number of 3 s waits: dead buttons for 10 s or more on the
+map or sync screen.
+
+Fixed with a per-call cap, `kMaxBlocksPerPoll = 2`
+(`src/activities/map/MapBleConsole.h`): `poll()` reads the command ring one
+byte at a time now, not in one 128-byte gulp, checking the cap before taking
+each byte -- so once 2 blocks have gone out this call, the rest of the queued
+bytes are left **in the ring**, in order, for the next `poll()` tick, instead
+of being read out and discarded. The trailing `flushReplies()` call at the end
+of `poll()` is skipped the same way once the cap is spent; whatever is still
+batched (`batch_`/`batchLen_`, both members) rides into the next call rather
+than becoming a 3rd send.
+
+**Worst case is now 2 x 3 s = 6 s per `poll()` call, not unbounded.** 1 block
+would halve that to 3 s but doubles how many ticks a healthy-link multi-line
+listing needs to clear -- doubling perceived latency for the common case to
+shave the pathological one. 2 is the trade-off taken.
+
+**Not covered: a single command whose own reply needs more than 2 blocks.**
+The cap is checked between bytes, i.e. between commands, not inside one
+command's own burst of `appendReply()` calls (`MapBleConsole.cpp`) -- those
+still flush unconditionally, because refusing a flush there would leave
+`appendReply()` writing past a full, fixed-size `batch_[kBatchBytes]`
+(253 bytes) instead of failing safely. No command on this console produces a
+reply anywhere near 2 blocks today (`have` for a whole viewport was 83 bytes,
+see above), so this is believed unreachable in practice, not proven so.
+
+`flushTransferStatus()` is untouched and needs no change: it already runs
+after `ble_.poll()` in the same tick on both screens
+(`src/activities/map/MapActivity.cpp`, `src/activities/map/TileSyncActivity.cpp`),
+so a parked transfer-status line now gets a send attempt *between* two capped
+console batches instead of after a whole listing -- the cap can only shorten
+its wait, never lengthen it.
+
+**`FETCH_CANCEL` on exit skips the same doomed wait.**
+`BlePositionServer::lastConfirmTimedOut()`
+(`lib/BlePositionServer/include/BlePositionServer.h`) is set inside
+`sendCommandBlock()` when a confirm wait expires and cleared the next time one
+succeeds (`lib/BlePositionServer/src/BlePositionServer.cpp:509-548`). Both
+`MapActivity::onExit()` and `TileSyncActivity::leave()` check it before sending
+`FETCH_CANCEL`: a peer that already let a confirm time out will not hear a
+cancel either, so sending it would only add one more 3 s freeze on the way out
+for a line nobody receives.
+
+**Untested on hardware** as of 2026-08-13: builds clean, host tests for
+`MapCommandParser` pass unchanged (they do not exercise `MapBleConsole` or
+`BlePositionServer`), but nothing on real BLE hardware has exercised the
+capped `poll()` or the `FETCH_CANCEL` skip yet.

@@ -161,6 +161,17 @@ class BlePositionServer {
   // indication whole.
   bool sendCommandBlock(const char* text, size_t len);
 
+  // True when the most recent sendCommandBlock/sendCommandReply's 3 s confirm
+  // wait expired instead of being answered -- i.e. the peer stopped
+  // confirming indications (hung, walked out of range, backgrounded past
+  // whatever keeps its GATT callback alive). Cleared the next time a send
+  // *is* confirmed, so this reflects only the latest attempt, not a sticky
+  // fault. Callers that would otherwise send one more indication on their way
+  // out (FETCH_CANCEL on exit) check this first: a peer that is not
+  // confirming will not hear that one either, so the exit's own 3 s wait for
+  // it buys nothing but a frozen screen.
+  bool lastConfirmTimedOut() const { return lastConfirmTimedOut_; }
+
   // What fits in one indication on this link: the ATT MTU minus its 3-byte
   // header. 20 while the MTU is unknown -- the 23-byte default every link
   // starts at, which is the safe assumption rather than an optimistic one.
@@ -347,6 +358,11 @@ class BlePositionServer {
   volatile uint16_t mtu_ = 0;
   volatile uint16_t connIntervalUnits_ = 0;
   volatile uint16_t connHandle_ = 0xFFFF;  // BLE_HS_CONN_HANDLE_NONE, kept out of this NimBLE-free header
+
+  // Set and read only inside sendCommandBlock and by lastConfirmTimedOut()'s
+  // callers, all on the activity task that calls sendCommandBlock -- no other
+  // task touches this, so a plain bool is enough (same reasoning as begun_).
+  bool lastConfirmTimedOut_ = false;
 
   // Minimum gap between advertising restart attempts from the activity task.
   // A loop() tick is milliseconds; a start() that failed on host state fails

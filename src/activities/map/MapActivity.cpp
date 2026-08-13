@@ -1504,7 +1504,14 @@ void MapActivity::onExit() {
   // is a frame the *central* writes -- so the cancel is a word on the command
   // channel, the same one TileSyncActivity::leave() sends.
   if (autoSyncPending_ > 0 && freeink::BlePositionServer::getInstance().isCommandSubscribed()) {
-    if (!freeink::BlePositionServer::getInstance().sendCommandReply("FETCH_CANCEL")) {
+    // Same skip TileSyncActivity::leave() makes: a peer that already let a
+    // confirm time out will not hear FETCH_CANCEL either, so the 3 s wait for
+    // it here is pure UI freeze on the way out with nothing delivered
+    // (docs/ble-review-2026-08.md, "Console flush can freeze the activity
+    // task").
+    if (freeink::BlePositionServer::getInstance().lastConfirmTimedOut()) {
+      LOG_ERR(kLogTag, "autosync: FETCH_CANCEL skipped: last confirm already timed out");
+    } else if (!freeink::BlePositionServer::getInstance().sendCommandReply("FETCH_CANCEL")) {
       LOG_ERR(kLogTag, "autosync: FETCH_CANCEL not delivered");
     }
   }
