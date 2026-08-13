@@ -197,6 +197,44 @@ of date, and could-not-check. The last one is deliberately not phrased as good
 news -- `checked unknown` means the phone could not read the index, and the two
 must never read alike.
 
+### A stale tile is a dot, a missing one is an outline
+
+Both are drawn on the same grid, because they answer different questions about
+the same ground: *this square is not on the card* against *this square is on the
+card and out of date*. An outline for one and a solid dot for the other tells
+them apart with no legend.
+
+The dot scales with the tile's LOD so depth still reads -- `kDotDivisor` of the
+cell, floored at `kMinDotPx` and capped at `kMaxDotPx` -- but it stays well
+under the cell on purpose. A disc that fills its square stops reading as a mark
+on a map and starts reading as a filled tile, which is the thing the outline
+decision already rejected for being all ink and no information.
+
+No new renderer primitive: `fillRoundedRect()` with a corner radius of half the
+side is a disc, and it already clamps the radius to half the smaller side
+(`lib/GfxRenderer/GfxRenderer.cpp`).
+
+Two things had to change around it:
+
+- **The grid window is sized on missing *and* stale tiles** (`interestCount()`,
+  `interestAt()`). It used to be sized on the missing list alone in `armRun()`,
+  so a visit with nothing missing had no window at all -- which is exactly the
+  common freshness case. `chooseWindow()` therefore runs again from
+  `onCheckFinished()`, the first moment every `stale` line has landed.
+- **`staleTiles_.onArrived()` is now called on the sync screen.** It never was:
+  `drainTransferredTiles()` only called `MISSING_TILES.forget()`, which returns
+  false for a tile that was never missing. So a replaced tile kept its entry for
+  the rest of the visit -- now visible as a dot that would never go out -- and
+  the ping-pong guard was never armed on this screen, meaning a cache serving
+  the old copy could be fetched repeatedly. The map screen had always done this
+  (`MapActivity::drainTransferredTiles()`); the sync screen now matches.
+
+**Not yet on hardware.** Builds clean and the geometry is read off the code; how
+a 3-20 px dot resolves on the panel next to a 2 px outline is a tone question
+and this project does not settle those from a laptop render
+(`docs/eink-grayscale.md`, and the `CMD:SHOWIMAGE` path exists for exactly
+this).
+
 ## How the check works
 
 The device does **not** read the index. That was decided rather than defaulted:

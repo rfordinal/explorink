@@ -231,6 +231,11 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
   freshnessState_ = staleCount > 0 ? Freshness::Stale : Freshness::Current;
   LOG_INF(kLogTag, "freshness: %u tile(s) out of date of %lu checked", static_cast<unsigned>(staleCount),
           static_cast<unsigned long>(freshnessAskedCount_));
+  // Every `stale` line has landed by now -- `checked` is what closes the
+  // listing -- so this is the first moment the grid window can cover them. It
+  // was sized on the missing list alone in armRun(), which on a visit with
+  // nothing missing meant no window at all.
+  chooseWindow();
   renderScreen();
 }
 
@@ -422,6 +427,19 @@ void TileSyncActivity::drainTransferredTiles() {
   if (!transfer.lastTileValid || transfer.tileSeq == lastClearedTileSeq_) return;
   lastClearedTileSeq_ = transfer.tileSeq;
 
+  // A stale tile's replacement lands here too, and it is not on the missing
+  // list -- it never was. Clearing it here rubs its dot off the grid and arms
+  // the ping-pong guard, so a cache that keeps serving the old copy is given up
+  // on rather than fetched forever (StaleTilesList::add). The map screen has
+  // always done this (MapActivity::drainTransferredTiles); this screen did not,
+  // which left a replaced tile marked out of date for the rest of the visit.
+  if (staleTiles_.contains(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row)) {
+    staleTiles_.onArrived(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row);
+    LOG_INF(kLogTag, "freshness: z%u %lu/%lu replaced", static_cast<unsigned>(transfer.lastTile.z),
+            static_cast<unsigned long>(transfer.lastTile.col), static_cast<unsigned long>(transfer.lastTile.row));
+    renderScreen();
+  }
+
   if (!MISSING_TILES.forget(transfer.lastTile.z, transfer.lastTile.col, transfer.lastTile.row)) {
     // A tile the device never hatched -- a corridor update pushed ahead of a
     // ride, say. Nothing to clear, and not an error.
@@ -467,13 +485,22 @@ void TileSyncActivity::parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t
   pr = static_cast<uint16_t>(tile.row >> down);
 }
 
+size_t TileSyncActivity::interestCount() const { return rowCount_ + staleTiles_.count(); }
+
+MapTileCoord TileSyncActivity::interestAt(size_t index) const {
+  if (index < rowCount_) return rows_[index].tile;
+  const StaleTilesList::Entry& e = staleTiles_.at(index - rowCount_);
+  return MapTileCoord{e.z, e.col, e.row};
+}
+
 void TileSyncActivity::chooseWindow() {
-  if (rowCount_ == 0) return;
+  const size_t interest = interestCount();
+  if (interest == 0) return;
 
   uint16_t minCol = 0xFFFF, maxCol = 0, minRow = 0xFFFF, maxRow = 0;
-  for (uint32_t i = 0; i < rowCount_; ++i) {
+  for (size_t i = 0; i < interest; ++i) {
     uint16_t pc = 0, pr = 0;
-    parentOf(rows_[i].tile, pc, pr);
+    parentOf(interestAt(i), pc, pr);
     if (pc < minCol) minCol = pc;
     if (pc > maxCol) maxCol = pc;
     if (pr < minRow) minRow = pr;
@@ -499,18 +526,19 @@ void TileSyncActivity::chooseWindow() {
   //
   // Only occupied parents are tried as the top-left corner: a window whose corner
   // holds nothing can always be slid onto one that does without losing a tile, so
-  // the best corner is among them. That makes this O(rowCount_^2) -- 40,000
-  // compares at the 200-entry cap (MissingTilesStore::kMaxEntries), once per run.
+  // the best corner is among them. That makes this O(interestCount()^2) -- 50,000
+  // compares at the 200-entry missing cap (MissingTilesStore::kMaxEntries) plus
+  // the 24-entry stale one (StaleTilesList), once per run.
   uint32_t best = 0;
   windowCol_ = minCol;
   windowRow_ = minRow;
-  for (uint32_t i = 0; i < rowCount_; ++i) {
+  for (size_t i = 0; i < interest; ++i) {
     uint16_t oc = 0, orr = 0;
-    parentOf(rows_[i].tile, oc, orr);
+    parentOf(interestAt(i), oc, orr);
     uint32_t inside = 0;
-    for (uint32_t j = 0; j < rowCount_; ++j) {
+    for (size_t j = 0; j < interest; ++j) {
       uint16_t pc = 0, pr = 0;
-      parentOf(rows_[j].tile, pc, pr);
+      parentOf(interestAt(j), pc, pr);
       if (pc >= oc && pc < oc + kMaxWindowCols && pr >= orr && pr < orr + kMaxWindowRows) ++inside;
     }
     if (inside > best) {
@@ -523,9 +551,9 @@ void TileSyncActivity::chooseWindow() {
   // distant outlier keeps the full 6 x 8 cap, and three occupied parents get
   // drawn tiny in the corner of a mostly empty grid.
   uint16_t inCol = 0xFFFF, inMaxCol = 0, inRow = 0xFFFF, inMaxRow = 0;
-  for (uint32_t i = 0; i < rowCount_; ++i) {
+  for (size_t i = 0; i < interest; ++i) {
     uint16_t pc = 0, pr = 0;
-    parentOf(rows_[i].tile, pc, pr);
+    parentOf(interestAt(i), pc, pr);
     if (pc < windowCol_ || pc >= windowCol_ + kMaxWindowCols) continue;
     if (pr < windowRow_ || pr >= windowRow_ + kMaxWindowRows) continue;
     if (pc < inCol) inCol = pc;
@@ -537,10 +565,10 @@ void TileSyncActivity::chooseWindow() {
   windowRow_ = inRow;
   windowCols_ = static_cast<uint8_t>(inMaxCol - inCol + 1);
   windowRows_ = static_cast<uint8_t>(inMaxRow - inRow + 1);
-  offWindow_ = rowCount_ - best;
+  offWindow_ = static_cast<uint32_t>(interest - best);
   LOG_INF(kLogTag, "grid window at z11 %u/%u, %lu of %lu tiles outside it", static_cast<unsigned>(windowCol_),
           static_cast<unsigned>(windowRow_), static_cast<unsigned long>(offWindow_),
-          static_cast<unsigned long>(rowCount_));
+          static_cast<unsigned long>(interest));
 }
 
 void TileSyncActivity::summaryRect(int& x, int& y, int& w, int& h) const {
@@ -628,6 +656,40 @@ bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_
     renderer.drawRect(fx, fy, fw, fw, thickness, true);
   }
 
+  // The stale tiles, over the same ground and in the same parents. A dot, not
+  // an outline: these squares *are* on the card, so drawing them the way a
+  // missing one is drawn would say the opposite of what is true.
+  for (size_t i = 0; i < staleTiles_.count(); ++i) {
+    const StaleTilesList::Entry& e = staleTiles_.at(i);
+    const MapTileCoord tile{e.z, e.col, e.row};
+    uint16_t tpc = 0, tpr = 0;
+    parentOf(tile, tpc, tpr);
+    if (tpc != pc || tpr != pr) continue;
+
+    if (!any) {
+      renderer.drawRect(px, py, size, size);
+      any = true;
+    }
+
+    const int down = tile.z < 13 ? 13 - tile.z : 0;
+    const int span = 1 << down;
+    const int lx = static_cast<int>((tile.col << down) & (kLeavesPerParent - 1));
+    const int ly = static_cast<int>((tile.row << down) & (kLeavesPerParent - 1));
+
+    // Centred in the tile's own cell, sized from that cell so the LOD still
+    // reads, capped so it stays a mark rather than a filled square.
+    const int cellPx = span * leaf;
+    int dot = cellPx / kDotDivisor;
+    if (dot > kMaxDotPx) dot = kMaxDotPx;
+    if (dot < kMinDotPx) dot = kMinDotPx;
+    const int cx = px + lx * leaf + cellPx / 2;
+    const int cy = py + ly * leaf + cellPx / 2;
+    // A rounded rect whose corner radius is half its side is a disc, so this
+    // needs no new renderer primitive -- fillRoundedRect() already clamps the
+    // radius to half the smaller side (GfxRenderer.cpp).
+    renderer.fillRoundedRect(cx - dot / 2, cy - dot / 2, dot, dot, dot / 2, Color::Black);
+  }
+
   return any;
 }
 
@@ -643,7 +705,10 @@ void TileSyncActivity::drawGrid(int top) {
   if (gh <= 0) return;
   renderer.fillRect(gx, gy, gw, gh, false);
 
-  if (rowCount_ == 0) {
+  // Nothing missing *and* nothing stale. A freshness-only visit still draws a
+  // grid -- the dots are the whole point of it -- so this is the empty case for
+  // both, not just for the fetch.
+  if (interestCount() == 0) {
     renderer.drawCenteredText(UI_10_FONT_ID, gy + gh / 2, I18N.get(verdict_));
     return;
   }
@@ -818,9 +883,11 @@ void TileSyncActivity::renderScreen() {
       y += bigLine;
     }
     // Below whatever the verdict needed, not at the running screen's fixed top.
-    // Skipped when the run had nothing to draw in the first place -- drawGrid()
-    // would centre the verdict a second time.
-    if (rowCount_ > 0) drawGrid(y + metrics.verticalSpacing);
+    // Skipped when there is nothing to draw in the first place -- drawGrid()
+    // would centre the verdict a second time. Stale tiles count: a visit with
+    // nothing missing and something out of date is a grid of dots and no
+    // squares, which is the case this screen could not show at all before.
+    if (interestCount() > 0) drawGrid(y + metrics.verticalSpacing);
   } else {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
     y += lineHeight;

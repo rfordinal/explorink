@@ -310,6 +310,29 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // rather than one blot. Drawn as an inset on the fill.
   static constexpr int kTileInset = 2;
 
+  // A stale tile is a dot, not an outlined square, and the two are drawn on the
+  // same grid on purpose: they answer different questions about the same ground
+  // -- "this square is not on the card" against "this square is on the card and
+  // out of date" -- and a rider needs to tell them apart at a glance. An
+  // outline for one and a solid dot for the other does that with no legend.
+  //
+  // The dot scales with the tile's LOD so depth still reads (a z11 dot is
+  // bigger than a z13 one), but it is capped well under the cell: a disc that
+  // fills its square stops looking like a mark on a map and starts looking like
+  // a filled tile, which is the thing the outline decision above already
+  // rejected for being all ink and no information.
+  static constexpr int kDotDivisor = 4;
+  static constexpr int kMaxDotPx = 20;
+  static constexpr int kMinDotPx = 3;
+
+  // Every tile this screen has something to say about: the missing ones it is
+  // fetching, then the stale ones a freshness check found. One sequence because
+  // the grid window has to cover both -- sizing it on the missing list alone
+  // left a freshness-only visit with no grid at all, which is exactly the
+  // common case (nothing missing, something out of date).
+  size_t interestCount() const;
+  MapTileCoord interestAt(size_t index) const;
+
   // Tiles the phone has given up on. Counted here as well as in the console's
   // tally because a `skip` for a tile that is not on this snapshot (a stale
   // phone-side list) still has to count toward finishing.
