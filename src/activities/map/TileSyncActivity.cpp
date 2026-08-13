@@ -723,11 +723,13 @@ bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_
     parentOf(tile, tpc, tpr);
     if (tpc != pc || tpr != pr) continue;
 
-    if (!any) {
-      renderer.drawRect(px, py, size, size);
-      any = true;
-    }
-
+    // **No parent frame here.** The frames belong to the missing tiles: they
+    // are the scaffolding that says how deep a hatched square sits. A dot
+    // already carries its own depth in its size, so framing a parent that
+    // holds nothing but dots spends ink on nothing and buries the one thing
+    // worth watching -- the dots going out one by one. A parent that holds
+    // both gets its frame from the loop above, which is correct: something in
+    // it really is missing.
     const int down = tile.z < 13 ? 13 - tile.z : 0;
     const int span = 1 << down;
     const int lx = static_cast<int>((tile.col << down) & (kLeavesPerParent - 1));

@@ -235,8 +235,16 @@ One grid, two marks, and each says what the square is waiting on:
 
 | mark | meaning | goes out when |
 |---|---|---|
-| outlined square | not on the card, being fetched | the tile arrives |
-| solid dot | on the card, not settled yet | the phone says it is current, or a stale one's replacement lands |
+| outlined square, inside a framed parent | not on the card, being fetched | the tile arrives |
+| solid dot, no frame | on the card, not settled yet | the phone says it is current, or a stale one's replacement lands |
+
+**The frames belong to the missing tiles only.** The z11 parent frame and the
+z12 quadrant frame are scaffolding for a hatched square -- they say how deep it
+sits. A dot already carries its depth in its size, so a parent holding nothing
+but dots is drawn bare: framing it spends ink on nothing and buries the one
+thing worth watching, which is the dots going out one at a time. A parent
+holding both still gets its frame, from the missing-tile pass, because
+something in it really is missing.
 
 **A dot is drawn for every tile queued for a check, not only for the ones that
 turn out to be stale.** That is the point of it: the grid starts full of dots
