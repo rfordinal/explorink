@@ -339,6 +339,9 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // disconnects leaves its signal bars on the panel until something unrelated
   // forces a redraw. Seen in a real session, 2026-08-07.
   void updateHeaderStatus();
+  // Maps a live rssi() reading to a bar count, holding the last real one
+  // across a failed (0) read. See MapActivity.cpp for why.
+  int resolveBleBars(int8_t rssi);
   // The globe's own slot, and the strip drawHeaderStatus() backs and repaints.
   // One source for both, or the repaint clips what the draw put down.
   void headerStatusRect(int& x, int& y, int& w, int& h) const;
@@ -640,6 +643,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   bool drawnLinkConnected_ = false;
   // -1 means "never drawn", which is not the same as 0 bars.
   int drawnBleBars_ = -1;
+  // Last bar count a real rssi() reading produced this connection. rssi()
+  // answers 0 on failure, not a real signal strength, and resolveBleBars()
+  // holds this instead of remapping 0 -- see its definition. 0 also means
+  // "no reading has succeeded yet", which draws the same as 0 bars. Reset to
+  // 0 on disconnect (drawHeaderStatusStrip()) and in onEnter(), so a new
+  // connection never inherits the last one's bars.
+  int lastKnownBleBars_ = 0;
   // millis() deadlines; 0 means due now. The poll interval bounds how often
   // rssi() is asked; the bars interval bounds how often a bar count that keeps
   // crossing a threshold may spend a waveform pass.
