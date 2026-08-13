@@ -338,12 +338,27 @@ class BlePositionServer {
   // still the same one*. An overflow drop on the host task in that window
   // moves the tail, the compare fails, and the next line is not eaten by a
   // send that was not about it.
+  //
+  // Plain, not volatile and not atomic. **Every** access to these two counters
+  // and to the two arrays above is inside a portENTER_CRITICAL(&g_mux) section
+  // (BlePositionServer.cpp:329-330, :387-388, :616-617, :690-703, :725-731,
+  // :741-744) -- and the critical section is the synchronisation, not the
+  // qualifier. On this single-core target portENTER_CRITICAL is an out-of-line
+  // call to vPortEnterCritical() (FreeRTOS portmacro.h:530, riscv, and no LTO
+  // in platformio.ini), so the compiler cannot move a plain access across it
+  // either.
+  //
+  // `volatile` is not a synchronisation primitive and bought nothing here
+  // except a -Wvolatile deprecation warning on `++counter` (C++20). Atomics
+  // would be worse than nothing: they would advertise a lock-free protocol that
+  // does not exist. Contrast advertisingDown_ below, which is atomic precisely
+  // because it *is* read outside any lock, by serviceAdvertising().
   static constexpr size_t kPendingStatusSlots = 2;
   static constexpr size_t kPendingStatusBytes = 64;
   char pendingStatus_[kPendingStatusSlots][kPendingStatusBytes] = {};
   uint8_t pendingStatusLen_[kPendingStatusSlots] = {};
-  volatile uint32_t pendingStatusHead_ = 0;  // next write, host task
-  volatile uint32_t pendingStatusTail_ = 0;  // next send, activity task
+  uint32_t pendingStatusHead_ = 0;  // next write, host task
+  uint32_t pendingStatusTail_ = 0;  // next send, activity task
 
   BlePositionServer() = default;
   BlePositionServer(const BlePositionServer&) = delete;
