@@ -221,6 +221,14 @@ class MapTransferReceiver {
   char finalPath_[kMaxRelPathBytes + 48] = {};
   char partPath_[kMaxRelPathBytes + 48] = {};
 
+  // The one exception to "host task only" above: resetCounters() zeroes
+  // these from the activity task (only while !active_). Plain uint32_t, not
+  // volatile -- same standard as BlePositionServer.h's pendingStatusHead_/
+  // Tail_ comment: portENTER_CRITICAL(&g_mux) is the synchronisation, not a
+  // qualifier, and that only holds if *every* write goes through it. The
+  // host-task increments (MapTransferReceiver.cpp's completion path in
+  // handleChunk, abandon(), refuse()) take the same lock resetCounters()
+  // does, so the two cannot interleave.
   uint32_t completed_ = 0;
   uint32_t completedBytes_ = 0;
   uint32_t failed_ = 0;

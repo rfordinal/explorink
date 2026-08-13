@@ -102,9 +102,12 @@ MapTransferReceiver::~MapTransferReceiver() {
 
 bool MapTransferReceiver::resetCounters() {
   if (active_) return false;
-  // Same critical section the publish path uses: the NimBLE host task writes the
-  // snapshot these mirror, and a torn read on the screen's next frame would show
-  // a count that never existed.
+  // g_mux is the actual synchronisation (MapTransferReceiver.h, above
+  // completed_): it only excludes the host task's increments because those
+  // increments take the same lock (handleChunk's completion path, abandon(),
+  // refuse()). Without that on both sides, this critical section excluded
+  // nothing -- the host task could still land ++completed_ between this
+  // store and the next status() read.
   portENTER_CRITICAL(&g_mux);
   completed_ = 0;
   completedBytes_ = 0;
@@ -439,8 +442,12 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   received_ = 0;
   declaredTotal_ = 0;
   activeTileValid_ = false;
+  // Same lock resetCounters() zeroes these under (MapTransferReceiver.h,
+  // above completed_) -- otherwise its critical section excludes nothing.
+  portENTER_CRITICAL(&g_mux);
   ++completed_;
   completedBytes_ += bytes;
+  portEXIT_CRITICAL(&g_mux);
 
   // The path is the only place this class learns what the file *is*. A tile
   // path means a MissingTilesStore entry just became stale; the activity task
@@ -491,7 +498,11 @@ void MapTransferReceiver::abandon(const char* reason) {
 
   if (reason == nullptr || endedElsewhere) return;
 
+  // Same lock resetCounters() zeroes this under -- see the comment on
+  // the completion path above.
+  portENTER_CRITICAL(&g_mux);
   ++failed_;
+  portEXIT_CRITICAL(&g_mux);
   char reply[64];
   snprintf(reply, sizeof(reply), "ERR %s", reason);
   freeink::BlePositionServer::getInstance().sendTransferStatus(reply);
@@ -499,7 +510,11 @@ void MapTransferReceiver::abandon(const char* reason) {
 }
 
 void MapTransferReceiver::refuse(const char* reason) {
+  // Same lock resetCounters() zeroes this under -- see the comment on the
+  // completion path above.
+  portENTER_CRITICAL(&g_mux);
   ++failed_;
+  portEXIT_CRITICAL(&g_mux);
   char reply[64];
   snprintf(reply, sizeof(reply), "ERR %s", reason);
   freeink::BlePositionServer::getInstance().sendTransferStatus(reply);

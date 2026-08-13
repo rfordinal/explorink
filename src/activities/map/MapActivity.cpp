@@ -1448,7 +1448,10 @@ void MapActivity::onEnter() {
   Activity::onEnter();
   LOG_DBG(kLogTag, "onEnter start");
 
-  freeink::BlePositionServer::getInstance().begin();
+  bleStartFailed_ = !freeink::BlePositionServer::getInstance().begin();
+  if (bleStartFailed_) {
+    LOG_ERR(kLogTag, "BlePositionServer.begin() failed");
+  }
   LOG_DBG(kLogTag, "BlePositionServer.begin() returned");
   // After begin(), so the characteristics exist before anything can be
   // written to them.
@@ -2380,7 +2383,7 @@ void MapActivity::renderWaiting() {
   // ordinary map, not the overview.
   overviewShown_ = false;
   renderer.clearScreen();
-  renderer.drawText(UI_10_FONT_ID, 8, 8, tr(STR_MAP_WAITING_BLE), true);
+  renderer.drawText(UI_10_FONT_ID, 8, 8, bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE), true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
