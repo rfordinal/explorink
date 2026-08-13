@@ -215,6 +215,30 @@ rather than a laptop render of what the layout ought to be:
     distinguishable.
   - The reply states what actually landed, not what was asked for -- the stores
     have their own caps.
+  - **It clears both stores before seeding**, and that clear is what makes the
+    determinism above true -- it was false until 2026-08-13. `fake` only added
+    before, so runs piled up, and because `MissingTilesStore` persists to the
+    card a stale seeding bug was still on screen two flashes later. The cost is
+    the device's real missing-tile list; it rebuilds the next time the map
+    hatches anything.
+
+**It seeds a ride, not a block.** A rider collects a corridor along a road, and
+`chooseWindow()` is placed and shrunk around whatever shape that is -- a
+rectangle never exercised it, and the picture said nothing about what the screen
+looks like after an actual trip. Sixteen hand-laid z11 waypoints that bend,
+inside the 6x8 window cap, with the near stretch held and the far stretch
+missing on a fixed split.
+
+Two bugs in that placement were visible on the panel and invisible in the code,
+which is the whole argument for this tool existing:
+
+- Offsets were first computed in **each LOD's own tile units**, so `+1` at z11
+  was a whole parent of ground and `+1` at z13 a sixteenth of one. The three
+  LODs spread over wildly different areas and the grid came back scattered.
+- The missing stretch's start was **derived from the held count**, which wrapped
+  modulo straight back onto waypoint 0 as soon as the held count covered the
+  road -- so `--held 48` put every frame on top of the first dots. It is a fixed
+  split now, and the two stretches cannot reach each other at any counts.
 - **`CMD:GOTO_TILESYNC`** (`main.cpp`), mirroring `CMD:GOTO_MAP`. The sync
   screen was the one screen a host could not reach, so every look at it cost a
   person standing at the device.
@@ -320,10 +344,17 @@ One grid, two marks, and each says what the square is waiting on:
 
 | mark | meaning | goes out when |
 |---|---|---|
-| outlined square, inside a framed parent | not on the card, being fetched | the tile arrives |
-| solid dot, no frame | on the card, not settled yet | the phone says it is current, or a stale one's replacement lands |
+| outlined square, inside a framed parent | waiting on **bytes** -- missing, or stale and being replaced | the tile arrives |
+| solid dot, no frame | on the card, waiting on an **answer** | the phone says it is current (it goes) or stale (it becomes a frame) |
 
-**The frames belong to the missing tiles only.** The z11 parent frame and the
+**The mark says what the device is waiting on, not why.** A stale tile stops
+waiting on an answer and starts waiting on bytes, which is exactly what a
+missing tile is doing, so it changes mark rather than keeping its own. The first
+version kept it a dot until the replacement landed, and that hid the one
+transition the grid exists to show: dots turning into frames as the check finds
+things, frames then vanishing as they download.
+
+**The frames belong to what is being downloaded.** The z11 parent frame and the
 z12 quadrant frame are scaffolding for a hatched square -- they say how deep it
 sits. A dot already carries its depth in its size, so a parent holding nothing
 but dots is drawn bare: framing it spends ink on nothing and buries the one
@@ -348,6 +379,30 @@ cell, floored at `kMinDotPx` and capped at `kMaxDotPx` -- but it stays well
 under the cell on purpose. A disc that fills its square stops reading as a mark
 on a map and starts reading as a filled tile, which is the thing the outline
 decision already rejected for being all ink and no information.
+
+**Measured on the panel 2026-08-13**, at a ~85 px cell: a divisor of 4 gave
+20/10/5 px for z11/z12/z13, and the 5 px ones read as dirt rather than marks,
+especially where they clustered next to a frame. Compressed to roughly 16/12/8
+(`kDotDivisor` 5, `kMinDotPx` 8, `kMaxDotPx` 16).
+
+**Open, and worth stating rather than hiding:** at 16/12/8 the 12 and the 8 are
+hard to tell apart unless they sit side by side, so the LOD is only reliably
+readable at the extremes. Whether that matters depends on whether a rider needs
+the LOD from this screen at all -- nobody has asked one, and the position
+already carries most of the depth information.
+
+The **"N / M" denominator is `transferTotal()`, not `rowCount_`**. A stale
+tile's replacement lands in `transfer.completed` exactly like a missing tile's
+arrival, but only the missing ones were ever in `rowCount_`, so a visit that
+replaced 24 stale tiles against 12 missing printed `24 / 12` -- a ratio above
+one, seen on the panel 2026-08-13. An earlier fix covered only the
+`rowCount_ == 0` case (which printed `1 / 0`) and left this one.
+
+**Unverified:** the hardware run that proved the check works found zero stale
+tiles, so neither `transferTotal()`'s stale term nor `onTileStale()`'s repaint
+has actually executed on a device. A sync against a genuinely republished area
+would settle both; `tools/mapcmd.py --ble stale <z> <col> <row>` with the sync
+screen up forces it without waiting for one.
 
 No new renderer primitive: `fillRoundedRect()` with a corner radius of half the
 side is a disc, and it already clamps the radius to half the smaller side

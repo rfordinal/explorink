@@ -1120,6 +1120,10 @@ Two hard rules, both about trust:
   empirical and two hardware-observed comments in this tree already contradict
   each other.
 
+Never write "deterministic", "bounded" or "cannot spin" in a comment until you
+have checked it. Twice on 2026-08-13 a claim of that shape was committed and
+then disproved by the next hardware run.
+
 Write it in the same pass as the work. If the work proves an existing doc or
 comment wrong, fixing it is part of the same change, not a follow-up.
 
