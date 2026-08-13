@@ -95,7 +95,19 @@ bool TileSyncActivity::armRun() {
 void TileSyncActivity::onEnter() {
   Activity::onEnter();
 
-  freeink::BlePositionServer::getInstance().begin();
+  if (!freeink::BlePositionServer::getInstance().begin()) {
+    // Plausible, not theoretical -- BLE init costs ~75 KB heap
+    // (docs/map-memory.md). Without this the screen would sit in
+    // Phase::Waiting forever, indistinguishable from a phone that just
+    // has not connected yet. Same verdict mechanism armRun() failing uses
+    // below, different string -- STR_TILE_SYNC_NO_ANSWER is a stalled
+    // transfer, this is a stack that never came up.
+    LOG_ERR(kLogTag, "BlePositionServer.begin() failed");
+    phase_ = Phase::Finished;
+    verdict_ = StrId::STR_TILE_SYNC_BLE_FAILED;
+    renderScreen();
+    return;
+  }
   // After begin(), so the characteristics exist before anything can be written
   // to them.
   transfer_.attach();

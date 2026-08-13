@@ -476,6 +476,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   uint8_t observeReturnHeading_ = 0;
   uint8_t observeReturnSeq_ = 0;
 
+  // Set from BlePositionServer::begin()'s return in onEnter(). Without this,
+  // a BLE stack that failed to come up (plausible: init costs ~75 KB heap,
+  // see docs/map-memory.md) looks identical to a phone that simply has not
+  // connected yet -- both render the same "waiting" banner forever.
+  // renderWaiting() reads this to draw a different line.
+  bool bleStartFailed_ = false;
   bool hasReceivedAny_ = false;
   uint8_t lastDrawnSeq_ = 0;
   // The fix a ladder step re-renders around. Only meaningful once
