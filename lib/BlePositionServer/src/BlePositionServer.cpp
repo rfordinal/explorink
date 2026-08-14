@@ -507,6 +507,44 @@ bool BlePositionServer::sendCommandReply(const char* line) {
 bool BlePositionServer::sendCommandBlock(const char* text, size_t len) {
   if (!begun_ || g_commandChar == nullptr || text == nullptr || len == 0) return false;
 
+  // Chunk to whatever fits in one indication on this link. Measured on
+  // hardware 2026-08-14/15: this used to hand the whole block to indicate()
+  // in one call, and anything past commandPayloadBytes() was silently
+  // truncated on the wire -- no error, indicate() still returned true, the
+  // caller believed it was delivered. `NEED_TILES 102 fmt 3\n` (21 bytes)
+  // against a pre-MTU-exchange link (20-byte payload floor) lost exactly its
+  // trailing '\n'; the phone's line reassembler (BleLink.kt) then held the
+  // line forever waiting for a terminator that never came, and the ask never
+  // registered as received. Splitting mid-line is safe: the receiver
+  // reassembles a byte stream and only splits on '\n' itself (BleLink.kt),
+  // so a line arriving as several indications reads identically to one.
+  //
+  // commandPayloadBytes() floors at 20, so chunkLen below is never zero and
+  // this loop always makes progress. Pointer arithmetic over the caller's
+  // own buffer -- no allocation.
+  const uint16_t payloadBytes = commandPayloadBytes();
+  size_t sent = 0;
+  while (sent < len) {
+    const size_t remaining = len - sent;
+    const size_t chunkLen = remaining < static_cast<size_t>(payloadBytes) ? remaining : static_cast<size_t>(payloadBytes);
+    if (!sendCommandChunk(text + sent, chunkLen)) {
+      // A chunk that fails aborts the whole block -- a half-delivered reply
+      // is a distinct, confusing failure (a partial line, or a listing that
+      // stops mid-row) and the log says exactly how far it got so the next
+      // read of this log is not left guessing.
+      LOG_ERR("BLEPOS", "command block send aborted: %u of %u bytes delivered",
+              static_cast<unsigned>(sent), static_cast<unsigned>(len));
+      return false;
+    }
+    sent += chunkLen;
+  }
+  return true;
+}
+
+// One indication, one confirm wait. sendCommandBlock() above calls this once
+// per chunk; every per-indication behaviour described below applies to each
+// chunk individually -- each gets its own retry budget and its own confirm.
+bool BlePositionServer::sendCommandChunk(const char* text, size_t len) {
   // Confirmed on real hardware: indicate() returning true only means this
   // indication was accepted into NimBLE's single-slot pending queue, not
   // that the peer received it -- a burst of 18 back-to-back indicate()

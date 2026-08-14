@@ -469,6 +469,12 @@ class BlePositionServer {
   // advertising state from the activity task, so there is exactly one owner.
   void maybeEnterSlowAdvertising();
 
+  // One indication, one confirm wait -- the unit sendCommandBlock() splits a
+  // block into. `len` must already fit commandPayloadBytes(); the caller
+  // (sendCommandBlock) is the one that sizes chunks. Returns false on a
+  // failed indicate() or an unconfirmed send within the retry budget.
+  bool sendCommandChunk(const char* text, size_t len);
+
   // --- Connection parameter requests (T6.2), state for serviceConnParams()
   //
   // Every field below is read and written only inside serviceConnParams(),

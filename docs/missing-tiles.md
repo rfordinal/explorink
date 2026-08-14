@@ -277,6 +277,72 @@ reads, checked for exact equality in `parseHeader()`
 (`src/activities/map/MapTileReader.cpp:85`). `info` reports the same number as
 `INFO tile_fmt=<version>`, so a builder can ask without starting a fetch.
 
+### The ask itself used to get truncated -- fixed 2026-08-15
+
+**Measured on hardware 2026-08-14/15.** `NEED_TILES 102 fmt 3\n` (21 bytes)
+never reached the phone. `BlePositionServer::sendCommandBlock()`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:507`) used to hand the whole
+`len` to one `indicate()` call with no regard for `commandPayloadBytes()`.
+When `len` exceeds the negotiated ATT payload, the controller silently drops
+the tail -- `indicate()` still returns `true`, so the caller believes the
+whole line went out.
+
+The ask is exactly the caller that hits this. `askForTiles()`
+(`src/activities/map/TileSyncActivity.cpp:314`) fires the moment
+`phoneListening()` turns true (`trackPhone()`,
+`src/activities/map/TileSyncActivity.cpp:372`) -- the instant the phone
+subscribes to the command characteristic, which on a fresh connection is
+*before* the MTU exchange completes. `negotiatedMtu()` is still 0 then, so
+`commandPayloadBytes()`
+(`lib/BlePositionServer/include/BlePositionServer.h:213`) floors at 20.
+`sendCommandReply()` appends `\n`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:501`), so a 3-digit tile
+count pushes the line to 21 bytes -- one over the 20-byte floor -- and the
+trailing `\n` is what gets cut.
+
+The phone's own line reassembler splits only on `\n` (`BleLink.kt:1362`), so a
+line missing its terminator sits in its buffer forever with nothing to flush
+it. Nothing on the phone side logs an error for this: its session log shows
+`tiles_ready` and the `mtu` bump a few ms later, and no `NEED_TILES` line at
+all. Device serial for one such run (uptime ms):
+
+```
+704620  command channel subscribed
+704629  phone subscribed, asking
+704642  asked for 102 tiles
+704665  MTU now 256, file payload 248 bytes per chunk
+734652  no answer for 30000 ms, 0 landed, 0 skipped
+```
+
+The ask went out 23 ms before the MTU rose. Size dependence confirms the
+mechanism: `NEED_TILES 4 fmt 3\n` (19 bytes) and `NEED_TILES 99 fmt 3\n` (20
+bytes, fits exactly) both work; `NEED_TILES 102 fmt 3\n` (21 bytes) is the
+first size that breaks. Any ask for a 3-digit tile count landed on a
+pre-MTU-exchange link fails this way.
+
+**Fixed by chunking inside `sendCommandBlock()`**, not by special-casing this
+one caller. It now splits `text`/`len` into consecutive pieces of at most
+`commandPayloadBytes()` and sends each piece through the existing
+retry-and-confirm loop, one confirm per chunk
+(`sendCommandChunk()`, `lib/BlePositionServer/src/BlePositionServer.cpp:547`).
+Splitting mid-line is safe: the receiver reassembles a byte stream and only
+splits on `\n` itself (`BleLink.kt:265`), so a line arriving as two
+indications reads identically to one arriving as one. A chunk that fails
+aborts the whole block and logs how many of the total bytes made it -- a
+half-delivered reply is a distinct, more confusing failure than none at all,
+and the log now says so.
+
+**Not changed:** whether `askForTiles()` should wait for a negotiated MTU
+before asking. Chunking repairs the failure regardless of when the ask fires,
+and a wait risks the opposite failure -- a central that never completes an
+MTU exchange would mean the ask never goes out. Leaving `askForTiles()` as-is
+is deliberate, not an oversight.
+
+Verified: read off the code, plus the hardware log above (2026-08-14/15) that
+found the bug. The fix's own re-run on hardware is **open** -- what would
+settle it: repeat the same 102-tile ask on a link with MTU still 0 and watch
+the phone actually log a `NEED_TILES` this time.
+
 Without it the feature quietly defeats itself. A tile built to another version
 transfers fine, passes CRC32 and gets renamed into place; the transfer reports
 `OK`, so `drainTransferredTiles()` drops the entry from the list. Then the next
