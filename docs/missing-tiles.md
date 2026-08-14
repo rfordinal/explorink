@@ -467,11 +467,9 @@ redraw at 63-73% of the following tile, observed on the panel four times as
 the phone's progress bar slowing and stopping.
 
 Rendering there is wrong twice over: the frame is about to be superseded by
-the tile still incoming, so the waveform pass is wasted, and it puts a
-multi-second panel refresh on the SPI bus the SD card shares in the middle of
-a transfer (the two share `SPI.begin` on the global `SPI` --
-`EpdBus.cpp:48`, `SDCardManager.cpp:96` -- a separate, larger problem this
-change does not touch).
+the tile still incoming, so the waveform pass is wasted, and the multi-second
+refresh it costs is long enough to expire the BLE supervision timeout and
+drop the link (see "What actually kills the link" below).
 
 `MapActivity::loop()` (`src/activities/map/MapActivity.cpp:1965-1974`) now
 checks `transfer_.status().active` when `arrivalRedrawDueMs_` expires. If a
@@ -491,11 +489,30 @@ reported `link lost`. A bound that eventually forces the same render is a
 scheduled version of the same kill, not a safety net, so it was removed
 (`src/activities/map/MapActivity.cpp:104-120` -- the constant and the
 rejection are both gone, replaced by a comment explaining why). The redraw
-now waits for `active` to go false, however long that takes, until the
-underlying problem is fixed: the panel and the SD card share one SPI bus
-(`EpdBus.cpp:48`, `SDCardManager.cpp:96` both call `SPI.begin` on the global
-`SPI`), which is under separate analysis and not touched here. A bound
-belongs back in `loop()` once a mid-transfer render stops being fatal.
+now waits for `active` to go false, however long that takes. A bound belongs
+back in `loop()` once a mid-transfer render stops being fatal.
+
+**What actually kills the link -- measured 2026-08-14.** The first hypothesis
+was the shared SPI bus: panel and SD card both call `SPI.begin` on the global
+`SPI` (`EpdBus.cpp:48`, `SDCardManager.cpp:96`). **Rejected on analysis**:
+`HalStorage` serialises every SD access behind `storageMutex`, SdFat's
+`SHARED_SPI` mode closes its transaction per sector operation, and the
+expensive part of a refresh -- the 0.5-1.7 s waveform wait -- holds no SPI
+transaction at all. The real cause is the BLE supervision timeout: **57 of 57
+disconnects on the maintainer's live ride came back `gatt_status: 8`**
+(Android's `GATT_CONN_TIMEOUT`, HCI reason `0x08`), with zero disconnects
+from any other cause, against the 4 s the transfer-active parameter set was
+asking for. A render plus panel refresh simply outlasts 4 s. The fix raises
+both parameter sets to 20 s -- `kConnParamsFastTimeoutUnits` and
+`kConnParamsIdleTimeoutUnits`, `lib/BlePositionServer/include/BlePositionServer.h`,
+full measurement in `docs/power-management.md`, "T6.2".
+
+**Still open**: *why* a render stalls the link layer for seconds at all. The
+controller task runs at a higher priority than the activity task and the
+panel path never masks interrupts, so the mechanism by which a refresh
+starves the LL is not established. Until the 20 s timeout is confirmed on
+hardware to end the kills, the unbounded deferral above stays as belt and
+braces.
 
 **The starvation case, partly closed 2026-08-14.** `arrivalRedrawDueMs_` only
 clears when `transfer_.status().active` is false at the moment it expires.

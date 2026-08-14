@@ -114,10 +114,17 @@ constexpr uint32_t kArrivalRedrawSettleMs = 5000;
 // go false, however long that takes. See docs/missing-tiles.md, "The settle
 // can expire mid-transfer" for the starvation case this leaves open.
 //
-// A bound belongs back here once a mid-transfer render is no longer fatal --
-// the panel and the SD card currently share one SPI bus (EpdBus.cpp:48,
-// SDCardManager.cpp:96 both call SPI.begin on the global SPI), which is
-// under separate analysis and not touched by this change.
+// A bound belongs back here once a mid-transfer render is no longer fatal.
+// What kills the link, measured 2026-08-14: 57/57 disconnects on a live ride
+// came back as gatt_status 8 (supervision timeout), against the 4 s the
+// transfer-active parameter set asked for. Raised to 20 s -- see
+// kConnParamsFastTimeoutUnits, BlePositionServer.h, and
+// docs/power-management.md, "T6.2". A shared SPI bus between panel and SD
+// card was the first hypothesis and was rejected: the HAL serialises SD
+// access, and the multi-second waveform wait holds no SPI transaction. What
+// is still open is *why* the render stalls the link layer at all, given the
+// controller task outranks the activity task -- so the deferral stays until
+// the 20 s timeout is confirmed on hardware to end the kills.
 
 // How often the header status row's state is looked at (updateHeaderStatus()).
 // Bounds the rate of rssi() calls into the NimBLE host, and is still prompt for
