@@ -392,14 +392,29 @@ the menu-close windowed repaint (restores a saved backdrop, touches neither
 flag), and `applyFix()`'s `!viewportDrawn_ || !markerPatchValid_ || !source_`
 check (this is the followability test the flag was built for -- untouched).
 
-**Open, not tested on the panel.** The trap documented above is still a trap:
-the persisted-fix frame carries a banner that only a full redraw clears, and
-`updateHeaderStatus()` repaints via `renderer.displayBufferWindow()`, a windowed
-refresh, over that same frame. Reading the code: `headerStatusRect()` sits in
-the top-right corner and the banner is presumably lower/centred, so a window
-repaint of the corner should not overlap the banner's own pixels -- but nobody
-has confirmed where the banner actually draws relative to that rect, and
-"should not overlap" is a read-off-the-code guess, not a measurement. What
-would settle it: `CMD:GOTO_MAP` with a persisted fix and no phone connected
-yet, then connect a phone and watch the header repaint on `CMD:SCREENSHOT` --
-does the banner survive untouched, get partly erased, or leave a stray edge.
+**Verified on the panel 2026-08-14, and the trap turned out not to exist.**
+Flashed and reproduced deliberately: the map entered from a persisted fix
+(`onEnter: rendering persisted fix 481306007,171078012`) with the link coming up
+half a second later (`connected: interval 24 units` then `MTU now 256`). The row
+flipped from the no-link X to signal bars on its own, with nothing touched.
+Before this change it held the X for as long as the frame was up.
+
+**The banner the trap was about does not exist.** Chased it while planning the
+panel check: `showingPersistedFix_` has no drawing use anywhere
+(`MapActivity.cpp` -- reset, set on entry, cleared when a real fix lands,
+`fixChanged`, and `viewportDrawn_`, and nothing else), there is no
+"last known fix" string in `lib/I18n/translations/english.yaml`, and the only
+overlay on that frame is the debug readout, which is `mapDebugInfo`-gated and
+sits *below* this row (see "The debug readout sits below this row"). So a
+windowed header repaint has nothing to damage, which is why the panel check
+found nothing to report.
+
+**That leaves a stale comment, and it is load-bearing.** `MapActivity.cpp`, just
+above `viewportDrawn_ = !showingPersistedFix_`, still says "The persisted-fix
+frame carries a banner only a full redraw can clear, so it is deliberately not
+followable". That banner is the stated justification for the assignment and it
+is not in the code. The assignment may still be right for another reason -- a
+persisted-fix frame plausibly should not be followable -- but its written reason
+cites something that is gone. **Open:** find the real reason and rewrite the
+comment, or find that the flag no longer needs to exclude persisted fixes at
+all. Do not delete the comment without settling which.
