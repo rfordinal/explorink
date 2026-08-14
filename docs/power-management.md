@@ -187,17 +187,17 @@ expensive event the device has and nothing has measured it in mA or in joules.
 comment says. `PowerTelemetry`'s `ref_*` and `panel_busy_ms` counters now make
 the *frequency* half of this measurable per ride.
 
-## Connection parameter requests while connected -- fix, unmeasured (T6.2, 2026-08-13)
+## Connection parameter requests while connected -- shipped as an improvement, measured as a regression (T6.2, 2026-08-13 -> fixed 2026-08-14)
 
-**Code change, not yet measured on hardware.** Item 5 above is about
-advertising with nobody connected; this is its cousin for the connected-idle
-case docs/ble-review-2026-08.md's "Power" bullet flagged: "device never
-requests connection parameters... connected-idle runs at the phone's 30 ms
-interval to carry 1 write/s -- ~33 radio events/s". `serviceAdvertising()`
-(`lib/BlePositionServer/include/BlePositionServer.h:154`) now takes a
-`transferActive` bool and calls `serviceConnParams()`
-(`lib/BlePositionServer/src/BlePositionServer.cpp:734`) whenever a phone is
-connected:
+Item 5 above is about advertising with nobody connected; this is its cousin
+for the connected-idle case docs/ble-review-2026-08.md's "Power" bullet
+flagged: "device never requests connection parameters... connected-idle runs
+at the phone's 30 ms interval to carry 1 write/s -- ~33 radio events/s".
+`serviceAdvertising()` (`lib/BlePositionServer/include/BlePositionServer.h:154`)
+takes a `transferActive` bool and calls `serviceConnParams()`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:756`, T6.2) whenever a phone
+is connected, requesting one of two parameter sets. **Read off the code**, T6.2
+shipped:
 
 - **Idle set** -- 24-40 units (30-50 ms), latency 9, timeout 600 units (6 s).
   Requested 5 s after connect, or 5 s after a transfer ends, whichever the
@@ -206,12 +206,75 @@ connected:
   Requested the tick a file transfer begins (`MapTransferReceiver`'s
   `active_` flag, read via `Status::active`).
 
+T6.2's own justification for the 4/6 s timeouts was `(1 + latency) *
+maxInterval * 2` -- 60 ms and 1000 ms worst case respectively -- against the
+requested timeout. That arithmetic is correct for *missed connection events*
+and says nothing about the peripheral being unavailable for **seconds**, which
+is the failure mode that actually showed up.
+
+**Measured on hardware, 2026-08-14, from the maintainer's live ride** (session
+log pulled off the phone,
+`/sdcard/Android/data/org.explorink.gpsbridge/files/explorink-gps-20260814-145110.jsonl`):
+
+- **57 disconnects, 57/57 `gatt_status: 8`** -- Android's `GATT_CONN_TIMEOUT`,
+  HCI reason `0x08`, supervision timeout. Not one disconnect from any other
+  cause.
+- **Zero `gatt_stack_dead`, zero `link_dead`** -- the app's own 37 s dead-link
+  verdict never fired, so this was not a software timeout; the link died at
+  the link layer.
+- `gatt_timeout` 119 and `gatt_late` 119, exactly equal: every timed-out
+  operation eventually got its late callback, 5.9-7.2 s after being issued.
+  The device always answered, just late -- overrunning the 3 s command
+  budget, not the 10 s transfer budget.
+- **The 4 s request was being applied by the phone.** Parameter sets reported
+  by `onConnectionUpdated`: `interval=24 latency=0 timeout=400` 34x,
+  `interval=24 latency=9 timeout=600` 28x, plus the phone's own
+  `interval=12 latency=0 timeout=500` 173x.
+- **29 of the 57 disconnects happened during an open fetch; 28 happened with
+  no fetch in flight at all** (i.e. against the idle set) -- not only a
+  render-collision story; a 4 s supervision timeout is simply too short for a
+  moving vehicle.
+
+**The fix (this section, 2026-08-14):** both timeouts raised to 2000 units
+(20 s), and `kConnParamsIdleLatency` lowered from 9 to 4
+(`lib/BlePositionServer/include/BlePositionServer.h`, see the comments on
+`kConnParamsIdleTimeoutUnits`, `kConnParamsFastTimeoutUnits` and
+`kConnParamsIdleLatency` for the full arithmetic). 20 s clears the
+maintainer's stated worst case -- a map render plus panel refresh must be
+assumed to reach 10 s -- with a 2x margin (2.7x against the slowest render
+measured on the bench, a 7463 ms rung-0 frame: parent repo,
+`docs/render-gate/stream-crc/manifest.json`, `"renderMs": 7463`, and
+`docs/street-labels-plan.md:82`. That is a render-gate figure, not a number
+from the 2026-08-14 ride, and it is not recorded in this submodule's
+`docs/place-labels.md`); stays inside
+the BLE supervision-timeout range (0x000A-0x0C80, 100 ms-32 s) with 12 s to spare;
+and sits 10 s below Android's own 30 s ATT transaction timeout, past which
+Android tears the bearer down itself regardless of what this device asks for.
+Latency was lowered because its power saving was never measured (the H8 power
+soak, `docs/ble-fix-plan.md`, never ran) while its cost -- more
+legitimately-skipped listens for a marginal-RF hiccup to stack on top of -- is
+real; it was not, on this evidence, the mechanism of the outage (latency 9's
+own worst-case gap was 500 ms, nowhere near even the old 6 s timeout).
+
+**Cost of the fix:** a larger supervision timeout means the device believes a
+departed phone is still present for longer before `onCentralDisconnect` fires
+and `resetAdvertisingPhase()` restarts the two-phase advertising clock
+(T6.1, `kFastAdvertisingMs = 30000` at
+`lib/BlePositionServer/include/BlePositionServer.h:443`). Worst case, that is
+now up to 20 s of "still connected" instead of 4-6 s -- 14-16 s later into the
+30 s fast-advertising window than before this change, ~50 s total from actual
+departure to falling back to slow advertising instead of ~36 s.
+
 Both are requests, not commands: `onConnParamsUpdate()`
 (`BlePositionServer.cpp:164-169`) logs whatever interval/latency/timeout the
-phone actually granted, which may match neither set. **Open, needs a ride
-with the Android app:** whether either request is honoured at all, and what
-connected-idle current draw looks like before/after -- exactly the number
-`power.csv`/`stats` above can catch once one is run with this code on.
+phone actually granted, which may match neither set -- the applied-params
+evidence above (400 applied 34x, but the phone also kept its own 500 173x)
+shows a central is not obliged to honour every request. **Open, needs a ride
+with the Android app:** whether the new 20 s timeout actually stops the
+disconnects (this fix is unverified on hardware as of this write-up), and what
+connected-idle current draw looks like with latency 4 instead of 9 -- exactly
+the numbers `power.csv`/`stats` above can catch once one is run with this code
+on.
 
 ## Power-saving mode drops CPU frequency after idle
 

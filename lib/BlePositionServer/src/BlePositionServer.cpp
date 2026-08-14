@@ -736,11 +736,23 @@ void BlePositionServer::serviceAdvertising(bool transferActive) {
 // them: the peripheral (this device) may skip a listening event, but the
 // central's stack holds a pending write until the next event it actually
 // keeps, not until this side happens to be listening. At 1 Hz and the idle
-// set's latency of 9 (worst case ~(1+9)*50 ms = 500 ms between mandatory
-// listens, computed below), the most a position write is ever delayed is
-// under half a second -- invisible against the map's own redraw cadence,
+// set's latency of 4 (worst case ~(1+4)*50 ms = 250 ms between mandatory
+// listens, computed below), the most a position write is ever delayed is a
+// quarter of a second -- invisible against the map's own redraw cadence,
 // which is on the order of a second even for a small partial refresh
 // (docs/eink-grayscale.md).
+//
+// T6.2's supervision timeouts (400/600 units, 4/6 s) were measured on
+// hardware to be a regression, not the improvement T6.2 assumed: 57/57
+// disconnects on a live ride were gatt_status 8 (Android's GATT_CONN_TIMEOUT,
+// HCI 0x08 -- supervision timeout), none from any other cause, and the
+// device answered every one of them late (119 gatt_timeout paired with 119
+// gatt_late, 5.9-7.2 s after issue) rather than not at all. T6.2's own
+// arithmetic -- (1+latency)*maxInterval*2 -- only clears *missed connection
+// events*; it says nothing about the peripheral being unavailable for
+// seconds at a time, which is what a map render plus panel refresh
+// (assumed worst case 10 s) actually does to it. docs/power-management.md,
+// "T6.2", has the full measurement. The timeouts below are the fix.
 void BlePositionServer::serviceConnParams(bool transferActive) {
   const uint16_t handle = connHandle_;
   const uint32_t now = millis();
@@ -761,11 +773,11 @@ void BlePositionServer::serviceConnParams(bool transferActive) {
     if (!connParamsTransferWasActive_) {
       // Transfer begin: fast link, no latency, while it runs. Supervision
       // timeout check: (1 + latency) * maxInterval * 2 = (1+0) * 30 ms * 2 =
-      // 60 ms, against a 4 s (400 * 10 ms) timeout -- clears with room to
-      // spare, same as the idle set below but by a much wider margin since
-      // latency is 0 here.
+      // 60 ms, against a 20 s (2000 * 10 ms) timeout -- clears by over 300x.
+      // See kConnParamsFastTimeoutUnits (BlePositionServer.h) for why 20 s,
+      // not the 4 s T6.2 shipped with.
       g_server->updateConnParams(handle, kConnParamsFastMinUnits, kConnParamsFastMaxUnits, kConnParamsFastLatency,
-                                  kConnParamsFastTimeoutUnits);
+                                 kConnParamsFastTimeoutUnits);
       LOG_INF("BLEPOS", "conn params: requested fast set (12-24 units, latency 0) for a transfer in flight");
       // The idle set will need to be asked for again once this transfer
       // ends -- clearing it here rather than waiting for the end transition
@@ -789,21 +801,21 @@ void BlePositionServer::serviceConnParams(bool transferActive) {
   if (connParamsIdleRequested_) return;
   if (now - connParamsQuietSinceMs_ < kConnParamsIdleDelayMs) return;
 
-  // Idle set: 24-40 units (30-50 ms) interval, slave latency 9 -- the
-  // peripheral may skip up to 9 listening events between ones it actually
-  // keeps, so the effective gap between mandatory listens is (1 + 9) * the
-  // interval the central actually picks: 300 ms at the 30 ms bound, 500 ms
-  // at the 50 ms bound (not the narrower "300-400 ms" the review doc's
-  // Power bullet estimated -- that bullet under-counted the top of the
-  // requested interval range; this comment is the corrected arithmetic).
+  // Idle set: 24-40 units (30-50 ms) interval, slave latency 4 (T6.2 shipped
+  // 9; see kConnParamsIdleLatency, BlePositionServer.h, for why it was
+  // lowered) -- the peripheral may skip up to 4 listening events between
+  // ones it actually keeps, so the effective gap between mandatory listens
+  // is (1 + 4) * the interval the central actually picks: 150 ms at the
+  // 30 ms bound, 250 ms at the 50 ms bound.
   //
   // Supervision timeout check, worst case: (1 + latency) * maxInterval * 2 =
-  // (1 + 9) * 50 ms * 2 = 1000 ms, against the 6 s (600 * 10 ms) timeout
-  // requested below -- clears with a 6x margin, so a listen or two getting
-  // lost does not tear the link down.
+  // (1 + 4) * 50 ms * 2 = 500 ms, against the 20 s (2000 * 10 ms) timeout
+  // requested below -- clears by 40x. See kConnParamsIdleTimeoutUnits
+  // (BlePositionServer.h) for why 20 s, not the 6 s T6.2 shipped with: that
+  // margin was never the problem -- a multi-second render/refresh stall was.
   g_server->updateConnParams(handle, kConnParamsIdleMinUnits, kConnParamsIdleMaxUnits, kConnParamsIdleLatency,
-                              kConnParamsIdleTimeoutUnits);
-  LOG_INF("BLEPOS", "conn params: requested idle set (24-40 units, latency 9) after %lu ms quiet",
+                             kConnParamsIdleTimeoutUnits);
+  LOG_INF("BLEPOS", "conn params: requested idle set (24-40 units, latency 4) after %lu ms quiet",
           static_cast<unsigned long>(now - connParamsQuietSinceMs_));
   connParamsIdleRequested_ = true;
 }
