@@ -457,6 +457,46 @@ of two seconds of waveform, and the frame worth spending is the one after the
 last tile. It is also deliberately not `armRedraw()`'s deadline: a button press
 must not be made to wait behind a transfer.
 
+### The settle can expire mid-transfer -- deferred, not fired, since 2026-08-14
+
+**Measured on hardware 2026-08-14**: the phone app moves bytes at ~9.0 kB/s
+(81,774 B in 9.08 s). At that rate any tile over ~45 KB takes longer than the
+5 s settle, so the timer armed by *one* arrival routinely expires while the
+*next* tile of the same fetch is still streaming in -- a 60-70 KB tile put the
+redraw at 63-73% of the following tile, observed on the panel four times as
+the phone's progress bar slowing and stopping.
+
+Rendering there is wrong twice over: the frame is about to be superseded by
+the tile still incoming, so the waveform pass is wasted, and it puts a
+multi-second panel refresh on the SPI bus the SD card shares in the middle of
+a transfer (the two share `SPI.begin` on the global `SPI` --
+`EpdBus.cpp:48`, `SDCardManager.cpp:96` -- a separate, larger problem this
+change does not touch).
+
+`MapActivity::loop()` (`src/activities/map/MapActivity.cpp:1934-1945`) now
+checks `transfer_.status().active` when `arrivalRedrawDueMs_` expires. If a
+transfer is still moving bytes, it re-arms the settle instead of rendering,
+so the redraw happens once the channel goes quiet -- the same coalescing the
+settle already does for a burst of arrivals, extended over the gap between
+two tiles of one fetch.
+
+That deferral is bounded, or a corridor fetch of many tiles back to back
+(`active` never going false) would starve the redraw for the whole run,
+which can run minutes. `arrivalRedrawDeadlineMs_` is set once, the first time
+a deferral happens, to `now + kArrivalRedrawMaxDeferMs` (30 s --
+`src/activities/map/MapActivity.cpp:106-122`). Once `now` passes that
+deadline the redraw fires regardless of `active`. Read off the code, not yet
+run against hardware: 30 s is six times the settle and, at ~9.0 kB/s, ~270 KB
+of continuous streaming -- comfortably more than a typical viewport ask (a
+handful of tiles, 6-75 KB each, this doc above) and past the point that ask
+would normally have gone quiet on its own. Only a long multi-tile catch-up
+that never goes quiet hits the bound, and then a redraw happens roughly every
+30 s rather than once at the end of a run that could take minutes.
+
+Every other `renderCurrent()` call site -- zoom, pan, orientation, mode, menu
+close -- is unchanged: those are rider-initiated and still render immediately.
+Only the automatic post-arrival redraw defers.
+
 ### When an ask ends
 
 - **Every tile settled** -- arrivals plus skips reach the count. The globe goes

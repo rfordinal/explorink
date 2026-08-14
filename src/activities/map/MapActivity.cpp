@@ -103,6 +103,24 @@ constexpr uint32_t kFreshnessGateLogThrottleMs = 30 * 1000;
 // after the last tile, so each arrival pushes this out.
 constexpr uint32_t kArrivalRedrawSettleMs = 5000;
 
+// Bound on how long the settle above may be deferred while a transfer is
+// still active (loop(), the arrivalRedrawDueMs_ check). Measured on hardware
+// 2026-08-14: the phone app moves bytes at ~9.0 kB/s (81,774 B in 9.08 s), so
+// any tile over kArrivalRedrawSettleMs worth of bytes (~45 KB) keeps the
+// channel busy past the settle armed by the tile before it -- without this
+// bound, a corridor fetch of many tiles back to back could hold `active` true
+// for minutes and starve the redraw for the whole run.
+//
+// 30 s, six times the settle: at ~9.0 kB/s that is ~270 KB of continuous
+// streaming, comfortably more than a typical viewport ask (a handful of
+// tiles, 6-75 KB each per docs/missing-tiles.md) and enough that an ordinary
+// ask settles on its own quiet gap well before the bound matures. Only a long
+// multi-tile catch-up that never goes quiet hits it, and then it fires
+// roughly every 30 s rather than once at the end of a run that can run
+// minutes -- worst case the rider sees a redraw mid-transfer at most once per
+// 30 s window instead of waiting out the whole fetch.
+constexpr uint32_t kArrivalRedrawMaxDeferMs = 30000;
+
 // How often the header status row's state is looked at (updateHeaderStatus()).
 // Bounds the rate of rssi() calls into the NimBLE host, and is still prompt for
 // a link that has dropped.
@@ -1503,6 +1521,7 @@ void MapActivity::onEnter() {
   autoSyncDeadlineMs_ = 0;
   lastClearedTileSeq_ = 0;
   arrivalRedrawDueMs_ = 0;
+  arrivalRedrawDeadlineMs_ = 0;
   lastTransferProgress_ = 0;
   transferIconShown_ = false;
   drawnLinkConnected_ = false;
@@ -1902,11 +1921,29 @@ void MapActivity::loop() {
   // A tile landed and the panel is still hatching where it goes. Deliberately
   // its own deadline rather than armRedraw()'s: this settles on the last
   // arrival, and a button press must not be made to wait behind it.
+  //
+  // Bytes may still be landing for the *next* tile of the same fetch when
+  // this settle expires -- at the measured ~9.0 kB/s, any tile over ~45 KB
+  // outlasts kArrivalRedrawSettleMs (5 s), so the timer armed by the previous
+  // arrival routinely expires mid-transfer. Rendering then is a wasted
+  // waveform (superseded by the next arrival) and puts a multi-second panel
+  // refresh on the SPI bus the SD card shares mid-transfer, so defer instead
+  // of rendering while transfer_.status().active is true -- bounded by
+  // kArrivalRedrawMaxDeferMs so a fetch that never goes quiet still redraws.
+  // See docs/missing-tiles.md, "Every arrival owes a redraw".
   if (arrivalRedrawDueMs_ != 0 && now >= arrivalRedrawDueMs_) {
-    arrivalRedrawDueMs_ = 0;
-    LOG_INF(kLogTag, "tiles arrived, redrawing");
-    showBusy();
-    renderCurrent();
+    const bool transferActive = transfer_.status().active;
+    const bool pastHardDeadline = arrivalRedrawDeadlineMs_ != 0 && now >= arrivalRedrawDeadlineMs_;
+    if (transferActive && !pastHardDeadline) {
+      if (arrivalRedrawDeadlineMs_ == 0) arrivalRedrawDeadlineMs_ = now + kArrivalRedrawMaxDeferMs;
+      arrivalRedrawDueMs_ = now + kArrivalRedrawSettleMs;
+    } else {
+      arrivalRedrawDueMs_ = 0;
+      arrivalRedrawDeadlineMs_ = 0;
+      LOG_INF(kLogTag, "tiles arrived, redrawing");
+      showBusy();
+      renderCurrent();
+    }
   }
   // Checked after the redraw, never before it: the redraw is what the rider
   // is waiting for, and this is an SD write.

@@ -616,6 +616,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Deadline for the redraw a tile arrival owes, pushed out by each further
   // arrival so a burst costs one frame. 0 means none owed.
   uint32_t arrivalRedrawDueMs_ = 0;
+  // Set the first time arrivalRedrawDueMs_ expires while transfer_.status()
+  // is still active -- the moment the redraw starts being deferred rather
+  // than skipped outright. 0 means no deferral is in progress. Bounds the
+  // deferral to kArrivalRedrawMaxDeferMs so a long multi-tile fetch that
+  // never goes quiet still gets a redraw. See loop().
+  uint32_t arrivalRedrawDeadlineMs_ = 0;
   // Bytes the receiver had moved when the ask's quiet timer was last rearmed.
   // The ask expires on silence, not on elapsed time (expireAutoSync()).
   uint32_t lastTransferProgress_ = 0;
