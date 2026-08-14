@@ -1047,7 +1047,17 @@ void MapActivity::updateHeaderStatus() {
   // Nothing to update before there is a frame to update: the waiting banner
   // draws no header row at all, and painting one onto it would leave a floating
   // status row over a screen with no map.
-  if (!viewportDrawn_) return;
+  //
+  // Gated on headerRowDrawn_, not viewportDrawn_. Those two used to be the same
+  // flag, but they answer different questions: viewportDrawn_ is "may an
+  // incoming fix move the marker on this frame" (followability), and a
+  // persisted-fix frame is deliberately not followable while still carrying a
+  // real header row. Reusing viewportDrawn_ here froze the row for the entire
+  // time the persisted-fix frame is up, which is exactly the case where the
+  // rider most wants to know whether the phone is still there -- see
+  // docs/map-header-status.md, "The row freezes while the map shows a
+  // persisted fix".
+  if (!headerRowDrawn_) return;
 
   // Polled, not checked per tick: rssi() is a NimBLE host call
   // (ble_gap_conn_rssi), and asking it hundreds of times a second to answer a
@@ -1477,6 +1487,7 @@ void MapActivity::onEnter() {
   saveDueMs_ = 0;
   showingPersistedFix_ = false;
   viewportDrawn_ = false;
+  headerRowDrawn_ = false;
   markerPatchValid_ = false;
   partialMoves_ = 0;
   screenMode_ = MapScreenMode::Follow;
@@ -2399,7 +2410,8 @@ void MapActivity::renderWaiting() {
   // ordinary map, not the overview.
   overviewShown_ = false;
   renderer.clearScreen();
-  renderer.drawText(UI_10_FONT_ID, 8, 8, bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE), true);
+  renderer.drawText(UI_10_FONT_ID, 8, 8, bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE),
+                    true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
@@ -2408,6 +2420,9 @@ void MapActivity::renderWaiting() {
   // No map and no marker on this frame: there is nothing for a fix to move
   // inside, so the next one draws a real viewport (applyFix()).
   viewportDrawn_ = false;
+  // No header row either -- this frame is just the waiting text, drawn with
+  // renderer.drawText() above, not drawHeaderStatus().
+  headerRowDrawn_ = false;
   markerPatchValid_ = false;
 }
 
@@ -2765,6 +2780,11 @@ void MapActivity::renderRouteOverview() {
   // after the rider leaves the overview does a full reset rather than trying to
   // move a marker that was never drawn.
   viewportDrawn_ = false;
+  // drawHeaderStatus() above did draw a header row onto this frame, though --
+  // the overview has the same link-status question as the follow map, and
+  // gating on viewportDrawn_ here would freeze it for as long as the overview
+  // is up, the same bug this flag exists to avoid elsewhere.
+  headerRowDrawn_ = true;
   markerPatchValid_ = false;
   overviewShown_ = true;
 
@@ -3131,6 +3151,10 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // The persisted-fix frame carries a banner only a full redraw can clear, so it
   // is deliberately not followable (applyFix()).
   viewportDrawn_ = !showingPersistedFix_;
+  // drawHeaderStatus() above ran unconditionally, persisted fix or not -- the
+  // header row is on the panel either way, so its own repaint gate does not
+  // follow showingPersistedFix_ the way viewportDrawn_ does.
+  headerRowDrawn_ = true;
 
   // Timed above, deliberately: the gate is how long the framebuffer takes to
   // be ready, not how long the panel takes to show it.

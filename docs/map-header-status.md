@@ -358,9 +358,48 @@ row repaints; this is about the row not repainting at all. Both were live in the
 same build, which is why the first hypothesis on the day was T6.6 and why
 `stats` reporting a real `rssi_dbm` was what ruled it out.
 
-**Fix, not yet built.** Split the two jobs: keep `viewportDrawn_` for
-followability, and gate the header on its own "a frame exists to draw onto"
-flag, which a persisted-fix frame satisfies. Care needed on one point already
-documented above -- the persisted-fix frame carries a banner that only a full
-redraw clears, so a windowed header repaint landing on top of it must be checked
-on the panel rather than assumed safe. Open: nobody has tried it.
+**Fixed, read off the code, not yet on the panel.** Split the two jobs: a new
+member `headerRowDrawn_` (`src/activities/map/MapActivity.h`, next to
+`viewportDrawn_`) is true whenever the frame on the panel carries a header row,
+independent of whether that frame is followable. `updateHeaderStatus()`
+(`MapActivity.cpp`) now opens with `if (!headerRowDrawn_) return;` instead of
+testing `viewportDrawn_`.
+
+`headerRowDrawn_` is set at every place `drawHeaderStatus()` runs or does not,
+next to the existing `viewportDrawn_` assignment there:
+
+- `renderViewport()` -- `true` unconditionally (persisted fix or not), because
+  `drawHeaderStatus()` in that function runs unconditionally too. This is the
+  line that fixes the bug: `viewportDrawn_` stays `!showingPersistedFix_` (its
+  followability meaning is untouched), `headerRowDrawn_` does not follow it.
+- `renderRouteOverview()`'s success path -- `true`. `drawHeaderStatus()` runs
+  there as well, and the same freeze applies to the route overview screen as to
+  the persisted-fix map: `viewportDrawn_` is `false` there (an overview has no
+  marker to follow), so the header row would have frozen for as long as the
+  overview stayed up, on the same mechanism as the bug above. Not separately
+  reported by the maintainer -- found by tracing every `viewportDrawn_` reader
+  while building this fix, not by a second hardware session.
+- `renderWaiting()` and `onEnter()`'s state reset -- `false`. Neither draws a
+  header row (`renderWaiting()` draws only the waiting text; `onEnter()` runs
+  before any frame exists), so the row must stay ungated-off here exactly as
+  before.
+
+Every other `viewportDrawn_` reader was checked and left alone:
+`panBy()` (`MapActivity.cpp`, guards on `source_` instead, by its own comment,
+because panning cares about a frame existing, not about followability -- the
+same distinction this fix draws, already correct there before this change),
+the menu-close windowed repaint (restores a saved backdrop, touches neither
+flag), and `applyFix()`'s `!viewportDrawn_ || !markerPatchValid_ || !source_`
+check (this is the followability test the flag was built for -- untouched).
+
+**Open, not tested on the panel.** The trap documented above is still a trap:
+the persisted-fix frame carries a banner that only a full redraw clears, and
+`updateHeaderStatus()` repaints via `renderer.displayBufferWindow()`, a windowed
+refresh, over that same frame. Reading the code: `headerStatusRect()` sits in
+the top-right corner and the banner is presumably lower/centred, so a window
+repaint of the corner should not overlap the banner's own pixels -- but nobody
+has confirmed where the banner actually draws relative to that rect, and
+"should not overlap" is a read-off-the-code guess, not a measurement. What
+would settle it: `CMD:GOTO_MAP` with a persisted fix and no phone connected
+yet, then connect a phone and watch the header repaint on `CMD:SCREENSHOT` --
+does the banner survive untouched, get partly erased, or leave a stray edge.
