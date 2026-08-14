@@ -614,7 +614,17 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Last tileSeq already cleared out of the store (drainTransferredTiles()).
   uint32_t lastClearedTileSeq_ = 0;
   // Deadline for the redraw a tile arrival owes, pushed out by each further
-  // arrival so a burst costs one frame. 0 means none owed.
+  // arrival so a burst costs one frame. 0 means none owed. loop() also
+  // re-arms this, with no bound, for as long as transfer_.status().active is
+  // true when it expires -- a render mid-transfer has been reproduced to
+  // kill the fetch, so there is deliberately no escape hatch there. See
+  // MapActivity.cpp's kArrivalRedrawSettleMs comment and docs/missing-tiles.md.
+  //
+  // expireAutoSync() also clears this directly once it independently proves
+  // the transfer has gone silent (kAutoSyncQuietMs of unmoved byte counters)
+  // -- but only while an autosync ask is outstanding. An unsolicited push
+  // with no ask never reaches expireAutoSync() and can still leave this
+  // armed forever if it stalls the same way.
   uint32_t arrivalRedrawDueMs_ = 0;
   // Bytes the receiver had moved when the ask's quiet timer was last rearmed.
   // The ask expires on silence, not on elapsed time (expireAutoSync()).

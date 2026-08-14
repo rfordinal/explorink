@@ -457,6 +457,123 @@ of two seconds of waveform, and the frame worth spending is the one after the
 last tile. It is also deliberately not `armRedraw()`'s deadline: a button press
 must not be made to wait behind a transfer.
 
+### The settle can expire mid-transfer -- deferred, not fired, since 2026-08-14
+
+**Measured on hardware 2026-08-14**: the phone app moves bytes at ~9.0 kB/s
+(81,774 B in 9.08 s). At that rate any tile over ~45 KB takes longer than the
+5 s settle, so the timer armed by *one* arrival routinely expires while the
+*next* tile of the same fetch is still streaming in -- a 60-70 KB tile put the
+redraw at 63-73% of the following tile, observed on the panel four times as
+the phone's progress bar slowing and stopping.
+
+Rendering there is wrong twice over: the frame is about to be superseded by
+the tile still incoming, so the waveform pass is wasted, and the multi-second
+refresh it costs is long enough to expire the BLE supervision timeout and
+drop the link (see "What actually kills the link" below).
+
+`MapActivity::loop()` (`src/activities/map/MapActivity.cpp:1965-1974`) now
+checks `transfer_.status().active` when `arrivalRedrawDueMs_` expires. If a
+transfer is still moving bytes, it re-arms the settle instead of rendering,
+so the redraw happens once the channel goes quiet -- the same coalescing the
+settle already does for a burst of arrivals, extended over the gap between
+two tiles of one fetch.
+
+**No bound on that deferral, on purpose.** The first version of this change
+capped the defer at 30 s so a long multi-tile fetch that never goes quiet
+would still redraw. **Measured on hardware 2026-08-14**: forcing a redraw
+mid-transfer is not merely a wasted waveform, it is reproducibly fatal to
+the fetch -- the maintainer pressed zoom on purpose while a transfer was in
+flight, which forces an immediate `renderCurrent()` (that call site is
+untouched by this change, see below), and the transfer died: the phone
+reported `link lost`. A bound that eventually forces the same render is a
+scheduled version of the same kill, not a safety net, so it was removed
+(`src/activities/map/MapActivity.cpp:104-120` -- the constant and the
+rejection are both gone, replaced by a comment explaining why). The redraw
+now waits for `active` to go false, however long that takes. A bound belongs
+back in `loop()` once a mid-transfer render stops being fatal.
+
+**What actually kills the link -- measured 2026-08-14.** The first hypothesis
+was the shared SPI bus: panel and SD card both call `SPI.begin` on the global
+`SPI` (`EpdBus.cpp:48`, `SDCardManager.cpp:96`). **Rejected on analysis**:
+`HalStorage` serialises every SD access behind `storageMutex`, SdFat's
+`SHARED_SPI` mode closes its transaction per sector operation, and the
+expensive part of a refresh -- the 0.5-1.7 s waveform wait -- holds no SPI
+transaction at all. The real cause is the BLE supervision timeout: **57 of 57
+disconnects on the maintainer's live ride came back `gatt_status: 8`**
+(Android's `GATT_CONN_TIMEOUT`, HCI reason `0x08`), with zero disconnects
+from any other cause, against the 4 s the transfer-active parameter set was
+asking for. A render plus panel refresh simply outlasts 4 s. The fix raises
+both parameter sets to 20 s -- `kConnParamsFastTimeoutUnits` and
+`kConnParamsIdleTimeoutUnits`, `lib/BlePositionServer/include/BlePositionServer.h`,
+full measurement in `docs/power-management.md`, "T6.2".
+
+**Still open**: *why* a render stalls the link layer for seconds at all. The
+controller task runs at a higher priority than the activity task and the
+panel path never masks interrupts, so the mechanism by which a refresh
+starves the LL is not established. Until the 20 s timeout is confirmed on
+hardware to end the kills, the unbounded deferral above stays as belt and
+braces.
+
+**The starvation case, partly closed 2026-08-14.** `arrivalRedrawDueMs_` only
+clears when `transfer_.status().active` is false at the moment it expires.
+`active_` (`MapTransferReceiver.h:213`, `MapTransferReceiver.cpp:317,441,494`)
+goes false on a completed transfer, an abort opcode from the phone (`kOpAbort`,
+`MapTransferReceiver.cpp:208-214`), a NimBLE disconnect (`hooks.onDisconnect`
+-> `abandon(nullptr)`, `MapTransferReceiver.cpp:124,169-177`), or the
+activity's own `detach()` on `onExit()` (`MapActivity.cpp:1722`, which blocks
+until any in-flight frame finishes and then abandons the transfer). But per
+`MapTransferReceiver.h:77-82`, **the only idle timeout on a stalled transfer
+fires from the *next* begin frame**, not from a poll: "that reclaim is the
+only timeout, and it deliberately happens on the host task when the next
+begin arrives rather than from a poll on the activity task." So a transfer
+that goes silent -- bytes stop, no abort opcode, no disconnect, and no new
+begin ever arrives, exactly the shape of a dead-but-still-connected link --
+used to leave `active_` true and `arrivalRedrawDueMs_` armed **forever**, for
+as long as the rider stayed on the map screen.
+
+**Closed for the case an autosync ask is outstanding.**
+`MapActivity::expireAutoSync()` (`MapActivity.cpp:1023-1080`) already owns a
+second, independent proof of silence: `kAutoSyncQuietMs` (45 s) with
+`transfer_.status().completedBytes + received` unchanged, re-armed on every
+real byte (`MapActivity.cpp:1034-1039`). Reaching its give-up branch means
+the one transfer the receiver can have in flight (`MapTransferReceiver.h:77`,
+"one transfer at a time") is not merely slow, it is not moving at all. At
+that point (`MapActivity.cpp:1048-1080`) it now also clears
+`arrivalRedrawDueMs_` and renders directly, instead of only clearing
+`autoSyncPending_`/`autoSyncDeadlineMs_` as before. Read off the code, not
+yet forced on hardware -- the failure mode this closes (a dead-but-connected
+link) is not one that can be triggered on demand the way the mid-transfer
+kill above was.
+
+Rendered from `expireAutoSync()` itself rather than by clearing the
+receiver's stuck `active_`: writing `MapTransferReceiver` state from the
+activity task without the host-task handshake `detach()` uses (waiting on
+`inFrame_`) is exactly the two-tasks-mutate-the-same-state shape T3.2 exists
+to prevent, and adding a second such path was rejected for that reason. This
+fix only reads `transfer_.status()` -- the pattern every other call site
+here already uses -- and renders on its own account.
+
+**Still open: the unsolicited push.** `expireAutoSync()` returns immediately
+when `autoSyncPending_ == 0` (`MapActivity.cpp:1024`), so it only ever runs
+while an autosync ask is outstanding. A tile the phone sends on its own with
+no ask behind it -- a stale tile pushed after a freshness check, or a route
+push -- arms `arrivalRedrawDueMs_` the same way (`MapActivity.cpp:722,750`)
+but never touches `autoSyncPending_`, so `expireAutoSync()`'s give-up branch
+never runs for it. If that push's transfer goes silent the same
+dead-but-connected way, the redraw it owes is still starved forever. Closing
+that would need either a periodic idle check on the receiver side (the
+change `MapTransferReceiver.h:77-82` already explains why it avoids) or some
+other proof-of-silence source that does not depend on an ask being open --
+neither exists today. Leaving the map screen unwinds either case regardless
+(`onExit()` -> `detach()` -> `abandon()`), because the whole activity is
+deleted then.
+
+Every other `renderCurrent()` call site -- zoom, pan, orientation, mode, menu
+close -- is unchanged: those are rider-initiated and still render immediately.
+Only the automatic post-arrival redraw defers. That is also why zooming
+mid-transfer was able to reproduce the kill above: this change does not (and
+must not) make a button press wait on a transfer.
+
 ### When an ask ends
 
 - **Every tile settled** -- arrivals plus skips reach the count. The globe goes
