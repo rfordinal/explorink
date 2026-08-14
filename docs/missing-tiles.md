@@ -473,7 +473,7 @@ a transfer (the two share `SPI.begin` on the global `SPI` --
 `EpdBus.cpp:48`, `SDCardManager.cpp:96` -- a separate, larger problem this
 change does not touch).
 
-`MapActivity::loop()` (`src/activities/map/MapActivity.cpp:1932-1941`) now
+`MapActivity::loop()` (`src/activities/map/MapActivity.cpp:1965-1974`) now
 checks `transfer_.status().active` when `arrivalRedrawDueMs_` expires. If a
 transfer is still moving bytes, it re-arms the settle instead of rendering,
 so the redraw happens once the channel goes quiet -- the same coalescing the
@@ -497,33 +497,59 @@ underlying problem is fixed: the panel and the SD card share one SPI bus
 `SPI`), which is under separate analysis and not touched here. A bound
 belongs back in `loop()` once a mid-transfer render stops being fatal.
 
-**The starvation case this leaves open, read off the code, not yet forced on
-hardware.** `arrivalRedrawDueMs_` only clears when `transfer_.status().active`
-is false at the moment it expires. `active_` (`MapTransferReceiver.h:213`,
-`MapTransferReceiver.cpp:317,441,494`) goes false on a completed transfer, an
-abort opcode from the phone (`kOpAbort`, `MapTransferReceiver.cpp:208-214`),
-a NimBLE disconnect (`hooks.onDisconnect` -> `abandon(nullptr)`,
-`MapTransferReceiver.cpp:124,169-177`), or the activity's own `detach()` on
-`onExit()` (`MapActivity.cpp:1722`, which blocks until any in-flight frame
-finishes and then abandons the transfer). But per
+**The starvation case, partly closed 2026-08-14.** `arrivalRedrawDueMs_` only
+clears when `transfer_.status().active` is false at the moment it expires.
+`active_` (`MapTransferReceiver.h:213`, `MapTransferReceiver.cpp:317,441,494`)
+goes false on a completed transfer, an abort opcode from the phone (`kOpAbort`,
+`MapTransferReceiver.cpp:208-214`), a NimBLE disconnect (`hooks.onDisconnect`
+-> `abandon(nullptr)`, `MapTransferReceiver.cpp:124,169-177`), or the
+activity's own `detach()` on `onExit()` (`MapActivity.cpp:1722`, which blocks
+until any in-flight frame finishes and then abandons the transfer). But per
 `MapTransferReceiver.h:77-82`, **the only idle timeout on a stalled transfer
 fires from the *next* begin frame**, not from a poll: "that reclaim is the
 only timeout, and it deliberately happens on the host task when the next
 begin arrives rather than from a poll on the activity task." So a transfer
 that goes silent -- bytes stop, no abort opcode, no disconnect, and no new
 begin ever arrives, exactly the shape of a dead-but-still-connected link --
-leaves `active_` true and `arrivalRedrawDueMs_` armed **forever**, for as
-long as the rider stays on the map screen. `expireAutoSync()`'s
-`kAutoSyncQuietMs` (45 s) ends the *ask* on the same silence and turns the
-globe off, but it does not touch `transfer_` or `arrivalRedrawDueMs_`, so the
-one visible sign of the stuck ask disappears while the redraw stays silently
-starved underneath it. This is a real gap, not patched over here: the fix
-would need either a periodic idle check on the receiver side (a change
-`MapTransferReceiver.h:77-82` explicitly avoided, for the reason it gives) or
-a way to force the redraw that does not cost a live transfer -- which is
-exactly what removing the bound gave up. Leaving the map screen unwinds it
-regardless (`onExit()` -> `detach()` -> `abandon()`), because the whole
-activity is deleted then.
+used to leave `active_` true and `arrivalRedrawDueMs_` armed **forever**, for
+as long as the rider stayed on the map screen.
+
+**Closed for the case an autosync ask is outstanding.**
+`MapActivity::expireAutoSync()` (`MapActivity.cpp:1023-1080`) already owns a
+second, independent proof of silence: `kAutoSyncQuietMs` (45 s) with
+`transfer_.status().completedBytes + received` unchanged, re-armed on every
+real byte (`MapActivity.cpp:1034-1039`). Reaching its give-up branch means
+the one transfer the receiver can have in flight (`MapTransferReceiver.h:77`,
+"one transfer at a time") is not merely slow, it is not moving at all. At
+that point (`MapActivity.cpp:1048-1080`) it now also clears
+`arrivalRedrawDueMs_` and renders directly, instead of only clearing
+`autoSyncPending_`/`autoSyncDeadlineMs_` as before. Read off the code, not
+yet forced on hardware -- the failure mode this closes (a dead-but-connected
+link) is not one that can be triggered on demand the way the mid-transfer
+kill above was.
+
+Rendered from `expireAutoSync()` itself rather than by clearing the
+receiver's stuck `active_`: writing `MapTransferReceiver` state from the
+activity task without the host-task handshake `detach()` uses (waiting on
+`inFrame_`) is exactly the two-tasks-mutate-the-same-state shape T3.2 exists
+to prevent, and adding a second such path was rejected for that reason. This
+fix only reads `transfer_.status()` -- the pattern every other call site
+here already uses -- and renders on its own account.
+
+**Still open: the unsolicited push.** `expireAutoSync()` returns immediately
+when `autoSyncPending_ == 0` (`MapActivity.cpp:1024`), so it only ever runs
+while an autosync ask is outstanding. A tile the phone sends on its own with
+no ask behind it -- a stale tile pushed after a freshness check, or a route
+push -- arms `arrivalRedrawDueMs_` the same way (`MapActivity.cpp:722,750`)
+but never touches `autoSyncPending_`, so `expireAutoSync()`'s give-up branch
+never runs for it. If that push's transfer goes silent the same
+dead-but-connected way, the redraw it owes is still starved forever. Closing
+that would need either a periodic idle check on the receiver side (the
+change `MapTransferReceiver.h:77-82` already explains why it avoids) or some
+other proof-of-silence source that does not depend on an ask being open --
+neither exists today. Leaving the map screen unwinds either case regardless
+(`onExit()` -> `detach()` -> `abandon()`), because the whole activity is
+deleted then.
 
 Every other `renderCurrent()` call site -- zoom, pan, orientation, mode, menu
 close -- is unchanged: those are rider-initiated and still render immediately.

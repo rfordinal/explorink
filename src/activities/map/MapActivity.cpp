@@ -1044,6 +1044,39 @@ void MapActivity::expireAutoSync() {
           static_cast<unsigned long>(kAutoSyncQuietMs / 1000));
   autoSyncPending_ = 0;
   autoSyncDeadlineMs_ = 0;
+
+  // Also release any arrival redraw still waiting out loop()'s
+  // transfer_.status().active check (the comment block right after
+  // kArrivalRedrawSettleMs's definition, and docs/missing-tiles.md, "No
+  // bound on that deferral, on purpose"). The check just above this line is
+  // exactly the proof that render needs: kAutoSyncQuietMs of the
+  // byte counters not moving at all, re-armed on every real byte
+  // (the `progress != lastTransferProgress_` branch above), so reaching
+  // here means the transfer -- there is only ever one at a time,
+  // MapTransferReceiver.h:77 -- is not merely slow, it is not moving.
+  //
+  // Rendered directly here rather than by clearing the receiver's stuck
+  // `active_`: doing that from the activity task would mean writing
+  // MapTransferReceiver's state without the host-task handshake detach()
+  // uses (waiting on inFrame_, MapTransferReceiver.cpp's detach()) --
+  // exactly the two-tasks-mutate-the-same-state shape T3.2 exists to
+  // prevent. This only ever reads transfer_.status() (the established
+  // pattern every other call site here already uses) and renders on its
+  // own account -- the same call loop()'s branch would make once `active`
+  // happened to read false there.
+  //
+  // Covers autosync asks only. An unsolicited push -- a stale tile the
+  // phone sends on its own after a freshness check, with no ask
+  // outstanding -- never reaches this function: the guard at the top of
+  // expireAutoSync() returns immediately when autoSyncPending_ == 0. That
+  // path can still leave arrivalRedrawDueMs_ armed forever if its transfer
+  // goes silent the same way. Open; not closed here.
+  if (arrivalRedrawDueMs_ != 0) {
+    arrivalRedrawDueMs_ = 0;
+    LOG_INF(kLogTag, "autosync: releasing the arrival redraw stuck behind it");
+    showBusy();
+    renderCurrent();
+  }
 }
 
 // rssi() answers 0 on failure (BlePositionServer.cpp:601-605), not a real
@@ -1926,9 +1959,11 @@ void MapActivity::loop() {
   // wasting a waveform: forcing a redraw mid-transfer has been reproduced on
   // hardware to kill the transfer outright (see the constant block above),
   // so this re-arms the settle for as long as transfer_.status().active
-  // stays true, with **no bound** -- see docs/missing-tiles.md, "The settle
-  // can expire mid-transfer", including the starvation case that leaves
-  // open: nothing here forces a redraw if `active` never goes false.
+  // stays true, with **no bound of its own** -- nothing in this branch ever
+  // forces a redraw if `active` never goes false. expireAutoSync() releases
+  // it independently once an outstanding ask proves the transfer has gone
+  // silent; an unsolicited push with no ask behind it is still uncovered.
+  // See docs/missing-tiles.md, "The settle can expire mid-transfer".
   if (arrivalRedrawDueMs_ != 0 && now >= arrivalRedrawDueMs_) {
     if (transfer_.status().active) {
       arrivalRedrawDueMs_ = now + kArrivalRedrawSettleMs;
