@@ -941,3 +941,148 @@ for a line nobody receives.
 `MapCommandParser` pass unchanged (they do not exercise `MapBleConsole` or
 `BlePositionServer`), but nothing on real BLE hardware has exercised the
 capped `poll()` or the `FETCH_CANCEL` skip yet.
+
+## Test scenarios for the freshness check
+
+Written 2026-08-14, after the BLE fix plan touched this path twice: T4.3 gave
+`FreshnessChecker` a generation guard and a stale-reply debt, T5.3 put the
+listing on fast link parameters. Neither has been on hardware.
+
+**Start from what is already covered, so nothing is re-tested by hand.**
+`FreshnessCheckerTest` (`android/app/src/test/java/org/explorink/gpsbridge/`)
+holds 25 plain-JVM tests, and they already pin: a matching content id is not
+reported stale; a differing one is reported once with the expected id kept; a
+whole viewport is one range read; an unreachable CDN answers `unknown` and never
+`stale`; a truncated `have` listing answers `unknown`; the offline backoff; a
+`CHECK_TILES` restart neither lets the stale write finish the new run nor feeds
+the new reader the old reply; and the fast link is released exactly once on each
+of success, truncation, silence, a hung index read, a dropped link and a restart
+answered immediately. Those are settled on the laptop. Hardware scenarios should
+only chase what a unit test cannot see.
+
+**The blocker, stated first: there is no laptop stand-in for this conversation.**
+`tools/blefakephone.py` speaks the missing-tile fetch (`NEED_TILES`, `missing`,
+begin/chunk) and does **not** speak `CHECK_TILES`, `have`, `stale` or `checked` —
+grep it for those words and they are absent, and its own comment says it fetches
+tiles the device does not have at all, with no `?crc=`. So every scenario below
+needs the real Android app today, which is why the autosync path has
+`tools/autosync_gate.py` and this one has nothing, and why two of its bugs (the
+truncated `have` listing, the dropped reply lines) were found late and by
+accident rather than by a gate.
+
+### The highest-value work here is a harness, not a checklist
+
+Teaching `blefakephone.py` the four freshness verbs would make S1, S3, S4 and S6
+below scriptable and repeatable, the way `autosync_gate.py` and
+`ble_reply_gate.py` already are for their features. It needs: answer
+`CHECK_TILES` by reading the device's `have` listing, byte-range read the CDN
+`.idx` (the logic already exists on the app side and in
+`../../docs/tile-index-spec.md`), reply `stale <z> <col> <row>` per differing
+tile then `checked <n>`, and push each stale tile with `?crc=<content_id>`.
+Until that exists, treat the list below as a manual pass.
+
+### S1 — the happy path, both ends agreeing
+
+Runnable today with the real app. Freshness must be switched on
+(`mapTileFreshnessMode`, off by default).
+
+1. Open the map with the phone connected. Wait for the check to run.
+2. Expect on the device: `CHECK_TILES <count> fmt <version>` out, `have` listing
+   answered, and a verdict line that is **not** `checked unknown`.
+3. Read the counts on the panel against the store: the check queue draws dots,
+   the fetch queue draws outlines (see "The check queue is dots" above).
+
+Disproves: nothing agreeing end to end. This is the baseline every other
+scenario is measured against, and the one that catches a format-version
+mismatch between the ends.
+
+### S2 — a tile that is genuinely stale gets replaced
+
+Runnable today, needs a rebuilt tile on the CDN.
+
+1. Note a tile the device holds and its `content_id`.
+2. Rebuild that tile so its `content_id` changes, push it to the CDN, regenerate
+   the index (`build_index.py`) and push the mirror — both steps, or the index
+   still describes the old tile and the check cannot see the change.
+3. Run the check.
+4. Expect: `stale` for exactly that tile, the phone pushes it unasked with
+   `?crc=<content_id>`, and the device's `contentId()` for it afterwards matches
+   the published index.
+
+Disproves: the whole feature. This is the only scenario that proves the signal
+works rather than that the plumbing moves.
+
+### S3 — restart mid-listing (T4.3's case)
+
+Runnable today, and the one this session's work most needs.
+
+1. Start a check on a store large enough that the listing takes several pages.
+2. While it is still listing, trigger a second check — press the menu item
+   again.
+3. Expect: the new run completes with a correct count, and **no** `stale` for a
+   tile the old run named. The app logs the discard
+   (`owedListingReplies`).
+
+Disproves: the second half of review item 3. A unit test pins the state machine;
+only hardware pins it against a device that really does keep answering the dead
+question.
+
+### S4 — the known open gap: a reply the device drops
+
+**Not runnable without new tooling**, and the scenario most worth building for.
+
+The debt is paid only by the stale reply's terminating `OK`
+(`docs/ble-map-transfer-protocol.md`, "A restart of the same ask still has a
+stale reply in flight", second known gap). Firmware drops a whole reply after
+`kConfirmTimeoutMs` (3000 ms) of an unconfirmed indication and says so:
+`reply unconfirmed after N ms, M bytes dropped`. To force it, the peer must stop
+confirming indications for 3 s while a listing reply is in flight — no current
+tool does that, and the real app always confirms.
+
+1. Peer stops confirming for >3 s mid-listing, then restart the check.
+2. Expect, if the gap is real: the next listing's reply is eaten line by line
+   and that check dies on the app's 15 s `REPLY_TIMEOUT_MS`.
+3. The remedy is written down and not built: clear the debt when the new
+   request's write is acked.
+
+Disproves: whether the gap is reachable at all. Right now it is arithmetic and a
+code read, nothing more.
+
+### S5 — the loop guard holds
+
+Runnable today, needs a CDN that serves a stale copy.
+
+1. Make a tile report `stale` whose fetched replacement still does not match.
+2. Expect: `StaleTilesList::onArrived()` remembers it was fetched because it was
+   stale, and the second `stale` report becomes `giveUp()` rather than another
+   entry — see "A stale fetch that does not fix the tile must stop asking".
+3. Expect no endless fetch loop, and the give-up to survive `clear()`.
+
+Disproves: the loop guard. There is real battery behind getting this wrong.
+
+### S6 — T5.3's fast link, on a real link
+
+Runnable today; needs the app's session log rather than the panel.
+
+1. Run a check and read the app's `conn_params` events (T2.2) around it.
+2. Expect the interval to be at the fast set while the listing runs and back to
+   idle after it, exactly once per exit — the unit tests pin the call counts, this
+   pins that the phone honours them.
+3. Time the listing. The review's arithmetic said 9 indication round trips at
+   688–1503 ms each is 6–14 s against a 15 s timeout; H1 measured intervals of
+   15–30 ms on this build, so the expectation now is comfortably under that.
+
+Disproves: that T5.3 bought anything measurable. It may turn out the link was
+never the constraint on this build, which is a result worth having in writing.
+
+### S7 — the check does not lie when it cannot answer
+
+Runnable today.
+
+1. Put the phone offline (airplane mode is enough) and run a check.
+2. Expect `checked unknown`, **not** `checked 0`, nothing marked, and the offline
+   backoff engaged so the device is not asked again immediately.
+
+Disproves: the discipline the whole feature rests on — a check that reports
+"all current" when it could not read the index is worse than no check, because it
+marks tiles settled.
