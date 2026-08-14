@@ -314,3 +314,53 @@ same offset still reads right.
   rssi() read must not draw full signal". What would settle it: a build with
   a logging shim that forces `ble_gap_conn_rssi()` to fail on demand, watched
   over `CMD:SCREENSHOT` through a connect / forced-fail / recovery cycle.
+
+## The row freezes while the map shows a persisted fix -- found on hardware 2026-08-14
+
+**Measured, not read off the code.** Reported as "BLE indicator is dead" with
+the link demonstrably alive, and traced end to end in one session.
+
+What happened, from the device's own serial log and a `CMD:SCREENSHOT` of the
+same moment:
+
+```
+10:07:16  onEnter: mapHasLastFix=1
+10:07:16  onEnter: rendering persisted fix 481305686,171078122
+10:07:18  connected: interval 40 units (50 ms)      <- link came up AFTER the frame
+10:07:19  command channel subscribed / transfer status subscribed / MTU now 256
+```
+
+The panel kept the "no link" X for minutes while `stats` answered
+`rssi_dbm=-38` and both indication channels were subscribed. The framebuffer
+itself held the X, so this is not a panel-refresh problem -- nothing redrew the
+row.
+
+**The mechanism is one flag doing two jobs.** `viewportDrawn_` is set from
+`viewportDrawn_ = !showingPersistedFix_` (`src/activities/map/MapActivity.cpp`,
+in the render path), which is correct for what that flag was built for: the
+comment right above it says the persisted-fix frame "is deliberately not
+followable". But `updateHeaderStatus()` opens with `if (!viewportDrawn_) return;`
+-- so the same flag also gates the header row. With no live fix the row is
+therefore drawn exactly once, by `onEnter`, and never again. The link comes up a
+second or two later, so the X `onEnter` correctly drew is what stays.
+
+Whether the phone is connected has nothing to do with whether the frame is
+followable. The two uses were never meant to be the same test.
+
+**Why it bites exactly when it matters.** No live fix is the case where a rider
+most wants to know whether the phone is still there -- the map is stale
+*because* something is wrong, and the one indicator that would say what is
+frozen. Indoors, or with GPS not yet locked, this is the normal state, not an
+edge case.
+
+**Not caused by the RSSI change above.** T6.6 changed *what* is drawn when the
+row repaints; this is about the row not repainting at all. Both were live in the
+same build, which is why the first hypothesis on the day was T6.6 and why
+`stats` reporting a real `rssi_dbm` was what ruled it out.
+
+**Fix, not yet built.** Split the two jobs: keep `viewportDrawn_` for
+followability, and gate the header on its own "a frame exists to draw onto"
+flag, which a persisted-fix frame satisfies. Care needed on one point already
+documented above -- the persisted-fix frame carries a banner that only a full
+redraw clears, so a windowed header repaint landing on top of it must be checked
+on the panel rather than assumed safe. Open: nobody has tried it.
