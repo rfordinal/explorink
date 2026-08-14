@@ -510,19 +510,66 @@ class BlePositionServer {
   // moving" settles onto the cheap interval well inside one map redraw.
   static constexpr uint32_t kConnParamsIdleDelayMs = 5000;
 
-  // Connected-idle set: 30-50 ms interval, slave latency 9. See
+  // Connected-idle set: 30-50 ms interval, slave latency 4. See
   // BlePositionServer.cpp, serviceConnParams(), for why the supervision
   // timeout below clears this pair's worst-case silence with room to spare.
-  static constexpr uint16_t kConnParamsIdleMinUnits = 24;   // 24 * 1.25 ms = 30 ms
-  static constexpr uint16_t kConnParamsIdleMaxUnits = 40;   // 40 * 1.25 ms = 50 ms
-  static constexpr uint16_t kConnParamsIdleLatency = 9;
-  static constexpr uint16_t kConnParamsIdleTimeoutUnits = 600;  // 600 * 10 ms = 6 s
+  static constexpr uint16_t kConnParamsIdleMinUnits = 24;  // 24 * 1.25 ms = 30 ms
+  static constexpr uint16_t kConnParamsIdleMaxUnits = 40;  // 40 * 1.25 ms = 50 ms
+  // T6.2 shipped 9. Lowered here (T6.2 hardware fix) because it is
+  // unmeasured savings against a real cost, not because it caused the
+  // measured outage: the 57/57 disconnects (docs/power-management.md,
+  // "T6.2") were all gatt_status 8 with a *late-answer* pattern -- 119
+  // gatt_timeout paired with 119 gatt_late, 5.9-7.2 s after issue -- which is
+  // a render/task stall, not a missed connection event. Latency 9's own
+  // worst-case gap, (1+9)*50 ms = 500 ms, was never close to even the old
+  // 6 s timeout, so it is not the mechanism of the outage. It is lowered
+  // anyway because the power it saves has never been measured (the H8 power
+  // soak, docs/ble-fix-plan.md, never ran) while the cost -- more
+  // legitimately-skipped listens for a marginal-RF hiccup to stack on top
+  // of -- is real and cheap to reduce: halving the skip budget costs
+  // (1+4)*50 ms*2 = 500 ms of margin against a 20 s timeout that has 40x to
+  // spare either way (BlePositionServer.cpp, serviceConnParams()).
+  static constexpr uint16_t kConnParamsIdleLatency = 4;
+  // 2000 * 10 ms = 20 s. T6.2 shipped 600 (6 s), sized only against
+  // (1+9)*50 ms*2 = 1000 ms of missed-event risk -- correct arithmetic for
+  // the wrong failure mode. Measured on hardware: 57/57 disconnects were
+  // gatt_status 8 (supervision timeout), 28 of them with no transfer in
+  // flight, i.e. against this idle set. 20 s clears the maintainer's stated
+  // worst case -- a map render plus panel refresh must be assumed to reach
+  // 10 s -- with a 2x margin (2.7x against the slowest render measured on the
+  // bench, a 7463 ms rung-0 frame: parent repo, docs/render-gate/stream-crc/
+  // manifest.json, "renderMs": 7463, and docs/street-labels-plan.md:82. That
+  // is a render-gate figure, not a number from the 2026-08-14 ride, and it is
+  // not in this submodule's docs/place-labels.md); stays inside the BLE
+  // supervision-timeout range (0x000A-0x0C80, 100 ms-32 s) with 12 s to
+  // spare; and sits 10 s below Android's own 30 s ATT transaction timeout,
+  // past which Android tears the bearer down itself regardless of what this
+  // device asks for, so going higher would buy nothing. Cost: a phone that
+  // is actually gone (not just a render stall) now reads as "still
+  // connected" for up to 20 s instead of 6 s, which delays
+  // resetAdvertisingPhase() by the same amount and therefore delays the
+  // start of kFastAdvertisingMs's 30 s fast-interval window -- worst case
+  // ~14 s later than before this change, ~50 s total from actual departure
+  // to falling back to slow advertising instead of ~36 s.
+  static constexpr uint16_t kConnParamsIdleTimeoutUnits = 2000;
 
   // Transfer-active set: fast, no latency, while bytes are actually moving.
   static constexpr uint16_t kConnParamsFastMinUnits = 12;  // 12 * 1.25 ms = 15 ms
   static constexpr uint16_t kConnParamsFastMaxUnits = 24;  // 24 * 1.25 ms = 30 ms
   static constexpr uint16_t kConnParamsFastLatency = 0;
-  static constexpr uint16_t kConnParamsFastTimeoutUnits = 400;  // 400 * 10 ms = 4 s
+  // 2000 * 10 ms = 20 s, same value and reasoning as
+  // kConnParamsIdleTimeoutUnits above -- 29 of the 57 measured disconnects
+  // happened during an open fetch, i.e. against this fast set, and the
+  // render/refresh pause that kills the link does not know or care whether
+  // a transfer happens to be in flight when it hits. Same margins: 2x the
+  // assumed 10 s render+refresh, 2.7x the slowest bench render (7463 ms), 12 s
+  // inside the BLE range's 32 s ceiling, 10 s below Android's 30 s ATT
+  // timeout. (1+0)*30 ms*2 = 60 ms against it -- clears by over 300x, wider
+  // than the idle set's margin since latency is 0 here. Cost: a phone that
+  // drops mid-transfer and is actually gone now reads as connected for up to
+  // 20 s instead of 4 s -- 16 s later into kFastAdvertisingMs's 30 s
+  // fast-advertising window than before this change.
+  static constexpr uint16_t kConnParamsFastTimeoutUnits = 2000;
 
   // The one place either set is ever requested. Called only from
   // serviceAdvertising(), which is itself activity-task-only -- so, like
