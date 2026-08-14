@@ -508,6 +508,15 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // frame are not followable: one has no map under it at all, the other carries
   // a banner that only a full redraw can clear.
   bool viewportDrawn_ = false;
+  // True whenever the frame on the panel carries a header row (the BLE link
+  // icon, its bars, the transfer globe) -- drawHeaderStatus() drew one.
+  // Separate from viewportDrawn_ on purpose: whether the phone is connected has
+  // nothing to do with whether the frame is followable. The persisted-fix frame
+  // has a header row and is not followable; the waiting banner has neither.
+  // updateHeaderStatus() gates its own windowed repaint on this flag, not on
+  // viewportDrawn_ -- see docs/map-header-status.md, "The row freezes while the
+  // map shows a persisted fix".
+  bool headerRowDrawn_ = false;
   // The heading the frame was drawn track-up with. proj_ is rotated by it, so
   // it is also the frame's "up".
   uint8_t anchorHeading_ = 0;
