@@ -103,23 +103,21 @@ constexpr uint32_t kFreshnessGateLogThrottleMs = 30 * 1000;
 // after the last tile, so each arrival pushes this out.
 constexpr uint32_t kArrivalRedrawSettleMs = 5000;
 
-// Bound on how long the settle above may be deferred while a transfer is
-// still active (loop(), the arrivalRedrawDueMs_ check). Measured on hardware
-// 2026-08-14: the phone app moves bytes at ~9.0 kB/s (81,774 B in 9.08 s), so
-// any tile over kArrivalRedrawSettleMs worth of bytes (~45 KB) keeps the
-// channel busy past the settle armed by the tile before it -- without this
-// bound, a corridor fetch of many tiles back to back could hold `active` true
-// for minutes and starve the redraw for the whole run.
+// A starvation bound on the deferral below (loop()) was considered and
+// deliberately rejected. Reason, found after this file's first version of
+// the deferral was written: a render landing mid-transfer is not merely a
+// wasted waveform, it is **reproducibly fatal to the fetch** -- forcing a
+// redraw mid-transfer on real hardware (zoom pressed on purpose to provoke
+// one) killed the transfer and the phone reported `link lost`. A bound that
+// eventually forces that same render is a scheduled kill, not a safety net,
+// so there is no bound: the redraw waits for transfer_.status().active to
+// go false, however long that takes. See docs/missing-tiles.md, "The settle
+// can expire mid-transfer" for the starvation case this leaves open.
 //
-// 30 s, six times the settle: at ~9.0 kB/s that is ~270 KB of continuous
-// streaming, comfortably more than a typical viewport ask (a handful of
-// tiles, 6-75 KB each per docs/missing-tiles.md) and enough that an ordinary
-// ask settles on its own quiet gap well before the bound matures. Only a long
-// multi-tile catch-up that never goes quiet hits it, and then it fires
-// roughly every 30 s rather than once at the end of a run that can run
-// minutes -- worst case the rider sees a redraw mid-transfer at most once per
-// 30 s window instead of waiting out the whole fetch.
-constexpr uint32_t kArrivalRedrawMaxDeferMs = 30000;
+// A bound belongs back here once a mid-transfer render is no longer fatal --
+// the panel and the SD card currently share one SPI bus (EpdBus.cpp:48,
+// SDCardManager.cpp:96 both call SPI.begin on the global SPI), which is
+// under separate analysis and not touched by this change.
 
 // How often the header status row's state is looked at (updateHeaderStatus()).
 // Bounds the rate of rssi() calls into the NimBLE host, and is still prompt for
@@ -1521,7 +1519,6 @@ void MapActivity::onEnter() {
   autoSyncDeadlineMs_ = 0;
   lastClearedTileSeq_ = 0;
   arrivalRedrawDueMs_ = 0;
-  arrivalRedrawDeadlineMs_ = 0;
   lastTransferProgress_ = 0;
   transferIconShown_ = false;
   drawnLinkConnected_ = false;
@@ -1925,21 +1922,18 @@ void MapActivity::loop() {
   // Bytes may still be landing for the *next* tile of the same fetch when
   // this settle expires -- at the measured ~9.0 kB/s, any tile over ~45 KB
   // outlasts kArrivalRedrawSettleMs (5 s), so the timer armed by the previous
-  // arrival routinely expires mid-transfer. Rendering then is a wasted
-  // waveform (superseded by the next arrival) and puts a multi-second panel
-  // refresh on the SPI bus the SD card shares mid-transfer, so defer instead
-  // of rendering while transfer_.status().active is true -- bounded by
-  // kArrivalRedrawMaxDeferMs so a fetch that never goes quiet still redraws.
-  // See docs/missing-tiles.md, "Every arrival owes a redraw".
+  // arrival routinely expires mid-transfer. Deferring here is not just about
+  // wasting a waveform: forcing a redraw mid-transfer has been reproduced on
+  // hardware to kill the transfer outright (see the constant block above),
+  // so this re-arms the settle for as long as transfer_.status().active
+  // stays true, with **no bound** -- see docs/missing-tiles.md, "The settle
+  // can expire mid-transfer", including the starvation case that leaves
+  // open: nothing here forces a redraw if `active` never goes false.
   if (arrivalRedrawDueMs_ != 0 && now >= arrivalRedrawDueMs_) {
-    const bool transferActive = transfer_.status().active;
-    const bool pastHardDeadline = arrivalRedrawDeadlineMs_ != 0 && now >= arrivalRedrawDeadlineMs_;
-    if (transferActive && !pastHardDeadline) {
-      if (arrivalRedrawDeadlineMs_ == 0) arrivalRedrawDeadlineMs_ = now + kArrivalRedrawMaxDeferMs;
+    if (transfer_.status().active) {
       arrivalRedrawDueMs_ = now + kArrivalRedrawSettleMs;
     } else {
       arrivalRedrawDueMs_ = 0;
-      arrivalRedrawDeadlineMs_ = 0;
       LOG_INF(kLogTag, "tiles arrived, redrawing");
       showBusy();
       renderCurrent();

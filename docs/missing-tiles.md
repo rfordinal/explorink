@@ -473,29 +473,63 @@ a transfer (the two share `SPI.begin` on the global `SPI` --
 `EpdBus.cpp:48`, `SDCardManager.cpp:96` -- a separate, larger problem this
 change does not touch).
 
-`MapActivity::loop()` (`src/activities/map/MapActivity.cpp:1934-1945`) now
+`MapActivity::loop()` (`src/activities/map/MapActivity.cpp:1932-1941`) now
 checks `transfer_.status().active` when `arrivalRedrawDueMs_` expires. If a
 transfer is still moving bytes, it re-arms the settle instead of rendering,
 so the redraw happens once the channel goes quiet -- the same coalescing the
 settle already does for a burst of arrivals, extended over the gap between
 two tiles of one fetch.
 
-That deferral is bounded, or a corridor fetch of many tiles back to back
-(`active` never going false) would starve the redraw for the whole run,
-which can run minutes. `arrivalRedrawDeadlineMs_` is set once, the first time
-a deferral happens, to `now + kArrivalRedrawMaxDeferMs` (30 s --
-`src/activities/map/MapActivity.cpp:106-122`). Once `now` passes that
-deadline the redraw fires regardless of `active`. Read off the code, not yet
-run against hardware: 30 s is six times the settle and, at ~9.0 kB/s, ~270 KB
-of continuous streaming -- comfortably more than a typical viewport ask (a
-handful of tiles, 6-75 KB each, this doc above) and past the point that ask
-would normally have gone quiet on its own. Only a long multi-tile catch-up
-that never goes quiet hits the bound, and then a redraw happens roughly every
-30 s rather than once at the end of a run that could take minutes.
+**No bound on that deferral, on purpose.** The first version of this change
+capped the defer at 30 s so a long multi-tile fetch that never goes quiet
+would still redraw. **Measured on hardware 2026-08-14**: forcing a redraw
+mid-transfer is not merely a wasted waveform, it is reproducibly fatal to
+the fetch -- the maintainer pressed zoom on purpose while a transfer was in
+flight, which forces an immediate `renderCurrent()` (that call site is
+untouched by this change, see below), and the transfer died: the phone
+reported `link lost`. A bound that eventually forces the same render is a
+scheduled version of the same kill, not a safety net, so it was removed
+(`src/activities/map/MapActivity.cpp:104-120` -- the constant and the
+rejection are both gone, replaced by a comment explaining why). The redraw
+now waits for `active` to go false, however long that takes, until the
+underlying problem is fixed: the panel and the SD card share one SPI bus
+(`EpdBus.cpp:48`, `SDCardManager.cpp:96` both call `SPI.begin` on the global
+`SPI`), which is under separate analysis and not touched here. A bound
+belongs back in `loop()` once a mid-transfer render stops being fatal.
+
+**The starvation case this leaves open, read off the code, not yet forced on
+hardware.** `arrivalRedrawDueMs_` only clears when `transfer_.status().active`
+is false at the moment it expires. `active_` (`MapTransferReceiver.h:213`,
+`MapTransferReceiver.cpp:317,441,494`) goes false on a completed transfer, an
+abort opcode from the phone (`kOpAbort`, `MapTransferReceiver.cpp:208-214`),
+a NimBLE disconnect (`hooks.onDisconnect` -> `abandon(nullptr)`,
+`MapTransferReceiver.cpp:124,169-177`), or the activity's own `detach()` on
+`onExit()` (`MapActivity.cpp:1722`, which blocks until any in-flight frame
+finishes and then abandons the transfer). But per
+`MapTransferReceiver.h:77-82`, **the only idle timeout on a stalled transfer
+fires from the *next* begin frame**, not from a poll: "that reclaim is the
+only timeout, and it deliberately happens on the host task when the next
+begin arrives rather than from a poll on the activity task." So a transfer
+that goes silent -- bytes stop, no abort opcode, no disconnect, and no new
+begin ever arrives, exactly the shape of a dead-but-still-connected link --
+leaves `active_` true and `arrivalRedrawDueMs_` armed **forever**, for as
+long as the rider stays on the map screen. `expireAutoSync()`'s
+`kAutoSyncQuietMs` (45 s) ends the *ask* on the same silence and turns the
+globe off, but it does not touch `transfer_` or `arrivalRedrawDueMs_`, so the
+one visible sign of the stuck ask disappears while the redraw stays silently
+starved underneath it. This is a real gap, not patched over here: the fix
+would need either a periodic idle check on the receiver side (a change
+`MapTransferReceiver.h:77-82` explicitly avoided, for the reason it gives) or
+a way to force the redraw that does not cost a live transfer -- which is
+exactly what removing the bound gave up. Leaving the map screen unwinds it
+regardless (`onExit()` -> `detach()` -> `abandon()`), because the whole
+activity is deleted then.
 
 Every other `renderCurrent()` call site -- zoom, pan, orientation, mode, menu
 close -- is unchanged: those are rider-initiated and still render immediately.
-Only the automatic post-arrival redraw defers.
+Only the automatic post-arrival redraw defers. That is also why zooming
+mid-transfer was able to reproduce the kill above: this change does not (and
+must not) make a button press wait on a transfer.
 
 ### When an ask ends
 
