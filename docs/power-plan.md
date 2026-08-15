@@ -314,10 +314,12 @@ Phase 1 -- make the instruments trustworthy:
       (2026-08-15, over `GET /download` in AP mode). 4028 rows across 61 boots;
       run 1 is the second-to-last boot. Rows are sane and the decomposition is
       now measured.
-- [ ] **Add the build hash to `power.csv`.** The log has no build column, so
-      nothing can say which firmware wrote which boot. That already bit this
-      analysis -- the 10 MHz boot cannot be tied to a build. It gets worse at
-      the second comparison run, which is the next thing that happens.
+- [x] **Add the build to `power.csv`** (2026-08-16). Every row now carries
+      `build` = `TRAILINK_VERSION` as the last column, and the header line is
+      written **once per boot** rather than once per file. The header doubles as
+      the boot marker, and it keeps a file readable across a column change
+      because each boot's rows carry their own column list. Readers must skip
+      any line starting with `uptime_s`. Built clean; **not yet on hardware**.
 - [ ] Teach the analysis to reject contaminated stretches automatically. Run 1's
       file contains charging jumps mid-boot; a naive first-row-to-last-row slope
       over such a boot reports a draw that never happened. Cut on any rise
@@ -401,8 +403,8 @@ Phase 4 -- tune what the measurements expose:
   only during a transfer. The central owns the interval, so this is
   phone-side work (`BlePositionServer::connIntervalUnits()` is how the device
   sees what it got).
-- Log a marker row into `power.csv` when a run starts, so a run's rows can be
-  found without matching timestamps by hand.
+- ~~Log a marker row into `power.csv` when a run starts~~ -- done differently
+  2026-08-16: the header line is now written once per boot, which is the marker.
 
 ## Open questions
 

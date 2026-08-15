@@ -25,6 +25,16 @@ without going through a button press.
   boot, with no phone and no cable needed. This is the only instrument that
   works for the baseline that matters most -- the device on battery with
   nothing connected.
+
+  Two format rules, both added 2026-08-16 after reading a real file:
+  - **Every row carries `build`** (`TRAILINK_VERSION`) as its last column. The
+    device appends across boots, so one file holds rows from several firmwares
+    and nothing else in the row says which. Run 1's file has 61 boots in it and
+    no way to tell their builds apart -- that is the gap this closes.
+  - **The header is written once per boot**, not once per file. It is therefore
+    also the boot marker, and a file stays readable across a column change
+    because each boot's rows carry their own column list. **A reader must skip
+    any line starting with `uptime_s`.**
 - **`stats` on the map console** (`src/activities/map/MapCommandParser.h`, the
   grammar block; `MapConsoleState::writeStats()`), answered over BLE or USB.
   Same key names as the CSV columns, deliberately, so one script parses both.

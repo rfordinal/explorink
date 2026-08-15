@@ -22,8 +22,10 @@ def run_git_value(project_dir, args, label):
             ['git', *args],
             text=True, stderr=subprocess.PIPE, cwd=project_dir
         ).strip()
-        # Strip characters that would break a C string literal
-        return ''.join(c for c in value if c not in '"\\')
+        # Strip characters that would break a C string literal, a printf format
+        # string, or a CSV field. The version reaches all three: it is compiled
+        # in as a literal, and PowerLog writes it as a column in power.csv.
+        return ''.join(c for c in value if c not in '"\\%,\n\r')
     except FileNotFoundError:
         warn(f'git not found on PATH; {label} suffix will be "unknown"')
         return 'unknown'
