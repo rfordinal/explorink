@@ -1547,6 +1547,7 @@ void MapActivity::onEnter() {
   markerPatchValid_ = false;
   partialMoves_ = 0;
   screenMode_ = MapScreenMode::Follow;
+  pendingEntryFullRefresh_ = true;
 
   // Autosync starts from nothing every time this screen opens. The rate cap in
   // particular is per session on purpose: a rider who left the map and came
@@ -2488,7 +2489,8 @@ void MapActivity::renderWaiting() {
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  renderer.displayBuffer(pendingEntryFullRefresh_ ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
+  pendingEntryFullRefresh_ = false;
   busyShown_ = false;  // this frame painted over the badge
   // No map and no marker on this frame: there is nothing for a fix to move
   // inside, so the next one draws a real viewport (applyFix()).
@@ -2867,7 +2869,8 @@ void MapActivity::renderRouteOverview() {
           static_cast<unsigned long>(millis() - startMs), fit.fits ? "whole route" : "too long for the ladder");
   (void)missing;
 
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  renderer.displayBuffer(pendingEntryFullRefresh_ ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
+  pendingEntryFullRefresh_ = false;
   busyShown_ = false;
 }
 
@@ -3231,6 +3234,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
 
   // Timed above, deliberately: the gate is how long the framebuffer takes to
   // be ready, not how long the panel takes to show it.
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  renderer.displayBuffer(pendingEntryFullRefresh_ ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
+  pendingEntryFullRefresh_ = false;
   busyShown_ = false;  // this frame painted over the badge
 }
