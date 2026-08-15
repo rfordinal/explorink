@@ -99,6 +99,39 @@ gets the redraw -- the floor must not swallow it. `MapFollowDecide`'s
 `HeadingDriftReAnchorsEvenStandingStill` and
 `GhostingBudgetBeatsTheMovementFloor` pin that.
 
+### The marker ladder's last rung broke check 2 -- fixed 2026-08-15
+
+**Reported by the maintainer**: the marker reached the bottom of the screen
+(the look-ahead ladder's deepest step) and the map would not stop redrawing;
+pressing the button that pulls the marker back up made it stop.
+
+**Verified by reading the code, not yet on hardware.** `kMarkerLadder`'s last
+entry is 760 (`src/activities/map/MapViewport.h:181`), on an 800 px screen.
+Check 2's margin (`keepInMarginPx`, above) is `ring + kKeepInSlackPx`
+(`MapActivity.cpp:2717`) -- 80 px at rungs 0-4 (full-size marker), 66 at rung
+5, 59 at rung 6 (`MapMarkerMetrics.h:65-82`). `insideKeepIn()`
+(`MapFollow.cpp:14-16`) requires `y < screenHeight - marginPx`, i.e. `y < 720`
+at the worst case. 760 fails that at every rung (720-741, all below 760).
+
+That is not "close to the edge", it is **outside the box the rest of this
+policy assumes the marker settles inside**. `decide()` checks the *new fix's*
+absolute position (`MapFollow.cpp:31`), and after a `ReAnchor` the fix sits
+exactly at `markerYForStep()` -- so parking on this step means every following
+fix, moving or not, fails check 2 and forces another `ReAnchor`. The map
+cannot stop redrawing once the marker is at this step, by construction, not
+because of GPS movement.
+
+**Fix**: `MapActivity::stepMarker()` now refuses to move onto a step whose
+`markerYForStep()` would already violate the largest margin (rungs 0-4's 80
+px, the worst case across every rung) -- `MapActivity.cpp`, `stepMarker()`.
+The ladder's last rung becomes unreachable via the button rather than reached
+and stuck; the ladder itself was not renumbered.
+
+**Open**: whether this is the whole story, or GPS jitter alone (without ever
+reaching step 4) can also land a resting fix outside the margin at a coarser
+rung -- unmeasured. Needs a ride at rung 5/6 with the marker left at a
+mid-ladder step to check.
+
 ## Erasing the marker
 
 Single-buffer mode has no shadow copy of the frame (`EINK_DISPLAY_SINGLE_BUFFER_MODE`,
