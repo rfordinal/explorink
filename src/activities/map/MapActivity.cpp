@@ -4,6 +4,7 @@
 #include <I18n.h>
 #include <Memory.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -231,6 +232,46 @@ constexpr int kHeaderBtToBarsGap = 4;
 constexpr int kHeaderGlobeDiameter = kHeaderIconHeight;
 constexpr int kHeaderGlobeToBtGap = 6;
 constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to bars
+
+// The clock sits leftmost in the status row, between the place name and the
+// globe slot. Its width is measured from "00:00" at draw time, not guessed --
+// same rule the battery percentage's allowance already follows below.
+//
+// **The slot is reserved whether or not a time is known**, exactly like the
+// globe's: a rect that shrank when the clock went away would leave the clock's
+// pixels on the panel with nothing to erase them. Before the phone has sent a
+// packet carrying a non-zero utc the device has no clock at all (the X4 has no
+// RTC), and the slot simply stays blank rather than showing a placeholder --
+// "--:--" reads as a fault, blank reads as "not a thing this screen has".
+constexpr int kHeaderClockToGlobeGap = 8;
+
+// Top y of text in this row, matching the battery percentage exactly.
+// drawHeader() hands drawBatteryRight() rect.y + 5 (BaseTheme.cpp:387), and
+// drawBatteryRight() draws its percentage string at that same y (:119) -- the
+// +6 it adds is for the icon only (:114). So text sits 4px above the icon row
+// (kHeaderMarginTop + 9), and a clock aligned to the icons would sit 4px below
+// the percentage it stands next to.
+constexpr int kHeaderTextTopY = kHeaderMarginTop + 5;
+
+// Width the clock slot reserves. Derived from the widest *digit*, not measured
+// from a sample string like "00:00": SMALL_FONT is proportional, so "23:59"
+// can be wider than "00:00". The clock is right-aligned in its slot, so a
+// string wider than the slot overflows to the **left** -- past the opaque
+// backing and outside headerStatusRect(), which is what the windowed repaint
+// refreshes. Those pixels would then never be erased.
+//
+// Sum of parts, no kerning: kerning between digits shortens a real string more
+// often than it lengthens one, so this is an over-estimate, which is the safe
+// direction. Four digit cells plus a colon covers "23:59"; a single-digit hour
+// simply sits further right in the same slot.
+int headerClockSlotWidth(const GfxRenderer& renderer) {
+  int widestDigit = 0;
+  for (char digit = '0'; digit <= '9'; ++digit) {
+    const char sample[2] = {digit, '\0'};
+    widestDigit = std::max(widestDigit, renderer.getTextWidth(SMALL_FONT_ID, sample));
+  }
+  return widestDigit * 4 + renderer.getTextWidth(SMALL_FONT_ID, ":");
+}
 // GUI.drawHeader() only clears its own 80px-wide battery box (BaseTheme.cpp:366);
 // the BLE logo+bars sit further left, over live map lines like the compass and
 // marker do, so they need the same opaque backing those give themselves.
@@ -1143,17 +1184,50 @@ void MapActivity::updateHeaderStatus() {
   // Every flip is a real waveform pass, so it is rate-capped.
   const bool barsMoved = connected && bars != drawnBleBars_;
 
-  if (!structural && !barsMoved) return;
-  if (!structural && now < nextBarsRepaintMs_) return;
+  // The minute rolling over. No rate cap of its own -- a minute *is* the cap,
+  // and it is 30x slower than the bars' floor. This is the one condition that
+  // fires while nothing else on the device is happening, which is exactly the
+  // case a clock has to survive: the phone sends a fix only when the rider
+  // moves, so without this the row would freeze at the time of the last
+  // movement and quietly lie (docs/map-header-status.md, "The clock").
+  uint32_t localNow = 0;
+  const bool haveClock = freeink::BlePositionServer::getInstance().localTimeNow(localNow);
+  const int16_t nowMinute = haveClock ? static_cast<int16_t>((localNow % 86400u) / 60u) : -1;
+  const bool minuteMoved = nowMinute != drawnClockMinute_;
+
+  if (!structural && !barsMoved && !minuteMoved) return;
+  if (!structural && !minuteMoved && now < nextBarsRepaintMs_) return;
   if (barsMoved) nextBarsRepaintMs_ = now + kHeaderBarsRepaintMs;
 
   int x, y, w, h;
   headerStatusRect(x, y, w, h);
-  // The strip alone, not drawHeaderStatus(): that one also redraws the battery
-  // block, which sits outside this window. Drawing outside what is refreshed
-  // puts a battery in the framebuffer that the panel will not show until the
-  // next full frame -- and if the charge has moved since, the two disagree.
   drawHeaderStatusStrip();  // records what it drew, for the comparisons above
+
+  // The battery rides the minute tick, and only it. Charge moves slowly enough
+  // that it has never earned a repaint of its own, and a minute is a fine rate
+  // to notice it at -- but it is drawn by GUI.drawHeader(), whose 80px-wide
+  // box (BaseTheme.cpp:366-368) sits outside headerStatusRect() entirely. So
+  // when this tick is a minute tick, redraw the battery too and widen the
+  // window to span both. Drawing outside what is refreshed would put a battery
+  // in the framebuffer that the panel does not show until the next full frame,
+  // and if the charge moved since, the two disagree -- which is why the
+  // bars-only and structural paths still refresh the strip alone.
+  if (minuteMoved) {
+    const int screenWidth = renderer.getScreenWidth();
+    GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}, nullptr, nullptr);
+    // Not the icon's own box -- GUI.drawHeader()'s *clear* box, which is what
+    // has to be inside the refreshed window. It wipes (rect.y + 5, height
+    // batteryHeight + 10) before drawing (BaseTheme.cpp:386-388), the extra 10
+    // covering the percentage text sitting above the icon.
+    const int batteryTop = kHeaderMarginTop + 5;
+    const int batteryBottom = batteryTop + BaseMetrics::values.batteryHeight + 10;
+    const int unionTop = std::min(y, batteryTop);
+    const int unionBottom = std::max(y + h, batteryBottom);
+    y = unionTop;
+    h = unionBottom - unionTop;
+    w = screenWidth - x;  // out to the right edge, covering the battery box
+  }
+
   // Windowed, like the busy badge: the map on the rest of the panel is
   // untouched and a full refresh would cost a second and throw it away twice.
   if (!renderer.displayBufferWindow(x, y, w, h)) {
@@ -1229,13 +1303,14 @@ void MapActivity::drawCompass(uint8_t headingStep) {
 }
 
 void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
-  // The strip the status row owns: the globe slot, the Bluetooth logo and the
-  // signal bars, plus the opaque backing's padding. Deliberately excludes the
-  // battery block -- GUI.drawHeader() clears and draws that itself.
+  // The strip the status row owns: the clock, the globe slot, the Bluetooth
+  // logo and the signal bars, plus the opaque backing's padding. Deliberately
+  // excludes the battery block -- GUI.drawHeader() clears and draws that
+  // itself.
   //
-  // **The globe's slot is always part of this rect, whether or not the globe
-  // is drawn.** A rect that shrank when the globe went away would leave the
-  // globe's pixels on the panel with nothing to erase them.
+  // **The globe's and the clock's slots are always part of this rect, whether
+  // or not either is drawn.** A rect that shrank when one went away would
+  // leave its pixels on the panel with nothing to erase them.
   const int screenWidth = renderer.getScreenWidth();
   const int batteryX = screenWidth - kHeaderMarginRight - BaseMetrics::values.batteryWidth;
   const int worstCasePercentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
@@ -1243,6 +1318,7 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
   const int globeLeft = logoLeft - kHeaderGlobeToBtGap - kHeaderGlobeDiameter;
+  const int clockLeft = globeLeft - kHeaderClockToGlobeGap - headerClockSlotWidth(renderer);
   // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
   // hands drawBatteryRight() rect.y+5 (BaseTheme.cpp:374), and
   // drawBatteryRight() adds another +6 of its own (:99) before drawing the
@@ -1252,10 +1328,16 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
   const int iconTop = iconBottom - kHeaderIconHeight;
 
-  x = globeLeft - kHeaderBackingPad;
-  y = iconTop - kHeaderBackingPad;
-  w = (barsRight - globeLeft) + kHeaderBackingPad * 2;
-  h = kHeaderIconHeight + kHeaderBackingPad * 2;
+  // The clock's text sits 4px above the icon row (see kHeaderTextTopY), so the
+  // rect starts at whichever of the two is higher. Content drawn above the
+  // rect would be outside what the windowed repaint refreshes -- a stale clock
+  // left on the panel is exactly the failure this whole feature exists to
+  // avoid.
+  const int contentTop = std::min(iconTop, kHeaderTextTopY);
+  x = clockLeft - kHeaderBackingPad;
+  y = contentTop - kHeaderBackingPad;
+  w = (barsRight - clockLeft) + kHeaderBackingPad * 2;
+  h = (iconBottom - contentTop) + kHeaderBackingPad * 2;
 }
 
 void MapActivity::drawHeaderStatus() {
@@ -1357,6 +1439,32 @@ void MapActivity::drawHeaderStatusStrip() {
   int backingX, backingY, backingW, backingH;
   headerStatusRect(backingX, backingY, backingW, backingH);
   renderer.fillRect(backingX, backingY, backingW, backingH, false);
+
+  // The clock, leftmost, when the phone has ever sent a non-zero utc. 24-hour
+  // only: SETTINGS.clockFormat exists but its menu entry is hidden on hardware
+  // with no RTC (StatusBarSettingsActivity.h:26), so honouring it here would
+  // read a setting the rider cannot reach.
+  //
+  // Right-aligned inside its reserved slot so the colon does not walk
+  // sideways between "9:05" and "10:05" -- the slot is sized for the widest
+  // string ("00:00"), and a narrower one hangs off its right edge, against
+  // the globe, rather than shifting the whole field.
+  uint32_t localNow = 0;
+  if (freeink::BlePositionServer::getInstance().localTimeNow(localNow)) {
+    const uint32_t secondsOfDay = localNow % 86400u;
+    char clockText[6];
+    snprintf(clockText, sizeof(clockText), "%u:%02u", static_cast<unsigned>(secondsOfDay / 3600u),
+             static_cast<unsigned>((secondsOfDay % 3600u) / 60u));
+    const int slotRight = globeLeft - kHeaderClockToGlobeGap;
+    const int textX = slotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
+    // kHeaderTextTopY, not iconTop: this is text standing next to the battery
+    // percentage, and the two rows are 4px apart. headerStatusRect() starts at
+    // whichever is higher, so this stays inside the refreshed window.
+    renderer.drawText(SMALL_FONT_ID, textX, kHeaderTextTopY, clockText, true);
+    drawnClockMinute_ = static_cast<int16_t>(secondsOfDay / 60u);
+  } else {
+    drawnClockMinute_ = -1;
+  }
 
   // The globe, while a transfer this screen asked for is outstanding. Drawn
   // from autoSyncPending_ rather than from transferIconShown_: this function

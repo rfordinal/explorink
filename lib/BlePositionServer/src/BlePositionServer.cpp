@@ -451,10 +451,36 @@ void BlePositionServer::onWriteIngest(const uint8_t* data, size_t len) {
   memcpy(&update.altitudeM, data + 19, sizeof(update.altitudeM));
   update.hasAltitude = (update.flags & 0x02) != 0;
 
+  // Outside the critical section: millis() is a read of the FreeRTOS tick and
+  // has no business inside one.
+  const uint32_t stamp = millis();
+
   portENTER_CRITICAL(&g_mux);
   latest_ = update;
   hasUpdate_ = true;
+  // utc == 0 means the sender has no clock (see the wire format above), so it
+  // must not overwrite a good anchor with "no time".
+  if (update.utc != 0) {
+    clockUtc_ = update.utc;
+    clockStampMs_ = stamp;
+    clockTzOffsetMin_ = update.tzOffsetMin;
+  }
   portEXIT_CRITICAL(&g_mux);
+}
+
+bool BlePositionServer::localTimeNow(uint32_t& localUnixSeconds) const {
+  portENTER_CRITICAL(&g_mux);
+  const uint32_t anchorUtc = clockUtc_;
+  const uint32_t anchorMs = clockStampMs_;
+  const int16_t tzOffsetMin = clockTzOffsetMin_;
+  portEXIT_CRITICAL(&g_mux);
+
+  if (anchorUtc == 0) return false;
+
+  // Unsigned wrap-around subtraction: correct across the millis() rollover.
+  const uint32_t elapsedSec = (millis() - anchorMs) / 1000;
+  localUnixSeconds = anchorUtc + elapsedSec + static_cast<int32_t>(tzOffsetMin) * 60;
+  return true;
 }
 
 void BlePositionServer::onCommandIngest(const uint8_t* data, size_t len) {
@@ -526,14 +552,15 @@ bool BlePositionServer::sendCommandBlock(const char* text, size_t len) {
   size_t sent = 0;
   while (sent < len) {
     const size_t remaining = len - sent;
-    const size_t chunkLen = remaining < static_cast<size_t>(payloadBytes) ? remaining : static_cast<size_t>(payloadBytes);
+    const size_t chunkLen =
+        remaining < static_cast<size_t>(payloadBytes) ? remaining : static_cast<size_t>(payloadBytes);
     if (!sendCommandChunk(text + sent, chunkLen)) {
       // A chunk that fails aborts the whole block -- a half-delivered reply
       // is a distinct, confusing failure (a partial line, or a listing that
       // stops mid-row) and the log says exactly how far it got so the next
       // read of this log is not left guessing.
-      LOG_ERR("BLEPOS", "command block send aborted: %u of %u bytes delivered",
-              static_cast<unsigned>(sent), static_cast<unsigned>(len));
+      LOG_ERR("BLEPOS", "command block send aborted: %u of %u bytes delivered", static_cast<unsigned>(sent),
+              static_cast<unsigned>(len));
       return false;
     }
     sent += chunkLen;
@@ -985,6 +1012,7 @@ bool BlePositionServer::begin(const char*) { return false; }
 void BlePositionServer::end() {}
 bool BlePositionServer::getLatest(PositionUpdate&) const { return false; }
 void BlePositionServer::onWriteIngest(const uint8_t*, size_t) {}
+bool BlePositionServer::localTimeNow(uint32_t&) const { return false; }
 void BlePositionServer::onCommandIngest(const uint8_t*, size_t) {}
 size_t BlePositionServer::readCommandBytes(char*, size_t) { return 0; }
 bool BlePositionServer::sendCommandReply(const char*) { return false; }

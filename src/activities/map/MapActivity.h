@@ -665,12 +665,17 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   //
   // Not the state itself -- autoSyncPending_ and the BLE server are. These are
   // what was last *drawn*, so updateHeaderStatus() can tell a real change from
-  // a poll. All three are written by drawHeaderStatusStrip(), on every path
+  // a poll. All of them are written by drawHeaderStatusStrip(), on every path
   // that draws the row, including full frames.
   bool transferIconShown_ = false;
   bool drawnLinkConnected_ = false;
   // -1 means "never drawn", which is not the same as 0 bars.
   int drawnBleBars_ = -1;
+  // Minute-of-day last painted into the clock slot, 0..1439. -1 means no time
+  // is known (no packet has carried a non-zero utc yet) and the slot is blank
+  // -- so the transition into or out of "no clock" moves this value and
+  // repaints, same as a minute rolling over does.
+  int16_t drawnClockMinute_ = -1;
   // Last bar count a real rssi() reading produced this connection. rssi()
   // answers 0 on failure, not a real signal strength, and resolveBleBars()
   // holds this instead of remapping 0 -- see its definition. 0 also means
