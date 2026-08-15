@@ -138,6 +138,33 @@ whether the battery's discharge curve is linear enough at this state of
 charge for the mAh math above to hold. A bench measurement with an inline
 meter (the plan's step 1) is still the number to trust over either of these.
 
+## The state-3 baseline: ~45 mA over 11.5 hours
+
+**Measured on hardware, 2026-08-15.** The first run long enough to be worth
+quoting. Map screen up and BLE linked the whole time, hike mode, rung 0, mostly
+stationary: 100 % at 10:30, 21 % at 22:00.
+
+| | |
+|---|---|
+| Duration | 11 h 30 min |
+| Drop | 79 % = 513 mAh at the 650 mAh spec figure |
+| Implied average draw | **~45 mA** |
+| Extrapolated full cycle | ~14.6 h |
+
+This is the working baseline for the plan's state 3 ("map screen, phone
+connected"). It agrees with ride 1 above (~46 mA) by a route with completely
+different contamination, which is why it is trusted where either ride alone was
+not.
+
+**Still percent-derived, not millivolt-derived.** `power.csv` for this run is on
+the card and has not been read; the number above should be recomputed from
+`batt_mv` when it is. Stationary also makes it a ceiling -- a walking hiker pays
+for viewport resets this run did not.
+
+The three-day (72 h) endurance target, the 9.0 mA budget it implies, and the
+three routes to it live in [`power-plan.md`](power-plan.md). Run 1's full record
+is in that file's Runs section.
+
 ## Where the power goes on the map screen -- read off the code
 
 **Read, 2026-08-11. None of this is measured**; it is the list a measurement
