@@ -144,26 +144,64 @@ meter (the plan's step 1) is still the number to trust over either of these.
 quoting. Map screen up and BLE linked the whole time, hike mode, rung 0, mostly
 stationary: 100 % at 10:30, 21 % at 22:00.
 
-| | |
-|---|---|
-| Duration | 11 h 30 min |
-| Drop | 79 % = 513 mAh at the 650 mAh spec figure |
-| Implied average draw | **~45 mA** |
-| Extrapolated full cycle | ~14.6 h |
+`power.csv` was pulled off the device the same evening, so these are
+millivolt-derived, not percent-derived:
+
+| | 99 % -> 21 % | full discharge |
+|---|---|---|
+| Duration | **11.42 h** | 12.94 h (to 5 %) |
+| Voltage | 4220 -> 3547 mV | 4220 -> 3380 mV |
+| Slope | **58.9 mV/h** | 64.9 mV/h |
+| Implied draw at 650 mAh | **44.4 mA** | 47.2 mA |
+| Extrapolated full cycle | **14.6 h** | 13.8 h |
 
 This is the working baseline for the plan's state 3 ("map screen, phone
 connected"). It agrees with ride 1 above (~46 mA) by a route with completely
 different contamination, which is why it is trusted where either ride alone was
 not.
 
-**Still percent-derived, not millivolt-derived.** `power.csv` for this run is on
-the card and has not been read; the number above should be recomputed from
-`batt_mv` when it is. Stationary also makes it a ceiling -- a walking hiker pays
-for viewport resets this run did not.
+### What the counters say the money went on
+
+Deltas across the 11.42 h window. This is the part that was previously inferred
+from the code and is now measured:
+
+| Counter | Over the run | Meaning |
+|---|---|---|
+| `throttled_ms` | 1.55 % of wall | CPU held 160 MHz for **98.5 %** of the run |
+| `loops` | 97.4 Hz | ~100 Hz loop, as read |
+| `loop_busy_ms` | 1.34 % of wall | the loop does work 1.3 % of the time |
+| `panel_busy_ms` | 0.89 % of wall | 62 refreshes/h, `ref_full` = **0**, nearly all `ref_window` |
+| `ble` | 2 in 765 of 777 rows | link connected all day |
+
+**Real work took ~2.2 % of the day.** The rest went on idling at 160 MHz in
+`delay(10)`, plus the radio. Not one full panel refresh in 13 hours -- the panel
+is not where the power goes on a stationary day.
+
+**Stationary makes 14.6 h a ceiling**, not a trail expectation: a walking hiker
+pays for viewport resets this run did not.
 
 The three-day (72 h) endurance target, the 9.0 mA budget it implies, and the
-three routes to it live in [`power-plan.md`](power-plan.md). Run 1's full record
-is in that file's Runs section.
+routes to it live in [`power-plan.md`](power-plan.md). Run 1's full record is in
+that file's Runs section.
+
+## A connected BLE link survives 10 MHz
+
+**Measured on hardware, found 2026-08-15** in `power.csv` data that was already
+on the card -- no run was made for it.
+
+One boot logged **466 of 513 minute rows with `cpu_mhz=10` and `ble=2` at the
+same time**, about 7.8 hours. `ble=2` means `connIntervalMs() > 0`
+(`src/PowerLog.cpp:25-27`), so that is a live connection, not advertising.
+
+This does **not** contradict the `NimBLEDevice::init()` finding below. That one
+is about *entering* low-power mode before init; this is about steady state with
+a connection already up. Both hold.
+
+Two limits on the same boot, so it is not over-read: it was **not the map
+screen** (different heap profile, and `MapActivity::preventAutoSleep()` would
+have pinned the clock), and it contains **two charging jumps**, so its apparent
+3.0 mA draw is contaminated and is not a throttled-draw figure. Only the
+link-survives-10-MHz claim comes out of it.
 
 ## Where the power goes on the map screen -- read off the code
 
