@@ -508,6 +508,15 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // frame are not followable: one has no map under it at all, the other carries
   // a banner that only a full redraw can clear.
   bool viewportDrawn_ = false;
+  // Set in onEnter(), consumed by whichever render*() draws the first real
+  // frame for this activation (renderViewport(), renderRouteOverview() or
+  // renderWaiting()). Forces that one frame through FULL_REFRESH instead of
+  // FAST_REFRESH -- the fast LUT leaves ghosting (main.cpp's CMD:SHOWIMAGE
+  // comment), and it never gets a real clear otherwise: the map screen has no
+  // other FULL_REFRESH call anywhere. Coming back from the menu after the
+  // screen has ghosted over a long session is exactly the point this screen
+  // reappears, so that is the one frame worth paying the slower waveform for.
+  bool pendingEntryFullRefresh_ = false;
   // True whenever the frame on the panel carries a header row (the BLE link
   // icon, its bars, the transfer globe) -- drawHeaderStatus() drew one.
   // Separate from viewportDrawn_ on purpose: whether the phone is connected has
