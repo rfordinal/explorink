@@ -351,6 +351,44 @@ connected-idle current draw looks like with latency 4 instead of 9 -- exactly
 the numbers `power.csv`/`stats` above can catch once one is run with this code
 on.
 
+## Letting the map screen throttle hung the device solid (2026-08-16, reverted)
+
+**Measured on hardware. The attempt is reverted; the finding is not.**
+
+`preventAutoSleep()` answers two questions with one bool -- "do not sleep me"
+and "do not slow my clock". Run 1 priced the second: the map held 160 MHz for
+98.5 % of an 11.4 h day while the loop did real work 1.3 % of the time. The
+obvious fix is to split the bool so the map can decline the clock pin and keep
+the sleep guard (`optimization/07-power-and-lifecycle.md`, step 2).
+
+That was built (`b8b8f307`), flashed, and **hung the X4 solid on first use** --
+screen frozen, no recovery but the ROM bootloader.
+
+**The cause was already written down in this file, one section below.**
+`NimBLEDevice::init()` hangs in low-power mode. `main.cpp` guards the two
+`CMD:` entry points into the map for exactly that reason and says so in a
+comment. The split let the map screen throttle *while it was up*, so any path
+that touches NimBLE at 10 MHz -- entering the map, an advertising restart, the
+handover to `TileSyncActivity` -- meets the documented hang. The attempt put
+`kickFullClock()` on the render entry points and left every BLE path
+unguarded.
+
+So the finding is not "the split cannot work". It is:
+
+- **The clock must be at full speed across anything that touches NimBLE**, not
+  just anything that draws. That is the missing half.
+- **The steady-state link is fine at 10 MHz** -- a connected link ran ~7.8 h at
+  `cpu_mhz=10` (see the section above). Init and re-init are the hazard, not
+  the connection.
+- **A supervised bench check comes before any long run.** This hang appeared
+  within minutes of the first real use; a day-long run would have been lost to
+  it.
+
+Next attempt: raise the clock before `BlePositionServer::begin()`, before
+advertising restarts, and across activity transitions that own the peripheral,
+then prove on the bench that entering the map and restarting advertising both
+survive at 10 MHz -- before anything runs for hours.
+
 ## Power-saving mode drops CPU frequency after idle
 
 `main.cpp:638` calls `powerManager.setPowerSaving(true)` after the device has

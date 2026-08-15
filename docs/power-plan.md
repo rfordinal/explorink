@@ -346,10 +346,14 @@ and record it in the table below before starting the next.
 Route A -- **start here**. Ordered by measured lever size, biggest first:
 
 - [ ] **Split `preventAutoSleep()` into `preventAutoSleep()` +
-      `preventThrottle()`** (plan 07, step 2) so the map can decline the clock
-      pin without becoming sleepable. Unblocked 2026-08-15. Release the throttle
-      around drawing; keep the sleep guard. **This is the first test.**
-      Prediction to be refuted: 44 mA -> 15-25 mA.
+      `preventThrottle()`**. **First attempt 2026-08-16 hung the device solid
+      and was reverted** -- it guarded the render paths and left every NimBLE
+      path at 10 MHz, where `NimBLEDevice::init()` is known to hang
+      (`power-management.md`, "Letting the map screen throttle hung the device
+      solid"). The lever is still the biggest one measured; the next attempt
+      raises the clock across BLE init, advertising restarts and activity
+      handover too, and proves both on the bench before any long run.
+      **Prediction, unchanged and still to be refuted: 44.4 mA -> 15-25 mA.**
 - [ ] Loop cadence: let the map take the 50 ms delay while it is only waiting
       for a fix. Small next to the throttle -- the loop only works 1.3 % of the
       time -- but nearly free.
