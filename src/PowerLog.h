@@ -15,8 +15,19 @@
 // rows is trivial in analysis and cannot lose an event; a delta written by the
 // device would lose whatever happened in the interval a row failed to write.
 //
-// Cost: one open/append/close of ~120 bytes every 60 s. At six rows an hour the
-// file grows about 7 KB per hour of riding, so nothing rotates it.
+// The header line is written once per boot, not once per file. It doubles as
+// the boot marker -- a reader splits runs on it instead of matching timestamps
+// by hand -- and it keeps a file readable across a column change, because each
+// boot's rows carry their own column list. Skip any line starting with
+// "uptime_s".
+//
+// Every row carries `build` (TRAILINK_VERSION). The device appends across
+// boots, so one file holds rows from several firmwares; without the column
+// nothing says which wrote what, and two runs cannot be compared. That gap was
+// found the hard way reading run 1 (docs/power-plan.md).
+//
+// Cost: one open/append/close of ~160 bytes every 60 s. At sixty rows an hour
+// the file grows about 10 KB per hour of riding, so nothing rotates it.
 class PowerLog {
  public:
   static constexpr uint32_t kIntervalMs = 60000;
