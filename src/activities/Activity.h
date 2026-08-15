@@ -43,17 +43,6 @@ class Activity {
 
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
-
-  // Hold the CPU at its full clock. Separate from preventAutoSleep() because
-  // they are two different questions that one flag used to answer together:
-  // "do not power the device down behind my back" and "do not slow the CPU
-  // down behind my back". The map screen wants the first and not the second --
-  // it is up for hours, and run 1 measured it at 160 MHz for 98.5 % of a
-  // 11.4 h day while doing real work 1.3 % of the time (docs/power-plan.md).
-  //
-  // Defaults to preventAutoSleep() so every activity that has not thought
-  // about it behaves exactly as it did before the split.
-  virtual bool preventThrottle() { return preventAutoSleep(); }
   virtual bool isReaderActivity() const { return false; }
   // Returns true when the activity schedules its own forced refresh.
   virtual bool handleForcedRefresh() { return false; }

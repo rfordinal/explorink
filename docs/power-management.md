@@ -233,17 +233,14 @@ which low-power clock mode is available.
 no tickless idle; the CPU runs at whatever `HalPowerManager` last set, and the
 idle task waits at that clock.
 
-**3. The map screen held full clock and the 10 ms loop for the whole ride.**
-~~`MapActivity::preventAutoSleep()` returns `BlePositionServer::isRunning()`,
-and `main.cpp` resets `lastActivityTime` and calls `setPowerSaving(false)` on
-it every iteration, so the `delay(50)` + `setPowerSaving(true)` branch is
-unreachable while the map is up.~~
-
-**Confirmed, then fixed.** `throttled_ms` was named here as the counter that
-would prove or refute it, and run 1 did: **1.55 % of an 11.4 h day**, i.e. the
-map held 160 MHz for 98.5 % of it (see the state-3 baseline above). The split
-described in "The throttle and the sleep guard are two questions" below
-landed 2026-08-16.
+**3. The map screen holds full clock and the 10 ms loop for the whole ride.**
+`MapActivity::preventAutoSleep()` returns `BlePositionServer::isRunning()`
+(`src/activities/map/MapActivity.cpp:768`), and `src/main.cpp:719-723` resets
+`lastActivityTime` and calls `setPowerSaving(false)` on it every iteration.
+The end of `loop()` then always takes the `delay(10)` branch -- the
+`delay(50)` + `setPowerSaving(true)` branch is unreachable while the map is
+up. `PowerTelemetry`'s `throttled_ms` is the counter that proves or refutes
+this on hardware: it should read 0 for a whole ride.
 
 **4. ~100 wakeups a second, each with two ADC reads.**
 `InputManager::update()` samples both button-ladder pins every call
@@ -354,60 +351,49 @@ connected-idle current draw looks like with latency 4 instead of 9 -- exactly
 the numbers `power.csv`/`stats` above can catch once one is run with this code
 on.
 
-## The throttle and the sleep guard are two questions
+## Letting the map screen throttle hung the device solid (2026-08-16, reverted)
 
-**Changed 2026-08-16.** Built clean; **not yet verified on hardware.**
+**Measured on hardware. The attempt is reverted; the finding is not.**
 
-`preventAutoSleep()` used to answer two questions with one bool: "do not power
-the device down behind my back" and "do not slow the CPU down behind my back".
-The map screen needs the first for a whole ride and does not need the second,
-so asking for one bought the other -- and run 1 priced it at 98.5 % of an
-11.4 h day pinned to 160 MHz while the loop did real work 1.3 % of the time.
+`preventAutoSleep()` answers two questions with one bool -- "do not sleep me"
+and "do not slow my clock". Run 1 priced the second: the map held 160 MHz for
+98.5 % of an 11.4 h day while the loop did real work 1.3 % of the time. The
+obvious fix is to split the bool so the map can decline the clock pin and keep
+the sleep guard (`optimization/07-power-and-lifecycle.md`, step 2).
 
-Now there are two:
+That was built (`b8b8f307`), flashed, and **hung the X4 solid on first use** --
+screen frozen, no recovery but the ROM bootloader.
 
-| Method | Question | Map screen |
-|---|---|---|
-| `preventAutoSleep()` | do not deep-sleep me | **true** while the BLE server runs |
-| `preventThrottle()` | do not slow my clock | **false**, except while work is queued |
+**The cause was already written down in this file, one section below.**
+`NimBLEDevice::init()` hangs in low-power mode. `main.cpp` guards the two
+`CMD:` entry points into the map for exactly that reason and says so in a
+comment. The split let the map screen throttle *while it was up*, so any path
+that touches NimBLE at 10 MHz -- entering the map, an advertising restart, the
+handover to `TileSyncActivity` -- meets the documented hang. The attempt put
+`kickFullClock()` on the render entry points and left every BLE path
+unguarded.
 
-`Activity::preventThrottle()` defaults to `preventAutoSleep()`
-(`src/activities/Activity.h`), so every activity that has not thought about it
-behaves exactly as before the split. Only `MapActivity` overrides it.
+So the finding is not "the split cannot work". It is:
 
-`main.cpp` keeps two deadlines instead of one -- `lastActivityTime` for the
-auto-sleep timeout and `lastFullClockTime` for the throttle. Real user input
-still resets both.
+- **The clock must be at full speed across anything that touches NimBLE**, not
+  just anything that draws. That is the missing half.
+- **The steady-state link is fine at 10 MHz** -- a connected link ran ~7.8 h at
+  `cpu_mhz=10` (see the section above). Init and re-init are the hazard, not
+  the connection.
+- **A supervised bench check comes before any long run.** This hang appeared
+  within minutes of the first real use; a day-long run would have been lost to
+  it.
 
-`MapActivity::preventThrottle()` returns true only while `redrawDueMs_`,
-`arrivalRedrawDueMs_` or an active transfer says work is queued. It is
-deliberately **not** true merely because a fix arrived: the phone sends at
-1 Hz and run 1 drew 62 times an hour, so un-throttling per fix would reset the
-3-second idle timer forever and the split would buy nothing. A fix that moves
-the marker less than the follow decision cares about is processed at the low
-clock and costs nothing.
-
-**The drawing does not rely on that flag.** Every render entry point --
-`showBusy()`, `renderWaiting()`, `renderLoadingTiles()`, `renderCurrent()`,
-`renderRouteOverview()` -- calls `MapActivity::kickFullClock()` first, because
-a fix can arrive and force a redraw inside the same `loop()` iteration whose
-`preventThrottle()` was already polled. A viewport reset is close to two
-seconds at 160 MHz and a large share of it is software floating point, so
-drawing at 10 MHz would put tens of seconds between a fix and the picture. The
-main loop drops the clock again on its own 3 seconds later.
-
-**Open, and the reason this needs a supervised check before a long run:**
-nothing has yet confirmed on hardware that the map still redraws promptly, that
-the BLE link holds across the clock changes, or that `throttled_ms` actually
-rises on the map screen. The last one is the pass/fail signal --
-`throttled_ms` near 0 over a map-screen hour means the split did not take.
+Next attempt: raise the clock before `BlePositionServer::begin()`, before
+advertising restarts, and across activity transitions that own the peripheral,
+then prove on the bench that entering the map and restarting advertising both
+survive at 10 MHz -- before anything runs for hours.
 
 ## Power-saving mode drops CPU frequency after idle
 
-`main.cpp` calls `powerManager.setPowerSaving(true)` after the device has
+`main.cpp:638` calls `powerManager.setPowerSaving(true)` after the device has
 been idle for a while (no button press, no touch, no tilt, nothing holding
-`activityManager.preventThrottle()` true -- that used to read
-`preventAutoSleep()`, see the section below). This lowers CPU frequency to save
+`activityManager.preventAutoSleep()` true). This lowers CPU frequency to save
 battery: `HalPowerManager::LOW_POWER_FREQ` is **10 MHz** on X4 (80 MHz only
 where `BOARD_HAS_PSRAM`), and the threshold is
 `HalPowerManager::IDLE_POWER_SAVING_MS`, **3 seconds**
