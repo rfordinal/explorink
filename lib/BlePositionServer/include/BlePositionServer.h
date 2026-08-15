@@ -41,8 +41,10 @@ namespace freeink {
 // current -- a write of the wrong length is dropped rather than read as a
 // truncated or padded version of the new one.
 //
-// `utc`, `tz_offset` and `accuracy` are wired and stored; nothing draws them
-// yet -- see docs/architecture-plan.md, "Time is mandatory in the payload".
+// `utc` and `tz_offset` drive the map header's clock, via localTimeNow() --
+// see docs/map-header-status.md, "The clock". `accuracy` is wired and stored
+// and nothing draws it -- see docs/architecture-plan.md, "Time is mandatory in
+// the payload".
 // `speed` is auto zoom's input and auto zoom is a later phase. `altitude` is
 // hike mode's future input, same reasoning: wired now so the packet stops
 // changing, not drawn or acted on yet.
@@ -326,6 +328,23 @@ class BlePositionServer {
   // one is negative), so it doubles as the sentinel.
   int8_t rssi() const;
 
+  // Local wall-clock time, as unix seconds already shifted by the phone's
+  // reported UTC offset. False until a packet carrying a non-zero `utc` has
+  // arrived; the X4 has no RTC (HalClock is the X3's DS3231 only), so before
+  // the first such packet this device genuinely does not know the time and
+  // nothing should draw one.
+  //
+  // Extrapolated from millis() since that packet, not read back from it: the
+  // phone sends a fix only when the rider moves, so a caller that used the
+  // stored `utc` directly would show the time of the last movement. Unsigned
+  // subtraction makes the 49.7-day millis() wrap harmless.
+  //
+  // Accuracy is bounded by the ESP32-C3 crystal's drift between packets --
+  // tens of ppm, so seconds over a day, and every fresh packet re-anchors it.
+  // Not verified against a reference clock; the claim here is the mechanism,
+  // not a measured figure.
+  bool localTimeNow(uint32_t& localUnixSeconds) const;
+
   // Internal: called by the NimBLE backend on the MTU exchange.
   void onMtuChanged(uint16_t mtu);
   // Internal: on connect and on every mid-connection parameter update.
@@ -586,6 +605,14 @@ class BlePositionServer {
   PositionUpdate latest_;
   volatile bool hasUpdate_ = false;
   bool begun_ = false;
+
+  // The clock anchor: the last non-zero `utc` seen, and the millis() at which
+  // it landed. Kept apart from latest_ on purpose -- latest_ is overwritten by
+  // every packet including ones carrying utc == 0 (a sender with no clock),
+  // and losing the anchor to one of those would stop the clock dead.
+  uint32_t clockUtc_ = 0;
+  uint32_t clockStampMs_ = 0;
+  int16_t clockTzOffsetMin_ = 0;
 };
 
 }  // namespace freeink

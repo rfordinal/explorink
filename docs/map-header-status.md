@@ -1,8 +1,9 @@
 # The map screen's header status row
 
-Top-right of the map, above the compass: a globe, a Bluetooth logo, four signal
-bars and the battery block. Drawn by `MapActivity::drawHeaderStatus()` and
-`drawHeaderStatusStrip()` (`src/activities/map/MapActivity.cpp`).
+Top-right of the map, above the compass: a clock, a globe, a Bluetooth logo,
+four signal bars and the battery block. Drawn by
+`MapActivity::drawHeaderStatus()` and `drawHeaderStatusStrip()`
+(`src/activities/map/MapActivity.cpp`).
 
 No other screen has one. Battery goes through `GUI.drawHeader()`, the same call
 every other activity makes, so its position matches the info-list screens
@@ -18,6 +19,7 @@ has a wireless link worth showing.
 | X over the bar slot | `connIntervalMs() == 0` | no central connected |
 | Bluetooth logo | always | what the bars are about |
 | Globe | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data |
+| Clock | `BlePositionServer::localTimeNow()` | local time, from the phone; blank until it has sent one |
 
 The globe is not an internet indicator in the literal sense -- this device has
 no radio that reaches the internet. It is about the thing the rider cares about:
@@ -26,21 +28,24 @@ the phone is spending mobile data on their behalf right now. See
 
 ## Two rects, one source
 
-`headerStatusRect()` gives the strip: the globe slot, the logo, the bars, plus
-the opaque backing's padding. Deliberately **excludes** the battery block, which
-`GUI.drawHeader()` clears and draws itself.
+`headerStatusRect()` gives the strip: the clock slot, the globe slot, the logo,
+the bars, plus the opaque backing's padding. Deliberately **excludes** the
+battery block, which `GUI.drawHeader()` clears and draws itself.
 
 Everything drawn must be inside it, because it is also what the windowed
-repaint refreshes. Two consequences worth stating:
+repaint refreshes. Three consequences worth stating:
 
-- **The globe's slot is in the rect whether or not the globe is drawn.** A rect
-  that shrank when the globe went away would leave the globe's pixels on the
+- **The globe's and the clock's slots are in the rect whether or not either is
+  drawn.** A rect that shrank when one went away would leave its pixels on the
   panel with nothing to erase them.
 - **`updateHeaderStatus()` calls `drawHeaderStatusStrip()`, never
   `drawHeaderStatus()`.** The latter also redraws the battery, which is outside
   the window -- that would put a battery in the framebuffer the panel will not
   show until the next full frame, and if the charge moved in between, the two
   disagree.
+- **The minute tick is the one exception**, and it pays for it: it redraws the
+  battery *and* widens the window to the right screen edge so both are inside
+  what is refreshed. See "The clock" below.
 
 The row needs an opaque white backing for the same reason the compass halo and
 the busy badge do: it lands on live map lines, not on blank margin.
@@ -168,11 +173,11 @@ already answered 0. There was simply nothing that repainted the row to say so.
 
 `MapActivity::updateHeaderStatus()`, called from `loop()`, is that. It compares
 live state against what was last drawn (`transferIconShown_`,
-`drawnLinkConnected_`, `drawnBleBars_` -- all written by
+`drawnLinkConnected_`, `drawnBleBars_`, `drawnClockMinute_` -- all written by
 `drawHeaderStatusStrip()` on every path that draws the row, full frames
 included) and refreshes only the strip when they differ.
 
-Three rate limits, each for its own reason:
+Four rate limits, each for its own reason:
 
 - **`kHeaderPollMs`, 2 s** -- how often the state is looked at at all.
   `rssi()` is a NimBLE host call (`ble_gap_conn_rssi`), and asking it every
@@ -184,10 +189,139 @@ Three rate limits, each for its own reason:
 - **No limit at all on a structural change** -- a link appearing or dropping, or
   a transfer starting or ending. That one changes what the row *means*, and the
   bug above is exactly what happens when it waits.
+- **The minute rolling over**, with no cap of its own. A minute *is* the cap,
+  and it is 30x slower than the bars' floor. It is the only condition that
+  fires while nothing else on the device is happening.
 
 Nothing repaints before `viewportDrawn_`: the waiting banner draws no header row
 at all, and painting one onto it would leave a floating status row over a screen
 with no map.
+
+## The clock (2026-08-15)
+
+The device has no clock of its own. The X4 has no RTC -- `lib/hal/HalClock.h`
+wraps a DS3231 that only the X3 carries, and the clock entries in the settings
+menu are hidden on hardware without one
+(`src/activities/settings/StatusBarSettingsActivity.h:26`). So the time on the
+map header is the phone's time, and before the phone has sent one there is no
+time to show.
+
+### Where it comes from
+
+Already on the wire, and has been since the packet was revised: `utc` at bytes
+8..11 (uint32, unix seconds) and `tz_offset` at bytes 12..13 (int16, minutes
+east of UTC) -- `lib/BlePositionServer/include/BlePositionServer.h:20-47`,
+`docs/architecture-plan.md`, "Time is mandatory in the payload". The fields were
+added ahead of any consumer precisely so adding one later would not need another
+wire-format bump. This is that consumer.
+
+### Why it is extrapolated, not read
+
+**The stored `utc` alone would be the wrong number to draw.** The phone sends a
+fix when the rider moves; park the bike and the packets stop. A header that
+printed `latest_.utc` would freeze at the time of the last movement and keep
+presenting it as the current time -- a clock that is confidently wrong, which is
+worse than no clock.
+
+So `BlePositionServer` keeps an anchor instead: the last non-zero `utc` and the
+`millis()` at which it landed (`clockUtc_`, `clockStampMs_`,
+`lib/BlePositionServer/src/BlePositionServer.cpp`, in `onWriteIngest()`).
+`localTimeNow()` adds the elapsed milliseconds to the anchor. Between packets
+the clock keeps running off the ESP32-C3's own tick; every fresh packet
+re-anchors it.
+
+Three details that are load-bearing:
+
+- **The anchor is separate from `latest_`.** `latest_` is overwritten by every
+  packet, including one carrying `utc == 0` -- the documented value for a sender
+  with no clock. Letting one of those clear the anchor would stop the clock
+  dead, so only a non-zero `utc` updates it.
+- **Unsigned subtraction across the `millis()` wrap.** `millis() - anchorMs` is
+  correct through the 49.7-day rollover; the device would have to be awake that
+  long for it to matter, and it still would not break.
+- **`localTimeNow()` returns the offset already applied**, so the caller does no
+  timezone arithmetic. False means no time is known.
+
+### Current time, not fix time -- a deliberate departure from the spec
+
+`map-render-spec.md` asks for something different, and asked for it first. Its
+rule 8 ("Fix time, always") makes the primary value **the time the phone took
+the position being drawn**, and says that when fix time and redraw time
+diverge, both must be shown, because "a device redrawing happily off a
+40-minute-old fix must not look identical to one that is current".
+
+**This clock shows current time instead.** Maintainer's call, 2026-08-15, made
+with that trade stated. The spec has been amended to record it -- see its
+"Current time in the header" note.
+
+The cost is exactly what the spec warned about and it has not gone away: a
+stale position now looks current. Nothing else on the header carries fix age
+either, so today the rider has no on-screen signal that the dot is old. If that
+turns out to bite on a real ride, the fix is additive rather than a rewrite --
+the anchor already knows when the last packet landed, so a staleness marker
+beside the clock is a small change. Nobody has ridden with this yet.
+
+### What is drawn
+
+24-hour, `H:MM`, leftmost in the status strip. `SETTINGS.clockFormat` exists
+(`src/CrossPointSettings.h:226-231`) and is **not** honoured: its menu entry is
+hidden on a device with no RTC, so reading it here would obey a setting the
+rider cannot reach.
+
+The slot is reserved whether or not a time is known -- same rule as the globe's
+slot, same reason. The text is right-aligned inside it, so the colon does not
+walk sideways between `9:05` and `10:05`.
+
+Its width comes from `headerClockSlotWidth()`, which measures the **widest
+digit** and takes four of them plus a colon. Measuring `"00:00"` instead would
+be a bug: `SMALL_FONT` is proportional, so `23:59` can be wider, and because the
+text is right-aligned an over-long string overflows *left* -- past the opaque
+backing, outside `headerStatusRect()`, onto pixels the windowed repaint never
+refreshes and therefore never erases. The sum-of-parts ignores kerning, which
+shortens real strings more often than it lengthens them, so the estimate errs
+wide. That is the safe direction.
+
+Vertically it sits on `kHeaderTextTopY`, **not** the icon row. The two are 4px
+apart: `drawHeader()` hands `drawBatteryRight()` `rect.y + 5`
+(`src/components/themes/BaseTheme.cpp:387`) and that function draws its
+percentage string at exactly that y (`:119`), while the +6 it adds is for the
+icon box only (`:114`). The clock stands next to the percentage, so it matches
+the percentage. `headerStatusRect()` therefore starts at whichever of the two
+rows is higher -- text drawn above the rect would land outside the window the
+repaint refreshes, which is the same stale-pixel failure the feature exists to
+avoid.
+
+**No time yet draws nothing**, not `--:--`. A placeholder reads as a fault; a
+blank slot reads as "not a thing this screen has".
+
+### The battery rides the minute tick
+
+Charge moves slowly enough that it never earned a repaint of its own, and it had
+none: the battery is drawn by `GUI.drawHeader()`, whose 80px box
+(`src/components/themes/BaseTheme.cpp:366-368`) sits outside `headerStatusRect()`
+entirely, so every strip repaint deliberately left it alone. A minute is a fine
+rate to notice charge at, so the minute tick now redraws the battery too and
+widens its window to the right screen edge to cover both. The bars-only and
+structural paths still refresh the strip alone -- unchanged.
+
+### Verified vs assumed
+
+- **Read off the code, not measured:** everything above about which function
+  draws what and when.
+- **Builds clean** on `feat/header-clock`: no warnings, RAM 17.8% (58,268 of
+  327,680 bytes), flash 59.3%. The added state is 10 bytes in
+  `BlePositionServer` and 2 in `MapActivity` -- below the resolution of the
+  build's own RAM figure.
+- **Open -- needs hardware.** Nothing here has been on the glass. Four things a
+  device run would settle: that the clock slot does not collide with the place
+  name at a long "fine, coarse" pair; that the minute tick's wider window does
+  not visibly disturb the map; what the tick actually costs when a grayscale
+  plane is pending and the window is promoted to a full HALF refresh (~1720 ms,
+  per the `GfxRenderer` HAL note); and whether a once-a-minute partial refresh
+  accumulates ghosting worth a periodic full clear.
+- **Not verified against a reference clock.** The drift claim is the mechanism
+  (crystal ppm between packets, re-anchored on every fix), not a measured
+  figure.
 
 ## Fixed height, a separator, and the place name (2026-08-11)
 
