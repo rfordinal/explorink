@@ -2397,6 +2397,18 @@ void MapActivity::stepZoom(int delta) {
 void MapActivity::stepMarker(int delta) {
   const int next = static_cast<int>(markerStep()) + delta;
   if (next < 0 || next >= MapViewport::kMarkerStepCount) return;
+  // A rest position inside the keep-in margin can never settle: decide()
+  // (MapFollow.cpp:31) checks the new fix's absolute screen position, and
+  // after a ReAnchor the fix sits exactly at markerYForStep(next) -- so a
+  // step that already violates the margin forces ReAnchor on every following
+  // fix, moving or standing still. That is the "map keeps refreshing" bug
+  // reported 2026-08-15: kMarkerLadder's last rung (760, MapViewport.h:181)
+  // sits past the margin at every zoom rung (720-741 px, MapMarkerMetrics.h's
+  // per-rung ring + MapFollow::kKeepInSlackPx). Checked against the full-size
+  // marker's margin -- the largest one, rungs 0-4 -- so the step is refused
+  // regardless of which rung is on screen now or chosen later.
+  const int16_t worstCaseMarginPx = static_cast<int16_t>(kMarkerMetricsFull.ring + MapFollow::kKeepInSlackPx);
+  if (MapViewport::markerYForStep(next) >= renderer.getScreenHeight() - worstCaseMarginPx) return;
   markerStep_[static_cast<uint8_t>(mode_)] = static_cast<uint8_t>(next);
   LOG_DBG(kLogTag, "marker step %u (y=%d)", static_cast<unsigned>(markerStep()),
           static_cast<int>(MapViewport::markerYForStep(markerStep())));
