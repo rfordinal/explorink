@@ -141,18 +141,6 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // peripheral is running and might receive a position update any moment.
   bool preventAutoSleep() override;
 
-  // But *do* let the CPU throttle. This screen is up for hours and spends
-  // almost all of them waiting: run 1 measured 98.5 % of a 11.4 h day at
-  // 160 MHz with the loop doing real work 1.3 % of the time, and 62 panel
-  // refreshes an hour against ~3600 fixes (docs/power-plan.md).
-  //
-  // Returns true only while there is work queued that a slow clock would make
-  // the rider wait for. The work itself does not rely on this: every render
-  // entry point raises the clock itself before it draws (see kickFullClock),
-  // because a fix can arrive and force a redraw inside the same loop()
-  // iteration that this was already polled for.
-  bool preventThrottle() override;
-
   // IMapSkipObserver -- the phone saying it cannot supply one tile. Marks the
   // entry refused so autosync stops asking for it, and settles the row against
   // the ask that is outstanding.
@@ -358,19 +346,6 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // One source for both, or the repaint clips what the draw put down.
   void headerStatusRect(int& x, int& y, int& w, int& h) const;
   void showBusy();
-
-  // Raise the CPU back to its full clock before doing anything the rider is
-  // waiting on. Called at the top of every render entry point.
-  //
-  // Not optional and not just an optimisation: with preventThrottle() false
-  // this screen really does sit at 10 MHz (HalPowerManager.h), and a viewport
-  // reset is already close to two seconds at 160 MHz -- a large share of it
-  // software floating point, which scales with the clock. Drawing at the low
-  // clock would put tens of seconds between a fix and the picture.
-  //
-  // The main loop drops the clock again on its own once
-  // IDLE_POWER_SAVING_MS passes with nothing asking for it (main.cpp).
-  static void kickFullClock();
   void drawBusyBadge();
   // Badge rectangle in logical screen coordinates. displayBufferWindow()
   // handles the controller's multiple-of-8 alignment itself.

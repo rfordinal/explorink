@@ -345,19 +345,11 @@ and record it in the table below before starting the next.
 
 Route A -- **start here**. Ordered by measured lever size, biggest first:
 
-- [x] **Split `preventAutoSleep()` into `preventAutoSleep()` +
-      `preventThrottle()`** (plan 07, step 2) -- written 2026-08-16, builds
-      clean (RAM 17.8 %, flash 59.4 %), **not yet on hardware**. Mechanism in
-      `power-management.md`, "The throttle and the sleep guard are two
-      questions".
-      **Prediction, recorded before the run so it can be refuted: 44.4 mA ->
-      15-25 mA, i.e. 26-43 h.** Under 10 mA and three days are done without
-      route B. No measurable change means the split did not take -- check
-      `throttled_ms` first, not the battery.
-- [ ] **Supervised check before the long run.** 15 minutes, phone connected,
-      on the map: does it still redraw promptly after a fix, does the link hold
-      across clock changes, and does `throttled_ms` actually rise? A whole test
-      day is too expensive to spend finding out that the map draws at 10 MHz.
+- [ ] **Split `preventAutoSleep()` into `preventAutoSleep()` +
+      `preventThrottle()`** (plan 07, step 2) so the map can decline the clock
+      pin without becoming sleepable. Unblocked 2026-08-15. Release the throttle
+      around drawing; keep the sleep guard. **This is the first test.**
+      Prediction to be refuted: 44 mA -> 15-25 mA.
 - [ ] Loop cadence: let the map take the 50 ms delay while it is only waiting
       for a fix. Small next to the throttle -- the loop only works 1.3 % of the
       time -- but nearly free.
