@@ -27,7 +27,7 @@ The budget follows from the cell:
 | Cell | 650 mAh (spec sheet, **not measured** -- see open questions) |
 | Target | 72 h |
 | **Budget** | **9.0 mA average** |
-| Measured today | **45 mA** (run 1 below) |
+| Measured today | **44.4 mA** (run 1 below, from `batt_mv`) |
 | Gap | **factor 5** |
 
 Two things this target is not:
@@ -54,9 +54,40 @@ on the public site until a real 72-hour run has happened on hardware.
 - That agrees with the earlier contaminated ~46 mA ride figure. Two independent
   arrivals at the same number; it is now the working baseline for state 3.
 - The three-day target above is set against it. Routes and estimates below.
-- `power.csv` for run 1 has **not been pulled off the card yet**, so the split
-  between CPU, radio and panel is still read-off-the-code, not measured.
+- **`power.csv` has been read off the device** (same evening, over the web
+  server's `GET /download` in AP mode -- see "Getting the file off" below). The
+  instrument works end to end. Phase 1's oldest open item is closed.
+- The CSV **confirms the read-off-the-code split**: 98.5 % of the run at
+  160 MHz, real work 2.2 % of wall, zero full panel refreshes. See "Where the
+  45 mA goes".
+- **The 10 MHz open question is answered, from data already on the card**: an
+  earlier boot held a connected BLE link for ~7.8 h at `cpu_mhz=10`. Route A's
+  throttle split is unblocked.
+- Because of that, **the throttle split is the first change to test**, not
+  modem sleep. Ordering changed the same day, on the data.
 - Nothing has been changed to save power yet. That is still deliberate.
+
+## Getting the file off the device
+
+`power.csv` lives at `/trailink/power.csv` on the card. Two ways off:
+
+1. **Pull the card.** What the methodology below assumes. No network.
+2. **Over the web server**, which is what was actually used on 2026-08-15:
+
+   ```
+   curl -OJ "http://<device-ip>/download?path=/trailink/power.csv"
+   ```
+
+   `GET /download` is a normal endpoint (`docs/webserver-endpoints.md:131`).
+   Note that WiFi and the map do not run at the same time on X4, so this
+   happens after a run, never during one.
+
+**Guest and hotel networks usually block it.** Client isolation stops two
+devices on the same AP from seeing each other; the symptom is a failed ARP for
+the device while the gateway still pings. Fix by putting the device in AP mode
+(open hotspot `CrossPoint-Reader`, `192.168.4.1`) and joining that, or by
+putting both the laptop and the device on a phone hotspot -- the second keeps
+the laptop's own internet, which matters if a tool on the laptop needs it.
 
 ## Status, 2026-08-11
 
@@ -74,11 +105,25 @@ on the public site until a real 72-hour run has happened on hardware.
 - Nothing has been changed to save power yet. That is deliberate: measure
   first.
 
-## Where the 45 mA goes -- read off the code, not measured
+## Where the 45 mA goes -- measured 2026-08-15
 
-**Confidence: read.** Every claim below is a citation, not a measurement. The
-split is what run 1's `power.csv` will confirm or refute; until then it is a
-hypothesis with a good paper trail.
+**Confidence: measured.** This section was written the same day as a read-off-
+the-code hypothesis. Run 1's `power.csv` was then pulled off the device and
+**confirmed it**. The counters below are deltas across the 11.42 h run window;
+the code citations are kept because they say *why*, but the numbers are no
+longer inferred.
+
+| Counter | Over the run | What it says |
+|---|---|---|
+| `throttled_ms` | **1.55 % of wall** | The CPU held 160 MHz for **98.5 %** of the run. Per-row census: 766 rows at 160 MHz, 11 at 10 MHz. |
+| `loops` | 97.4 Hz | The loop runs at ~100 Hz, as the code reading said. |
+| `loop_busy_ms` | **1.34 % of wall** | The loop does real work 1.3 % of the time. |
+| `panel_busy_ms` | 0.89 % of wall | 62 refreshes/h, of which `ref_full` = **0**. Almost all `ref_window`. |
+| `ble` | 2 (connected) in 765 of 777 rows | The link held all day. |
+
+**Real work took ~2.2 % of the day.** The other ~98 % was spent in `delay(10)`
+at 160 MHz doing nothing, plus the radio. The panel is as cheap as predicted --
+not one full refresh in 13 hours.
 
 The map screen never lets the device rest, and it takes four steps to see why:
 
@@ -120,12 +165,21 @@ Split `preventAutoSleep()` into `preventAutoSleep()` + `preventThrottle()` so
 the map can drop to 10 MHz while it is only waiting for a fix, and set
 `CONFIG_BT_CTRL_MODEM_SLEEP=y`.
 
-- Estimate: 45 mA -> 20-25 mA, so **26-32 h**.
-- **Does not reach the target**, even if everything lands. Worth doing anyway:
-  it is the cheapest, lowest-risk step, and it makes every later measurement
-  cleaner.
-- Blocked on: does a live NimBLE link survive a drop to 10 MHz? (open
-  questions, below).
+- Estimate: 44 mA -> 15-25 mA, so **26-43 h**.
+- **Unblocked 2026-08-15**: a live NimBLE link does survive 10 MHz (see open
+  questions). **This is the first change to test.**
+- The measurement is what promotes it. 98.5 % of run 1 sat at 160 MHz and only
+  1.3 % of that did any work, so the throttle is the largest single lever in
+  the tree, and it is no longer a guess about where the milliamps are.
+- Probably still does not reach 9 mA on its own -- the CPU does not stop, it
+  only slows. If it lands under 10 mA, route B is unnecessary and three days is
+  already done.
+- Two things the implementation must get right, both from run 1's counters:
+  - **Release the throttle around drawing.** A viewport reset is ~2 s at
+    160 MHz; at 10 MHz it would be tens of seconds. Run 1 drew 62 times an
+    hour, so this is the difference between usable and not.
+  - **`preventAutoSleep()` must stay true while `preventThrottle()` goes
+    false.** The split releases the clock, not the sleep guard.
 
 ### B. Automatic light sleep
 
@@ -256,10 +310,18 @@ Phase 1 -- make the instruments trustworthy:
 - [x] Confirm `stats` answers over a real BLE link.
 - [x] Confirm `throttled_ms` stops rising on the map screen and rises on Home
       -- the code reading (`power-management.md`, item 3) checked on hardware.
-- [ ] Read a real `power.csv` off the card and check the rows are sane. **Run 1
-      is sitting on the card now** -- ~690 rows, the first real state-3 data.
-      Pull it before anything else; it turns the 45 mA decomposition above from
-      read into measured.
+- [x] Read a real `power.csv` off the card and check the rows are sane
+      (2026-08-15, over `GET /download` in AP mode). 4028 rows across 61 boots;
+      run 1 is the second-to-last boot. Rows are sane and the decomposition is
+      now measured.
+- [ ] **Add the build hash to `power.csv`.** The log has no build column, so
+      nothing can say which firmware wrote which boot. That already bit this
+      analysis -- the 10 MHz boot cannot be tied to a build. It gets worse at
+      the second comparison run, which is the next thing that happens.
+- [ ] Teach the analysis to reject contaminated stretches automatically. Run 1's
+      file contains charging jumps mid-boot; a naive first-row-to-last-row slope
+      over such a boot reports a draw that never happened. Cut on any rise
+      above ADC noise before computing anything.
 - [ ] Cross-check one `stats` reply against the CSV row written beside it.
 - [ ] Chase `rssi()` returning 0 on a live link, or drop the line from `stats`.
 - [ ] Record run 1 (state 1, 2 hours) and run 2 (state 2, 2 hours).
@@ -279,18 +341,24 @@ Phase 2 -- baseline the four states:
 Phase 3 -- one change per branch, per build, per run. Re-run state 3 after each
 and record it in the table below before starting the next.
 
-Route A (cheap, does not reach the target on its own):
+Route A -- **start here**. Ordered by measured lever size, biggest first:
 
+- [ ] **Split `preventAutoSleep()` into `preventAutoSleep()` +
+      `preventThrottle()`** (plan 07, step 2) so the map can decline the clock
+      pin without becoming sleepable. Unblocked 2026-08-15. Release the throttle
+      around drawing; keep the sleep guard. **This is the first test.**
+      Prediction to be refuted: 44 mA -> 15-25 mA.
 - [ ] Loop cadence: let the map take the 50 ms delay while it is only waiting
-      for a fix. Cheapest possible first step, low risk.
-- [ ] Split `preventAutoSleep()` into `preventAutoSleep()` +
-      `preventThrottle()` (plan 07, step 2) so the map can decline the clock
-      pin without becoming sleepable. Blocked on the 10 MHz link question.
-- [ ] `CONFIG_BT_CTRL_MODEM_SLEEP=y` plus a mode/clock selection.
+      for a fix. Small next to the throttle -- the loop only works 1.3 % of the
+      time -- but nearly free.
+- [ ] `CONFIG_BT_CTRL_MODEM_SLEEP=y` plus a mode/clock selection. Without an
+      external 32.768 kHz crystal the low-power clock stays `MAIN_XTAL`, so the
+      main crystal keeps running through modem sleep and the saving is smaller
+      than the flag suggests.
 - [ ] Advertising interval and TX power set explicitly in
       `BlePositionServer::begin()`. Affects state 2 most.
 
-Route B (the one that reaches three days):
+Route B (only if route A lands short of 9 mA):
 
 - [ ] Settle the external 32.768 kHz crystal question first.
 - [ ] `CONFIG_PM_ENABLE=y` with DFS and tickless idle. **Riskiest** -- APB
@@ -338,11 +406,20 @@ Phase 4 -- tune what the measurements expose:
 
 ## Open questions
 
-- **Does an established NimBLE link survive a drop to 10 MHz?** The
-  hardware-verified finding is about `NimBLEDevice::init()` hanging, not about
-  steady state (`power-management.md`). Nothing has tested a throttle with a
-  connection up. If it cannot, the throttle split is dead and phase 3 loses
-  one item.
+- ~~**Does an established NimBLE link survive a drop to 10 MHz?**~~
+  **ANSWERED 2026-08-15: yes.** Found in `power.csv` data that was already on
+  the card, not by a new run. An earlier boot logged **466 of 513 minute rows
+  with `cpu_mhz=10` and `ble=2` simultaneously** -- `ble=2` means
+  `connIntervalMs() > 0`, i.e. a live connection, not just advertising
+  (`src/PowerLog.cpp:25-27`). That is ~7.8 hours of connected link at the low
+  clock. The old hardware-verified finding stands and is about something else:
+  `NimBLEDevice::init()` hangs when *entered* in low-power mode
+  (`power-management.md`). Steady state is fine.
+  Two caveats on that same boot: it was **not the map screen** (the heap
+  profile differs and `preventAutoSleep()` would have pinned the clock), and it
+  contains **two charging jumps**, so its apparent 3.0 mA draw is contaminated
+  and must not be quoted. The link finding survives both; the draw figure does
+  not.
 - **Does the X4 have an external 32.768 kHz crystal? BLOCKING.** Decides which
   BLE low-power clock modes are available, and therefore how much modem sleep
   and light sleep can save. Promoted to blocking 2026-08-15: it gates route B,
@@ -368,32 +445,44 @@ Newest last. One row per run, with the file kept alongside.
 
 | Date | Build | State | Duration | Start mV | End mV | Slope mV/h | Notes |
 |---|---|---|---|---|---|---|---|
-| 2026-08-15 | unrecorded | 3 | 11 h 30 min | -- | -- | -- | Run 1. See below. |
+| 2026-08-15 | unrecorded | 3 | 11 h 25 min | 4220 | 3547 | **58.9** | Run 1, 99->21 %. See below. |
 
 ### Run 1 -- 2026-08-15, first long endurance run
 
 The first run long enough to mean anything, and the run the three-day target is
-set against.
+set against. File: `docs/power-runs/run1-2026-08-15.csv` (parent repo), the
+second-to-last boot in it.
 
-- **State 3**: map screen up the whole time, BLE linked the whole time, hike
-  mode, rung 0, area Praha. Mostly stationary, little movement.
-- **Percent**: 100 % at 10:30, 21 % at 22:00. 79 % over 11.5 h = **6.9 %/h**.
-- **Derived draw**: 79 % of 650 mAh = 513 mAh over 11.5 h = **~45 mA**.
-- **Extrapolated full cycle**: ~14.6 h.
+**Conditions.** State 3: map screen up the whole time, BLE connected the whole
+time (`ble=2` in 765 of 777 rows), hike mode, rung 0, area Praha. Mostly
+stationary.
 
-Caveats, all of which matter:
+**The window the device reported, from `batt_mv`:**
 
-- **Percent, not millivolts.** Constraint 3 says not to do this. It is done
-  here because the run was long enough that 1 % of coarseness is small against
-  79 %, and because the CSV had not been read yet. Redo it from `batt_mv` when
-  the card is pulled.
-- **Build not recorded.** Fix for run 2: note the build before unplugging.
+| | 99 % -> 21 % | full discharge |
+|---|---|---|
+| Duration | **11.42 h** | 12.94 h (to 5 %) |
+| Voltage | 4220 -> 3547 mV | 4220 -> 3380 mV |
+| Slope | **58.9 mV/h** | 64.9 mV/h |
+| Drain | 6.83 %/h = **44.4 mA** | 7.27 %/h = 47.2 mA |
+| 100 -> 0 extrapolated | **14.6 h** | 13.8 h |
+
+The same day's percent-only arithmetic (100 % at 10:30, 21 % at 22:00, ~45 mA,
+~14.6 h) came out right to a decimal. Worth knowing: over a run this long,
+percent is not as useless as constraint 3 implies. Over a short one it still is.
+
+**Counters over the run** are in "Where the 45 mA goes" above -- 98.5 % of the
+run at 160 MHz, real work 2.2 % of wall, zero full panel refreshes.
+
+Caveats:
+
+- **Build not recorded.** Fix for run 2, and see the phase 1 item about adding
+  a build column.
+- **The boot began with an hour of charging** (4025 -> 4220 mV) before the run
+  proper. The numbers above start at peak voltage, not at boot. Run 2 should
+  unplug and rest 10 minutes so the window starts clean.
 - **Stationary is optimistic.** A walking hiker triggers viewport resets this
   run did not pay for, so 14.6 h is a ceiling for state 3, not an expectation on
   a trail.
 - **Agrees with the earlier ~46 mA ride figure**, which was contaminated. Two
-  independent routes to the same number is why 45 mA is treated as the working
-  baseline rather than one more soft data point.
-
-`power.csv` for this run is still on the card -- ~690 rows. Reading it is the
-top item in phase 1.
+  independent routes to the same number.
