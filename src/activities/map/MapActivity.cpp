@@ -246,11 +246,10 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 constexpr int kHeaderClockToGlobeGap = 8;
 
 // Top y of text in this row, matching the battery percentage exactly.
-// drawHeader() hands drawBatteryRight() rect.y + 5 (BaseTheme.cpp:387), and
-// drawBatteryRight() draws its percentage string at that same y (:119) -- the
-// +6 it adds is for the icon only (:114). So text sits 4px above the icon row
-// (kHeaderMarginTop + 9), and a clock aligned to the icons would sit 4px below
-// the percentage it stands next to.
+// GUI.drawHeader() hands drawBatteryRight() rect.y + 5 and that function draws
+// its percentage string at that same y (BaseTheme.cpp:119) -- the +6 it adds is
+// for the icon only (:114). So text sits 4px above the icon row, and a clock
+// aligned to the icons would sit 4px below the percentage it stands next to.
 constexpr int kHeaderTextTopY = kHeaderMarginTop + 5;
 
 // Width the clock slot reserves. Derived from the widest *digit*, not measured
@@ -272,8 +271,10 @@ int headerClockSlotWidth(const GfxRenderer& renderer) {
   }
   return widestDigit * 4 + renderer.getTextWidth(SMALL_FONT_ID, ":");
 }
-// GUI.drawHeader() only clears its own 80px-wide battery box (BaseTheme.cpp:366);
-// the BLE logo+bars sit further left, over live map lines like the compass and
+// GUI.drawHeader() does not clear anything the strip can rely on: BaseTheme
+// wipes only an 80px battery box (BaseTheme.cpp:383), but the shipped Lyra
+// theme wipes the **full width** of the rect it is handed (LyraTheme.cpp:112).
+// Either way the BLE logo+bars sit over live map lines like the compass and
 // marker do, so they need the same opaque backing those give themselves.
 constexpr int kHeaderBackingPad = 2;
 // The full-width strip GUI.drawHeader() clears for the row above (its own
@@ -1200,32 +1201,38 @@ void MapActivity::updateHeaderStatus() {
   if (barsMoved) nextBarsRepaintMs_ = now + kHeaderBarsRepaintMs;
 
   int x, y, w, h;
-  headerStatusRect(x, y, w, h);
-  drawHeaderStatusStrip();  // records what it drew, for the comparisons above
 
   // The battery rides the minute tick, and only it. Charge moves slowly enough
   // that it has never earned a repaint of its own, and a minute is a fine rate
-  // to notice it at -- but it is drawn by GUI.drawHeader(), whose 80px-wide
-  // box (BaseTheme.cpp:366-368) sits outside headerStatusRect() entirely. So
-  // when this tick is a minute tick, redraw the battery too and widen the
-  // window to span both. Drawing outside what is refreshed would put a battery
-  // in the framebuffer that the panel does not show until the next full frame,
-  // and if the charge moved since, the two disagree -- which is why the
-  // bars-only and structural paths still refresh the strip alone.
+  // to notice it at. But the battery belongs to GUI.drawHeader(), and **the
+  // active theme's drawHeader() clears the full width of the rect it is given
+  // before it draws anything** -- LyraTheme.cpp:112 opens with
+  // fillRect(rect.x, rect.y, rect.width, rect.height), i.e. all 480 columns of
+  // [kHeaderMarginTop, kHeaderMarginTop + kHeaderRowHeight). Only BaseTheme
+  // confines itself to an 80px battery box; Lyra is what ships
+  // (CrossPointSettings.h, uiTheme = LYRA).
+  //
+  // Found on hardware 2026-08-15, the expensive way. The first cut of this
+  // called drawHeaderStatusStrip() and *then* GUI.drawHeader(), so the clear
+  // wiped the clock, the BLE icons and the place name a moment after drawing
+  // them, leaving exactly one scanline of each -- the fill's bottom edge (28)
+  // sits one row under the shared text baseline (29). See
+  // docs/map-header-status.md, "The clock".
+  //
+  // So the minute tick redraws the whole row through the one function that
+  // already gets the order right, and refreshes the whole band. It costs a
+  // 480x36 window once a minute instead of a strip; the alternative is a
+  // second copy of drawHeaderStatus()'s ordering that has to be kept in step
+  // with it forever.
   if (minuteMoved) {
-    const int screenWidth = renderer.getScreenWidth();
-    GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}, nullptr, nullptr);
-    // Not the icon's own box -- GUI.drawHeader()'s *clear* box, which is what
-    // has to be inside the refreshed window. It wipes (rect.y + 5, height
-    // batteryHeight + 10) before drawing (BaseTheme.cpp:386-388), the extra 10
-    // covering the percentage text sitting above the icon.
-    const int batteryTop = kHeaderMarginTop + 5;
-    const int batteryBottom = batteryTop + BaseMetrics::values.batteryHeight + 10;
-    const int unionTop = std::min(y, batteryTop);
-    const int unionBottom = std::max(y + h, batteryBottom);
-    y = unionTop;
-    h = unionBottom - unionTop;
-    w = screenWidth - x;  // out to the right edge, covering the battery box
+    drawHeaderStatus();  // clear, battery, strip, place name, separator
+    x = 0;
+    y = 0;
+    w = renderer.getScreenWidth();
+    h = kHeaderBarHeight;
+  } else {
+    headerStatusRect(x, y, w, h);
+    drawHeaderStatusStrip();  // records what it drew, for the comparisons above
   }
 
   // Windowed, like the busy badge: the map on the rest of the panel is
@@ -1328,11 +1335,15 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
   const int iconTop = iconBottom - kHeaderIconHeight;
 
-  // The clock's text sits 4px above the icon row (see kHeaderTextTopY), so the
+  // The clock's text sits 4px above the icon row (kHeaderTextTopY), so the
   // rect starts at whichever of the two is higher. Content drawn above the
-  // rect would be outside what the windowed repaint refreshes -- a stale clock
-  // left on the panel is exactly the failure this whole feature exists to
-  // avoid.
+  // rect would be outside what the windowed repaint refreshes.
+  //
+  // Safe to raise even though the place name shares those rows: this rect is
+  // bounded horizontally to clockLeft..barsRight, and drawHeaderPlaceName()
+  // truncates the name against clockLeft before drawing it. A box that reaches
+  // further than its own glyphs is what erased this row twice already
+  // (2026-08-08, see docs/map-header-status.md) -- this one does not.
   const int contentTop = std::min(iconTop, kHeaderTextTopY);
   x = clockLeft - kHeaderBackingPad;
   y = contentTop - kHeaderBackingPad;

@@ -294,31 +294,84 @@ avoid.
 **No time yet draws nothing**, not `--:--`. A placeholder reads as a fault; a
 blank slot reads as "not a thing this screen has".
 
+### `GUI.drawHeader()` clears the full width, and it cost a hardware bug
+
+**Found on hardware 2026-08-15.** The first cut of the minute tick drew the
+strip and *then* called `GUI.drawHeader()` to refresh the battery. On the panel
+the clock, the Bluetooth logo and the signal bars vanished a moment after
+appearing, and so did the place name -- each reduced to a single row of pixels.
+
+The comment that justified that order was wrong about which theme runs.
+`GUI` is whatever `SETTINGS.uiTheme` selects, and the shipped default is Lyra
+(`src/CrossPointSettings.h:334`, `uiTheme = LYRA`). `LyraTheme::drawHeader()`
+opens with a clear of **the whole rect it is handed**:
+
+```cpp
+// src/components/themes/lyra/LyraTheme.cpp:112
+renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+```
+
+Handed `Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}` that is all
+480 columns, rows 6..27. Only `BaseTheme` confines itself to an 80px battery box
+(`src/components/themes/BaseTheme.cpp:383`) -- and `BaseTheme` is not what
+ships.
+
+The single surviving scanline is the tell, and the arithmetic is exact.
+`GfxRenderer::drawText()`'s `y` is the **top of the line box**, not a baseline:
+`const int yPos = y + getFontAscenderSize(...)` (`GfxRenderer.cpp:571`).
+
+| element | draw y | ascender | baseline | last ink row |
+|---|---|---|---|---|
+| place name, `ubuntu_10` | 9 | 20 | 29 | 28 |
+| clock, `notosans_8` | 11 | 18 | 29 | 28 |
+
+The clear covers rows 6..27 inclusive. Row 28 is one below its bottom edge, so
+row 28 is exactly what survives -- for both, from two different fonts, by
+coincidence of a shared baseline.
+
+**The rule this leaves behind: never call `GUI.drawHeader()` after drawing
+anything else into the header band.** `drawHeaderStatus()` already has the
+order right (clear, battery, strip, place name, separator), so the minute tick
+now calls that one function and refreshes the whole band rather than keeping a
+second copy of the ordering in step with it.
+
 ### The battery rides the minute tick
 
 Charge moves slowly enough that it never earned a repaint of its own, and it had
-none: the battery is drawn by `GUI.drawHeader()`, whose 80px box
-(`src/components/themes/BaseTheme.cpp:366-368`) sits outside `headerStatusRect()`
-entirely, so every strip repaint deliberately left it alone. A minute is a fine
-rate to notice charge at, so the minute tick now redraws the battery too and
-widens its window to the right screen edge to cover both. The bars-only and
-structural paths still refresh the strip alone -- unchanged.
+none: the battery is drawn by `GUI.drawHeader()`, which sits outside
+`headerStatusRect()` entirely, so every strip repaint deliberately left it
+alone. A minute is a fine rate to notice charge at, so the minute tick now
+redraws the whole row via `drawHeaderStatus()` and refreshes the whole band --
+480x36 once a minute instead of a strip. The bars-only and structural paths
+still redraw and refresh the strip alone, unchanged.
+
+Those partial paths still never call `drawHeaderPlaceName()`. That is fine only
+because nothing they draw reaches the name: `headerStatusRect()` is bounded to
+`clockLeft..barsRight` and the name is truncated against `clockLeft`. Widen
+either and the name has to be redrawn with them.
 
 ### Verified vs assumed
 
-- **Read off the code, not measured:** everything above about which function
-  draws what and when.
-- **Builds clean** on `feat/header-clock`: no warnings, RAM 17.8% (58,268 of
-  327,680 bytes), flash 59.3%. The added state is 10 bytes in
-  `BlePositionServer` and 2 in `MapActivity` -- below the resolution of the
-  build's own RAM figure.
-- **Open -- needs hardware.** Nothing here has been on the glass. Four things a
-  device run would settle: that the clock slot does not collide with the place
-  name at a long "fine, coarse" pair; that the minute tick's wider window does
-  not visibly disturb the map; what the tick actually costs when a grayscale
-  plane is pending and the window is promoted to a full HALF refresh (~1720 ms,
-  per the `GfxRenderer` HAL note); and whether a once-a-minute partial refresh
-  accumulates ghosting worth a periodic full clear.
+- **Measured on hardware 2026-08-15**, from decoded `CMD:SCREENSHOT`
+  framebuffer dumps: the clock draws and reads correctly, and **the minute tick
+  fires while the device is idle**. Over 75 s with no interaction and no forced
+  render, the dumped framebuffer went `23:43` -> `23:45` and the battery 70% ->
+  72%. The battery is the load-bearing half of that: the structural and
+  bars-only paths deliberately do not touch it, so only the minute tick can
+  have moved it.
+- **Measured on hardware 2026-08-15**, same method: the full-width clear bug
+  above, and its fix.
+- **Read off the code, not measured:** everything about which function draws
+  what and when, and the font arithmetic in the clear-bug section.
+- **Builds clean**: no warnings, RAM 17.8% (58,268 of 327,680 bytes), flash
+  59.3%. The added state is 10 bytes in `BlePositionServer` and 2 in
+  `MapActivity` -- below the resolution of the build's own RAM figure.
+- **Open -- needs hardware.** Three things a longer device run would settle:
+  that the clock slot does not collide with the place name at a long
+  "fine, coarse" pair; what the minute tick costs when a grayscale plane is
+  pending and the window is promoted to a full HALF refresh (~1720 ms, per the
+  `GfxRenderer` HAL note); and whether a once-a-minute refresh of the whole
+  header band accumulates ghosting worth a periodic full clear.
 - **Not verified against a reference clock.** The drift claim is the mechanism
   (crystal ppm between packets, re-anchored on every fix), not a measured
   figure.
