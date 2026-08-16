@@ -1,7 +1,6 @@
 #include "MapActivity.h"
 
 #include <BlePositionServer.h>
-#include <HalPowerManager.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -672,7 +671,6 @@ void MapActivity::drawMapScale() {
 }
 
 void MapActivity::showBusy() {
-  kickFullClock();
   // One badge per burst. Three quick zoom presses are one redraw, so they must
   // also be one refresh -- the badge from the first press is still on screen
   // and says the same thing.
@@ -2612,28 +2610,7 @@ void MapActivity::saveLaddersIfChanged() {
 
 bool MapActivity::preventAutoSleep() { return freeink::BlePositionServer::getInstance().isRunning(); }
 
-void MapActivity::kickFullClock() { powerManager.setPowerSaving(false); }
-
-bool MapActivity::preventThrottle() {
-  // Queued work the rider is waiting on, or bytes moving.
-  if (redrawDueMs_ != 0 || arrivalRedrawDueMs_ != 0 || transfer_.status().active) return true;
-
-  // Everything that is not a settled, connected link. This is the guard whose
-  // absence hung the device on 2026-08-16: connIntervalMs() is non-zero only
-  // once a central is connected and the interval is agreed, so advertising,
-  // init, disconnects and reconnects all fall through to "hold full clock" --
-  // and those are exactly the paths that reach NimBLEDevice::init(), which
-  // hangs at a low clock (docs/power-management.md).
-  const auto& ble = freeink::BlePositionServer::getInstance();
-  if (!ble.isRunning() || ble.connIntervalMs() == 0) return true;
-
-  // Connected and idle. The only state with hardware evidence that 10 MHz is
-  // survivable, and the state this screen spends nearly all its life in.
-  return false;
-}
-
 void MapActivity::renderWaiting() {
-  kickFullClock();
   // Same reason as renderViewport(): whatever asked for this frame asked for the
   // ordinary map, not the overview.
   overviewShown_ = false;
@@ -2656,7 +2633,6 @@ void MapActivity::renderWaiting() {
 }
 
 void MapActivity::renderLoadingTiles() {
-  kickFullClock();
   // Same centred logo layout as BootActivity/SleepActivity, not a top-left
   // status line: this is the same kind of "device is busy, wait" screen they
   // are, and should look like one rather than like debug text.
@@ -2693,7 +2669,6 @@ void MapActivity::renderLoadingTiles() {
 }
 
 void MapActivity::renderCurrent() {
-  kickFullClock();
   if (!hasReceivedAny_) {
     renderWaiting();
     return;
@@ -2899,7 +2874,6 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
 }
 
 void MapActivity::renderRouteOverview() {
-  kickFullClock();
   if (!source_ || !route_) {
     renderWaiting();
     return;
