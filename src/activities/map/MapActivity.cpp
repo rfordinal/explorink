@@ -1,6 +1,7 @@
 #include "MapActivity.h"
 
 #include <BlePositionServer.h>
+#include <HalPowerManager.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -671,6 +672,7 @@ void MapActivity::drawMapScale() {
 }
 
 void MapActivity::showBusy() {
+  kickFullClock();
   // One badge per burst. Three quick zoom presses are one redraw, so they must
   // also be one refresh -- the badge from the first press is still on screen
   // and says the same thing.
@@ -1648,6 +1650,13 @@ void MapActivity::onEnter() {
   Activity::onEnter();
   LOG_DBG(kLogTag, "onEnter start");
 
+  // NimBLEDevice::init() hangs at a low clock, and this screen can be entered
+  // from an idle Home screen that is already throttled (verified 2026-08-04,
+  // docs/power-management.md). HalPowerManager's BLE_SAFE_FREQ floor only
+  // applies once the controller is enabled -- which is what the next line
+  // does -- so the window before it needs closing here.
+  powerManager.setPowerSaving(false);
+
   bleStartFailed_ = !freeink::BlePositionServer::getInstance().begin();
   if (bleStartFailed_) {
     LOG_ERR(kLogTag, "BlePositionServer.begin() failed");
@@ -2610,7 +2619,17 @@ void MapActivity::saveLaddersIfChanged() {
 
 bool MapActivity::preventAutoSleep() { return freeink::BlePositionServer::getInstance().isRunning(); }
 
+void MapActivity::kickFullClock() { powerManager.setPowerSaving(false); }
+
+bool MapActivity::preventThrottle() {
+  // Queued work the rider is waiting on, or bytes moving. Everything else on
+  // this screen is a handful of integer compares per tick and runs fine at the
+  // BLE-safe clock.
+  return redrawDueMs_ != 0 || arrivalRedrawDueMs_ != 0 || transfer_.status().active;
+}
+
 void MapActivity::renderWaiting() {
+  kickFullClock();
   // Same reason as renderViewport(): whatever asked for this frame asked for the
   // ordinary map, not the overview.
   overviewShown_ = false;
@@ -2633,6 +2652,7 @@ void MapActivity::renderWaiting() {
 }
 
 void MapActivity::renderLoadingTiles() {
+  kickFullClock();
   // Same centred logo layout as BootActivity/SleepActivity, not a top-left
   // status line: this is the same kind of "device is busy, wait" screen they
   // are, and should look like one rather than like debug text.
@@ -2669,6 +2689,7 @@ void MapActivity::renderLoadingTiles() {
 }
 
 void MapActivity::renderCurrent() {
+  kickFullClock();
   if (!hasReceivedAny_) {
     renderWaiting();
     return;
@@ -2874,6 +2895,7 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
 }
 
 void MapActivity::renderRouteOverview() {
+  kickFullClock();
   if (!source_ || !route_) {
     renderWaiting();
     return;
@@ -3112,6 +3134,12 @@ void MapActivity::updateManualHeadingCapture(uint8_t fixHeadingStep) {
 }
 
 void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  // The one seam every heavy frame goes through. renderCurrent() is not
+  // enough: applyFix()'s follow decision, the observation-mode return and the
+  // console's goto all call this directly, and the first bench run of the
+  // 80 MHz floor caught a 10.6 s viewport reset that had bypassed the
+  // wrappers' guard entirely.
+  kickFullClock();
   LOG_DBG(kLogTag, "renderViewport start: lat=%d lon=%d heading=%u seq=%u", (int)latE7, (int)lonE7,
           (unsigned)headingStep, (unsigned)seq);
   // Whatever got here -- a button, a console command, the menu's Refresh -- asked

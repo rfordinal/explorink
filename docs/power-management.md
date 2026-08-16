@@ -527,6 +527,81 @@ advertising restarts, and across activity transitions that own the peripheral,
 then prove on the bench that entering the map and restarting advertising both
 survive at 10 MHz -- before anything runs for hours.
 
+## The map throttles to 80 MHz (2026-08-17)
+
+**Built and bench-verified on hardware.** The third attempt at the throttle
+split, and the first that works. What changed is not the guard but the floor.
+
+`preventAutoSleep()` used to answer two questions with one bool. Now there are
+two, and **safety lives in neither of them**:
+
+| Method | Question | Map screen |
+|---|---|---|
+| `preventAutoSleep()` | do not deep-sleep me | **true** while the BLE server runs |
+| `preventThrottle()` | do not slow my clock | **false**, except while work is queued |
+
+`Activity::preventThrottle()` defaults to `preventAutoSleep()`, so every other
+activity is unchanged. `main.cpp` keeps two deadlines, `lastActivityTime` for
+auto-sleep and `lastFullClockTime` for the throttle; user input resets both.
+
+### The floor is the safety, not the caller
+
+`HalPowerManager::lowPowerFloorMhz()` asks
+`esp_bt_controller_get_status()` on **every** throttle and returns
+`BLE_SAFE_FREQ` (80 MHz) whenever the controller is enabled, `LOW_POWER_FREQ`
+(10 MHz) otherwise. No call site can put the radio in an unsupported state,
+whatever it returns, because the HAL refuses.
+
+That is deliberate. The two earlier attempts placed the duty at the call site
+and keyed it on an application-level view of the link -- which went stale and
+hung the device. The controller's own status cannot go stale.
+
+`setPowerSaving()` also re-applies when the **floor moves under an existing
+throttle**: the controller can come up while the device is already at 10 MHz,
+which is exactly what entering the map from an idle Home screen does.
+`MapActivity::onEnter()` and `TileSyncActivity::onEnter()` additionally raise
+the clock before `BlePositionServer::begin()`, closing the window before the
+controller is enabled and the floor starts applying.
+
+### Drawing still runs at 160 MHz
+
+`MapActivity::renderViewport()` calls `kickFullClock()` first. **That seam
+matters and the first bench run proved it**: the guard was originally only on
+`renderCurrent()` and its siblings, and a 10.6 s viewport reset slipped through
+via one of `renderViewport()`'s three direct callers. Moving the guard into
+`renderViewport()` itself took the identical scene (107,930 points projected)
+from **10,576 ms back to 6,075 ms**.
+
+### Bench results
+
+Four runs with `tools/blefakephone.py`, serial captured throughout:
+
+- Throttle engages with a central connected -- `[PWR] Going to low-power mode
+  (80 MHz)` -- and the link survives it. **44, 45 and 33 fixes** across three
+  runs, device still logging after the central left every time.
+- `throttled_ms` **93.8 % of wall** over a 299 s run (`stats`), against 0.02 %
+  in run 2. The throttle genuinely engages.
+- The clock rises for a render and falls back afterwards, four transitions in
+  one run.
+- A fresh connect after the device had been running and throttling works.
+
+**Transfers were not exercised on this build.** They hold full clock by
+construction -- `preventThrottle()` returns true while
+`transfer_.status().active` -- so the transfer path behaves exactly as it did
+on the previous build, where two transfers were verified end to end with
+matching CRCs.
+
+**Not measured: the saving.** USB charges, so only a full unplugged run prices
+it. Run 2's slope was 32.6 mV/h at 24.0 mA with the CPU at 160 MHz all day; the
+CPU is the largest remaining component and this halves its clock for ~94 % of
+the time.
+
+**A note on the rig:** the laptop's BlueZ stack accumulated failures across
+~15 connect cycles in one session, failing at `start_notify` with "Unlikely
+Error" while the device log showed a clean connect, subscribe and MTU
+negotiation. `bluetoothctl power off; power on` cleared it. Do not read a
+host-side GATT error as a device fault without checking the device's own log.
+
 ## Why 10 MHz breaks BLE: APB, and a lock that is compiled out
 
 **Read off the code 2026-08-16 (ESP-IDF and Arduino core sources), explains
