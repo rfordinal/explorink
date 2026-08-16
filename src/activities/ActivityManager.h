@@ -125,6 +125,9 @@ class ActivityManager {
   void popActivity();
 
   bool preventAutoSleep() const;
+  // See Activity::preventThrottle(). Defaults through to preventAutoSleep()
+  // for any activity that has not overridden it.
+  bool preventThrottle() const;
   bool isReaderActivity() const;
   bool handleForcedRefresh();
   bool skipLoopDelay() const;

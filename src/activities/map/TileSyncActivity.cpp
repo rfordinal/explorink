@@ -1,6 +1,7 @@
 #include "TileSyncActivity.h"
 
 #include <BlePositionServer.h>
+#include <HalPowerManager.h>
 #include <Logging.h>
 #include <Memory.h>
 
@@ -94,6 +95,13 @@ bool TileSyncActivity::armRun() {
 
 void TileSyncActivity::onEnter() {
   Activity::onEnter();
+
+  // NimBLEDevice::init() hangs at a low clock, and this screen can be entered
+  // from an idle Home screen that is already throttled (verified 2026-08-04,
+  // docs/power-management.md). HalPowerManager's BLE_SAFE_FREQ floor only
+  // applies once the controller is enabled -- which is what the next line
+  // does -- so the window before it needs closing here.
+  powerManager.setPowerSaving(false);
 
   if (!freeink::BlePositionServer::getInstance().begin()) {
     // Plausible, not theoretical -- BLE init costs ~75 KB heap

@@ -141,6 +141,18 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // peripheral is running and might receive a position update any moment.
   bool preventAutoSleep() override;
 
+  // But *do* let the CPU throttle. This screen is up for hours and spends
+  // almost all of them waiting: run 2 measured 160 MHz for all but 0.02 % of a
+  // 13 h day, with the panel busy 3.3 % of it (docs/power-plan.md).
+  //
+  // Returns true only while there is queued work a slow clock would make the
+  // rider wait for. It carries no safety duty: HalPowerManager will not go
+  // below BLE_SAFE_FREQ while the BT controller is enabled, so the radio is
+  // protected by the floor rather than by what this returns. An earlier
+  // attempt put that duty here, keyed it on a cached view of the link, and
+  // hung the device when the view went stale.
+  bool preventThrottle() override;
+
   // IMapSkipObserver -- the phone saying it cannot supply one tile. Marks the
   // entry refused so autosync stops asking for it, and settles the row against
   // the ask that is outstanding.
@@ -346,6 +358,20 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // One source for both, or the repaint clips what the draw put down.
   void headerStatusRect(int& x, int& y, int& w, int& h) const;
   void showBusy();
+
+  // Raise the CPU back to full speed before anything the rider waits on.
+  // Called at the top of every render entry point.
+  //
+  // This is about latency, not safety. With preventThrottle() false the screen
+  // sits at BLE_SAFE_FREQ (80 MHz), where a viewport reset -- close to two
+  // seconds at 160 MHz, much of it software floating point -- would take
+  // roughly twice as long. A fix can also arrive and force a redraw inside the
+  // same loop() iteration whose preventThrottle() was already polled, so the
+  // render paths cannot rely on that flag alone.
+  //
+  // The main loop drops the clock again once IDLE_POWER_SAVING_MS passes with
+  // nothing asking for it (main.cpp).
+  static void kickFullClock();
   void drawBusyBadge();
   // Badge rectangle in logical screen coordinates. displayBufferWindow()
   // handles the controller's multiple-of-8 alignment itself.

@@ -377,21 +377,17 @@ and record it in the table below before starting the next.
 
 Route A -- **start here**. Ordered by measured lever size, biggest first:
 
-- [ ] **Split `preventAutoSleep()` into `preventAutoSleep()` +
-      `preventThrottle()`**. **Two attempts on 2026-08-16, both hung the
-      device, both reverted.** Attempt 1 left the NimBLE paths at 10 MHz.
-      Attempt 2 guarded those and throttled only on a settled connected link --
-      and hung the moment the throttle engaged with a central connected. A
-      control run on the logging build with the same rig held the link for 22
-      fixes, so the rig is sound and the firmware was the cause
-      (`power-management.md`, "A connected BLE link does NOT survive 10 MHz").
-      **The blocker is now the 10 MHz clock itself, not where the guard sits.**
-      Next idea worth trying is the milder one already in the list below: drop
-      to 80 MHz rather than 10 while a link is live, which needs a per-caller
-      frequency in `HalPowerManager` instead of the single `LOW_POWER_FREQ`.
-      Do it in a supervised session with the bench rig, never before an
-      unattended run.
-      **Prediction still unmeasured: 44.4 mA -> 15-25 mA.**
+- [x] **Split `preventAutoSleep()` into `preventAutoSleep()` +
+      `preventThrottle()`, with an 80 MHz floor** (2026-08-17). Two earlier
+      attempts hung the device by throttling to 10 MHz with the controller up;
+      the fix is a floor enforced inside `HalPowerManager` from
+      `esp_bt_controller_get_status()`, not a guard at the call site.
+      Bench-verified: throttle engages with a central connected, link holds
+      (44/45/33 fixes across three runs), `throttled_ms` **93.8 % of wall**
+      against run 2's 0.02 %. Mechanism in `power-management.md`, "The map
+      throttles to 80 MHz".
+      **Prediction for the next run, to be refuted: 24.0 mA -> 14-19 mA.**
+      That would be ~34-46 h, still short of the 9.0 mA three-day budget.
 - [ ] Loop cadence: let the map take the 50 ms delay while it is only waiting
       for a fix. Small next to the throttle -- the loop only works 1.3 % of the
       time -- but nearly free.

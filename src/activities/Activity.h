@@ -43,6 +43,22 @@ class Activity {
 
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
+
+  // Hold the CPU at its full clock. Separate from preventAutoSleep() because
+  // they are two different questions that one flag used to answer together:
+  // "do not power the device down behind my back" and "do not slow the CPU
+  // down behind my back". The map screen wants the first and not the second --
+  // it is up for hours, and run 2 measured it at 160 MHz for all but 0.02 % of
+  // a 13 h day (docs/power-plan.md).
+  //
+  // Safety does not live here. HalPowerManager refuses to go below
+  // BLE_SAFE_FREQ while the BT controller is enabled, so an activity declining
+  // the clock pin cannot put the radio in an unsupported state no matter what
+  // it returns.
+  //
+  // Defaults to preventAutoSleep() so every activity that has not thought
+  // about it behaves exactly as it did before the split.
+  virtual bool preventThrottle() { return preventAutoSleep(); }
   virtual bool isReaderActivity() const { return false; }
   // Returns true when the activity schedules its own forced refresh.
   virtual bool handleForcedRefresh() { return false; }

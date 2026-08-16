@@ -5,6 +5,7 @@
 #include <PowerManager.h>
 #include <PowerTelemetry.h>
 #include <WiFi.h>
+#include <esp_bt.h>
 #include <esp_sleep.h>
 #include <soc/soc_caps.h>
 
@@ -13,6 +14,17 @@
 #include "HalGPIO.h"
 
 HalPowerManager powerManager;  // Singleton instance
+
+int HalPowerManager::lowPowerFloorMhz() {
+  // Asked of the controller, not of any application-level flag. This is the
+  // one condition that matters and the one that cannot go stale: if the
+  // controller is enabled, the radio may touch the BT MAC at any moment, and
+  // the MAC needs APB at 80 MHz.
+  if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+    return BLE_SAFE_FREQ;
+  }
+  return LOW_POWER_FREQ;
+}
 
 void HalPowerManager::begin() {
   if (BoardConfig::ACTIVE.batteryAdc >= 0) {
@@ -42,17 +54,25 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // it's not very important if we read a slightly stale value for currentLockMode
   const LockMode mode = currentLockMode;
 
-  if (mode == None && enabled && !isLowPower) {
-    LOG_DBG("PWR", "Going to low-power mode");
-    if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
-      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
+  const int floorFreq = lowPowerFloorMhz();
+
+  // Re-enters when the floor moves under an existing throttle, not only when
+  // throttling from full speed. The BLE controller can come up while the
+  // device is already at 10 MHz -- entering the map from an idle Home screen
+  // does exactly that -- and staying there would be the hang this floor
+  // exists to prevent.
+  if (mode == None && enabled && (!isLowPower || appliedLowFreq != floorFreq)) {
+    LOG_DBG("PWR", "Going to low-power mode (%d MHz)", floorFreq);
+    if (!setCpuFrequencyMhz(floorFreq)) {
+      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", floorFreq);
       return;
     }
     isLowPower = true;
+    appliedLowFreq = floorFreq;
     // Only after the call succeeded: a failed setCpuFrequencyMhz() leaves the
     // CPU on the old clock, and telling the meter otherwise would put the ride
     // in the wrong bucket for as long as it lasts.
-    POWER_TELEMETRY.onCpuFrequency(LOW_POWER_FREQ, /*throttled=*/true);
+    POWER_TELEMETRY.onCpuFrequency(static_cast<uint16_t>(floorFreq), /*throttled=*/true);
 
   } else if ((!enabled || mode != None) && isLowPower) {
     LOG_DBG("PWR", "Restoring normal CPU frequency");
@@ -61,6 +81,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
       return;
     }
     isLowPower = false;
+    appliedLowFreq = 0;
     POWER_TELEMETRY.onCpuFrequency(static_cast<uint16_t>(normalFreq), /*throttled=*/false);
   }
 

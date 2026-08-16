@@ -14,7 +14,8 @@ class HalPowerManager;
 extern HalPowerManager powerManager;  // Singleton
 
 class HalPowerManager {
-  int normalFreq = 0;  // MHz
+  int normalFreq = 0;      // MHz
+  int appliedLowFreq = 0;  // the low-power clock actually in force, 0 when not throttled
   bool isLowPower = false;
 
   mutable int _batteryCachedPercent = 0;         // Last read battery percentage (0-100)
@@ -30,8 +31,31 @@ class HalPowerManager {
 #else
   static constexpr int LOW_POWER_FREQ = 10;  // MHz
 #endif
+
+  // The floor while the BLE controller is enabled. Not a tuning knob -- a
+  // correctness bound.
+  //
+  // Below 80 MHz the CPU leaves the PLL for the crystal and
+  // rtc_clk_apb_freq_update() drags **APB down with it**; 80 and 160 MHz are
+  // both PLL-sourced and leave APB pinned at 80. The BLE controller states its
+  // requirement as an ESP_PM_APB_FREQ_MAX lock whose every call site sits
+  // inside #ifdef CONFIG_PM_ENABLE -- which this firmware does not set -- so
+  // the controller's only defence against a slow APB compiles out, and nothing
+  // stops the clock being pulled out from under a live radio.
+  //
+  // Measured the hard way on 2026-08-16: two builds that throttled to 10 MHz
+  // with the controller up hung the device solid, one at init and one in
+  // steady state. See docs/power-management.md, "Why 10 MHz breaks BLE".
+  static constexpr int BLE_SAFE_FREQ = 80;                     // MHz
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 3000;  // ms
-  static constexpr unsigned long BATTERY_POLL_MS = 1500;       // ms
+
+  // Which low-power clock is legal right now: BLE_SAFE_FREQ while the BT
+  // controller is enabled, LOW_POWER_FREQ otherwise. Asked the controller
+  // itself on every throttle and never cached -- an earlier attempt keyed on a
+  // cached application-level view of the link and threw the device away when
+  // that view went stale.
+  static int lowPowerFloorMhz();
+  static constexpr unsigned long BATTERY_POLL_MS = 1500;  // ms
 
   void begin();
 
