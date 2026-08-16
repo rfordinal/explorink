@@ -141,6 +141,21 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // peripheral is running and might receive a position update any moment.
   bool preventAutoSleep() override;
 
+  // But *do* let the CPU throttle -- only while the link is connected and
+  // settled, and nothing is queued. This screen is up for hours and spends
+  // almost all of them waiting: run 1 measured 98.5 % of an 11.4 h day at
+  // 160 MHz with the loop doing real work 1.3 % of the time (docs/power-plan.md).
+  //
+  // The connected condition is the whole safety story, not a refinement. A
+  // first attempt (2026-08-16) let the map throttle whenever no redraw was
+  // queued, and hung the device solid: NimBLEDevice::init() hangs in low-power
+  // mode (docs/power-management.md), and every path that touches it -- entering
+  // the screen, an advertising restart, a reconnect -- happens while *not*
+  // connected. Throttling only in the connected steady state keeps all of them
+  // at full clock, and that steady state is the one case with hardware evidence
+  // behind it: ~7.8 h of a live link at cpu_mhz=10.
+  bool preventThrottle() override;
+
   // IMapSkipObserver -- the phone saying it cannot supply one tile. Marks the
   // entry refused so autosync stops asking for it, and settles the row against
   // the ask that is outstanding.
@@ -346,6 +361,21 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // One source for both, or the repaint clips what the draw put down.
   void headerStatusRect(int& x, int& y, int& w, int& h) const;
   void showBusy();
+
+  // Raise the CPU back to its full clock before doing anything the rider is
+  // waiting on. Called at the top of every render entry point.
+  //
+  // Not optional: with preventThrottle() false this screen really does sit at
+  // 10 MHz (HalPowerManager.h), and a viewport reset is already close to two
+  // seconds at 160 MHz -- much of it software floating point, which scales with
+  // the clock. Drawing at the low clock would put tens of seconds between a fix
+  // and the picture. A fix can also arrive and force a redraw inside the same
+  // loop() iteration whose preventThrottle() was already polled, so the render
+  // paths cannot rely on that flag alone.
+  //
+  // The main loop drops the clock again once IDLE_POWER_SAVING_MS passes with
+  // nothing asking for it (main.cpp).
+  static void kickFullClock();
   void drawBusyBadge();
   // Badge rectangle in logical screen coordinates. displayBufferWindow()
   // handles the controller's multiple-of-8 alignment itself.

@@ -351,7 +351,7 @@ connected-idle current draw looks like with latency 4 instead of 9 -- exactly
 the numbers `power.csv`/`stats` above can catch once one is run with this code
 on.
 
-## Letting the map screen throttle hung the device solid (2026-08-16, reverted)
+## Letting the map screen throttle: attempt 1 hung the device (2026-08-16)
 
 **Measured on hardware. The attempt is reverted; the finding is not.**
 
@@ -388,6 +388,45 @@ Next attempt: raise the clock before `BlePositionServer::begin()`, before
 advertising restarts, and across activity transitions that own the peripheral,
 then prove on the bench that entering the map and restarting advertising both
 survive at 10 MHz -- before anything runs for hours.
+
+### Attempt 2: throttle only while the link is connected
+
+**Same day, built clean, bench gate before any long run.**
+
+Rather than guarding each NimBLE call site one by one, attempt 2 makes the
+condition positive: the map throttles **only in the connected steady state**,
+and holds full clock everywhere else.
+
+`MapActivity::preventThrottle()` returns true (hold the clock) when any of:
+
+- a redraw is queued (`redrawDueMs_`, `arrivalRedrawDueMs_`) or a transfer is
+  moving bytes;
+- the BLE server is not running, **or `connIntervalMs() == 0`**.
+
+That last clause is the fix. `connIntervalMs()` is non-zero only once a central
+is connected and the interval is agreed
+(`lib/BlePositionServer/include/BlePositionServer.h:323`), so advertising,
+init, disconnects and reconnects all fall through to "hold full clock" -- and
+those are exactly the paths that reach `NimBLEDevice::init()`.
+
+It is also the only state with hardware evidence behind it: ~7.8 h of a live
+link at `cpu_mhz=10` (see the section above). Attempt 1 threw that distinction
+away by keying on "no redraw queued" instead.
+
+The render entry points still call `kickFullClock()` first, because a fix can
+arrive and force a redraw inside the same `loop()` iteration whose
+`preventThrottle()` was already polled.
+
+**Bench gate, before any long run** -- this is what attempt 1 skipped:
+
+1. Enter the map with no phone (advertising, must stay at full clock).
+2. Connect the phone, leave it a few minutes -- `throttled_ms` must start rising.
+3. Disconnect the phone, reconnect it. This is the reconnect path that hung
+   attempt 1.
+4. Confirm the map still redraws in seconds after a fix.
+
+`throttled_ms` not rising in step 2 means the split did not take, and the
+battery would not say so until the evening.
 
 ## Power-saving mode drops CPU frequency after idle
 

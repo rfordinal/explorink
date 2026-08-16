@@ -353,6 +353,11 @@ Route A -- **start here**. Ordered by measured lever size, biggest first:
       solid"). The lever is still the biggest one measured; the next attempt
       raises the clock across BLE init, advertising restarts and activity
       handover too, and proves both on the bench before any long run.
+      **Attempt 2 built the same morning**: throttle only while the link is
+      connected and settled (`connIntervalMs() != 0`), so init, advertising,
+      disconnects and reconnects all keep full clock. Builds clean (RAM 17.8 %,
+      flash 59.4 %). Mechanism and the four-step bench gate in
+      `power-management.md`, "Attempt 2".
       **Prediction, unchanged and still to be refuted: 44.4 mA -> 15-25 mA.**
 - [ ] Loop cadence: let the map take the 50 ms delay while it is only waiting
       for a fix. Small next to the throttle -- the loop only works 1.3 % of the
