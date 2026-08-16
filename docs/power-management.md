@@ -148,6 +148,70 @@ whether the battery's discharge curve is linear enough at this state of
 charge for the mAh math above to hold. A bench measurement with an inline
 meter (the plan's step 1) is still the number to trust over either of these.
 
+## A windowed update costs the same panel time as a fast full refresh
+
+**Derived from run 2's counters, 2026-08-16. Not directly measured per type --
+see the limit at the end.**
+
+Nearly every refresh on the map is a windowed one. Run 2, over 13.19 h:
+
+| Type | Count | Share | Static 10:30-20:00 | Driving 20:00-23:50 |
+|---|---|---|---|---|
+| `ref_window` | 2948 | **95.0 %** | 1138 (98.1 %) | 1809 (93.2 %) |
+| `ref_fast` | 153 | 4.9 % | 21 (1.8 %) | 132 (6.8 %) |
+| `ref_half` | 0 | 0 % | 0 | 0 |
+| `ref_full` | **1 all day** | 0.0 % | 1 | 0 |
+
+`ref_window` is a marker move. `ref_fast` is a viewport reset -- the marker
+left the keep-in area and the frame re-centred -- which is why it goes from
+2/h standing still to **36/h driving** across tiles.
+
+### The cost does not follow the area
+
+`panel_busy_ms / total refreshes` comes out at **507 ms in every phase**, even
+though the type mix differs sharply (98 % window standing still, 93 % driving).
+If a windowed update were cheap, the static phase would average lower. It does
+not.
+
+Two phases with different mixes give two equations and two unknowns:
+
+```
+static:   1138*w +  21*f = 588 000 ms
+driving:  1809*w + 132*f = 983 000 ms
+```
+
+Solving: **`ref_window` ~= 508 ms, `ref_fast` ~= 490 ms.** A partial update of
+a marker patch and a fast refresh of the whole 800x480 panel cost the same
+panel time.
+
+So the driver's cost is set by the **waveform's frame count, not by how many
+rows changed**. Area is free; the number of refreshes is what is paid for.
+
+### What it means for power and for MapFollow
+
+The panel was busy **119 s per hour** in run 2 (3.31 % of wall), and **95 % of
+that time went on marker moves**. Not dominant next to the CPU, but not the
+rounding error it looked like after run 1, which saw only 69 refreshes/h
+against run 2's 235.
+
+It also inverts a design assumption. "Prefer many small partial moves over one
+viewport reset" only saves anything if partial moves are cheaper, and they are
+not. `MapFollow::kMaxPartialMoves` and the keep-in margin should be tuned to
+minimise the **count** of refreshes, not their size -- a reset that buys many
+fixes without a redraw can beat a run of partial moves.
+
+### The limit on this finding
+
+Both equations come from one run, split by a wall-clock time the rider
+reported, and both phases share whatever fixed overhead the driver has. The
+numbers are consistent across three independent phase splits, which is why they
+are quoted, but nothing measured a single refresh of each type directly.
+
+**What would settle it:** the same route driven twice with deliberately
+different keep-in margins, so the window/reset ratio changes while everything
+else holds. Or a bench run that issues N windowed updates and N fast refreshes
+and differences `panel_busy_ms` across each.
+
 ## BLE modem sleep cuts the draw a third (measured 2026-08-16)
 
 **Measured on hardware, two full-day runs.** `CONFIG_BT_CTRL_MODEM_SLEEP` was

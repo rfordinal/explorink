@@ -422,7 +422,12 @@ Route C (fallback, and a hike-only profile in its own right):
 Phase 4 -- tune what the measurements expose:
 
 - [ ] `MapFollow::kMaxPartialMoves` against real ghosting, now that refresh
-      counts are visible per ride.
+      counts are visible per ride. **Sharpened 2026-08-16**: a windowed update
+      costs the same panel time as a fast full refresh (~508 vs ~490 ms), so
+      the target is the **count** of refreshes, not their size
+      (`power-management.md`, "A windowed update costs the same panel time").
+      "Many small partial moves rather than one reset" saves nothing. Run 2
+      spent 119 s of panel time an hour, 95 % of it on marker moves.
 - [ ] Decide whether `power.csv` should stay on by default or move behind a
       setting, once its real cost and value are known. **This gets sharper with
       the three-day target**: a once-a-minute write keeps the SD card from ever
