@@ -777,12 +777,24 @@ void loop() {
     }
   }
 
-  // Check for any user activity (button press or release) or active background work
-  static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
-    lastActivityTime = millis();         // Reset inactivity timer
-    powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
+  // Two deadlines, not one. They used to be the same variable, which meant an
+  // activity could not ask to stay awake without also pinning the CPU at
+  // 160 MHz -- and the map screen asks to stay awake for the whole ride. Run 1
+  // measured what that cost: 98.5 % of an 11.4 h day at full clock, with real
+  // work happening 1.3 % of the time (docs/power-plan.md).
+  //
+  // Real user input still resets both, so nothing about pressing a button
+  // changed.
+  static unsigned long lastActivityTime = millis();   // -> auto-sleep timeout
+  static unsigned long lastFullClockTime = millis();  // -> CPU throttle
+  const bool userInput =
+      gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity();
+  if (userInput || activityManager.preventAutoSleep()) {
+    lastActivityTime = millis();
+  }
+  if (userInput || activityManager.preventThrottle()) {
+    lastFullClockTime = millis();
+    powerManager.setPowerSaving(false);  // Restore normal CPU frequency
   }
 
   static bool screenshotButtonsReleased = true;
@@ -870,7 +882,9 @@ void loop() {
     powerManager.setPowerSaving(false);  // Make sure we're at full performance when skipLoopDelay is requested
     yield();                             // Give FreeRTOS a chance to run tasks, but return immediately
   } else {
-    if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
+    // Reads lastFullClockTime, not lastActivityTime: an activity that only
+    // asked not to be slept (the map) must still be allowed to throttle.
+    if (millis() - lastFullClockTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
       // If we've been inactive for a while, increase the delay to save power
       powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
       delay(50);
