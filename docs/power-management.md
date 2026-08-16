@@ -194,7 +194,43 @@ The three-day (72 h) endurance target, the 9.0 mA budget it implies, and the
 routes to it live in [`power-plan.md`](power-plan.md). Run 1's full record is in
 that file's Runs section.
 
-## A connected BLE link survives 10 MHz
+## A connected BLE link does NOT survive 10 MHz (corrected 2026-08-16)
+
+**This section previously claimed the opposite. It was wrong, and the wrong
+version is what justified two flashes that both hung the device.** The
+correction is kept in place of the claim rather than deleted, because the bad
+inference is the lesson.
+
+**Measured on hardware 2026-08-16, with a control run.** Two runs, same rig
+(`tools/blefakephone.py` sending a fixed position, serial captured throughout):
+
+| Build | Result |
+|---|---|
+| Throttle split (`158a2bc4`) | 1 fix received, then the link died. `[PWR] Going to low-power mode` at 12856 ms, then **total serial silence** for the rest of the run. Never recovered, not even after the 20 s supervision timeout should have dropped the link and restored full clock. Hung. |
+| Logging build (`40cc5087`), control | **22 fixes** over ~2 minutes, link held throughout, device still logging after the central left. |
+
+The control is what makes this conclusive: the rig is sound, so the difference
+is the firmware. **Throttling to 10 MHz while a central is connected kills the
+link and hangs the device.**
+
+### What the old evidence actually was
+
+The refuted claim came from reading `power.csv`: one boot logged 466 of 513
+minute rows with `cpu_mhz=10` and `ble=2` together, ~7.8 hours, and `ble=2`
+means `connIntervalMs() > 0` (`src/PowerLog.cpp:25-27`).
+
+That is not evidence of a healthy connected link at 10 MHz. `connIntervalUnits_`
+is cleared in `onCentralDisconnect()` (`BlePositionServer.cpp:709`), which runs
+from NimBLE's disconnect callback -- so if the link dies in a way that callback
+never services, the field stays non-zero and `ble` keeps reading 2 with nothing
+connected. Which is exactly the state the 2026-08-16 runs produced.
+
+**The lesson, not the number:** a counter derived from a cached field is only
+as good as the path that clears it. `ble=2` proves the device *believes* a
+central is connected, and nothing more. Anything built on that belief needs a
+second, independent signal -- traffic arriving, in this case.
+
+## (superseded) A connected BLE link survives 10 MHz
 
 **Measured on hardware, found 2026-08-15** in `power.csv` data that was already
 on the card -- no run was made for it.
