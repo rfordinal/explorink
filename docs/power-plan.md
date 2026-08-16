@@ -46,6 +46,20 @@ spend asleep**. Today the answer is none of it.
 Marketing wants this number too, so it has to survive being quoted. Nothing goes
 on the public site until a real 72-hour run has happened on hardware.
 
+## Status, 2026-08-16
+
+- **First optimisation measured, and it works.** BLE modem sleep cuts the draw
+  **33 % at matched voltage** (35.6 -> 24.0 mA) while the device did roughly
+  twice the panel work. Run 2 below.
+- The radio was never sleeping before this -- `CONFIG_BT_CTRL_MODEM_SLEEP` was
+  simply off. That is now the single biggest confirmed win of the campaign.
+- **The CPU is untouched and is now the largest remaining component**:
+  `throttled_ms` was 0.02 % of run 2, so 160 MHz for the whole day.
+- The mechanism behind both throttle-split hangs is understood (APB follows the
+  CPU below 80 MHz; the controller's PM lock compiles out). An 80 MHz floor is
+  safe by construction and is the next thing to build.
+- 24.0 mA against a 9.0 mA budget: **2.7x still to find.**
+
 ## Status, 2026-08-15
 
 - **First long endurance run done** (run 1 below): 11.5 h, map up, hike mode,
@@ -480,6 +494,51 @@ Newest last. One row per run, with the file kept alongside.
 | Date | Build | State | Duration | Start mV | End mV | Slope mV/h | Notes |
 |---|---|---|---|---|---|---|---|
 | 2026-08-15 | unrecorded | 3 | 11 h 25 min | 4220 | 3547 | **58.9** | Run 1, 99->21 %. See below. |
+| 2026-08-16 | `9686ce21` | 3 | 13 h 12 min | 4178 | 3748 | **32.6** | Run 2, first optimisation measured: BLE modem sleep. See below. |
+
+### Run 2 -- 2026-08-16, BLE modem sleep, the first measured saving
+
+Build `9686ce21` (`CONFIG_BT_CTRL_MODEM_SLEEP=y`, mode 1, main XTAL). File:
+`docs/power-runs/run2-2026-08-16.csv` (parent repo). Day: 100 % at 10:30, small
+movement around town and mostly static until 20:00, then a car drive
+Prague -> Bratislava until 23:50, ending at 48 %.
+
+**Not a clean repeat of run 1** -- the drive makes the second half a much
+heavier workload. That makes the result stronger, not weaker: the device did
+more and drew less.
+
+**Like-for-like, the same voltage band both runs covered (4178 -> 3866 mV).**
+This is the only honest comparison; whole-run figures flatter run 2 because run
+1 continued into the steep tail below 3748 mV.
+
+| | Run 1 (no modem sleep) | Run 2 (modem sleep) |
+|---|---|---|
+| Time for the same drop | 6.20 h | **9.48 h** |
+| Slope | 50.3 mV/h | **32.9 mV/h** |
+| Draw at 650 mAh | 35.6 mA | **24.0 mA** |
+| Refreshes/h | 65 | 122 |
+| `loop_busy_ms` | 1.50 % | 5.81 % |
+
+**Draw down 33 %** while the panel did ~2x the work and the loop ~4x. The
+saving at equal workload is therefore larger than 33 %; nothing here separates
+the two, and only a static repeat would.
+
+Phases of run 2, from the wall-clock split the rider reported:
+
+| Phase | Duration | Slope | Draw | Refresh/h | loop busy |
+|---|---|---|---|---|---|
+| Static, 10:30-20:00 | 9.48 h | 32.9 mV/h | 24.0 mA | 122 | 5.81 % |
+| Driving, 20:00-23:50 | 3.69 h | 31.7 mV/h | 29.9 mA | 526 | 21.78 % |
+
+A full driving hour now costs less than run 1's static hour did.
+
+**`throttled_ms` was 0.02 % of the run** -- the CPU held 160 MHz throughout, as
+expected, since the throttle split is not in this build. So modem sleep is the
+only variable between the two runs, and the CPU is still untouched and still
+the largest remaining component.
+
+**Against the target:** 24.0 mA gives ~27 h on a charge. The 9.0 mA budget for
+three days is still 2.7x away.
 
 ### Run 1 -- 2026-08-15, first long endurance run
 
