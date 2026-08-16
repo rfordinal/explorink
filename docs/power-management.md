@@ -411,19 +411,63 @@ unguarded.
 
 So the finding is not "the split cannot work". It is:
 
-- **The clock must be at full speed across anything that touches NimBLE**, not
-  just anything that draws. That is the missing half.
-- **The steady-state link is fine at 10 MHz** -- a connected link ran ~7.8 h at
-  `cpu_mhz=10` (see the section above). Init and re-init are the hazard, not
-  the connection.
+- ~~**The clock must be at full speed across anything that touches NimBLE**,
+  not just anything that draws.~~ Too narrow. The rule is about the **bus**,
+  not the call site -- see "Why 10 MHz breaks BLE" below.
+- ~~**The steady-state link is fine at 10 MHz**~~ -- **refuted 2026-08-16 by
+  attempt 2 and its control run.** The ~7.8 h of `cpu_mhz=10` with `ble=2` was
+  a device believing it was connected, not a healthy link. See the corrected
+  section above.
 - **A supervised bench check comes before any long run.** This hang appeared
   within minutes of the first real use; a day-long run would have been lost to
-  it.
+  it. Still true, and the only bullet here that survived.
 
 Next attempt: raise the clock before `BlePositionServer::begin()`, before
 advertising restarts, and across activity transitions that own the peripheral,
 then prove on the bench that entering the map and restarting advertising both
 survive at 10 MHz -- before anything runs for hours.
+
+## Why 10 MHz breaks BLE: APB, and a lock that is compiled out
+
+**Read off the code 2026-08-16 (ESP-IDF and Arduino core sources), explains
+every measurement we have.** This is the mechanism behind both hangs.
+
+1. `setPowerSaving(true)` calls `setCpuFrequencyMhz(10)`
+   (`lib/hal/HalPowerManager.cpp:47`, `LOW_POWER_FREQ` at
+   `lib/hal/HalPowerManager.h:31`).
+2. At 10 MHz the CPU source becomes the crystal, and `rtc_clk_cpu_freq_to_xtal`
+   ends by calling `rtc_clk_apb_freq_update(cpu_freq)` -- **APB drops with the
+   CPU**. At 80 and 160 MHz the source is the PLL and **APB stays pinned at
+   80 MHz**.
+3. The ESP32-C3 BLE controller states its requirement as an
+   `ESP_PM_APB_FREQ_MAX` lock: taken for as long as the controller is enabled,
+   and re-taken before every modem-sleep wakeup.
+4. **Every one of those lock sites is inside `#ifdef CONFIG_PM_ENABLE`, and
+   `CONFIG_PM_ENABLE` is not set** (`sdkconfig.defaults:1680`). So the
+   controller's only defence against a non-80 MHz APB compiles out of this
+   firmware, and `setCpuFrequencyMhz()` will pull APB out from under a live
+   controller with nothing objecting.
+
+So the rule is not "raise the clock around NimBLE calls". It is:
+
+> **Never take the CPU below 80 MHz while the BLE controller is enabled.**
+> 80 and 160 MHz are both PLL-sourced and both leave APB at 80 MHz. 10 MHz is
+> not a slower version of the same state -- it is a different bus
+> configuration that Espressif never supports outside the PM-lock system.
+
+That also collapses two findings into one. The verified
+`NimBLEDevice::init()` hang and the 2026-08-16 steady-state hang are the same
+violation; init was simply the first register conversation with the BT MAC, so
+it was hit first, back in 2026-08-04.
+
+**Open, and cheap to settle:** whether the failure leaves the CPU hung or only
+the controller dead. `power.csv` from the attempt-2 bench boot decides it --
+rows continuing past the throttle mean the CPU lived and only the radio died.
+The card has not been read since.
+
+**Consequence for the campaign:** the throttle split is not dead, it was aimed
+at the wrong floor. An 80 MHz floor while the controller is up is safe by
+construction and needs no PM machinery.
 
 ## Power-saving mode drops CPU frequency after idle
 
@@ -446,7 +490,7 @@ effect (a menu selection, an activity switch) is even acted on.
 
 **Verified on real hardware, 2026-08-04, reproduced twice identically.**
 Entering `MapActivity` (which calls `BlePositionServer::begin()` ->
-`NimBLEDevice::init()`, `lib/BlePositionServer/src/BlePositionServer.cpp:92`)
+`NimBLEDevice::init()`, `lib/BlePositionServer/src/BlePositionServer.cpp:253-254`)
 while the CPU is still in power-saving mode hangs the device solid: serial
 dead, buttons dead, screen frozen on whatever was last drawn. The ROM
 bootloader still answers (`esptool` reaches it -- that's a separate,
