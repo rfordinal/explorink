@@ -602,6 +602,34 @@ Error" while the device log showed a clean connect, subscribe and MTU
 negotiation. `bluetoothctl power off; power on` cleared it. Do not read a
 host-side GATT error as a device fault without checking the device's own log.
 
+**Verified again from a clean boot on the merged build** (`3c6644c3`):
+throttles to 80 MHz at 11.5 s, the central connects **while throttled**, 30
+fixes, the clock rises for a render and drops back. That is the state the
+device was left in.
+
+### Open: advertising stopped after a long test session
+
+**Observed once, 2026-08-17, not explained.** After roughly 25
+connect/disconnect cycles and several reflashes in one sitting, the device sat
+on the map screen answering `stats` over serial but **not advertising** -- two
+`blefakephone` runs in a row reported "no device advertising the map service".
+
+It is not the laptop: a `BleakScanner.discover()` at that moment saw 44 other
+BLE devices. It is not the build either, in any simple sense: a device reset
+brought advertising straight back and everything worked.
+
+So something in the advertising restart path does not recover from whatever
+that sequence produced. The area already has explicit failure handling --
+`advertisingDown_`, `retryAdvertising()`, `serviceAdvertising()` in
+`lib/BlePositionServer/` -- so this is a data point against it, not a new
+mechanism.
+
+**What would settle it:** reproduce with the serial log running through the
+whole cycle sequence and watch `onAdvertisingState()` and the retry path.
+Nothing here says whether a rider could hit it -- a ride has far fewer
+disconnects than a test session -- but it should not be filed as a rig
+problem, because the rig was demonstrably working.
+
 ## Why 10 MHz breaks BLE: APB, and a lock that is compiled out
 
 **Read off the code 2026-08-16 (ESP-IDF and Arduino core sources), explains
