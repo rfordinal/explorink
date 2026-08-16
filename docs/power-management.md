@@ -148,6 +148,42 @@ whether the battery's discharge curve is linear enough at this state of
 charge for the mAh math above to hold. A bench measurement with an inline
 meter (the plan's step 1) is still the number to trust over either of these.
 
+## BLE modem sleep cuts the draw a third (measured 2026-08-16)
+
+**Measured on hardware, two full-day runs.** `CONFIG_BT_CTRL_MODEM_SLEEP` was
+off in this tree, so the BLE baseband stayed powered between connection events
+for entire rides. Turning it on (mode 1, main XTAL) is the campaign's first
+confirmed saving.
+
+Compared over the **same voltage band both runs covered** (4178 -> 3866 mV) --
+whole-run figures flatter the newer run because run 1 continued into the steep
+tail below 3748 mV:
+
+| | Run 1, no modem sleep | Run 2, modem sleep |
+|---|---|---|
+| Time for the same drop | 6.20 h | **9.48 h** |
+| Slope | 50.3 mV/h | **32.9 mV/h** |
+| Draw at 650 mAh spec | 35.6 mA | **24.0 mA** |
+| Refreshes/h | 65 | 122 |
+| `loop_busy_ms` | 1.50 % | 5.81 % |
+
+**33 % less draw while doing about twice the panel work and four times the
+loop work.** The saving at equal workload is larger than 33 %; these two runs
+cannot separate the two effects, and only a static repeat would.
+
+Run 2's second half was a car drive (526 refreshes/h, 21.8 % loop busy) and
+still cost 29.9 mA -- less than run 1's *static* 35.6 mA.
+
+Config lives in `platformio.ini`'s `custom_sdkconfig` block. Verify it compiled
+in rather than merely requested: `CONFIG_BT_CTRL_SLEEP_MODE_EFF` and
+`CONFIG_BT_CTRL_SLEEP_CLOCK_EFF` must read `1` in the generated
+`sdkconfig.default`. Those are the values
+`BT_CONTROLLER_INIT_CONFIG_DEFAULT` hands the controller.
+
+**What it does not touch:** the CPU. `throttled_ms` was 0.02 % of run 2, so the
+map held 160 MHz all day. The CPU is now the largest remaining component, and
+an 80 MHz floor is the next thing to try (see "Why 10 MHz breaks BLE").
+
 ## The state-3 baseline: ~45 mA over 11.5 hours
 
 **Measured on hardware, 2026-08-15.** The first run long enough to be worth
