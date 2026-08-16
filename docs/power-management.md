@@ -194,7 +194,43 @@ The three-day (72 h) endurance target, the 9.0 mA budget it implies, and the
 routes to it live in [`power-plan.md`](power-plan.md). Run 1's full record is in
 that file's Runs section.
 
-## A connected BLE link survives 10 MHz
+## A connected BLE link does NOT survive 10 MHz (corrected 2026-08-16)
+
+**This section previously claimed the opposite. It was wrong, and the wrong
+version is what justified two flashes that both hung the device.** The
+correction is kept in place of the claim rather than deleted, because the bad
+inference is the lesson.
+
+**Measured on hardware 2026-08-16, with a control run.** Two runs, same rig
+(`tools/blefakephone.py` sending a fixed position, serial captured throughout):
+
+| Build | Result |
+|---|---|
+| Throttle split (`158a2bc4`) | 1 fix received, then the link died. `[PWR] Going to low-power mode` at 12856 ms, then **total serial silence** for the rest of the run. Never recovered, not even after the 20 s supervision timeout should have dropped the link and restored full clock. Hung. |
+| Logging build (`40cc5087`), control | **22 fixes** over ~2 minutes, link held throughout, device still logging after the central left. |
+
+The control is what makes this conclusive: the rig is sound, so the difference
+is the firmware. **Throttling to 10 MHz while a central is connected kills the
+link and hangs the device.**
+
+### What the old evidence actually was
+
+The refuted claim came from reading `power.csv`: one boot logged 466 of 513
+minute rows with `cpu_mhz=10` and `ble=2` together, ~7.8 hours, and `ble=2`
+means `connIntervalMs() > 0` (`src/PowerLog.cpp:25-27`).
+
+That is not evidence of a healthy connected link at 10 MHz. `connIntervalUnits_`
+is cleared in `onCentralDisconnect()` (`BlePositionServer.cpp:709`), which runs
+from NimBLE's disconnect callback -- so if the link dies in a way that callback
+never services, the field stays non-zero and `ble` keeps reading 2 with nothing
+connected. Which is exactly the state the 2026-08-16 runs produced.
+
+**The lesson, not the number:** a counter derived from a cached field is only
+as good as the path that clears it. `ble=2` proves the device *believes* a
+central is connected, and nothing more. Anything built on that belief needs a
+second, independent signal -- traffic arriving, in this case.
+
+## (superseded) A connected BLE link survives 10 MHz
 
 **Measured on hardware, found 2026-08-15** in `power.csv` data that was already
 on the card -- no run was made for it.
@@ -351,7 +387,7 @@ connected-idle current draw looks like with latency 4 instead of 9 -- exactly
 the numbers `power.csv`/`stats` above can catch once one is run with this code
 on.
 
-## Letting the map screen throttle: attempt 1 hung the device (2026-08-16)
+## Letting the map screen throttle hung the device solid (2026-08-16, reverted)
 
 **Measured on hardware. The attempt is reverted; the finding is not.**
 
@@ -388,45 +424,6 @@ Next attempt: raise the clock before `BlePositionServer::begin()`, before
 advertising restarts, and across activity transitions that own the peripheral,
 then prove on the bench that entering the map and restarting advertising both
 survive at 10 MHz -- before anything runs for hours.
-
-### Attempt 2: throttle only while the link is connected
-
-**Same day, built clean, bench gate before any long run.**
-
-Rather than guarding each NimBLE call site one by one, attempt 2 makes the
-condition positive: the map throttles **only in the connected steady state**,
-and holds full clock everywhere else.
-
-`MapActivity::preventThrottle()` returns true (hold the clock) when any of:
-
-- a redraw is queued (`redrawDueMs_`, `arrivalRedrawDueMs_`) or a transfer is
-  moving bytes;
-- the BLE server is not running, **or `connIntervalMs() == 0`**.
-
-That last clause is the fix. `connIntervalMs()` is non-zero only once a central
-is connected and the interval is agreed
-(`lib/BlePositionServer/include/BlePositionServer.h:323`), so advertising,
-init, disconnects and reconnects all fall through to "hold full clock" -- and
-those are exactly the paths that reach `NimBLEDevice::init()`.
-
-It is also the only state with hardware evidence behind it: ~7.8 h of a live
-link at `cpu_mhz=10` (see the section above). Attempt 1 threw that distinction
-away by keying on "no redraw queued" instead.
-
-The render entry points still call `kickFullClock()` first, because a fix can
-arrive and force a redraw inside the same `loop()` iteration whose
-`preventThrottle()` was already polled.
-
-**Bench gate, before any long run** -- this is what attempt 1 skipped:
-
-1. Enter the map with no phone (advertising, must stay at full clock).
-2. Connect the phone, leave it a few minutes -- `throttled_ms` must start rising.
-3. Disconnect the phone, reconnect it. This is the reconnect path that hung
-   attempt 1.
-4. Confirm the map still redraws in seconds after a fix.
-
-`throttled_ms` not rising in step 2 means the split did not take, and the
-battery would not say so until the evening.
 
 ## Power-saving mode drops CPU frequency after idle
 

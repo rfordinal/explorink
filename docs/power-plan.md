@@ -299,6 +299,24 @@ Per interval, from two rows of `power.csv`:
 
 ## TODO
 
+**Bench rig, added 2026-08-16.** Any change that touches power or the radio is
+proved on the bench before it runs unattended, with a **control run on the last
+known-good build using the same rig**. Two builds hung the device that day and
+only the control run made the cause unambiguous.
+
+```
+# reset, enter the map inside the full-clock window, then:
+python3 tools/blefakephone.py --pos <lat> <lon> --heading 4 --no-tiles --no-serial
+```
+
+Pass: fixes keep arriving for minutes, the device still logs after the central
+leaves. Fail: the link dies after the first packet, or serial goes silent and
+stays silent past the 20 s supervision timeout.
+
+Note the device only accepts `CMD:` for about 3 seconds after a reset -- once it
+throttles to 10 MHz on any screen, serial RX is starved and nothing gets in. So
+`CMD:GOTO_MAP` has to be sent in the boot window.
+
 **Working rule, agreed 2026-08-15: one option at a time, tested hard before the
 next.** Each item in phase 3 is a separate branch, a separate build and a
 separate run of at least 2 hours in state 3. Two changes in one build cannot be
@@ -346,19 +364,20 @@ and record it in the table below before starting the next.
 Route A -- **start here**. Ordered by measured lever size, biggest first:
 
 - [ ] **Split `preventAutoSleep()` into `preventAutoSleep()` +
-      `preventThrottle()`**. **First attempt 2026-08-16 hung the device solid
-      and was reverted** -- it guarded the render paths and left every NimBLE
-      path at 10 MHz, where `NimBLEDevice::init()` is known to hang
-      (`power-management.md`, "Letting the map screen throttle hung the device
-      solid"). The lever is still the biggest one measured; the next attempt
-      raises the clock across BLE init, advertising restarts and activity
-      handover too, and proves both on the bench before any long run.
-      **Attempt 2 built the same morning**: throttle only while the link is
-      connected and settled (`connIntervalMs() != 0`), so init, advertising,
-      disconnects and reconnects all keep full clock. Builds clean (RAM 17.8 %,
-      flash 59.4 %). Mechanism and the four-step bench gate in
-      `power-management.md`, "Attempt 2".
-      **Prediction, unchanged and still to be refuted: 44.4 mA -> 15-25 mA.**
+      `preventThrottle()`**. **Two attempts on 2026-08-16, both hung the
+      device, both reverted.** Attempt 1 left the NimBLE paths at 10 MHz.
+      Attempt 2 guarded those and throttled only on a settled connected link --
+      and hung the moment the throttle engaged with a central connected. A
+      control run on the logging build with the same rig held the link for 22
+      fixes, so the rig is sound and the firmware was the cause
+      (`power-management.md`, "A connected BLE link does NOT survive 10 MHz").
+      **The blocker is now the 10 MHz clock itself, not where the guard sits.**
+      Next idea worth trying is the milder one already in the list below: drop
+      to 80 MHz rather than 10 while a link is live, which needs a per-caller
+      frequency in `HalPowerManager` instead of the single `LOW_POWER_FREQ`.
+      Do it in a supervised session with the bench rig, never before an
+      unattended run.
+      **Prediction still unmeasured: 44.4 mA -> 15-25 mA.**
 - [ ] Loop cadence: let the map take the 50 ms delay while it is only waiting
       for a fix. Small next to the throttle -- the loop only works 1.3 % of the
       time -- but nearly free.
@@ -408,6 +427,10 @@ Phase 4 -- tune what the measurements expose:
   input feel.
 - Drop the CPU to 80 MHz (not 10) while a BLE link is live. Smaller, safer
   step than the throttle split, and it answers the same open question.
+  **Promoted 2026-08-16**: both 10 MHz attempts hung the device with a central
+  connected, so this is no longer the cautious alternative -- it is the only
+  remaining version of route A. Needs a per-caller frequency in
+  `HalPowerManager` rather than the one `LOW_POWER_FREQ` constant.
 - Ask the phone for a slower connection interval between fixes and a fast one
   only during a transfer. The central owns the interval, so this is
   phone-side work (`BlePositionServer::connIntervalUnits()` is how the device
