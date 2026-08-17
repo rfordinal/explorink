@@ -295,6 +295,20 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // them as part of a frame that was going to be rendered anyway, which is why
   // this can ship at all before that measurement exists.
   uint8_t mapPinsOffscreen = 0;
+  // Per-pin override of the above: bit N is catalogue slot N (PinCatalog.h). All on
+  // by default, so turning the master on behaves exactly as it did before this
+  // existed. A pin whose key this build does not know has no bit and follows the
+  // master.
+  //
+  // In the settings file but **not** in SettingsList: it is edited from the map's
+  // own Pins list (a row per pin reads better than sixteen toggles in a settings
+  // screen), so toJson/fromJson carry it by hand.
+  //
+  // Deliberately not in the pin log. Visibility is a display preference, not
+  // something that happened -- and a new log field would mean a v2 record, which
+  // every older build skips as an unknown version and would cost a rider their
+  // pins (docs/pins.md, "Reading, and damage").
+  uint16_t mapPinsOffscreenMask = 0xFFFF;
   // The GPS/tile/BLE readout in the map's top-left corner. Off by default: it
   // is diagnostic text, not something a rider needs on screen. Toggled from
   // the Settings screen (category Map) or live from the map's own menu

@@ -227,6 +227,20 @@ class BaseTheme {
   // hint font carries at readable size) passes a different one explicitly.
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
                                    int fontId = SMALL_FONT_ID) const;
+  // The four-box hint band along the bottom. Empty on a touch panel, where
+  // drawButtonHints() draws nothing. Same purpose as sideButtonHintsRect(): a
+  // caller placing something near an edge has to know what is already there.
+  Rect buttonHintsRect(const GfxRenderer& renderer) const;
+  // What those boxes cover, for a caller that repaints part of the panel and has
+  // to refresh exactly the region they changed. Empty on a touch panel, where
+  // drawSideButtonHints() draws nothing.
+  //
+  // This exists because guessing it is expensive: the map screen refreshed the
+  // whole panel instead, and a full-window refresh allocates a buffer inside the
+  // display driver -- on a map screen with 38 KB free that allocation failed and
+  // aborted the device (measured 2026-08-17, crash_report.txt:
+  // Ssd1677Driver::displayWindow -> operator new -> bad_alloc -> terminate).
+  Rect sideButtonHintsRect(const GfxRenderer& renderer) const;
   virtual int getListRowStep(bool hasSubtitle) const;
   virtual int getListPageItems(int contentHeight, bool hasSubtitle) const;
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
@@ -265,6 +279,18 @@ class BaseTheme {
     int scrollTop = 0;
     bool leftAlign = false;
     bool compact = false;
+    // Floors, both optional (0 = no floor). For a popup that *replaces* another
+    // one over the same background: without them a submenu shrinks to its own
+    // content and lands as a differently sized box in the middle of the previous
+    // one, which reads as a different kind of thing rather than the next step of
+    // the same one. The ceilings still win -- neither can push the dialog past
+    // kOptionPopupMaxVisibleRows or the panel's side margins.
+    //
+    // A matching size also keeps the caller's saved backdrop valid, which is what
+    // makes closing the second popup as cheap as closing the first
+    // (MapActivity::captureMenuBackdrop()).
+    int minDialogWidth = 0;
+    int minVisibleRows = 0;
   };
   // Where the dialog and its visible rows land. One function, two readers: the
   // drawing pass and OptionPopup's hit test, which must agree or a tap misses

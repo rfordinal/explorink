@@ -1248,6 +1248,23 @@ void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, con
   }
 }
 
+void GfxRenderer::drawMono1bpp(const uint8_t bitmap[], const int x, const int y, const int w, const int h,
+                               const bool state) const {
+  // drawIcon() without its quarter turn and without its square assumption -- see
+  // the header for why that turn exists and why a screen rendering in its own
+  // orientation must not get it.
+  const int rowBytes = (w + 7) / 8;
+  for (int row = 0; row < h; row++) {
+    for (int col = 0; col < w; col++) {
+      const uint8_t byte = bitmap[row * rowBytes + (col >> 3)];
+      const bool ink = ((byte >> (7 - (col & 7))) & 1) == 0;
+      if (ink) {
+        drawPixel(x + col, y + row, state);
+      }
+    }
+  }
+}
+
 void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
                              const float cropX, const float cropY) const {
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;

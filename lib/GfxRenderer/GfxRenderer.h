@@ -239,6 +239,22 @@ class GfxRenderer {
                        bool roundBottomLeft, bool roundBottomRight, Color color) const;
   void drawImage(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawIcon(const uint8_t bitmap[], int x, int y, int size) const;
+  // A 1bpp bitmap of any size, plotted row->y and col->x: MSB-first, stride
+  // (w + 7) / 8, bit 0 = paint `state`, bit 1 = leave the pixel alone.
+  //
+  // Two things drawIcon() above cannot do. It is square only, and it maps
+  // (row, col) to (size-1-row, col) -- a quarter turn that reproduces a
+  // byte-aligned blit only the forced-Portrait UI themes ever needed, and its own
+  // comment says so. A screen that renders in its own orientation gets every icon
+  // turned by that compensation: measured on the panel 2026-08-17, the map's pin
+  // glyphs came out at rot270 (100 % pixel match against the asset rotated, a
+  // tools/screenshot_gate.py grab diffed against the bitmaps).
+  //
+  // Goes through drawPixel(), so it lands the way drawText() does on the same
+  // screen. `state` is what makes a white pass possible: draw a silhouette false
+  // first, then its outline true, and a hollow shape stops showing the map through
+  // its middle.
+  void drawMono1bpp(const uint8_t bitmap[], int x, int y, int w, int h, bool state) const;
   void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0,
                   float cropY = 0) const;
   void drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;

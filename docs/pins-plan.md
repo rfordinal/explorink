@@ -4,11 +4,25 @@ User pins on the device. A pin is a place the rider needs to keep a spatial
 relation to during a trip — base, car, camp, the bus. Not a POI database, not
 routing, not turn-by-turn.
 
-Status: **agreed 2026-08-15; phases 1-6 built 2026-08-17.** What was actually
-built, and the two places it deviates from this plan, are in
+Status: **agreed 2026-08-15; built and on the panel 2026-08-17.** What was
+actually built, where it deviates from this plan and why, is in
 [`pins.md`](pins.md) -- read that for the mechanism, this for the reasoning and
-what is still open. Nothing has been on hardware, and the off-screen measurement
-below has not been run.
+what is still open.
+
+Verified on hardware that day: a pin saved from the console survives a reflash and
+a reboot with its id intact (the log replay), `pin set/del/list/log`, the pins and
+their halo on the panel, edge markers with their distances, Show-on-map, heap
+50-52 KB free on the map screen. **Not verified: Delete and Replace from the row
+actions, and any rotated orientation.**
+
+Three things the panel changed, all in `pins.md`: a bare glyph was unfindable and
+had to become a pin shape with the glyph inside it, `GfxRenderer::drawIcon()` turned
+every glyph 90 degrees, and a whole-panel window refresh in the menu-close path
+aborted the device. Per-pin off-screen visibility, which this plan deferred, was
+built as well.
+
+The off-screen measurement below **has still not been run**, so that default has
+not moved.
 
 Every "how" below is read off the code and cited. Nothing is measured on hardware
 yet; the one item gated on a measurement is called out in "Off-screen pins".
@@ -127,7 +141,9 @@ Taken 2026-08-15. Each closed a real fork; the reason is why it stays closed.
 - **Everything on the phone.** No map picker, no coordinate screen, no history
   export. The wire path (`pin set`) exists; the app does not use it.
 - **Trips**, and the track / black-box log.
-- **Per-pin visibility** (a far Base stored but kept off the edge).
+- ~~**Per-pin visibility**~~ -- built 2026-08-17 after all, as a settings bitmask
+  plus a row in the Pins list (`pins.md`, "Off-screen markers"). It stayed out of
+  the log on purpose: visibility is a preference, not an event.
 - **Log compaction / rotation.**
 
 ### Not goals
@@ -585,7 +601,10 @@ only if they justify it — otherwise it stays OFF and the doc says why.
 
 ## Open items
 
-- Off-screen refresh cost — must be measured before the default flips.
+- Off-screen refresh cost — must be measured before the default flips. Still open,
+  and now with two halves: what a per-fix edge redraw costs on the panel, and
+  therefore whether to build it at all (what ships draws markers only inside a
+  frame that was being rendered anyway).
 - Stale-fix threshold: how old is too old for a save, and is it a refusal or a
   warning?
 - Log rotation: at what size, and does it ever discard, or only fold into a
