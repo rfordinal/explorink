@@ -57,7 +57,7 @@
 //
 // Follow mode (the default):
 //
-// | UP / DOWN      | zoom ladder, 5 rungs, 1..20 m/px                     |
+// | UP / DOWN      | zoom ladder, 7 rungs, 1..45 m/px                     |
 // | LEFT / RIGHT   | marker-height ladder, 5 rungs, look-ahead 50..95 %   |
 // | CONFIRM        | open the map menu: Refresh, Mode, zoom/rotation/     |
 // |                | heading mode toggles (ride/hike/cycle)               |
@@ -70,6 +70,18 @@
 // GPS fixes are still recorded (applyFix()) but never redraw the frame out
 // from under a rider who is looking around; picking "Follow mode" from the
 // same menu snaps straight back to wherever the last fix actually was.
+//
+// The zoom ladder is not lost in Observe, it moves onto a **hold**: Up or Down
+// held past kObserveZoomHoldMs steps the same ladder it steps in Follow (in on
+// Up, out on Down), one rung per hold, and the release that ends the hold does
+// not also pan. A pan therefore fires on button *release* in this mode, not on
+// press -- a press cannot be told from the start of a hold until it ends.
+// The zoom re-anchors on the frame's own anchor point (renderCurrent() ->
+// lastLatE7_, which panBy() has been repointing all along), so a rung change
+// keeps whatever the rider panned to, rather than snapping back to the fix.
+// A hold is invisible on a still panel, so the menu carries "Zoom in"/"Zoom
+// out" rows in this mode as well (openMapMenu()) -- that is where a rider who
+// never guesses the hold finds the ladder.
 //
 // Any of those that triggers a redraw first paints an hourglass badge above the
 // button hints and refreshes only its rectangle (showBusy()). A ladder step
@@ -638,6 +650,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   int32_t observeReturnLonE7_ = 0;
   uint8_t observeReturnHeading_ = 0;
   uint8_t observeReturnSeq_ = 0;
+  // Latched by a hold on Up/Down in Observe that has already fired its zoom
+  // step, so the release ending that hold does not also pan (handleButtons()).
+  // One step per hold: this stays set until the button comes back up.
+  bool observeHoldZoomed_ = false;
 
   // Set from BlePositionServer::begin()'s return in onEnter(). Without this,
   // a BLE stack that failed to come up (plausible: init costs ~75 KB heap,

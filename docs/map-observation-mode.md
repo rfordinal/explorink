@@ -72,6 +72,63 @@ The position marker is not drawn while observing
 around `drawPositionMarker()`): the anchor is a pan target the rider chose to
 look at, not a GPS fix, and a marker glyph on it would claim otherwise.
 
+## Zoom while observing: a hold, plus two menu rows
+
+Added 2026-08-13, **flashed and verified on the panel 2026-08-14.** Serial log
+of that pass: four holds produced `observe: hold zoom in` / `... zoom out`
+followed by the matching `zoom step` line, with no `pan: half-screen step`
+between them -- the release ending a hold did not pan. Both menu rows stepped
+the ladder too (`zoom step` with no `observe:` line before it). 600 ms felt
+right to the maintainer in that sitting: one person, one session, no misfires
+seen. Not a measurement of the threshold -- what would settle it is a gloved
+hand on a moving bike, which is where an accidental zoom would show up.
+
+Observe took all four direction buttons for the pan, which left the zoom
+ladder unreachable while looking around -- and the map screen has no spare
+button (`MapActivity.h`, "There is no spare button"). The ladder comes back on
+a **hold of the same two buttons that carry it in Follow**: Up held past
+`kObserveZoomHoldMs` (600 ms, `MapActivity.cpp:72`) steps one rung in, Down one
+rung out (`handleButtons()`, `MapActivity.cpp:1953` onward).
+
+Three consequences, all deliberate:
+
+- **A pan fires on button release in Observe, not on press.** A press cannot
+  be told from the start of a hold until it ends. All four buttons moved to
+  release together -- half a direction pad answering on press and the other
+  half on release is a difference the hand feels.
+- **One rung per hold, no repeat.** The step arms a redraw that blocks
+  `loop()` for the better part of two seconds, so a repeat rate would be
+  fiction, and the ladder is seven rungs wide
+  (`MapViewport::kZoomStepCount`, 1..45 m/px).
+- **The release that ends a hold-zoom does not also pan.**
+  `observeHoldZoomed_` (`MapActivity.h:496`) latches that, cleared by the
+  Up/Down release it belongs to, and defensively cleared when neither button
+  is down and no release is pending (`MapActivity.cpp:1987`, `:1995`).
+
+The rung change re-anchors on `lastLatE7_`/`lastLonE7_` through
+`renderCurrent()` -- which `panBy()` has been repointing at the pan target all
+along (see "Two coordinates, not one" above). So zooming keeps what the rider
+panned to and does not snap back to the fix. Same anchor point the pan itself
+measures from (`MapViewport::kAnchorScreenX`, `markerYForStep()`), so pan and
+zoom agree about which pixel stays still.
+
+A hold is invisible on a still panel. So the CONFIRM menu carries **Zoom in**
+and **Zoom out** rows while Observe is active (`openMapMenu()`,
+`MapActivity.cpp:2159` area, `STR_MAP_ZOOM_IN` / `STR_MAP_ZOOM_OUT`) -- that is
+where a rider who never guesses the hold finds the ladder. Each row is hidden
+at its end of the ladder rather than shown doing nothing, the same "no row that
+cannot do anything" rule the Whole-route and Observation-mode rows follow. The
+rows render immediately instead of waiting out `stepZoom()`'s settle timer: a
+menu row cannot be pressed in a burst, and the popup's pixels need a frame
+anyway.
+
+Follow mode gets no such rows. There the two side buttons *are* the ladder.
+
+**Open, needs hardware:** whether 600 ms is right. Too short and a deliberate
+pan zooms by accident; too long and the hold feels dead. Nothing about
+pan-on-release has been felt on the device either -- that is the other thing
+the first ride will answer.
+
 ## Finding: CONFIRM's press/release race reopened the menu after every Select
 
 **Verified on hardware, 2026-08-08.** Picking any row from the map menu
