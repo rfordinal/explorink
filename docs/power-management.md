@@ -212,6 +212,14 @@ different keep-in margins, so the window/reset ratio changes while everything
 else holds. Or a bench run that issues N windowed updates and N fast refreshes
 and differences `panel_busy_ms` across each.
 
+**Checked against the split point, 2026-08-17.** The derivation rests on a phase
+boundary taken from the rider's report, not from the data, so it was re-solved
+for every split between 8.5 h and 10.5 h. `ref_window` came out **507-511 ms**
+across all of them -- it barely depends on where the cut goes, because window
+updates dominate the counts on both sides. `ref_fast` is softer, 435-497 ms. So
+the headline ("both cost about the same; area does not set the price") is
+robust; the exact `ref_fast` figure is not.
+
 ## BLE modem sleep cuts the draw a third (measured 2026-08-16)
 
 **Measured on hardware, two full-day runs.** `CONFIG_BT_CTRL_MODEM_SLEEP` was
@@ -585,11 +593,17 @@ Four runs with `tools/blefakephone.py`, serial captured throughout:
   one run.
 - A fresh connect after the device had been running and throttling works.
 
-**Transfers were not exercised on this build.** They hold full clock by
-construction -- `preventThrottle()` returns true while
-`transfer_.status().active` -- so the transfer path behaves exactly as it did
-on the previous build, where two transfers were verified end to end with
-matching CRCs.
+**Transfers were not exercised on this build.** `preventThrottle()` returns
+true while `transfer_.status().active`, so a transfer already under way holds
+full clock. But the previous build had no split at all -- it ran at 160 MHz
+throughout -- so its two verified transfers say nothing about the new path:
+**a transfer that begins while the device is throttled at 80 MHz is untested on
+any build.** The bench never produced one, because the test route already had
+its tiles on the card.
+
+**What would settle it:** clear a tile from the card, or drive the fake phone to
+an area with none, and confirm a transfer starts and completes from a throttled
+state.
 
 **Not measured: the saving.** USB charges, so only a full unplugged run prices
 it. Run 2's slope was 32.6 mV/h at 24.0 mA with the CPU at 160 MHz all day; the
@@ -734,6 +748,22 @@ tilt only -- so a host that just sends a command talks to a 10 MHz CPU, and the
 
 The 100/100 clean result in `docs/debug-screenshot-channel-plan.md`'s gate 2 was
 taken on a device being poked by hand, which is why this never showed up there.
+
+### And starves RX outright
+
+**Measured 2026-08-16.** The TX half above is the known one. The receive side is
+worse: at 10 MHz the device does not accept `CMD:` at all. A host can write
+`CMD:GOTO_MAP` repeatedly for 45 s and see nothing but the 10 s heartbeat log,
+while the same command lands instantly in the ~3 s full-clock window after a
+reset.
+
+So any tool that drives the device over serial must either send inside that boot
+window, or wake the device another way first. `main.cpp`'s handlers call
+`setPowerSaving(false)` *after* the line is read, which does not help a line that
+never arrives.
+
+With the 80 MHz floor this only applies where the floor does not: screens with
+the BLE controller down, Home among them.
 
 ## The fix
 

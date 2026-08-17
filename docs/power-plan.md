@@ -580,3 +580,11 @@ Caveats:
   a trail.
 - **Agrees with the earlier ~46 mA ride figure**, which was contaminated. Two
   independent routes to the same number.
+
+**Temperature is an unrecorded confounder for the run 1 / run 2 pair.**
+Constraint 5 of this file's own methodology says to record where a run happened,
+and this pair does not. Run 1 was a static day; run 2 spent its last 3.7 h in a
+car cabin, whose temperature is unknown and need not match. Nothing here
+suggests the 33 % is mostly thermal -- the matched-voltage bands agree across
+the whole discharge, not only the driving half -- but the figure carries this
+caveat until a static repeat exists.

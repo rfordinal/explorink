@@ -1113,6 +1113,12 @@ Two hard rules, both about trust:
 * **Cite `file:line` for every claim.** This matches the Evidence-Based
   Reasoning rule above. A finding with no citation rots into folklore and cannot
   be re-checked when the code moves.
+* **Before acting on a telemetry counter, check what clears it.** A counter
+  derived from a cached field proves only what the device *believes*. `ble=2`
+  read `connIntervalMs() != 0`, which is cleared solely by NimBLE's disconnect
+  callback -- so a link that died without that callback left it reading
+  "connected" for hours. Two builds were flashed on that reading and both hung
+  the device.
 * **Separate verified from unverified.** Read-off-the-code, measured-on-hardware
   and assumed are three different confidence levels. Label them. For anything
   open, say what measurement would settle it. A guess dressed as a fact costs
