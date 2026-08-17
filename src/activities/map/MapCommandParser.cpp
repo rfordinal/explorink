@@ -321,6 +321,72 @@ MapCommand parseChecked(const Tokens& tokens) {
   return cmd;
 }
 
+// `pin set <key> <lat> <lon> [<utc>]` | `pin del <key>` | `pin list` |
+// `pin log [<offset>]`.
+//
+// The key is checked against the catalogue here, in the pure half: the catalogue
+// is a constexpr table (PinCatalog.h) and a typo that reached the store would
+// occupy one of the four foreign-key slots for nothing.
+MapCommand parsePin(const Tokens& tokens) {
+  if (tokens.n < 2) return fail(MapCommandError::BadArity);
+
+  MapCommand cmd;
+  cmd.type = MapCommandType::Pin;
+  const std::string_view verb = tokens.t[1];
+
+  if (verb == "list") {
+    if (tokens.n != 2) return fail(MapCommandError::BadArity);
+    cmd.pinVerb = MapPinVerb::List;
+    return cmd;
+  }
+
+  if (verb == "log") {
+    if (tokens.n > 3) return fail(MapCommandError::BadArity);
+    cmd.pinVerb = MapPinVerb::Log;
+    if (tokens.n == 3) {
+      uint32_t value = 0;
+      if (!parseUint(tokens.t[2], value)) return fail(MapCommandError::BadNumber);
+      if (value > 0xFFFFu) return fail(MapCommandError::OutOfRange);
+      cmd.pinLogOffset = static_cast<uint16_t>(value);
+    }
+    return cmd;
+  }
+
+  if (verb == "del") {
+    if (tokens.n != 3) return fail(MapCommandError::BadArity);
+    if (pinCatalogIndex(tokens.t[2]) == kPinIndexUnknown) return fail(MapCommandError::UnknownPin);
+    cmd.pinVerb = MapPinVerb::Del;
+    for (size_t i = 0; i < tokens.t[2].size(); ++i) cmd.pinKey[i] = tokens.t[2][i];
+    return cmd;
+  }
+
+  if (verb == "set") {
+    if (tokens.n < 5 || tokens.n > 6) return fail(MapCommandError::BadArity);
+    if (pinCatalogIndex(tokens.t[2]) == kPinIndexUnknown) return fail(MapCommandError::UnknownPin);
+
+    int64_t lat = 0;
+    int64_t lon = 0;
+    if (!parseDegrees(tokens.t[3], lat) || !parseDegrees(tokens.t[4], lon)) {
+      return fail(MapCommandError::BadNumber);
+    }
+    if (lat < -kLatMaxE7 || lat > kLatMaxE7) return fail(MapCommandError::OutOfRange);
+    if (lon < -kLonMaxE7 || lon > kLonMaxE7) return fail(MapCommandError::OutOfRange);
+
+    cmd.pinVerb = MapPinVerb::Set;
+    for (size_t i = 0; i < tokens.t[2].size(); ++i) cmd.pinKey[i] = tokens.t[2][i];
+    cmd.latE7 = static_cast<int32_t>(lat);
+    cmd.lonE7 = static_cast<int32_t>(lon);
+    if (tokens.n == 6) {
+      uint32_t utc = 0;
+      if (!parseUint(tokens.t[5], utc)) return fail(MapCommandError::BadNumber);
+      cmd.pinUtc = utc;
+    }
+    return cmd;
+  }
+
+  return fail(MapCommandError::UnknownCommand);
+}
+
 MapCommand parseMode(const Tokens& tokens) {
   if (tokens.n != 2) return fail(MapCommandError::BadArity);
   MapCommand cmd;
@@ -367,6 +433,7 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   if (name == "stats") return parseBare(tokens, MapCommandType::Stats);
   if (name == "fake") return parseFake(tokens);
+  if (name == "pin") return parsePin(tokens);
   return fail(MapCommandError::UnknownCommand);
 }
 
@@ -384,6 +451,8 @@ const char* mapCommandErrorText(MapCommandError error) {
       return "out_of_range";
     case MapCommandError::BadMode:
       return "bad_mode";
+    case MapCommandError::UnknownPin:
+      return "unknown_pin";
     case MapCommandError::LineTooLong:
       return "line_too_long";
   }

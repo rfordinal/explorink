@@ -1793,6 +1793,11 @@ void MapActivity::onEnter() {
   // Where `fake` lands. Only this screen offers it -- it is the one with the
   // projection and MISSING_TILES.
   consoleState_.setFakeSink(this);
+  // The pins come back off the card before anything can ask for them. A failed
+  // replay leaves the set empty *and* refuses every save, rather than appending
+  // onto a history it never read (MapPins::pinSet).
+  pins_.begin();
+  consoleState_.setPinsSource(&pins_);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -1945,6 +1950,9 @@ void MapActivity::onExit() {
   consoleState_.setStaleObserver(nullptr);
   consoleState_.setStaleTiles(nullptr);
   consoleState_.setFakeSink(nullptr);
+  // The pins source is a member of this activity, which main.cpp deletes right
+  // after this returns -- the console must not be left pointing into it.
+  consoleState_.setPinsSource(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this

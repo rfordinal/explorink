@@ -6,6 +6,8 @@
 
 #include "HeldTilesStore.h"
 #include "MapCommandParser.h"
+#include "PinRecord.h"
+#include "PinStore.h"
 #include "StaleTilesList.h"
 
 // The channel-free half of the map command console: line assembly, the
@@ -211,6 +213,37 @@ class IMapSkipObserver {
   virtual void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) = 0;
 };
 
+// Where the `pin` commands land. Implemented by MapActivity over a PinStore and
+// PinLog; the native tests implement it over a PinStore and an in-memory log.
+//
+// Unlike the tile stores above, this half neither reads nor writes the card: a
+// pin action is a write to the log *and* a change to the active pins, and the
+// order between the two is a durability rule (the log first, always), which
+// belongs with the thing that owns both.
+class IMapPinsSource {
+ public:
+  virtual ~IMapPinsSource() = default;
+
+  // Create or replace at the coordinate. False when the history could not be
+  // written -- the active pins are then left exactly as they were, because RAM
+  // claiming a pin the card never recorded is the one state a replay cannot fix.
+  virtual bool pinSet(std::string_view key, int32_t latE7, int32_t lonE7, uint32_t utc) = 0;
+
+  // False when no pin is stored under that key, or the history could not be
+  // written. Nothing on the card is ever erased -- a delete appends a record.
+  virtual bool pinDelete(std::string_view key) = 0;
+
+  // The present pins, in catalogue order.
+  virtual size_t pinCount() const = 0;
+  virtual PinEntry pinAt(size_t index) const = 0;  // only called with index < pinCount()
+
+  // Newest-first page of the history. Returns the total valid record count, so
+  // the caller can say where the next page starts. `maxCount` 0 asks for the
+  // total only and must visit nothing -- that is how a reply prints its totals
+  // ahead of its entries without holding a page in RAM.
+  virtual uint32_t pinLogPage(uint32_t offset, uint32_t maxCount, IPinLogVisitor& visitor) = 0;
+};
+
 // What the commands actually do, and the only thing that knows it. Holds no
 // channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
@@ -361,6 +394,17 @@ class MapConsoleState {
   // outlive this state. Left unset, only the tally above is kept.
   void setSkipObserver(IMapSkipObserver* observer) { skipObserver_ = observer; }
 
+  // Where the `pin` commands go. Not owned; must outlive this state. Left unset
+  // (the default, and the case on every screen but the map) every `pin` command
+  // answers `INFO pins=unavailable` rather than silently doing nothing.
+  void setPinsSource(IMapPinsSource* source) { pins_ = source; }
+
+  // Records one `pin log` command will print. Smaller than the missing page for
+  // the same reason it is bounded at all -- every line is one BLE indication and
+  // each waits for the peer's ATT confirm -- and a history line is longer than a
+  // tile line.
+  static constexpr uint16_t kPinLogPageSize = 8;
+
   // Entries one `missing` command will print. Bounded because every reply
   // line is one BLE indication and each one waits for the peer's ATT confirm
   // before the next goes out (BlePositionServer::sendCommandReply) -- 200
@@ -378,6 +422,11 @@ class MapConsoleState {
   // tile recorded since (HeldTilesStore::beginListing).
   void writeHave(IMapReplyWriter& out);
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
+  void writePinList(IMapReplyWriter& out) const;
+  // Non-const: paging the log is what streams the card, and the source is not
+  // ours to be const about (same shape as writeHave()).
+  void writePinLog(uint16_t offset, IMapReplyWriter& out);
+  bool executePin(const MapCommand& cmd, IMapReplyWriter& out);
 
   bool hasPosition_ = false;
   int32_t latE7_ = 0;
@@ -408,6 +457,7 @@ class MapConsoleState {
   IMapStaleObserver* staleObserver_ = nullptr;
   IMapFakeSink* fakeSink_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
+  IMapPinsSource* pins_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;
   // 0 until MapActivity pushes the real one -- `info` then omits the line

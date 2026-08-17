@@ -4,6 +4,9 @@ add_executable(MapCommandParserTest
   ${REPO_ROOT}/src/activities/map/MapCommandConsole.cpp
   ${REPO_ROOT}/src/activities/map/HeldTilesStore.cpp
   ${REPO_ROOT}/src/activities/map/MapModeMask.cpp
+  # The console formats `pin log` records, so it needs the record codec. The pins
+  # feature's own cases live in test/pins.
+  ${REPO_ROOT}/src/activities/map/PinRecord.cpp
 )
 
 target_include_directories(MapCommandParserTest PRIVATE

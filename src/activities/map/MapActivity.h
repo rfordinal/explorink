@@ -12,6 +12,7 @@
 #include "MapFollow.h"
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
+#include "MapPins.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
 #include "MapRouteSource.h"
@@ -771,6 +772,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   MapConsoleState consoleState_;
   MapSerialConsole serial_{consoleState_};
   MapBleConsole ble_{consoleState_};
+
+  // The rider's pins: the active set replayed off the card in onEnter(), and the
+  // append-only history behind it (MapPins.h, ../../../docs/pins-plan.md).
+  //
+  // Lives on this screen rather than in a global for the reason a Pins *activity*
+  // was rejected: this screen owns the BLE peripheral for exactly its own
+  // lifetime, and the pins are only ever placed at the last fix it received.
+  MapPins pins_;
 
   // CONFIRM's menu (Refresh / Mode / Observation mode).
   OptionPopup optionPopup_;
