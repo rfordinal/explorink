@@ -188,6 +188,29 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   renderer.setOrientation(orig_orientation);
 }
 
+namespace {
+// Side-hint box geometry, in one place because two functions read it: the drawing
+// below and sideButtonHintsRect(), which a caller repainting part of the panel
+// needs in order to refresh exactly what these boxes cover. Two copies of these
+// numbers would drift the first time one of them moved.
+constexpr int kSideHintWidth = BaseMetrics::values.sideButtonHintsWidth;  // width on screen (height when rotated)
+constexpr int kSideHintHeight = 80;                                       // height on screen (width when rotated)
+constexpr int kSideHintMargin = 4;
+constexpr int kSideHintX4TopY = 345;  // X4: both boxes stacked on the right
+constexpr int kSideHintX3Y = 155;     // X3: one box per side, higher up
+}  // namespace
+
+Rect BaseTheme::sideButtonHintsRect(const GfxRenderer& renderer) const {
+  const int screenWidth = renderer.getScreenWidth();
+  if (gpio.hasTouch()) return Rect{0, 0, 0, 0};  // drawSideButtonHints() draws nothing on a touch panel
+  if (gpio.deviceIsX3()) {
+    // Both sides, so the rect spans the full width -- the two boxes are the left
+    // and the right edge of the same band.
+    return Rect{0, kSideHintX3Y, screenWidth, kSideHintHeight};
+  }
+  return Rect{screenWidth - kSideHintMargin - kSideHintWidth, kSideHintX4TopY, kSideHintWidth, kSideHintHeight * 2};
+}
+
 void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
                                     int fontId) const {
   if (gpio.hasTouch()) {
@@ -195,13 +218,13 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
   }
 
   const int screenWidth = renderer.getScreenWidth();
-  constexpr int buttonWidth = BaseMetrics::values.sideButtonHintsWidth;  // Width on screen (height when rotated)
-  constexpr int buttonHeight = 80;                                       // Height on screen (width when rotated)
-  constexpr int buttonMargin = 4;
+  constexpr int buttonWidth = kSideHintWidth;
+  constexpr int buttonHeight = kSideHintHeight;
+  constexpr int buttonMargin = kSideHintMargin;
 
   if (gpio.deviceIsX3()) {
     // X3 layout: Up on left side, Down on right side, positioned higher
-    constexpr int x3ButtonY = 155;
+    constexpr int x3ButtonY = kSideHintX3Y;
 
     if (topBtn != nullptr && topBtn[0] != '\0') {
       const int leftX = buttonMargin;
@@ -224,7 +247,7 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     }
   } else {
     // X4 layout: Both buttons stacked on right side
-    constexpr int topButtonY = 345;
+    constexpr int topButtonY = kSideHintX4TopY;
     const char* labels[] = {topBtn, bottomBtn};
     const int x = screenWidth - buttonMargin - buttonWidth;
 
@@ -1020,10 +1043,22 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
     visibleRows = std::min(optionCount, std::min(kOptionPopupMaxVisibleRows, std::max(1, fits)));
   }
 
+  // A caller can ask for a floor on both, so a popup that replaces another one
+  // keeps its size instead of shrinking to its own content -- see
+  // OptionPopupSpec::minVisibleRows. The ceilings above still win: the floor can
+  // never grow the dialog past the row cap or the panel's side margins.
+  if (spec.minVisibleRows > visibleRows) {
+    const int fitsCap = rowStep > 0 ? (heightBudget - chromeHeight + spacing.itemSpacing) / rowStep : visibleRows;
+    visibleRows = std::min(spec.minVisibleRows, std::min(kOptionPopupMaxVisibleRows, std::max(1, fitsCap)));
+  }
+
   const int listHeight = visibleRows > 0 ? rowHeight * visibleRows + spacing.itemSpacing * (visibleRows - 1) : 0;
-  const int dialogW =
+  int dialogW =
       std::min((maxTextWidth + spacing.innerPadding * 2 + spacing.selectionHPadding * 2) * spacing.widthPercent / 100,
                pageWidth - metrics.optionPopupDialogSideMargin * 2);
+  if (spec.minDialogWidth > dialogW) {
+    dialogW = std::min(spec.minDialogWidth, pageWidth - metrics.optionPopupDialogSideMargin * 2);
+  }
   const int dialogH = titleLineHeight + spacing.titleGap + listHeight + spacing.innerPadding * 2;
 
   OptionPopupGeometry geometry;

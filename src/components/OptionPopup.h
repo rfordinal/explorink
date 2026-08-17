@@ -104,9 +104,11 @@ class OptionPopup {
   // nothing else changes. show() clears the actions, so a popup can never inherit
   // the previous one's -- set them right after show().
   //
-  // A row action does **not** close the popup and does not repaint: the callback
-  // owns what happens next, because the useful thing to do from one is usually to
-  // open a confirmation over the same popup object (show() replaces the content).
+  // A row action does **not** close the popup and does not repaint. And it must
+  // not call show() on this popup either, directly or indirectly: the callback
+  // runs from inside handleInput(), so a show() there reassigns the very
+  // std::function that is executing. Record what should happen and act on it from
+  // the caller's own loop (MapActivity::PinPopup).
   struct RowActions {
     std::function<void(int)> onLeft;
     std::function<void(int)> onRight;
@@ -137,6 +139,22 @@ class OptionPopup {
   }
 
   bool hasSideHints() const { return sideHintTop != nullptr || sideHintBottom != nullptr; }
+
+  // Keep this popup at least as big as the one it replaced: same width, same row
+  // count. A submenu that shrinks to its own content reads as a different kind of
+  // dialog instead of the next step of the same one, and a caller holding a
+  // backdrop of the previous dialog can reuse it only while the new one fits
+  // inside it. Cleared by every show(), like the row actions.
+  void setSizeHint(int dialogWidth, int visibleRows) {
+    minDialogWidth = dialogWidth;
+    minVisibleRows = visibleRows;
+    layoutValid = false;
+  }
+
+  // The dialog's own geometry, for a caller that wants the next popup to match it
+  // (setSizeHint above). frameRect() is the same box plus the frame thickness.
+  int dialogWidth(const GfxRenderer& renderer) const { return getLayout(renderer).dialog.width; }
+  int visibleRows(const GfxRenderer& renderer) const { return getLayout(renderer).visibleRows; }
 
   bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
     if (!active) return false;
@@ -284,6 +302,8 @@ class OptionPopup {
     s.scrollTop = scrollTop;
     s.leftAlign = leftAligned;
     s.compact = compact;
+    s.minDialogWidth = minDialogWidth;
+    s.minVisibleRows = minVisibleRows;
     return s;
   }
 
@@ -349,6 +369,8 @@ class OptionPopup {
     sideHintTop = nullptr;
     sideHintBottom = nullptr;
     sideHintFontId = SMALL_FONT_ID;
+    minDialogWidth = 0;
+    minVisibleRows = 0;
   }
 
   static bool contains(const Rect& rect, const int x, const int y) {
@@ -374,6 +396,8 @@ class OptionPopup {
   const char* sideHintTop = nullptr;
   const char* sideHintBottom = nullptr;
   int sideHintFontId = SMALL_FONT_ID;
+  int minDialogWidth = 0;
+  int minVisibleRows = 0;
   mutable Layout layout;
   mutable bool layoutValid = false;
 };

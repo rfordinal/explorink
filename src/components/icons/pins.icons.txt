@@ -1,8 +1,17 @@
-# Pin type glyphs, drawn on the map and in the Pins lists.
-# One line per catalogue row (src/activities/map/PinCatalog.h); #1-#5 share one.
+# Pin type glyphs, composited inside the pin shape by scripts/gen_pin_icons.py.
+# One line per catalogue row (src/activities/map/PinCatalog.h).
+#
+# `text:X` bakes the characters instead of a Lucide asset. #1-#5 mean their own
+# number (Lucide has no numerals) and a parking P beats any car glyph at 20 px --
+# both judged on the panel 2026-08-17, where `handshake` and `circle-parking` came
+# out as mush at this size.
 pin_base    = house
-pin_parking = car
-pin_dest    = flag
-pin_meet    = users
+pin_parking = text:P
+pin_dest    = flag-triangle-right
+pin_meet    = circle-dot
 pin_camp    = tent
-pin_custom  = hash
+pin_c1      = digit:1
+pin_c2      = digit:2
+pin_c3      = digit:3
+pin_c4      = digit:4
+pin_c5      = digit:5

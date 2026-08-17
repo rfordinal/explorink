@@ -65,7 +65,7 @@
 //
 // Observe mode (menu's "Observation mode" row, MapScreenMode::Observe): the
 // same four direction buttons are re-read as a pan, not a ladder step -- each
-// press moves the viewport half a screen the way it points (panBy()), and the
+// press moves the viewport 30 % of a screen the way it points (panBy()), and the
 // hints/side-hints repaint to say so (renderViewport()'s button-hint switch).
 // GPS fixes are still recorded (applyFix()) but never redraw the frame out
 // from under a rider who is looking around; picking "Follow mode" from the
@@ -486,6 +486,22 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // screen must cost nothing, same rule as stepZoom/stepMarker's ladder ends.
   void switchMode(MapRideMode newMode);
 
+  // Which pins popup the next loop() should open. A row callback may not open one
+  // itself: OptionPopup invokes the callback from inside handleInput(), and a
+  // show() from there reassigns the very std::function that is executing -- it
+  // destroys the running callable under its own call. So a callback records what
+  // it wants here and returns, and loop() opens it one iteration later.
+  enum class PinPopup : uint8_t { None, List, AddList, ConfirmSet, ConfirmDelete, Show, Save };
+  PinPopup pendingPinPopup_ = PinPopup::None;
+  uint8_t pendingPinArg_ = 0;
+  // The map menu's own dialog size, so every pins list opens at exactly that size
+  // instead of shrinking to its own content. Two reasons: a differently sized box
+  // in the middle of the previous one reads as a different kind of dialog rather
+  // than the next step of the same one, and a same-or-smaller dialog keeps the
+  // menu backdrop valid, which is what makes the close cheap.
+  int menuDialogWidth_ = 0;
+  int menuVisibleRows_ = 0;
+
   // ## Pins (../../../docs/pins-plan.md, phase 3)
   //
   // All of it is OptionPopup inside this activity, not a Pins activity: this
@@ -496,15 +512,17 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // The Pins list: existing pins only, with the distance from the rider in the
   // popup's value column. LEFT deletes, SELECT shows, RIGHT replaces
   // (OptionPopup::RowActions).
+  // Opens whatever a row callback asked for (pendingPinPopup_). Called from
+  // loop(), never from a callback.
+  void servicePendingPinPopup();
   void openPinsMenu();
   // Add / Replace: all ten catalogue slots, so an empty one can be filled. An
   // empty slot saves straight away; an occupied one is confirmed.
   void openPinsAddList();
-  // A Replace is always confirmed, from either list. Two entry points because
-  // the two lists address a pin differently: the Add list knows a catalogue row,
-  // the Pins list knows a store slot -- which may hold a key this build does not
-  // know and therefore has no catalogue row at all.
-  void confirmPinSet(size_t catalogIndex);
+  // A Replace is always confirmed, from either list. One entry point for both:
+  // a catalogue row and a store slot are the same index for every key this build
+  // knows, and the slots above the catalogue hold foreign keys, which this handles
+  // by reading the key off the entry.
   void confirmPinReplaceSlot(size_t slot);
   void confirmPinDelete(size_t slot);
   // Both go through MapPins, which writes the history before it moves the active
@@ -521,9 +539,17 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // through MapRenderer, which knows nothing about pins. Off-screen pins are
   // skipped here; their edge indicators are phase 6.
   void drawPins();
-  static constexpr int kPinIconPx = 16;
-  // White ring around the glyph, so it stays readable on road lines and hatch.
-  static constexpr int kPinHaloPad = 2;
+  // One pin: a rounded head with the type glyph inside it, on a tail whose point
+  // is the coordinate. Same 2 px stroke as the position marker, so the two read as
+  // one family, and big enough to find on a panel full of building outlines --
+  // both asked for on hardware 2026-08-17, where a bare 16 px glyph could not be
+  // spotted and sat under the marker when the pin was at the rider's own position.
+  void drawPinBalloon(int tipX, int tipY, size_t catalogIndex);
+  // Sized on the panel, not on a laptop: a 16 px glyph was legible and still hard
+  // to pick out of a field of building outlines, so this went to a real pin shape
+  // at 39x47 with the glyph inside its head (2026-08-17). Against the position
+  // marker's 44 px, which keeps the rider's own mark the biggest thing on screen.
+  // The dimensions live with the asset (pins_shape.h), not here.
 
   // One edge marker for a pin outside the viewport: where the bearing ray leaves
   // the screen, which way it points (unit vector times 64 -- the raw pixel
@@ -535,7 +561,8 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
     int16_t dirX = 0;
     int16_t dirY = 0;
     uint32_t metres = 0;
-    uint8_t count = 0;  // 0 means merged into another mark
+    uint8_t catalogIndex = 0;  // which pin, so the marker can carry its glyph
+    uint8_t count = 0;         // 0 means merged into another mark
   };
   void drawPinEdgeMark(const PinEdgeMark& mark);
   // Markers one frame will draw. A cap, because the array is a stack local and the
@@ -546,7 +573,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   static constexpr int kPinEdgeMargin = 14;
   // Two markers closer than this merge into one with a count: two arrows on top
   // of each other read as one broken arrow.
-  static constexpr int kPinEdgeMergePx = 28;
+  static constexpr int kPinEdgeMergePx = 52;  // a whole pin wide, since a marker is one now
   static constexpr int kPinArrowPx = 11;
   // Which store slot the nth row of the open Pins list stands for. Recomputed
   // rather than captured: the popup is modal, so the store cannot change under
@@ -602,11 +629,16 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // No-op entering with no fix yet (hasReceivedAny_ false): nothing to look
   // around in that case, same "cost nothing" rule as switchMode().
   void toggleObserveMode();
-  // One half-screen step in `direction`, reusing the projection the frame on
+  // One pan step (kPanStepPercent of the screen) in `direction`, reusing the projection the frame on
   // screen was actually drawn with (proj_) -- whether that frame came from a
   // real fix or the previous pan step. See the .cpp for why this is not on
   // the ladder steps' settle timer.
   void panBy(PanDirection direction);
+  // How far one pan press moves the frame, as a percentage of the screen. 30 %
+  // rather than 50 %: half a screen jumps far enough that the rider loses the
+  // place they were looking at, and the cost per press (a tile read and a
+  // refresh) is the same at any step size.
+  static constexpr int kPanStepPercent = 30;
   // Up/Down side-button hints while Observe is active: same box as
   // drawZoomSideHints(), different glyphs, because the side buttons pan
   // instead of zooming.

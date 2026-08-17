@@ -13,7 +13,7 @@ right, also verified on hardware the same day.
 Follow is the normal ride/hike/cycle screen (`MapActivity.h:52-58`'s button
 table). Observe re-reads the same four buttons as a direction pad
 (`MapActivity::handleButtons()`, `MapActivity.cpp:1264`): each press pans the
-viewport half a screen the way it points, via `panBy()`
+viewport 30 % of a screen the way it points, via `panBy()`
 (`MapActivity.cpp:1394`). Button hints switch to `<`/`>` (front) and `^`/`v`
 (side) -- plain literals, not `tr()`, same reasoning as the zoom ladder's
 `+`/`--` (`MapActivity.cpp`, `drawZoomSideHints()`'s comment): a direction pad
@@ -29,12 +29,12 @@ Entered and left from the CONFIRM menu (`MapActivity::openMapMenu()`,
 frame (`hasReceivedAny_`) -- same "no row that cannot do anything" rule the
 Whole-route row already uses.
 
-## The pan itself: a half-screen step through the current projection
+## The pan itself: a 30 % step through the current projection
 
 `panBy()` does not track a separate "where am I looking" coordinate. It reads
 the projection the frame *on screen* was drawn with (`proj_`, whether that
 frame came from a real fix or the previous pan step), inverse-projects the
-screen point half a screen away from the anchor
+screen point `MapActivity::kPanStepPercent` of a screen away from the anchor
 (`MapProjection::screenToMerc()`), converts back to lat/lon
 (`MapProjection::mercToLonLat()`), and calls `renderViewport()` with that as
 the new anchor -- the exact same function a ladder step or a real fix uses. A
