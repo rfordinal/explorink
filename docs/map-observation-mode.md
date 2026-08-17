@@ -74,7 +74,7 @@ look at, not a GPS fix, and a marker glyph on it would claim otherwise.
 
 ## Zoom while observing: a hold, plus two menu rows
 
-Added 2026-08-13, **flashed and verified on the panel 2026-08-14.** Serial log
+Added and **flashed and verified on the panel 2026-08-17.** Serial log
 of that pass: four holds produced `observe: hold zoom in` / `... zoom out`
 followed by the matching `zoom step` line, with no `pan: half-screen step`
 between them -- the release ending a hold did not pan. Both menu rows stepped
