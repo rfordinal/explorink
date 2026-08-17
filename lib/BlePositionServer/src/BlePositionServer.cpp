@@ -483,6 +483,19 @@ bool BlePositionServer::localTimeNow(uint32_t& localUnixSeconds) const {
   return true;
 }
 
+bool BlePositionServer::utcNow(uint32_t& unixSeconds) const {
+  portENTER_CRITICAL(&g_mux);
+  const uint32_t anchorUtc = clockUtc_;
+  const uint32_t anchorMs = clockStampMs_;
+  portEXIT_CRITICAL(&g_mux);
+
+  if (anchorUtc == 0) return false;
+
+  const uint32_t elapsedSec = (millis() - anchorMs) / 1000;
+  unixSeconds = anchorUtc + elapsedSec;
+  return true;
+}
+
 void BlePositionServer::onCommandIngest(const uint8_t* data, size_t len) {
   if (!data || len == 0) return;
 
@@ -1013,6 +1026,7 @@ void BlePositionServer::end() {}
 bool BlePositionServer::getLatest(PositionUpdate&) const { return false; }
 void BlePositionServer::onWriteIngest(const uint8_t*, size_t) {}
 bool BlePositionServer::localTimeNow(uint32_t&) const { return false; }
+bool BlePositionServer::utcNow(uint32_t&) const { return false; }
 void BlePositionServer::onCommandIngest(const uint8_t*, size_t) {}
 size_t BlePositionServer::readCommandBytes(char*, size_t) { return 0; }
 bool BlePositionServer::sendCommandReply(const char*) { return false; }

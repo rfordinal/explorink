@@ -345,6 +345,18 @@ class BlePositionServer {
   // not a measured figure.
   bool localTimeNow(uint32_t& localUnixSeconds) const;
 
+  // The same clock, unshifted. False under exactly the same condition, and for
+  // the same reason: with no packet carrying a `utc` the device does not know
+  // the time at all.
+  //
+  // Separate from localTimeNow() because a stored timestamp and a drawn clock
+  // want different things. The header draws local time, so a rider reads their
+  // own watch. A record on the card must be comparable to one written in another
+  // timezone, which local seconds are not -- and a `utc` field holding local
+  // seconds is a lie that only shows up months later, in the log
+  // (../../../docs/pins-plan.md, the log's `utc` field).
+  bool utcNow(uint32_t& unixSeconds) const;
+
   // Internal: called by the NimBLE backend on the MTU exchange.
   void onMtuChanged(uint16_t mtu);
   // Internal: on connect and on every mid-connection parameter update.

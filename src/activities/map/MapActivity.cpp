@@ -29,6 +29,9 @@
 #include "MapViewport.h"
 #include "MissingTilesConsoleSource.h"
 #include "MissingTilesStore.h"
+#include "PinGeo.h"
+#include "PinIcons.h"
+#include "PinLabels.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
@@ -740,8 +743,8 @@ uint32_t MapActivity::recheckHatchedTiles() const {
   if (screenMode_ != MapScreenMode::Follow || overviewShown_) return 0;
   if (!lastTileRange_.valid || lastTileRange_.unavailableMask == 0) return 0;
 
-  const MapViewport::TileRange range{lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0,
-                                      lastTileRange_.col1, lastTileRange_.row1};
+  const MapViewport::TileRange range{lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0, lastTileRange_.col1,
+                                     lastTileRange_.row1};
   const uint32_t now = millis();
   // Same walk and the same 32-tile cap as drawMapLayers()'s hatch loop -- the
   // mask is one bit per index and never carried more than that to begin with.
@@ -1793,6 +1796,11 @@ void MapActivity::onEnter() {
   // Where `fake` lands. Only this screen offers it -- it is the one with the
   // projection and MISSING_TILES.
   consoleState_.setFakeSink(this);
+  // The pins come back off the card before anything can ask for them. A failed
+  // replay leaves the set empty *and* refuses every save, rather than appending
+  // onto a history it never read (MapPins::pinSet).
+  pins_.begin();
+  consoleState_.setPinsSource(&pins_);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -1945,6 +1953,9 @@ void MapActivity::onExit() {
   consoleState_.setStaleObserver(nullptr);
   consoleState_.setStaleTiles(nullptr);
   consoleState_.setFakeSink(nullptr);
+  // The pins source is a member of this activity, which main.cpp deletes right
+  // after this returns -- the console must not be left pointing into it.
+  consoleState_.setPinsSource(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this
@@ -1973,6 +1984,15 @@ void MapActivity::onExit() {
 
 void MapActivity::loop() {
   Activity::loop();
+
+  // The pin confirmation goes away on its own timer, or on the first button --
+  // whichever comes first. Before the popup below gets the input: a rider who
+  // presses CONFIRM to open the menu should get the map back under it, not a
+  // stale "Camp saved" sitting behind a fresh dialog.
+  if (pinNoticeUntilMs_ != 0 &&
+      (static_cast<int32_t>(millis() - pinNoticeUntilMs_) >= 0 || mappedInput.wasAnyPressed())) {
+    clearPinNotice();
+  }
 
   // Menu owns input while open, same idiom as every other OptionPopup
   // consumer (TextSettingsActivity.cpp:179) -- the callback draws the popup
@@ -2332,9 +2352,16 @@ bool MapActivity::restoreMenuBackdrop() {
   // of the panel so the one window covers both.
   drawMapButtonHints();
   const int x = 0;
-  const int y = rect.y;
+  // A popup with row actions also drew the two side-hint boxes, and those sit
+  // outside the dialog -- on the right edge, at the theme's own y. The backdrop
+  // does not cover them, so the window has to: drawMapButtonHints() has just
+  // repainted this screen's own hints over them (drawSideButtonHints() lays a
+  // white backing first), and without the wider window the panel would keep
+  // showing the popup's arrows next to a map that no longer has a popup.
+  const int y = popupDrewSideHints_ ? 0 : rect.y;
+  popupDrewSideHints_ = false;
   const int w = renderer.getScreenWidth();
-  const int h = renderer.getScreenHeight() - rect.y;
+  const int h = renderer.getScreenHeight() - y;
   if (!renderer.displayBufferWindow(x, y, w, h)) {
     LOG_ERR(kLogTag, "menu close window rejected: %d,%d %dx%d", x, y, w, h);
     return false;
@@ -2376,6 +2403,17 @@ void MapActivity::openMapMenu() {
     options.push_back(tr(STR_MAP_WHOLE_ROUTE));
     values.emplace_back();
   }
+  // Pins. High in the list on purpose: it is the row a rider reaches for while
+  // moving ("park here", "camp here"), unlike the settings toggles below it. The
+  // value column carries how many are saved, so the rider does not have to open
+  // the list to find out (0 is still worth a row -- it is where a pin is made).
+  const int pinsIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_PINS));
+  {
+    char count[8];
+    snprintf(count, sizeof(count), "%u", static_cast<unsigned>(pins_.pinCount()));
+    values.emplace_back(count);
+  }
   const int modeIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_MODE));
   values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
@@ -2406,16 +2444,20 @@ void MapActivity::openMapMenu() {
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
       StrId::STR_MAP, options, values, 0,
-      [this, observeIdx, wholeRouteIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx,
+      [this, observeIdx, wholeRouteIdx, pinsIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx,
        debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
         // that change nothing on it (zoom mode) put it back
         // instead of re-rendering, and so does a plain dismiss
         // (loop()). Freed first for every redraw row, so the
         // buffer is not held across a tile read.
-        if (idx != zoomModeIdx) dropMenuBackdrop();
+        // The pins list opens over the same map, so it keeps the backdrop --
+        // openPinsMenu() gives it up itself if its own dialog outgrows the rect.
+        if (idx != zoomModeIdx && idx != pinsIdx) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
+        } else if (idx == pinsIdx) {
+          openPinsMenu();
         } else if (idx == wholeRouteIdx) {
           // Back to the whole route, at any point in a ride. Costs one full refresh
           // and one pass over the route file, the same as the frame the picker drew.
@@ -2481,6 +2523,605 @@ void MapActivity::openMapMenu() {
   // the first draw (the framebuffer still holds the map).
   captureMenuBackdrop();
   optionPopup_.processRender(renderer, mappedInput);
+}
+
+// ---------------------------------------------------------------------- pins
+//
+// The Pins UI is popups over this screen (../../../docs/pins-plan.md, phase 3).
+// Nothing here draws a pin on the map -- that is phase 4, in the marker pass.
+
+size_t MapActivity::pinSlotForRow(size_t row) const {
+  size_t seen = 0;
+  for (size_t slot = 0; slot < PinStore::kSlotCount; ++slot) {
+    if (!pins_.store().at(slot).present) continue;
+    if (seen == row) return slot;
+    ++seen;
+  }
+  return PinStore::kSlotCount;
+}
+
+int32_t MapActivity::riderLatE7() const {
+  // Observe mode repoints lastLatE7_ at whatever the rider panned to, so it is
+  // the wrong answer to "where am I". The route overview does not: it holds the
+  // fix in lastLatE7_ (applyFix()).
+  return screenMode_ == MapScreenMode::Observe ? observeReturnLatE7_ : lastLatE7_;
+}
+
+int32_t MapActivity::riderLonE7() const {
+  return screenMode_ == MapScreenMode::Observe ? observeReturnLonE7_ : lastLonE7_;
+}
+
+const char* MapActivity::pinSaveRefusal() const {
+  // Never write 0,0. With no fix at all there is nothing to save *at*, and a pin
+  // off the coast of Ghana is worse than no pin.
+  if (!hasReceivedAny_) return tr(STR_PIN_NO_FIX);
+  return nullptr;
+}
+
+bool MapActivity::pinFixAgeWarning(char* buf, size_t bufLen) const {
+  if (buf == nullptr || bufLen == 0) return false;
+  buf[0] = '\0';
+  // The fix restored off the card in onEnter() is where the rider was when they
+  // last had a phone, which can be days ago -- and it has no age in minutes to
+  // quote, only a session boundary.
+  if (showingPersistedFix_ || lastFixMs_ == 0) {
+    snprintf(buf, bufLen, "%s", tr(STR_PIN_FIX_LAST_SESSION));
+    return true;
+  }
+  const uint32_t ageMs = millis() - lastFixMs_;
+  if (ageMs < kPinStaleFixMs) return false;
+  snprintf(buf, bufLen, tr(STR_PIN_FIX_AGE), static_cast<int>(ageMs / 60000u));
+  return true;
+}
+
+void MapActivity::pinDistanceText(const PinEntry& entry, char* buf, size_t bufLen) const {
+  if (buf == nullptr || bufLen == 0) return;
+  if (!hasReceivedAny_) {
+    // Nothing to measure from. "-" and never "0 m": zero is a real distance and
+    // would read as "you are standing on it".
+    snprintf(buf, bufLen, "-");
+    return;
+  }
+  const uint32_t metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), entry.latE7, entry.lonE7);
+  PinGeo::formatDistance(metres, buf, bufLen);
+}
+
+void MapActivity::openPinsMenu() {
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  const size_t count = pins_.pinCount();
+  options.reserve(count + 1);
+  values.reserve(count + 1);
+
+  // Add / Replace first, and it is the only row when nothing is saved yet: an
+  // empty slot is not listed here (it lives in that list), so a rider with no
+  // pins sees the one row that does something rather than ten that say "empty".
+  options.push_back(tr(STR_PIN_ADD));
+  values.emplace_back();
+
+  char distance[16];
+  for (size_t row = 0; row < count; ++row) {
+    const PinEntry& entry = pins_.store().at(pinSlotForRow(row));
+    options.emplace_back(pinEntryLabel(entry));
+    pinDistanceText(entry, distance, sizeof(distance));
+    values.emplace_back(distance);
+  }
+
+  optionPopup_.showWithValues(StrId::STR_MAP_PINS, options, values, 0, [this](int idx) {
+    if (idx == 0) {
+      openPinsAddList();
+      return;
+    }
+    showPinOnMap(pinSlotForRow(static_cast<size_t>(idx - 1)));
+  });
+  // Row actions, so Delete and Replace are one press each instead of a submenu
+  // per pin. This takes the front pair away from scrolling, which is why the side
+  // hints go up with it (OptionPopup::setRowActions).
+  OptionPopup::RowActions actions;
+  actions.leftLabel = tr(STR_DELETE);
+  actions.rightLabel = tr(STR_REPLACE);
+  actions.confirmLabel = tr(STR_SHOW);
+  actions.onLeft = [this](int idx) {
+    // Row 0 is Add / Replace: there is no pin under it to delete, and a press
+    // that silently does nothing is better than one that deletes the first pin.
+    if (idx <= 0) return;
+    confirmPinDelete(pinSlotForRow(static_cast<size_t>(idx - 1)));
+  };
+  actions.onRight = [this](int idx) {
+    if (idx <= 0) return;
+    confirmPinReplaceSlot(pinSlotForRow(static_cast<size_t>(idx - 1)));
+  };
+  optionPopup_.setRowActions(std::move(actions));
+  // Rotated by the theme: a right-pointing glyph lands pointing up, a left one
+  // lands pointing down -- the same rotation drawPanSideHints() had to account
+  // for, verified there on hardware.
+  optionPopup_.setSideHints("→", "←", UI_10_FONT_ID);
+  popupDrewSideHints_ = true;
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::openPinsAddList() {
+  // Every catalogue slot, so an empty one can be filled and an occupied one
+  // replaced from the same place. Ten rows scroll inside the popup's six-row
+  // window, which costs one refresh per selection step and no RAM
+  // (BaseTheme::optionPopupGeometry()).
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  options.reserve(kPinSlotCount);
+  values.reserve(kPinSlotCount);
+
+  char distance[16];
+  for (size_t i = 0; i < kPinSlotCount; ++i) {
+    options.emplace_back(pinTypeLabel(i));
+    const PinEntry& entry = pins_.store().at(i);
+    if (entry.present) {
+      pinDistanceText(entry, distance, sizeof(distance));
+      values.emplace_back(distance);
+    } else {
+      values.emplace_back();
+    }
+  }
+
+  optionPopup_.showWithValues(StrId::STR_PIN_ADD, options, values, 0, [this](int idx) {
+    const size_t catalogIndex = static_cast<size_t>(idx);
+    if (catalogIndex >= kPinSlotCount) return;
+    char age[48];
+    const bool occupied = pins_.store().at(catalogIndex).present;
+    // An empty slot saves straight away -- there is nothing to lose, so a
+    // confirmation would only be in the way. Unless the fix is old: then the
+    // save is about to record where the rider *was*, and that is worth a
+    // question even on an empty slot.
+    if (!occupied && !pinFixAgeWarning(age, sizeof(age))) {
+      savePin(kPinCatalog[catalogIndex].key, pinTypeLabel(catalogIndex));
+      return;
+    }
+    confirmPinSet(catalogIndex);
+  });
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::confirmPinSet(size_t catalogIndex) {
+  if (catalogIndex >= kPinSlotCount) return;
+  confirmPinReplaceSlot(catalogIndex);
+}
+
+void MapActivity::confirmPinReplaceSlot(size_t slot) {
+  if (slot >= PinStore::kSlotCount) return;
+  const PinEntry& entry = pins_.store().at(slot);
+  // A foreign key has no catalogue row, so the label is the raw key and the key
+  // itself has to come off the entry -- which is also what keeps a pin written by
+  // a later firmware replaceable rather than only deletable.
+  const bool foreign = entry.catalogIndex >= kPinSlotCount;
+  const char* key = foreign ? entry.key : kPinCatalog[slot].key;
+  const char* label = foreign ? entry.key : pinTypeLabel(slot);
+
+  char title[96];
+  char age[48];
+  snprintf(title, sizeof(title), tr(STR_PIN_REPLACE_CONFIRM), label);
+  if (pinFixAgeWarning(age, sizeof(age))) {
+    // The age goes in the question, not in a notice afterwards: a Replace on a
+    // dead link saves where the rider was, and by the time a notice could say so
+    // the old position is already gone from the active set.
+    const size_t len = strlen(title);
+    snprintf(title + len, sizeof(title) - len, " (%s)", age);
+  }
+
+  // Cancel first, so the destructive option is never the one already under the
+  // cursor. Same two-option shape as the reader's bookmark delete
+  // (EpubReaderBookmarksActivity.cpp).
+  const char* options[] = {tr(STR_CANCEL), tr(STR_REPLACE)};
+  char keyCopy[kPinKeyBytes];
+  snprintf(keyCopy, sizeof(keyCopy), "%s", key);
+  std::string labelCopy(label);
+  optionPopup_.show(title, options, 2, 0, [this, keyCopy, labelCopy](int idx) {
+    if (idx != 1) {
+      // Nothing changed, so the frame under the popup is still right.
+      if (!restoreMenuBackdrop()) {
+        redrawDueMs_ = 0;
+        showBusy();
+        renderCurrent();
+      }
+      return;
+    }
+    savePin(keyCopy, labelCopy.c_str());
+  });
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::confirmPinDelete(size_t slot) {
+  if (slot >= PinStore::kSlotCount) return;
+  const PinEntry& entry = pins_.store().at(slot);
+  if (!entry.present) return;
+
+  char title[96];
+  snprintf(title, sizeof(title), tr(STR_PIN_DELETE_CONFIRM), pinEntryLabel(entry));
+  const char* options[] = {tr(STR_CANCEL), tr(STR_DELETE)};
+  const int slotCopy = static_cast<int>(slot);
+  optionPopup_.show(title, options, 2, 0, [this, slotCopy](int idx) {
+    if (idx != 1) {
+      if (!restoreMenuBackdrop()) {
+        redrawDueMs_ = 0;
+        showBusy();
+        renderCurrent();
+      }
+      return;
+    }
+    deletePin(static_cast<size_t>(slotCopy));
+  });
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::savePin(const char* key, const char* label) {
+  dropMenuBackdrop();
+  const char* refusal = pinSaveRefusal();
+  if (refusal != nullptr) {
+    // The popup's pixels are still on the panel, so the map has to come back
+    // before the notice lands on top of it.
+    redrawDueMs_ = 0;
+    showBusy();
+    renderCurrent();
+    showPinNotice(refusal);
+    return;
+  }
+
+  char notice[64];
+  if (!pins_.pinSet(key, riderLatE7(), riderLonE7(), MapPins::utcNowOrZero())) {
+    snprintf(notice, sizeof(notice), "%s", tr(STR_PIN_WRITE_FAILED));
+  } else {
+    snprintf(notice, sizeof(notice), tr(STR_PIN_SAVED), label);
+  }
+  // A full frame, not a backdrop restore: the pin belongs in the picture, and
+  // from phase 4 on it is drawn in the same pass as the marker.
+  redrawDueMs_ = 0;
+  showBusy();
+  renderCurrent();
+  showPinNotice(notice);
+}
+
+void MapActivity::deletePin(size_t slot) {
+  dropMenuBackdrop();
+  if (slot >= PinStore::kSlotCount) return;
+  // The label is read before the delete: afterwards the slot is empty and a
+  // foreign key's label lives in the entry that just went away.
+  char label[kPinKeyBytes + 16];
+  snprintf(label, sizeof(label), "%s", pinEntryLabel(pins_.store().at(slot)));
+  const bool ok = pins_.pinDelete(pins_.store().at(slot).key);
+
+  char notice[64];
+  snprintf(notice, sizeof(notice), ok ? tr(STR_PIN_DELETED) : tr(STR_PIN_WRITE_FAILED), label);
+  redrawDueMs_ = 0;
+  showBusy();
+  renderCurrent();
+  showPinNotice(notice);
+}
+
+namespace {
+
+// Liang-Barsky, cut down to what an edge marker needs: where the segment from
+// `ox,oy` to `px,py` leaves the rectangle. False when the segment never enters it
+// at all, which happens with the rider off screen (Observe mode panned away) and
+// the pin on the far side.
+bool clipExitPoint(double ox, double oy, double px, double py, double left, double top, double right, double bottom,
+                   double& outX, double& outY) {
+  double t0 = 0.0;
+  double t1 = 1.0;
+  const double dx = px - ox;
+  const double dy = py - oy;
+  const double p[4] = {-dx, dx, -dy, dy};
+  const double q[4] = {ox - left, right - ox, oy - top, bottom - oy};
+  for (int i = 0; i < 4; ++i) {
+    if (p[i] == 0.0) {
+      if (q[i] < 0.0) return false;  // parallel and outside this edge
+      continue;
+    }
+    const double t = q[i] / p[i];
+    if (p[i] < 0.0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+  }
+  outX = ox + dx * t1;
+  outY = oy + dy * t1;
+  return true;
+}
+
+}  // namespace
+
+void MapActivity::drawPins() {
+  if (pins_.pinCount() == 0) return;
+
+  // Straight onto GfxRenderer, not through IMapCanvas: a pin is not map data, it
+  // is the rider's own mark, and MapRenderer knows nothing about it. That is also
+  // why the webapp's firmware preview panel cannot show pins (parent
+  // docs/device-preview.md) -- say so there rather than let someone chase it.
+  //
+  // Above the route rather than under it, which the plan had the other way round:
+  // the route is drawn inside MapRenderer::render() as a second source, and pins
+  // deliberately are not in that renderer at all. The glyph is small and its halo
+  // is tight, so what it covers of a line is a few pixels at the pin's own place.
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  int drawn = 0;
+
+  // Off-screen markers, when the rider turned them on. Collected first and drawn
+  // after the loop, so overlapping ones can merge into a single glyph with a
+  // count instead of stacking into an unreadable pile.
+  const bool wantEdges = SETTINGS.mapPinsOffscreen != 0 && hasReceivedAny_;
+  PinEdgeMark edges[kPinEdgeMax];
+  size_t edgeCount = 0;
+  size_t edgesDropped = 0;
+  // Where the bearing is measured from: the rider, projected through the frame on
+  // screen. Not the screen centre -- the marker sits low on the panel by design
+  // (the marker ladder), so a centre-based ray points at the wrong edge.
+  double riderX = 0.0;
+  double riderY = 0.0;
+  if (wantEdges) {
+    double mercX = 0.0;
+    double mercY = 0.0;
+    MapProjection::lonLatToMerc(static_cast<double>(riderLatE7()) / 1e7, static_cast<double>(riderLonE7()) / 1e7, mercX,
+                                mercY);
+    int32_t rx = 0;
+    int32_t ry = 0;
+    proj_.projectMercWide(mercX, mercY, rx, ry);
+    riderX = static_cast<double>(rx);
+    riderY = static_cast<double>(ry);
+  }
+
+  for (size_t slot = 0; slot < PinStore::kSlotCount; ++slot) {
+    const PinEntry& entry = pins_.store().at(slot);
+    if (!entry.present) continue;
+
+    double mercX = 0.0;
+    double mercY = 0.0;
+    MapProjection::lonLatToMerc(static_cast<double>(entry.latE7) / 1e7, static_cast<double>(entry.lonE7) / 1e7, mercX,
+                                mercY);
+    // Wide projection: a pin can be a hundred kilometres away, which overflows the
+    // int16_t path and would draw a glyph in the middle of the map
+    // (MapProjection::projectMercWide).
+    int32_t sx = 0;
+    int32_t sy = 0;
+    proj_.projectMercWide(mercX, mercY, sx, sy);
+
+    const int half = kPinIconPx / 2 + kPinHaloPad;
+    if (sx < -half || sy < -half || sx > screenW + half || sy > screenH + half) {
+      if (!wantEdges) continue;
+      double ex = 0.0;
+      double ey = 0.0;
+      // Inset by the marker's own size, so the arrow and its distance stay fully
+      // on the panel instead of half off the edge.
+      const double inset = kPinEdgeMargin;
+      if (!clipExitPoint(riderX, riderY, static_cast<double>(sx), static_cast<double>(sy), inset, inset,
+                         screenW - inset, screenH - inset, ex, ey)) {
+        continue;
+      }
+      if (edgeCount >= kPinEdgeMax) {
+        ++edgesDropped;
+        continue;
+      }
+      PinEdgeMark& mark = edges[edgeCount++];
+      mark.x = static_cast<int16_t>(ex);
+      mark.y = static_cast<int16_t>(ey);
+      // Unit direction times 64, not the raw difference: a pin 100 km away is
+      // millions of pixels off and would overflow the int16 the mark keeps.
+      const double vx = static_cast<double>(sx) - riderX;
+      const double vy = static_cast<double>(sy) - riderY;
+      const double len = sqrt(vx * vx + vy * vy);
+      mark.dirX = len > 0.0 ? static_cast<int16_t>(lround(vx / len * 64.0)) : 0;
+      mark.dirY = len > 0.0 ? static_cast<int16_t>(lround(vy / len * 64.0)) : 0;
+      mark.metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), entry.latE7, entry.lonE7);
+      mark.count = 1;
+      continue;
+    }
+
+    const int boxX = static_cast<int>(sx) - half;
+    const int boxY = static_cast<int>(sy) - half;
+    const int box = kPinIconPx + kPinHaloPad * 2;
+    // Opaque halo first: the glyph's own bitmap leaves its background alone (bit 1
+    // is transparent, Icon.h), so without this it lands unreadable on top of road
+    // lines and a landuse hatch. Same reasoning as the compass halo.
+    renderer.fillRect(boxX, boxY, box, box, false);
+    renderer.drawIcon(pinIcon(entry.catalogIndex).bits, boxX + kPinHaloPad, boxY + kPinHaloPad, kPinIconPx);
+    ++drawn;
+  }
+
+  // Crowding: two pins in nearly the same direction leave the screen at nearly
+  // the same point, and two arrows on top of each other read as one broken one.
+  // Merge them into the nearest one's arrow with a count.
+  for (size_t i = 0; i < edgeCount; ++i) {
+    if (edges[i].count == 0) continue;
+    for (size_t j = i + 1; j < edgeCount; ++j) {
+      if (edges[j].count == 0) continue;
+      const int dx = edges[i].x - edges[j].x;
+      const int dy = edges[i].y - edges[j].y;
+      if (dx * dx + dy * dy > kPinEdgeMergePx * kPinEdgeMergePx) continue;
+      // The nearer pin's distance survives: "the closest of these is 2.4 km" is
+      // the useful half of a merged marker.
+      if (edges[j].metres < edges[i].metres) {
+        edges[i].metres = edges[j].metres;
+        edges[i].dirX = edges[j].dirX;
+        edges[i].dirY = edges[j].dirY;
+      }
+      edges[i].count = static_cast<uint8_t>(edges[i].count + edges[j].count);
+      edges[j].count = 0;
+    }
+  }
+
+  for (size_t i = 0; i < edgeCount; ++i) {
+    if (edges[i].count == 0) continue;
+    drawPinEdgeMark(edges[i]);
+    ++drawn;
+  }
+  // Never a silent cap: a marker that was not drawn is a pin the rider cannot
+  // see, which is exactly the failure the feature is about.
+  if (edgesDropped > 0)
+    LOG_ERR(kLogTag, "%u off-screen pin marker(s) dropped: more than %d", static_cast<unsigned>(edgesDropped),
+            kPinEdgeMax);
+  if (drawn > 0) LOG_DBG(kLogTag, "%d pin mark(s) drawn", drawn);
+}
+
+void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
+  // An arrow, not a glyph: it points at a live bearing, which is the documented
+  // exception to the Lucide rule (parent CLAUDE.md, Icons) -- a static bitmap
+  // cannot represent a value that changes with the rider's position.
+  const double dx = static_cast<double>(mark.dirX) / 64.0;
+  const double dy = static_cast<double>(mark.dirY) / 64.0;
+  const double tipX = mark.x + dx * kPinArrowPx;
+  const double tipY = mark.y + dy * kPinArrowPx;
+  // Perpendicular, for the two base corners.
+  const double bx = mark.x - dx * kPinArrowPx * 0.4;
+  const double by = mark.y - dy * kPinArrowPx * 0.4;
+  const double px = -dy * kPinArrowPx * 0.55;
+  const double py = dx * kPinArrowPx * 0.55;
+
+  char distance[16];
+  PinGeo::formatDistance(mark.metres, distance, sizeof(distance));
+  char text[24];
+  if (mark.count > 1) {
+    // "2.4 km x3" -- how many pins are behind this arrow, and how far the nearest
+    // one is. Plain literals, no tr(): a multiplication sign is not language
+    // dependent, same call as the map's "+"/"--" side hints.
+    snprintf(text, sizeof(text), "%s x%u", distance, static_cast<unsigned>(mark.count));
+  } else {
+    snprintf(text, sizeof(text), "%s", distance);
+  }
+
+  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text);
+  const int textHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  // Text on the inside of the arrow, clamped so it cannot fall off the panel.
+  int textX = static_cast<int>(mark.x - dx * kPinArrowPx * 1.4) - textWidth / 2;
+  int textY = static_cast<int>(mark.y - dy * kPinArrowPx * 1.4) - textHeight / 2;
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  if (textX < 2) textX = 2;
+  if (textY < 2) textY = 2;
+  if (textX + textWidth > screenW - 2) textX = screenW - 2 - textWidth;
+  if (textY + textHeight > screenH - 2) textY = screenH - 2 - textHeight;
+
+  // Opaque backing under both, for the same reason the in-viewport glyph gets a
+  // halo: this lands on road lines, not on margin.
+  renderer.fillRect(textX - 2, textY - 2, textWidth + 4, textHeight + 4, false);
+  renderer.drawText(UI_10_FONT_ID, textX, textY, text, true);
+
+  const int xs[3] = {static_cast<int>(tipX), static_cast<int>(bx + px), static_cast<int>(bx - px)};
+  const int ys[3] = {static_cast<int>(tipY), static_cast<int>(by + py), static_cast<int>(by - py)};
+  renderer.fillPolygon(xs, ys, 3, true);
+}
+
+void MapActivity::showPinOnMap(size_t slot) {
+  dropMenuBackdrop();
+  if (slot >= PinStore::kSlotCount) return;
+  const PinEntry entry = pins_.store().at(slot);
+  if (!entry.present) return;
+
+  // Observation mode wholesale (docs/map-observation-mode.md), rather than a
+  // fourth kind of frame: it already stops the next fix yanking the viewport
+  // back, and the menu's "Follow mode" row already knows how to return to the
+  // rider. GPS keeps being recorded, the route is untouched.
+  if (screenMode_ == MapScreenMode::Follow) {
+    screenMode_ = MapScreenMode::Observe;
+    // The return anchor is the rider, captured before the frame moves -- the same
+    // capture toggleObserveMode() does, and for the same reason: lastLatE7_ is
+    // about to be repointed at the pin.
+    observeReturnLatE7_ = lastLatE7_;
+    observeReturnLonE7_ = lastLonE7_;
+    observeReturnHeading_ = lastHeading_;
+    observeReturnSeq_ = lastDrawnSeq_;
+  }
+  // Already in Observe: the anchor is whatever fix was in effect when the rider
+  // started looking around, which is still the right place to go back to.
+
+  LOG_INF(kLogTag, "show pin %s at %ld,%ld", entry.key, static_cast<long>(entry.latE7), static_cast<long>(entry.lonE7));
+  redrawDueMs_ = 0;
+  showBusy();
+  // anchorHeading_, the heading the frame on the panel was drawn with -- the same
+  // choice panBy() makes, so looking at a pin does not also rotate the map.
+  renderViewport(entry.latE7, entry.lonE7, anchorHeading_, lastDrawnSeq_);
+}
+
+void MapActivity::pinNoticeRect(int& x, int& y, int& w, int& h) const {
+  const int pad = 6;
+  h = renderer.getLineHeight(UI_12_FONT_ID) + pad * 2;
+  w = renderer.getScreenWidth() - kTextX * 2;
+  x = kTextX;
+  // Above the busy badge's clearance line, which is itself above
+  // GUI.drawButtonHints' band -- so the notice never lands on a hint box.
+  y = renderer.getScreenHeight() - kBusyMarginBottom - h - pad;
+}
+
+void MapActivity::showPinNotice(const char* text) {
+  if (text == nullptr || text[0] == '\0') return;
+  clearPinNotice();
+
+  int x = 0, y = 0, w = 0, h = 0;
+  pinNoticeRect(x, y, w, h);
+
+  // Save what it covers, so the notice can go away again without re-reading a
+  // tile. Small (a few KB at 480 px wide), and freed as soon as it is put back.
+  const size_t size = renderer.getRegionByteSize(x, y, w, h);
+  if (size > 0) {
+    auto buffer = makeUniqueNoThrow<uint8_t[]>(size);
+    if (buffer && renderer.copyRegionToBuffer(x, y, w, h, buffer.get(), size)) {
+      pinNoticePatch_ = std::move(buffer);
+      pinNoticePatchSize_ = size;
+      pinNoticePatchRect_ = Rect{x, y, w, h};
+    } else if (!buffer) {
+      LOG_ERR(kLogTag, "pin notice patch unavailable: %u bytes", static_cast<unsigned>(size));
+    }
+  }
+
+  // Opaque, like the compass halo and the busy badge: this lands on live map
+  // lines, not on margin.
+  renderer.fillRect(x, y, w, h, false);
+  renderer.drawRect(x, y, w, h, kBusyBorder, true);
+  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, text);
+  const int textX = x + (w - textWidth) / 2;
+  const int textY = y + (h - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
+  renderer.drawText(UI_12_FONT_ID, textX > x ? textX : x + 4, textY, text, true);
+
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "pin notice window rejected: %d,%d %dx%d", x, y, w, h);
+  }
+  pinNoticeUntilMs_ = millis() + kPinNoticeMs;
+}
+
+void MapActivity::clearPinNotice() {
+  pinNoticeUntilMs_ = 0;
+  if (!pinNoticePatch_) return;
+  const Rect rect = pinNoticePatchRect_;
+  const bool written =
+      renderer.copyBufferToRegion(rect.x, rect.y, rect.width, rect.height, pinNoticePatch_.get(), pinNoticePatchSize_);
+  pinNoticePatch_.reset();
+  pinNoticePatchSize_ = 0;
+  if (!written) {
+    LOG_ERR(kLogTag, "pin notice restore rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+    return;
+  }
+  if (!renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height)) {
+    LOG_ERR(kLogTag, "pin notice clear window rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+  }
+}
+
+void MapActivity::dropBackdropIfPopupOutgrew() {
+  if (!menuBackdrop_) return;
+  const Rect popup = optionPopup_.frameRect(renderer);
+  const Rect saved = menuBackdropRect_;
+  const bool covered = popup.x >= saved.x && popup.y >= saved.y && popup.x + popup.width <= saved.x + saved.width &&
+                       popup.y + popup.height <= saved.y + saved.height;
+  if (covered) return;
+  // Restoring a rect smaller than what is on the panel would leave the previous
+  // popup's frame around the new one, so the backdrop is worth nothing now. The
+  // close then costs a full redraw, which is the behaviour before backdrops
+  // existed.
+  LOG_DBG(kLogTag, "menu backdrop dropped: popup %dx%d outgrew the saved %dx%d", popup.width, popup.height, saved.width,
+          saved.height);
+  dropMenuBackdrop();
 }
 
 void MapActivity::toggleObserveMode() {
@@ -2868,6 +3509,10 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   updateManualHeadingCapture(headingStep);
+  // Before every early return below: a fix held back because Observe mode or the
+  // route overview owns the frame is still a fresh fix, and a pin saved while one
+  // of those is up is saved at it (riderLatE7()).
+  lastFixMs_ = millis();
   if (screenMode_ == MapScreenMode::Observe) {
     // A rider looking around must not have the frame snatched away from under
     // them by the next fix -- same reasoning as overviewShown_ below, just
@@ -3036,6 +3681,9 @@ void MapActivity::renderRouteOverview() {
   view.maxLabels = MapViewport::kZoomLadder[fit.zoomStep].maxLabels;
 
   const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, {}, &nearestPlaces_);
+  // Pins on the overview too: "where is the car relative to this whole route" is
+  // exactly the question the overview is for.
+  drawPins();
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -3308,6 +3956,10 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     renderer.clearScreen();
     missing = drawMapLayers(range, canvas, view, &timing, bad, &nearestPlaces_);
   }
+
+  // The rider's own marks, over the map and under everything below: the marker,
+  // the compass, the readout and the hints all still land on top of them.
+  drawPins();
 
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's

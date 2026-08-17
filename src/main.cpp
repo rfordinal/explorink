@@ -719,6 +719,8 @@ void loop() {
           target = &SETTINGS.mapTileFreshnessMode;
         else if (key == "mapDebugInfo")
           target = &SETTINGS.mapDebugInfo;
+        else if (key == "mapPinsOffscreen")
+          target = &SETTINGS.mapPinsOffscreen;
         if (target == nullptr) {
           logSerial.printf("SETTING_ERR:unknown\n");
         } else if (value.length() == 0) {

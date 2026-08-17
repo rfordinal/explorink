@@ -198,6 +198,9 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
     }
 
+    case MapCommandType::Pin:
+      return executePin(cmd, out);
+
     case MapCommandType::Zoom:
       // The parser already rejected anything outside 0-4, so the ladder is
       // never indexed off its end from here.
@@ -223,6 +226,143 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
   }
 
   return false;
+}
+
+bool MapConsoleState::executePin(const MapCommand& cmd, IMapReplyWriter& out) {
+  if (pins_ == nullptr) {
+    // Distinct from "no pins", exactly like `missing=unavailable`: a host must
+    // not read "the rider has saved nothing" out of a screen that cannot answer.
+    out.reply("INFO pins=unavailable");
+    out.reply("OK");
+    return false;
+  }
+
+  char line[kReplyBuf];
+  switch (cmd.pinVerb) {
+    case MapPinVerb::Set:
+      // The source writes the history first and only then moves the active pins,
+      // so a false here means nothing changed anywhere.
+      if (!pins_->pinSet(std::string_view(cmd.pinKey), cmd.latE7, cmd.lonE7, cmd.pinUtc)) {
+        out.reply("ERR pin_write");
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO pin_set=%s", cmd.pinKey);
+      out.reply(line);
+      out.reply("OK");
+      // The pin has to be drawn, and it is drawn in the map's own pass -- so this
+      // is a redraw, unlike every other command that only reports.
+      ++seq_;
+      return true;
+
+    case MapPinVerb::Del:
+      if (!pins_->pinDelete(std::string_view(cmd.pinKey))) {
+        // One reason for both a missing pin and a refused write, deliberately:
+        // the caller's next move is the same either way, and `pin list` says
+        // which of the two it was.
+        out.reply("ERR pin_write");
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO pin_del=%s", cmd.pinKey);
+      out.reply(line);
+      out.reply("OK");
+      ++seq_;
+      return true;
+
+    case MapPinVerb::List:
+      writePinList(out);
+      out.reply("OK");
+      return false;
+
+    case MapPinVerb::Log:
+      writePinLog(cmd.pinLogOffset, out);
+      out.reply("OK");
+      return false;
+  }
+  return false;
+}
+
+void MapConsoleState::writePinList(IMapReplyWriter& out) const {
+  // Wider than kReplyBuf, for the same reason writePinLog's buffer is: a key, two
+  // signed coordinates, a timestamp and an id at their widest are 67 characters,
+  // and a truncated coordinate in a pin listing points at the wrong place.
+  char line[96];
+  char lat[24];
+  char lon[24];
+
+  const size_t total = pins_->pinCount();
+  snprintf(line, sizeof(line), "INFO pins_total=%lu", static_cast<unsigned long>(total));
+  out.reply(line);
+
+  // Bounded by the catalogue (PinStore::kSlotCount), so no paging: the whole
+  // active set is at most fourteen lines, which is inside what `info` already
+  // sends in one command.
+  for (size_t i = 0; i < total; ++i) {
+    const PinEntry entry = pins_->pinAt(i);
+    formatE7(entry.latE7, lat, sizeof(lat));
+    formatE7(entry.lonE7, lon, sizeof(lon));
+    snprintf(line, sizeof(line), "INFO pin_%s=%s,%s,%lu,%lu", entry.key, lat, lon,
+             static_cast<unsigned long>(entry.utc), static_cast<unsigned long>(entry.id));
+    out.reply(line);
+  }
+}
+
+namespace {
+
+// Formats each record of a `pin log` page as it is streamed off the card, so a
+// page costs one record on the stack rather than an array of them.
+class PinLogReplyVisitor : public IPinLogVisitor {
+ public:
+  explicit PinLogReplyVisitor(IMapReplyWriter& out) : out_(out) {}
+
+  void onPinLogRecord(const PinRecord& rec) override {
+    char lat[24] = {};
+    char lon[24] = {};
+    if (rec.hasPos) {
+      formatE7(rec.latE7, lat, sizeof(lat));
+      formatE7(rec.lonE7, lon, sizeof(lon));
+    }
+    // Wider than kReplyBuf: a history line carries an op, a key, two coordinates
+    // and a timestamp, and a truncated coordinate in a recovery listing would
+    // send a rider to the wrong place. Still well inside the Resource Protocol's
+    // 256-byte cap on a frame's locals.
+    char line[112];
+    snprintf(line, sizeof(line), "INFO pinlog_%lu=%s,%s,%s,%s,%lu", static_cast<unsigned long>(rec.seq),
+             pinOpText(rec.op), rec.key, lat, lon, static_cast<unsigned long>(rec.utc));
+    out_.reply(line);
+  }
+
+ private:
+  IMapReplyWriter& out_;
+};
+
+}  // namespace
+
+void MapConsoleState::writePinLog(uint16_t offset, IMapReplyWriter& out) {
+  char line[kReplyBuf];
+  PinLogReplyVisitor visitor(out);
+
+  // Totals before entries, the same order `missing` answers in -- a reader that
+  // knows both keys can size its progress before the lines arrive. Asking for
+  // zero records is how the total is fetched without them (IMapPinsSource).
+  const uint32_t total = pins_->pinLogPage(offset, 0, visitor);
+  snprintf(line, sizeof(line), "INFO pinlog_total=%lu", static_cast<unsigned long>(total));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO pinlog_offset=%u", static_cast<unsigned>(offset));
+  out.reply(line);
+
+  // Newest first, so offset 0 is the last thing the rider did -- which is what a
+  // recovery ("I deleted the wrong camp") needs to see first.
+  pins_->pinLogPage(offset, kPinLogPageSize, visitor);
+
+  // Where the next command starts, or `done` -- the reader never does the
+  // arithmetic, so it cannot get it wrong (same contract as `missing_next`).
+  const uint32_t next = static_cast<uint32_t>(offset) + kPinLogPageSize;
+  if (next < total) {
+    snprintf(line, sizeof(line), "INFO pinlog_next=%lu", static_cast<unsigned long>(next));
+  } else {
+    snprintf(line, sizeof(line), "INFO pinlog_next=done");
+  }
+  out.reply(line);
 }
 
 void MapConsoleState::writeInfo(IMapReplyWriter& out) const {

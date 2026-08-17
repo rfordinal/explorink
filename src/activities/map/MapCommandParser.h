@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "MapRideMode.h"
+#include "PinCatalog.h"
 
 // Line-based ASCII command grammar for the map/nav console.
 //
@@ -30,6 +31,10 @@
 //   checked <n>|unknown
 //   info
 //   stats
+//   pin set <key> <lat> <lon> [<utc>]
+//   pin del <key>
+//   pin list
+//   pin log [<offset>]
 //
 // `tiles` reports the current viewport. `missing` reports the persisted
 // list of every tile the device has ever hatched, which is a different and
@@ -58,6 +63,17 @@
 // one", so the device's fetch progress can count it as failed instead of
 // waiting for a file that will never arrive. `<reason>` is one free-form word
 // (no spaces), for the log -- the device shows a count, not a reason.
+//
+// `pin` is the pins feature's whole wire path (../../docs/pins-plan.md). The
+// device has no keyboard and no GPS, so `pin set` is the only way to place a pin
+// at a coordinate the rider is not standing on -- a distant pin gets tested
+// without driving to it, and a phone can eventually push one. `<utc>` is unix
+// seconds and defaults to 0, which the log records as "the sender had no clock"
+// rather than inventing a time. `<key>` must be a catalogue key (PinCatalog.h);
+// anything else is `unknown_pin`, so a typo cannot occupy a slot.
+//
+// `pin log` pages exactly like `missing [<offset>]`, and for the same reason: a
+// whole history does not fit in one reply.
 //
 // The optional tail of `pos` takes the value bare (`pos 48.4 17.0 4 30`) or
 // behind its own keyword (`pos 48.4 17.0 heading 4 speed 30`). Both spell
@@ -88,7 +104,17 @@ enum class MapCommandType : uint8_t {
   Info,
   Stats,
   Fake,
+  Pin,
   Error,  // see MapCommand::error
+};
+
+// Sub-verb of `pin`. One command type with a verb rather than four types: the
+// four share the key field and every caller switches on the pair anyway.
+enum class MapPinVerb : uint8_t {
+  Set,
+  Del,
+  List,
+  Log,
 };
 
 enum class MapCommandError : uint8_t {
@@ -98,6 +124,7 @@ enum class MapCommandError : uint8_t {
   BadNumber,
   OutOfRange,
   BadMode,
+  UnknownPin,   // `pin set`/`pin del` with a key that is not in the catalogue
   LineTooLong,  // not produced by the parser; the line assembler raises it
 };
 
@@ -140,6 +167,14 @@ struct MapCommand {
   // rejected -- a long reason word is still a legitimate skip.
   static constexpr size_t kSkipReasonBytes = 16;
   char skipReason[kSkipReasonBytes] = {};
+  // Pin: which sub-verb, which slot, and the two numbers only one verb each
+  // uses. latE7/lonE7 above carry `pin set`'s coordinate -- the same fields
+  // `pos` uses, deliberately, so one line of a log means one thing wherever a
+  // coordinate came from. Copied, not viewed, for the same reason as skipReason.
+  MapPinVerb pinVerb = MapPinVerb::List;
+  char pinKey[kPinKeyBytes] = {};
+  uint32_t pinUtc = 0;         // `pin set`, optional; 0 = the sender had no clock
+  uint16_t pinLogOffset = 0;   // `pin log`, default 0 = the newest page
   MapRideMode mode = MapRideMode::Ride;
   bool hasHeading = false;   // Pos carried a heading
   bool hasSpeed = false;     // Pos carried a speed

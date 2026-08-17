@@ -241,6 +241,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // rider turns it on deliberately or not at all.
         SettingInfo::Toggle(StrId::STR_MAP_AUTOSYNC_TILES, &CrossPointSettings::mapAutoSyncTiles, "mapAutoSyncTiles",
                             StrId::STR_CAT_MAP),
+        // Off by default, and it stays off until the panel cost of edge markers
+        // has been measured (CrossPointSettings::mapPinsOffscreen). Pins inside
+        // the viewport are drawn either way.
+        SettingInfo::Toggle(StrId::STR_MAP_PINS_OFFSCREEN, &CrossPointSettings::mapPinsOffscreen, "mapPinsOffscreen",
+                            StrId::STR_CAT_MAP),
         // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
         // something a rider needs. Same field the map's own menu toggles live
         // (MapActivity::openMapMenu()).

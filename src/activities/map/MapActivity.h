@@ -12,6 +12,7 @@
 #include "MapFollow.h"
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
+#include "MapPins.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
 #include "MapRouteSource.h"
@@ -473,6 +474,104 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // screen must cost nothing, same rule as stepZoom/stepMarker's ladder ends.
   void switchMode(MapRideMode newMode);
 
+  // ## Pins (../../../docs/pins-plan.md, phase 3)
+  //
+  // All of it is OptionPopup inside this activity, not a Pins activity: this
+  // screen owns the BLE peripheral for exactly its own lifetime, so leaving it
+  // would drop the phone link, stop the position and cost a full redraw to come
+  // back.
+  //
+  // The Pins list: existing pins only, with the distance from the rider in the
+  // popup's value column. LEFT deletes, SELECT shows, RIGHT replaces
+  // (OptionPopup::RowActions).
+  void openPinsMenu();
+  // Add / Replace: all ten catalogue slots, so an empty one can be filled. An
+  // empty slot saves straight away; an occupied one is confirmed.
+  void openPinsAddList();
+  // A Replace is always confirmed, from either list. Two entry points because
+  // the two lists address a pin differently: the Add list knows a catalogue row,
+  // the Pins list knows a store slot -- which may hold a key this build does not
+  // know and therefore has no catalogue row at all.
+  void confirmPinSet(size_t catalogIndex);
+  void confirmPinReplaceSlot(size_t slot);
+  void confirmPinDelete(size_t slot);
+  // Both go through MapPins, which writes the history before it moves the active
+  // set -- the console and these popups must produce the same record.
+  void savePin(const char* key, const char* label);
+  void deletePin(size_t slot);
+  // SELECT on a pin: render the viewport around it and switch to Observe, so the
+  // next fix does not yank the frame back. Reuses observation mode wholesale
+  // rather than adding a fourth kind of frame, which also means the return path
+  // already exists -- the menu's "Follow mode" row (docs/map-observation-mode.md).
+  void showPinOnMap(size_t slot);
+  // Every stored pin that lands inside the viewport, drawn straight onto
+  // GfxRenderer in the same composition pass as the compass and the marker -- not
+  // through MapRenderer, which knows nothing about pins. Off-screen pins are
+  // skipped here; their edge indicators are phase 6.
+  void drawPins();
+  static constexpr int kPinIconPx = 16;
+  // White ring around the glyph, so it stays readable on road lines and hatch.
+  static constexpr int kPinHaloPad = 2;
+
+  // One edge marker for a pin outside the viewport: where the bearing ray leaves
+  // the screen, which way it points (unit vector times 64 -- the raw pixel
+  // difference can be millions), how far the pin is, and how many pins merged
+  // into this one arrow.
+  struct PinEdgeMark {
+    int16_t x = 0;
+    int16_t y = 0;
+    int16_t dirX = 0;
+    int16_t dirY = 0;
+    uint32_t metres = 0;
+    uint8_t count = 0;  // 0 means merged into another mark
+  };
+  void drawPinEdgeMark(const PinEdgeMark& mark);
+  // Markers one frame will draw. A cap, because the array is a stack local and the
+  // Resource Protocol keeps a frame's locals under 256 bytes -- eight is 128 of
+  // them. Anything past it is logged, never dropped silently.
+  static constexpr int kPinEdgeMax = 8;
+  // Keeps an arrow and its distance fully on the panel instead of half off it.
+  static constexpr int kPinEdgeMargin = 14;
+  // Two markers closer than this merge into one with a count: two arrows on top
+  // of each other read as one broken arrow.
+  static constexpr int kPinEdgeMergePx = 28;
+  static constexpr int kPinArrowPx = 11;
+  // Which store slot the nth row of the open Pins list stands for. Recomputed
+  // rather than captured: the popup is modal, so the store cannot change under
+  // it, and a captured table would be one more thing to keep in step.
+  size_t pinSlotForRow(size_t row) const;
+  void pinDistanceText(const PinEntry& entry, char* buf, size_t bufLen) const;
+  // Why a pin cannot be saved right now, or nullptr when it can. Only ever "no
+  // fix at all" today -- a pin must never be written at 0,0.
+  const char* pinSaveRefusal() const;
+  // Fills `buf` with how old the fix is ("fix 4 min old", "fix is from the last
+  // session") when that matters, and returns true. False means the fix is fresh
+  // enough that saying anything would be noise.
+  bool pinFixAgeWarning(char* buf, size_t bufLen) const;
+  // Where the rider actually is, which is not what the frame is showing while
+  // Observe mode is panned away from them (observeReturnLatE7_).
+  int32_t riderLatE7() const;
+  int32_t riderLonE7() const;
+  // Short confirmation above the button hints -- "Camp saved", or the reason
+  // nothing was saved. Saves the pixels underneath and refreshes only its own
+  // rectangle, so it costs one small window refresh and leaves the map up; the
+  // patch is what lets it disappear again without re-reading a tile.
+  void showPinNotice(const char* text);
+  void clearPinNotice();
+  void pinNoticeRect(int& x, int& y, int& w, int& h) const;
+  // A popup that opened over the menu can be bigger than the menu was. The
+  // backdrop covers the menu's rect only, so a larger popup has to give it up --
+  // restoring a rect smaller than what is on the panel leaves popup pixels
+  // behind.
+  void dropBackdropIfPopupOutgrew();
+  // How long a fix may be before a save says so. Not measured, and not the
+  // answer to "how old is too old" -- that stays open (docs/pins-plan.md, Open
+  // items). Two minutes is simply longer than the phone's own send interval at
+  // any speed (../../../docs/send-interval-analysis.md), so a fresh link never
+  // trips it.
+  static constexpr uint32_t kPinStaleFixMs = 2 * 60 * 1000;
+  static constexpr uint32_t kPinNoticeMs = 2500;
+
   // Follow is the normal ride/hike/cycle screen; Observe repurposes the four
   // direction buttons to pan the viewport instead of stepping the zoom/marker
   // ladders. Not MapRideMode -- that picks *what* the frame is for, this picks
@@ -772,8 +871,31 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   MapSerialConsole serial_{consoleState_};
   MapBleConsole ble_{consoleState_};
 
+  // The rider's pins: the active set replayed off the card in onEnter(), and the
+  // append-only history behind it (MapPins.h, ../../../docs/pins-plan.md).
+  //
+  // Lives on this screen rather than in a global for the reason a Pins *activity*
+  // was rejected: this screen owns the BLE peripheral for exactly its own
+  // lifetime, and the pins are only ever placed at the last fix it received.
+  MapPins pins_;
+
   // CONFIRM's menu (Refresh / Mode / Observation mode).
   OptionPopup optionPopup_;
+  // Set while an open popup has drawn the two side-hint boxes (a Pins list, which
+  // takes the front pair for its row actions). They land outside the dialog, so
+  // the close has to refresh a taller window than the backdrop rect
+  // (restoreMenuBackdrop()).
+  bool popupDrewSideHints_ = false;
+  // The pin notice on the panel: the pixels it covered, and when it expires.
+  // Cleared by the timer in loop() or by any button, whichever comes first.
+  std::unique_ptr<uint8_t[]> pinNoticePatch_;
+  size_t pinNoticePatchSize_ = 0;
+  Rect pinNoticePatchRect_{0, 0, 0, 0};
+  uint32_t pinNoticeUntilMs_ = 0;
+  // millis() of the last *real* fix. Zero until one lands: the persisted fix
+  // restored in onEnter() is not one, which is why a save on it warns
+  // (pinFixAgeWarning()).
+  uint32_t lastFixMs_ = 0;
   // The map under the open menu (captureMenuBackdrop()). Null whenever the menu
   // is closed or the capture failed.
   std::unique_ptr<uint8_t[]> menuBackdrop_;
