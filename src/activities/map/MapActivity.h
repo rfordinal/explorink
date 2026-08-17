@@ -737,13 +737,19 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   bool viewportDrawn_ = false;
   // Set in onEnter(), consumed by whichever render*() draws the first real
   // frame for this activation (renderViewport(), renderRouteOverview() or
-  // renderWaiting()). Forces that one frame through FULL_REFRESH instead of
+  // renderWaiting()). Forces that one frame through HALF_REFRESH instead of
   // FAST_REFRESH -- the fast LUT leaves ghosting (main.cpp's CMD:SHOWIMAGE
   // comment), and it never gets a real clear otherwise: the map screen has no
-  // other FULL_REFRESH call anywhere. Coming back from the menu after the
-  // screen has ghosted over a long session is exactly the point this screen
-  // reappears, so that is the one frame worth paying the slower waveform for.
-  bool pendingEntryFullRefresh_ = false;
+  // other non-differential refresh anywhere. Coming back from the menu after
+  // the screen has ghosted over a long session is exactly the point this
+  // screen reappears, so that is the one frame worth a clean waveform.
+  //
+  // HALF, not FULL: HALF is the single-pass absolute clean (0xD7), the only
+  // clean primitive stock X4 firmware uses in normal operation. FULL selects
+  // the multi-flash OTP waveform (0xF7) -- it clears no better and the map
+  // screen visibly blinked through several inversions on every entry
+  // (Ssd1677Driver::displayImpl, SleepActivity's #2471 note).
+  bool pendingEntryCleanRefresh_ = false;
   // True whenever the frame on the panel carries a header row (the BLE link
   // icon, its bars, the transfer globe) -- drawHeaderStatus() drew one.
   // Separate from viewportDrawn_ on purpose: whether the phone is connected has

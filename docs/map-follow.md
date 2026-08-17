@@ -194,6 +194,62 @@ the `MapRenderer` pass, not out of the waveform. `MapActivity.h`'s coalescing no
 still says "the better part of two seconds" for a reset; at zoom step 2 over
 Bratislava (22,904 ways, 4 tiles, 1.57 MB read) it is four times that.
 
+### The entry frame is HALF, not FULL -- fixed 2026-08-17
+
+Opening the map screen used to blink several times through an apparent negative
+before the map appeared. Reported from the panel; not a normal e-ink clear.
+
+`onEnter()` sets `pendingEntryCleanRefresh_` (`MapActivity.cpp:1755`) so the
+first real frame of the activation gets a non-differential refresh -- the fast
+LUT is differential and cannot clear whatever the previous screen left. That part
+is right. What was wrong is which non-differential mode it asked for: it asked
+for `FULL_REFRESH`, and on X4 `FULL_REFRESH` selects the OTP full waveform
+`0xF7` (`Ssd1677Driver.cpp:59,186`), which is the multi-flash one. Several
+inversions per refresh, by design of the waveform.
+
+`HALF_REFRESH` (`0xD7`) is the single-pass absolute clean, and it is the only
+clean primitive stock X4 firmware uses in normal operation -- the driver says so
+(`Ssd1677Driver.cpp:360`) and the sleep screen already relies on it for exactly
+this reason (`SleepActivity.cpp:154`, "#2471's blinking complaint"). It clears
+the panel and seeds the differential baseline just as `FULL` does, without the
+flashing.
+
+So all three entry frames -- the viewport, the route overview, the waiting banner
+(`MapActivity.cpp:3726,4116,4495`) -- now pass `HALF_REFRESH`.
+
+Entry still costs two refreshes, not one: `renderLoadingTiles()` paints the
+"reading tiles" logo first (`FAST_REFRESH`, `MapActivity.cpp:3768`) because the
+tile read behind it takes seconds and needs feedback. One fast differential pass
+plus one clean pass.
+
+**Read off the code and the driver, not yet measured on the panel.** What would
+settle it: open the map on hardware and count the inversions.
+
+### Entry could also drop the first real fix -- fixed 2026-08-17
+
+Same report: after opening the map, a BLE position that arrived did not move the
+map off the fix restored from the card. Only riding corrected it.
+
+The bulk of that is on the phone -- its send policy had no reason to send at all
+on a reconnect, see the parent workspace's `send-interval-analysis.md`. The
+firmware had a second, narrower version of the same bug.
+
+`onEnter()` seeds the persisted fix as if it had been received:
+`hasReceivedAny_ = true`, `showingPersistedFix_ = true`, `lastDrawnSeq_ = 0`
+(`MapActivity.cpp:1746,1919-1928`). The BLE intake then only accepts a packet
+whose `seq` differs from `lastDrawnSeq_` (`MapActivity.cpp:2072`), which is the
+right guard against re-drawing a packet already drawn. But `seq` is a rolling
+0-255 counter the phone owns (`BlePositionServer.h`), so a phone whose counter
+happened to sit at 0 had its first real packet read as "already drawn" and
+discarded -- and nothing advances that counter while the rider is parked.
+
+Fixed by accepting any packet while `showingPersistedFix_` is still set: a frame
+that carries the card's fix has never had a real packet drawn into it, whatever
+the counter says.
+
+1 in 256 by itself, so this is not what the maintainer saw -- the phone-side bug
+is. Read off the code; not reproduced on hardware.
+
 ### That 8.9 s is a city number. Rural is ten times cheaper
 
 **Measured 2026-08-06** on a forested pass in the Malé Karpaty, route loaded,
