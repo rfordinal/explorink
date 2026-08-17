@@ -247,3 +247,7 @@ diagonal-over-index:
 `../../docs/ble-map-transfer-protocol.md`, "Viewport diagonal". What the
 phone does with it: `../../docs/send-interval-analysis.md` (parent repo),
 `android/README.md`, "Send policy".
+
+Confirmed 2026-08-17: the `zoom N` console command triggers the same
+`renderViewport()` call a button press does, so it is a valid way to test
+this without touching the device.
