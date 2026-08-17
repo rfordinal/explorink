@@ -119,10 +119,14 @@ MapActivity::restoreMenuBackdrop() -> GfxRenderer::displayBufferWindow()
   -> bad_alloc -> __terminate -> abort()
 ```
 
-`Ssd1677Driver::displayWindow()` allocates a buffer sized by the window. A
-480x800 window does not fit a map screen's heap: the crash report has 38,292
-bytes free and a 34,804-byte largest block, and with `-fno-exceptions` a failed
-`operator new` aborts rather than returning null (`CLAUDE.md`, Resource
+`Ssd1677Driver::displayWindow()` allocates a `std::vector<uint8_t>` of
+`(w / 8) * h` bytes
+(`freeink-sdk/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp:440-442`)
+-- 48,000 bytes for a full panel -- and **a second one the same size** when it is
+handed a previous frame (`:454`). So a whole-panel window asks for 48 KB, or
+96 KB differentially, against the 38,292 bytes free and the 34,804-byte largest
+block in the crash report. The first allocation fails, and with `-fno-exceptions`
+a failed `operator new` aborts rather than returning null (`CLAUDE.md`, Resource
 Protocol 9).
 
 So: **never refresh the whole panel to fix up something small.** The close now

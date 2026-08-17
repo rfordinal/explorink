@@ -765,6 +765,31 @@ never arrives.
 With the 80 MHz floor this only applies where the floor does not: screens with
 the BLE controller down, Home among them.
 
+
+### The RX side after idle: observed, not explained
+
+**Observed 2026-08-17, cause open.** Straight after a flash the device answered no
+`CMD:` at all -- `CMD:GOTO_MAP` and `CMD:SCREENSHOT` were written three times each
+with no reply, while its own `[MEM]` log kept coming out every ten seconds, so the
+loop was alive and TX was fine. Pressing a button on the device did not change it.
+What worked was resetting the device over DTR/RTS and sending the command inside
+the first ~3 seconds of boot (`wake.py`-style: wait for `Entering activity: Home`,
+then write).
+
+The boot log shows `[5249] [PWR] Going to low-power mode (10 MHz)`, so the low
+clock is the obvious suspect and the symmetry with the TX finding above is
+tempting. **It is not proven.** Nothing here isolates the clock: a button press
+should have restored full speed and did not fix it, so something else that
+survives a press could equally be the cause.
+
+Do not repeat "10 MHz deafens the RX" as fact. What would settle it: send one
+`CMD:INFO`-shaped command within a second of a button press (full clock,
+`powerManager` not yet throttled) and the identical command after ten seconds of
+idle, same cable, same port, and compare. If both fail, the clock is innocent.
+
+Practical consequence either way: **a host that needs the console should reset the
+device and talk inside the boot window**, or drive the map screen, which holds the
+clock up while BLE is running.
 ## The fix
 
 **Every `CMD:` handler runs at full CPU.** `main.cpp` calls

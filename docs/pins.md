@@ -325,8 +325,8 @@ field of building outlines, and a pin saved at the rider's own position disappea
 under the 44 px position marker.
 
 What ships instead: the map-pin shape from
-`src/components/icons/pin-shape.svg`, **41x49 px**, with the type's glyph inside
-its head, a white halo one pixel wide around the whole outline, and the tail's
+`src/components/icons/pin-shape.svg`, **42x50 px** (frame 0 of the rotation table,
+`src/components/icons/pins_shape.h:69`), with the type's glyph inside its head, a white halo one pixel wide around the whole outline, and the tail's
 point **at** the coordinate. The halo does the job the marker's own halo does --
 without it the black outline lands on road lines and the shape stops reading.
 Anchoring at the point means the body hangs above the coordinate, which is both the
@@ -376,13 +376,18 @@ What it does, all measured off the rasterised artwork rather than hardcoded:
   drags the eye down, so a glyph on the geometric centre reads as if it were
   floating at the top -- judged on the panel twice.
 
-Glyphs, all chosen at 20 px on the glass:
+The numbers moved when the rotations landed: that pass rasterises at a different
+oversample and the head measured a pixel wider, so a 22 px glyph fits where 20 px
+did before. **Read the sizes off `pins_shape.h`, not off this page** -- they are
+generated.
+
+Glyphs, all chosen at 20-22 px on the glass:
 
 | pin | glyph | why |
 |---|---|---|
 | Base | `house` | |
 | Parking | baked `P` | `circle-parking` read as a circle inside a circle |
-| Destination | `flag-triangle-right` | a pennant survives 20 px; `flag` is busier |
+| Destination | `flag-triangle-right` | a pennant survives at this size; `flag` is busier |
 | Meet | `circle-dot` | `handshake` was mush at this size |
 | Camp | `tent` | |
 | `#1`-`#5` | baked numerals | Lucide has no numerals, and nothing says "#3" like a 3 |
@@ -469,6 +474,33 @@ its distance and a count: `7.1 km x3` is three pins that way, the closest 7.1 km
 off. At most eight markers a frame (a stack-local array against the 256-byte rule);
 anything past that is logged as an error, never dropped silently.
 
+### Per pin
+
+`CrossPointSettings::mapPinsOffscreenMask`, one bit per catalogue slot, **all set
+by default** -- and a settings file written before this existed loads as all-set,
+so nothing changes for anyone until they touch it.
+
+**Not in the pin log.** Visibility is a display preference, not something that
+happened, and a new field in a record would mean a `v2` line -- which every older
+build skips as an unknown version (above, "Reading, and damage"), costing a rider
+their pins. A settings bit costs nothing and carries the same information.
+
+It is edited from the map, not from Settings: a row per pin reads better than
+sixteen toggles in a settings screen. The Pins list carries
+`Off-screen markers   3/5` -- how many pins would mark the edge, out of how many
+are saved -- and SELECT on it opens `All` plus one row per saved pin. SELECT
+toggles a row and reopens the list on that row, so several can be flipped in one
+visit; each toggle costs one full-panel refresh, because `OptionPopup` repaints
+through `displayBuffer()`. Closing after a change renders a real frame rather than
+restoring the backdrop: a marker has just appeared or gone away, so the map
+underneath is wrong.
+
+With `All` off, every per-pin row reads `-` rather than `Off`. The bit is whatever
+it is; the master is simply overriding it, and this popup cannot grey a row.
+
+A key this build does not know has no bit and follows the master --
+wrong-but-visible beats a pin whose marker silently never appears.
+
 **What is not built:** the plan's quantised per-fix redraw. Markers are drawn only
 as part of a frame that was going to be rendered anyway, so a distance goes stale
 between viewport resets and a marker costs nothing extra on the panel. That is
@@ -507,15 +539,18 @@ press SELECT, trips, per-pin visibility and log rotation stay deferred as planne
 **Nothing in this feature has run on the panel.** Every geometry and button claim
 above is read off the code. What a hardware pass has to check:
 
-- a pin saved from the menu, then a reboot, then the pin still there;
-- the row actions in a rotated orientation, and that the side hints do not look
-  broken;
-- that the notice patch restores cleanly;
-- that a 16 px glyph is actually legible on the glass over a road and over hatch,
-  and that it does not out-shout the marker or the route;
-- an edge marker's arrow and distance with `mapPinsOffscreen` on;
-- free heap with the Pins list open (the map sits around 54 KB free and the menu
-  backdrop already spends ~9 KB of it).
+**Confirmed on the device 2026-08-17** (maintainer at the panel, agent on the
+console): a pin saved from the console survives a reflash and a reboot with its id
+intact, `pin set/del/list/log`, the pins and their halo on the glass, edge markers
+with their distances and their rotation, Show-on-map, Delete and Replace from the
+row actions, the per-pin toggles, and 50-52 KB free on the map screen with pins
+loaded.
+
+**Still unverified:** every rotated orientation (INVERTED, LANDSCAPE_CW,
+LANDSCAPE_CCW) -- the row actions' left/right mapping and the side hints are read
+off `MappedInputManager`, not seen -- and the X3 side-hint layout, which is one
+band across the full width rather than a strip on the right, and which
+`pinEdgeArea()` does not special-case.
 
 Firmware RAM after all six phases: 17.8 % (58,300 bytes) -- unchanged from
 `a45efe5a`, because the store lives inside the heap-allocated activity and the
