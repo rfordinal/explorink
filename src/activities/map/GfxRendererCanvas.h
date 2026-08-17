@@ -143,6 +143,14 @@ class GfxRendererCanvas : public IMapCanvas {
       return true;
     }
     const int fontId = fontIdForSize(sizePx);
+    // No label face registered at all: report "this canvas has no text" rather
+    // than asking GfxRenderer about font 0, which is its not-found sentinel and
+    // would log an error per call (see fontIdForSize).
+    if (fontId == 0) {
+      outWidth = 0;
+      outHeight = 0;
+      return false;
+    }
     outWidth = renderer_.getTextWidth(fontId, utf8, styleFor(bold));
     // Line height, not the string's own ink height: every label on screen wants
     // the same box depth, or a name with no descender sits in a visibly
@@ -161,6 +169,13 @@ class GfxRendererCanvas : public IMapCanvas {
   // too tall for a compact map label, so today's map labels come out as the
   // Ubuntu UI face at 24/29 px. docs/place-labels.md, "The font", has what a
   // purpose-built map face would change and what it would cost.
+  //
+  // **Most of this list is not registered in the default build.** `OMIT_FONTS`
+  // (platformio.ini) drops the four Noto Sans families, because the map is the
+  // only screen left that draws text and it uses UI_10/UI_12/SMALL. The ids are
+  // still declared, so they stay here for builds that do carry them, and
+  // fontIdForSize() skips whatever the renderer has not been given -- see the
+  // note there, this cost a log flood once.
   static constexpr int kLabelFontIds[] = {SMALL_FONT_ID,       UI_10_FONT_ID,       UI_12_FONT_ID,
                                           NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
                                           NOTOSANS_18_FONT_ID};
@@ -169,7 +184,9 @@ class GfxRendererCanvas : public IMapCanvas {
   // ascender itself), which is exactly IMapCanvas's top-left contract.
   void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) override {
     if (utf8 == nullptr || *utf8 == '\0') return;
-    renderer_.drawText(fontIdForSize(sizePx), x, y, utf8, ink == MapInk::Black, styleFor(bold));
+    const int fontId = fontIdForSize(sizePx);
+    if (fontId == 0) return;  // no label face registered; measureText said so too
+    renderer_.drawText(fontId, x, y, utf8, ink == MapInk::Black, styleFor(bold));
   }
 
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {
@@ -182,22 +199,49 @@ class GfxRendererCanvas : public IMapCanvas {
  private:
   static EpdFontFamily::Style styleFor(const bool bold) { return bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR; }
 
-  // Largest face whose line height fits in `sizePx`, or the smallest face when
-  // even that does not fit. Nearest-below rather than nearest, because a face
-  // taller than the style asked for makes every label box taller than the style
-  // author was looking at when they picked the number.
+  // Largest *registered* face whose line height fits in `sizePx`, or the
+  // smallest registered face when none fits. Nearest-below rather than nearest,
+  // because a face taller than the style asked for makes every label box taller
+  // than the style author was looking at when they picked the number.
+  //
+  // The registration test is not defensive dressing. `getLineHeight()` answers an
+  // unknown font id with `LOG_ERR("GFX", "Font %d not found")` and a 0, and the
+  // default build leaves four of the seven ids unregistered (`OMIT_FONTS`). This
+  // loop runs once per measureText and once per drawText, and a haloed label is
+  // 17 drawText calls, so every label used to emit dozens of error lines over USB
+  // -- measured on hardware 2026-08-13. Asking `getFontMap()` first is silent.
+  //
+  // Memoised on the last request because those 17 calls all ask for the same
+  // size: without it each one walks seven std::map lookups to reach the same
+  // answer.
   int fontIdForSize(const int sizePx) const {
-    int best = kLabelFontIds[0];
+    if (sizePx == memoSizePx_) return memoFontId_;
+
+    const auto& fonts = renderer_.getFontMap();
+    int best = 0;
     int bestHeight = 0;
+    int smallest = 0;
+    int smallestHeight = 0;
     for (const int fontId : kLabelFontIds) {
+      if (fonts.find(fontId) == fonts.end()) continue;
       const int height = renderer_.getLineHeight(fontId);
-      if (height <= 0 || height > sizePx) continue;
+      if (height <= 0) continue;
+      if (smallestHeight == 0 || height < smallestHeight) {
+        smallestHeight = height;
+        smallest = fontId;
+      }
+      if (height > sizePx) continue;
       if (height > bestHeight) {
         bestHeight = height;
         best = fontId;
       }
     }
-    return best;
+    // `smallest` is 0 only when the renderer carries none of these faces at all,
+    // and then there is no id worth returning: measureText reports a zero width
+    // for it and MapLabels draws dots and no names.
+    memoSizePx_ = sizePx;
+    memoFontId_ = best != 0 ? best : smallest;
+    return memoFontId_;
   }
 
   // Grey is coming: a second branch is adding the panel's real grey levels, and
@@ -306,4 +350,10 @@ class GfxRendererCanvas : public IMapCanvas {
   int minY_ = 0;
   int bottomReserved_ = 0;
   int rightReserved_ = 0;
+  // Last resolved (size -> font id). Mutable because measureText/drawText are the
+  // callers and the canvas is handed around by reference; the memo changes no
+  // pixel. 0 is never a valid font id (fontIds.h reserves it as the not-found
+  // sentinel), so it doubles as "nothing memoised yet".
+  mutable int memoSizePx_ = 0;
+  mutable int memoFontId_ = 0;
 };

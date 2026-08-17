@@ -127,6 +127,26 @@ is its point size at 150 DPI, not its pixel height
 | `notosans_16` | 45 | 36 | regular, bold |
 | `notosans_18` | 51 | 41 | regular, bold |
 
+### The candidate list is mostly not in the build
+
+`OMIT_FONTS` (`platformio.ini`) drops the four Noto Sans families from the
+default build -- the map is the only screen left that draws text, and it draws
+with UI_10/UI_12/SMALL. Four of the seven ids in
+`GfxRendererCanvas::kLabelFontIds` are therefore never registered.
+
+That was harmless for the picture and not harmless for the log.
+`GfxRenderer::getLineHeight()` answers an unknown id with
+`LOG_ERR("GFX", "Font %d not found")` and a 0, the picker walked the whole list
+on every call, and a haloed label is 17 `drawText` calls -- so each label emitted
+dozens of error lines over USB. **Measured on hardware 2026-08-13**, reported as
+"desiatky riadkov".
+
+Fixed by asking `GfxRenderer::getFontMap()` whether a face is registered before
+asking its height (silent), and by memoising the last size-to-id answer, since
+those 17 calls all ask for the same size. **No pixel changes**: an unregistered
+face already scored 0 and was already skipped, so the face chosen was the same
+before and after -- only the noise and 7 map lookups per call are gone.
+
 So today's labels come out as **Ubuntu UI bold 29 px** (major) and **Ubuntu UI
 regular 24 px** (minor): sans-serif, proportional, both weights present, and the
 only faces in flash small enough for a compact label. The smallest Noto Sans
