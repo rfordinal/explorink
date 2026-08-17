@@ -696,9 +696,17 @@ void MapActivity::maybeAutoSyncTiles() {
   // want kept across minutes would fire an ask for tiles the rider has since
   // ridden away from. The next frame over a gap hatches again and asks again --
   // there is nothing to remember.
-  const uint32_t want = autoSyncWantCount_;
+  uint32_t want = autoSyncWantCount_;
   autoSyncWantCount_ = 0;
-  if (want == 0) return;
+  if (want == 0) {
+    // The common case: MapFollow::Action::MoveMarker slid the marker with no
+    // re-render (applyFix()), so nothing hatched this tick. Fall back to the
+    // last reset's own mask re-checked against the clock, instead of waiting
+    // for the next full re-render -- see recheckHatchedTiles() for why that
+    // wait can run to 15+ minutes on a straight leg with a route loaded.
+    want = recheckHatchedTiles();
+    if (want == 0) return;
+  }
 
   // Stale tiles are NOT counted here, and that is the design rather than an
   // omission. A stale tile is one the phone found by reading the index, so the
@@ -722,6 +730,27 @@ void MapActivity::maybeAutoSyncTiles() {
   if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) return;
 
   askForViewportTiles(want);
+}
+
+uint32_t MapActivity::recheckHatchedTiles() const {
+  // Same scope as a fresh hatch: an overview or the observation screen has no
+  // autosync, and lastTileRange_ is left stale rather than cleared while
+  // either is up (only renderViewport() writes it), so it must not be trusted
+  // here just because valid is still true.
+  if (screenMode_ != MapScreenMode::Follow || overviewShown_) return 0;
+  if (!lastTileRange_.valid || lastTileRange_.unavailableMask == 0) return 0;
+
+  const MapViewport::TileRange range{lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0,
+                                      lastTileRange_.col1, lastTileRange_.row1};
+  const uint32_t now = millis();
+  // Same walk and the same 32-tile cap as drawMapLayers()'s hatch loop -- the
+  // mask is one bit per index and never carried more than that to begin with.
+  uint32_t fetchable = 0;
+  for (uint32_t index = 0; index < range.count() && index < 32; ++index) {
+    if ((lastTileRange_.unavailableMask & (1u << index)) == 0) continue;
+    if (!MISSING_TILES.isRefused(range.z, range.colAt(index), range.rowAt(index), now)) ++fetchable;
+  }
+  return fetchable;
 }
 
 void MapActivity::askForViewportTiles(uint32_t count) {
@@ -1686,6 +1715,10 @@ void MapActivity::onEnter() {
   autoSyncArrived_ = false;
   autoSyncNextAskMs_ = 0;
   autoSyncDeadlineMs_ = 0;
+  // A stale range from whatever was on screen before must not feed
+  // recheckHatchedTiles() a mask that no longer matches this session's tile
+  // source.
+  lastTileRange_ = MapTileRangeSnapshot();
   lastClearedTileSeq_ = 0;
   arrivalRedrawDueMs_ = 0;
   lastTransferProgress_ = 0;
@@ -3333,6 +3366,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   rangeSnapshot.row1 = range.row1;
   rangeSnapshot.unavailableMask = missing;
   consoleState_.setTileRange(rangeSnapshot);
+  // Kept for recheckHatchedTiles() to re-scan against the clock between
+  // resets -- see the field comment (MapActivity.h).
+  lastTileRange_ = rangeSnapshot;
 
   // The same walk, one field further: each tile's content identity, which the
   // header parse already put in RAM. This is the only moment on the device where
