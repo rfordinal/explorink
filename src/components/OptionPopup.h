@@ -28,6 +28,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    resetRowChrome();
   }
 
   void show(const char* titleStr, const char* const* options, int optionCount, int currentIndex,
@@ -45,6 +46,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    resetRowChrome();
   }
 
   void show(StrId titleId, const std::vector<std::string>& options, int currentIndex,
@@ -59,6 +61,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    resetRowChrome();
   }
 
   // Settings-style rows: label left, current value right in a highlight box on
@@ -79,7 +82,61 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    resetRowChrome();
   }
+
+  // Per-row actions, opt-in.
+  //
+  // The front Left and Right buttons are **not free** in a popup: they are
+  // aliases for scrolling (NavNext is side Down *or* front Right, NavPrevious is
+  // side Up *or* front Left -- MappedInputManager.cpp). So a popup that wants row
+  // actions does not gain buttons, it takes that pair away from scrolling:
+  // selection then moves on the screen's up/down pair and the screen's left/right
+  // pair acts on the selected row. Same split the map screen already teaches --
+  // one pair moves through something, the other does something to it.
+  //
+  // Everything here goes through the Screen* buttons and mapDirectionalLabels(),
+  // never raw Left/Right with mapLabels(): the physical left and right swap in
+  // INVERTED and LANDSCAPE_CCW, and a hint on the wrong button means the rider
+  // presses Delete because the label said Replace.
+  //
+  // Opt-in per popup: every existing popup keeps front-button scrolling, so
+  // nothing else changes. show() clears the actions, so a popup can never inherit
+  // the previous one's -- set them right after show().
+  //
+  // A row action does **not** close the popup and does not repaint: the callback
+  // owns what happens next, because the useful thing to do from one is usually to
+  // open a confirmation over the same popup object (show() replaces the content).
+  struct RowActions {
+    std::function<void(int)> onLeft;
+    std::function<void(int)> onRight;
+    // Hint text, already translated. Nullptr or empty draws no label.
+    const char* leftLabel = nullptr;
+    const char* rightLabel = nullptr;
+    // What CONFIRM says. Nullptr keeps tr(STR_SELECT).
+    const char* confirmLabel = nullptr;
+  };
+
+  void setRowActions(RowActions actions) {
+    rowActions = std::move(actions);
+    hasRowActions = true;
+  }
+
+  // The side buttons carry no slot in the four-box hint bar, so a popup that has
+  // taken the front pair has to say so somewhere or scrolling looks broken. Both
+  // glyphs are drawn rotated by the theme (BaseTheme::drawSideButtonHints), and
+  // the boxes sit where the physical side buttons are -- which is the screen's
+  // up/down pair on a portrait-rendered screen, the only way the map runs.
+  //
+  // Drawn outside the dialog, so an owner that snapshots the pixels under the
+  // popup (MapActivity's menu backdrop) must cover these too when it restores.
+  void setSideHints(const char* top, const char* bottom, int fontId = SMALL_FONT_ID) {
+    sideHintTop = top;
+    sideHintBottom = bottom;
+    sideHintFontId = fontId;
+  }
+
+  bool hasSideHints() const { return sideHintTop != nullptr || sideHintBottom != nullptr; }
 
   bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
     if (!active) return false;
@@ -120,11 +177,35 @@ class OptionPopup {
       return true;
     }
 
-    if (input.wasPressed(MappedInputManager::Button::NavPrevious)) {
+    if (hasRowActions) {
+      // Selection on the screen's up/down pair only -- the front pair is taken.
+      if (input.wasPressed(MappedInputManager::Button::ScreenUp)) {
+        moveSelection(-1, input.getRenderer());
+        requestUpdate();
+        return true;
+      }
+      if (input.wasPressed(MappedInputManager::Button::ScreenDown)) {
+        moveSelection(1, input.getRenderer());
+        requestUpdate();
+        return true;
+      }
+      // The callback runs last and nothing here touches this object afterwards:
+      // it is allowed to show() something else over the top.
+      if (input.wasPressed(MappedInputManager::Button::ScreenLeft) && rowActions.onLeft) {
+        rowActions.onLeft(selectedIndex);
+        return true;
+      }
+      if (input.wasPressed(MappedInputManager::Button::ScreenRight) && rowActions.onRight) {
+        rowActions.onRight(selectedIndex);
+        return true;
+      }
+    }
+
+    if (!hasRowActions && input.wasPressed(MappedInputManager::Button::NavPrevious)) {
       moveSelection(-1, input.getRenderer());
       requestUpdate();
       return true;
-    } else if (input.wasPressed(MappedInputManager::Button::NavNext)) {
+    } else if (!hasRowActions && input.wasPressed(MappedInputManager::Button::NavNext)) {
       moveSelection(1, input.getRenderer());
       requestUpdate();
       return true;
@@ -143,8 +224,23 @@ class OptionPopup {
 
   bool processRender(GfxRenderer& renderer, const MappedInputManager& input) const {
     if (!active) return false;
-    const auto popupLabels = input.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    GUI.drawButtonHints(renderer, popupLabels.btn1, popupLabels.btn2, popupLabels.btn3, popupLabels.btn4);
+    if (hasRowActions) {
+      // mapDirectionalLabels(), so each label lands on the button that performs
+      // it whatever the orientation does to left and right. Up/Down are passed
+      // as well rather than left blank: in a rotated orientation the screen's
+      // up/down pair *is* the front pair, and then they are the labels that
+      // belong in the hint bar.
+      const auto labels = input.mapDirectionalLabels(
+          tr(STR_BACK), rowActions.confirmLabel != nullptr ? rowActions.confirmLabel : tr(STR_SELECT),
+          rowActions.leftLabel != nullptr ? rowActions.leftLabel : "",
+          rowActions.rightLabel != nullptr ? rowActions.rightLabel : "", sideHintTop != nullptr ? sideHintTop : "",
+          sideHintBottom != nullptr ? sideHintBottom : "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    } else {
+      const auto popupLabels = input.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, popupLabels.btn1, popupLabels.btn2, popupLabels.btn3, popupLabels.btn4);
+    }
+    if (hasSideHints()) GUI.drawSideButtonHints(renderer, sideHintTop, sideHintBottom, sideHintFontId);
     render(renderer);
     renderer.displayBuffer();
     return true;
@@ -243,6 +339,18 @@ class OptionPopup {
     layoutValid = false;
   }
 
+  // Every show() drops the previous popup's row actions and side hints. A menu
+  // and a pin list share one OptionPopup on the map screen, and a menu that
+  // inherited the list's buttons would delete a pin from a row that means
+  // something else entirely.
+  void resetRowChrome() {
+    hasRowActions = false;
+    rowActions = RowActions{};
+    sideHintTop = nullptr;
+    sideHintBottom = nullptr;
+    sideHintFontId = SMALL_FONT_ID;
+  }
+
   static bool contains(const Rect& rect, const int x, const int y) {
     return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
   }
@@ -261,6 +369,11 @@ class OptionPopup {
   // is not known until a renderer is in hand.
   mutable int scrollTop = 0;
   std::function<void(int)> onSelectCallback;
+  bool hasRowActions = false;
+  RowActions rowActions;
+  const char* sideHintTop = nullptr;
+  const char* sideHintBottom = nullptr;
+  int sideHintFontId = SMALL_FONT_ID;
   mutable Layout layout;
   mutable bool layoutValid = false;
 };

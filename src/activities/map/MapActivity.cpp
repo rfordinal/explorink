@@ -2340,9 +2340,16 @@ bool MapActivity::restoreMenuBackdrop() {
   // of the panel so the one window covers both.
   drawMapButtonHints();
   const int x = 0;
-  const int y = rect.y;
+  // A popup with row actions also drew the two side-hint boxes, and those sit
+  // outside the dialog -- on the right edge, at the theme's own y. The backdrop
+  // does not cover them, so the window has to: drawMapButtonHints() has just
+  // repainted this screen's own hints over them (drawSideButtonHints() lays a
+  // white backing first), and without the wider window the panel would keep
+  // showing the popup's arrows next to a map that no longer has a popup.
+  const int y = popupDrewSideHints_ ? 0 : rect.y;
+  popupDrewSideHints_ = false;
   const int w = renderer.getScreenWidth();
-  const int h = renderer.getScreenHeight() - rect.y;
+  const int h = renderer.getScreenHeight() - y;
   if (!renderer.displayBufferWindow(x, y, w, h)) {
     LOG_ERR(kLogTag, "menu close window rejected: %d,%d %dx%d", x, y, w, h);
     return false;

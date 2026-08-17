@@ -783,6 +783,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
 
   // CONFIRM's menu (Refresh / Mode / Observation mode).
   OptionPopup optionPopup_;
+  // Set while an open popup has drawn the two side-hint boxes (a Pins list, which
+  // takes the front pair for its row actions). They land outside the dialog, so
+  // the close has to refresh a taller window than the backdrop rect
+  // (restoreMenuBackdrop()).
+  bool popupDrewSideHints_ = false;
   // The map under the open menu (captureMenuBackdrop()). Null whenever the menu
   // is closed or the capture failed.
   std::unique_ptr<uint8_t[]> menuBackdrop_;
