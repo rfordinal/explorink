@@ -132,6 +132,30 @@ regular 24 px** (minor): sans-serif, proportional, both weights present, and the
 only faces in flash small enough for a compact label. The smallest Noto Sans
 built in is a 34 px line -- too tall to fit several names on a 480x800 screen.
 
+### The NotoSans rows of kLabelFontIds do not exist in any shipped build
+
+`GfxRendererCanvas::kLabelFontIds` (`GfxRendererCanvas.h:164-166`) lists seven
+faces, but `[base] build_flags` sets `-DOMIT_FONTS=1` for **every** environment
+(`platformio.ini:38`), and `main.cpp:286-295` inserts the four NotoSans faces
+only inside `#ifndef OMIT_FONTS`. So on the device three faces exist:
+`notosans_8` (SMALL), `ubuntu_10`, `ubuntu_12`.
+
+Two consequences, both measured on hardware 2026-08-14:
+
+- Every label measure/draw probes the four missing ids, and each probe logs
+  `LOG_ERR("GFX", "Font %d not found")` (`GfxRenderer.cpp:1836`). One map
+  session of about ten minutes produced 1016 such lines -- enough to bury
+  anything else on the serial console.
+- `fontIdForSize()` cannot return a face taller than `ubuntu_12`'s 29 px,
+  whatever the style asks for. The host preview *can*: `PreviewFont`'s `kFaces`
+  (`test/map_preview/PreviewFont.cpp:135-140`) carries all seven. So the "a
+  label that fits in the preview fits on the panel" claim above holds only up
+  to 29 px; above that the preview draws bigger text than the device can.
+
+Neither is a new regression -- it has been true since place labels landed. The
+fix is one line either way (drop the NotoSans rows under `OMIT_FONTS`, or stop
+logging a missing font at ERR when the caller is probing), and it is not done.
+
 ### Why 29/24 with a 2 px halo
 
 Judged in the host preview on two scenes (rung 6 over Modra/Pezinok, 108 places

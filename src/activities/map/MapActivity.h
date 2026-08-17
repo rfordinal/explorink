@@ -55,7 +55,7 @@
 //
 // Follow mode (the default):
 //
-// | UP / DOWN      | zoom ladder, 5 rungs, 1..20 m/px                     |
+// | UP / DOWN      | zoom ladder, 7 rungs, 1..45 m/px                     |
 // | LEFT / RIGHT   | marker-height ladder, 5 rungs, look-ahead 50..95 %   |
 // | CONFIRM        | open the map menu: Refresh, Mode, zoom/rotation/     |
 // |                | heading mode toggles (ride/hike/cycle)               |

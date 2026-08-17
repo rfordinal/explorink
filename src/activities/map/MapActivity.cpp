@@ -1976,8 +1976,8 @@ void MapActivity::handleButtons() {
       // One zoom step per hold, not a repeat. Keeping the button down does
       // nothing more -- the step arms a redraw that blocks loop() for the
       // better part of two seconds anyway (armRedraw()), so a repeat rate
-      // would be a fiction, and the ladder is only five rungs wide
-      // (MapViewport::kZoomStepCount).
+      // would be a fiction, and the ladder is seven rungs wide
+      // (MapViewport::kZoomStepCount, 1..45 m/px).
       if (!observeHoldZoomed_ && mappedInput.getHeldTime() >= kObserveZoomHoldMs) {
         if (mappedInput.isPressed(MappedInputManager::Button::Up)) {
           observeHoldZoomed_ = true;

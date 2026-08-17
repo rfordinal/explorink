@@ -74,7 +74,14 @@ look at, not a GPS fix, and a marker glyph on it would claim otherwise.
 
 ## Zoom while observing: a hold, plus two menu rows
 
-Added 2026-08-13. **Built clean, not yet on hardware.**
+Added 2026-08-13, **flashed and verified on the panel 2026-08-14.** Serial log
+of that pass: four holds produced `observe: hold zoom in` / `... zoom out`
+followed by the matching `zoom step` line, with no `pan: half-screen step`
+between them -- the release ending a hold did not pan. Both menu rows stepped
+the ladder too (`zoom step` with no `observe:` line before it). 600 ms felt
+right to the maintainer in that sitting: one person, one session, no misfires
+seen. Not a measurement of the threshold -- what would settle it is a gloved
+hand on a moving bike, which is where an accidental zoom would show up.
 
 Observe took all four direction buttons for the pan, which left the zoom
 ladder unreachable while looking around -- and the map screen has no spare
@@ -91,8 +98,8 @@ Three consequences, all deliberate:
   half on release is a difference the hand feels.
 - **One rung per hold, no repeat.** The step arms a redraw that blocks
   `loop()` for the better part of two seconds, so a repeat rate would be
-  fiction, and the ladder is five rungs wide
-  (`MapViewport::kZoomStepCount`).
+  fiction, and the ladder is seven rungs wide
+  (`MapViewport::kZoomStepCount`, 1..45 m/px).
 - **The release that ends a hold-zoom does not also pan.**
   `observeHoldZoomed_` (`MapActivity.h:496`) latches that, cleared by the
   Up/Down release it belongs to, and defensively cleared when neither button
