@@ -283,6 +283,18 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // IS a Settings-screen toggle, so the generic toJson/fromJson loop carries
   // it and nothing here has to.
   uint8_t mapAutoSyncTiles = 0;
+  // Edge markers for pins outside the viewport: a direction arrow and the
+  // distance, drawn where the bearing ray leaves the screen
+  // (MapActivity::drawPins(), ../docs/pins.md). Pins *inside* the viewport are
+  // always drawn and this does not touch them.
+  //
+  // **Off by default, and the default does not move until it is measured on the
+  // panel** (../docs/pins-plan.md, decision 6). An edge marker's content changes
+  // with every fix, so the risk is e-ink drawing at the screen edges all ride:
+  // ghosting, battery, a visible flicker per fix. What is built today only draws
+  // them as part of a frame that was going to be rendered anyway, which is why
+  // this can ship at all before that measurement exists.
+  uint8_t mapPinsOffscreen = 0;
   // The GPS/tile/BLE readout in the map's top-left corner. Off by default: it
   // is diagnostic text, not something a rider needs on screen. Toggled from
   // the Settings screen (category Map) or live from the map's own menu

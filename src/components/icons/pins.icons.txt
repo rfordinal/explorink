@@ -1,0 +1,8 @@
+# Pin type glyphs, drawn on the map and in the Pins lists.
+# One line per catalogue row (src/activities/map/PinCatalog.h); #1-#5 share one.
+pin_base    = house
+pin_parking = car
+pin_dest    = flag
+pin_meet    = users
+pin_camp    = tent
+pin_custom  = hash

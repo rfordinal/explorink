@@ -30,6 +30,7 @@
 #include "MissingTilesConsoleSource.h"
 #include "MissingTilesStore.h"
 #include "PinGeo.h"
+#include "PinIcons.h"
 #include "PinLabels.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -2798,6 +2799,221 @@ void MapActivity::deletePin(size_t slot) {
   showPinNotice(notice);
 }
 
+namespace {
+
+// Liang-Barsky, cut down to what an edge marker needs: where the segment from
+// `ox,oy` to `px,py` leaves the rectangle. False when the segment never enters it
+// at all, which happens with the rider off screen (Observe mode panned away) and
+// the pin on the far side.
+bool clipExitPoint(double ox, double oy, double px, double py, double left, double top, double right, double bottom,
+                   double& outX, double& outY) {
+  double t0 = 0.0;
+  double t1 = 1.0;
+  const double dx = px - ox;
+  const double dy = py - oy;
+  const double p[4] = {-dx, dx, -dy, dy};
+  const double q[4] = {ox - left, right - ox, oy - top, bottom - oy};
+  for (int i = 0; i < 4; ++i) {
+    if (p[i] == 0.0) {
+      if (q[i] < 0.0) return false;  // parallel and outside this edge
+      continue;
+    }
+    const double t = q[i] / p[i];
+    if (p[i] < 0.0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+  }
+  outX = ox + dx * t1;
+  outY = oy + dy * t1;
+  return true;
+}
+
+}  // namespace
+
+void MapActivity::drawPins() {
+  if (pins_.pinCount() == 0) return;
+
+  // Straight onto GfxRenderer, not through IMapCanvas: a pin is not map data, it
+  // is the rider's own mark, and MapRenderer knows nothing about it. That is also
+  // why the webapp's firmware preview panel cannot show pins (parent
+  // docs/device-preview.md) -- say so there rather than let someone chase it.
+  //
+  // Above the route rather than under it, which the plan had the other way round:
+  // the route is drawn inside MapRenderer::render() as a second source, and pins
+  // deliberately are not in that renderer at all. The glyph is small and its halo
+  // is tight, so what it covers of a line is a few pixels at the pin's own place.
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  int drawn = 0;
+
+  // Off-screen markers, when the rider turned them on. Collected first and drawn
+  // after the loop, so overlapping ones can merge into a single glyph with a
+  // count instead of stacking into an unreadable pile.
+  const bool wantEdges = SETTINGS.mapPinsOffscreen != 0 && hasReceivedAny_;
+  PinEdgeMark edges[kPinEdgeMax];
+  size_t edgeCount = 0;
+  size_t edgesDropped = 0;
+  // Where the bearing is measured from: the rider, projected through the frame on
+  // screen. Not the screen centre -- the marker sits low on the panel by design
+  // (the marker ladder), so a centre-based ray points at the wrong edge.
+  double riderX = 0.0;
+  double riderY = 0.0;
+  if (wantEdges) {
+    double mercX = 0.0;
+    double mercY = 0.0;
+    MapProjection::lonLatToMerc(static_cast<double>(riderLatE7()) / 1e7, static_cast<double>(riderLonE7()) / 1e7, mercX,
+                                mercY);
+    int32_t rx = 0;
+    int32_t ry = 0;
+    proj_.projectMercWide(mercX, mercY, rx, ry);
+    riderX = static_cast<double>(rx);
+    riderY = static_cast<double>(ry);
+  }
+
+  for (size_t slot = 0; slot < PinStore::kSlotCount; ++slot) {
+    const PinEntry& entry = pins_.store().at(slot);
+    if (!entry.present) continue;
+
+    double mercX = 0.0;
+    double mercY = 0.0;
+    MapProjection::lonLatToMerc(static_cast<double>(entry.latE7) / 1e7, static_cast<double>(entry.lonE7) / 1e7, mercX,
+                                mercY);
+    // Wide projection: a pin can be a hundred kilometres away, which overflows the
+    // int16_t path and would draw a glyph in the middle of the map
+    // (MapProjection::projectMercWide).
+    int32_t sx = 0;
+    int32_t sy = 0;
+    proj_.projectMercWide(mercX, mercY, sx, sy);
+
+    const int half = kPinIconPx / 2 + kPinHaloPad;
+    if (sx < -half || sy < -half || sx > screenW + half || sy > screenH + half) {
+      if (!wantEdges) continue;
+      double ex = 0.0;
+      double ey = 0.0;
+      // Inset by the marker's own size, so the arrow and its distance stay fully
+      // on the panel instead of half off the edge.
+      const double inset = kPinEdgeMargin;
+      if (!clipExitPoint(riderX, riderY, static_cast<double>(sx), static_cast<double>(sy), inset, inset,
+                         screenW - inset, screenH - inset, ex, ey)) {
+        continue;
+      }
+      if (edgeCount >= kPinEdgeMax) {
+        ++edgesDropped;
+        continue;
+      }
+      PinEdgeMark& mark = edges[edgeCount++];
+      mark.x = static_cast<int16_t>(ex);
+      mark.y = static_cast<int16_t>(ey);
+      // Unit direction times 64, not the raw difference: a pin 100 km away is
+      // millions of pixels off and would overflow the int16 the mark keeps.
+      const double vx = static_cast<double>(sx) - riderX;
+      const double vy = static_cast<double>(sy) - riderY;
+      const double len = sqrt(vx * vx + vy * vy);
+      mark.dirX = len > 0.0 ? static_cast<int16_t>(lround(vx / len * 64.0)) : 0;
+      mark.dirY = len > 0.0 ? static_cast<int16_t>(lround(vy / len * 64.0)) : 0;
+      mark.metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), entry.latE7, entry.lonE7);
+      mark.count = 1;
+      continue;
+    }
+
+    const int boxX = static_cast<int>(sx) - half;
+    const int boxY = static_cast<int>(sy) - half;
+    const int box = kPinIconPx + kPinHaloPad * 2;
+    // Opaque halo first: the glyph's own bitmap leaves its background alone (bit 1
+    // is transparent, Icon.h), so without this it lands unreadable on top of road
+    // lines and a landuse hatch. Same reasoning as the compass halo.
+    renderer.fillRect(boxX, boxY, box, box, false);
+    renderer.drawIcon(pinIcon(entry.catalogIndex).bits, boxX + kPinHaloPad, boxY + kPinHaloPad, kPinIconPx);
+    ++drawn;
+  }
+
+  // Crowding: two pins in nearly the same direction leave the screen at nearly
+  // the same point, and two arrows on top of each other read as one broken one.
+  // Merge them into the nearest one's arrow with a count.
+  for (size_t i = 0; i < edgeCount; ++i) {
+    if (edges[i].count == 0) continue;
+    for (size_t j = i + 1; j < edgeCount; ++j) {
+      if (edges[j].count == 0) continue;
+      const int dx = edges[i].x - edges[j].x;
+      const int dy = edges[i].y - edges[j].y;
+      if (dx * dx + dy * dy > kPinEdgeMergePx * kPinEdgeMergePx) continue;
+      // The nearer pin's distance survives: "the closest of these is 2.4 km" is
+      // the useful half of a merged marker.
+      if (edges[j].metres < edges[i].metres) {
+        edges[i].metres = edges[j].metres;
+        edges[i].dirX = edges[j].dirX;
+        edges[i].dirY = edges[j].dirY;
+      }
+      edges[i].count = static_cast<uint8_t>(edges[i].count + edges[j].count);
+      edges[j].count = 0;
+    }
+  }
+
+  for (size_t i = 0; i < edgeCount; ++i) {
+    if (edges[i].count == 0) continue;
+    drawPinEdgeMark(edges[i]);
+    ++drawn;
+  }
+  // Never a silent cap: a marker that was not drawn is a pin the rider cannot
+  // see, which is exactly the failure the feature is about.
+  if (edgesDropped > 0)
+    LOG_ERR(kLogTag, "%u off-screen pin marker(s) dropped: more than %d", static_cast<unsigned>(edgesDropped),
+            kPinEdgeMax);
+  if (drawn > 0) LOG_DBG(kLogTag, "%d pin mark(s) drawn", drawn);
+}
+
+void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
+  // An arrow, not a glyph: it points at a live bearing, which is the documented
+  // exception to the Lucide rule (parent CLAUDE.md, Icons) -- a static bitmap
+  // cannot represent a value that changes with the rider's position.
+  const double dx = static_cast<double>(mark.dirX) / 64.0;
+  const double dy = static_cast<double>(mark.dirY) / 64.0;
+  const double tipX = mark.x + dx * kPinArrowPx;
+  const double tipY = mark.y + dy * kPinArrowPx;
+  // Perpendicular, for the two base corners.
+  const double bx = mark.x - dx * kPinArrowPx * 0.4;
+  const double by = mark.y - dy * kPinArrowPx * 0.4;
+  const double px = -dy * kPinArrowPx * 0.55;
+  const double py = dx * kPinArrowPx * 0.55;
+
+  char distance[16];
+  PinGeo::formatDistance(mark.metres, distance, sizeof(distance));
+  char text[24];
+  if (mark.count > 1) {
+    // "2.4 km x3" -- how many pins are behind this arrow, and how far the nearest
+    // one is. Plain literals, no tr(): a multiplication sign is not language
+    // dependent, same call as the map's "+"/"--" side hints.
+    snprintf(text, sizeof(text), "%s x%u", distance, static_cast<unsigned>(mark.count));
+  } else {
+    snprintf(text, sizeof(text), "%s", distance);
+  }
+
+  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text);
+  const int textHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  // Text on the inside of the arrow, clamped so it cannot fall off the panel.
+  int textX = static_cast<int>(mark.x - dx * kPinArrowPx * 1.4) - textWidth / 2;
+  int textY = static_cast<int>(mark.y - dy * kPinArrowPx * 1.4) - textHeight / 2;
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  if (textX < 2) textX = 2;
+  if (textY < 2) textY = 2;
+  if (textX + textWidth > screenW - 2) textX = screenW - 2 - textWidth;
+  if (textY + textHeight > screenH - 2) textY = screenH - 2 - textHeight;
+
+  // Opaque backing under both, for the same reason the in-viewport glyph gets a
+  // halo: this lands on road lines, not on margin.
+  renderer.fillRect(textX - 2, textY - 2, textWidth + 4, textHeight + 4, false);
+  renderer.drawText(UI_10_FONT_ID, textX, textY, text, true);
+
+  const int xs[3] = {static_cast<int>(tipX), static_cast<int>(bx + px), static_cast<int>(bx - px)};
+  const int ys[3] = {static_cast<int>(tipY), static_cast<int>(by + py), static_cast<int>(by - py)};
+  renderer.fillPolygon(xs, ys, 3, true);
+}
+
 void MapActivity::showPinOnMap(size_t slot) {
   dropMenuBackdrop();
   if (slot >= PinStore::kSlotCount) return;
@@ -3465,6 +3681,9 @@ void MapActivity::renderRouteOverview() {
   view.maxLabels = MapViewport::kZoomLadder[fit.zoomStep].maxLabels;
 
   const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, {}, &nearestPlaces_);
+  // Pins on the overview too: "where is the car relative to this whole route" is
+  // exactly the question the overview is for.
+  drawPins();
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -3737,6 +3956,10 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     renderer.clearScreen();
     missing = drawMapLayers(range, canvas, view, &timing, bad, &nearestPlaces_);
   }
+
+  // The rider's own marks, over the map and under everything below: the marker,
+  // the compass, the readout and the hints all still land on top of them.
+  drawPins();
 
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's

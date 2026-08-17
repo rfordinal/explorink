@@ -504,6 +504,38 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // rather than adding a fourth kind of frame, which also means the return path
   // already exists -- the menu's "Follow mode" row (docs/map-observation-mode.md).
   void showPinOnMap(size_t slot);
+  // Every stored pin that lands inside the viewport, drawn straight onto
+  // GfxRenderer in the same composition pass as the compass and the marker -- not
+  // through MapRenderer, which knows nothing about pins. Off-screen pins are
+  // skipped here; their edge indicators are phase 6.
+  void drawPins();
+  static constexpr int kPinIconPx = 16;
+  // White ring around the glyph, so it stays readable on road lines and hatch.
+  static constexpr int kPinHaloPad = 2;
+
+  // One edge marker for a pin outside the viewport: where the bearing ray leaves
+  // the screen, which way it points (unit vector times 64 -- the raw pixel
+  // difference can be millions), how far the pin is, and how many pins merged
+  // into this one arrow.
+  struct PinEdgeMark {
+    int16_t x = 0;
+    int16_t y = 0;
+    int16_t dirX = 0;
+    int16_t dirY = 0;
+    uint32_t metres = 0;
+    uint8_t count = 0;  // 0 means merged into another mark
+  };
+  void drawPinEdgeMark(const PinEdgeMark& mark);
+  // Markers one frame will draw. A cap, because the array is a stack local and the
+  // Resource Protocol keeps a frame's locals under 256 bytes -- eight is 128 of
+  // them. Anything past it is logged, never dropped silently.
+  static constexpr int kPinEdgeMax = 8;
+  // Keeps an arrow and its distance fully on the panel instead of half off it.
+  static constexpr int kPinEdgeMargin = 14;
+  // Two markers closer than this merge into one with a count: two arrows on top
+  // of each other read as one broken arrow.
+  static constexpr int kPinEdgeMergePx = 28;
+  static constexpr int kPinArrowPx = 11;
   // Which store slot the nth row of the open Pins list stands for. Recomputed
   // rather than captured: the popup is modal, so the store cannot change under
   // it, and a captured table would be one more thing to keep in step.
