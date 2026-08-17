@@ -227,6 +227,10 @@ class BaseTheme {
   // hint font carries at readable size) passes a different one explicitly.
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
                                    int fontId = SMALL_FONT_ID) const;
+  // The four-box hint band along the bottom. Empty on a touch panel, where
+  // drawButtonHints() draws nothing. Same purpose as sideButtonHintsRect(): a
+  // caller placing something near an edge has to know what is already there.
+  Rect buttonHintsRect(const GfxRenderer& renderer) const;
   // What those boxes cover, for a caller that repaints part of the panel and has
   // to refresh exactly the region they changed. Empty on a touch panel, where
   // drawSideButtonHints() draws nothing.

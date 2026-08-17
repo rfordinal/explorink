@@ -104,6 +104,45 @@ Precedent for the technique in the same file: the marker patch
 (`saveMarkerPatch()`), which saves and restores the box under the position
 marker so a fix can move it without redrawing the map.
 
+
+### A whole-panel window refresh can abort the device
+
+**Measured, the hard way, 2026-08-17.** The close path used to widen its refresh
+to the whole panel when the popup had drawn side-hint boxes (they sit outside the
+dialog, so the backdrop does not cover them). Opening the Pins list then killed the
+device:
+
+```
+MapActivity::restoreMenuBackdrop() -> GfxRenderer::displayBufferWindow()
+  -> HalDisplay::displayWindow -> Ssd1677Driver::displayWindow
+  -> std::vector<uint8_t>::_M_create_storage -> operator new
+  -> bad_alloc -> __terminate -> abort()
+```
+
+`Ssd1677Driver::displayWindow()` allocates a buffer sized by the window. A
+480x800 window does not fit a map screen's heap: the crash report has 38,292
+bytes free and a 34,804-byte largest block, and with `-fno-exceptions` a failed
+`operator new` aborts rather than returning null (`CLAUDE.md`, Resource
+Protocol 9).
+
+So: **never refresh the whole panel to fix up something small.** The close now
+refreshes the dialog's own window and, only when it has to, a second small window
+over the side-hint strip. That strip's geometry comes from
+`BaseTheme::sideButtonHintsRect()` -- added for this, because the alternative is
+copying the theme's private constants and letting them drift.
+
+The same ceiling applies to anything else that reaches for a big window: two small
+refreshes are cheap, one big one can be fatal.
+
+### A row callback must not open a popup
+
+`OptionPopup::handleInput()` invokes the row callback, so a `show()` from inside
+that callback reassigns the very `std::function` that is executing -- it destroys
+the running callable under its own call. The Pins rows record what they want
+(`MapActivity::PinPopup`) and `loop()` opens it one iteration later.
+
+This is also where the double render went: the opener no longer paints, and
+`handleInput()`'s own `requestUpdate()` does it once.
 ## The dialog has a ceiling, and the list scrolls through it
 
 `BaseTheme::optionPopupGeometry()` decides how many rows are on screen at once

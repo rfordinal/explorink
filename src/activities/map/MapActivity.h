@@ -544,7 +544,9 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // one family, and big enough to find on a panel full of building outlines --
   // both asked for on hardware 2026-08-17, where a bare 16 px glyph could not be
   // spotted and sat under the marker when the pin was at the rider's own position.
-  void drawPinBalloon(int tipX, int tipY, size_t catalogIndex);
+  void drawPinBalloon(int tipX, int tipY, size_t catalogIndex, uint8_t step = 0);
+  // Which baked rotation of the shape points closest to a screen-space direction.
+  static uint8_t pinShapeStepFor(double dx, double dy);
   // Sized on the panel, not on a laptop: a 16 px glyph was legible and still hard
   // to pick out of a field of building outlines, so this went to a real pin shape
   // at 39x47 with the glyph inside its head (2026-08-17). Against the position
@@ -565,6 +567,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
     uint8_t count = 0;         // 0 means merged into another mark
   };
   void drawPinEdgeMark(const PinEdgeMark& mark);
+  // Where an edge marker and its label may land: the panel minus everything this
+  // screen already draws over the map -- the button bar, the side-hint boxes and the
+  // compass. Empty (zero width or height) when there is nothing left, which is a
+  // refusal to draw rather than a marker hidden under furniture.
+  Rect pinEdgeArea() const;
   // Markers one frame will draw. A cap, because the array is a stack local and the
   // Resource Protocol keeps a frame's locals under 256 bytes -- eight is 128 of
   // them. Anything past it is logged, never dropped silently.
@@ -574,7 +581,6 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Two markers closer than this merge into one with a count: two arrows on top
   // of each other read as one broken arrow.
   static constexpr int kPinEdgeMergePx = 52;  // a whole pin wide, since a marker is one now
-  static constexpr int kPinArrowPx = 11;
   // Which store slot the nth row of the open Pins list stands for. Recomputed
   // rather than captured: the popup is modal, so the store cannot change under
   // it, and a captured table would be one more thing to keep in step.

@@ -85,6 +85,23 @@ def text_grid(text, size):
     return out
 
 
+def rotate_about(img, angle_deg, pivot):
+    """Rotate a greyscale image about `pivot`, expanding the canvas to hold it.
+
+    Returns (image, new_pivot). Done at the oversampled size and downscaled after,
+    so the outline survives: a nearest-neighbour rotation of a 3 px stroke at 1:1
+    breaks it into dashes.
+    """
+    w, h = img.size
+    px, py = pivot
+    # Pad so the rotation cannot clip, with the pivot at the centre of the padding.
+    reach = int(max(w, h) * 1.5) + 4
+    canvas = Image.new("L", (reach * 2, reach * 2), 255)
+    canvas.paste(img, (reach - px, reach - py))
+    rotated = canvas.rotate(-angle_deg, resample=Image.BICUBIC, center=(reach, reach), fillcolor=255)
+    return rotated, (reach, reach)
+
+
 def dilate(grid, radius):
     """Grow a grid by `radius` pixels in every direction (a chebyshev dilation)."""
     if radius <= 0:
@@ -241,38 +258,79 @@ def main():
         default=1,
         help="white pixels painted outside the shape, so its outline never touches a map line",
     )
+    ap.add_argument(
+        "--steps",
+        type=int,
+        default=16,
+        help="baked rotations of the shape, clockwise from point-down; 16 matches MapHeading's steps",
+    )
+    ap.add_argument("--oversample", type=int, default=8, help="rasterise at this multiple, then rotate and shrink")
     args = ap.parse_args()
 
-    # Rasterise square and crop: the shape does not fill its own viewBox, and the
-    # height that matters is the shape's, not the canvas's.
-    square = args.height * 3
-    ink = crop_to_ink(ink_grid(rasterize(SHAPE_SVG, square, square)))
-    scale = args.height / len(ink)
-    ink = crop_to_ink(
-        ink_grid(rasterize(SHAPE_SVG, max(1, round(square * scale)), max(1, round(square * scale))))
-    )
-    # Room for the halo on every side, so the dilated mask is not clipped.
-    pad = max(0, args.halo)
-    if pad:
-        blank = [False] * (len(ink[0]) + pad * 2)
-        ink = (
-            [blank[:] for _ in range(pad)]
-            + [[False] * pad + row + [False] * pad for row in ink]
-            + [blank[:] for _ in range(pad)]
-        )
-    height, width = len(ink), len(ink[0])
-    # The halo is what separates the pin from the map: the shape's own outline is
-    # black and lands straight on top of road lines otherwise. Same job the position
-    # marker's white halo does (MapActivity::drawPositionMarker()).
-    mask = dilate(silhouette(ink), pad)
-    cx, cy, clear = head_circle(ink, mask)
+    # Rasterise oversampled, once. Every rotation comes off this one image, so the
+    # outline stays smooth: rotating a 1bpp bitmap directly turns a 3 px stroke into
+    # dashes, and rotating the vector per step would need a rasteriser call per step.
+    big = args.height * args.oversample
+    # The shape does not fill its own viewBox, so render square and crop to the ink.
+    square = rasterize(SHAPE_SVG, big * 3 // 2, big * 3 // 2)
+    ink_big = crop_to_ink(ink_grid(square))
+    # Rebuild an image from the cropped grid: PIL is what rotates.
+    hb, wb = len(ink_big), len(ink_big[0])
+    shape_img = Image.new("L", (wb, hb), 255)
+    for y in range(hb):
+        for x in range(wb):
+            if ink_big[y][x]:
+                shape_img.putpixel((x, y), 0)
+    # The point is the bottom of the shape, on its centre line.
+    tip_big = (wb // 2, hb - 1)
 
-    glyph = args.glyph
-    if glyph == 0:
-        # The largest even size whose diagonal still fits the clear circle, so a
-        # corner of the glyph cannot touch the outline.
-        glyph = int((clear * 2) / (2 ** 0.5)) & ~1
-    print(f"pin {width}x{height}, head centre ({cx},{cy}), clear radius {clear}, glyph {glyph}px")
+    def bake(angle_deg):
+        """One rotation: (mask grid, ink grid, tip xy, head xy)."""
+        if angle_deg == 0:
+            img, pivot = shape_img, tip_big
+        else:
+            img, pivot = rotate_about(shape_img, angle_deg, tip_big)
+        scale = args.height / hb
+        small = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+        pivot_small = (pivot[0] * scale, pivot[1] * scale)
+        grid = ink_grid(small)
+        # Crop to the ink and keep the pivot in the cropped frame's coordinates.
+        ys = [y for y in range(len(grid)) if any(grid[y])]
+        xs = [x for x in range(len(grid[0])) if any(row[x] for row in grid)]
+        grid = [row[xs[0] : xs[-1] + 1] for row in grid[ys[0] : ys[-1] + 1]]
+        tip = (pivot_small[0] - xs[0], pivot_small[1] - ys[0])
+        # Room for the halo on every side, so the dilated mask is not clipped.
+        pad = max(0, args.halo)
+        if pad:
+            blank = [False] * (len(grid[0]) + pad * 2)
+            grid = (
+                [blank[:] for _ in range(pad)]
+                + [[False] * pad + row + [False] * pad for row in grid]
+                + [blank[:] for _ in range(pad)]
+            )
+            tip = (tip[0] + pad, tip[1] + pad)
+        # The halo is what separates the pin from the map: the shape's own outline is
+        # black and lands straight on top of road lines otherwise. Same job the
+        # position marker's white halo does (MapActivity::drawPositionMarker()).
+        mask = dilate(silhouette(grid), pad)
+        hx, hy, clear = head_circle(grid, mask)
+        return mask, grid, tip, (hx, hy), clear
+
+    frames = []
+    clear0 = 0
+    for step in range(args.steps):
+        angle = 360.0 * step / args.steps
+        mask, ink, tip, head, clear = bake(angle)
+        if step == 0:
+            clear0 = clear
+        frames.append((mask, ink, tip, head))
+        print(
+            f"step {step:2d} ({angle:5.1f} deg): {len(ink[0])}x{len(ink)}, "
+            f"tip ({tip[0]:.1f},{tip[1]:.1f}), head {head}"
+        )
+
+    glyph = args.glyph or (int((clear0 * 2) / (2 ** 0.5)) & ~1)
+    print(f"glyph {glyph}px, head clear radius {clear0} upright")
 
     lines = [
         "#pragma once",
@@ -280,43 +338,61 @@ def main():
         "#include <cstdint>",
         "",
         "// Generated by scripts/gen_pin_icons.py from src/components/icons/pin-shape.svg",
-        "// plus the Lucide glyphs in src/components/icons/pins.icons.txt. Do not edit.",
+        "// plus the glyphs in src/components/icons/pins.icons.txt. Do not edit.",
         "//",
-        "// Two arrays per pin, both 1bpp MSB-first with bit 0 = draw:",
-        "//   kPinShapeMaskBits -- the silhouette, painted white first so the map does",
-        "//                        not show through the head",
-        "//   kPinShape<Alias>Bits -- the outline with the type glyph inside it",
+        "// One frame per rotation of the *shape*, clockwise from point-down. The glyph is",
+        "// NOT rotated with it -- a numeral or a P has to stay readable -- so each frame",
+        "// carries where its head's centre ended up and the device draws the glyph there,",
+        "// upright.",
         "//",
-        "// The anchor is the bottom centre: the tip of the tail is the coordinate.",
+        "// Every array is 1bpp MSB-first with bit 0 = draw, stride (w + 7) / 8:",
+        "//   mask -- the silhouette plus its halo, painted white first so neither the map",
+        "//           nor a road line shows through the pin",
+        "//   ink  -- the outline",
+        "//",
+        "// `tipX`/`tipY` locate the point inside the frame: draw at (x - tipX, y - tipY)",
+        "// and the point lands exactly on the coordinate the pin means.",
         "",
-        f"inline constexpr int kPinShapeWidth = {width};",
-        f"inline constexpr int kPinShapeHeight = {height};",
+        f"inline constexpr int kPinShapeSteps = {args.steps};",
+        f"inline constexpr int kPinGlyphPx = {glyph};",
         "",
-        carray("kPinShapeMaskBits", pack(mask)),
+        "struct PinShapeFrame {",
+        "  const uint8_t* mask;",
+        "  const uint8_t* ink;",
+        "  int16_t w;",
+        "  int16_t h;",
+        "  int16_t tipX;",
+        "  int16_t tipY;",
+        "  int16_t headX;",
+        "  int16_t headY;",
+        "};",
         "",
     ]
 
-    for alias, lucide in parse_manifest(MANIFEST):
-        if lucide.startswith("digit:") or lucide.startswith("text:"):
-            gi = text_grid(lucide.split(":", 1)[1], glyph)
+    for step, (mask, ink, tip, head) in enumerate(frames):
+        lines.append(carray(f"kPinShapeMask{step}Bits", pack(mask)))
+        lines.append(carray(f"kPinShapeInk{step}Bits", pack(ink)))
+    lines.append("")
+    lines.append("inline constexpr PinShapeFrame kPinShapeFrames[kPinShapeSteps] = {")
+    for step, (mask, ink, tip, head) in enumerate(frames):
+        lines.append(
+            f"    {{kPinShapeMask{step}Bits, kPinShapeInk{step}Bits, {len(ink[0])}, {len(ink)}, "
+            f"{round(tip[0])}, {round(tip[1])}, {head[0]}, {head[1] + args.glyph_dy}}},"
+        )
+    lines.append("};")
+    lines.append("")
+
+    for alias, source in parse_manifest(MANIFEST):
+        if source.startswith("digit:") or source.startswith("text:"):
+            gi = text_grid(source.split(":", 1)[1], glyph)
         else:
-            svg = os.path.join(LUCIDE_DIR, lucide + ".svg")
+            svg = os.path.join(LUCIDE_DIR, source + ".svg")
             if not os.path.exists(svg):
                 sys.exit(f"ERROR: missing svg for '{alias}': {svg}")
             gi = ink_grid(rasterize(svg, glyph, glyph))
-        composed = [row[:] for row in ink]
-        # The head's geometric centre sits high to the eye: the tail draws the eye
-        # down, so a glyph centred on the measured centre reads as if it were
-        # floating at the top. 4 px down, judged on the panel twice (2026-08-17) --
-        # the default is what the committed header was generated with.
-        ox, oy = cx - glyph // 2, cy - glyph // 2 + args.glyph_dy
-        for y in range(glyph):
-            for x in range(glyph):
-                if gi[y][x] and 0 <= oy + y < height and 0 <= ox + x < width:
-                    composed[oy + y][ox + x] = True
         ident = "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]", alias) if part)
-        lines.append(f"// {alias}  (lucide: {lucide})")
-        lines.append(carray(f"kPinShape{ident}Bits", pack(composed)))
+        lines.append(f"// {alias}  ({source})")
+        lines.append(carray(f"kPinGlyph{ident}Bits", pack(gi)))
         lines.append("")
 
     open(OUT, "w").write("\n".join(lines))

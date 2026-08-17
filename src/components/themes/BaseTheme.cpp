@@ -200,6 +200,14 @@ constexpr int kSideHintX4TopY = 345;  // X4: both boxes stacked on the right
 constexpr int kSideHintX3Y = 155;     // X3: one box per side, higher up
 }  // namespace
 
+Rect BaseTheme::buttonHintsRect(const GfxRenderer& renderer) const {
+  if (gpio.hasTouch()) return Rect{0, 0, 0, 0};  // drawButtonHints() draws nothing on a touch panel
+  // Full width: the four boxes are one band as far as anything trying to stay out
+  // of their way is concerned. Height and offset are drawButtonHints()' own.
+  const int height = BaseMetrics::values.buttonHintsHeight;
+  return Rect{0, renderer.getScreenHeight() - height, renderer.getScreenWidth(), height};
+}
+
 Rect BaseTheme::sideButtonHintsRect(const GfxRenderer& renderer) const {
   const int screenWidth = renderer.getScreenWidth();
   if (gpio.hasTouch()) return Rect{0, 0, 0, 0};  // drawSideButtonHints() draws nothing on a touch panel

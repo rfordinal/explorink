@@ -311,97 +311,172 @@ The pin is not highlighted yet -- nothing draws a pin at all until phase 4.
 
 ## Drawing
 
-### In the viewport
-
 Drawn by `MapActivity::drawPins()`, straight onto `GfxRenderer`, in the same
 composition pass as the compass and the marker -- **not** by `MapRenderer`. So the
 webapp's firmware preview panel will never show pins (parent
 `docs/device-preview.md`); that is by design, not a bug to chase.
 
-Each pin is a 16 px Lucide glyph on an opaque white pad. The pad is not
-decoration: the glyph's own bitmap leaves its background alone (bit 1 is
-transparent, `Icon.h`), so without it the icon lands unreadable on road lines and
-landuse hatch. Same reasoning as the compass halo.
+### A pin is a pin, and its point is the coordinate
 
-Layer order, closest to the glass last:
+**All of this was decided on the panel, 2026-08-17.** The first version drew a
+16 px Lucide glyph on a white pad. It compiled, it was upright in a host preview,
+and on the glass it failed twice over: a bare glyph could not be picked out of a
+field of building outlines, and a pin saved at the rider's own position disappeared
+under the 44 px position marker.
+
+What ships instead: the map-pin shape from
+`src/components/icons/pin-shape.svg`, **41x49 px**, with the type's glyph inside
+its head, a white halo one pixel wide around the whole outline, and the tail's
+point **at** the coordinate. The halo does the job the marker's own halo does --
+without it the black outline lands on road lines and the shape stops reading.
+Anchoring at the point means the body hangs above the coordinate, which is both the
+convention a rider already knows and the reason it no longer hides under the
+marker.
+
+Three 1bpp arrays, drawn back to front (`MapActivity::drawPinBalloon()`):
+
+```
+renderer.drawMono1bpp(frame.mask, x, y, frame.w, frame.h, false);  // silhouette + halo, white
+renderer.drawMono1bpp(frame.ink,  x, y, frame.w, frame.h, true);   // outline
+renderer.drawMono1bpp(pinGlyphBits(index), ..., true);             // the glyph, upright
+```
+
+The mask is not optional: the ink array is an outline, so without it the map shows
+through the head. `frame` is `kPinShapeFrames[step]` -- step 0 (point-down) for a
+pin in the viewport, and one of sixteen rotations for an edge marker (below).
+
+### `drawIcon()` carries a quarter turn -- use `drawMono1bpp()`
+
+`GfxRenderer::drawIcon()` maps `(row, col)` to `(size-1-row, col)`, reproducing a
+byte-aligned blit that only the forced-Portrait UI themes ever needed; its own
+comment says so. The map renders in its own orientation, so every pin glyph came
+out **rotated 270 degrees** -- confirmed by diffing a `screenshot_gate.py` grab
+against the assets, a 100 % pixel match at `rot270`.
+
+`drawMono1bpp()` (added for this) has no quarter turn, takes non-square
+dimensions, and takes the colour to paint -- which is what makes the white mask
+pass possible. Anything on the map that draws a bitmap should use it.
+
+### The asset pipeline
+
+`scripts/gen_pin_icons.py` bakes `src/components/icons/pins_shape.h` from the
+shape SVG plus `src/components/icons/pins.icons.txt`. It is separate from
+freeink-sdk's `gen_icons.py` because that one emits square ink-only icons and
+lives in a submodule that is upstream's.
+
+What it does, all measured off the rasterised artwork rather than hardcoded:
+
+- crops the shape to its ink, so the pin's height is the shape's height;
+- derives the **fill mask** by flooding the not-ink pixels from the border --
+  whatever the flood cannot reach is inside;
+- **dilates** the mask by `--halo` (1) pixels: that is the white separation;
+- finds the head's centre and clear radius as the widest enclosed run in the upper
+  half, then picks the largest glyph whose diagonal fits;
+- composites the glyph `--glyph-dy` (4) pixels **below** that centre. The tail
+  drags the eye down, so a glyph on the geometric centre reads as if it were
+  floating at the top -- judged on the panel twice.
+
+Glyphs, all chosen at 20 px on the glass:
+
+| pin | glyph | why |
+|---|---|---|
+| Base | `house` | |
+| Parking | baked `P` | `circle-parking` read as a circle inside a circle |
+| Destination | `flag-triangle-right` | a pennant survives 20 px; `flag` is busier |
+| Meet | `circle-dot` | `handshake` was mush at this size |
+| Camp | `tent` | |
+| `#1`-`#5` | baked numerals | Lucide has no numerals, and nothing says "#3" like a 3 |
+
+`text:X` in the manifest bakes characters from a system bold font, so the device
+needs no font for them.
+
+The generator needs `rsvg-convert` (librsvg) or `cairosvg`; this machine has only
+the second, and the script falls back to it.
+
+### Layer order
 
 1. map context and the **active route** (both inside `MapRenderer::render()`)
 2. pins
-3. position and heading, the compass, the scale, the readout
+3. position and heading, the compass, the scale, the readout, the hints
 
-**This is not the order the plan asked for.** The plan put pins *under* the route.
-The route is drawn inside `MapRenderer::render()` as a second source, and pins are
-deliberately not in that renderer at all, so a pin lands on top of a route line
-that passes through it. The glyph is 16 px with a 2 px pad, so what it covers is a
-few pixels at the pin's own place; the marker and the route are still the strongest
-things on the panel everywhere else. Changing this would mean handing pins to
-`MapRenderer`, which is the coupling the plan rejected for a stronger reason.
+**Not the order the plan asked for**, which put pins under the route. The route is
+drawn inside `MapRenderer::render()` as a second source and pins deliberately are
+not in that renderer, so a pin lands on top of a route line passing through it.
+The alternative is handing pins to `MapRenderer`, which is the coupling the plan
+rejected for a stronger reason.
 
 A pin is projected with `projectMercWide()`, not the int16 path: a pin can be a
-hundred kilometres away, and the narrow projection would wrap and draw a glyph in
-the middle of the map.
+hundred kilometres away, and the narrow projection would wrap and draw it in the
+middle of the map.
 
 The overview frame (the menu's "Whole route") draws pins too -- "where is the car
 relative to this whole route" is what that frame is for.
-
-### Icons
-
-Lucide, through the existing pipeline (parent `CLAUDE.md`, Icons). Manifest
-`src/components/icons/pins.icons.txt`, generated header
-`src/components/icons/pins16.h`, consumed with `GfxRenderer::drawIcon()`:
-
-| pin | lucide |
-|---|---|
-| Base | `house` |
-| Parking | `car` |
-| Destination | `flag` |
-| Meet | `users` |
-| Camp | `tent` |
-| `#1`-`#5`, and any unknown key | `hash` |
-
-`#1`-`#5` share one glyph: numbering them in the bitmap would mean five
-near-identical assets and a sixth the day the cap moves, and the list is where a
-rider reads which number it is.
-
-The generator needs `rsvg-convert` (librsvg), which this machine does not have.
-The header was generated by putting a `cairosvg`-backed script named
-`rsvg-convert` on `PATH` for that one run -- same `-w N -h N file.svg` to PNG
-contract, so `gen_icons.py` itself was not touched (it lives in the `freeink-sdk`
-submodule, which is upstream's). Re-generating on a machine with librsvg needs no
-shim.
 
 ### Off-screen markers
 
 `mapPinsOffscreen`, **default off**, in Settings (category Map) and over
 `CMD:SETTING mapPinsOffscreen 1`.
 
-What is built: a pin outside the viewport gets an arrow where the bearing ray from
-the rider leaves the screen (Liang-Barsky against a 14 px inset rect), plus the
-distance, and markers closer than 28 px merge into one arrow with a count
-(`2.4 km x3` -- the nearest pin's distance survives the merge). Bearing is
-computed in screen space, after the frame's rotation, so it is correct in every
-rotation and heading mode. The arrow is a hand-drawn triangle, not a glyph: it
-points at a live value, which is the documented exception to the Lucide rule.
+**The marker is the pin, turned so its point aims at where the pin is.** Three
+iterations on the panel got here (2026-08-17):
 
-At most eight markers per frame (a stack-local array against the 256-byte rule).
-Anything past that is logged as an error, never dropped silently.
+1. an arrow plus a distance -- says "11 km that way" and nothing about *what* is
+   that way, which is the question;
+2. the pin upright plus an arrow beside it -- says the direction twice, in two
+   different shapes;
+3. the pin itself, rotated. One object, and the identity and the direction are the
+   same mark.
 
-**What is not built, and why:** the plan's quantised per-fix patch update. Today
-markers are drawn only as part of a frame that was going to be rendered anyway --
-a viewport reset -- so a marker's distance goes stale between resets, and a marker
-move costs nothing extra on the panel. The plan wanted them redrawn per fix
-through the marker's own patch technique, quantised on bearing and distance
-thresholds. That is precisely the part the plan gated on a measurement
-("refreshes per minute at a realistic fix rate, ghosting after an hour, whether
-the patch restore is clean at the panel edges"), and that measurement has not been
-run. Drawing them per frame ships the feature with **no new refresh behaviour at
-all**, which is why it can land before the measurement exists.
+`scripts/gen_pin_icons.py --steps 16` bakes one frame per 22.5 degrees, clockwise
+from point-down, each carrying where its point and its head ended up
+(`PinShapeFrame`). The **glyph is not rotated with the shape** -- a numeral or a P
+has to stay readable -- so the device draws the frame and then the glyph upright at
+that frame's head centre. Step 0 is point-down, which is every pin inside the
+viewport. `MapActivity::pinShapeStepFor()` picks the step from the screen-space
+direction: step k points at `(-sin, cos)` of its angle, which inverts to
+`atan2(-dx, dy)`.
 
-So the open item is unchanged and now has two halves:
+Rotation happens at generation time, oversampled and downscaled, because rotating
+a 1bpp bitmap at 1:1 turns a 3 px outline into dashes. Cost: ~6 KB of flash for
+sixteen frames, no runtime cost, no float per frame beyond one `atan2`.
 
-- measure what a per-fix edge redraw costs on the panel, then decide whether to
-  build it at all;
-- only then can `mapPinsOffscreen`'s default move.
+**Where a marker may land** is `MapActivity::pinEdgeArea()`: the panel minus
+everything this screen already draws over the map -- the bottom hint bar, the
+side-hint boxes and the compass. The geometry comes from whoever owns each piece
+(`BaseTheme::buttonHintsRect()`, `BaseTheme::sideButtonHintsRect()`, this file's
+compass constants), because both of the first two were found the hard way: an
+11 km marker came out underneath the zoom hints with only its "11" readable, and a
+bottom one sat behind the button bar. On X3 the side hints are one band across the
+full width, which this does not special-case -- read off the code, untested, no X3
+here.
+
+**The bearing origin is the rider only while the rider is on the frame.** Panned
+away in Observe mode they are not, and a ray between two points that are both off
+the panel usually crosses none of it -- so every distant pin silently lost its
+marker (reported from the device, 2026-08-17). Off-frame, bearings are measured
+from the middle of what is on screen; the distance stays rider-to-pin, which is the
+number the rider wants.
+
+**The label** is the distance, under the head (the point is against the edge and
+aiming outward, so there is no room that side), and it dodges **sideways** when it
+would land under the position marker -- which is drawn after the pins and would eat
+it. Near the bottom edge there is no room above or below, and there is always most
+of a screen to one side. Measured: label 149,685 90x24 against a marker at
+198,658 64x64.
+
+Markers closer than 52 px merge into one, carrying the **nearest** pin's identity,
+its distance and a count: `7.1 km x3` is three pins that way, the closest 7.1 km
+off. At most eight markers a frame (a stack-local array against the 256-byte rule);
+anything past that is logged as an error, never dropped silently.
+
+**What is not built:** the plan's quantised per-fix redraw. Markers are drawn only
+as part of a frame that was going to be rendered anyway, so a distance goes stale
+between viewport resets and a marker costs nothing extra on the panel. That is
+precisely the part the plan gated on a measurement ("refreshes per minute at a
+realistic fix rate, ghosting after an hour, whether the patch restore is clean at
+the panel edges"), and that measurement still has not been run. So the open item
+now has two halves: measure what a per-fix edge redraw costs, then decide whether
+to build it -- and only then can the default move.
 
 ## Distance
 

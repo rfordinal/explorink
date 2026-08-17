@@ -2989,6 +2989,42 @@ bool clipExitPoint(double ox, double oy, double px, double py, double left, doub
 
 }  // namespace
 
+Rect MapActivity::pinEdgeArea() const {
+  // Where an edge marker may land. Everything this screen draws over the map has a
+  // fixed place, and a marker that lands under one of them is invisible -- measured
+  // on the panel 2026-08-17, where one came out beneath the zoom hints with only
+  // its "11" readable and another sat behind the button bar.
+  //
+  // The geometry comes from whoever owns each piece: the theme for both hint bands
+  // (BaseTheme::buttonHintsRect(), sideButtonHintsRect()), this file's own compass
+  // constants for the compass. Copying their numbers here is what drift is made of.
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  int top = kPinEdgeMargin;
+  int bottom = screenH - kPinEdgeMargin;
+  int right = screenW - kPinEdgeMargin;
+  const int left = kPinEdgeMargin;
+
+  const Rect bottomHints = GUI.buttonHintsRect(renderer);
+  if (bottomHints.height > 0) bottom = bottomHints.y - kPinEdgeMargin / 2;
+
+  const Rect sideHints = GUI.sideButtonHintsRect(renderer);
+  // X4 stacks them on the right edge; X3 puts one on each side, which is a band
+  // across the full width and cannot be avoided by narrowing -- not special-cased
+  // yet, and there is no X3 here to try it on.
+  if (sideHints.width > 0 && sideHints.width < screenW && sideHints.x > screenW / 2) {
+    right = sideHints.x - kPinEdgeMargin / 2;
+  }
+
+  // The compass sits top-right and the header row above it; clear both by taking
+  // the compass glyph's own bottom edge.
+  const int compassBottom = kCompassCenterTop + kCompassGlyphRadius;
+  if (compassBottom + kPinEdgeMargin > top) top = compassBottom + kPinEdgeMargin / 2;
+
+  if (right <= left || bottom <= top) return Rect{left, top, 0, 0};
+  return Rect{left, top, right - left, bottom - top};
+}
+
 void MapActivity::drawPins() {
   if (pins_.pinCount() == 0) return;
 
@@ -3027,6 +3063,21 @@ void MapActivity::drawPins() {
     proj_.projectMercWide(mercX, mercY, rx, ry);
     riderX = static_cast<double>(rx);
     riderY = static_cast<double>(ry);
+    // Direction is measured from the rider only while the rider is on this frame.
+    // Panned away in Observe mode they are not, and a ray between two points that
+    // are both off the panel frequently crosses none of it -- so every distant pin
+    // silently lost its marker (panel, 2026-08-17). Fall back to the middle of what
+    // is on screen: "that way" from what the rider is looking at is the only
+    // question a marker can answer then. The distance stays rider-to-pin, which is
+    // the number they actually want.
+    const Rect area = pinEdgeArea();
+    const bool riderOnFrame =
+        riderX >= area.x && riderX <= area.x + area.width && riderY >= area.y && riderY <= area.y + area.height;
+    if (!riderOnFrame) {
+      riderX = area.x + area.width / 2.0;
+      riderY = area.y + area.height / 2.0;
+      LOG_DBG(kLogTag, "pin markers: rider off frame, bearings from the screen centre");
+    }
   }
 
   for (size_t slot = 0; slot < PinStore::kSlotCount; ++slot) {
@@ -3046,28 +3097,18 @@ void MapActivity::drawPins() {
 
     // The balloon hangs *above* its tip, so the on-screen test is asymmetric: a
     // tip a little below the panel still has a readable body on it.
-    if (sx < -kPinShapeWidth || sy < -kPinShapeHeight || sx > screenW + kPinShapeWidth ||
-        sy > screenH + kPinShapeHeight) {
+    const PinShapeFrame& upright = kPinShapeFrames[0];
+    if (sx < -upright.w || sy < -upright.h || sx > screenW + upright.w || sy > screenH + upright.h) {
       if (!wantEdges) continue;
       double ex = 0.0;
       double ey = 0.0;
-      // Inset by the marker's own size, so the arrow and its distance stay fully
-      // on the panel instead of half off the edge.
-      const double inset = kPinEdgeMargin;
-      // And clear of the side-hint boxes. They sit on the right edge on X4, exactly
-      // where a marker for anything east of the rider wants to land -- measured on
-      // the panel 2026-08-17, where an 11 km marker came out underneath the zoom
-      // hints and only its "11" was readable. The theme owns that geometry
-      // (BaseTheme::sideButtonHintsRect()); guessing it here is what drift is made
-      // of. On X3 the boxes are one band across the full width instead, which this
-      // does not special-case yet -- read off the code, no X3 to try it on.
-      const Rect hints = GUI.sideButtonHintsRect(renderer);
-      double right = screenW - inset;
-      if (hints.width > 0 && hints.width < screenW && hints.x > screenW / 2) {
-        right = hints.x - inset;
-      }
-      if (!clipExitPoint(riderX, riderY, static_cast<double>(sx), static_cast<double>(sy), inset, inset, right,
-                         screenH - inset, ex, ey)) {
+      // Clipped to the area nothing else on this screen owns (pinEdgeArea()), not
+      // to the panel: a marker under the hint bar or the compass is a marker the
+      // rider never sees.
+      const Rect area = pinEdgeArea();
+      if (area.width <= 0 || area.height <= 0) continue;
+      if (!clipExitPoint(riderX, riderY, static_cast<double>(sx), static_cast<double>(sy), area.x, area.y,
+                         area.x + area.width, area.y + area.height, ex, ey)) {
         continue;
       }
       if (edgeCount >= kPinEdgeMax) {
@@ -3132,60 +3173,69 @@ void MapActivity::drawPins() {
   if (drawn > 0) LOG_DBG(kLogTag, "%d pin mark(s) drawn", drawn);
 }
 
-void MapActivity::drawPinBalloon(int tipX, int tipY, size_t catalogIndex) {
+void MapActivity::drawPinBalloon(int tipX, int tipY, size_t catalogIndex, uint8_t step) {
   // A map pin, not a bare glyph: the shape is a baked asset
-  // (src/components/icons/pin-shape.svg through scripts/gen_pin_icons.py) with the
-  // type's glyph composited inside its head, and the tail's point is *at* the
-  // coordinate. Both things a 16 px glyph could not do -- it is findable on a panel
-  // full of building outlines, and it says which pixel it means instead of hovering
-  // over it (asked for on hardware 2026-08-17, where bare glyphs were unfindable
-  // and vanished under the position marker).
+  // (src/components/icons/pin-shape.svg through scripts/gen_pin_icons.py) and the
+  // tail's point is *at* the coordinate. Both things a 16 px glyph could not do --
+  // it is findable on a panel full of building outlines, and it says which pixel it
+  // means instead of hovering over it (asked for on hardware 2026-08-17, where bare
+  // glyphs were unfindable and vanished under the position marker).
   //
-  // Two passes, and the first one is not optional: the ink array is an outline, so
+  // `step` turns the shape so its point aims somewhere other than straight down;
+  // the glyph is drawn upright regardless, because a numeral that rotates with the
+  // pin stops being readable. Step 0 is point-down, which is every pin inside the
+  // viewport.
+  //
+  // Three passes, and the first is not optional: the ink array is an outline, so
   // without the silhouette painted white underneath, road lines show through the
   // head. Same reasoning as the marker's halo, just shaped like the pin.
-  const int x = tipX - kPinShapeWidth / 2;
-  const int y = tipY - kPinShapeHeight;
-  renderer.drawMono1bpp(kPinShapeMaskBits, x, y, kPinShapeWidth, kPinShapeHeight, false);
-  renderer.drawMono1bpp(pinShapeBits(catalogIndex), x, y, kPinShapeWidth, kPinShapeHeight, true);
+  const PinShapeFrame& frame = kPinShapeFrames[step % kPinShapeSteps];
+  const int x = tipX - frame.tipX;
+  const int y = tipY - frame.tipY;
+  renderer.drawMono1bpp(frame.mask, x, y, frame.w, frame.h, false);
+  renderer.drawMono1bpp(frame.ink, x, y, frame.w, frame.h, true);
+  renderer.drawMono1bpp(pinGlyphBits(catalogIndex), x + frame.headX - kPinGlyphPx / 2,
+                        y + frame.headY - kPinGlyphPx / 2, kPinGlyphPx, kPinGlyphPx, true);
+}
+
+// Which baked rotation points closest to `dx,dy` (screen space, y down).
+//
+// Step k is the shape turned k * 360/kPinShapeSteps degrees clockwise from
+// point-down, so its point aims at (-sin, cos) of that angle -- which inverts to
+// atan2(-dx, dy).
+uint8_t MapActivity::pinShapeStepFor(double dx, double dy) {
+  if (dx == 0.0 && dy == 0.0) return 0;
+  const double stepAngle = 2.0 * M_PI / kPinShapeSteps;
+  double turns = atan2(-dx, dy) / stepAngle;
+  int step = static_cast<int>(lround(turns)) % kPinShapeSteps;
+  if (step < 0) step += kPinShapeSteps;
+  return static_cast<uint8_t>(step);
 }
 
 void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
-  // The pin itself, not an anonymous arrow. An arrow plus a distance says "11 km
-  // that way" and nothing about *what* is that way, which is the one thing the
-  // rider is asking (found on the panel 2026-08-17). So an edge marker is the
-  // pin's own glyph, pulled inside the panel, with a filled arrow pointing off
-  // screen behind it and the distance under it.
-  //
-  // The arrow is hand-drawn vector, not a glyph: it points at a live bearing,
-  // which is the documented exception to the Lucide rule (parent CLAUDE.md).
+  // The pin itself, turned so its point aims at where the pin actually is. An arrow
+  // plus a distance said "11 km that way" and nothing about *what* was that way,
+  // and a separate arrow next to an upright pin said it twice (both judged on the
+  // panel 2026-08-17). One object now: the pin is the arrow.
   const double dx = static_cast<double>(mark.dirX) / 64.0;
   const double dy = static_cast<double>(mark.dirY) / 64.0;
-  const int screenW = renderer.getScreenWidth();
-  const int screenH = renderer.getScreenHeight();
+  const uint8_t step = pinShapeStepFor(dx, dy);
+  const PinShapeFrame& frame = kPinShapeFrames[step % kPinShapeSteps];
+  const Rect area = pinEdgeArea();
+  const int leftLimit = area.x;
+  const int rightLimit = area.x + area.width;
+  const int topLimit = area.y;
+  const int bottomLimit = area.y + area.height;
 
-  // Pull the pin in from the boundary far enough to leave room for the arrow, then
-  // clamp its whole box on screen: the exit point is on the clip rect, so half of
-  // an un-clamped pin would hang off the panel.
-  int tipX = static_cast<int>(mark.x - dx * (kPinArrowPx + 4));
-  int tipY = static_cast<int>(mark.y - dy * (kPinArrowPx + 4));
-  const int halfW = kPinShapeWidth / 2 + 2;
-  if (tipX < halfW) tipX = halfW;
-  if (tipX > screenW - halfW) tipX = screenW - halfW;
-  if (tipY < kPinShapeHeight + 2) tipY = kPinShapeHeight + 2;
-  if (tipY > screenH - 2) tipY = screenH - 2;
-  drawPinBalloon(tipX, tipY, mark.catalogIndex);
-
-  // Arrow at the boundary, pointing the way the pin actually lies.
-  const double baseX = mark.x - dx * kPinArrowPx * 0.4;
-  const double baseY = mark.y - dy * kPinArrowPx * 0.4;
-  const double perpX = -dy * kPinArrowPx * 0.55;
-  const double perpY = dx * kPinArrowPx * 0.55;
-  const int xs[3] = {static_cast<int>(mark.x + dx * kPinArrowPx * 0.6), static_cast<int>(baseX + perpX),
-                     static_cast<int>(baseX - perpX)};
-  const int ys[3] = {static_cast<int>(mark.y + dy * kPinArrowPx * 0.6), static_cast<int>(baseY + perpY),
-                     static_cast<int>(baseY - perpY)};
-  renderer.fillPolygon(xs, ys, 3, true);
+  // The point sits on the boundary the marker was clipped to; clamp the frame's box
+  // so the body, which extends inward, stays inside the same area.
+  int tipX = mark.x;
+  int tipY = mark.y;
+  if (tipX - frame.tipX < leftLimit) tipX = leftLimit + frame.tipX;
+  if (tipX - frame.tipX + frame.w > rightLimit) tipX = rightLimit - frame.w + frame.tipX;
+  if (tipY - frame.tipY < topLimit) tipY = topLimit + frame.tipY;
+  if (tipY - frame.tipY + frame.h > bottomLimit) tipY = bottomLimit - frame.h + frame.tipY;
+  drawPinBalloon(tipX, tipY, mark.catalogIndex, step);
 
   char distance[16];
   PinGeo::formatDistance(mark.metres, distance, sizeof(distance));
@@ -3201,14 +3251,38 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
 
   const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text);
   const int textHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  // Under the pin's point, which is where a label belongs on a pin -- and above it
-  // instead when the point is already at the bottom of the panel.
-  int textX = tipX - textWidth / 2;
-  int textY = tipY + 2;
-  if (textY + textHeight > screenH - 2) textY = tipY - kPinShapeHeight - textHeight - 2;
-  if (textX < 2) textX = 2;
-  if (textY < 2) textY = 2;
-  if (textX + textWidth > screenW - 2) textX = screenW - 2 - textWidth;
+  // Under the head, not under the point: the point is against the edge of the area
+  // and aiming outward, so there is no room that side.
+  int textX = tipX - frame.tipX + frame.headX - textWidth / 2;
+  int textY = tipY - frame.tipY + frame.h + 2;
+  if (textY + textHeight > bottomLimit) textY = tipY - frame.tipY - textHeight - 2;
+  // And not under the rider's own marker, which is drawn after this and would eat
+  // it: a pin near the bottom edge puts its label exactly where the marker sits
+  // (panel, 2026-08-17 -- measured, the label was at 149,685 90x24 against a marker
+  // at 198,658 64x64).
+  //
+  // Sideways, not above or below: near the bottom edge there is no room either way,
+  // and there is always most of a screen to one side. Vertical is the last resort.
+  {
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    // Where the marker is *about to* land, not where the last frame left it:
+    // drawPins() only ever runs inside a full render, and a full render puts the
+    // marker on the ladder anchor (renderViewport()). markerDrawnX_ still describes
+    // the previous frame at this point.
+    markerRect(MapViewport::kAnchorScreenX, MapViewport::markerYForStep(markerStep()), mx, my, mw, mh);
+    const bool overlaps = textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my;
+    if (overlaps) {
+      if (mx - leftLimit >= textWidth + 4) {
+        textX = mx - textWidth - 4;
+      } else if (rightLimit - (mx + mw) >= textWidth + 4) {
+        textX = mx + mw + 4;
+      } else if (my - textHeight - 4 >= topLimit) {
+        textY = my - textHeight - 4;
+      } else {
+        textY = my + mh + 4;
+      }
+    }
+  }
 
   // Opaque backing, same reason the pin has a halo: this lands on road lines.
   renderer.fillRect(textX - 2, textY - 2, textWidth + 4, textHeight + 4, false);
