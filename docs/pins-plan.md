@@ -4,9 +4,14 @@ User pins on the device. A pin is a place the rider needs to keep a spatial
 relation to during a trip — base, car, camp, the bus. Not a POI database, not
 routing, not turn-by-turn.
 
-Status: **agreed 2026-08-15, nothing built.** Every "how" below is read off the
-code and cited. Nothing is measured on hardware yet; the one item gated on a
-measurement is called out in "Off-screen pins".
+Status: **agreed 2026-08-15; phases 1-6 built 2026-08-17.** What was actually
+built, and the two places it deviates from this plan, are in
+[`pins.md`](pins.md) -- read that for the mechanism, this for the reasoning and
+what is still open. Nothing has been on hardware, and the off-screen measurement
+below has not been run.
+
+Every "how" below is read off the code and cited. Nothing is measured on hardware
+yet; the one item gated on a measurement is called out in "Off-screen pins".
 
 This file is the whole feature: what it must do, what the device forces on it,
 and the phase-by-phase plan to build it. A session picking this up needs
@@ -470,7 +475,7 @@ Seven phases. Each ends buildable and green. Phases 1 and 3 are each worth their
 own flash: a pin that saves and survives a reboot is the whole feature, the rest
 is presentation.
 
-### Phase 1 — `PinStore`, the log, the console commands (no UI)
+### Phase 1 — `PinStore`, the log, the console commands (no UI) — BUILT
 
 Everything here is host-testable, so it lands before a single pixel.
 
@@ -506,7 +511,7 @@ to `test/CMakeLists.txt`). Cases, at minimum:
 **Done when**: host tests green; `pin set` / `pin list` / `pin log` work over
 the serial console; a reboot rebuilds the same active pins.
 
-### Phase 2 — `OptionPopup` row actions
+### Phase 2 — `OptionPopup` row actions — BUILT
 
 Shared component, so it lands alone and gets its own look on the panel before
 anything depends on it.
@@ -522,7 +527,7 @@ anything depends on it.
 menu and a settings picker), the new mode is correct **in a rotated orientation
 as well as upright**, and a list long enough to scroll still scrolls.
 
-### Phase 3 — the Pins UI
+### Phase 3 — the Pins UI — BUILT
 
 - `Pins` row in `MapActivity::openMapMenu()`.
 - The Pins list: existing pins only, distance in the value column, row actions
@@ -535,7 +540,7 @@ as well as upright**, and a list long enough to scroll still scrolls.
 **Done when**: create, replace and delete all work on the device; each one
 appends the expected line; a reboot brings the pins back. Check free heap.
 
-### Phase 4 — icons and in-viewport drawing
+### Phase 4 — icons and in-viewport drawing — BUILT (pins draw above the route, not below — see `pins.md`)
 
 - Icon manifest, `gen_icons.py` run, generated header committed.
 - Draw pins in the marker pass, with the halo and the layer order above.
@@ -546,7 +551,7 @@ appends the expected line; a reboot brings the pins back. Check free heap.
 panel, and does not out-shout the marker or the route. Screenshot — mind the
 privacy rule.
 
-### Phase 5 — Show on map, and getting back
+### Phase 5 — Show on map, and getting back — BUILT
 
 - Viewport around the pin, `MapScreenMode::Observe`, pin highlighted.
 - Return through the existing `Follow mode` row; verify the return anchor is the
@@ -555,7 +560,7 @@ privacy rule.
 **Done when**: Show, then Follow, lands the rider back where they are, with no
 change to route or navigation state.
 
-### Phase 6 — off-screen indicators, then the measurement
+### Phase 6 — off-screen indicators, then the measurement — PARTLY BUILT (per frame, not per fix; the measurement is still owed — see `pins.md`)
 
 - `mapPinsOffscreen` in `CrossPointSettings` + `SettingsList.h` toggle + an
   `I18nKeys.h` entry and its `translations/english.yaml` string + the
@@ -569,7 +574,7 @@ change to route or navigation state.
 **Done when**: the numbers exist and are written down. The default flips to ON
 only if they justify it — otherwise it stays OFF and the doc says why.
 
-### Phase 7 — documentation and merge
+### Phase 7 — documentation and merge — BUILT
 
 - `docs/pins.md` in this repo: the mechanism as built, measured apart from read,
   every claim cited.
