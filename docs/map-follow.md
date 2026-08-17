@@ -222,8 +222,22 @@ Entry still costs two refreshes, not one: `renderLoadingTiles()` paints the
 tile read behind it takes seconds and needs feedback. One fast differential pass
 plus one clean pass.
 
-**Read off the code and the driver, not yet measured on the panel.** What would
-settle it: open the map on hardware and count the inversions.
+**Verified on the X4 2026-08-17**, build `319a8c5f`, off the driver's own
+`Wait complete: refresh (N ms)` line after a `CMD:GOTO_MAP` on a device with a
+persisted fix:
+
+| frame | mode | panel time |
+|---|---|---|
+| `renderLoadingTiles()` logo | `FAST_REFRESH` | 500 ms |
+| the map | `HALF_REFRESH` | 1,684 ms |
+| the next fix's re-anchor | `FAST_REFRESH` | 500 ms |
+
+Two refreshes at entry, one waveform each -- the multi-flash sequence is gone.
+So `HALF` is **3.4x the panel time of a `FAST`** here, which is the real cost of
+the clean entry frame and is worth knowing: the 500 ms figure in "The refresh"
+above is a `FAST`/windowed number and does not generalise to the absolute
+waveforms. The full `FULL_REFRESH` time was never measured before the change, so
+what `HALF` saves in milliseconds is unknown -- what it removes is the flashing.
 
 ### Entry could also drop the first real fix -- fixed 2026-08-17
 
@@ -248,7 +262,23 @@ that carries the card's fix has never had a real packet drawn into it, whatever
 the counter says.
 
 1 in 256 by itself, so this is not what the maintainer saw -- the phone-side bug
-is. Read off the code; not reproduced on hardware.
+is. Read off the code; not reproduced on hardware, and not reachable to test
+without forcing the phone's counter.
+
+**The phone-side half is verified on the X4 2026-08-17**, build `319a8c5f`
+against the app of the same day. Opening the map with the rider standing still,
+the log shows the persisted fix drawn and then, 56 ms after `onEnter done`, a
+real packet arriving and re-anchoring the frame:
+
+```
+[24864] [DBG] [MAP] onEnter done
+[24920] [DBG] [MAP] ble fix: seq 2, heading 0, speed 0 km/h, accuracy 10 m
+[24921] [DBG] [MAP] renderViewport start: ... seq=2
+```
+
+The rider had not moved, so before the app fix nothing would have arrived at all.
+`seq 2` says only that this was the second packet the app process had sent -- its
+counter is per process, not per link, and was not touched by the fix.
 
 ### That 8.9 s is a city number. Rural is ten times cheaper
 
