@@ -29,6 +29,8 @@
 #include "MapViewport.h"
 #include "MissingTilesConsoleSource.h"
 #include "MissingTilesStore.h"
+#include "PinGeo.h"
+#include "PinLabels.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
@@ -740,8 +742,8 @@ uint32_t MapActivity::recheckHatchedTiles() const {
   if (screenMode_ != MapScreenMode::Follow || overviewShown_) return 0;
   if (!lastTileRange_.valid || lastTileRange_.unavailableMask == 0) return 0;
 
-  const MapViewport::TileRange range{lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0,
-                                      lastTileRange_.col1, lastTileRange_.row1};
+  const MapViewport::TileRange range{lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0, lastTileRange_.col1,
+                                     lastTileRange_.row1};
   const uint32_t now = millis();
   // Same walk and the same 32-tile cap as drawMapLayers()'s hatch loop -- the
   // mask is one bit per index and never carried more than that to begin with.
@@ -1982,6 +1984,15 @@ void MapActivity::onExit() {
 void MapActivity::loop() {
   Activity::loop();
 
+  // The pin confirmation goes away on its own timer, or on the first button --
+  // whichever comes first. Before the popup below gets the input: a rider who
+  // presses CONFIRM to open the menu should get the map back under it, not a
+  // stale "Camp saved" sitting behind a fresh dialog.
+  if (pinNoticeUntilMs_ != 0 &&
+      (static_cast<int32_t>(millis() - pinNoticeUntilMs_) >= 0 || mappedInput.wasAnyPressed())) {
+    clearPinNotice();
+  }
+
   // Menu owns input while open, same idiom as every other OptionPopup
   // consumer (TextSettingsActivity.cpp:179) -- the callback draws the popup
   // directly rather than going through requestUpdate(), because MapActivity
@@ -2391,6 +2402,17 @@ void MapActivity::openMapMenu() {
     options.push_back(tr(STR_MAP_WHOLE_ROUTE));
     values.emplace_back();
   }
+  // Pins. High in the list on purpose: it is the row a rider reaches for while
+  // moving ("park here", "camp here"), unlike the settings toggles below it. The
+  // value column carries how many are saved, so the rider does not have to open
+  // the list to find out (0 is still worth a row -- it is where a pin is made).
+  const int pinsIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_PINS));
+  {
+    char count[8];
+    snprintf(count, sizeof(count), "%u", static_cast<unsigned>(pins_.pinCount()));
+    values.emplace_back(count);
+  }
   const int modeIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_MODE));
   values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
@@ -2421,16 +2443,20 @@ void MapActivity::openMapMenu() {
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
       StrId::STR_MAP, options, values, 0,
-      [this, observeIdx, wholeRouteIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx,
+      [this, observeIdx, wholeRouteIdx, pinsIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx,
        debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
         // that change nothing on it (zoom mode) put it back
         // instead of re-rendering, and so does a plain dismiss
         // (loop()). Freed first for every redraw row, so the
         // buffer is not held across a tile read.
-        if (idx != zoomModeIdx) dropMenuBackdrop();
+        // The pins list opens over the same map, so it keeps the backdrop --
+        // openPinsMenu() gives it up itself if its own dialog outgrows the rect.
+        if (idx != zoomModeIdx && idx != pinsIdx) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
+        } else if (idx == pinsIdx) {
+          openPinsMenu();
         } else if (idx == wholeRouteIdx) {
           // Back to the whole route, at any point in a ride. Costs one full refresh
           // and one pass over the route file, the same as the frame the picker drew.
@@ -2496,6 +2522,390 @@ void MapActivity::openMapMenu() {
   // the first draw (the framebuffer still holds the map).
   captureMenuBackdrop();
   optionPopup_.processRender(renderer, mappedInput);
+}
+
+// ---------------------------------------------------------------------- pins
+//
+// The Pins UI is popups over this screen (../../../docs/pins-plan.md, phase 3).
+// Nothing here draws a pin on the map -- that is phase 4, in the marker pass.
+
+size_t MapActivity::pinSlotForRow(size_t row) const {
+  size_t seen = 0;
+  for (size_t slot = 0; slot < PinStore::kSlotCount; ++slot) {
+    if (!pins_.store().at(slot).present) continue;
+    if (seen == row) return slot;
+    ++seen;
+  }
+  return PinStore::kSlotCount;
+}
+
+int32_t MapActivity::riderLatE7() const {
+  // Observe mode repoints lastLatE7_ at whatever the rider panned to, so it is
+  // the wrong answer to "where am I". The route overview does not: it holds the
+  // fix in lastLatE7_ (applyFix()).
+  return screenMode_ == MapScreenMode::Observe ? observeReturnLatE7_ : lastLatE7_;
+}
+
+int32_t MapActivity::riderLonE7() const {
+  return screenMode_ == MapScreenMode::Observe ? observeReturnLonE7_ : lastLonE7_;
+}
+
+const char* MapActivity::pinSaveRefusal() const {
+  // Never write 0,0. With no fix at all there is nothing to save *at*, and a pin
+  // off the coast of Ghana is worse than no pin.
+  if (!hasReceivedAny_) return tr(STR_PIN_NO_FIX);
+  return nullptr;
+}
+
+bool MapActivity::pinFixAgeWarning(char* buf, size_t bufLen) const {
+  if (buf == nullptr || bufLen == 0) return false;
+  buf[0] = '\0';
+  // The fix restored off the card in onEnter() is where the rider was when they
+  // last had a phone, which can be days ago -- and it has no age in minutes to
+  // quote, only a session boundary.
+  if (showingPersistedFix_ || lastFixMs_ == 0) {
+    snprintf(buf, bufLen, "%s", tr(STR_PIN_FIX_LAST_SESSION));
+    return true;
+  }
+  const uint32_t ageMs = millis() - lastFixMs_;
+  if (ageMs < kPinStaleFixMs) return false;
+  snprintf(buf, bufLen, tr(STR_PIN_FIX_AGE), static_cast<int>(ageMs / 60000u));
+  return true;
+}
+
+void MapActivity::pinDistanceText(const PinEntry& entry, char* buf, size_t bufLen) const {
+  if (buf == nullptr || bufLen == 0) return;
+  if (!hasReceivedAny_) {
+    // Nothing to measure from. "-" and never "0 m": zero is a real distance and
+    // would read as "you are standing on it".
+    snprintf(buf, bufLen, "-");
+    return;
+  }
+  const uint32_t metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), entry.latE7, entry.lonE7);
+  PinGeo::formatDistance(metres, buf, bufLen);
+}
+
+void MapActivity::openPinsMenu() {
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  const size_t count = pins_.pinCount();
+  options.reserve(count + 1);
+  values.reserve(count + 1);
+
+  // Add / Replace first, and it is the only row when nothing is saved yet: an
+  // empty slot is not listed here (it lives in that list), so a rider with no
+  // pins sees the one row that does something rather than ten that say "empty".
+  options.push_back(tr(STR_PIN_ADD));
+  values.emplace_back();
+
+  char distance[16];
+  for (size_t row = 0; row < count; ++row) {
+    const PinEntry& entry = pins_.store().at(pinSlotForRow(row));
+    options.emplace_back(pinEntryLabel(entry));
+    pinDistanceText(entry, distance, sizeof(distance));
+    values.emplace_back(distance);
+  }
+
+  optionPopup_.showWithValues(StrId::STR_MAP_PINS, options, values, 0, [this](int idx) {
+    if (idx == 0) {
+      openPinsAddList();
+      return;
+    }
+    showPinOnMap(pinSlotForRow(static_cast<size_t>(idx - 1)));
+  });
+  // Row actions, so Delete and Replace are one press each instead of a submenu
+  // per pin. This takes the front pair away from scrolling, which is why the side
+  // hints go up with it (OptionPopup::setRowActions).
+  OptionPopup::RowActions actions;
+  actions.leftLabel = tr(STR_DELETE);
+  actions.rightLabel = tr(STR_REPLACE);
+  actions.confirmLabel = tr(STR_SHOW);
+  actions.onLeft = [this](int idx) {
+    // Row 0 is Add / Replace: there is no pin under it to delete, and a press
+    // that silently does nothing is better than one that deletes the first pin.
+    if (idx <= 0) return;
+    confirmPinDelete(pinSlotForRow(static_cast<size_t>(idx - 1)));
+  };
+  actions.onRight = [this](int idx) {
+    if (idx <= 0) return;
+    confirmPinReplaceSlot(pinSlotForRow(static_cast<size_t>(idx - 1)));
+  };
+  optionPopup_.setRowActions(std::move(actions));
+  // Rotated by the theme: a right-pointing glyph lands pointing up, a left one
+  // lands pointing down -- the same rotation drawPanSideHints() had to account
+  // for, verified there on hardware.
+  optionPopup_.setSideHints("→", "←", UI_10_FONT_ID);
+  popupDrewSideHints_ = true;
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::openPinsAddList() {
+  // Every catalogue slot, so an empty one can be filled and an occupied one
+  // replaced from the same place. Ten rows scroll inside the popup's six-row
+  // window, which costs one refresh per selection step and no RAM
+  // (BaseTheme::optionPopupGeometry()).
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  options.reserve(kPinSlotCount);
+  values.reserve(kPinSlotCount);
+
+  char distance[16];
+  for (size_t i = 0; i < kPinSlotCount; ++i) {
+    options.emplace_back(pinTypeLabel(i));
+    const PinEntry& entry = pins_.store().at(i);
+    if (entry.present) {
+      pinDistanceText(entry, distance, sizeof(distance));
+      values.emplace_back(distance);
+    } else {
+      values.emplace_back();
+    }
+  }
+
+  optionPopup_.showWithValues(StrId::STR_PIN_ADD, options, values, 0, [this](int idx) {
+    const size_t catalogIndex = static_cast<size_t>(idx);
+    if (catalogIndex >= kPinSlotCount) return;
+    char age[48];
+    const bool occupied = pins_.store().at(catalogIndex).present;
+    // An empty slot saves straight away -- there is nothing to lose, so a
+    // confirmation would only be in the way. Unless the fix is old: then the
+    // save is about to record where the rider *was*, and that is worth a
+    // question even on an empty slot.
+    if (!occupied && !pinFixAgeWarning(age, sizeof(age))) {
+      savePin(kPinCatalog[catalogIndex].key, pinTypeLabel(catalogIndex));
+      return;
+    }
+    confirmPinSet(catalogIndex);
+  });
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::confirmPinSet(size_t catalogIndex) {
+  if (catalogIndex >= kPinSlotCount) return;
+  confirmPinReplaceSlot(catalogIndex);
+}
+
+void MapActivity::confirmPinReplaceSlot(size_t slot) {
+  if (slot >= PinStore::kSlotCount) return;
+  const PinEntry& entry = pins_.store().at(slot);
+  // A foreign key has no catalogue row, so the label is the raw key and the key
+  // itself has to come off the entry -- which is also what keeps a pin written by
+  // a later firmware replaceable rather than only deletable.
+  const bool foreign = entry.catalogIndex >= kPinSlotCount;
+  const char* key = foreign ? entry.key : kPinCatalog[slot].key;
+  const char* label = foreign ? entry.key : pinTypeLabel(slot);
+
+  char title[96];
+  char age[48];
+  snprintf(title, sizeof(title), tr(STR_PIN_REPLACE_CONFIRM), label);
+  if (pinFixAgeWarning(age, sizeof(age))) {
+    // The age goes in the question, not in a notice afterwards: a Replace on a
+    // dead link saves where the rider was, and by the time a notice could say so
+    // the old position is already gone from the active set.
+    const size_t len = strlen(title);
+    snprintf(title + len, sizeof(title) - len, " (%s)", age);
+  }
+
+  // Cancel first, so the destructive option is never the one already under the
+  // cursor. Same two-option shape as the reader's bookmark delete
+  // (EpubReaderBookmarksActivity.cpp).
+  const char* options[] = {tr(STR_CANCEL), tr(STR_REPLACE)};
+  char keyCopy[kPinKeyBytes];
+  snprintf(keyCopy, sizeof(keyCopy), "%s", key);
+  std::string labelCopy(label);
+  optionPopup_.show(title, options, 2, 0, [this, keyCopy, labelCopy](int idx) {
+    if (idx != 1) {
+      // Nothing changed, so the frame under the popup is still right.
+      if (!restoreMenuBackdrop()) {
+        redrawDueMs_ = 0;
+        showBusy();
+        renderCurrent();
+      }
+      return;
+    }
+    savePin(keyCopy, labelCopy.c_str());
+  });
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::confirmPinDelete(size_t slot) {
+  if (slot >= PinStore::kSlotCount) return;
+  const PinEntry& entry = pins_.store().at(slot);
+  if (!entry.present) return;
+
+  char title[96];
+  snprintf(title, sizeof(title), tr(STR_PIN_DELETE_CONFIRM), pinEntryLabel(entry));
+  const char* options[] = {tr(STR_CANCEL), tr(STR_DELETE)};
+  const int slotCopy = static_cast<int>(slot);
+  optionPopup_.show(title, options, 2, 0, [this, slotCopy](int idx) {
+    if (idx != 1) {
+      if (!restoreMenuBackdrop()) {
+        redrawDueMs_ = 0;
+        showBusy();
+        renderCurrent();
+      }
+      return;
+    }
+    deletePin(static_cast<size_t>(slotCopy));
+  });
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::savePin(const char* key, const char* label) {
+  dropMenuBackdrop();
+  const char* refusal = pinSaveRefusal();
+  if (refusal != nullptr) {
+    // The popup's pixels are still on the panel, so the map has to come back
+    // before the notice lands on top of it.
+    redrawDueMs_ = 0;
+    showBusy();
+    renderCurrent();
+    showPinNotice(refusal);
+    return;
+  }
+
+  char notice[64];
+  if (!pins_.pinSet(key, riderLatE7(), riderLonE7(), MapPins::utcNowOrZero())) {
+    snprintf(notice, sizeof(notice), "%s", tr(STR_PIN_WRITE_FAILED));
+  } else {
+    snprintf(notice, sizeof(notice), tr(STR_PIN_SAVED), label);
+  }
+  // A full frame, not a backdrop restore: the pin belongs in the picture, and
+  // from phase 4 on it is drawn in the same pass as the marker.
+  redrawDueMs_ = 0;
+  showBusy();
+  renderCurrent();
+  showPinNotice(notice);
+}
+
+void MapActivity::deletePin(size_t slot) {
+  dropMenuBackdrop();
+  if (slot >= PinStore::kSlotCount) return;
+  // The label is read before the delete: afterwards the slot is empty and a
+  // foreign key's label lives in the entry that just went away.
+  char label[kPinKeyBytes + 16];
+  snprintf(label, sizeof(label), "%s", pinEntryLabel(pins_.store().at(slot)));
+  const bool ok = pins_.pinDelete(pins_.store().at(slot).key);
+
+  char notice[64];
+  snprintf(notice, sizeof(notice), ok ? tr(STR_PIN_DELETED) : tr(STR_PIN_WRITE_FAILED), label);
+  redrawDueMs_ = 0;
+  showBusy();
+  renderCurrent();
+  showPinNotice(notice);
+}
+
+void MapActivity::showPinOnMap(size_t slot) {
+  dropMenuBackdrop();
+  if (slot >= PinStore::kSlotCount) return;
+  const PinEntry entry = pins_.store().at(slot);
+  if (!entry.present) return;
+
+  // Observation mode wholesale (docs/map-observation-mode.md), rather than a
+  // fourth kind of frame: it already stops the next fix yanking the viewport
+  // back, and the menu's "Follow mode" row already knows how to return to the
+  // rider. GPS keeps being recorded, the route is untouched.
+  if (screenMode_ == MapScreenMode::Follow) {
+    screenMode_ = MapScreenMode::Observe;
+    // The return anchor is the rider, captured before the frame moves -- the same
+    // capture toggleObserveMode() does, and for the same reason: lastLatE7_ is
+    // about to be repointed at the pin.
+    observeReturnLatE7_ = lastLatE7_;
+    observeReturnLonE7_ = lastLonE7_;
+    observeReturnHeading_ = lastHeading_;
+    observeReturnSeq_ = lastDrawnSeq_;
+  }
+  // Already in Observe: the anchor is whatever fix was in effect when the rider
+  // started looking around, which is still the right place to go back to.
+
+  LOG_INF(kLogTag, "show pin %s at %ld,%ld", entry.key, static_cast<long>(entry.latE7), static_cast<long>(entry.lonE7));
+  redrawDueMs_ = 0;
+  showBusy();
+  // anchorHeading_, the heading the frame on the panel was drawn with -- the same
+  // choice panBy() makes, so looking at a pin does not also rotate the map.
+  renderViewport(entry.latE7, entry.lonE7, anchorHeading_, lastDrawnSeq_);
+}
+
+void MapActivity::pinNoticeRect(int& x, int& y, int& w, int& h) const {
+  const int pad = 6;
+  h = renderer.getLineHeight(UI_12_FONT_ID) + pad * 2;
+  w = renderer.getScreenWidth() - kTextX * 2;
+  x = kTextX;
+  // Above the busy badge's clearance line, which is itself above
+  // GUI.drawButtonHints' band -- so the notice never lands on a hint box.
+  y = renderer.getScreenHeight() - kBusyMarginBottom - h - pad;
+}
+
+void MapActivity::showPinNotice(const char* text) {
+  if (text == nullptr || text[0] == '\0') return;
+  clearPinNotice();
+
+  int x = 0, y = 0, w = 0, h = 0;
+  pinNoticeRect(x, y, w, h);
+
+  // Save what it covers, so the notice can go away again without re-reading a
+  // tile. Small (a few KB at 480 px wide), and freed as soon as it is put back.
+  const size_t size = renderer.getRegionByteSize(x, y, w, h);
+  if (size > 0) {
+    auto buffer = makeUniqueNoThrow<uint8_t[]>(size);
+    if (buffer && renderer.copyRegionToBuffer(x, y, w, h, buffer.get(), size)) {
+      pinNoticePatch_ = std::move(buffer);
+      pinNoticePatchSize_ = size;
+      pinNoticePatchRect_ = Rect{x, y, w, h};
+    } else if (!buffer) {
+      LOG_ERR(kLogTag, "pin notice patch unavailable: %u bytes", static_cast<unsigned>(size));
+    }
+  }
+
+  // Opaque, like the compass halo and the busy badge: this lands on live map
+  // lines, not on margin.
+  renderer.fillRect(x, y, w, h, false);
+  renderer.drawRect(x, y, w, h, kBusyBorder, true);
+  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, text);
+  const int textX = x + (w - textWidth) / 2;
+  const int textY = y + (h - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
+  renderer.drawText(UI_12_FONT_ID, textX > x ? textX : x + 4, textY, text, true);
+
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "pin notice window rejected: %d,%d %dx%d", x, y, w, h);
+  }
+  pinNoticeUntilMs_ = millis() + kPinNoticeMs;
+}
+
+void MapActivity::clearPinNotice() {
+  pinNoticeUntilMs_ = 0;
+  if (!pinNoticePatch_) return;
+  const Rect rect = pinNoticePatchRect_;
+  const bool written =
+      renderer.copyBufferToRegion(rect.x, rect.y, rect.width, rect.height, pinNoticePatch_.get(), pinNoticePatchSize_);
+  pinNoticePatch_.reset();
+  pinNoticePatchSize_ = 0;
+  if (!written) {
+    LOG_ERR(kLogTag, "pin notice restore rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+    return;
+  }
+  if (!renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height)) {
+    LOG_ERR(kLogTag, "pin notice clear window rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+  }
+}
+
+void MapActivity::dropBackdropIfPopupOutgrew() {
+  if (!menuBackdrop_) return;
+  const Rect popup = optionPopup_.frameRect(renderer);
+  const Rect saved = menuBackdropRect_;
+  const bool covered = popup.x >= saved.x && popup.y >= saved.y && popup.x + popup.width <= saved.x + saved.width &&
+                       popup.y + popup.height <= saved.y + saved.height;
+  if (covered) return;
+  // Restoring a rect smaller than what is on the panel would leave the previous
+  // popup's frame around the new one, so the backdrop is worth nothing now. The
+  // close then costs a full redraw, which is the behaviour before backdrops
+  // existed.
+  LOG_DBG(kLogTag, "menu backdrop dropped: popup %dx%d outgrew the saved %dx%d", popup.width, popup.height, saved.width,
+          saved.height);
+  dropMenuBackdrop();
 }
 
 void MapActivity::toggleObserveMode() {
@@ -2883,6 +3293,10 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   updateManualHeadingCapture(headingStep);
+  // Before every early return below: a fix held back because Observe mode or the
+  // route overview owns the frame is still a fresh fix, and a pin saved while one
+  // of those is up is saved at it (riderLatE7()).
+  lastFixMs_ = millis();
   if (screenMode_ == MapScreenMode::Observe) {
     // A rider looking around must not have the frame snatched away from under
     // them by the next fix -- same reasoning as overviewShown_ below, just

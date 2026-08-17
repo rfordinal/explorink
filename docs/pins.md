@@ -8,9 +8,10 @@ The requirement, the decisions behind it and the phase plan are in
 here is **read off the code** unless it says otherwise; nothing in the pins path
 has been measured on hardware yet.
 
-Status, 2026-08-17: **phase 1 built** -- the store, the record format, the log and
-the `pin` console commands. No UI, nothing drawn. 34 host tests
-(`test/pins/`).
+Status, 2026-08-17: **phases 1, 2, 3 and 5 built** -- the store, the log, the
+console commands, `OptionPopup` row actions, the Pins UI and Show-on-map.
+Nothing is drawn on the map yet (phase 4) and the off-screen indicators do not
+exist (phase 6). 37 host tests (`test/pins/`). **Nothing has been on hardware.**
 
 ## The files
 
@@ -21,7 +22,9 @@ the `pin` console commands. No UI, nothing drawn. 34 host tests
 | `src/activities/map/PinStore.{h,cpp}` | the active pins and the mutations that produce records | yes |
 | `src/activities/map/PinLogScanner.{h,cpp}` | bytes to lines to records, and the replay | yes |
 | `src/activities/map/PinLog.{h,cpp}` | the only file that touches the card | no (HalStorage) |
+| `src/activities/map/PinGeo.{h,cpp}` | straight-line distance and how it is written | yes |
 | `src/activities/map/MapPins.{h,cpp}` | log-then-apply, and the console's `IMapPinsSource` | no (Arduino) |
+| `src/activities/map/PinLabels.h` | catalogue row to `StrId` | no (I18n) |
 
 "Pure" means no Arduino, no HAL, no SD -- host-testable, and tested
 (`test/pins/PinsTest.cpp`). `PinLog` is the exception on purpose: keeping the
@@ -195,12 +198,146 @@ Newest-first paging costs two scans plus a short read per printed line
 of each line in the window, then each line is read back at its offset. The file
 only reads forwards, and 4 bytes an offset is cheaper than 44 bytes a record.
 
+## The UI
+
+All of it is `OptionPopup` inside `MapActivity` -- no Pins activity. A separate
+activity would drop the BLE peripheral, because this screen owns it for exactly
+its own lifetime (`MapActivity::onExit()` calls `BlePositionServer::end()`), and
+coming back would cost a full redraw.
+
+Entry is a **`Pins` row in the CONFIRM menu**, above the settings toggles, with
+the saved count in the value column. Long-press SELECT is still deferred: no long
+press exists anywhere in this firmware.
+
+### Row actions: LEFT deletes, SELECT shows, RIGHT replaces
+
+`OptionPopup` learned per-row actions for this (`OptionPopup.h`,
+`setRowActions()`). The front Left and Right buttons are **not free** in a popup
+-- they are aliases for scrolling (`NavNext` is side Down *or* front Right) -- so
+the Pins list does not gain buttons, it takes that pair away from scrolling:
+
+- selection moves on the screen's up/down pair (`Button::ScreenUp` /
+  `ScreenDown`),
+- the screen's left/right pair acts on the selected row.
+
+Everything goes through the `Screen*` buttons and `mapDirectionalLabels()`, never
+raw `Left`/`Right` with `mapLabels()`: the physical pair swaps in INVERTED and
+LANDSCAPE_CCW, and a label on the wrong button means Delete under a hint that
+said Replace. **Read off `MappedInputManager.cpp:20-50`, not yet checked on a
+rotated panel.**
+
+The four-box hint bar has no slot for the side buttons, so the popup draws its own
+side hints through the theme (`setSideHints()`, arrows chosen for the theme's 90°
+CW text rotation, the same correction `drawPanSideHints()` verified on hardware).
+Those boxes land outside the dialog, so the menu close refreshes a taller window
+than the backdrop rect (`restoreMenuBackdrop()`).
+
+Opt-in per popup, and every `show()` clears it: a menu that inherited a list's
+row actions would delete a pin from a row that means something else.
+
+### The two lists
+
+```
+Pins                          Add / Replace
++ Add / Replace               Base          2.6 km
+Base              2.6 km      Parking       1.2 km
+Parking           1.2 km      Destination
+Camp                   -      Meet
+#1                890 m       Camp          890 m
+                              #1 ... #5
+```
+
+- The Pins list shows **existing pins only**; an empty slot lives in Add /
+  Replace. With nothing saved, the list is the one Add row -- ten rows saying
+  "empty" would be worse.
+- The distance column is the popup's existing value column
+  (`showWithValues()`), and it is `-` when there is no fix to measure from.
+  Never `0 m`: zero is a real distance and reads as "you are standing on it".
+- Add / Replace lists all ten catalogue slots and scrolls inside the popup's
+  six-row window. List length costs one refresh per selection step and no RAM
+  (`BaseTheme::optionPopupGeometry()`).
+- A pin whose key this build does not know shows the raw key, and can still be
+  shown, replaced and deleted.
+
+### What is confirmed, and what a save refuses
+
+- **Replace is always confirmed** -- `Replace Parking with current location?`,
+  `Cancel` first so the destructive row is never under the cursor.
+- **Delete is always confirmed.** Nothing on the card is erased; a `del` record
+  is appended.
+- **An empty slot saves with no confirmation** -- unless the fix is old, and then
+  it asks anyway, with the age in the question: `Replace Camp with current
+  location? (fix 7 min old)`. This is a deliberate addition to the plan, which
+  said an empty slot never confirms. An unconfirmed save on a stale fix records
+  where the rider *was*, and by the time a notice could say so the position is
+  already written.
+- **No fix at all refuses**, with a reason, and never writes 0,0.
+- "Old" is `MapActivity::kPinStaleFixMs`, 2 minutes, or any frame still showing
+  the fix restored from the card. **Not measured, and not the answer to "how old
+  is too old"** -- that stays open in `pins-plan.md`. Two minutes is simply longer
+  than the phone's own send interval at any speed.
+
+The position saved is the **rider's**, not the frame's: in Observe mode
+`lastLatE7_` is wherever the rider panned to, so a save reads
+`observeReturnLatE7_` instead (`MapActivity::riderLatE7()`).
+
+### Feedback after a save
+
+A short boxed line above the button hints -- `Camp saved`, `Camp deleted`, or the
+reason nothing was saved. It saves the pixels it covers and refreshes only its own
+rectangle, so it costs one small window refresh and leaves the map up, and the
+patch is what lets it disappear again 2.5 s later (or on the first button) without
+re-reading a tile. Same technique as the marker patch.
+
+The distance line the original sketch had is dropped: a pin saved at the current
+position is always 0 m.
+
+### Show on map
+
+Reuses observation mode wholesale (`docs/map-observation-mode.md`): render the
+viewport around the pin's coordinate, switch to `MapScreenMode::Observe` so the
+next fix does not yank the frame back, keep the frame's heading
+(`anchorHeading_`, the same choice `panBy()` makes, so looking at a pin does not
+also rotate the map). GPS keeps being recorded; the route and navigation are
+untouched.
+
+Return already existed: the menu's `Follow mode` row renders around the stored
+return anchor, which `showPinOnMap()` captures from the rider's fix *before* the
+frame moves.
+
+The pin is not highlighted yet -- nothing draws a pin at all until phase 4.
+
+## Distance
+
+Straight line, never routing. Equirectangular with a `cos(latitude)` scale taken
+at the **midpoint** latitude, so the answer does not depend on the argument order.
+
+Integer only, no libm, no float: the ESP32-C3 is RV32IMC and every float is
+soft-float. The cosine is a 91-entry `uint16` table (182 bytes of flash) scaled by
+1024 and interpolated linearly; the square root is the bit-by-bit integer method.
+
+Checked against the haversine formula on a 6,371,008.8 m sphere at six
+separations, 0 m to 33 km, all within 1 % (`test/pins/PinsTest.cpp`,
+`PinGeo.KnownSeparationsAreWithinAPercent`). The 1 % is dominated by the constant
+this code uses for a degree (111,320 m, the WGS84 equatorial figure) against the
+mean-radius one haversine uses -- 0.11 % -- plus the projection's own error, which
+grows with separation. Both are far below the 10 m the result is rounded to.
+
+Written as `820 m` (10 m steps) below 1 km, `4.2 km` below 10 km, `37 km` above.
+999 m prints as `1.0 km`, not `1000 m`.
+
 ## What is not built yet
 
-Phases 2-7 of `pins-plan.md`: the `OptionPopup` row actions, the Pins UI, the
-icons and in-viewport drawing, Show-on-map, the off-screen indicators and their
-measurement. The phone side stays a wire path -- `pin set` exists, no app uses
-it.
+Phases 4, 6 and 7 of `pins-plan.md`: the icons and in-viewport drawing, the
+off-screen indicators and their measurement, and the merge pass. The phone side
+stays a wire path -- `pin set` exists, no app uses it. The Pin History UI and
+Restore stay deferred; `pin log` plus `pin set` recover a pin today.
+
+**Nothing in this feature has run on the panel.** Every geometry and button claim
+above is read off the code. What a hardware pass has to check: the row actions in
+a rotated orientation, that the side hints do not look broken, that the notice
+patch restores cleanly, and free heap with the Pins list open (the map sits around
+54 KB free and the backdrop already spends ~9 KB of it).
 
 Pins will be drawn by `MapActivity`, not `MapRenderer`, so the webapp's firmware
 preview panel will not show them (parent `docs/device-preview.md`).

@@ -15,6 +15,7 @@
 #include "MapCommandConsole.h"
 #include "MapCommandParser.h"
 #include "PinCatalog.h"
+#include "PinGeo.h"
 #include "PinLogScanner.h"
 #include "PinRecord.h"
 #include "PinStore.h"
@@ -394,6 +395,63 @@ TEST(PinLogReplay, RecordsWithNoClockKeepTheirUptimeOrdering) {
   ASSERT_NE(store.find("camp"), nullptr);
   EXPECT_EQ(store.find("camp")->utc, 0u);
   EXPECT_EQ(store.find("camp")->latE7, 110000000) << "the later uptime is the later record";
+}
+
+// ------------------------------------------------------------- the distance
+
+TEST(PinGeo, KnownSeparationsAreWithinAPercent) {
+  // Reference values from the haversine formula on a 6,371,008.8 m sphere,
+  // computed off-device. The approximation is equirectangular, so the check is a
+  // tolerance and not equality -- what matters is that the error is far below
+  // what a rider can read off a 10 m-rounded number.
+  struct Case {
+    int32_t lat1E7, lon1E7, lat2E7, lon2E7;
+    uint32_t expectM;
+  };
+  const Case cases[] = {
+      {484372000, 170186000, 484372000, 170186000, 0},      // same point
+      {484372000, 170186000, 484462000, 170186000, 1001},   // 0.0009 deg north
+      {484372000, 170186000, 484372000, 170322000, 1003},   // due east at 48.4 N
+      {484372000, 170186000, 485372000, 171186000, 13340},  // a diagonal
+      {484372000, 170186000, 481486000, 171096000, 32789},  // Bratislava-ish to 32 km away
+      {0, 0, 0, 1000000, 11120},                            // on the equator
+  };
+  for (const Case& c : cases) {
+    const uint32_t got = PinGeo::distanceM(c.lat1E7, c.lon1E7, c.lat2E7, c.lon2E7);
+    const uint32_t tolerance = c.expectM / 100 + 2;  // 1 % plus rounding
+    EXPECT_NEAR(got, c.expectM, tolerance) << c.expectM << " m case";
+    // Order must not change the answer: the cos() scale is taken at the midpoint.
+    EXPECT_EQ(PinGeo::distanceM(c.lat2E7, c.lon2E7, c.lat1E7, c.lon1E7), got);
+  }
+}
+
+TEST(PinGeo, TheAntimeridianIsTakenTheShortWay) {
+  const uint32_t across = PinGeo::distanceM(0, 1799000000, 0, -1799000000);
+  EXPECT_NEAR(across, 22239u, 300u) << "two points either side of 180 deg are close, not 40,000 km apart";
+}
+
+TEST(PinGeo, FormatsTheWayTheListsShowIt) {
+  char buf[16];
+  PinGeo::formatDistance(0, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "0 m");
+  PinGeo::formatDistance(7, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "10 m");
+  PinGeo::formatDistance(824, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "820 m");
+  PinGeo::formatDistance(999, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "1.0 km") << "999 m must not print as 1000 m";
+  PinGeo::formatDistance(1000, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "1.0 km");
+  PinGeo::formatDistance(4249, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "4.2 km");
+  PinGeo::formatDistance(9999, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "10.0 km");
+  PinGeo::formatDistance(37400, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "37 km");
+  // A buffer too small writes nothing rather than half a number.
+  char tiny[4] = {'x', 'x', 'x', 'x'};
+  PinGeo::formatDistance(1234, tiny, sizeof(tiny));
+  EXPECT_STREQ(tiny, "");
 }
 
 // -------------------------------------------------------------- the grammar

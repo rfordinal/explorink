@@ -3,6 +3,7 @@ add_executable(PinsTest
   ${REPO_ROOT}/src/activities/map/PinRecord.cpp
   ${REPO_ROOT}/src/activities/map/PinStore.cpp
   ${REPO_ROOT}/src/activities/map/PinLogScanner.cpp
+  ${REPO_ROOT}/src/activities/map/PinGeo.cpp
   ${REPO_ROOT}/src/activities/map/MapCommandParser.cpp
   ${REPO_ROOT}/src/activities/map/MapCommandConsole.cpp
   ${REPO_ROOT}/src/activities/map/HeldTilesStore.cpp
