@@ -2718,6 +2718,9 @@ void MapActivity::servicePendingPinPopup() {
     case PinPopup::AddList:
       openPinsAddList();
       return;
+    case PinPopup::Offscreen:
+      openPinsOffscreenList();
+      return;
     case PinPopup::ConfirmSet:
       confirmPinReplaceSlot(arg);
       return;
@@ -2733,6 +2736,76 @@ void MapActivity::servicePendingPinPopup() {
   }
 }
 
+bool MapActivity::pinEdgeMarkerEnabled(const PinEntry& entry) const {
+  // A key this build does not know has no bit of its own and follows the master --
+  // wrong-but-visible beats a pin that silently has no marker (PinCatalog.h, the
+  // unknown-key rule).
+  if (entry.catalogIndex >= kPinSlotCount) return true;
+  return (SETTINGS.mapPinsOffscreenMask & (1u << entry.catalogIndex)) != 0;
+}
+
+size_t MapActivity::pinEdgeMarkerCount() const {
+  size_t on = 0;
+  for (size_t slot = 0; slot < PinStore::kSlotCount; ++slot) {
+    const PinEntry& entry = pins_.store().at(slot);
+    if (entry.present && pinEdgeMarkerEnabled(entry)) ++on;
+  }
+  return on;
+}
+
+void MapActivity::openPinsOffscreenList() {
+  // One row per saved pin plus `All` for the master switch. Only saved pins: a bit
+  // for a slot with nothing in it is a setting for a pin that does not exist.
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  const size_t count = pins_.pinCount();
+  options.reserve(count + 1);
+  values.reserve(count + 1);
+
+  const bool master = SETTINGS.mapPinsOffscreen != 0;
+  options.push_back(tr(STR_PIN_OFFSCREEN_ALL));
+  values.emplace_back(I18N.get(master ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
+
+  for (size_t row = 0; row < count; ++row) {
+    const PinEntry& entry = pins_.store().at(pinSlotForRow(row));
+    options.emplace_back(pinEntryLabel(entry));
+    if (!master) {
+      // Not "Off": the bit is whatever it is, the master is simply overriding it.
+      // A dash says that without needing a greyed-out row, which this popup cannot
+      // draw.
+      values.emplace_back("-");
+    } else {
+      values.emplace_back(I18N.get(pinEdgeMarkerEnabled(entry) ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
+    }
+  }
+
+  optionPopup_.showWithValues(StrId::STR_PIN_OFFSCREEN, options, values, pinsOffscreenRow_, [this](int idx) {
+    if (idx == 0) {
+      SETTINGS.mapPinsOffscreen = SETTINGS.mapPinsOffscreen ? 0 : 1;
+    } else {
+      const size_t slot = pinSlotForRow(static_cast<size_t>(idx - 1));
+      const PinEntry& entry = pins_.store().at(slot);
+      if (entry.catalogIndex < kPinSlotCount) {
+        SETTINGS.mapPinsOffscreenMask ^= static_cast<uint16_t>(1u << entry.catalogIndex);
+      }
+    }
+    SETTINGS.saveToFile();
+    // The map underneath is now wrong -- a marker appeared or went away -- so the
+    // backdrop is worth nothing and the close has to render a real frame. Dropping
+    // it is how that happens: every dismiss path falls back to renderCurrent() when
+    // there is nothing saved.
+    dropMenuBackdrop();
+    // Reopened rather than left closed, so a rider can flip several in one visit.
+    // Through the pending mechanism, never a show() from inside this callback
+    // (PinPopup).
+    pinsOffscreenRow_ = static_cast<uint8_t>(idx);
+    pendingPinPopup_ = PinPopup::Offscreen;
+  });
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
 void MapActivity::openPinsMenu() {
   std::vector<std::string> options;
   std::vector<std::string> values;
@@ -2746,6 +2819,18 @@ void MapActivity::openPinsMenu() {
   options.push_back(tr(STR_PIN_ADD));
   values.emplace_back();
 
+  // How many pins would put a marker on the edge, out of how many are saved. The
+  // row is here rather than in the map menu because it belongs to the pins, and the
+  // map menu is already eleven rows long.
+  const int offscreenIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_PIN_OFFSCREEN));
+  {
+    char ratio[16];
+    snprintf(ratio, sizeof(ratio), "%u/%u", static_cast<unsigned>(SETTINGS.mapPinsOffscreen ? pinEdgeMarkerCount() : 0),
+             static_cast<unsigned>(count));
+    values.emplace_back(ratio);
+  }
+
   char distance[16];
   for (size_t row = 0; row < count; ++row) {
     const PinEntry& entry = pins_.store().at(pinSlotForRow(row));
@@ -2754,15 +2839,20 @@ void MapActivity::openPinsMenu() {
     values.emplace_back(distance);
   }
 
-  optionPopup_.showWithValues(StrId::STR_MAP_PINS, options, values, 0, [this](int idx) {
+  optionPopup_.showWithValues(StrId::STR_MAP_PINS, options, values, 0, [this, offscreenIdx](int idx) {
     if (idx == 0) {
       pendingPinPopup_ = PinPopup::AddList;
+      return;
+    }
+    if (idx == offscreenIdx) {
+      pinsOffscreenRow_ = 0;
+      pendingPinPopup_ = PinPopup::Offscreen;
       return;
     }
     // Show is not a popup, but it renders a frame -- and rendering from inside
     // handleInput() would draw under the popup that is still on the panel. Same
     // deferral, same reason.
-    pendingPinArg_ = static_cast<uint8_t>(pinSlotForRow(static_cast<size_t>(idx - 1)));
+    pendingPinArg_ = static_cast<uint8_t>(pinSlotForRow(pinRowToListIndex(idx)));
     pendingPinPopup_ = PinPopup::Show;
   });
   // Row actions, so Delete and Replace are one press each instead of a submenu
@@ -2773,15 +2863,16 @@ void MapActivity::openPinsMenu() {
   actions.rightLabel = tr(STR_REPLACE);
   actions.confirmLabel = tr(STR_SHOW);
   actions.onLeft = [this](int idx) {
-    // Row 0 is Add / Replace: there is no pin under it to delete, and a press
-    // that silently does nothing is better than one that deletes the first pin.
-    if (idx <= 0) return;
-    pendingPinArg_ = static_cast<uint8_t>(pinSlotForRow(static_cast<size_t>(idx - 1)));
+    // The rows above the pins (Add / Replace, Off-screen markers) have no pin under
+    // them to delete, and a press that silently does nothing is better than one that
+    // deletes the first pin.
+    if (idx < kPinListFirstPinRow) return;
+    pendingPinArg_ = static_cast<uint8_t>(pinSlotForRow(pinRowToListIndex(idx)));
     pendingPinPopup_ = PinPopup::ConfirmDelete;
   };
   actions.onRight = [this](int idx) {
-    if (idx <= 0) return;
-    pendingPinArg_ = static_cast<uint8_t>(pinSlotForRow(static_cast<size_t>(idx - 1)));
+    if (idx < kPinListFirstPinRow) return;
+    pendingPinArg_ = static_cast<uint8_t>(pinSlotForRow(pinRowToListIndex(idx)));
     pendingPinPopup_ = PinPopup::ConfirmSet;
   };
   optionPopup_.setRowActions(std::move(actions));
@@ -3100,6 +3191,7 @@ void MapActivity::drawPins() {
     const PinShapeFrame& upright = kPinShapeFrames[0];
     if (sx < -upright.w || sy < -upright.h || sx > screenW + upright.w || sy > screenH + upright.h) {
       if (!wantEdges) continue;
+      if (!pinEdgeMarkerEnabled(entry)) continue;
       double ex = 0.0;
       double ey = 0.0;
       // Clipped to the area nothing else on this screen owns (pinEdgeArea()), not

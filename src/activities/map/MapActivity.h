@@ -491,7 +491,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // show() from there reassigns the very std::function that is executing -- it
   // destroys the running callable under its own call. So a callback records what
   // it wants here and returns, and loop() opens it one iteration later.
-  enum class PinPopup : uint8_t { None, List, AddList, ConfirmSet, ConfirmDelete, Show, Save };
+  enum class PinPopup : uint8_t { None, List, AddList, Offscreen, ConfirmSet, ConfirmDelete, Show, Save };
   PinPopup pendingPinPopup_ = PinPopup::None;
   uint8_t pendingPinArg_ = 0;
   // The map menu's own dialog size, so every pins list opens at exactly that size
@@ -499,6 +499,9 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // in the middle of the previous one reads as a different kind of dialog rather
   // than the next step of the same one, and a same-or-smaller dialog keeps the
   // menu backdrop valid, which is what makes the close cheap.
+  // Which row the off-screen list reopens on after a toggle, so flipping four pins
+  // does not walk back down the list four times.
+  uint8_t pinsOffscreenRow_ = 0;
   int menuDialogWidth_ = 0;
   int menuVisibleRows_ = 0;
 
@@ -519,6 +522,16 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Add / Replace: all ten catalogue slots, so an empty one can be filled. An
   // empty slot saves straight away; an occupied one is confirmed.
   void openPinsAddList();
+  // One row per saved pin plus `All`: which pins may put a marker on the edge when
+  // they are outside the viewport (CrossPointSettings::mapPinsOffscreenMask). SELECT
+  // toggles and reopens the list, so several can be flipped in one visit.
+  void openPinsOffscreenList();
+  bool pinEdgeMarkerEnabled(const PinEntry& entry) const;
+  size_t pinEdgeMarkerCount() const;
+  // The Pins list carries two rows above the pins (Add / Replace, Off-screen
+  // markers), so a row index is not a pin index. One place converts.
+  static constexpr int kPinListFirstPinRow = 2;
+  static size_t pinRowToListIndex(int row) { return static_cast<size_t>(row - kPinListFirstPinRow); }
   // A Replace is always confirmed, from either list. One entry point for both:
   // a catalogue row and a store slot are the same index for every key this build
   // knows, and the slots above the catalogue hold foreign keys, which this handles

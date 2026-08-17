@@ -97,6 +97,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     mapZoomSteps.add(mapZoomStep[mode]);
     mapMarkerSteps.add(mapMarkerStep[mode]);
   }
+  // Not in SettingsList (edited from the map's Pins list), so it is saved here.
+  doc["mapPinsOffscreenMask"] = mapPinsOffscreenMask;
   doc["mapHasLastFix"] = mapHasLastFix;
   doc["mapLastLatE7"] = mapLastLatE7;
   doc["mapLastLonE7"] = mapLastLonE7;
@@ -214,6 +216,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
                                   kDefaultMarkerStepForMode[mode]);
     }
   }
+  // Defaults to every bit set: a file written before this existed must behave the
+  // way it did then, which is "the master decides for all of them".
+  mapPinsOffscreenMask = doc["mapPinsOffscreenMask"] | (uint16_t)0xFFFF;
   mapHasLastFix = doc["mapHasLastFix"] | false;
   mapLastLatE7 = doc["mapLastLatE7"] | 0;
   mapLastLonE7 = doc["mapLastLonE7"] | 0;
