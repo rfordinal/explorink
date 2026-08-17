@@ -9,8 +9,9 @@ on them.
 
 ## The ladder
 
-`src/activities/map/MapViewport.h:70-79` is the table. Ground metres per pixel,
-and the LOD each rung reads:
+`src/activities/map/MapViewport.h:117-126` is the table (line numbers drift as
+the file grows — re-check with `grep -n kZoomLadder` before citing them again).
+Ground metres per pixel, and the LOD each rung reads:
 
 | rung | m/px | LOD | panel covers | marker scale | move floor |
 |---|---|---|---|---|---|
@@ -230,3 +231,19 @@ hand -- the same pattern `partialMoveBudget` already used, and what keeps
 `zoom 0..6` over BLE and USB (`MapCommandParser.cpp:13`, bounds taken off
 `MapViewport::kZoomStepCount`, not repeated). `marker 0..4`, off the marker
 count. `map_preview --zoom 0..6` likewise.
+
+## The phone learns the rung too, as a distance
+
+Since 2026-08-17, `MapActivity::sendViewportDiagonalIfChanged()`
+(`MapActivity.cpp`, called from `renderViewport()` right after
+`consoleState_.setZoomInfo()`) pushes one unsolicited line, `DIAG_M
+<metres>`, over the BLE command channel whenever the rung changes and once
+per reconnect. `<metres>` is `ladder[step].mpp * sqrt(screenWidthPx^2 +
+screenHeightPx^2)` — the ground distance the screen's diagonal represents,
+not the rung index and not a width, so a phone never needs this file's own
+table, and it stays correct on a differently-sized or landscape panel
+without a firmware or app change. Wire format and the reasoning for
+diagonal-over-index:
+`../../docs/ble-map-transfer-protocol.md`, "Viewport diagonal". What the
+phone does with it: `../../docs/send-interval-analysis.md` (parent repo),
+`android/README.md`, "Send policy".

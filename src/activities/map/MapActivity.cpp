@@ -784,6 +784,39 @@ void MapActivity::askForViewportTiles(uint32_t count) {
   LOG_INF(kLogTag, "autosync: asked for %lu tiles on screen", static_cast<unsigned long>(count));
 }
 
+void MapActivity::sendViewportDiagonalIfChanged() {
+  const bool subscribed = freeink::BlePositionServer::getInstance().isCommandSubscribed();
+  if (!subscribed) {
+    // Not an error -- the rider may not have the app open. The reconnect
+    // edge below is what makes sure the phone gets a fresh value once it is.
+    lastDiagSubscribed_ = false;
+    return;
+  }
+
+  const uint8_t step = zoomStep();
+  const bool justSubscribed = !lastDiagSubscribed_;
+  lastDiagSubscribed_ = true;
+  if (step == lastSentDiagZoomStep_ && !justSubscribed) return;
+
+  // mpp is ground metres per pixel at this rung; the diagonal in pixels is
+  // fixed by the panel's own resolution, orientation-aware on purpose so a
+  // future landscape or higher-res device (X4 Pro, X3, ...) needs no change
+  // here -- see MapActivity.cpp's other renderer.getScreenWidth()/Height()
+  // call in renderViewport(), same reasoning.
+  const double mpp = MapViewport::kZoomLadder[step].mpp;
+  const double widthPx = static_cast<double>(renderer.getScreenWidth());
+  const double heightPx = static_cast<double>(renderer.getScreenHeight());
+  const double diagonalM = mpp * std::sqrt(widthPx * widthPx + heightPx * heightPx);
+
+  char line[32];
+  snprintf(line, sizeof(line), "DIAG_M %.1f", diagonalM);
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "DIAG_M not delivered");
+    return;
+  }
+  lastSentDiagZoomStep_ = step;
+}
+
 void MapActivity::drainTransferredTiles() {
   const MapTransferReceiver::Status transfer = transfer_.status();
   if (!transfer.lastTileValid || transfer.tileSeq == lastClearedTileSeq_) return;
@@ -3387,6 +3420,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   consoleState_.setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted(),
                                source_->bytesRead(), source_->waysFiltered());
   consoleState_.setZoomInfo(zoomStep(), range.z, MapViewport::kZoomLadder[zoomStep()].mpp);
+  sendViewportDiagonalIfChanged();
 
   // Composited last, over the map's own bottom-edge pixels rather than into
   // reserved space -- same idea as the debug readout at the top of the

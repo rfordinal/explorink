@@ -358,6 +358,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // the phone to answer from `tiles` (this screen) rather than page `missing`
   // (the tile sync screen). docs/ble-map-transfer-protocol.md.
   void askForViewportTiles(uint32_t count);
+  // `DIAG_M <metres>` -- the ground distance the current zoom rung's screen
+  // diagonal represents, so the phone can size its GPS send-move threshold to
+  // what the panel can actually show instead of one constant guessing at every
+  // rung (docs/send-interval-analysis.md in the parent repo). Sent once per
+  // rung change and once per reconnect; no-op otherwise. No reply expected,
+  // same shape as FETCH_CANCEL, not a listing -- docs/ble-map-transfer-protocol.md.
+  void sendViewportDiagonalIfChanged();
   // Clears MissingTilesStore entries for tiles that have landed, and settles
   // them against the outstanding ask.
   //
@@ -683,6 +690,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // asks, the deadline is the give-up on one ask.
   uint32_t autoSyncNextAskMs_ = 0;
   uint32_t autoSyncDeadlineMs_ = 0;
+  // Last zoom step a DIAG_M line was actually sent for, and whether the phone
+  // was subscribed at that time -- see sendViewportDiagonalIfChanged(). 0xFF
+  // is "never sent", so the first render on a fresh connection always sends
+  // regardless of which step it lands on.
+  uint8_t lastSentDiagZoomStep_ = 0xFF;
+  bool lastDiagSubscribed_ = false;
   // Last tileSeq already cleared out of the store (drainTransferredTiles()).
   uint32_t lastClearedTileSeq_ = 0;
   // Deadline for the redraw a tile arrival owes, pushed out by each further
