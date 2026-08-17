@@ -8,6 +8,7 @@
 #include "CrossPointSettings.h"
 #include "HalFileSource.h"
 #include "MapBleConsole.h"
+#include "MapCommandConsole.h"
 #include "MapFollow.h"
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
@@ -320,7 +321,34 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // already in flight and the rate cap has expired. Called from loop(), never
   // from the render path: the hatch loop only records what it would be worth
   // asking for (autoSyncWantCount_).
+  //
+  // Falls back to recheckHatchedTiles() when nothing was freshly hatched this
+  // tick -- see that method for why a full re-render is not what this waits
+  // for.
   void maybeAutoSyncTiles();
+  // Re-derives autoSyncWantCount_ from the last reset's own tile range and
+  // missing mask (lastTileRange_), instead of a fresh hatch.
+  //
+  // Why this exists: drawMapLayers() is the only place a tile's refusal is
+  // re-checked against the clock (MapActivity.cpp, MISSING_TILES.isRefused()),
+  // and it only runs on a full renderViewport() reset. Between resets,
+  // MapFollow::Action::MoveMarker slides the marker with no re-render at all
+  // (applyFix()) -- and with a route loaded, that can run for
+  // MapFollow::kRouteFramePartialMoves fixes before a ReAnchor forces one
+  // (MapActivity.h, partialMoveBudget()). At a zoomed-out rung and highway
+  // speed that budget was measured taking 15+ minutes to exhaust (2026-08-14
+  // report), which is much longer than a refused tile's own retry delay
+  // (MissingTilesStore::kRefusalBaseMs..kRefusalMaxMs) -- so autosync could go
+  // quiet for a tile the CDN had long since built, for as long as the rider
+  // stayed on a straight leg.
+  //
+  // No card read and no redraw: just isRefused() over a mask already in RAM,
+  // the same handful of integer compares maybeAutoSyncTiles() costs when idle.
+  // Rate-limited the same way a fresh hatch is -- through autoSyncNextAskMs_
+  // in maybeAutoSyncTiles(), not by its own timer -- so this cannot make
+  // autosync ask any more often than it already does; it only changes what
+  // feeds the want count on a tick that had no fresh one.
+  uint32_t recheckHatchedTiles() const;
   // Sibling of maybeAutoSyncTiles(), and deliberately not folded into it: one
   // asks for tiles the device does not have, the other asks whether the ones it
   // does have are still current. Different setting, different cooldown,
@@ -634,6 +662,15 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // already refused by the supplier. 0 means there is nothing to ask for.
   // Written by drawMapLayers(), consumed and cleared by maybeAutoSyncTiles().
   uint32_t autoSyncWantCount_ = 0;
+  // The last reset's own tile range and missing mask, kept for
+  // recheckHatchedTiles() to re-scan between resets. Written only by
+  // renderViewport() (never by renderRouteOverview() -- an overview has no
+  // autosync), so it is stale, on purpose, while the overview or observation
+  // screen is up; recheckHatchedTiles() gates on screenMode_/overviewShown_
+  // rather than trusting valid alone for that reason. A field-for-field copy
+  // of what renderViewport() already builds for consoleState_.setTileRange()
+  // (MapCommandConsole.h, MapTileRangeSnapshot), not a second convention.
+  MapTileRangeSnapshot lastTileRange_;
   // Tiles asked for and not yet settled by an arrival or a `skip`. Non-zero is
   // exactly the condition the globe shows.
   uint32_t autoSyncPending_ = 0;
