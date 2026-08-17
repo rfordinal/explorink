@@ -218,9 +218,15 @@ SETTINGS.sleepScreen == QUICK_RESUME ||
 
 If true, `renderLastScreenSleepScreen()` (`:281-291`) runs instead of anything
 above: it leaves whatever is already on the e-ink panel — from *any* activity,
-reader or not — and overlays a small moon icon bottom-left, using the panel's
-differential refresh (`FAST_REFRESH` on X3, `HALF_REFRESH` on X4/other) so
-the underlying content isn't repainted. This is the one path that is
+reader or not — and overlays a small moon icon bottom-left, without a
+full-screen flash. Only the X3 half of that is differential: X3 gets
+`displayGrayscaleBase(FAST_REFRESH)`, X4 and the rest get
+`displayBuffer(HALF_REFRESH)` (`SleepActivity.cpp:281-291`), which is **not**
+differential — it repaints the whole panel, to the same pixels plus the moon.
+It looks like the content was left alone because the frame it repaints is the
+frame that was already there, not because the pixels were skipped. Which mode
+means what, and why never `FULL_REFRESH`: [`refresh-modes.md`](refresh-modes.md).
+This is the one path that is
 genuinely screen-agnostic: a Map screen frozen with a moon icon on it is a
 real, working sleep screen, not a designed one.
 

@@ -207,6 +207,10 @@ for `FULL_REFRESH`, and on X4 `FULL_REFRESH` selects the OTP full waveform
 `0xF7` (`Ssd1677Driver.cpp:59,186`), which is the multi-flash one. Several
 inversions per refresh, by design of the waveform.
 
+Which mode means what on this hardware, what the driver promotes behind the
+caller's back, and why `FULL` is never the right ask:
+[`refresh-modes.md`](refresh-modes.md).
+
 `HALF_REFRESH` (`0xD7`) is the single-pass absolute clean, and it is the only
 clean primitive stock X4 firmware uses in normal operation -- the driver says so
 (`Ssd1677Driver.cpp:360`) and the sleep screen already relies on it for exactly
@@ -226,18 +230,34 @@ plus one clean pass.
 `Wait complete: refresh (N ms)` line after a `CMD:GOTO_MAP` on a device with a
 persisted fix:
 
-| frame | mode | panel time |
+| frame | mode | waveform |
 |---|---|---|
 | `renderLoadingTiles()` logo | `FAST_REFRESH` | 500 ms |
 | the map | `HALF_REFRESH` | 1,684 ms |
 | the next fix's re-anchor | `FAST_REFRESH` | 500 ms |
 
-Two refreshes at entry, one waveform each -- the multi-flash sequence is gone.
-So `HALF` is **3.4x the panel time of a `FAST`** here, which is the real cost of
-the clean entry frame and is worth knowing: the 500 ms figure in "The refresh"
-above is a `FAST`/windowed number and does not generalise to the absolute
-waveforms. The full `FULL_REFRESH` time was never measured before the change, so
-what `HALF` saves in milliseconds is unknown -- what it removes is the flashing.
+So `HALF`'s waveform is **3.4x a `FAST`'s**, which is worth knowing on its own:
+the 500 ms figure in "The refresh" above is a `FAST`/windowed number and does not
+generalise to the absolute waveforms.
+
+**That column is the waveform, not the frame.** `Wait complete: refresh (N ms)`
+brackets only the BUSY wait after the refresh is triggered (`EpdBus.cpp:220`);
+the controller RAM writes happen before it (`Ssd1677Driver.cpp:398-407`) and are
+not in it. The modes write different amounts: a non-differential mode writes both
+planes before the wait and, in single-buffer mode, both again after to reseed the
+differential baseline; `FAST` writes one. Off the log gaps between `framebuffer
+ready` and the start of each wait -- both frames being full `renderViewport()`
+calls, so the remaining draw work is identical -- that is 95 ms for the `HALF`
+frame against 27 ms for the `FAST` one, which puts ~68 ms of the difference on
+the extra plane writes. Derived from two timestamps, not instrumented directly.
+
+`FULL_REFRESH` was never timed before the change, so what `HALF` saves in
+milliseconds is unknown. **That the flashing is gone is not something the log can
+show** -- one `Wait complete` line per frame does not rule out a multi-inversion
+waveform, because `0xF7` is also one trigger and one BUSY wait, just a longer
+one. The evidence is the mode the code now asks for, plus the maintainer looking
+at the panel on 2026-08-17 and confirming it. For this claim a person's eyes are
+the instrument; nothing in the firmware can be.
 
 ### Entry could also drop the first real fix -- fixed 2026-08-17
 
