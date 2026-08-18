@@ -24,8 +24,15 @@ target_compile_definitions(WalletTest PRIVATE
   WALLET_I18N_DIR="${REPO_ROOT}/lib/I18n/translations"
 )
 
+# OpenSSL is the host's crypto for the P3 tests. The device uses mbedtls, which no
+# host build here links -- the shared arithmetic is bound to one library on each
+# side on purpose, so two independent primitives have to agree on one contract
+# (test/wallet/WalletCryptoHost.h).
+find_package(OpenSSL REQUIRED)
+
 target_link_libraries(WalletTest PRIVATE
   crosspoint_test_common
+  OpenSSL::Crypto
   GTest::gtest_main
 )
 

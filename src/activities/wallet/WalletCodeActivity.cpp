@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "MappedInputManager.h"
+#include "WalletCryptoDevice.h"
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -40,6 +41,16 @@ void WalletCodeActivity::onEnter() {
 
 void WalletCodeActivity::loop() {
   Activity::loop();
+
+  // The wallet key dies if the rider walks away with a wallet screen up. Touched by
+  // any button, so the timeout measures idleness and not how long the screen has
+  // been open (docs/wallet-crypto.md, "The key's lifetime").
+  auto& session = wallet::Session::instance();
+  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()) session.touch();
+  if (session.expireIfIdle()) {
+    onGoHome(HomeMenuItem::WALLET);
+    return;
+  }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();

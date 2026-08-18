@@ -16,7 +16,15 @@
 //
 //   wallet_preview --tree DIR [--panel x4|x3] [--item 0 --page 0
 //                  --level fit|detail|one_to_one --col 0 --row 0]
-//                  [--asset <16 hex>] [--win-x N --win-y N] [--code N] --out PREFIX
+//                  [--asset <16 hex>] [--win-x N --win-y N] [--code N]
+//                  [--key <64 hex>] --out PREFIX
+//
+// `--key` renders an ENCRYPTED tree (P3): it reads `manifest.enc` instead of
+// `manifest.json`, verifies the GCM tag before parsing a byte of it, and decrypts
+// each asset with AES-256-CTR. Windows are decrypted row by row at each row's own
+// payload offset -- the same arithmetic PageReader::readWindow() runs on the device,
+// so a wrong offset comes out as a visibly wrong picture here rather than as noise
+// on the panel.
 //
 // `--code N` renders the item's Nth machine-readable code instead of a document
 // level (P2). It runs the device's own code path: ManifestParser's code lookup,
@@ -37,6 +45,7 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -45,6 +54,8 @@
 #include <vector>
 
 #include "WalletAsset.h"
+#include "WalletCrypto.h"
+#include "WalletCryptoHost.h"
 #include "WalletManifestParser.h"
 #include "WalletSidecar.h"
 
@@ -162,7 +173,42 @@ bool readWholeFile(const std::string& path, std::vector<uint8_t>& out) {
 
 // Feeds the manifest to the real ManifestParser in 256-byte bites, the same
 // bite WalletStore uses on the card.
-bool feedManifest(const std::string& tree, wallet::ManifestParser& parser) {
+//
+// With a key, `manifest.enc` wins and the tag is verified over the whole file
+// before one byte reaches the parser -- the same order the device enforces, and the
+// reason there is no streaming path for an encrypted manifest.
+bool feedManifest(const std::string& tree, wallet::ManifestParser& parser, const uint8_t* key) {
+  if (key != nullptr) {
+    std::vector<uint8_t> blob;
+    const std::string encPath = tree + "/manifest.enc";
+    if (!readWholeFile(encPath, blob)) {
+      std::fprintf(stderr, "no encrypted manifest at %s\n", encPath.c_str());
+      return false;
+    }
+    wallet::ManifestEnvelope envelope;
+    if (!wallet::parseManifestEnvelope(blob.data(), blob.size(), envelope)) {
+      std::fprintf(stderr, "%s is not an EWM1 envelope, or its lengths disagree\n", encPath.c_str());
+      return false;
+    }
+    std::vector<uint8_t> plain(envelope.ciphertextLen);
+    if (!wallet::host::gcmDecrypt(key, envelope.nonce, wallet::kGcmNonceLen, blob.data() + envelope.tagOffset,
+                                  wallet::kGcmTagLen, blob.data() + envelope.ciphertextOffset, envelope.ciphertextLen,
+                                  plain.data())) {
+      std::fprintf(stderr, "manifest does not authenticate: wrong key, or the file was altered\n");
+      return false;
+    }
+    std::printf("manifest.enc: %zu bytes, tag VERIFIED, %u bytes of JSON\n", blob.size(), envelope.plaintextLen);
+    for (size_t at = 0; at < plain.size(); at += 256) {
+      const size_t take = std::min<size_t>(256, plain.size() - at);
+      parser.feed(reinterpret_cast<const char*>(plain.data() + at), take);
+    }
+    if (parser.hasError()) {
+      std::fprintf(stderr, "decrypted manifest did not parse\n");
+      return false;
+    }
+    return true;
+  }
+
   const std::string path = tree + "/manifest.json";
   FILE* fh = std::fopen(path.c_str(), "rb");
   if (fh == nullptr) {
@@ -188,7 +234,7 @@ void usage() {
                "usage: wallet_preview --tree DIR --out PREFIX [--panel x4|x3]\n"
                "                     [--asset <16 hex> | --item N --page N\n"
                "                      --level fit|detail|one_to_one --col N --row N]\n"
-               "                     [--code N]\n");
+               "                     [--code N] [--key <64 hex>]\n");
 }
 
 }  // namespace
@@ -206,6 +252,7 @@ int main(int argc, char** argv) {
   long winX = -1;
   long winY = -1;
   int codeIndex = -1;
+  std::string keyHex;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -234,6 +281,8 @@ int main(int argc, char** argv) {
       winY = std::atol(argv[++i]);
     else if (arg == "--code" && hasNext)
       codeIndex = std::atoi(argv[++i]);
+    else if (arg == "--key" && hasNext)
+      keyHex = argv[++i];
     else {
       usage();
       return 2;
@@ -242,6 +291,16 @@ int main(int argc, char** argv) {
   if (tree.empty() || out.empty()) {
     usage();
     return 2;
+  }
+
+  uint8_t key[wallet::kWalletKeyLen] = {0};
+  bool haveKey = false;
+  if (!keyHex.empty()) {
+    if (!wallet::hexToBytes(keyHex.c_str(), key, sizeof(key))) {
+      std::fprintf(stderr, "--key wants exactly %zu hex characters\n", wallet::kWalletKeyLen * 2);
+      return 2;
+    }
+    haveKey = true;
   }
 
   wallet::PanelGeometry panel = wallet::kPanelX4;
@@ -265,7 +324,7 @@ int main(int argc, char** argv) {
   if (codeIndex >= 0) {
     wallet::ManifestParser parser;
     parser.beginCodeLookup(item, codeIndex);
-    if (!feedManifest(tree, parser)) return 1;
+    if (!feedManifest(tree, parser, haveKey ? key : nullptr)) return 1;
     const wallet::CodeLookup& found = parser.codes();
     std::printf("manifest    : formatVersion %u, walletVersion %u\n", parser.formatVersion(), parser.walletVersion());
     if (!found.itemFound) {
@@ -287,7 +346,7 @@ int main(int argc, char** argv) {
   } else if (assetId.empty()) {
     wallet::ManifestParser parser;
     parser.beginLookup(item, page, level, static_cast<uint8_t>(col), static_cast<uint8_t>(row));
-    if (!feedManifest(tree, parser)) return 1;
+    if (!feedManifest(tree, parser, haveKey ? key : nullptr)) return 1;
     declared = parser.panel();
     const wallet::PageLookup& found = parser.lookup();
     std::printf("manifest    : formatVersion %u, walletVersion %u\n", parser.formatVersion(), parser.walletVersion());
@@ -350,9 +409,10 @@ int main(int argc, char** argv) {
 
   wallet::AssetHeader header;
   const wallet::AssetCheck check =
-      codeIndex >= 0 ? wallet::checkCodeAsset(file.data(), file.size(), panel, header)
-                     : (pageImage.present ? wallet::checkPageImage(file.data(), file.size(), pageImage, panel, header)
-                                          : wallet::checkAssetForPanel(file.data(), file.size(), panel, header));
+      codeIndex >= 0
+          ? wallet::checkCodeAsset(file.data(), file.size(), panel, header, haveKey)
+          : (pageImage.present ? wallet::checkPageImage(file.data(), file.size(), pageImage, panel, header, haveKey)
+                               : wallet::checkAssetForPanel(file.data(), file.size(), panel, header, haveKey));
   std::printf(
       "header      : type %u, bitDepth %u, tile %u,%u, %ux%u, rawLen %u, version %u, flags %u, "
       "presentation %u\n",
@@ -364,6 +424,22 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "refused: %s (panel %ux%u, %u B/row, %u B/asset)\n", names[static_cast<unsigned>(check)],
                  panel.width, panel.height, panel.rowBytes, panel.bufferBytes);
     return 1;
+  }
+
+  const bool encrypted = (header.flags & wallet::kFlagEncrypted) != 0;
+  uint8_t iv[wallet::kAssetIvLen] = {0};
+  if (encrypted) {
+    if (!haveKey) {
+      std::fprintf(stderr, "%s is encrypted; pass --key\n", path);
+      return 1;
+    }
+    if (!wallet::buildAssetIv(assetId.c_str(), header.version, iv)) {
+      std::fprintf(stderr, "cannot build an IV for %s\n", assetId.c_str());
+      return 1;
+    }
+    char ivHex[wallet::kAssetIvLen * 2 + 1];
+    for (size_t i = 0; i < wallet::kAssetIvLen; ++i) std::snprintf(ivHex + i * 2, 3, "%02x", iv[i]);
+    std::printf("crypto      : AES-256-CTR, IV %s (assetId || version %u || 0)\n", ivHex, header.version);
   }
 
   if (!pageImage.present && file.size() < wallet::kAssetHeaderBytes + header.rawLen) {
@@ -398,9 +474,25 @@ int main(int argc, char** argv) {
         return 1;
       }
       std::memcpy(fb.data() + static_cast<size_t>(r) * panel.rowBytes, file.data() + off, panel.rowBytes);
+      if (encrypted) {
+        // Per row, at that row's own payload offset -- the file offset minus the
+        // 32-byte cleartext header. This is PageReader::readWindow()'s arithmetic, and
+        // the reason the format uses CTR at all.
+        const uint32_t payloadOffset = static_cast<uint32_t>(off - wallet::kAssetHeaderBytes);
+        wallet::host::ctrXor(key, iv, payloadOffset, fb.data() + static_cast<size_t>(r) * panel.rowBytes,
+                             panel.rowBytes);
+      }
     }
   } else {
     fb.assign(file.begin() + wallet::kAssetHeaderBytes, file.begin() + wallet::kAssetHeaderBytes + header.rawLen);
+    if (encrypted) {
+      wallet::host::ctrXor(key, iv, 0, fb.data(), fb.size());
+      // The header's prefix covers the PLAINTEXT, so this is where it can be checked --
+      // and on an encrypted asset it is also the wrong-key detector.
+      const wallet::HashResult hash = wallet::checkPayloadHash(fb.data(), fb.size(), nullptr, header.sha256Prefix);
+      std::printf("plaintext   : sha256 prefix %s\n", hash.ok ? "MATCHES the header" : "DOES NOT MATCH -- wrong key?");
+      if (!hash.ok) return 1;
+    }
   }
 
   size_t inked = 0;

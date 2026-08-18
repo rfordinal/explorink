@@ -25,6 +25,8 @@
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
 #include "wallet/WalletActivity.h"
+#include "wallet/WalletCryptoDevice.h"
+#include "wallet/WalletUnlockActivity.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -220,6 +222,15 @@ void ActivityManager::goToRouteSelect() {
 void ActivityManager::goToTileSync() { replaceActivity(std::make_unique<TileSyncActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
+  // An encrypted tree with no key in the session cannot list anything -- the titles
+  // are inside the encrypted manifest -- so the PIN screen comes first and carries
+  // the requested target through the unlock. A cleartext tree, and an already
+  // unlocked one, go straight to the list: a card in the field may be either
+  // (docs/wallet-crypto.md).
+  if (wallet::treeIsEncrypted() && !wallet::Session::instance().hasKey()) {
+    replaceActivity(std::make_unique<WalletUnlockActivity>(renderer, mappedInput, itemIndex, codeIndex));
+    return;
+  }
   replaceActivity(std::make_unique<WalletActivity>(renderer, mappedInput, itemIndex, codeIndex));
 }
 

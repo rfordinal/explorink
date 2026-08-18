@@ -1,5 +1,6 @@
 #include "WalletActivity.h"
 
+#include <Arduino.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -9,6 +10,7 @@
 
 #include "MappedInputManager.h"
 #include "WalletCodeActivity.h"
+#include "WalletCryptoDevice.h"
 #include "WalletViewActivity.h"
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
@@ -40,6 +42,9 @@ void WalletActivity::onEnter() {
     LOG_INF(kLogTag, "no list: error %u", static_cast<unsigned>(error_));
   }
   selected_ = 0;
+  LOG_INF(kLogTag, "heap with the browse list up (%s manifest): %lu free, %lu largest block",
+          wallet::treeIsEncrypted() ? "encrypted" : "cleartext", static_cast<unsigned long>(ESP.getFreeHeap()),
+          static_cast<unsigned long>(ESP.getMaxAllocHeap()));
   // The manifest is read; now, and only now, is it known whether a
   // CMD:GOTO_WALLET index exists. Pushing a child activity from onEnter() is the
   // supported pattern -- pendingActivity is already emptied by then
@@ -59,6 +64,16 @@ void WalletActivity::onExit() {
 
 void WalletActivity::loop() {
   Activity::loop();
+
+  // The wallet key dies if the rider walks away with a wallet screen up. Touched by
+  // any button, so the timeout measures idleness and not how long the screen has
+  // been open (docs/wallet-crypto.md, "The key's lifetime").
+  auto& session = wallet::Session::instance();
+  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()) session.touch();
+  if (session.expireIfIdle()) {
+    onGoHome(HomeMenuItem::WALLET);
+    return;
+  }
 
   const int rows = rowCount();
   bool moved = false;

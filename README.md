@@ -240,6 +240,12 @@ costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, an
 to one peripheral connection gave 9 KB back and put the screen above its 50 KB
 gate.
 
+[`docs/wallet-viewer.md`](./docs/wallet-viewer.md) is the offline document wallet:
+the screens, the pan design, the button map and the fullscreen machine codes.
+[`docs/wallet-crypto.md`](./docs/wallet-crypto.md) is its encryption -- the crypto
+path, the key's lifetime, and the threat boundary, which stops at "card removed" and
+explicitly does **not** cover a device in somebody's hand with a cable.
+
 ## Credits
 
 **This project exists because of

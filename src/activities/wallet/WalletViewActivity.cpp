@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "MappedInputManager.h"
+#include "WalletCryptoDevice.h"
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -44,6 +45,16 @@ void WalletViewActivity::onEnter() {
 void WalletViewActivity::loop() {
   Activity::loop();
 
+  // The wallet key dies if the rider walks away with a wallet screen up. Touched by
+  // any button, so the timeout measures idleness and not how long the screen has
+  // been open (docs/wallet-crypto.md, "The key's lifetime").
+  auto& session = wallet::Session::instance();
+  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()) session.touch();
+  if (session.expireIfIdle()) {
+    onGoHome(HomeMenuItem::WALLET);
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -62,14 +73,12 @@ void WalletViewActivity::loop() {
   // The steps are named for what the rider feels, not for a native axis. See the
   // axis note above stepView(): `windowStepX` is a step DOWN the document and
   // `windowStepY` a step ACROSS it, because the payload is stored rotated.
-  const int stepDown =
-      usingPageImage_
-          ? static_cast<int>(page_.spec().windowStepX > 0 ? page_.spec().windowStepX : renderer.getDisplayWidth())
-          : 1;
-  const int stepAcross =
-      usingPageImage_
-          ? static_cast<int>(page_.spec().windowStepY > 0 ? page_.spec().windowStepY : renderer.getDisplayHeight())
-          : 1;
+  const int stepDown = usingPageImage_ ? static_cast<int>(page_.spec().windowStepX > 0 ? page_.spec().windowStepX
+                                                                                       : renderer.getDisplayWidth())
+                                       : 1;
+  const int stepAcross = usingPageImage_ ? static_cast<int>(page_.spec().windowStepY > 0 ? page_.spec().windowStepY
+                                                                                         : renderer.getDisplayHeight())
+                                         : 1;
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
     if (stepView(0, +stepAcross)) showCurrent(HalDisplay::FAST_REFRESH);
@@ -337,12 +346,12 @@ void WalletViewActivity::drawFailure(const HalDisplay::RefreshMode mode) {
                  title_[0] != '\0' ? title_ : tr(STR_WALLET), nullptr);
 
   int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 2;
-  renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, wallet::errorText(error_), true,
-                    EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, wallet::errorText(error_), true, EpdFontFamily::BOLD);
   y += lineHeight * 2;
 
   char where[80];
-  snprintf(where, sizeof(where), tr(STR_WALLET_PAGE_OF), pageIndex_ + 1, static_cast<int>(pageCount_ > 0 ? pageCount_ : 1));
+  snprintf(where, sizeof(where), tr(STR_WALLET_PAGE_OF), pageIndex_ + 1,
+           static_cast<int>(pageCount_ > 0 ? pageCount_ : 1));
   renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, where, true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_WALLET_LEVEL), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
