@@ -253,8 +253,8 @@ Measured against the branch point `51bfbbc0`, `pio run -e default`,
 
 | | baseline | with the wallet | delta |
 |---|---|---|---|
-| `firmware.bin` | 3,939,600 | 3,949,408 | **+9,808** |
-| `.flash.text` | 2,171,060 | 2,178,692 | +7,632 |
+| `firmware.bin` | 3,939,600 | 3,949,392 | **+9,792** |
+| `.flash.text` | 2,171,060 | 2,178,670 | +7,610 |
 | `.flash.rodata` | 1,649,008 | 1,651,192 | +2,184 |
 | `.dram0.data` | 18,145 | 18,145 | **0** |
 | `.dram0.bss` | 40,152 | 40,152 | **0** |
