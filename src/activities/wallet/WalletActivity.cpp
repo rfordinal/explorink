@@ -23,8 +23,9 @@ constexpr int kRowGap = 8;
 
 }  // namespace
 
-WalletActivity::WalletActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : Activity("Wallet", renderer, mappedInput) {}
+WalletActivity::WalletActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const int openItem,
+                               const int openCode)
+    : Activity("Wallet", renderer, mappedInput), openItem_(openItem), openCode_(openCode) {}
 
 void WalletActivity::onEnter() {
   Activity::onEnter();
@@ -39,6 +40,11 @@ void WalletActivity::onEnter() {
     LOG_INF(kLogTag, "no list: error %u", static_cast<unsigned>(error_));
   }
   selected_ = 0;
+  // The manifest is read; now, and only now, is it known whether a
+  // CMD:GOTO_WALLET index exists. Pushing a child activity from onEnter() is the
+  // supported pattern -- pendingActivity is already emptied by then
+  // (ActivityManager.cpp:153-159).
+  if (applyGotoTarget()) return;
   // HALF on entry: the panel is carrying whatever screen came before, and a
   // differential refresh cannot clear what it never saw
   // (../../../docs/refresh-modes.md).
@@ -83,11 +89,11 @@ void WalletActivity::loop() {
   // ring the code screen cycles. One code: either button opens it. No codes: both
   // do nothing, which is why the row says how many there are.
   if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    openCode(0);
+    openCodeStep(+1);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    openCode(-1);
+    openCodeStep(-1);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -111,7 +117,7 @@ void WalletActivity::openSelected() {
       [this](const ActivityResult&) { renderScreen(HalDisplay::HALF_REFRESH); });
 }
 
-void WalletActivity::openCode(const int which) {
+void WalletActivity::openCodeStep(const int delta) {
   if (stored_ == 0) return;
   if (selected_ < 0 || selected_ >= static_cast<int>(stored_)) return;
 
@@ -123,12 +129,53 @@ void WalletActivity::openCode(const int which) {
     LOG_INF(kLogTag, "item %d has no codes", selected_);
     return;
   }
-  // `which` is an index from the front (0) or from the back (-1).
-  const int codeIndex = which >= 0 ? which : static_cast<int>(codes) + which;
-  LOG_INF(kLogTag, "open item %d code %d of %u", selected_, codeIndex, static_cast<unsigned>(codes));
+  // RIGHT steps onto the ring from before its start, LEFT steps back off its
+  // beginning -- one rule, wallet::walkCodeIndex(), shared with the code screen.
+  const int from = delta > 0 ? -1 : 0;
+  openCodeAt(wallet::walkCodeIndex(from, delta, codes), codes);
+}
+
+bool WalletActivity::openCodeAt(const int codeIndex, const uint16_t codeCount) {
+  if (codeIndex < 0 || codeIndex >= static_cast<int>(codeCount)) return false;
+  LOG_INF(kLogTag, "open item %d code %d of %u", selected_, codeIndex, static_cast<unsigned>(codeCount));
   startActivityForResult(
       std::make_unique<WalletCodeActivity>(renderer, mappedInput, selected_, entries_[selected_].title, codeIndex),
       [this](const ActivityResult&) { renderScreen(HalDisplay::HALF_REFRESH); });
+  return true;
+}
+
+bool WalletActivity::applyGotoTarget() {
+  const int wantItem = openItem_;
+  const int wantCode = openCode_;
+  // Consumed: coming back out of the viewer must land on the list, not open the
+  // same document again for ever.
+  openItem_ = -1;
+  openCode_ = -1;
+  if (wantItem < 0) return false;
+
+  if (wantItem >= static_cast<int>(stored_)) {
+    // Refused, not clamped. A host script that asks for document 9 of a two-document
+    // wallet must not be handed document 0 and believe it got what it asked for.
+    LOG_ERR(kLogTag, "GOTO_WALLET: no item %d (wallet has %u)", wantItem, static_cast<unsigned>(stored_));
+    snprintf(gotoError_, sizeof(gotoError_), tr(STR_WALLET_NO_ITEM), wantItem);
+    return false;
+  }
+  selected_ = wantItem;
+
+  if (wantCode < 0) {
+    // Document only. openSelected() paints the viewer over this screen.
+    LOG_INF(kLogTag, "GOTO_WALLET: item %d", wantItem);
+    openSelected();
+    return true;
+  }
+  const uint16_t codes = entries_[wantItem].codeCount;
+  if (!openCodeAt(wantCode, codes)) {
+    LOG_ERR(kLogTag, "GOTO_WALLET: item %d has %u codes, none at %d", wantItem, static_cast<unsigned>(codes), wantCode);
+    snprintf(gotoError_, sizeof(gotoError_), tr(STR_WALLET_NO_CODE), wantItem, wantCode);
+    return false;
+  }
+  LOG_INF(kLogTag, "GOTO_WALLET: item %d code %d", wantItem, wantCode);
+  return true;
 }
 
 void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
@@ -141,7 +188,11 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
 
   const int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing / 2;
   char status[112];
-  if (error_ == wallet::Error::PanelMismatch) {
+  if (gotoError_[0] != '\0') {
+    // A CMD:GOTO_WALLET index that is not in this wallet. On the panel as well as
+    // in the log, because a host-driven loop verifies by screenshot.
+    snprintf(status, sizeof(status), "%s", gotoError_);
+  } else if (error_ == wallet::Error::PanelMismatch) {
     // Name both panels. "Wrong screen" without saying which is a dead end for
     // whoever has to fix the card.
     const wallet::PanelGeometry live = wallet::livePanel(renderer);
@@ -162,10 +213,19 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
 
   drawList();
 
-  // LEFT/RIGHT are the code walk now, so the hints say so. Moving the selection is
-  // the side pair, which has no hint box on the X4 -- the device-wide convention
-  // for a list, and the reason the front pair could be given to codes at all.
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_WALLET_CODE), tr(STR_WALLET_CODE));
+  // LEFT/RIGHT are the code walk now, so the hints say so -- and they say WHICH
+  // WAY. Two boxes both reading "Code" cost a real misdiagnosis on the panel: the
+  // maintainer could not tell which was which, pressed one, landed on the last
+  // code and concluded the code itself was drawn wrong. A label that forces a
+  // guess is a defect (../../../docs/wallet-viewer.md, "The hints are
+  // directional"). mapLabels() takes (previous, next) and swaps them itself when
+  // the nav direction is swapped.
+  //
+  // Moving the selection is the side pair, which has no hint box on the X4 -- the
+  // device-wide convention for a list, and the reason the front pair could be given
+  // to codes at all.
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_WALLET_CODE_PREV), tr(STR_WALLET_CODE_NEXT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(mode);
 }

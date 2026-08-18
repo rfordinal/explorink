@@ -219,7 +219,9 @@ void ActivityManager::goToRouteSelect() {
 
 void ActivityManager::goToTileSync() { replaceActivity(std::make_unique<TileSyncActivity>(renderer, mappedInput)); }
 
-void ActivityManager::goToWallet() { replaceActivity(std::make_unique<WalletActivity>(renderer, mappedInput)); }
+void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
+  replaceActivity(std::make_unique<WalletActivity>(renderer, mappedInput, itemIndex, codeIndex));
+}
 
 void ActivityManager::goToPreview() {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH

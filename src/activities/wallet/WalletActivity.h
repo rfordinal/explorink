@@ -22,7 +22,13 @@
 // bracket for the row snapshot.
 class WalletActivity final : public Activity {
  public:
-  WalletActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  // `openItem` / `openCode` are what `CMD:GOTO_WALLET` asks for: -1 for "just the
+  // list", an item index to open that document, and both to land straight on one
+  // of its codes. Acted on once, in onEnter(), because that is the first moment
+  // the manifest is known -- and refused with a message on screen if the index is
+  // not in the wallet, never clamped (../../../docs/wallet-viewer.md,
+  // "CMD:GOTO_WALLET").
+  WalletActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int openItem = -1, int openCode = -1);
 
   void onEnter() override;
   void onExit() override;
@@ -42,9 +48,17 @@ class WalletActivity final : public Activity {
   int firstVisibleRow() const;
   int rowCount() const { return static_cast<int>(stored_); }
   void openSelected();
-  // Opens the selected item's machine-readable codes. `which` is 0 for the first
-  // or -1 for the last, which is what RIGHT and LEFT mean on a ring.
-  void openCode(int which);
+  // Steps the code ring from the browse list: `delta` +1 opens the selected item's
+  // first code, -1 its last. wallet::walkCodeIndex() decides where that lands.
+  void openCodeStep(int delta);
+  // Opens one code of the selected item by index. False when the index is not in
+  // the item's ring.
+  bool openCodeAt(int codeIndex, uint16_t codeCount);
+  // Acts on the CMD:GOTO_WALLET request, if there was one. Called from onEnter()
+  // with the list already read. True when it started a child activity, so the
+  // caller can skip painting a list nobody will see -- that would cost a whole
+  // 1.7 s HALF refresh and flash the list on the way to the code.
+  bool applyGotoTarget();
 
   std::unique_ptr<wallet::ItemEntry[]> entries_;
   // What the manifest says it was built for. Only read when the wallet is
@@ -54,4 +68,11 @@ class WalletActivity final : public Activity {
   uint32_t seen_ = 0;
   wallet::Error error_ = wallet::Error::None;
   int selected_ = 0;
+  // The CMD:GOTO_WALLET request, consumed once by applyGotoTarget().
+  int openItem_ = -1;
+  int openCode_ = -1;
+  // Filled when a requested index was not in the wallet, so the status line can
+  // say which one -- a host driving this over serial reads the panel, not a
+  // return code.
+  char gotoError_[64] = {0};
 };

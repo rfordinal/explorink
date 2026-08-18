@@ -59,15 +59,11 @@ void WalletCodeActivity::loop() {
 }
 
 bool WalletCodeActivity::stepCode(const int delta) {
-  const int count = codeCount_ > 0 ? codeCount_ : 1;
-  if (count <= 1) return false;
-  int next = codeIndex_ + delta;
-  // Cycling, not clamping. A document's codes are a set the rider flips through
-  // at a gate, not a surface with edges -- unlike a page, where a clamp is what
-  // paper does.
-  while (next < 0) next += count;
-  next %= count;
-  if (next == codeIndex_) return false;
+  // The ring, and the reason it wraps instead of clamping, are in one place:
+  // wallet::walkCodeIndex() (WalletAsset.h). The browse screen's LEFT/RIGHT are
+  // the same function with the same ring.
+  const int next = wallet::walkCodeIndex(codeIndex_, delta, codeCount_);
+  if (next < 0 || next == codeIndex_) return false;
   codeIndex_ = next;
   return true;
 }
@@ -221,7 +217,10 @@ void WalletCodeActivity::drawFailure() {
   y += lineHeight * 2;
   renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_WALLET_CODE_NOT_SHOWN), true);
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), nullptr, tr(STR_WALLET_CODE), tr(STR_WALLET_CODE));
+  // Directional labels, not two boxes both reading "Code". mapLabels() takes them
+  // as (previous, next) and swaps them itself when the nav direction is swapped,
+  // so the arrows always point where the button goes.
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), nullptr, tr(STR_WALLET_CODE_PREV), tr(STR_WALLET_CODE_NEXT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // HALF: replacing whatever was on the panel with text.
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
