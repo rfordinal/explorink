@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "WalletSha256.h"
+
 // One wallet asset = one whole screen, already in panel-native byte order.
 //
 // The laptop-side generator rotates, scales, dithers and packs; the device
@@ -62,11 +64,12 @@ struct AssetHeader {
   uint32_t version = 0;
   uint8_t flags = 0;
   uint8_t presentation = 0;
-  // First 8 bytes of the sha256 of the payload. Parsed and carried, never
-  // checked in P1 -- verification lands in the phase that adds encryption,
-  // where it is read together with the AEAD tag (docs/wallet-viewer.md,
-  // "What is deliberately absent").
-  uint8_t sha256Prefix[8] = {0};
+  // First 8 bytes of the sha256 of the payload. Checked for a **machine code**
+  // and for nothing else: a garbage document tile is cosmetic, a garbage barcode
+  // is a rider at a gate with a pass that will not scan
+  // (docs/wallet-viewer.md, "Why the hash is checked here and nowhere else").
+  // The manifest's full hash wins where it has one; this prefix is the fallback.
+  uint8_t sha256Prefix[kSha256PrefixBytes] = {0};
 };
 
 // flags bit 0: payload is encrypted. Always 0 in P1; a set bit is refused
@@ -109,9 +112,7 @@ inline bool parseAssetHeader(const uint8_t* bytes, size_t len, AssetHeader& out)
   return true;
 }
 
-inline bool isHexDigit(char c) {
-  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-}
+inline bool isHexDigit(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
 // 16 hex characters and nothing else. Enforced before the id ever reaches a
 // path, so a manifest cannot name a file outside the wallet directory: no '/',
@@ -253,17 +254,70 @@ inline uint32_t maxWindowX(const PageImageSpec& page, uint16_t panelRowBytes) {
   return static_cast<uint32_t>(page.rowBytes - panelRowBytes) * 8u;
 }
 
+// ---------------------------------------------------------------------------
+// Machine-readable codes (P2)
+//
+// A boarding pass or a ticket is the most valuable thing a wallet can hold, and
+// the only thing on this device that has to be read by a machine rather than by
+// a person. So a code asset is not "a picture that happens to be a barcode":
+//
+//   * the laptop generator decodes the code, regenerates it clean, renders it to
+//     the device asset and decodes it back OUT OF THAT ASSET. Only then does the
+//     manifest say `verified` (tools/walletgen.py, verify_code_asset);
+//   * the device checks the payload's sha256 before it draws it, which it does
+//     for no other asset;
+//   * nothing is drawn on top of it except the symbology label, and that only
+//     where the framebuffer proves there is white space for it.
+//
+// The asset itself is an ordinary full-screen panel-native tile, so the read path
+// is `Store::loadAssetIntoFrameBuffer()`'s, unchanged.
+// ---------------------------------------------------------------------------
+
+// "c001".
+inline constexpr size_t kCodeIdBufBytes = 8;
+// The longest symbology the generator emits is "datamatrix" (10 characters).
+inline constexpr size_t kSymbologyBufBytes = 12;
+
+// One entry of a page's `codes` array. Field names are the manifest's, verbatim.
+//
+// `payload` is deliberately **not** carried. The device has no use for the
+// decoded text -- it draws the bitmap, it does not encode anything -- and a
+// boarding-pass payload runs to hundreds of characters, which is a buffer nobody
+// needs on a screen that must cost no RAM.
+struct CodeEntry {
+  bool present = false;
+  char id[kCodeIdBufBytes] = {0};
+  char symbology[kSymbologyBufBytes] = {0};
+  char assetId[kAssetIdBufBytes] = {0};
+  // Full sha256 of the payload, lowercase hex, from the manifest. Empty when the
+  // manifest did not state one; then the header's 8-byte prefix is the authority
+  // (WalletSha256.h, checkPayloadHash).
+  char sha256[kSha256HexBufBytes] = {0};
+  // The generator's round-trip result. **Defaults to false**: a manifest that
+  // says nothing has not verified anything, and the safe reading of silence here
+  // is "not verified", never "fine".
+  bool verified = false;
+  uint16_t moduleSize = 0;
+  uint16_t quietZone = 0;
+  // The code plus its quiet zone, in logical pixels. Read and logged; the label
+  // placement does not trust them -- it reads the framebuffer instead, see
+  // logicalBandIsBlank().
+  uint16_t codeWidthPx = 0;
+  uint16_t codeHeightPx = 0;
+};
+
 // Why an asset cannot be drawn, or Ok. The single gate every reader passes
 // through -- the device (WalletStore::loadAssetIntoFrameBuffer), the host
 // preview (test/wallet_preview) and the tests all call this one function, so a
 // disagreement about the header layout cannot hide on one side.
 enum class AssetCheck : uint8_t {
   Ok = 0,
-  Malformed,   // bad magic, or fewer than 32 bytes
-  Encrypted,   // flags bit 0 -- a later phase's job
-  BitDepth,    // not 1 bpp
-  WrongPanel,  // rawLen / width / height is not this panel's, or the window does not fit
+  Malformed,          // bad magic, or fewer than 32 bytes
+  Encrypted,          // flags bit 0 -- a later phase's job
+  BitDepth,           // not 1 bpp
+  WrongPanel,         // rawLen / width / height is not this panel's, or the window does not fit
   PageImageMismatch,  // a page image whose header disagrees with the manifest
+  NotACode,           // the manifest called it a code, the header says otherwise
 };
 
 // Shared head of both gates: the things that are wrong regardless of what shape
@@ -278,8 +332,8 @@ inline AssetCheck checkAssetCommon(const uint8_t* bytes, size_t len, AssetHeader
 // A page image: checked against its own stated geometry and against the panel
 // window fitting inside it. Deliberately NOT against the panel's width and
 // height -- see PageImageSpec.
-inline AssetCheck checkPageImage(const uint8_t* bytes, size_t len, const PageImageSpec& page,
-                                 const PanelGeometry& live, AssetHeader& out) {
+inline AssetCheck checkPageImage(const uint8_t* bytes, size_t len, const PageImageSpec& page, const PanelGeometry& live,
+                                 AssetHeader& out) {
   const AssetCheck common = checkAssetCommon(bytes, len, out);
   if (common != AssetCheck::Ok) return common;
   if (out.assetType != AssetType::PageImage) return AssetCheck::PageImageMismatch;
@@ -301,6 +355,97 @@ inline AssetCheck checkAssetForPanel(const uint8_t* bytes, size_t len, const Pan
   if (live.bufferBytes == 0 || out.rawLen != live.bufferBytes) return AssetCheck::WrongPanel;
   if (out.width != live.width || out.height != live.height) return AssetCheck::WrongPanel;
   return AssetCheck::Ok;
+}
+
+// A machine code: an ordinary panel-shaped tile that must also *say* it is a
+// code. A manifest entry pointing at a document tile is a generator or a sync
+// bug, and drawing page three of an insurance policy where a boarding pass
+// should be is worse than drawing nothing.
+inline AssetCheck checkCodeAsset(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out) {
+  const AssetCheck panelCheck = checkAssetForPanel(bytes, len, live, out);
+  if (panelCheck != AssetCheck::Ok) return panelCheck;
+  if (out.assetType != AssetType::MachineCode) return AssetCheck::NotACode;
+  return AssetCheck::Ok;
+}
+
+// The one decision that lets a code bitmap reach the panel.
+//
+// Pure, and called from exactly one place (WalletCodeActivity::showCurrent), so
+// every branch is host-testable and no second path can grow beside it. The
+// failure *screen* needs a renderer and cannot be tested on the host; this
+// verdict, which is what selects it, can.
+enum class CodeVerdict : uint8_t {
+  Draw,            // refresh the panel
+  RefuseAsset,     // the file, the gate or the hash said no -- nothing is drawn
+  RefuseUnmarked,  // unverified, and the "not verified" marker had nowhere to go
+};
+
+// `loadedAndHashed` -- the payload is in the framebuffer and its sha256 matched.
+// `manifestVerified` -- the manifest's `verified` for this code.
+// `markerPlaced` -- the unverified marker was actually drawn on white space.
+//
+// An unverified code is shown, but only ever *marked* (docs/wallet-viewer.md,
+// "Unverified codes are shown, marked"). So if the marker could not be placed,
+// the code does not go up either: an unmarked unverified code is exactly the lie
+// this feature must not tell.
+inline CodeVerdict codeVerdict(bool loadedAndHashed, bool manifestVerified, bool markerPlaced) {
+  if (!loadedAndHashed) return CodeVerdict::RefuseAsset;
+  if (!manifestVerified && !markerPlaced) return CodeVerdict::RefuseUnmarked;
+  return CodeVerdict::Draw;
+}
+
+// True when a horizontal band of the LOGICAL portrait screen holds no ink at all
+// in a panel-native framebuffer.
+//
+// This is how the symbology label finds its space. The alternative was to trust
+// `codeWidthPx` / `codeHeightPx` plus "the generator centres it" -- an assumption
+// about a tool in another repo, guarding the one thing on this screen that must
+// not be drawn over. Reading the bytes needs no assumption: if there is ink in
+// the band, there is no label.
+//
+// Logical portrait (x, y) maps to panel (y, panelHeight - 1 - x)
+// (GfxRenderer::rotateCoordinates(), lib/GfxRenderer/GfxRenderer.cpp:216-223), so
+// a logical band of rows is a panel band of *columns* across every panel row --
+// which is why this cannot be a memcmp over a row range.
+inline bool logicalBandIsBlank(const uint8_t* fb, const PanelGeometry& panel, int y0, int y1) {
+  if (fb == nullptr || panel.rowBytes == 0) return false;
+  // A logical y is a panel x, so the band is clamped against the panel's WIDTH
+  // (800), not its height. Getting this the wrong way round would check the wrong
+  // 480 columns and pass a band that is not blank at all.
+  if (y0 < 0) y0 = 0;
+  if (y1 > static_cast<int>(panel.width)) y1 = panel.width;
+  if (y1 <= y0) return false;
+  for (uint16_t phyY = 0; phyY < panel.height; ++phyY) {
+    const uint8_t* row = fb + static_cast<size_t>(phyY) * panel.rowBytes;
+    for (int phyX = y0; phyX < y1; ++phyX) {
+      // bit 1 = white; a cleared bit is ink (GfxRenderer.cpp:517-524).
+      if (((row[phyX / 8] >> (7 - (phyX % 8))) & 1u) == 0u) return false;
+    }
+  }
+  return true;
+}
+
+// "qr" -> "QR", "pdf417" -> "PDF417". A symbology is a technical identifier, not
+// prose: it is never translated, only upper-cased for the label. ASCII only,
+// which is all a symbology name ever is.
+//
+// An empty or missing symbology becomes "CODE", so the label never comes out
+// blank on a manifest that left the field out.
+inline void symbologyLabel(const char* symbology, char* out, size_t outLen) {
+  if (out == nullptr || outLen == 0) return;
+  if (symbology == nullptr || symbology[0] == '\0') {
+    const char* fallback = "CODE";
+    size_t i = 0;
+    for (; fallback[i] != '\0' && i + 1 < outLen; ++i) out[i] = fallback[i];
+    out[i] = '\0';
+    return;
+  }
+  size_t i = 0;
+  for (; symbology[i] != '\0' && i + 1 < outLen; ++i) {
+    const char c = symbology[i];
+    out[i] = (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
+  }
+  out[i] = '\0';
 }
 
 // The level a manifest key names. "fit", "detail", "one_to_one" -- anything

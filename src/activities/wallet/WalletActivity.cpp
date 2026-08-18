@@ -5,8 +5,10 @@
 #include <Memory.h>
 
 #include <cstdio>
+#include <cstring>
 
 #include "MappedInputManager.h"
+#include "WalletCodeActivity.h"
 #include "WalletViewActivity.h"
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
@@ -54,16 +56,18 @@ void WalletActivity::loop() {
 
   const int rows = rowCount();
   bool moved = false;
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-      mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+  // The selection moves on the side pair only. LEFT and RIGHT used to be a second
+  // way to move it; they walk the selected document's machine-readable codes now
+  // (P2, docs/wallet-viewer.md, "The code walk"). The side pair is where this
+  // device puts list movement anyway.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     // Hard stops, not a wrap -- the same as every other list on this device.
     if (selected_ > 0) {
       --selected_;
       moved = true;
     }
   }
-  if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-      mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
     if (selected_ + 1 < rows) {
       ++selected_;
       moved = true;
@@ -73,6 +77,17 @@ void WalletActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     openSelected();
+    return;
+  }
+  // RIGHT opens the first code, LEFT the last -- the other way round the same
+  // ring the code screen cycles. One code: either button opens it. No codes: both
+  // do nothing, which is why the row says how many there are.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+    openCode(0);
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+    openCode(-1);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -96,6 +111,26 @@ void WalletActivity::openSelected() {
       [this](const ActivityResult&) { renderScreen(HalDisplay::HALF_REFRESH); });
 }
 
+void WalletActivity::openCode(const int which) {
+  if (stored_ == 0) return;
+  if (selected_ < 0 || selected_ >= static_cast<int>(stored_)) return;
+
+  const uint16_t codes = entries_[selected_].codeCount;
+  if (codes == 0) {
+    // Nothing to open, and nothing to say: a document with no code is the normal
+    // case, and spending a 1.7 s HALF refresh on a message about a button that did
+    // nothing would be worse than the silence. The row already states the count.
+    LOG_INF(kLogTag, "item %d has no codes", selected_);
+    return;
+  }
+  // `which` is an index from the front (0) or from the back (-1).
+  const int codeIndex = which >= 0 ? which : static_cast<int>(codes) + which;
+  LOG_INF(kLogTag, "open item %d code %d of %u", selected_, codeIndex, static_cast<unsigned>(codes));
+  startActivityForResult(
+      std::make_unique<WalletCodeActivity>(renderer, mappedInput, selected_, entries_[selected_].title, codeIndex),
+      [this](const ActivityResult&) { renderScreen(HalDisplay::HALF_REFRESH); });
+}
+
 void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
@@ -110,9 +145,9 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
     // Name both panels. "Wrong screen" without saying which is a dead end for
     // whoever has to fix the card.
     const wallet::PanelGeometry live = wallet::livePanel(renderer);
-    snprintf(status, sizeof(status), tr(STR_WALLET_PANEL_MISMATCH),
-             declared_.name[0] != '\0' ? declared_.name : "?", static_cast<int>(declared_.width),
-             static_cast<int>(declared_.height), static_cast<int>(live.width), static_cast<int>(live.height));
+    snprintf(status, sizeof(status), tr(STR_WALLET_PANEL_MISMATCH), declared_.name[0] != '\0' ? declared_.name : "?",
+             static_cast<int>(declared_.width), static_cast<int>(declared_.height), static_cast<int>(live.width),
+             static_cast<int>(live.height));
   } else if (stored_ == 0) {
     snprintf(status, sizeof(status), "%s", wallet::errorText(error_));
   } else if (seen_ > stored_) {
@@ -127,7 +162,10 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
 
   drawList();
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // LEFT/RIGHT are the code walk now, so the hints say so. Moving the selection is
+  // the side pair, which has no hint box on the X4 -- the device-wide convention
+  // for a list, and the reason the front pair could be given to codes at all.
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_WALLET_CODE), tr(STR_WALLET_CODE));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(mode);
 }
@@ -190,11 +228,23 @@ void WalletActivity::drawRow(const int index, const int y, const int rowHeight) 
   const bool ink = !highlighted;
 
   const wallet::ItemEntry& entry = entries_[index];
-  char detail[64];
+  char detail[96];
   if (entry.pageCount == 1) {
     snprintf(detail, sizeof(detail), "%s", tr(STR_WALLET_PAGE_ONE));
   } else {
     snprintf(detail, sizeof(detail), tr(STR_WALLET_PAGES), static_cast<int>(entry.pageCount));
+  }
+  // A code count on the row is what makes LEFT/RIGHT discoverable: without it a
+  // rider cannot tell a document with no code from a button that does nothing.
+  if (entry.codeCount > 0) {
+    const size_t at = std::strlen(detail);
+    char codes[32];
+    if (entry.codeCount == 1) {
+      snprintf(codes, sizeof(codes), "%s", tr(STR_WALLET_CODE_ONE));
+    } else {
+      snprintf(codes, sizeof(codes), tr(STR_WALLET_CODES), static_cast<int>(entry.codeCount));
+    }
+    snprintf(detail + at, sizeof(detail) - at, ", %s", codes);
   }
 
   const char* title = entry.title[0] != '\0' ? entry.title : tr(STR_WALLET_UNTITLED);

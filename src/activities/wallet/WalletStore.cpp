@@ -86,6 +86,14 @@ const char* errorText(const Error error) {
       return tr(STR_WALLET_ASSET_SIZE);
     case Error::NoFrameBuffer:
       return tr(STR_WALLET_ASSET_BUSY);
+    case Error::NoCodes:
+      return tr(STR_WALLET_CODE_NONE);
+    case Error::CodeNotACode:
+      return tr(STR_WALLET_CODE_BAD);
+    case Error::CodeHashMismatch:
+      return tr(STR_WALLET_CODE_BAD_HASH);
+    case Error::CodeUnmarked:
+      return tr(STR_WALLET_CODE_UNMARKED);
   }
   return "";
 }
@@ -99,8 +107,8 @@ PanelGeometry livePanel(const GfxRenderer& renderer) {
   return live;
 }
 
-bool Store::listItems(ItemEntry* out, const uint16_t max, const GfxRenderer& renderer, uint16_t& stored,
-                      uint32_t& seen, DeclaredPanel& declared, Error& error) {
+bool Store::listItems(ItemEntry* out, const uint16_t max, const GfxRenderer& renderer, uint16_t& stored, uint32_t& seen,
+                      DeclaredPanel& declared, Error& error) {
   stored = 0;
   seen = 0;
   declared = DeclaredPanel{};
@@ -168,6 +176,41 @@ bool Store::lookupPage(const int itemIndex, const int pageIndex, const Level lev
   return true;
 }
 
+bool Store::lookupCode(const int itemIndex, const int codeIndex, CodeLookup& out, Error& error) {
+  out = CodeLookup{};
+  error = Error::None;
+
+  auto parser = makeUniqueNoThrow<ManifestParser>();
+  if (!parser) {
+    LOG_ERR(kLogTag, "OOM: manifest parser");
+    error = Error::ManifestUnreadable;
+    return false;
+  }
+  parser->beginCodeLookup(itemIndex, codeIndex);
+  if (!feedManifest(*parser, error)) return false;
+
+  out = parser->codes();
+  if (!out.itemFound) {
+    error = Error::NotInManifest;
+    return false;
+  }
+  if (out.codeCount == 0) {
+    // Not a fault: most documents have no code. The browse screen reads the count
+    // and leaves LEFT/RIGHT idle.
+    error = Error::NoCodes;
+    return false;
+  }
+  if (!out.code.present) {
+    LOG_ERR(kLogTag, "item %d has %u codes, none at index %d", itemIndex, static_cast<unsigned>(out.codeCount),
+            codeIndex);
+    error = Error::NotInManifest;
+    return false;
+  }
+  LOG_INF(kLogTag, "item %d code %d/%u: %s %s %s", itemIndex, codeIndex, static_cast<unsigned>(out.codeCount),
+          out.code.id, out.code.symbology, out.code.verified ? "verified" : "UNVERIFIED");
+  return true;
+}
+
 bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Error& error) {
   error = Error::None;
   if (!page.present || !isValidAssetId(page.assetId)) {
@@ -220,6 +263,7 @@ bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Er
       return false;
     case AssetCheck::Malformed:
     case AssetCheck::BitDepth:
+    case AssetCheck::NotACode:
     case AssetCheck::PageImageMismatch:
       LOG_ERR(kLogTag, "page image %s does not match the manifest", path);
       file_.close();
@@ -265,9 +309,8 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
   const uint32_t rows = renderer.getDisplayHeight();
   const uint32_t xByte = x / 8;
   if (xByte + rowBytes > spec_.rowBytes || y + rows > spec_.nativeHeight) {
-    LOG_ERR(kLogTag, "window %lu,%lu does not fit %ux%u", static_cast<unsigned long>(x),
-            static_cast<unsigned long>(y), static_cast<unsigned>(spec_.nativeWidth),
-            static_cast<unsigned>(spec_.nativeHeight));
+    LOG_ERR(kLogTag, "window %lu,%lu does not fit %ux%u", static_cast<unsigned long>(x), static_cast<unsigned long>(y),
+            static_cast<unsigned>(spec_.nativeWidth), static_cast<unsigned>(spec_.nativeHeight));
     error = Error::AssetWrongSize;
     return false;
   }
@@ -288,7 +331,13 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
   return true;
 }
 
-bool Store::loadAssetIntoFrameBuffer(const char* assetId, GfxRenderer& renderer, AssetHeader& header, Error& error) {
+namespace {
+
+// Which gate a whole-screen read passes through. Same read either way; a code
+// must additionally *say* it is a code (WalletAsset.h, checkCodeAsset).
+enum class Gate : uint8_t { Tile, Code };
+
+bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer, AssetHeader& header, Error& error) {
   header = AssetHeader{};
   error = Error::None;
 
@@ -326,9 +375,25 @@ bool Store::loadAssetIntoFrameBuffer(const char* assetId, GfxRenderer& renderer,
   // about the header layout or the panel geometry cannot hide on one side
   // (WalletAsset.h, checkAssetForPanel).
   const PanelGeometry live = livePanel(renderer);
-  switch (checkAssetForPanel(raw, sizeof(raw), live, header)) {
+  const AssetCheck check = gate == Gate::Code ? checkCodeAsset(raw, sizeof(raw), live, header)
+                                              : checkAssetForPanel(raw, sizeof(raw), live, header);
+  switch (check) {
     case AssetCheck::Ok:
       break;
+    case AssetCheck::NotACode:
+      // The manifest's codes array pointed at a document tile. Drawing page three
+      // of an insurance policy where a boarding pass belongs is worse than
+      // drawing nothing.
+      LOG_ERR(kLogTag, "%s is assetType %u, not a machine code", path, static_cast<unsigned>(header.assetType));
+      file.close();
+      error = Error::CodeNotACode;
+      return false;
+    case AssetCheck::PageImageMismatch:
+      // Only checkPageImage() produces this, and this is not that gate.
+      LOG_ERR(kLogTag, "unexpected page-image verdict for %s", path);
+      file.close();
+      error = Error::BadAsset;
+      return false;
     case AssetCheck::Malformed:
       LOG_ERR(kLogTag, "bad asset header %s", path);
       file.close();
@@ -370,9 +435,33 @@ bool Store::loadAssetIntoFrameBuffer(const char* assetId, GfxRenderer& renderer,
     return false;
   }
 
-  // header.sha256Prefix is parsed and ignored. Verification lands with
-  // encryption, where the payload is authenticated anyway -- hashing 48 KB here
-  // would cost a read the framebuffer has already consumed.
+  return true;
+}
+
+}  // namespace
+
+bool Store::loadAssetIntoFrameBuffer(const char* assetId, GfxRenderer& renderer, AssetHeader& header, Error& error) {
+  // A document tile's sha256 is parsed and ignored, deliberately: a wrong pixel on
+  // a passport scan is cosmetic, and a page image is read a window at a time, so a
+  // whole-file hash would cost more than the read it guards. The code path below
+  // is the exception, and the only one (docs/wallet-viewer.md).
+  return readWholeScreen(assetId, Gate::Tile, renderer, header, error);
+}
+
+bool Store::loadCodeIntoFrameBuffer(const CodeEntry& code, GfxRenderer& renderer, AssetHeader& header, Error& error) {
+  if (!readWholeScreen(code.assetId, Gate::Code, renderer, header, error)) return false;
+
+  // The payload IS the framebuffer, so the bytes to hash are already in RAM and
+  // the second read the obvious design would need does not exist. The caller holds
+  // a RenderLock across this, so nothing else can write those bytes in between.
+  const HashResult hash = checkPayloadHash(renderer.getFrameBuffer(), header.rawLen, code.sha256, header.sha256Prefix);
+  if (!hash.ok) {
+    LOG_ERR(kLogTag, "code %s %s: sha256 mismatch against the %s", code.id, code.assetId,
+            hash.authority == HashAuthority::Full ? "manifest" : "asset header");
+    error = Error::CodeHashMismatch;
+    return false;
+  }
+  LOG_INF(kLogTag, "code %s hash ok (%s)", code.id, hash.authority == HashAuthority::Full ? "manifest" : "prefix");
   return true;
 }
 

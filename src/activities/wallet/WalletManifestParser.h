@@ -13,12 +13,16 @@
 // buffered but the answer the caller asked for, so a manifest with a hundred
 // pages costs the same RAM as one with one page.
 //
-// Two questions, one parser:
+// Three questions, one parser:
 //
 //   * `beginList()`  -- what items are on the card (title, page count). The
 //     browse screen's list.
 //   * `beginLookup()` -- for one item, one page: the grid of every level and
 //     the assetId of one tile. The viewer's whole per-screen need.
+//   * `beginCodeLookup()` -- for one item: how many machine-readable codes it
+//     has across all its pages, and the one at a given index. The code screen's
+//     whole per-screen need, and what tells the browse screen whether LEFT and
+//     RIGHT have anything to do.
 //
 // The viewer re-runs a lookup on every tile step rather than caching a table of
 // assetIds. A manifest read is a few KB off the card; a FAST refresh is 500 ms
@@ -36,6 +40,11 @@ inline constexpr size_t kTitleBufBytes = 48;
 struct ItemEntry {
   char title[kTitleBufBytes] = {0};
   uint16_t pageCount = 0;
+  // Machine-readable codes across all the item's pages. Counted in the same list
+  // pass, so the browse row can say "1 code" and the rider knows before pressing
+  // that LEFT/RIGHT have something to walk. Two bytes a row against a second
+  // manifest pass per row.
+  uint16_t codeCount = 0;
 };
 
 struct LevelGrid {
@@ -63,6 +72,23 @@ struct PageLookup {
   char title[kTitleBufBytes] = {0};
 };
 
+// One item's machine-readable codes.
+//
+// Codes belong to a **page** in the manifest, but a rider walks the codes of a
+// **document**: the boarding pass and its bag tag are one item with one code
+// each, and nobody thinks of them as "page 1's code" and "page 2's code". So the
+// walk is item-wide and the order is the manifest's -- pages in order, and each
+// page's `codes` array in order.
+struct CodeLookup {
+  bool itemFound = false;
+  // Every code the item carries, on every page. What decides whether the browse
+  // screen's LEFT/RIGHT do anything at all.
+  uint16_t codeCount = 0;
+  char title[kTitleBufBytes] = {0};
+  // The code at the requested index, when the item has one there.
+  CodeEntry code;
+};
+
 class ManifestParser {
  public:
   ManifestParser();
@@ -77,6 +103,10 @@ class ManifestParser {
   // along in the same pass because they are six bytes and the viewer needs them
   // to clamp its arrows.
   void beginLookup(int itemIndex, int pageIndex, Level level, uint8_t col, uint8_t row);
+  // Code mode: one item, one code index. `codeCount` comes out filled whatever
+  // the index was, so a caller that only wants "does this item have codes" asks
+  // for index 0 and reads the count.
+  void beginCodeLookup(int itemIndex, int codeIndex);
 
   void feed(const char* data, size_t len);
 
@@ -90,9 +120,10 @@ class ManifestParser {
   uint16_t itemsStored() const { return stored; }
   uint32_t itemsSeen() const { return seen; }
   const PageLookup& lookup() const { return result; }
+  const CodeLookup& codes() const { return codeResult; }
 
  private:
-  enum class Mode : uint8_t { List, Lookup };
+  enum class Mode : uint8_t { List, Lookup, Codes };
 
   // Where in the document we are. One entry per open object/array, so the
   // meaning of a key never depends on guessing a depth number.
@@ -108,7 +139,9 @@ class ManifestParser {
     LevelObj,
     AssetsArr,
     Asset,
-    PageImage
+    PageImage,
+    CodesArr,
+    Code
   };
 
   static constexpr uint8_t kMaxDepth = StreamingJsonParser::MAX_NESTING;
@@ -128,6 +161,7 @@ class ManifestParser {
   void onKey(const char* key, size_t len);
   void onString(const char* value, size_t len);
   void onNumber(const char* value, size_t len);
+  void onBool(bool value);
   void onContainerStart(bool isObject);
   void onContainerEnd();
 
@@ -136,6 +170,7 @@ class ManifestParser {
   bool keyIs(const char* name) const;
   void commitItem();
   void commitAsset();
+  void commitCode();
   // Copies a UTF-8 string into a fixed buffer, cutting on a codepoint boundary
   // rather than mid-sequence -- half a glyph draws as a replacement box.
   static void copyText(char* dst, size_t dstLen, const char* src, size_t srcLen);
@@ -171,6 +206,13 @@ class ManifestParser {
   uint8_t wantRow = 0;
   PageLookup result;
 
+  // Code mode
+  int wantCode = -1;
+  CodeLookup codeResult;
+  // True only while inside the code object the caller asked for. `codeCount`
+  // doubles as the cursor: the code being read is the codeCount-th of the item.
+  bool inWantedCode = false;
+
   // Cursor through the document
   int itemIndex = -1;
   int pageIndex = -1;
@@ -178,6 +220,10 @@ class ManifestParser {
   char itemTitle[kTitleBufBytes] = {0};
   Level levelInPlay = Level::Fit;
   bool levelKnown = false;
+
+  // Codes closed so far in the item being read. Both the per-item total and the
+  // cursor the code lookup matches its index against.
+  uint16_t codesInItem = 0;
 
   // The asset object currently being read
   char assetId[kAssetIdBufBytes] = {0};

@@ -9,7 +9,8 @@
 // Browse: one row per document in the wallet manifest.
 //
 // UP/DOWN move the selection, CONFIRM opens the document in WalletViewActivity,
-// BACK goes home. A missing, unreadable or empty manifest gets a row of text
+// LEFT/RIGHT open its machine-readable codes in WalletCodeActivity, BACK goes
+// home. A missing, unreadable or empty manifest gets a row of text
 // saying which of those it is -- never a blank screen and never a crash
 // (../../../docs/wallet-viewer.md, "Failure states").
 //
@@ -41,6 +42,9 @@ class WalletActivity final : public Activity {
   int firstVisibleRow() const;
   int rowCount() const { return static_cast<int>(stored_); }
   void openSelected();
+  // Opens the selected item's machine-readable codes. `which` is 0 for the first
+  // or -1 for the last, which is what RIGHT and LEFT mean on a ring.
+  void openCode(int which);
 
   std::unique_ptr<wallet::ItemEntry[]> entries_;
   // What the manifest says it was built for. Only read when the wallet is

@@ -1,0 +1,268 @@
+{
+  "formatVersion": 1,
+  "walletVersion": 1,
+  "panel": {
+    "name": "x4",
+    "width": 800,
+    "height": 480,
+    "rowBytes": 100,
+    "assetBytes": 48000
+  },
+  "items": [
+    {
+      "id": "bf664c47689164ae",
+      "title": "Boarding pass",
+      "createdAt": "2026-08-18T13:12:33Z",
+      "sortOrder": 0,
+      "pages": [
+        {
+          "id": "p001",
+          "paper": "a4",
+          "levels": {
+            "fit": {
+              "cols": 1,
+              "rows": 1,
+              "defaultTileX": 0,
+              "defaultTileY": 0,
+              "assets": [
+                {
+                  "assetId": "15a3e986fbf3cfeb",
+                  "type": 1,
+                  "col": 0,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "92edadb0c754425fdbaeb80a415641450a7741a185d8fbd6288d8ac5f6bf5392",
+                  "rleLen": 17962
+                }
+              ]
+            },
+            "detail": {
+              "cols": 2,
+              "rows": 2,
+              "defaultTileX": 0,
+              "defaultTileY": 0,
+              "assets": [
+                {
+                  "assetId": "c0c3444c8e015d86",
+                  "type": 2,
+                  "col": 0,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "a31f289dec6513994654044499e3d5ce8cd161d3c65e63b74d152cdf54b51c43",
+                  "rleLen": 25135
+                },
+                {
+                  "assetId": "2b2e3e666f41091a",
+                  "type": 2,
+                  "col": 1,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "77be4a2f29697a727d065f35ecea6d35d6bcdebfb9a0f577ce51f14072c1562f",
+                  "rleLen": 7785
+                },
+                {
+                  "assetId": "1ed4d8759d9286bc",
+                  "type": 2,
+                  "col": 0,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "d29aac3acfb0c8ca882fbeee8f70a2fac13e98df3adfb76a11c57206eda780ca",
+                  "rleLen": 18311
+                },
+                {
+                  "assetId": "b6e01a331a72efc4",
+                  "type": 2,
+                  "col": 1,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "b99b6829068ee1c7c4f317109ea972091184274f1b6b821b70bf23c378e8650f",
+                  "rleLen": 11046
+                }
+              ]
+            },
+            "one_to_one": {
+              "cols": 4,
+              "rows": 4,
+              "defaultTileX": 1,
+              "defaultTileY": 1,
+              "assets": [
+                {
+                  "assetId": "d5bad4084cba18a3",
+                  "type": 3,
+                  "col": 0,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "9eb2acb2aee7741abf34fa009e0784b0269189405bc05caa275693a2b95d0cb7",
+                  "rleLen": 18788
+                },
+                {
+                  "assetId": "ac52e5752b4746ec",
+                  "type": 3,
+                  "col": 1,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "5af0f77ae17576af13707aa75fa58363adf6a5ac6032750a02e9c052587b2dab",
+                  "rleLen": 24360
+                },
+                {
+                  "assetId": "8812bad0cbf5bfa5",
+                  "type": 3,
+                  "col": 2,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "c42d9c855d1444aa6dcd6656b437297d8fc1f4de440b3429d19dfc4362d43ce1",
+                  "rleLen": 10931
+                },
+                {
+                  "assetId": "0e239cb6b42d410a",
+                  "type": 3,
+                  "col": 3,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "5d4da29e2c449b9d421e73a5d39e963b7f4ab13a14ab6bdaddfa33e460b0ee7d",
+                  "rleLen": 1650
+                },
+                {
+                  "assetId": "231e0938cefeb1e3",
+                  "type": 3,
+                  "col": 0,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "8db754b5df9c6f3ef3a03911b3997bd16cc36c76377bbc1c4b9dda0d3b5bd944",
+                  "rleLen": 23424
+                },
+                {
+                  "assetId": "7bcf58400651fa87",
+                  "type": 3,
+                  "col": 1,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "950dde3b775c0b9a29f9450c29679dd876f50e7a7d16f7624ee1798d238121cb",
+                  "rleLen": 29124
+                },
+                {
+                  "assetId": "ee4214afbac1f0cf",
+                  "type": 3,
+                  "col": 2,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "ba523de3e31b28bd10e56e6b045682337f731ed67b24cf4f02be7a66a7507073",
+                  "rleLen": 13158
+                },
+                {
+                  "assetId": "442afe473d5fe95d",
+                  "type": 3,
+                  "col": 3,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "cca3d0a31bd1aa0de1676f4f48c2be8a5e725985da720d9e0e0250f61e413441",
+                  "rleLen": 4781
+                },
+                {
+                  "assetId": "c323ad96595c5646",
+                  "type": 3,
+                  "col": 0,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "9c84e0994848f633e0c7ce33c5440e725e05cb70a91d99995c98aa68256cec64",
+                  "rleLen": 8427
+                },
+                {
+                  "assetId": "aff2012dab402eb5",
+                  "type": 3,
+                  "col": 1,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "c6dfb4cbf235c20d42816f7053194682c7ae774b468b887e94f22db1c87b2f85",
+                  "rleLen": 25099
+                },
+                {
+                  "assetId": "9285568993cd6775",
+                  "type": 3,
+                  "col": 2,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "f18e0b2841dd4ad4a33d579909824990ae26292f0017f6b81d0a059ac741fb4f",
+                  "rleLen": 12926
+                },
+                {
+                  "assetId": "68f19561a002c7f6",
+                  "type": 3,
+                  "col": 3,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "3b7c27f528b326def2ad22291bcf1eb980a482b68b32cf4819ff6bc91360819a",
+                  "rleLen": 2615
+                },
+                {
+                  "assetId": "49cc4e5d1489189d",
+                  "type": 3,
+                  "col": 0,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "d94618cfbe8b86a3a05a02bccb372f3b97fa256f74f8ef92eb0c06be96421c41",
+                  "rleLen": 1386
+                },
+                {
+                  "assetId": "fa5c9e203411fa98",
+                  "type": 3,
+                  "col": 1,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "9e42cb47c8874f4fd1a939da79541e5ca186aca364c186c428d060df0ad1f6af",
+                  "rleLen": 830
+                },
+                {
+                  "assetId": "dc2566d3b10cea58",
+                  "type": 3,
+                  "col": 2,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "9e42cb47c8874f4fd1a939da79541e5ca186aca364c186c428d060df0ad1f6af",
+                  "rleLen": 830
+                },
+                {
+                  "assetId": "701682719eac66be",
+                  "type": 3,
+                  "col": 3,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "9e42cb47c8874f4fd1a939da79541e5ca186aca364c186c428d060df0ad1f6af",
+                  "rleLen": 830
+                }
+              ]
+            }
+          },
+          "codes": [
+            {
+              "id": "c001",
+              "symbology": "qr",
+              "payload": "M1DOE/JOHN       EABC123 BTSFRAAF 0123 250Y012C0045 100",
+              "verified": true,
+              "assetId": "f3e7250a407c088b",
+              "moduleSize": 12,
+              "quietZone": 4,
+              "codeWidthPx": 444,
+              "codeHeightPx": 444,
+              "sha256": "4e748db4a304c0859a31e25706e5e22af8af768301f65c5a84d1f9762ae85f9d",
+              "rleLen": 13160
+            },
+            {
+              "id": "c002",
+              "symbology": "pdf417",
+              "payload": "M1DOE/JOHN EABC123 BTSFRAAF",
+              "verified": true,
+              "assetId": "0e706e8d6bc5dd91",
+              "moduleSize": 3,
+              "quietZone": 4,
+              "codeWidthPx": 384,
+              "codeHeightPx": 105,
+              "sha256": "b809373a830b8607fe9378c442ec63789edc7bb7e43b4fce481dbaae01a91d9f",
+              "rleLen": 3361
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

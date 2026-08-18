@@ -14,6 +14,12 @@ Point it at a bigger tree by running the binary directly:
   build/test/wallet_preview/wallet_preview --tree DIR --level detail --col 1 \
       --row 0 --out /tmp/tile
 
+`--code N` renders a machine-readable code instead of a document level and
+reports its sha256 check, module box, centring and label band -- see
+docs/wallet-viewer.md, "The code screen":
+  build/test/wallet_preview/wallet_preview --tree test/wallet/fixtures/codes \
+      --code 0 --out /tmp/code
+
 This is a host build (plain g++ via CMake), not a firmware build -- no
 PlatformIO/ESP-IDF toolchain involved.
 """

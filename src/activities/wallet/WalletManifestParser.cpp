@@ -8,10 +8,9 @@ namespace wallet {
 namespace {
 
 JsonCallbacks makeCallbacks(void* ctx, void (*onKey)(void*, const char*, size_t),
-                            void (*onString)(void*, const char*, size_t),
-                            void (*onNumber)(void*, const char*, size_t), void (*onBool)(void*, bool),
-                            void (*onNull)(void*), void (*onObjectStart)(void*), void (*onObjectEnd)(void*),
-                            void (*onArrayStart)(void*), void (*onArrayEnd)(void*)) {
+                            void (*onString)(void*, const char*, size_t), void (*onNumber)(void*, const char*, size_t),
+                            void (*onBool)(void*, bool), void (*onNull)(void*), void (*onObjectStart)(void*),
+                            void (*onObjectEnd)(void*), void (*onArrayStart)(void*), void (*onArrayEnd)(void*)) {
   JsonCallbacks cb{};
   cb.ctx = ctx;
   cb.onKey = onKey;
@@ -41,7 +40,7 @@ void ManifestParser::sOnString(void* ctx, const char* v, size_t len) {
 void ManifestParser::sOnNumber(void* ctx, const char* v, size_t len) {
   static_cast<ManifestParser*>(ctx)->onNumber(v, len);
 }
-void ManifestParser::sOnBool(void*, bool) {}
+void ManifestParser::sOnBool(void* ctx, bool v) { static_cast<ManifestParser*>(ctx)->onBool(v); }
 void ManifestParser::sOnNull(void*) {}
 void ManifestParser::sOnObjectStart(void* ctx) { static_cast<ManifestParser*>(ctx)->onContainerStart(true); }
 void ManifestParser::sOnObjectEnd(void* ctx) { static_cast<ManifestParser*>(ctx)->onContainerEnd(); }
@@ -73,6 +72,9 @@ void ManifestParser::reset() {
   assetCol = 0;
   assetRow = 0;
   inWantedPageImage = false;
+  codeResult = CodeLookup{};
+  inWantedCode = false;
+  codesInItem = 0;
 }
 
 void ManifestParser::beginList(ItemEntry* dst, uint16_t max) {
@@ -92,6 +94,15 @@ void ManifestParser::beginLookup(int item, int page, Level level, uint8_t col, u
   wantLevel = level;
   wantCol = col;
   wantRow = row;
+}
+
+void ManifestParser::beginCodeLookup(int item, int code) {
+  reset();
+  mode = Mode::Codes;
+  out = nullptr;
+  outMax = 0;
+  wantItem = item;
+  wantCode = code;
 }
 
 void ManifestParser::feed(const char* data, size_t len) { parser.feed(data, len); }
@@ -132,6 +143,7 @@ void ManifestParser::onContainerStart(bool isObject) {
       ++itemIndex;
       pageIndex = -1;
       pagesInItem = 0;
+      codesInItem = 0;
       itemTitle[0] = '\0';
     } else if (cur == Ctx::PagesArr) {
       next = Ctx::Page;
@@ -165,6 +177,16 @@ void ManifestParser::onContainerStart(bool isObject) {
       assetId[0] = '\0';
       assetCol = 0;
       assetRow = 0;
+    } else if (cur == Ctx::CodesArr) {
+      next = Ctx::Code;
+      // codesInItem is the cursor as well as the total: the object opening here is
+      // the codesInItem-th code of this item, and the count only advances when the
+      // object closes.
+      if (mode == Mode::Codes && itemIndex == wantItem && static_cast<int>(codesInItem) == wantCode) {
+        codeResult.code = CodeEntry{};
+        codeResult.code.present = true;
+        inWantedCode = true;
+      }
     }
   } else {
     if (cur == Ctx::Root && keyIs("items")) {
@@ -175,6 +197,8 @@ void ManifestParser::onContainerStart(bool isObject) {
       pageIndex = -1;
     } else if (cur == Ctx::LevelObj && keyIs("assets")) {
       next = Ctx::AssetsArr;
+    } else if (cur == Ctx::Page && keyIs("codes")) {
+      next = Ctx::CodesArr;
     }
   }
 
@@ -206,6 +230,9 @@ void ManifestParser::onContainerEnd() {
       if (inWantedPageImage && !isValidAssetId(result.pageImage.assetId)) result.pageImage = PageImageSpec{};
       inWantedPageImage = false;
       break;
+    case Ctx::Code:
+      commitCode();
+      break;
     default:
       break;
   }
@@ -218,7 +245,16 @@ void ManifestParser::commitItem() {
     if (out != nullptr && stored < outMax) {
       std::memcpy(out[stored].title, itemTitle, sizeof(itemTitle));
       out[stored].pageCount = pagesInItem;
+      out[stored].codeCount = codesInItem;
       ++stored;
+    }
+    return;
+  }
+  if (mode == Mode::Codes) {
+    if (itemIndex == wantItem) {
+      codeResult.itemFound = true;
+      codeResult.codeCount = codesInItem;
+      std::memcpy(codeResult.title, itemTitle, sizeof(itemTitle));
     }
     return;
   }
@@ -240,6 +276,27 @@ void ManifestParser::commitAsset() {
   result.assetFound = true;
 }
 
+// Closes one code object. Counted in every mode -- the browse list wants the
+// per-item total as much as the code screen does -- and counted whether or not
+// this was the code asked for, which is what makes it a total rather than "codes
+// seen up to the index".
+void ManifestParser::commitCode() {
+  if (inWantedCode) {
+    // The id becomes a path. Same 16-hex rule as everywhere else, and a code that
+    // fails it is no code at all rather than one that fails to open later.
+    if (!isValidAssetId(codeResult.code.assetId)) codeResult.code = CodeEntry{};
+    inWantedCode = false;
+  }
+  if (codesInItem < 0xFFFFu) ++codesInItem;
+}
+
+void ManifestParser::onBool(const bool value) {
+  if (top() != Ctx::Code || !inWantedCode) return;
+  // `verified` is the generator's decode round-trip result. Absent means false --
+  // see CodeEntry.
+  if (keyIs("verified")) codeResult.code.verified = value;
+}
+
 void ManifestParser::onString(const char* value, size_t len) {
   switch (top()) {
     case Ctx::Item:
@@ -255,6 +312,18 @@ void ManifestParser::onString(const char* value, size_t len) {
       if (inWantedPageImage && keyIs("assetId")) {
         copyText(result.pageImage.assetId, sizeof(result.pageImage.assetId), value, len);
       }
+      break;
+    case Ctx::Code:
+      // `payload` is read by nobody on purpose (WalletAsset.h, CodeEntry). It is
+      // also the one field here that can be longer than the parser's 512-byte
+      // token buffer, and an overlong string is dropped without a callback
+      // (StreamingJsonParser.cpp:226-249) -- so a 700-character boarding-pass
+      // payload costs this parser nothing and breaks nothing.
+      if (!inWantedCode) break;
+      if (keyIs("id")) copyText(codeResult.code.id, sizeof(codeResult.code.id), value, len);
+      if (keyIs("symbology")) copyText(codeResult.code.symbology, sizeof(codeResult.code.symbology), value, len);
+      if (keyIs("assetId")) copyText(codeResult.code.assetId, sizeof(codeResult.code.assetId), value, len);
+      if (keyIs("sha256")) copyText(codeResult.code.sha256, sizeof(codeResult.code.sha256), value, len);
       break;
     default:
       break;
@@ -295,6 +364,16 @@ void ManifestParser::onNumber(const char* value, size_t len) {
       if (keyIs("col")) assetCol = static_cast<uint16_t>(toU32(value));
       if (keyIs("row")) assetRow = static_cast<uint16_t>(toU32(value));
       break;
+    case Ctx::Code: {
+      if (!inWantedCode) break;
+      const uint32_t n = toU32(value);
+      const uint16_t small = n > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(n);
+      if (keyIs("moduleSize")) codeResult.code.moduleSize = small;
+      if (keyIs("quietZone")) codeResult.code.quietZone = small;
+      if (keyIs("codeWidthPx")) codeResult.code.codeWidthPx = small;
+      if (keyIs("codeHeightPx")) codeResult.code.codeHeightPx = small;
+      break;
+    }
     case Ctx::PageImage: {
       if (!inWantedPageImage) break;
       const uint32_t n = toU32(value);

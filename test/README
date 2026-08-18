@@ -25,4 +25,7 @@ Three targets here are host tools, not gtest suites, so ctest does not run them:
                renders a generated wallet asset through the device's own
                WalletAsset/ManifestParser code and writes PNGs of the
                framebuffer -- docs/wallet-viewer.md, "Read against real
-               generator output". `pio run -t wallet-preview`
+               generator output". `pio run -t wallet-preview`.
+               `--code N` renders a machine-readable code and reports its hash,
+               module box, centring and label band -- same doc, "The code
+               screen" 
