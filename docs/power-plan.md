@@ -99,7 +99,7 @@ on the public site until a real 72-hour run has happened on hardware.
 **Guest and hotel networks usually block it.** Client isolation stops two
 devices on the same AP from seeing each other; the symptom is a failed ARP for
 the device while the gateway still pings. Fix by putting the device in AP mode
-(open hotspot `CrossPoint-Reader`, `192.168.4.1`) and joining that, or by
+(open hotspot `ExplorInk-Reader`, `192.168.4.1`) and joining that, or by
 putting both the laptop and the device on a phone hotspot -- the second keeps
 the laptop's own internet, which matters if a tool on the laptop needs it.
 

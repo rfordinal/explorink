@@ -84,7 +84,7 @@ virtual bool preventThrottle()  const { return false; }   // do not drop to 10 M
 `setPowerSaving(false)` on the second. Default both to `false` in `Activity` so
 every inherited activity behaves exactly as it does today
 (`src/activities/Activity.h`), and have the existing callers
-(`CrossPointWebServerActivity`, `OtaUpdateActivity`, and the map screens) return
+(`ExplorInkWebServerActivity`, `OtaUpdateActivity`, and the map screens) return
 `true` from both — which reproduces current behaviour for all of them, so the
 split is a no-op until something opts out.
 

@@ -1,6 +1,6 @@
 # Web Server Guide
 
-This guide explains how to use TrailInk's built-in web server. It moves files
+This guide explains how to use ExplorInk's built-in web server. It moves files
 on and off the SD card. That is all it does -- device settings and Wi-Fi are
 configured on the device itself, not in a browser.
 
@@ -35,7 +35,7 @@ networks or in hotspot mode when you control who is connected.
 ## Join Network Mode
 
 1. Select **Join Network**.
-2. If you have saved Wi-Fi credentials, CrossPoint first tries the last
+2. If you have saved Wi-Fi credentials, ExplorInk first tries the last
    connected network, then other visible saved networks in signal-strength
    order. Press **Back** to cancel or **Confirm** to stop auto-connect and show
    the network list.
@@ -49,7 +49,7 @@ After connection, the reader shows:
 - The connected SSID
 - A QR code for the web URL
 - The direct IP URL, for example `http://192.168.1.102/`
-- The mDNS fallback URL, usually `http://crosspoint.local/`
+- The mDNS fallback URL, usually `http://explorink.local/`
 
 Use either URL from a phone, tablet, or computer on the same network.
 
@@ -59,10 +59,10 @@ Use either URL from a phone, tablet, or computer on the same network.
 2. Connect your phone or computer to the open Wi-Fi network:
 
 ```text
-CrossPoint-Reader
+ExplorInk-Reader
 ```
 
-3. Open the URL shown on the reader. `http://crosspoint.local/` is preferred
+3. Open the URL shown on the reader. `http://explorink.local/` is preferred
    when supported; the fallback IP is typically `http://192.168.4.1/`.
 
 The reader displays one QR code for joining the hotspot and another QR code for
@@ -129,7 +129,7 @@ Endpoint details are documented in [webserver-endpoints.md](./webserver-endpoint
 ## Tips
 
 1. Use **Create Hotspot** when no trusted network is available.
-2. Prefer `crosspoint.local` when available, but keep the displayed IP address as a fallback.
+2. Prefer `explorink.local` when available, but keep the displayed IP address as a fallback.
    That hostname is the literal value in the code, not a stale name.
 3. Move closer to the router if upload progress stalls in Join Network mode.
 4. Copy custom `.cpfont` families to `/.fonts/` or `/fonts/` on the SD card. The

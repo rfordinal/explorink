@@ -51,7 +51,7 @@ one is negative) when nothing is connected.
 **Open — needs measurement on hardware.** The signal-to-bars thresholds
 (`MapActivity.cpp`, `bleBarsForRssi()`: -85/-75/-65/-55 dBm) are carried over
 unchanged from the WiFi indicator's rise thresholds
-(`CrossPointWebServerActivity.cpp:53-59`). BLE and WiFi share the 2.4 GHz band,
+(`ExplorInkWebServerActivity.cpp:53-59`). BLE and WiFi share the 2.4 GHz band,
 so the bands should read similarly, but nobody has checked what `rssi()`
 actually returns at a given phone-to-device distance, or whether
 `ble_gap_conn_rssi()` even succeeds reliably on this NimBLE-Arduino version in

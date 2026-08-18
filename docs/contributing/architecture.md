@@ -160,7 +160,7 @@ binary cache formats, see `docs/file-formats.md`.
 
 ## Networking architecture
 
-Network file transfer is controlled by `src/activities/network/CrossPointWebServerActivity.h` and served by `src/network/CrossPointWebServer.h`.
+Network file transfer is controlled by `src/activities/network/ExplorInkWebServerActivity.h` and served by `src/network/ExplorInkWebServer.h`.
 
 Modes:
 
