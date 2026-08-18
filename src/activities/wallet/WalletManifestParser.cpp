@@ -297,6 +297,13 @@ void ManifestParser::commitCode() {
 }
 
 void ManifestParser::onBool(const bool value) {
+  // An item's own "grey": the document says whether it wants the grey waveform.
+  // Absent means false, which is the right default -- a card written before grey
+  // existed asks for none (docs/wallet-grey.md).
+  if (top() == Ctx::Item && keyIs("grey")) {
+    if (mode == Mode::Lookup && itemIndex == wantItem) result.wantsGrey = value;
+    return;
+  }
   if (top() != Ctx::Code || !inWantedCode) return;
   // `verified` is the generator's decode round-trip result. Absent means false --
   // see CodeEntry.
