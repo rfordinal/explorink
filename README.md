@@ -13,13 +13,20 @@ motorcycle rides and hiking. A fork of
 which is where nearly everything that makes this device work came from — see
 [Credits](#credits).
 
-> **Heavy development. Not usable yet.**
-> The map screen draws real OSM data off the SD card, zoom and marker height
-> respond to the hardware buttons, and a phone can drive it all over BLE. The
-> renderer now follows most of the map style on the real panel: per-class road
-> widths and casings, hatched or dithered buildings, forest, built-up and water
-> areas. No place names and no route yet — those are the next two pieces. Formats and the BLE protocol
-> change without notice. If you want a working device today, use
+Project site, with real panel screenshots and the development log:
+**[explorink.com](https://explorink.com/)**.
+
+> **Working prototype, active development. No packaged release yet.**
+> It runs on real hardware: the map screen draws OSM data off the SD card, a
+> phone drives it over BLE, the marker follows the fix without redrawing the
+> map, and the renderer follows most of the map style on the panel — per-class
+> road widths and casings, dithered or hatched buildings, forest, built-up and
+> water areas, place names and a loaded route. Junction dots and off-screen
+> place markers are the pieces still missing.
+>
+> Installing it today means a cable and PlatformIO: build and flash from source,
+> as below. There is no one-click flasher and no store app yet. Formats and the
+> BLE protocol change without notice. If you want a finished e-reader today, use
 > [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) — this
 > fork trades its features away for a different purpose.
 
@@ -84,7 +91,7 @@ not a pull request.
 | Command console (serial and BLE), zoom/mode filter | exists — same grammar over USB and BLE |
 | Marker follows the fix without redrawing the map | exists, **verified on hardware 2026-08-05** by replaying a recorded ride — 117 fixes cost 31 skips, 71 windowed marker refreshes and 14 full redraws, ~160 s against the ~1,040 s all-redraws would have cost, heap flat. A fix moves the marker and refreshes one 64x64 rectangle; the map is redrawn only when the marker nears an edge, the rider turns 90°, or the ghosting budget runs out. See [`docs/map-follow.md`](./docs/map-follow.md) |
 | Track-up map | exists — the fix's heading is up on screen and the north indicator rotates to match |
-| Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots, marker anchor. Confirmed on the panel, not only in the preview. Labels, route and junction dots: **not implemented** |
+| Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots and place names, the route line, marker anchor. Confirmed on the panel, not only in the preview. Junction dots and off-screen place markers: **not implemented**. See [`docs/place-labels.md`](./docs/place-labels.md) and [`docs/route-layer.md`](./docs/route-layer.md) |
 | Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
 | Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |
 | Route following, off-route warning | **not started** |
