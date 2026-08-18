@@ -367,6 +367,35 @@ bool Store::lookupCode(const int itemIndex, const int codeIndex, CodeLookup& out
   return true;
 }
 
+bool readPlaneWindow(HalFile& file, const uint8_t* const key, const uint8_t iv[kAssetIvLen], const uint32_t planeBase,
+                     const uint32_t srcRowBytes, const uint32_t xByte, const uint32_t y, const uint32_t rows,
+                     uint8_t* const dest, const uint32_t destRowBytes, Error& error) {
+  error = Error::None;
+  for (uint32_t r = 0; r < rows; ++r) {
+    // Two offsets, and they are not the same number: the file offset includes the
+    // 32-byte cleartext header, the CTR offset does not.
+    const uint32_t payloadOffset = planeBase + (y + r) * srcRowBytes + xByte;
+    const uint32_t offset = kAssetHeaderBytes + payloadOffset;
+    uint8_t* const row = dest + r * destRowBytes;
+    if (!file.seekSet(offset) || file.read(row, destRowBytes) != static_cast<int>(destRowBytes)) {
+      LOG_ERR(kLogTag, "page-image row %lu short at offset %lu", static_cast<unsigned long>(r),
+              static_cast<unsigned long>(offset));
+      error = Error::ShortRead;
+      return false;
+    }
+    if (key != nullptr && !ctrDecryptInPlace(key, iv, payloadOffset, row, destRowBytes)) {
+      error = Error::AssetDecrypt;
+      return false;
+    }
+  }
+  // This is the whole reason the format uses CTR. Every one of those rows starts at
+  // an arbitrary, generally unaligned payload offset, and CTR reaches it by starting
+  // the counter at offset / 16 and dropping offset % 16 bytes of keystream. Anything
+  // chained would have forced a decrypt from byte zero per row -- up to 585 KB a row
+  // (docs/wallet-crypto.md, "Why CTR").
+  return true;
+}
+
 bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Error& error) {
   error = Error::None;
   if (!page.present || !isValidAssetId(page.assetId)) {
@@ -487,37 +516,14 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
     return false;
   }
 
-  uint8_t* const fb = renderer.getFrameBuffer();
-  for (uint32_t r = 0; r < rows; ++r) {
-    // Two offsets, and they are not the same number: the file offset includes the
-    // 32-byte cleartext header, the CTR offset does not. The keystream is indexed
-    // from the first byte of the PAYLOAD.
-    const uint32_t payloadOffset = (y + r) * spec_.rowBytes + xByte;
-    const uint32_t offset = kAssetHeaderBytes + payloadOffset;
-    if (!file_.seekSet(offset) || file_.read(fb + r * rowBytes, rowBytes) != static_cast<int>(rowBytes)) {
-      LOG_ERR(kLogTag, "page-image row %lu short at offset %lu", static_cast<unsigned long>(r),
-              static_cast<unsigned long>(offset));
-      error = Error::ShortRead;
-      return false;
-    }
-    if (encrypted_ && !ctrDecryptInPlace(key, iv_, payloadOffset, fb + r * rowBytes, rowBytes)) {
-      error = Error::AssetDecrypt;
-      return false;
-    }
-  }
-  // This is the whole reason the format uses CTR. Every one of those 480 rows starts
-  // at an arbitrary, generally unaligned payload offset, and CTR reaches it by
-  // starting the counter at offset / 16 and dropping offset % 16 bytes of keystream.
-  // Anything chained would have forced a decrypt from byte zero per row -- 480 times
-  // up to 585 KB (docs/wallet-crypto.md, "Why CTR").
+  // One plane, so the payload base is 0. The seek, read and CTR arithmetic is
+  // readPlaneWindow()'s, shared with the grey reader.
   //
   // No plaintext hash check here: a window is a fraction of the payload, so there is
   // nothing to check it against. A wrong key cannot get this far anyway -- the
   // manifest that named this asset would not have authenticated.
-  // header_.sha256Prefix is still unchecked here, same as the tile path -- and a
-  // window is a fraction of the payload, so a whole-file hash would cost more than
-  // the read it is guarding.
-  return true;
+  return readPlaneWindow(file_, key, iv_, /*planeBase=*/0, spec_.rowBytes, xByte, y, rows, renderer.getFrameBuffer(),
+                         rowBytes, error);
 }
 
 namespace {

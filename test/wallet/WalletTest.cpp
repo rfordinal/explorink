@@ -10,6 +10,7 @@
 #include "WalletAsset.h"
 #include "WalletCrypto.h"
 #include "WalletCryptoHost.h"
+#include "WalletGreySynth.h"
 #include "WalletManifestParser.h"
 #include "WalletSha256.h"
 #include "WalletSidecar.h"
@@ -1983,4 +1984,431 @@ TEST(WalletUnlockOutcomes, TheDelayAHostWillWatchIsTheOneTheScreenEnforces) {
   // And the tenth failure is not a delay at all: it is the end.
   EXPECT_TRUE(pinIsLockedOut(kMaxPinFailures));
   EXPECT_FALSE(pinIsLockedOut(kMaxPinFailures - 1));
+}
+
+// ---------------------------------------------------------------------------
+// P2b: grey. The two grey asset forms, the plane encoding they share, and the
+// gates. docs/wallet-grey.md is the layout; docs/eink-grayscale.md is why the
+// planes look the way they do.
+//
+// The device never looks at a grey pixel -- it streams baked planes straight to
+// controller RAM -- so nothing on the device can notice a wrong bit order. These
+// tests and the host preview are the only place it can be noticed at all.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The synthetic page, at panel size so the in-memory payloads stay small:
+// 3 x 48,000 for the planes, 96,000 for the 2bpp form.
+const wallet::host::GreyPage& greyPage() {
+  static const wallet::host::GreyPage page = wallet::host::makeGreyPage(800, 480);
+  return page;
+}
+
+// One a little larger than the panel, so a window has somewhere to pan to. Plane
+// row 102 bytes, so the x limit is 16 px.
+const wallet::host::GreyPage& greyPagePannable() {
+  static const wallet::host::GreyPage page = wallet::host::makeGreyPage(816, 488);
+  return page;
+}
+
+PageImageSpec greyPlanesSpec(const wallet::host::GreyPage& page, const char* id = "1234567890abcdef") {
+  PageImageSpec spec;
+  spec.present = true;
+  std::strcpy(spec.assetId, id);
+  spec.nativeWidth = page.width;
+  spec.nativeHeight = page.height;
+  spec.rowBytes = static_cast<uint16_t>(page.planeRowBytes);
+  spec.rawLen = static_cast<uint32_t>(page.planes.size());
+  spec.windowStepX = 8;
+  spec.windowStepY = 8;
+  return spec;
+}
+
+PageImageSpec greyImageSpec(const wallet::host::GreyPage& page, const char* id = "fedcba0987654321") {
+  PageImageSpec spec;
+  spec.present = true;
+  std::strcpy(spec.assetId, id);
+  spec.nativeWidth = page.width;
+  spec.nativeHeight = page.height;
+  spec.rowBytes = static_cast<uint16_t>(page.greyRowBytes);
+  spec.rawLen = static_cast<uint32_t>(page.twoBpp.size());
+  return spec;
+}
+
+uint8_t levelFromPlanesAt(const wallet::host::GreyPage& page, uint32_t x, uint32_t y) {
+  const size_t planeBytes = static_cast<size_t>(page.planeRowBytes) * page.height;
+  const uint8_t* base = page.planes.data() + static_cast<size_t>(y) * page.planeRowBytes;
+  const uint8_t* lsb = base + planeBytes;
+  const uint8_t* msb = base + planeBytes * 2;
+  return wallet::host::levelFromPlaneRows(base, lsb, msb, x);
+}
+
+}  // namespace
+
+TEST(WalletGreyEncoding, PlaneBitsAreTheLutTable) {
+  // docs/eink-grayscale.md, "A grey pixel is a black pixel that got nudged
+  // lighter": black/white 00 (no drive), light grey 10, dark grey 11. Plus the
+  // base frame's own convention, where bit 1 is white and BOTH greys are ink.
+  struct Row {
+    uint8_t value;
+    bool base;  // framebuffer bit: 1 = white
+    bool lsb;   // controller bit: 1 = nudge
+    bool msb;
+  };
+  const Row rows[] = {
+      {kGreyValueBlack, false, false, false},
+      {kGreyValueDarkGray, false, true, true},
+      {kGreyValueLightGray, false, false, true},
+      {kGreyValueWhite, true, false, false},
+  };
+  for (const Row& row : rows) {
+    const GrayShade shade = greyShadeFromValue(row.value);
+    EXPECT_EQ(greyPlaneBit(shade, GreyPlane::Base), row.base) << "base, value " << int(row.value);
+    EXPECT_EQ(greyPlaneBit(shade, GreyPlane::Lsb), row.lsb) << "lsb, value " << int(row.value);
+    EXPECT_EQ(greyPlaneBit(shade, GreyPlane::Msb), row.msb) << "msb, value " << int(row.value);
+    // And the level is recoverable from the three bits, or the host preview draws
+    // the wrong picture while the panel draws the right one.
+    EXPECT_EQ(greyValueFromPlaneBits(row.base, row.lsb, row.msb), row.value);
+    EXPECT_EQ(greyValueFromShade(shade), row.value);
+  }
+}
+
+TEST(WalletGreyEncoding, LosingThePlanesReadsBlackAndNotWhite) {
+  // The consequence that bites (docs/eink-grayscale.md): with both plane bits
+  // clear, a grey pixel is whatever the base frame says -- and the base frame inks
+  // both greys. So a dropped plane is a black page, not a washed-out one.
+  for (const uint8_t value : {kGreyValueBlack, kGreyValueDarkGray, kGreyValueLightGray}) {
+    const GrayShade shade = greyShadeFromValue(value);
+    EXPECT_FALSE(greyPlaneBit(shade, GreyPlane::Base)) << "value " << int(value) << " must be ink in the base frame";
+    EXPECT_EQ(greyValueFromPlaneBits(greyPlaneBit(shade, GreyPlane::Base), false, false), kGreyValueBlack);
+  }
+}
+
+TEST(WalletGreyEncoding, TwoBppIsFourPixelsPerByteMsbFirst) {
+  std::vector<uint8_t> row(1, 0);
+  wallet::host::setTwoBppValue(row, 1, 0, 0, kGreyValueBlack);
+  wallet::host::setTwoBppValue(row, 1, 1, 0, kGreyValueDarkGray);
+  wallet::host::setTwoBppValue(row, 1, 2, 0, kGreyValueLightGray);
+  wallet::host::setTwoBppValue(row, 1, 3, 0, kGreyValueWhite);
+  // 00 01 10 11, pixel 0 in the TOP two bits.
+  EXPECT_EQ(row[0], 0x1Bu);
+  for (uint32_t x = 0; x < 4; ++x) EXPECT_EQ(wallet::host::twoBppValueAt(row.data(), x), x);
+}
+
+TEST(WalletGreyEncoding, StridesAreTheDocumentedFormulas) {
+  EXPECT_EQ(greyPlaneRowBytes(800), 100u);
+  EXPECT_EQ(greyRowBytes2bpp(800), 200u);
+  // X3: 792 px.
+  EXPECT_EQ(greyPlaneRowBytes(792), 99u);
+  EXPECT_EQ(greyRowBytes2bpp(792), 198u);
+  // A width that is not a whole number of bytes rounds UP in both forms, or the
+  // last pixels of every row fall off.
+  EXPECT_EQ(greyPlaneRowBytes(801), 101u);
+  EXPECT_EQ(greyRowBytes2bpp(801), 201u);
+  EXPECT_EQ(greyRowBytes2bpp(802), 201u);
+  EXPECT_EQ(greyRowBytes2bpp(803), 201u);
+  EXPECT_EQ(greyRowBytes2bpp(804), 201u);
+}
+
+TEST(WalletGreyEncoding, TheTwoFormsOfOnePageAgreeOnEveryPixel) {
+  const wallet::host::GreyPage& page = greyPage();
+  ASSERT_EQ(page.planes.size(), static_cast<size_t>(page.planeRowBytes) * page.height * kGreyPlaneCount);
+  ASSERT_EQ(page.twoBpp.size(), static_cast<size_t>(page.greyRowBytes) * page.height);
+
+  size_t counts[kGreyValues] = {0, 0, 0, 0};
+  for (uint32_t y = 0; y < page.height; ++y) {
+    const uint8_t* twoBppRow = page.twoBpp.data() + static_cast<size_t>(y) * page.greyRowBytes;
+    for (uint32_t x = 0; x < page.width; ++x) {
+      const uint8_t want = page.levels[static_cast<size_t>(y) * page.width + x];
+      ASSERT_EQ(levelFromPlanesAt(page, x, y), want) << "planes at " << x << "," << y;
+      ASSERT_EQ(wallet::host::twoBppValueAt(twoBppRow, x), want) << "2bpp at " << x << "," << y;
+      counts[want]++;
+    }
+  }
+  // All four levels have to be in the test pattern, or this test proves nothing
+  // about the two mid tones -- which are the only ones the encoding can get wrong.
+  for (uint8_t value = 0; value < kGreyValues; ++value) EXPECT_GT(counts[value], 0u) << "level " << int(value);
+}
+
+TEST(WalletGreyOffsets, EachPlaneStartsWhereTheLastOneEnded) {
+  const PageImageSpec spec = greyPlanesSpec(greyPage());
+  const uint32_t planeBytes = greyPlaneBytes(spec);
+  EXPECT_EQ(planeBytes, 48000u);
+  EXPECT_EQ(greyPlaneOffset(spec, GreyPlane::Base), 0u);
+  EXPECT_EQ(greyPlaneOffset(spec, GreyPlane::Lsb), planeBytes);
+  EXPECT_EQ(greyPlaneOffset(spec, GreyPlane::Msb), planeBytes * 2u);
+  EXPECT_EQ(greyPlaneOffset(spec, GreyPlane::Msb) + planeBytes, spec.rawLen);
+}
+
+TEST(WalletGreyGate, AcceptsTheBakedPlanesAndThe2bppImage) {
+  const wallet::host::GreyPage& page = greyPage();
+  const PageImageSpec planes = greyPlanesSpec(page);
+  const PageImageSpec image = greyImageSpec(page);
+  AssetHeader h;
+
+  const auto planesFile =
+      wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth2, page.width, page.height, page.planes);
+  EXPECT_EQ(checkGreyPlanes(planesFile.data(), planesFile.size(), planes, kPanelX4, h), AssetCheck::Ok);
+  EXPECT_EQ(h.bitDepth, kBitDepth2);
+
+  const auto imageFile =
+      wallet::host::buildAssetFile(AssetType::PageImageGrey, kBitDepth2, page.width, page.height, page.twoBpp);
+  EXPECT_EQ(checkGreyImage(imageFile.data(), imageFile.size(), image, kPanelX4, h), AssetCheck::Ok);
+
+  // The X3's panel is wider than this page, so no window can fill it. Refused as a
+  // wrong-device asset, not as a corrupt one.
+  EXPECT_EQ(checkGreyPlanes(planesFile.data(), planesFile.size(), planes, kPanelX3, h), AssetCheck::WrongPanel);
+}
+
+TEST(WalletGreyGate, RefusesTheOtherFormInEitherSlot) {
+  const wallet::host::GreyPage& page = greyPage();
+  AssetHeader h;
+  const auto planesFile =
+      wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth2, page.width, page.height, page.planes);
+  const auto imageFile =
+      wallet::host::buildAssetFile(AssetType::PageImageGrey, kBitDepth2, page.width, page.height, page.twoBpp);
+  // Swapped: the manifest's greyPlanes pointing at the 2bpp asset would have the
+  // device stream a third of an image into the controller as plane bits.
+  EXPECT_EQ(checkGreyPlanes(imageFile.data(), imageFile.size(), greyImageSpec(page), kPanelX4, h),
+            AssetCheck::PageImageMismatch);
+  EXPECT_EQ(checkGreyImage(planesFile.data(), planesFile.size(), greyPlanesSpec(page), kPanelX4, h),
+            AssetCheck::PageImageMismatch);
+  // And a 1bpp page image is not a grey asset either, whatever slot names it.
+  const auto oneBpp = wallet::host::buildAssetFile(AssetType::PageImage, kBitDepth1, page.width, page.height,
+                                                   wallet::host::makeOneBppPage(page));
+  EXPECT_EQ(checkGreyPlanes(oneBpp.data(), oneBpp.size(), greyPlanesSpec(page), kPanelX4, h), AssetCheck::BitDepth);
+}
+
+TEST(WalletGreyGate, RefusesBitDepthThatIsNotTwo) {
+  const wallet::host::GreyPage& page = greyPage();
+  AssetHeader h;
+  // Right type, right lengths, wrong depth. Both grey forms say 2, because the
+  // field describes the picture and not the stride of one plane.
+  const auto planesFile =
+      wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth1, page.width, page.height, page.planes);
+  EXPECT_EQ(checkGreyPlanes(planesFile.data(), planesFile.size(), greyPlanesSpec(page), kPanelX4, h),
+            AssetCheck::BitDepth);
+  // And the 1bpp gates keep refusing a 2bpp asset, which is what stops the old
+  // reader from drawing a grey page at half width.
+  const auto greyFile =
+      wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth2, page.width, page.height, page.planes);
+  EXPECT_EQ(checkAssetForPanel(greyFile.data(), greyFile.size(), kPanelX4, h), AssetCheck::BitDepth);
+  EXPECT_EQ(checkPageImage(greyFile.data(), greyFile.size(), greyPlanesSpec(page), kPanelX4, h), AssetCheck::BitDepth);
+}
+
+TEST(WalletGreyGate, RefusesARawLenThatIsNotThreeWholePlanes) {
+  const wallet::host::GreyPage& page = greyPage();
+  AssetHeader h;
+  const auto file =
+      wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth2, page.width, page.height, page.planes);
+
+  // A manifest that describes one plane where the file holds three: the classic
+  // way a reader ends up streaming the base frame as a plane.
+  PageImageSpec onePlane = greyPlanesSpec(page);
+  onePlane.rawLen = greyPlaneBytes(onePlane);
+  EXPECT_EQ(checkGreyPlanes(file.data(), file.size(), onePlane, kPanelX4, h), AssetCheck::PageImageMismatch);
+
+  // A header whose rawLen disagrees with the manifest's, both otherwise valid.
+  const auto shortFile =
+      wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth2, page.width, page.height,
+                                   std::vector<uint8_t>(page.planes.begin(), page.planes.end() - page.planeRowBytes));
+  EXPECT_EQ(checkGreyPlanes(shortFile.data(), shortFile.size(), greyPlanesSpec(page), kPanelX4, h),
+            AssetCheck::PageImageMismatch);
+}
+
+TEST(WalletGreyGate, RefusesAStrideTooNarrowForTheWidth) {
+  const wallet::host::GreyPage& page = greyPage();
+  AssetHeader h;
+  const auto file =
+      wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth2, page.width, page.height, page.planes);
+  PageImageSpec narrow = greyPlanesSpec(page);
+  narrow.rowBytes = 99;  // 792 px of stride for an 800 px page
+  narrow.rawLen = static_cast<uint32_t>(narrow.rowBytes) * narrow.nativeHeight * kGreyPlaneCount;
+  // Caught as a mismatch rather than drawn: a stride one byte short skews every
+  // row a little further than the last, which reads as a bent document instead of
+  // as a broken file.
+  EXPECT_EQ(checkGreyPlanes(file.data(), file.size(), narrow, kPanelX4, h), AssetCheck::PageImageMismatch);
+}
+
+TEST(WalletGreyGate, EncryptedNeedsAKeyExactlyLikeEveryOtherAsset) {
+  const wallet::host::GreyPage& page = greyPage();
+  AssetHeader h;
+  const auto file = wallet::host::buildAssetFile(AssetType::GreyPlanes, kBitDepth2, page.width, page.height,
+                                                 page.planes, /*version=*/1, /*encryptedFlag=*/true);
+  const PageImageSpec spec = greyPlanesSpec(page);
+  EXPECT_EQ(checkGreyPlanes(file.data(), file.size(), spec, kPanelX4, h, /*allowEncrypted=*/false),
+            AssetCheck::Encrypted);
+  EXPECT_EQ(checkGreyPlanes(file.data(), file.size(), spec, kPanelX4, h, /*allowEncrypted=*/true), AssetCheck::Ok);
+  EXPECT_NE(h.flags & kFlagEncrypted, 0);
+}
+
+TEST(WalletGreyCrypto, EveryPlaneRowOfAWindowDecryptsAtItsOwnPayloadOffset) {
+  // The device reads a grey window as 3 x 480 rows, each at an arbitrary payload
+  // offset, and decrypts each one where it lies -- readPlaneWindow() in
+  // WalletStore.cpp, called once per plane with that plane's base offset. The
+  // offsets in the second and third plane are the ones a naive implementation gets
+  // wrong, because they are past the first 48,000 bytes.
+  const wallet::host::GreyPage& page = greyPagePannable();
+  const PageImageSpec spec = greyPlanesSpec(page);
+  const uint32_t planeBytes = greyPlaneBytes(spec);
+
+  uint8_t key[kWalletKeyLen];
+  for (size_t i = 0; i < sizeof(key); ++i) key[i] = static_cast<uint8_t>(0x40 + i);
+  uint8_t iv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(spec.assetId, /*version=*/1, iv));
+
+  // One CTR stream over the whole payload, exactly as the generator writes it.
+  std::vector<uint8_t> cipher = page.planes;
+  wallet::host::ctrXor(key, iv, 0, cipher.data(), cipher.size());
+  ASSERT_NE(cipher, page.planes);
+
+  const uint32_t panelRowBytes = kPanelX4.rowBytes;
+  const uint32_t x = 8;  // 8-aligned and not zero: xByte = 1
+  const uint32_t y = 7;  // not a band boundary either
+  ASSERT_LE(x + kPanelX4.width, page.width);
+  ASSERT_LE(y + kPanelX4.height, page.height);
+
+  std::vector<uint8_t> rows[kGreyPlaneCount];
+  for (uint32_t r = 0; r < kPanelX4.height; ++r) {
+    for (uint8_t plane = 0; plane < kGreyPlaneCount; ++plane) {
+      const uint32_t payloadOffset = plane * planeBytes + (y + r) * spec.rowBytes + x / 8u;
+      rows[plane].assign(cipher.begin() + payloadOffset, cipher.begin() + payloadOffset + panelRowBytes);
+      wallet::host::ctrXor(key, iv, payloadOffset, rows[plane].data(), rows[plane].size());
+    }
+    for (uint32_t px = 0; px < kPanelX4.width; ++px) {
+      const uint8_t got = wallet::host::levelFromPlaneRows(rows[0].data(), rows[1].data(), rows[2].data(), px);
+      const uint8_t want = page.levels[static_cast<size_t>(y + r) * page.width + x + px];
+      ASSERT_EQ(got, want) << "row " << r << " px " << px;
+    }
+  }
+}
+
+TEST(WalletGreyCrypto, TheWrongKeyDoesNotDecodeToThePicture) {
+  const wallet::host::GreyPage& page = greyPage();
+  const PageImageSpec spec = greyPlanesSpec(page);
+  uint8_t key[kWalletKeyLen];
+  uint8_t wrong[kWalletKeyLen];
+  for (size_t i = 0; i < sizeof(key); ++i) {
+    key[i] = static_cast<uint8_t>(0x40 + i);
+    wrong[i] = static_cast<uint8_t>(0x41 + i);
+  }
+  uint8_t iv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(spec.assetId, 1, iv));
+
+  std::vector<uint8_t> cipher = page.planes;
+  wallet::host::ctrXor(key, iv, 0, cipher.data(), cipher.size());
+  std::vector<uint8_t> bad = cipher;
+  wallet::host::ctrXor(wrong, iv, 0, bad.data(), bad.size());
+  EXPECT_NE(bad, page.planes);
+  // A window carries no hash to check itself against -- it is a fraction of the
+  // payload -- so a wrong key on a grey page shows as a wrong picture, exactly as
+  // it does on a 1bpp page image. What catches a wrong key is the manifest's GCM
+  // tag, which fails before any assetId is even read (docs/wallet-crypto.md).
+  const uint8_t* base = bad.data();
+  size_t differing = 0;
+  for (uint32_t x = 0; x < page.width; ++x) {
+    const uint8_t want = page.levels[x];
+    const uint8_t got =
+        wallet::host::levelFromPlaneRows(base, base + greyPlaneBytes(spec), base + greyPlaneBytes(spec) * 2, x);
+    if (got != want) ++differing;
+  }
+  EXPECT_GT(differing, page.width / 4) << "a wrong key must not produce the picture";
+}
+
+TEST(WalletGreyManifest, ReadsBothGreyFormsForTheRequestedLevelOnly) {
+  // The keys the generator has to write, in the shape the level object already
+  // uses for `pageImage`.
+  const char* json = R"JSON({
+  "formatVersion": 1,
+  "items": [{
+    "title": "Grey both ways",
+    "pages": [{
+      "levels": {
+        "fit": {
+          "cols": 1, "rows": 1,
+          "pageImage": {"assetId": "aaaaaaaaaaaaaaaa", "nativeWidth": 800, "nativeHeight": 480,
+                        "rowBytes": 100, "rawLen": 48000, "windowStepX": 240, "windowStepY": 160,
+                        "focalX": 8, "focalY": 16},
+          "greyPlanes": {"assetId": "bbbbbbbbbbbbbbbb", "nativeWidth": 800, "nativeHeight": 480,
+                         "rowBytes": 100, "rawLen": 144000, "windowStepX": 240, "windowStepY": 160,
+                         "focalX": 8, "focalY": 16},
+          "greyPageImage": {"assetId": "cccccccccccccccc", "nativeWidth": 800, "nativeHeight": 480,
+                            "rowBytes": 200, "rawLen": 96000}
+        },
+        "detail": {
+          "cols": 1, "rows": 1,
+          "greyPlanes": {"assetId": "dddddddddddddddd", "nativeWidth": 1600, "nativeHeight": 960,
+                         "rowBytes": 200, "rawLen": 576000}
+        }
+      }
+    }]
+  }]
+})JSON";
+
+  ManifestParser fit;
+  fit.beginLookup(0, 0, Level::Fit, 0, 0);
+  fit.feed(json, std::strlen(json));
+  ASSERT_FALSE(fit.hasError());
+  const PageLookup& f = fit.lookup();
+  ASSERT_TRUE(f.pageImage.present);
+  ASSERT_TRUE(f.greyPlanes.present);
+  ASSERT_TRUE(f.greyImage.present);
+  EXPECT_STREQ(f.pageImage.assetId, "aaaaaaaaaaaaaaaa");
+  EXPECT_STREQ(f.greyPlanes.assetId, "bbbbbbbbbbbbbbbb");
+  EXPECT_STREQ(f.greyImage.assetId, "cccccccccccccccc");
+  // Three objects, three slots: a field of one must never land in another.
+  EXPECT_EQ(f.greyPlanes.rawLen, 144000u);
+  EXPECT_EQ(f.greyPlanes.rowBytes, 100u);
+  EXPECT_EQ(f.greyImage.rawLen, 96000u);
+  EXPECT_EQ(f.greyImage.rowBytes, 200u);
+  EXPECT_EQ(f.pageImage.rawLen, 48000u);
+  EXPECT_EQ(f.greyPlanes.focalX, 8u);
+  EXPECT_EQ(f.greyPlanes.windowStepY, 160u);
+
+  // The other level's grey asset does not leak into this answer.
+  ManifestParser detail;
+  detail.beginLookup(0, 0, Level::Detail, 0, 0);
+  detail.feed(json, std::strlen(json));
+  ASSERT_FALSE(detail.hasError());
+  const PageLookup& d = detail.lookup();
+  EXPECT_FALSE(d.pageImage.present);
+  EXPECT_FALSE(d.greyImage.present);
+  ASSERT_TRUE(d.greyPlanes.present);
+  EXPECT_STREQ(d.greyPlanes.assetId, "dddddddddddddddd");
+  EXPECT_EQ(d.greyPlanes.nativeWidth, 1600u);
+}
+
+TEST(WalletGreyManifest, AGreyAssetIdThatIsNotSixteenHexIsNoGreyAsset) {
+  const char* json = R"JSON({
+  "formatVersion": 1,
+  "items": [{"title": "Bad ids", "pages": [{"levels": {"fit": {
+    "greyPlanes": {"assetId": "../../etc/passwd", "nativeWidth": 800, "nativeHeight": 480,
+                   "rowBytes": 100, "rawLen": 144000},
+    "greyPageImage": {"assetId": "nope", "nativeWidth": 800, "nativeHeight": 480,
+                      "rowBytes": 200, "rawLen": 96000}
+  }}}]}]
+})JSON";
+  ManifestParser parser;
+  parser.beginLookup(0, 0, Level::Fit, 0, 0);
+  parser.feed(json, std::strlen(json));
+  ASSERT_FALSE(parser.hasError());
+  // Same rule as every other assetId: the id becomes a path, so anything that is
+  // not 16 hex characters is not an asset at all rather than one that fails to open.
+  EXPECT_FALSE(parser.lookup().greyPlanes.present);
+  EXPECT_FALSE(parser.lookup().greyImage.present);
+}
+
+TEST(WalletGreyManifest, ACardWithNoGreyAssetsReadsExactlyAsItDidBefore) {
+  // The regression that matters: P2b must be invisible to a tree generated before
+  // it. kManifest is the pre-grey fixture used by every test above.
+  for (const Level level : {Level::Fit, Level::Detail, Level::OneToOne}) {
+    ManifestParser parser;
+    parser.beginLookup(0, 0, level, 0, 0);
+    parser.feed(kManifest, std::strlen(kManifest));
+    ASSERT_FALSE(parser.hasError());
+    EXPECT_TRUE(parser.lookup().itemFound);
+    EXPECT_FALSE(parser.lookup().greyPlanes.present) << levelName(level);
+    EXPECT_FALSE(parser.lookup().greyImage.present) << levelName(level);
+  }
 }

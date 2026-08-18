@@ -67,6 +67,14 @@ struct PageLookup {
   // requested level only -- the viewer re-runs a lookup on a level change, so
   // carrying the other two would be dead weight (design B).
   PageImageSpec pageImage;
+  // The same level in grey (P2b), from the manifest's `greyPlanes` and
+  // `greyPageImage` objects. `greyPlanes` is the baked form the device draws;
+  // `greyImage` is the 2bpp form, read here so the host preview can render a
+  // four-level PNG through the same parser the device uses. A level may carry
+  // neither, and a card with neither behaves exactly as it did before P2b
+  // (../../../docs/wallet-grey.md).
+  PageImageSpec greyPlanes;
+  PageImageSpec greyImage;
   LevelGrid grid[kLevelCount] = {};
   uint16_t pageCount = 0;
   char title[kTitleBufBytes] = {0};
@@ -229,8 +237,12 @@ class ManifestParser {
   char assetId[kAssetIdBufBytes] = {0};
   uint16_t assetCol = 0;
   uint16_t assetRow = 0;
-  // True only while inside the pageImage object of the level being looked up.
-  bool inWantedPageImage = false;
+  // The image spec being filled while inside a `pageImage` / `greyPlanes` /
+  // `greyPageImage` object of the level being looked up, or null when the object
+  // belongs to some other level, item or page. One pointer instead of three
+  // flags: the three objects carry identical fields, so the only thing that
+  // differs is which slot they land in.
+  PageImageSpec* wantedImage = nullptr;
 };
 
 }  // namespace wallet

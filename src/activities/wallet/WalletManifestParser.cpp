@@ -71,7 +71,7 @@ void ManifestParser::reset() {
   assetId[0] = '\0';
   assetCol = 0;
   assetRow = 0;
-  inWantedPageImage = false;
+  wantedImage = nullptr;
   codeResult = CodeLookup{};
   inWantedCode = false;
   codesInItem = 0;
@@ -164,13 +164,19 @@ void ManifestParser::onContainerStart(bool isObject) {
         // manifest may carry levels a later phase adds.
         levelKnown = false;
       }
-    } else if (cur == Ctx::LevelObj && keyIs("pageImage")) {
+    } else if (cur == Ctx::LevelObj && (keyIs("pageImage") || keyIs("greyPlanes") || keyIs("greyPageImage"))) {
+      // Three objects, identical fields, one context. Which slot they fill is the
+      // only difference, and it is decided here while the key is still in hand --
+      // push() clears it.
       next = Ctx::PageImage;
       if (mode == Mode::Lookup && levelKnown && itemIndex == wantItem && pageIndex == wantPage &&
           levelInPlay == wantLevel) {
-        result.pageImage = PageImageSpec{};
-        result.pageImage.present = true;
-        inWantedPageImage = true;
+        PageImageSpec* slot = keyIs("pageImage")    ? &result.pageImage
+                              : keyIs("greyPlanes") ? &result.greyPlanes
+                                                    : &result.greyImage;
+        *slot = PageImageSpec{};
+        slot->present = true;
+        wantedImage = slot;
       }
     } else if (cur == Ctx::AssetsArr) {
       next = Ctx::Asset;
@@ -227,8 +233,8 @@ void ManifestParser::onContainerEnd() {
     case Ctx::PageImage:
       // A page image whose assetId is not 16 hex characters is no page image:
       // the id is what becomes a path, and buildAssetPath refuses it anyway.
-      if (inWantedPageImage && !isValidAssetId(result.pageImage.assetId)) result.pageImage = PageImageSpec{};
-      inWantedPageImage = false;
+      if (wantedImage != nullptr && !isValidAssetId(wantedImage->assetId)) *wantedImage = PageImageSpec{};
+      wantedImage = nullptr;
       break;
     case Ctx::Code:
       commitCode();
@@ -309,8 +315,8 @@ void ManifestParser::onString(const char* value, size_t len) {
       if (keyIs("assetId")) copyText(assetId, sizeof(assetId), value, len);
       break;
     case Ctx::PageImage:
-      if (inWantedPageImage && keyIs("assetId")) {
-        copyText(result.pageImage.assetId, sizeof(result.pageImage.assetId), value, len);
+      if (wantedImage != nullptr && keyIs("assetId")) {
+        copyText(wantedImage->assetId, sizeof(wantedImage->assetId), value, len);
       }
       break;
     case Ctx::Code:
@@ -375,17 +381,17 @@ void ManifestParser::onNumber(const char* value, size_t len) {
       break;
     }
     case Ctx::PageImage: {
-      if (!inWantedPageImage) break;
+      if (wantedImage == nullptr) break;
       const uint32_t n = toU32(value);
       const uint16_t small = n > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(n);
-      if (keyIs("nativeWidth")) result.pageImage.nativeWidth = small;
-      if (keyIs("nativeHeight")) result.pageImage.nativeHeight = small;
-      if (keyIs("rowBytes")) result.pageImage.rowBytes = small;
-      if (keyIs("rawLen")) result.pageImage.rawLen = n;
-      if (keyIs("windowStepX")) result.pageImage.windowStepX = small;
-      if (keyIs("windowStepY")) result.pageImage.windowStepY = small;
-      if (keyIs("focalX")) result.pageImage.focalX = small;
-      if (keyIs("focalY")) result.pageImage.focalY = small;
+      if (keyIs("nativeWidth")) wantedImage->nativeWidth = small;
+      if (keyIs("nativeHeight")) wantedImage->nativeHeight = small;
+      if (keyIs("rowBytes")) wantedImage->rowBytes = small;
+      if (keyIs("rawLen")) wantedImage->rawLen = n;
+      if (keyIs("windowStepX")) wantedImage->windowStepX = small;
+      if (keyIs("windowStepY")) wantedImage->windowStepY = small;
+      if (keyIs("focalX")) wantedImage->focalX = small;
+      if (keyIs("focalY")) wantedImage->focalY = small;
       break;
     }
     default:

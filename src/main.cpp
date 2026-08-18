@@ -36,6 +36,7 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "activities/wallet/WalletAsset.h"
 #include "activities/wallet/WalletCryptoDevice.h"
+#include "activities/wallet/WalletGreyPage.h"
 #include "activities/wallet/WalletKeyStore.h"
 #include "activities/wallet/WalletStore.h"
 #include "components/UITheme.h"
@@ -1286,6 +1287,68 @@ void loop() {
             static_cast<unsigned long>(session.retryWaitMs()), manifestKind, items, cardVersion,
             static_cast<unsigned long>(session.idleLeftMs()),
             static_cast<unsigned long>(wallet::KeyStore::iterations()));
+      } else if (cmd == "WALLETGREY" || cmd.startsWith("WALLETGREY ")) {
+        // The A/B switch of P2b, from a host, because the question it serves is
+        // "does grey read better than dither on this panel" and the answer is a
+        // person looking at the glass -- twice, at the same page, minutes apart.
+        // Pressing buttons for that means somebody stands at the device for every
+        // round; this command plus CMD:SCREENSHOT does not
+        // (docs/wallet-grey.md, "Driving the comparison from a host").
+        //
+        // CMD:WALLETGREY [on|off|toggle|status] [half|fast]
+        //
+        // The second argument is the BW base frame's refresh mode. HALF is what
+        // every working grey path in this firmware uses; FAST is exposed only
+        // because whether it is good enough is an open question that needs the
+        // panel, not an argument.
+        String args = cmd.length() > 10 ? cmd.substring(11) : String();
+        args.trim();
+        bool ok = true;
+        while (!args.isEmpty() && ok) {
+          int space = args.indexOf(' ');
+          String token = space < 0 ? args : args.substring(0, space);
+          args = space < 0 ? String() : args.substring(space + 1);
+          args.trim();
+          if (token == "on") {
+            wallet::grey::setEnabled(true);
+          } else if (token == "off") {
+            wallet::grey::setEnabled(false);
+          } else if (token == "toggle") {
+            wallet::grey::toggle();
+          } else if (token == "status") {
+            // Explicit no-op: the reply below is the status.
+          } else if (token == "half") {
+            wallet::grey::setBaseMode(HalDisplay::HALF_REFRESH);
+          } else if (token == "fast") {
+            wallet::grey::setBaseMode(HalDisplay::FAST_REFRESH);
+          } else {
+            ok = false;
+          }
+        }
+        if (!ok) {
+          logSerial.printf("WALLETGREY_ERR usage: CMD:WALLETGREY [on|off|toggle|status] [half|fast]\n");
+        } else {
+          // Every number the last frame of each kind measured, in microseconds,
+          // so the comparison is captured rather than retold. `grey_rendered=0`
+          // means no grey frame has happened since boot -- the fields are then
+          // zeros and not a measurement.
+          const wallet::GreyTimings& t = wallet::grey::lastGrey();
+          logSerial.printf("WALLETGREY_OK enabled=%d base=%s grey_rendered=%d\n", wallet::grey::enabled() ? 1 : 0,
+                           wallet::grey::baseModeName(), t.rendered ? 1 : 0);
+          logSerial.printf(
+              "WALLETGREY mode=grey card_base_us=%lu base_us=%lu card_planes_us=%lu planes_us=%lu nudge_us=%lu "
+              "cleanup_us=%lu total_us=%lu card_bytes=%lu\n",
+              static_cast<unsigned long>(t.baseCardUs), static_cast<unsigned long>(t.baseDisplayUs),
+              static_cast<unsigned long>(t.planeCardUs), static_cast<unsigned long>(t.planeWriteUs),
+              static_cast<unsigned long>(t.nudgeUs), static_cast<unsigned long>(t.cleanupUs),
+              static_cast<unsigned long>(t.totalUs), static_cast<unsigned long>(t.cardBytes));
+          logSerial.printf(
+              "WALLETGREY mode=1bpp card_us=%lu refresh_us=%lu total_us=%lu card_bytes=%lu\n",
+              static_cast<unsigned long>(wallet::grey::lastOneBppCardUs()),
+              static_cast<unsigned long>(wallet::grey::lastOneBppRefreshUs()),
+              static_cast<unsigned long>(wallet::grey::lastOneBppCardUs() + wallet::grey::lastOneBppRefreshUs()),
+              static_cast<unsigned long>(wallet::grey::lastOneBppCardBytes()));
+        }
       } else if (cmd == "WALLETLOCK") {
         // The explicit lock, and the only way to drop the key without sleeping or
         // waiting out the idle timeout. Also how a host script proves the unlock path

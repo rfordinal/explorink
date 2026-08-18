@@ -2,8 +2,9 @@
 
 Papers a rider may have to show somebody -- passport, licence, insurance card,
 registration, a boarding pass -- kept on the SD card and drawn on the panel with
-no phone, no network and no map. **Read-only viewing only.** No crypto, no BLE,
-no grey, no write path.
+no phone, no network and no map. **Read-only viewing only.** No BLE, no write
+path. Encryption is in ([`wallet-crypto.md`](wallet-crypto.md)) and so is
+four-level grey, off by default ([`wallet-grey.md`](wallet-grey.md)).
 
 Three screens:
 
@@ -62,8 +63,8 @@ An asset file is a 32-byte cleartext header, then the payload:
 | offset | size | field |
 |---|---|---|
 | 0 | 4 | magic `EWA1` |
-| 4 | 1 | assetType 1=FIT 2=DETAIL_TILE 3=ONE_TO_ONE_TILE 4=MACHINE_CODE 5=PAGE_IMAGE |
-| 5 | 1 | bitDepth (1 today; 2 = 4-level grey is reserved, **not implemented**) |
+| 4 | 1 | assetType 1=FIT 2=DETAIL_TILE 3=ONE_TO_ONE_TILE 4=MACHINE_CODE 5=PAGE_IMAGE 6=PAGE_IMAGE_GREY 7=GREY_PLANES |
+| 5 | 1 | bitDepth (1 for every 1bpp asset; 2 for both grey types -- [`wallet-grey.md`](wallet-grey.md)) |
 | 6 | 1 | tileCol |
 | 7 | 1 | tileRow |
 | 8 | 2 | width, little endian |
@@ -978,8 +979,13 @@ Per `docs/refresh-modes.md`. `FULL` is never used anywhere here.
 | **entering a code** | `HALF` | see below -- a code is never `FAST` |
 | **stepping to the next code** | `HALF` | same |
 
-No grayscale path exists here and none should be added: grey costs a second
-waveform pass (`docs/eink-grayscale.md`).
+Grey has its own rows, and its own reason for each
+([`wallet-grey.md`](wallet-grey.md)):
+
+| event | mode | why |
+|---|---|---|
+| a grey frame | the base frame's `HALF`, then the grey nudge | a grey frame is a BW base plus a plane nudge; it is never a `FAST` |
+| the first BW frame after a grey one | `HALF`, promoted from `FAST` | grey residue ghosts the next frame and a fast diff cannot clear it (`EpubReaderActivity.cpp:1560-1567`) |
 
 ## No overlay
 
@@ -1228,7 +1234,10 @@ it is worse than one that cannot show it.
   see "Why the hash is checked here and nowhere else".
 - **BLE.** Nothing in the wallet opens a radio. Assets arrive by whatever put
   them on the card.
-- **Grey.** `bitDepth` 2 is refused.
+- ~~**Grey.**~~ Done in P2b -- `assetType` 6 and 7 and the manifest's
+  `greyPlanes` / `greyPageImage` objects. Off by default and additive: a card with
+  no grey assets behaves exactly as it did.
+  [`wallet-grey.md`](wallet-grey.md).
 - ~~**Machine codes.**~~ Done in P2 -- `assetType` 4 and the manifest's `codes`
   array are read and drawn. See "The code screen".
 - **Any write path.** See above.

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "WalletGreyPage.h"
 #include "WalletStore.h"
 #include "activities/Activity.h"
 
@@ -34,6 +35,7 @@
 // ## Buttons
 //
 //   CONFIRM      cycle level: FIT -> DETAIL -> 1:1 -> FIT
+//   CONFIRM held  1bpp <-> grey, in a lab build only (see below)
 //   LEFT/RIGHT   pan by windowStepX, or step tile column, clamped
 //   UP/DOWN      pan by windowStepY, or step tile row, clamped
 //                ... except where there is nothing to step on that axis (always
@@ -44,6 +46,21 @@
 // (MappedInputManager.cpp:51-108). Six buttons, seven roles -- so one pair does
 // two jobs, and the pair chosen is the one that has nothing to do at FIT.
 // Reasoning in ../../../docs/wallet-viewer.md, "The button map".
+//
+// ## Grey is the same page, drawn the other way (P2b)
+//
+// When the level carries a `greyPlanes` asset and the grey switch is on, the frame
+// is a four-level grey render instead of a 1bpp one: same window, same origin, same
+// document -- `../../../docs/wallet-grey.md`. Off by default, and a level with no
+// grey asset never notices the switch.
+//
+// A held CONFIRM flips it, so the two versions can be compared back to back on the
+// glass, which is the only way that comparison can be made. It is a **lab
+// affordance**, compiled in with the wallet's other test seams
+// (`ENABLE_WALLET_TEST_CMDS`, on in the dev environment and in no release one) --
+// the doc's own argument against hold-to-page applies to a rider's build, and this
+// is not one. `CMD:WALLETGREY` is the same switch from a host, which is how the
+// verification runs without hands.
 //
 // ## No overlay
 //
@@ -63,6 +80,14 @@ class WalletViewActivity final : public Activity {
 
  private:
   void showCurrent(HalDisplay::RefreshMode mode);
+  // The grey frame for the page on screen. `fatal` comes back true when the grey
+  // asset itself is wrong, i.e. the caller must show a failure screen rather than
+  // quietly drawing the 1bpp version of the same page.
+  bool showGreyPage(const wallet::PageLookup& page, bool& fatal);
+  // The 1bpp comparison point, measured on the same page in the same session:
+  // one card read plus the refresh that follows it. Printed in the same
+  // WALLETGREY line shape as the grey stages, so a host captures both.
+  void logOneBppCost(uint32_t cardUs, uint32_t refreshUs, uint32_t cardBytes);
   void drawFailure(HalDisplay::RefreshMode mode);
   // `down` moves toward the bottom of the document, `across` toward its left --
   // see the axis note in the .cpp, this is not the same thing as native x and y.
@@ -78,6 +103,10 @@ class WalletViewActivity final : public Activity {
   uint32_t downLimit() const;
   uint32_t acrossLimit() const;
   const wallet::LevelGrid& currentGrid() const { return grid_[static_cast<uint8_t>(level_)]; }
+  // The page image on screen, whichever of the two it is. The grey asset and the
+  // 1bpp asset of one level describe the same page, so the window origin means the
+  // same thing in both -- but the limits are read off whichever is actually open.
+  const wallet::PageImageSpec& activeSpec() const;
 
   const int itemIndex_;
   char title_[wallet::kTitleBufBytes] = {0};
@@ -97,6 +126,16 @@ class WalletViewActivity final : public Activity {
   uint32_t winNativeY_ = 0;
   // The level on screen is a page image, so the arrows pan instead of stepping.
   bool usingPageImage_ = false;
+  // ... and it is the grey one.
+  bool usingGrey_ = false;
+  // The frame on the panel is a grey frame. The next 1bpp frame must then be HALF,
+  // never FAST: grey residue ghosts the following frame and a plain fast diff
+  // cannot clear it (docs/eink-grayscale.md; the reader forces the same cadence at
+  // EpubReaderActivity.cpp:1560-1567).
+  bool lastFrameWasGrey_ = false;
+  // millis() when CONFIRM went down, so a held CONFIRM can mean something else
+  // than a pressed one.
+  uint32_t confirmDownMs_ = 0;
   // Set by anything that changes which level or page is on screen; consumed by
   // showCurrent(), which then positions the view at the focal point of whichever
   // source the new level turns out to have.
@@ -105,6 +144,9 @@ class WalletViewActivity final : public Activity {
   // already open measured 282.8 ms on the X4, and reopening per frame is
   // unmeasured cost (docs/wallet-viewer.md).
   wallet::PageReader page_;
+  // The grey asset of the same level, kept open beside it so an A/B toggle costs no
+  // open (docs/wallet-grey.md).
+  wallet::GreyPageReader greyPage_;
 
   // Grids for all three levels of the page on screen, from the same manifest
   // pass that fetched the asset. What the arrows clamp against.
