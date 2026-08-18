@@ -54,6 +54,10 @@ struct PageLookup {
   bool pageFound = false;
   bool assetFound = false;
   char assetId[kAssetIdBufBytes] = {0};
+  // The requested level's whole-page image, when it has one. Filled for the
+  // requested level only -- the viewer re-runs a lookup on a level change, so
+  // carrying the other two would be dead weight (design B).
+  PageImageSpec pageImage;
   LevelGrid grid[kLevelCount] = {};
   uint16_t pageCount = 0;
   char title[kTitleBufBytes] = {0};
@@ -92,7 +96,20 @@ class ManifestParser {
 
   // Where in the document we are. One entry per open object/array, so the
   // meaning of a key never depends on guessing a depth number.
-  enum class Ctx : uint8_t { Other, Root, Panel, ItemsArr, Item, PagesArr, Page, Levels, LevelObj, AssetsArr, Asset };
+  enum class Ctx : uint8_t {
+    Other,
+    Root,
+    Panel,
+    ItemsArr,
+    Item,
+    PagesArr,
+    Page,
+    Levels,
+    LevelObj,
+    AssetsArr,
+    Asset,
+    PageImage
+  };
 
   static constexpr uint8_t kMaxDepth = StreamingJsonParser::MAX_NESTING;
   static constexpr size_t kKeyBufBytes = 24;
@@ -166,6 +183,8 @@ class ManifestParser {
   char assetId[kAssetIdBufBytes] = {0};
   uint16_t assetCol = 0;
   uint16_t assetRow = 0;
+  // True only while inside the pageImage object of the level being looked up.
+  bool inWantedPageImage = false;
 };
 
 }  // namespace wallet

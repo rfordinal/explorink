@@ -39,6 +39,10 @@ enum class AssetType : uint8_t {
   DetailTile = 2,
   OneToOneTile = 3,
   MachineCode = 4,
+  // Design B: one whole-page image per level, panel-native order, and the device
+  // blits an arbitrary window out of it. The pan step is a fraction of the view
+  // instead of a whole screen (../../../docs/wallet-viewer.md, "Design B").
+  PageImage = 5,
 };
 
 // Which of the three zoom levels a screen belongs to. Deliberately separate
@@ -205,6 +209,50 @@ inline bool panelMatches(const DeclaredPanel& declared, const PanelGeometry& liv
   return true;
 }
 
+// One level's whole-page image, as the manifest describes it.
+//
+// The image is bigger than the panel and is not panel-shaped: the 1:1 page image
+// is byte-identical on an X4 and an X3, because there is no grid in it and so
+// nothing about it is cut to a screen. That is why a page image is validated
+// against its own geometry (`rowBytes * nativeHeight == rawLen`) and against the
+// panel window fitting inside it -- never against the panel's own width and
+// height, which is what a tile asset is checked against.
+struct PageImageSpec {
+  bool present = false;
+  char assetId[kAssetIdBufBytes] = {0};
+  uint16_t nativeWidth = 0;
+  uint16_t nativeHeight = 0;
+  uint16_t rowBytes = 0;
+  uint32_t rawLen = 0;
+  // How far one press moves the window, in native pixels. The generator
+  // guarantees windowStepX is a multiple of 8 -- see clampWindowOrigin().
+  uint16_t windowStepX = 0;
+  uint16_t windowStepY = 0;
+  // Where the level opens. Not 0,0: on a 1:1 page that is the top-left margin.
+  uint16_t focalX = 0;
+  uint16_t focalY = 0;
+};
+
+// How far the window origin may travel on one axis: clamped, never wrapped.
+// `span` is the image, `window` is the panel. A page smaller than the panel on an
+// axis pins the origin at 0 rather than going negative.
+inline uint32_t clampWindowOrigin(int32_t value, uint32_t span, uint32_t window) {
+  if (span <= window) return 0;
+  const int32_t limit = static_cast<int32_t>(span - window);
+  if (value < 0) return 0;
+  return value > limit ? static_cast<uint32_t>(limit) : static_cast<uint32_t>(value);
+}
+
+// The x limit in *bytes*, which is the constraint that actually matters: a row
+// read starts at x/8 and runs for the panel's rowBytes, so it must not leave the
+// image's row. Multiplying back by 8 makes the limit inherently 8-aligned, so
+// clamping can never produce an unaligned origin even for an image whose
+// nativeWidth is not a multiple of 8.
+inline uint32_t maxWindowX(const PageImageSpec& page, uint16_t panelRowBytes) {
+  if (page.rowBytes <= panelRowBytes) return 0;
+  return static_cast<uint32_t>(page.rowBytes - panelRowBytes) * 8u;
+}
+
 // Why an asset cannot be drawn, or Ok. The single gate every reader passes
 // through -- the device (WalletStore::loadAssetIntoFrameBuffer), the host
 // preview (test/wallet_preview) and the tests all call this one function, so a
@@ -214,13 +262,42 @@ enum class AssetCheck : uint8_t {
   Malformed,   // bad magic, or fewer than 32 bytes
   Encrypted,   // flags bit 0 -- a later phase's job
   BitDepth,    // not 1 bpp
-  WrongPanel,  // rawLen / width / height is not this panel's
+  WrongPanel,  // rawLen / width / height is not this panel's, or the window does not fit
+  PageImageMismatch,  // a page image whose header disagrees with the manifest
 };
 
-inline AssetCheck checkAssetForPanel(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out) {
+// Shared head of both gates: the things that are wrong regardless of what shape
+// the asset is meant to be.
+inline AssetCheck checkAssetCommon(const uint8_t* bytes, size_t len, AssetHeader& out) {
   if (!parseAssetHeader(bytes, len, out)) return AssetCheck::Malformed;
   if ((out.flags & kFlagEncrypted) != 0) return AssetCheck::Encrypted;
   if (out.bitDepth != kBitDepth1) return AssetCheck::BitDepth;
+  return AssetCheck::Ok;
+}
+
+// A page image: checked against its own stated geometry and against the panel
+// window fitting inside it. Deliberately NOT against the panel's width and
+// height -- see PageImageSpec.
+inline AssetCheck checkPageImage(const uint8_t* bytes, size_t len, const PageImageSpec& page,
+                                 const PanelGeometry& live, AssetHeader& out) {
+  const AssetCheck common = checkAssetCommon(bytes, len, out);
+  if (common != AssetCheck::Ok) return common;
+  if (out.assetType != AssetType::PageImage) return AssetCheck::PageImageMismatch;
+  // The file must agree with what the manifest promised about it.
+  if (out.width != page.nativeWidth || out.height != page.nativeHeight) return AssetCheck::PageImageMismatch;
+  if (page.rowBytes == 0 || page.nativeHeight == 0) return AssetCheck::PageImageMismatch;
+  if (static_cast<uint32_t>(page.rowBytes) * page.nativeHeight != page.rawLen) return AssetCheck::PageImageMismatch;
+  if (out.rawLen != page.rawLen) return AssetCheck::PageImageMismatch;
+  // And the window has to fit. A page image narrower or shorter than this panel
+  // cannot fill it, and that is a wrong-device problem, not a corrupt file.
+  if (page.rowBytes < live.rowBytes || page.nativeHeight < live.height) return AssetCheck::WrongPanel;
+  return AssetCheck::Ok;
+}
+
+// A tile asset: exactly one panel frame, checked against the panel.
+inline AssetCheck checkAssetForPanel(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out) {
+  const AssetCheck common = checkAssetCommon(bytes, len, out);
+  if (common != AssetCheck::Ok) return common;
   if (live.bufferBytes == 0 || out.rawLen != live.bufferBytes) return AssetCheck::WrongPanel;
   if (out.width != live.width || out.height != live.height) return AssetCheck::WrongPanel;
   return AssetCheck::Ok;

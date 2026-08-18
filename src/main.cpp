@@ -576,10 +576,19 @@ void setup() {
 //   sequential  one read of the whole framebuffer from the payload start. The
 //               baseline the ratio is against -- what tiles cost today.
 //   oversized   the same 480 rows, but pulling 512 bytes per row and keeping the
-//               rowBytes that matter. If the card's block size dominates, this
-//               costs about the same as `windowed` and the small read was already
-//               a whole block; if it is much worse, the small read was being
-//               served from a cache.
+//               rowBytes that matter. Asked whether the card's block size
+//               dominates; answered something else and more useful -- measured at
+//               613 ms against 283, because a 512-byte read over a 322-byte stride
+//               overshoots the row and every read is followed by a *backward*
+//               seek. Seek direction costs, block size did not enter into it
+//               (docs/wallet-viewer.md, "Two beliefs the numbers corrected").
+//   stream      the window's whole row range read sequentially, no seeks at all:
+//               rows * stride bytes through a small chunk buffer, lifting rowBytes
+//               out of each row on the way past. 480 x 322 = 154,560 bytes instead
+//               of 48,000, but at the sequential rate rather than the strided one.
+//               Estimated ~211 ms against the measured 283. A candidate, not the
+//               shipped path -- the shipped path is `windowed` until this is
+//               measured to beat it.
 //
 // What it does NOT measure, and must not be read as measuring: any decrypt (P1
 // has none), any panel refresh (deliberately outside the timed section -- a FAST
@@ -596,14 +605,16 @@ namespace {
 
 constexpr int kWalletBenchMaxIters = 32;
 constexpr size_t kWalletBenchOversizedRead = 512;
+constexpr int kWalletBenchModes = 4;
 
-// Both static, not stack. The 512-byte oversized read is over the 256-byte
-// guidance for a stack buffer in this tree, and the sample array wants to
-// outlive the RenderLock scope so the summary can be printed with the lock
-// released. 512 + 3 * 32 * 4 = 896 bytes of .bss, and no heap at all -- the
-// point of the exercise is the card, not the allocator.
+// Both static, not stack. The 512-byte buffer is over the 256-byte guidance for a
+// stack buffer in this tree, and the sample array wants to outlive the RenderLock
+// scope so the summary can be printed with the lock released. 512 + 4 * 32 * 4 =
+// 1,024 bytes of .bss, and no heap at all -- the point of the exercise is the
+// card, not the allocator. Modes 3 and 4 share the one buffer; they never run at
+// the same time.
 uint8_t walletBenchScratch[kWalletBenchOversizedRead];
-uint32_t walletBenchSamples[3][kWalletBenchMaxIters];
+uint32_t walletBenchSamples[kWalletBenchModes][kWalletBenchMaxIters];
 
 uint32_t walletBenchMedian(uint32_t* samples, const int count) {
   // Insertion sort in place: count is at most 32 and this runs once, after the
@@ -710,6 +721,7 @@ void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t o
                    static_cast<unsigned long>(rowBytes), iters);
 
   size_t oversizedRead = 0;
+  size_t streamRead = 0;
   bool shortRead = false;
 
   {
@@ -757,6 +769,39 @@ void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t o
       }
       walletBenchSamples[2][i] = micros() - t2;
       oversizedRead = pulled;
+
+      // 4. sequential stream over the window's row range, no seeks after the first
+      size_t streamed = 0;
+      const uint32_t t3 = micros();
+      {
+        uint32_t pos = base + originY * stride + xByte;
+        if (!file.seekSet(pos)) shortRead = true;
+        for (uint32_t r = 0; r < rows && !shortRead; ++r) {
+          const uint32_t rowWant = base + (originY + r) * stride + xByte;
+          // Walk forward to this row's window by reading, never by seeking. That
+          // is the whole idea: the card is fast in a straight line.
+          while (pos < rowWant) {
+            size_t skip = rowWant - pos;
+            if (skip > sizeof(walletBenchScratch)) skip = sizeof(walletBenchScratch);
+            const int got = file.read(walletBenchScratch, skip);
+            if (got <= 0) {
+              shortRead = true;
+              break;
+            }
+            pos += static_cast<uint32_t>(got);
+            streamed += static_cast<size_t>(got);
+          }
+          if (shortRead) break;
+          if (file.read(fb + r * rowBytes, rowBytes) != static_cast<int>(rowBytes)) {
+            shortRead = true;
+            break;
+          }
+          pos += rowBytes;
+          streamed += rowBytes;
+        }
+      }
+      walletBenchSamples[3][i] = micros() - t3;
+      streamRead = streamed;
     }
   }
 
@@ -765,6 +810,7 @@ void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t o
   walletBenchReport("windowed", walletBenchSamples[0], iters, bufferBytes, bufferBytes);
   walletBenchReport("sequential", walletBenchSamples[1], iters, bufferBytes, bufferBytes);
   walletBenchReport("oversized", walletBenchSamples[2], iters, bufferBytes, oversizedRead);
+  walletBenchReport("stream", walletBenchSamples[3], iters, bufferBytes, streamRead);
   logSerial.printf("WALLETBENCH note=no-decrypt,no-refresh,file-kept-open,one-file,one-card,fixed-mode-order\n");
   if (shortRead) {
     logSerial.printf("WALLETBENCH_ERR a read came up short -- the numbers above are not trustworthy\n");

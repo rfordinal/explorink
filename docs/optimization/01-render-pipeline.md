@@ -189,6 +189,14 @@ Two findings in that table:
   bytes halves the card time, predictably, which is what makes plan 02's saving
   calculable before it is written.
 
+  **Read this as a figure for *this* access pattern, not for the card.** These
+  rungs open a file per tile. One already-open file read straight through measured
+  **732 kB/s** on the same device (`CMD:WALLETBENCH`, 2026-08-18,
+  `../wallet-viewer.md`, "Measured on the X4"), and 480 strided 100-byte reads out
+  of one open file measured ~168 kB/s. Seeks and reopens *do* cost, once the
+  pattern is not this one -- cite whichever figure matches the access pattern in
+  hand and do not average them.
+
 That is the opposite of what this plan assumed before the measurement: smaller
 tiles (`docs/tile-simplification-plan.md` in the parent repo) went from "the
 honest fix" to **last**. After plan 02 the card is ~1.5 s at rung 0, so z14 would

@@ -71,11 +71,13 @@ first two: `buildAssetPath()`
 directory -- no `/`, no `.`, no `..` survives it. Tested
 (`test/wallet/WalletTest.cpp`, `RejectsAnythingThatIsNotSixteenHex`).
 
-## The display path: one read, no scratch buffer
+## The display path: no scratch buffer, ever
 
 The payload **is** the framebuffer. The laptop-side generator does every
-rotation, scale, dither and pack at build time; the device rotates nothing. So
-one screen is:
+rotation, scale, dither and pack at build time; the device rotates nothing.
+
+There are two paths into the framebuffer, and neither stages anything. A **tile
+asset** is one whole screen, so it is one read:
 
 ```
 open -> read the 32-byte header -> read rawLen bytes into the framebuffer -> displayBuffer()
@@ -87,11 +89,16 @@ length `renderer.getBufferSize()` (`:2074`), guarded by `hasFrameBuffer()`
 (`lib/GfxRenderer/GfxRenderer.h:355`). The same move the sleep frame already
 makes (`src/main.cpp:223-236`).
 
-**No scratch buffer exists anywhere on that path, and none may be added.** A
-screen is 48 KB on the X4, and with BLE up the largest contiguous heap block is
-about 43 KB -- measured, `docs/map-memory.md:57`. Staging a screen would fail
-before it could be drawn. There is nothing to stage anyway: the bytes are already
-in panel order.
+A **page image** is bigger than the screen, so it is 480 reads of one panel row
+each, straight into the framebuffer rows -- `wallet::PageReader::readWindow()`
+(`WalletStore.cpp`). Measured at 283 ms against the single read's 65 ms; see
+"Whole-screen paging was rejected" for the decision that bought.
+
+**No scratch buffer exists on either path, and none may be added.** A screen is
+48 KB on the X4, and with BLE up the largest contiguous heap block is about 43 KB
+-- measured, `docs/map-memory.md:57`. Staging a screen would fail before it could
+be drawn. There is nothing to stage anyway: the bytes are already in panel order,
+and in that order a window is a row range at a byte offset.
 
 The byte convention the payload must match, read off the renderer's own pixel
 write (`lib/GfxRenderer/GfxRenderer.cpp:517-524`): row-major,
@@ -182,26 +189,30 @@ therefore does two jobs.
 | button | in the viewer |
 |---|---|
 | CONFIRM (front) | cycle level: FIT -> DETAIL -> 1:1 -> FIT |
-| LEFT / RIGHT (front) | step tile column at the current level, clamped |
-| UP / DOWN (side) | step tile row at the current level, clamped |
-| UP / DOWN (side), on a level with one tile row | previous / next page |
+| LEFT / RIGHT (front) | move the view across the document, clamped |
+| UP / DOWN (side) | move the view down/up the document, clamped |
+| UP / DOWN (side), where the view cannot travel down at all | previous / next page |
 | BACK (front) | back to the browse list |
+
+The four arrows always mean the same four directions **of the document**. How far
+one press moves is the source's business, not the button's -- a fraction of the
+view for a page image, one whole tile for a tile grid.
 
 Why the side pair carries pages:
 
 - The repo's existing convention already puts page turning on the side buttons --
   that is what `Button::PageBack` / `PageForward` are
   (`src/MappedInputManager.cpp:77-98`).
-- On a level with a single tile row -- always true at FIT, which is 1x1 -- the row
-  arrows have nothing to step. Overloading a pair that is idle beats overloading
-  one that is not.
+- Where the view cannot travel down the document -- always true at FIT, which is
+  exactly one screen tall -- the vertical arrows have nothing to move. Overloading
+  a pair that is idle beats overloading one that is not.
 - FIT is where a reader flips pages anyway. DETAIL and 1:1 are for inspecting one
   region of the page in front of you; flipping to another page from inside a
   zoomed corner is not a move anybody makes.
 
 `Button::Up`/`Down` are used directly rather than `PageBack`/`PageForward`, so
 the reader's side-button swap setting does **not** apply here. Deliberate: the
-same two buttons also step tile rows, where up must mean up.
+same two buttons also move the view vertically, where up must mean up.
 
 **This map is a signed-off decision, 2026-08-18, not a placeholder.** Two
 alternatives were on the table and both lost:
@@ -215,52 +226,164 @@ alternatives were on the table and both lost:
   screen. The level-dependent split needs no teaching: at FIT there is no row to
   step, so nothing is taken away.
 
-Arrows clamp at the edges and never wrap (`WalletViewActivity.cpp:stepTile`) --
+Arrows clamp at the edges and never wrap (`WalletViewActivity::stepView()`) --
 what a sheet of paper does. A page change resets to FIT (`stepPage`).
 
-A level change does **not** carry the tile coordinate across: the three grids are
-different sizes, so there is no honest mapping between their coordinates. It
-opens at the level's **focal tile** instead, which the manifest names per level
-as `defaultTileX`/`defaultTileY` (`WalletManifestParser.h`, `LevelGrid`;
-`WalletViewActivity.cpp:jumpToLevelDefault`). The generator's rule is the centre
-biased top-left, so a 4x4 1:1 grid points at 1,1. Verified on real output: tile
-1,1 of the demo page's 1:1 level opens on body text at full size, where 0,0 would
-have opened on the top-left margin.
+**How far one press moves depends on the source**, and only that:
+
+- a **page image** pans by the manifest's `windowStepX` / `windowStepY`, a fraction
+  of the view. This is what the maintainer asked for and what design B delivers;
+- a **tile grid** steps one whole tile, which is one whole screen. That is the
+  interaction he rejected, kept only because a card in the field may hold nothing
+  else.
+
+A level change does **not** carry the position across: the levels are different
+sizes, so there is no honest mapping between their coordinates. It opens at the
+level's own focal position -- the `pageImage`'s `focalX`/`focalY`, or the tile
+grid's `defaultTileX`/`defaultTileY` (`WalletViewActivity::jumpToLevelDefault()`).
+The generator's rule for the tile case is the centre biased top-left, so a 4x4 1:1
+grid points at 1,1. Verified on real output both ways: tile 1,1 of the demo page's
+1:1 level opens on body text at full size where 0,0 would have opened on the
+top-left margin, and the 1:1 page image's focal point 800,859 does the same.
 
 Browse: UP/DOWN (also LEFT/RIGHT) move the selection with hard stops, CONFIRM
 opens, BACK goes home (`WalletActivity.cpp:loop`).
 
-## Whole-screen paging was rejected
+## Whole-screen paging was rejected, and design B replaced it
 
-**The maintainer used it and turned it down, 2026-08-18.** The viewer works; the
-*interaction* is wrong. He wants to look at an arbitrary **part** of a document, so
-a pan must move by a fraction of the view, not a whole screen per press. One press
-one screen is fine for turning pages and useless for finding the line with the
-policy number on it.
+**The maintainer used it on the panel and turned it down, 2026-08-18.** The viewer
+worked; the *interaction* was wrong. He wants to look at an arbitrary **part** of a
+document, so a pan must move by a fraction of the view, not a whole screen per
+press. One press one screen is fine for turning pages and useless for finding the
+line with the policy number on it.
 
-That kills pre-cut non-overlapping tiles as the only mechanism, because a
+That killed pre-cut non-overlapping tiles as the only mechanism -- a
 non-overlapping grid can only ever land on multiples of a whole screen. Two
-candidates replace it, and **neither is in the format yet**:
+candidates:
 
-- **B: one whole-page image per zoom level**, panel-native order, and the device
-  blits an arbitrary window out of it. In native order a logical-horizontal pan is
-  pure row selection and a logical-vertical pan is a byte shift inside rows, so an
-  8-aligned step needs no bit rotation at all. Storage is smaller than tiles --
-  one image instead of an overlapping grid. The cost is that a window becomes 480
-  strided reads of one panel row instead of one 48,000-byte sequential read.
+- **B: one whole-page image per zoom level**, panel-native order, an arbitrary
+  window blitted out of it. Smaller on the card than an overlapping grid, and in
+  native order an 8-aligned window needs no bit rotation at all. The cost is that a
+  window becomes 480 strided reads of one panel row instead of one 48,000-byte
+  sequential read.
 - **A: overlapping tiles at 50 %** (fallback). Keeps the single-read blit exactly
-  as it is today, at 49 tiles per A4 1:1 page instead of 16.
+  as it was, at 49 tiles per A4 1:1 page instead of 16.
 
-**The whole decision turns on one number nobody has measured**: what those 480
-strided reads cost. An estimate off the measured 550-608 KB/s sequential figure
-puts it at 0.25-0.9 s, which spans "free next to a 500 ms waveform" and "twice the
-refresh" -- an estimate that wide decides nothing. So it gets measured before
-either design is written down: `CMD:WALLETBENCH`, below.
+The decision turned entirely on what those 480 strided reads cost, and nobody knew
+-- an estimate off the sequential rate spanned 0.25 s to 0.9 s, which is the
+difference between "free next to the waveform" and "twice the refresh". So a gate
+was pre-registered at **400 ms**, `CMD:WALLETBENCH` was written to measure it, and
+the measurement was taken before either design was written down.
 
-The **button map above survives either design** -- the same six buttons, the same
-roles, the same overloaded pair. Only the step size changes: a fraction of the
-view instead of a whole one. What is open is the step size itself, and whether a
-level change still lands on a focal tile or on a focal *point*.
+### Measured on the X4, 2026-08-18
+
+`CMD:WALLETBENCH`, build `648a9f0f`. One A4 1:1 page image, 2576x1819 native,
+322 bytes a row; a 480-row window; 3 iterations; no decrypt and no panel refresh
+inside the timed section; the file opened once, outside the timing.
+
+| mode | ms per frame | bytes read | effective rate |
+|---|---|---|---|
+| `windowed` -- 480 strided reads of 100 B | **282.8 / 285.5 / 287.1** | 48,000 | ~168 kB/s |
+| `sequential` -- one 48,000 B read | 65.5 | 48,000 | 732 kB/s |
+| `oversized` -- 480 reads of 512 B | 613.3 | 245,760 | 400 kB/s |
+
+The three `windowed` figures are three window origins -- top-left, focal,
+bottom-right clamped. **Offset does not matter**: 1.5 % spread across the whole
+image. So a window costs what a window costs, wherever it is.
+
+**Decision: design B, against the 400 ms gate.** 283 ms of card against a 500 ms
+FAST waveform means a pan is about **785 ms**, versus about **565 ms** for a
+whole-screen tile step. A pan costs ~40 % more than a page-turn did and buys the
+interaction the device is for. Design A is not implemented and should not be
+unless something later disqualifies B.
+
+### Two beliefs the numbers corrected
+
+- **Sequential SD read is 732 kB/s here, not 550-608 kB/s.** That older figure is
+  real and stands for what it measured (`docs/optimization/01-render-pipeline.md:175-187`
+  -- the map's tile reads, which reopen a file per tile). This one is a single open
+  file read straight through. **Different access pattern, different number. Cite
+  whichever matches the pattern; do not average them.**
+- **`oversized` was slower because of backward seeks, not block size.** It was
+  written to ask whether the card's block size already dominates a 100-byte read.
+  It answered something else: a 512-byte read over a 322-byte stride overshoots the
+  row, so every read is followed by a seek *backwards*. 613 ms against 283. Seek
+  direction costs; block size never entered into it. The mode answered a different
+  question than it was asked, and a more useful one -- which is the argument for
+  keeping a mode whose result you cannot predict.
+
+### The pan step, and what a level opens at
+
+Both come out of the manifest, per level, so the device invents neither:
+`windowStepX` / `windowStepY` for the step and `focalX` / `focalY` for where a
+level opens. Clamped with `max(0, min(v, span - window))`
+(`clampWindowOrigin()`, `src/activities/wallet/WalletAsset.h:239-244`) -- never
+wrapped, exactly like the tile arrows.
+
+The x limit is derived in **bytes** and multiplied back by eight
+(`maxWindowX()`, `:251-254`), so every reachable origin on that axis is 8-aligned
+by construction even for an image whose `nativeWidth` is not a multiple of 8. The
+generator guarantees the step and the focal point are 8-aligned too; an unaligned
+one is **refused and logged, not rounded** -- rounding would hide a generator bug
+behind a half-pixel shift.
+
+### The axis note, and the bug it caught
+
+A page image is the document stored turned a quarter, because that is what the
+panel wants. `GfxRenderer::rotateCoordinates()` maps logical portrait `(x, y)` to
+panel `(y, panelHeight - 1 - x)` (`lib/GfxRenderer/GfxRenderer.cpp:216-223`), so
+inside a stored page image:
+
+- **native x runs DOWN the document**, 0 at the top. It is also the byte-offset
+  axis -- a row read starts at `x / 8` -- so this is the axis that must stay
+  8-aligned.
+- **native y runs ACROSS the document, inverted.** The *largest* native y is the
+  document's **left** edge, so panning left means increasing native y.
+
+The first wiring of this had LEFT/RIGHT on native x and UP/DOWN on native y, which
+rotates the whole pan by ninety degrees. The host preview caught it before the code
+ever reached the panel: rendering native `(0, max)` of a real generated 1:1 page
+image shows the **top-left of the page**, title and left margin, which is only
+consistent with the mapping above. Pinned by
+`WalletWindow.NativeXRunsDownThePageAndNativeYRunsAcrossItInverted` and stated in
+full above `WalletViewActivity::stepView()`.
+
+### Two sources per level, and the tile path is not deleted
+
+A level offers a `pageImage`, a tile grid, or both. **`pageImage` wins when it is
+there**; the tile grid is the fallback, and it stays because the generator still
+emits both and a card in the field may hold either
+(`WalletViewActivity::showCurrent()`). `Store::lookupPage()` therefore succeeds when
+*either* source is present -- a design-B level may carry an empty `assets` array.
+
+```json
+"one_to_one": {"cols":4,"rows":4,"assets":[...],
+  "pageImage": {"assetId":"...","nativeWidth":2576,"nativeHeight":1819,
+                "rowBytes":322,"rawLen":585718,"sha256":"...",
+                "windowStepX":400,"windowStepY":240,"focalX":800,"focalY":859}}
+```
+
+`assetType 5 = PAGE_IMAGE`. The file is opened **once and kept open across
+presses** (`wallet::PageReader`, `WalletStore.h`): that is what the 282.8 ms was
+measured with, and reopening per frame is unmeasured cost. A pan re-seeks; it does
+not reopen.
+
+**A page image is not checked against the panel.** It is not panel-shaped by
+design: the 1:1 page image is byte-identical on an X4 and an X3, because there is no
+grid in it and so nothing about it is cut to a screen. `checkPageImage()`
+(`WalletAsset.h:281-295`) validates it against its own stated geometry --
+`rowBytes * nativeHeight == rawLen`, and the header agreeing with the manifest --
+plus the window fitting inside it (`rowBytes >= panel rowBytes`,
+`nativeHeight >= panel height`). A page image *smaller* than the panel is refused as
+`WrongPanel`, because no window out of it can fill the screen. Tile assets keep the
+existing panel check unchanged, `checkAssetForPanel()`; the two gates share their
+head, `checkAssetCommon()`, so magic, encryption and bit depth cannot drift apart.
+
+The **button map survived the redesign** -- same six buttons, same roles, same
+overloaded pair. Only the step size changed, and the idle test moved from "does the
+grid have more than one row" to "can the view travel down the document at all". At
+FIT the page image is exactly one panel, so both tests give the same answer, which
+is why nothing a rider does at FIT changed.
 
 ### CMD:WALLETBENCH
 
@@ -274,15 +397,16 @@ CMD:WALLETBENCH <path-under-/trailink> <stride> <x> <y> <iters>
 
 `stride` is the source image's bytes per row, not the panel's. `x` must be a
 multiple of 8: an 8-aligned window is the whole reason design B needs no bit
-rotation, so an unaligned request is refused rather than silently measured. Three
+rotation, so an unaligned request is refused rather than silently measured. Four
 modes, same file, same window, `iters` times each (1..32), reported as min /
-median / max plus the implied KB/s over payload bytes:
+median / max per frame plus the implied kB/s over payload bytes:
 
-| mode | what it does | what it tells us |
+| mode | what it does | what it told us |
 |---|---|---|
-| `windowed` | 480 seeks + 480 reads of `rowBytes`, straight into the framebuffer | design B's real per-frame cost |
-| `sequential` | one read of the whole framebuffer from the payload start | the baseline the ratio is against -- what a tile costs today |
-| `oversized` | the same 480 rows, pulling 512 bytes each and keeping `rowBytes` | whether the card's block size dominates. Same cost as `windowed` means the 100-byte read was already a whole block; much worse means the small read was being served from a cache. Either answer is useful |
+| `windowed` | 480 seeks + 480 reads of `rowBytes`, straight into the framebuffer | design B's real per-frame cost. **283 ms** |
+| `sequential` | one read of the whole framebuffer from the payload start | the baseline. **65.5 ms**, 732 kB/s |
+| `oversized` | the same 480 rows, pulling 512 B each and keeping `rowBytes` | asked about block size, answered about seek direction. **613 ms** |
+| `stream` | the window's whole row range read sequentially, no seeks at all: `rows * stride` bytes through the same 512-byte chunk buffer, lifting `rowBytes` out of each row on the way past | the candidate optimisation. 154,560 bytes instead of 48,000, but at the sequential rate. Estimated ~211 ms against the measured 283. **Written, never run** |
 
 Everything goes through `HalStorage`/`HalFile`, never raw SdFat, per this repo's
 threading rule. A `RenderLock` is held across every iteration of every mode: the
@@ -290,19 +414,22 @@ destination is the framebuffer, which the render task also owns, and nothing may
 repaint in the middle of a measurement. The summary prints after the lock is
 released, so CDC writes are outside both the lock and the timed section.
 
-Two static buffers, 896 bytes of `.bss` and no heap: the 512-byte oversized-read
-scratch (over the 256-byte guidance for a stack buffer in this tree, so it is not
-on the stack) and a 3 x 32 sample array that has to outlive the lock scope.
+Two static buffers, 1,024 bytes of `.bss` and no heap: the 512-byte chunk buffer
+that modes 3 and 4 share (over the 256-byte guidance for a stack buffer in this
+tree, so it is not on the stack) and a 4 x 32 sample array that has to outlive the
+lock scope.
 
 **What it does not measure**, and must not be read as measuring: any decrypt (P1
 has none), any panel refresh (deliberately outside the timed section -- a FAST
 waveform is 500 ms and would swamp the card completely), the cost of opening the
-file (opened once, outside the timing, which is what design B would do too), more
-than one file, more than one card, and any order other than the fixed
-windowed-sequential-oversized one. SdFat keeps a single 512-byte block cache, so a
-rerun with the modes reversed is the sanity check on that last point.
+file (opened once, outside the timing, which is what design B does too), more than
+one file, more than one card, and any order other than the fixed mode order. SdFat
+keeps a single 512-byte block cache, so a rerun with the modes reversed is the
+sanity check on that last point.
 
-Status: **written and building, never run.** The numbers do not exist yet.
+Host-side friction worth knowing, from the run: a raw pyserial reader needs
+`dtr=True` or the C3's CDC never sees the write at all, and `mapcmd.py` eats the
+first lines of the reply.
 
 ## Refresh policy
 
@@ -377,12 +504,21 @@ bit 1 = white. It writes two images per asset:
   `GfxRenderer::rotateCoordinates()` for `Portrait`
   (`lib/GfxRenderer/GfxRenderer.cpp:216-223`). This is what a rider sees.
 
+It also renders a **design-B window**: when the level carries a `pageImage`, the
+window at `--win-x` / `--win-y` is blitted out of it row by row -- the same
+arithmetic `PageReader::readWindow()` runs on the device, with a `memcpy` where the
+device has a seek and a read. Origins default to the manifest's focal point and are
+clamped exactly as the device clamps them. **This is what caught the rotated pan
+axis** (see "The axis note").
+
 Run it: `pio run -t wallet-preview` renders the committed fixture, or point the
 binary at a whole tree:
 
 ```
 build/test/wallet_preview/wallet_preview --tree DIR --level detail --col 1 --row 0 \
     --out /tmp/tile
+build/test/wallet_preview/wallet_preview --tree DIR --level one_to_one \
+    --win-x 0 --win-y 99999 --out /tmp/corner
 ```
 
 A tree with only sidecars is read through them (`test/wallet_preview/WalletSidecar.h`
@@ -407,6 +543,30 @@ So: the generator's build-time rotation is the exact inverse of the firmware's
 portrait transform, the ink polarity matches, and the manifest's `col`/`row` mean
 what the arrows assume. Ink coverage 6.87 % on the FIT page -- an inverted
 polarity would read about 93 %.
+
+### And again for design B, same day
+
+`walletgen.py --demo --paper a4 --panel x4 --page-image` writes a tree with a
+`panel` object and a `pageImage` per level. Read through the same reader code:
+
+| what | verdict |
+|---|---|
+| the declared `panel` | `x4 800x480, 100 B/row, 48000 B/asset -- matches` |
+| the 1:1 page image | header type 5, 2576x1819, `rawLen` 585,718 -- **accepted by `checkPageImage()` and refused by `checkAssetForPanel()`**, which is the whole point of the second gate |
+| x travel limit | 1776, exactly `(322 - 100) * 8` |
+| window at the focal point 800,859 | body text at full size, upright, legible |
+| window at 400,859 -- one step back | overlaps the focal window by half a view, and the overlap is the same text. **The pan is a fraction of the view** |
+| window at 0,max | the **top-left of the page**: left margin, title starting. This is the shot that settled the axis mapping |
+| window at max,max | the bottom-left, clamped on both axes |
+
+Every field name in the manifest matched what this reader parses, first try:
+`assetId`, `nativeWidth`, `nativeHeight`, `rowBytes`, `rawLen`, `windowStepX`,
+`windowStepY`, `focalX`, `focalY`, and `panel.{name,width,height,rowBytes,assetBytes}`.
+Two implementations of one contract, written apart, agreeing. The generator also
+emits `rleLen` and `sha256`, which this reader ignores.
+
+The page-image tree is **not committed**: the 1:1 asset alone is 585 KB and its
+sidecar 175 KB. Regenerate it with the line above when it is needed.
 
 ### The test that keeps it that way
 
@@ -447,7 +607,8 @@ either side; they are places the written contract and the code disagreed.
   never looks at the manifest's `type`, it trusts the asset header's `assetType` --
   but a later phase that does read it must expect an integer.
 - **`defaultTileX` / `defaultTileY` exist and the contract did not mention them.**
-  Now honoured: a level opens at its focal tile (above).
+  Now honoured: a level opens at its focal tile (above). Design B's `focalX` /
+  `focalY` are the same idea as a point rather than a tile.
 - **`presentation` defaults to 1 (portrait), not 0.** The generator rotates at
   build time so the document stands upright on a device held in portrait -- the
   same orientation the rest of the UI uses. The earlier assumption here was that
@@ -529,18 +690,17 @@ Measured against the branch point `51bfbbc0`, `pio run -e default`,
 
 | | baseline | with the wallet | delta |
 |---|---|---|---|
-| `firmware.bin` | 3,939,600 | 3,953,264 | **+13,664** |
-| `.flash.text` | 2,171,060 | 2,181,130 | +10,070 |
-| `.flash.rodata` | 1,649,008 | 1,652,608 | +3,600 |
+| `firmware.bin` | 3,939,600 | 3,956,480 | **+16,880** |
+| `.flash.text` | 2,171,060 | 2,183,814 | +12,754 |
+| `.flash.rodata` | 1,649,008 | 1,653,128 | +4,120 |
 | `.dram0.data` | 18,145 | 18,145 | **0** |
-| `.dram0.bss` | 40,152 | 41,048 | +896 |
+| `.dram0.bss` | 40,152 | 41,176 | +1,024 |
 | `.iram0.text` | 87,350 | 87,350 | 0 |
 
 The rodata is mostly the 21 new `STR_WALLET_*` strings across 31 language arrays,
 plus 128 bytes of menu icon. The `.bss` is `CMD:WALLETBENCH`'s two static buffers
 and nothing else -- the viewer itself has no globals. Measured separately, in the
-same way: the icon is **+144 bytes of binary** (128 rodata + 16 text) and no RAM;
-`CMD:WALLETBENCH` is **+2,624 bytes of binary** and the 896 bytes of `.bss`.
+same way: the icon is **+144 bytes of binary** (128 rodata + 16 text) and no RAM.
 
 Heap, **derived from the type sizes, not measured on hardware**:
 
@@ -549,8 +709,10 @@ Heap, **derived from the type sizes, not measured on hardware**:
   count), so **1,200 bytes**, plus the
   activity object itself (~100 bytes). Held while the viewer is open too, because
   the viewer is pushed on top rather than replacing it.
-- `WalletViewActivity` while up: **~150 bytes** -- a title, a page index, three
-  `LevelGrid` pairs.
+- `WalletViewActivity` while up: **~230 bytes** -- a title, a page index, three
+  `LevelGrid` entries, the window origin, and a `PageReader` holding one open
+  `HalFile` and the level's `PageImageSpec`. The open file is the point: a pan
+  re-seeks, it never reopens.
 - Per screen and per lookup, transient: one `ManifestParser` on the heap,
   **~750 bytes** (`StreamingJsonParser`'s 512-byte token buffer, a 32-entry
   context stack, a key buffer), freed before the function returns. Heap, not
@@ -574,11 +736,17 @@ Heap, **derived from the type sizes, not measured on hardware**:
   the panel**, 2026-08-18, from device screenshots with assets pushed over BLE.
 - Heap: **derived** from type sizes. Nobody has run `heap_caps_get_info()` with a
   wallet on screen.
-- **The pan step is undecided.** Whole-screen paging was used and rejected;
-  designs A and B are both unwritten, and B needs the `CMD:WALLETBENCH` numbers
-  before anyone can choose. **Open, and blocking the format.**
-- `CMD:WALLETBENCH` itself: **written and building, never run.** No card figures
-  exist yet.
+- The card figures behind design B: **measured on the X4**, 2026-08-18, three
+  origins, three iterations -- table above. The 400 ms gate was pre-registered
+  before the measurement, which is why the decision is a decision and not a
+  preference.
+- Design B's row-blit arithmetic, the clamp, the 8-alignment and the axis mapping:
+  **host-tested** and **rendered as pictures** off real generator output. Never run
+  on the panel.
+- `CMD:WALLETBENCH` mode 4 (`stream`): **written, never run.** Estimated ~211 ms
+  against the measured 283. If it wins, the shipped path should move to it; if it
+  loses, the estimate was wrong and that is worth writing down. Until then
+  `windowed` is what ships. **Open.**
 - Still open after the on-panel session: whether FIT is legible in daylight,
   whether HALF on every page turn is too slow to page through a document, the real
   heap figures (nobody has run `heap_caps_get_info()` with a wallet on screen), and
