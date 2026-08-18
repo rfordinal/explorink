@@ -211,6 +211,32 @@ const char* errorText(const Error error) {
 
 bool treeIsEncrypted() { return Storage.exists(kManifestEncPath); }
 
+void countCardAssets(uint16_t& assets, uint16_t& codes) {
+  assets = 0;
+  codes = 0;
+  HalFile root;
+  if (!Storage.openFileForRead(kLogTag, kWalletDir, root)) return;
+  if (!root.isDirectory()) return;
+  char nameBuf[64] = {0};
+  for (auto shard = root.openNextFile(); shard; shard = root.openNextFile()) {
+    if (!shard.isDirectory()) continue;
+    for (auto entry = shard.openNextFile(); entry; entry = shard.openNextFile()) {
+      if (entry.isDirectory()) continue;
+      if (!entry.getName(nameBuf, sizeof(nameBuf))) continue;
+      const size_t len = std::strlen(nameBuf);
+      if (len < 5 || std::strcmp(nameBuf + len - 4, ".dat") != 0) continue;
+      uint8_t head[kAssetHeaderBytes] = {0};
+      if (entry.read(head, sizeof(head)) != static_cast<int>(sizeof(head))) continue;
+      AssetHeader header;
+      if (!parseAssetHeader(head, sizeof(head), header)) continue;
+      if (assets < 0xFFFF) ++assets;
+      if (header.assetType == AssetType::MachineCode && codes < 0xFFFF) ++codes;
+    }
+  }
+  LOG_INF(kLogTag, "card holds %u assets (%u codes) by header scan", static_cast<unsigned>(assets),
+          static_cast<unsigned>(codes));
+}
+
 bool readCardWalletVersion(uint32_t& out) {
   out = 0;
   if (!Storage.exists(kManifestEncPath)) return false;

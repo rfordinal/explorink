@@ -67,6 +67,17 @@ PanelGeometry livePanel(const GfxRenderer& renderer);
 // either).
 bool treeIsEncrypted();
 
+// Walks /trailink/wallet's shard directories and counts the assets whose 32-byte
+// header parses, plus how many of those are machine codes. No key needed and no
+// manifest consulted -- headers are cleartext.
+//
+// This is the honest half of brief 32's recovery: it can say **what the card
+// holds**, so a broken manifest never reads as an empty wallet. It cannot rebuild
+// the manifest, because the header carries no item or page id -- see
+// docs/wallet-sync.md. Recovery proper is a resync from the phone, which is the
+// authority (brief 43).
+void countCardAssets(uint16_t& assets, uint16_t& codes);
+
 struct Store {
   // Fills `out` with up to `max` items in manifest order. `seen` counts every
   // item the manifest holds, so a truncated list can say so.
