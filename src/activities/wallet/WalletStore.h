@@ -26,6 +26,7 @@ enum class Error : uint8_t {
   NoManifest,         // nothing at kManifestPath
   ManifestUnreadable, // opened, but the JSON did not parse
   ManifestVersion,    // formatVersion this firmware does not know
+  PanelMismatch,      // built for another panel, and the manifest says so
   NoItems,            // parsed fine, carries nothing
   NoAsset,            // the manifest names an assetId with no file behind it
   BadAsset,           // wrong magic, wrong bit depth, header short
@@ -37,12 +38,25 @@ enum class Error : uint8_t {
 };
 
 // Translated one-line reason, for the empty state and the missing-asset screen.
+// PanelMismatch is deliberately absent here: it needs two geometries in the
+// sentence, so the screen builds that line itself.
 const char* errorText(Error error);
+
+// The panel this device actually has, read off the live renderer. Never a
+// constant (WalletAsset.h, PanelGeometry).
+PanelGeometry livePanel(const GfxRenderer& renderer);
 
 struct Store {
   // Fills `out` with up to `max` items in manifest order. `seen` counts every
   // item the manifest holds, so a truncated list can say so.
-  static bool listItems(ItemEntry* out, uint16_t max, uint16_t& stored, uint32_t& seen, Error& error);
+  //
+  // The manifest's declared panel is checked against the live one **first**, and
+  // a mismatch refuses the whole wallet with Error::PanelMismatch -- one asset
+  // set per wallet, so if the set is for another device none of it can be drawn.
+  // `declared` is filled in whenever the manifest parsed, so the screen can name
+  // both panels in the message.
+  static bool listItems(ItemEntry* out, uint16_t max, const GfxRenderer& renderer, uint16_t& stored, uint32_t& seen,
+                        DeclaredPanel& declared, Error& error);
 
   // One item, one page: the grid of all three levels plus the assetId of the
   // named tile. Re-run per screen; see WalletManifestParser.h for why that is

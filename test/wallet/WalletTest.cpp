@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "WalletAsset.h"
 #include "WalletManifestParser.h"
+#include "WalletSidecar.h"
 
 // The two pure halves of the wallet viewer: the 32-byte asset header, and the
 // manifest reader. Both run here with no Storage, no renderer and no panel --
@@ -307,4 +309,313 @@ TEST(WalletLevels, ConfirmCyclesFitDetailOneToOneFit) {
   EXPECT_EQ(nextLevel(Level::Fit), Level::Detail);
   EXPECT_EQ(nextLevel(Level::Detail), Level::OneToOne);
   EXPECT_EQ(nextLevel(Level::OneToOne), Level::Fit);
+}
+
+// ---------------------------------------------------------------------------
+// The panel a wallet was built for
+// ---------------------------------------------------------------------------
+
+TEST(WalletPanel, AbsentPanelObjectMatchesAnything) {
+  // Trees generated before the field existed. Treated as the live panel, with
+  // the per-asset header check as the real gate.
+  const DeclaredPanel none;
+  EXPECT_TRUE(panelMatches(none, kPanelX4));
+  EXPECT_TRUE(panelMatches(none, kPanelX3));
+}
+
+TEST(WalletPanel, DeclaredPanelMustMatchEveryFieldItStates) {
+  DeclaredPanel x4;
+  x4.present = true;
+  std::strcpy(x4.name, "x4");
+  x4.width = 800;
+  x4.height = 480;
+  x4.rowBytes = 100;
+  x4.assetBytes = 48000;
+  EXPECT_TRUE(panelMatches(x4, kPanelX4));
+  EXPECT_FALSE(panelMatches(x4, kPanelX3));
+
+  // A field left at 0 declared nothing and is not compared.
+  DeclaredPanel partial;
+  partial.present = true;
+  partial.assetBytes = 52272;
+  EXPECT_FALSE(panelMatches(partial, kPanelX4));
+  EXPECT_TRUE(panelMatches(partial, kPanelX3));
+}
+
+TEST(WalletPanel, ParsedOutOfTheManifest) {
+  const char* json = R"({"formatVersion":1,"walletVersion":3,
+    "panel":{"name":"x3","width":792,"height":528,"rowBytes":99,"assetBytes":52272},
+    "items":[]})";
+  ManifestParser parser;
+  ItemEntry items[1];
+  parser.beginList(items, 1);
+  parser.feed(json, std::strlen(json));
+
+  ASSERT_TRUE(parser.panel().present);
+  EXPECT_STREQ(parser.panel().name, "x3");
+  EXPECT_EQ(parser.panel().width, 792);
+  EXPECT_EQ(parser.panel().height, 528);
+  EXPECT_EQ(parser.panel().rowBytes, 99);
+  EXPECT_EQ(parser.panel().assetBytes, 52272u);
+  EXPECT_FALSE(panelMatches(parser.panel(), kPanelX4));
+  EXPECT_TRUE(panelMatches(parser.panel(), kPanelX3));
+}
+
+TEST(WalletAssetGate, AcceptsItsOwnPanelAndRefusesTheOther) {
+  const auto x4Asset = makeHeader(1, 1, 0, 0, 800, 480, 48000);
+  AssetHeader h;
+  EXPECT_EQ(checkAssetForPanel(x4Asset.data(), x4Asset.size(), kPanelX4, h), AssetCheck::Ok);
+  EXPECT_EQ(checkAssetForPanel(x4Asset.data(), x4Asset.size(), kPanelX3, h), AssetCheck::WrongPanel);
+
+  const auto x3Asset = makeHeader(1, 1, 0, 0, 792, 528, 52272);
+  EXPECT_EQ(checkAssetForPanel(x3Asset.data(), x3Asset.size(), kPanelX3, h), AssetCheck::Ok);
+  EXPECT_EQ(checkAssetForPanel(x3Asset.data(), x3Asset.size(), kPanelX4, h), AssetCheck::WrongPanel);
+}
+
+TEST(WalletAssetGate, NamesTheReasonItRefused) {
+  AssetHeader h;
+  auto bad = makeHeader();
+  bad[0] = 'X';
+  EXPECT_EQ(checkAssetForPanel(bad.data(), bad.size(), kPanelX4, h), AssetCheck::Malformed);
+
+  const auto enc = makeHeader(1, 1, 0, 0, 800, 480, 48000, 7, kFlagEncrypted);
+  EXPECT_EQ(checkAssetForPanel(enc.data(), enc.size(), kPanelX4, h), AssetCheck::Encrypted);
+
+  const auto grey = makeHeader(1, /*bitDepth=*/2);
+  EXPECT_EQ(checkAssetForPanel(grey.data(), grey.size(), kPanelX4, h), AssetCheck::BitDepth);
+}
+
+TEST(WalletAssetPath, RootIsAParameterSoTheHostToolWalksTheSameMapping) {
+  char path[128];
+  ASSERT_TRUE(buildAssetPathIn("/tmp/tree", "3acec0373d3c4ba0", path, sizeof(path)));
+  EXPECT_STREQ(path, "/tmp/tree/3a/3acec0373d3c4ba0.dat");
+  // And the card root is the same function with one argument bound.
+  char card[kAssetPathBufBytes];
+  ASSERT_TRUE(buildAssetPath("3acec0373d3c4ba0", card, sizeof(card)));
+  EXPECT_STREQ(card, "/trailink/wallet/3a/3acec0373d3c4ba0.dat");
+}
+
+// ---------------------------------------------------------------------------
+// Against bytes a real generator wrote
+//
+// fixtures/manifest.json and fixtures/3a/3acec0373d3c4ba0.rle are verbatim
+// output of `tools/walletgen.py --demo --paper a4` (parent repo). Nothing here
+// is hand-authored, which is the point: the format was implemented twice from
+// one written contract -- once in that generator, once in this firmware -- and
+// these cases are where the two meet. See docs/wallet-viewer.md, "Read against
+// real generator output".
+//
+// The sidecar is committed instead of the 48 KB .dat because it is 17 KB and
+// carries the asset's 32-byte header verbatim as a prefix. The firmware does
+// not decode EWRL in P1, so the decoder below is test scaffolding only.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::string fixture(const char* name) { return std::string(WALLET_FIXTURES_DIR) + "/" + name; }
+
+std::vector<uint8_t> readFixture(const char* name) {
+  const std::string path = fixture(name);
+  FILE* fh = std::fopen(path.c_str(), "rb");
+  if (fh == nullptr) return {};
+  std::vector<uint8_t> out;
+  uint8_t buf[4096];
+  for (;;) {
+    const size_t got = std::fread(buf, 1, sizeof(buf), fh);
+    if (got == 0) break;
+    out.insert(out.end(), buf, buf + got);
+  }
+  std::fclose(fh);
+  return out;
+}
+
+// Panel-native read, exactly as GfxRenderer writes a pixel
+// (lib/GfxRenderer/GfxRenderer.cpp:517-524): MSB first, bit 1 = white.
+bool physWhite(const std::vector<uint8_t>& fb, int rowBytes, int phyX, int phyY) {
+  return ((fb[static_cast<size_t>(phyY) * rowBytes + phyX / 8] >> (7 - (phyX % 8))) & 1u) != 0;
+}
+
+// Logical portrait read: logical (x,y) -> physical (y, panelHeight - 1 - x).
+// GfxRenderer::rotateCoordinates(), Portrait (GfxRenderer.cpp:216-223).
+bool logicalWhite(const std::vector<uint8_t>& fb, const PanelGeometry& panel, int x, int y) {
+  return physWhite(fb, panel.rowBytes, y, panel.height - 1 - x);
+}
+
+int logicalBandInk(const std::vector<uint8_t>& fb, const PanelGeometry& panel, int x0, int x1, int y0, int y1) {
+  int inked = 0;
+  for (int y = y0; y < y1; ++y) {
+    for (int x = x0; x < x1; ++x) {
+      if (!logicalWhite(fb, panel, x, y)) ++inked;
+    }
+  }
+  return inked;
+}
+
+}  // namespace
+
+TEST(WalletGeneratedTree, ManifestListsTheDemoItem) {
+  const std::vector<uint8_t> raw = readFixture("manifest.json");
+  ASSERT_FALSE(raw.empty()) << "fixtures/manifest.json missing";
+
+  ItemEntry items[4];
+  ManifestParser parser;
+  parser.beginList(items, 4);
+  parser.feed(reinterpret_cast<const char*>(raw.data()), raw.size());
+
+  EXPECT_FALSE(parser.hasError());
+  EXPECT_EQ(parser.formatVersion(), 1u);
+  EXPECT_EQ(parser.walletVersion(), 1u);
+  ASSERT_EQ(parser.itemsStored(), 1);
+  EXPECT_STREQ(items[0].title, "Demo A4 Page");
+  EXPECT_EQ(items[0].pageCount, 1);
+  // This tree predates the panel field. Nothing refuses it for that.
+  EXPECT_FALSE(parser.panel().present);
+  EXPECT_TRUE(panelMatches(parser.panel(), kPanelX4));
+}
+
+TEST(WalletGeneratedTree, LookupFindsTheRealAssetIdsAndGrids) {
+  const std::vector<uint8_t> raw = readFixture("manifest.json");
+  ASSERT_FALSE(raw.empty());
+
+  ManifestParser parser;
+  parser.beginLookup(0, 0, Level::Fit, 0, 0);
+  parser.feed(reinterpret_cast<const char*>(raw.data()), raw.size());
+
+  const PageLookup& out = parser.lookup();
+  ASSERT_TRUE(out.assetFound);
+  // The id the generator derived for this demo page. Committed with the tree, so
+  // a change in either id derivation shows up here.
+  EXPECT_STREQ(out.assetId, "3acec0373d3c4ba0");
+  // A4 at 217 PPI: one FIT screen, a 2x2 DETAIL grid, a 4x4 1:1 grid.
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Fit)].cols, 1);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Fit)].rows, 1);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Detail)].cols, 2);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Detail)].rows, 2);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::OneToOne)].cols, 4);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::OneToOne)].rows, 4);
+}
+
+TEST(WalletGeneratedTree, TheAssetIdMapsToTheFileTheGeneratorWrote) {
+  char path[512];
+  ASSERT_TRUE(buildAssetPathIn(WALLET_FIXTURES_DIR, "3acec0373d3c4ba0", path, sizeof(path)));
+  // The .dat is not committed (48 KB); the sidecar sits beside it under the same
+  // shard and stem, which is what this asserts.
+  const std::string dat(path);
+  ASSERT_GT(dat.size(), 4u);
+  const std::string rle = dat.substr(0, dat.size() - 4) + ".rle";
+  FILE* fh = std::fopen(rle.c_str(), "rb");
+  EXPECT_NE(fh, nullptr) << rle;
+  if (fh != nullptr) std::fclose(fh);
+}
+
+TEST(WalletGeneratedTree, HeaderTheGeneratorWroteParsesFieldForField) {
+  const std::vector<uint8_t> blob = readFixture("3a/3acec0373d3c4ba0.rle");
+  ASSERT_GE(blob.size(), kAssetHeaderBytes);
+
+  AssetHeader h;
+  ASSERT_TRUE(parseAssetHeader(blob.data(), blob.size(), h));
+  EXPECT_EQ(h.assetType, AssetType::Fit);
+  EXPECT_EQ(h.bitDepth, 1);
+  EXPECT_EQ(h.tileCol, 0);
+  EXPECT_EQ(h.tileRow, 0);
+  EXPECT_EQ(h.width, 800);
+  EXPECT_EQ(h.height, 480);
+  EXPECT_EQ(h.rawLen, 48000u);
+  EXPECT_EQ(h.flags, 0);
+  // The generator lays the document out upright for a device held in portrait.
+  EXPECT_EQ(h.presentation, 1);
+
+  EXPECT_EQ(checkAssetForPanel(blob.data(), blob.size(), kPanelX4, h), AssetCheck::Ok);
+  EXPECT_EQ(checkAssetForPanel(blob.data(), blob.size(), kPanelX3, h), AssetCheck::WrongPanel);
+}
+
+TEST(WalletGeneratedTree, PayloadDrawsAnUprightPageWithInkAsBlack) {
+  const std::vector<uint8_t> blob = readFixture("3a/3acec0373d3c4ba0.rle");
+  ASSERT_GE(blob.size(), kAssetHeaderBytes);
+  std::vector<uint8_t> fb;
+  ASSERT_TRUE(wallet::host::decodeSidecarPayload(blob, fb));
+  ASSERT_EQ(fb.size(), 48000u);
+
+  const PanelGeometry panel = kPanelX4;
+  const int total = panel.width * panel.height;
+  const int inked = logicalBandInk(fb, panel, 0, panel.height, 0, panel.width);
+
+  // 1. Polarity. A page of text inks a few per cent. If bit 1 meant ink instead
+  //    of white, this would be the complement -- over 90 %.
+  EXPECT_GT(inked, total / 100) << "blank: nothing decoded as ink";
+  EXPECT_LT(inked, total / 5) << "mostly black: polarity is inverted";
+
+  // 2. Margins. The top and bottom 10 % of the page carry no ink at all. Read
+  //    with a wrong byte order or a transposed row stride, ink lands here.
+  EXPECT_EQ(logicalBandInk(fb, panel, 0, 480, 0, 80), 0) << "ink in the top margin";
+  EXPECT_EQ(logicalBandInk(fb, panel, 0, 480, 720, 800), 0) << "ink in the bottom margin";
+
+  // 3. Which way up. The title band is dense; the footer band near the bottom is
+  //    a single small line. A 180-degree flip swaps them.
+  const int titleBand = logicalBandInk(fb, panel, 0, 480, 80, 140);
+  const int footerBand = logicalBandInk(fb, panel, 0, 480, 600, 720);
+  EXPECT_GT(titleBand, 500);
+  EXPECT_LT(footerBand, 200);
+  EXPECT_GT(titleBand, footerBand * 5) << "page is upside down";
+
+  // 4. Which way round. The left column band carries the text block's start; the
+  //    right margin is nearly empty. A mirror swaps them.
+  const int leftBand = logicalBandInk(fb, panel, 0, 60, 0, 800);
+  const int rightBand = logicalBandInk(fb, panel, 420, 480, 0, 800);
+  EXPECT_GT(leftBand, rightBand * 5) << "page is mirrored left to right";
+
+  // 5. Bit order inside a byte. None of the checks above sees it: reversing the
+  //    bits of every byte keeps the margins white and the bands dense, it only
+  //    scrambles pixels within each group of eight. What does see it is
+  //    correlation. Adjacent pixels agree far more often than pixels seven apart,
+  //    so compare the transition rate across a byte boundary (bit 7 next to the
+  //    next byte's bit 0) with the rate inside bytes. Equal-ish when the order is
+  //    right; the boundary rate jumps when it is reversed, because the pixels
+  //    that end up adjacent were seven apart.
+  //
+  //    Measured on this fixture: 0.887 correct, 1.254 with every byte reversed.
+  //    The 1.05 threshold sits between them with room on both sides. A heuristic,
+  //    and fixture-specific -- recheck the two numbers if the fixture changes.
+  long innerPairs = 0;
+  long innerFlips = 0;
+  long edgePairs = 0;
+  long edgeFlips = 0;
+  for (int y = 0; y < panel.height; ++y) {
+    for (int x = 0; x + 1 < panel.width; ++x) {
+      const bool changed = physWhite(fb, panel.rowBytes, x, y) != physWhite(fb, panel.rowBytes, x + 1, y);
+      if ((x % 8) == 7) {
+        ++edgePairs;
+        edgeFlips += changed ? 1 : 0;
+      } else {
+        ++innerPairs;
+        innerFlips += changed ? 1 : 0;
+      }
+    }
+  }
+  ASSERT_GT(innerPairs, 0);
+  ASSERT_GT(edgePairs, 0);
+  const double innerRate = static_cast<double>(innerFlips) / static_cast<double>(innerPairs);
+  const double edgeRate = static_cast<double>(edgeFlips) / static_cast<double>(edgePairs);
+  ASSERT_GT(innerRate, 0.0);
+  EXPECT_LT(edgeRate / innerRate, 1.05) << "bit order inside a byte looks reversed: inner " << innerRate << ", edge "
+                                        << edgeRate;
+}
+
+TEST(WalletGeneratedTree, FocalTileHintComesOutOfTheManifest) {
+  const std::vector<uint8_t> raw = readFixture("manifest.json");
+  ASSERT_FALSE(raw.empty());
+
+  ManifestParser parser;
+  parser.beginLookup(0, 0, Level::Fit, 0, 0);
+  parser.feed(reinterpret_cast<const char*>(raw.data()), raw.size());
+  const PageLookup& out = parser.lookup();
+
+  // The generator's centre-biased-top-left rule: 1x1 -> 0,0; 2x2 -> 0,0;
+  // 4x4 -> 1,1, the upper-left of the middle four, where a page's text starts.
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Fit)].defaultCol, 0);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Fit)].defaultRow, 0);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Detail)].defaultCol, 0);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::Detail)].defaultRow, 0);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::OneToOne)].defaultCol, 1);
+  EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::OneToOne)].defaultRow, 1);
 }

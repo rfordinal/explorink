@@ -41,6 +41,12 @@ struct ItemEntry {
 struct LevelGrid {
   uint8_t cols = 0;
   uint8_t rows = 0;
+  // The generator's focal tile for this level ("defaultTileX"/"defaultTileY"):
+  // the centre biased top-left, so a 4x4 grid points at 1,1 where a page's text
+  // starts rather than at the top-left margin. A hint, not a constraint -- the
+  // viewer opens a level here and the arrows go wherever they like afterwards.
+  uint8_t defaultCol = 0;
+  uint8_t defaultRow = 0;
 };
 
 struct PageLookup {
@@ -73,6 +79,9 @@ class ManifestParser {
   bool hasError() const { return parser.hasError() || overflowed; }
   uint32_t formatVersion() const { return formatVersion_; }
   uint32_t walletVersion() const { return walletVersion_; }
+  // What the manifest says it was built for. `present` false means the manifest
+  // predates the field (WalletAsset.h, DeclaredPanel).
+  const DeclaredPanel& panel() const { return panel_; }
 
   uint16_t itemsStored() const { return stored; }
   uint32_t itemsSeen() const { return seen; }
@@ -83,7 +92,7 @@ class ManifestParser {
 
   // Where in the document we are. One entry per open object/array, so the
   // meaning of a key never depends on guessing a depth number.
-  enum class Ctx : uint8_t { Other, Root, ItemsArr, Item, PagesArr, Page, Levels, LevelObj, AssetsArr, Asset };
+  enum class Ctx : uint8_t { Other, Root, Panel, ItemsArr, Item, PagesArr, Page, Levels, LevelObj, AssetsArr, Asset };
 
   static constexpr uint8_t kMaxDepth = StreamingJsonParser::MAX_NESTING;
   static constexpr size_t kKeyBufBytes = 24;
@@ -129,6 +138,7 @@ class ManifestParser {
 
   uint32_t formatVersion_ = 0;
   uint32_t walletVersion_ = 0;
+  DeclaredPanel panel_;
 
   // List mode
   ItemEntry* out = nullptr;

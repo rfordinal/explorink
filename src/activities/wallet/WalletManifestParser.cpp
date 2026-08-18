@@ -60,6 +60,7 @@ void ManifestParser::reset() {
   key[0] = '\0';
   formatVersion_ = 0;
   walletVersion_ = 0;
+  panel_ = DeclaredPanel{};
   stored = 0;
   seen = 0;
   result = PageLookup{};
@@ -134,6 +135,9 @@ void ManifestParser::onContainerStart(bool isObject) {
     } else if (cur == Ctx::PagesArr) {
       next = Ctx::Page;
       ++pageIndex;
+    } else if (cur == Ctx::Root && keyIs("panel")) {
+      next = Ctx::Panel;
+      panel_.present = true;
     } else if (cur == Ctx::Page && keyIs("levels")) {
       next = Ctx::Levels;
     } else if (cur == Ctx::Levels) {
@@ -226,6 +230,9 @@ void ManifestParser::onString(const char* value, size_t len) {
     case Ctx::Item:
       if (keyIs("title")) copyText(itemTitle, sizeof(itemTitle), value, len);
       break;
+    case Ctx::Panel:
+      if (keyIs("name")) copyText(panel_.name, sizeof(panel_.name), value, len);
+      break;
     case Ctx::Asset:
       if (keyIs("assetId")) copyText(assetId, sizeof(assetId), value, len);
       break;
@@ -241,6 +248,14 @@ void ManifestParser::onNumber(const char* value, size_t len) {
       if (keyIs("formatVersion")) formatVersion_ = toU32(value);
       if (keyIs("walletVersion")) walletVersion_ = toU32(value);
       break;
+    case Ctx::Panel: {
+      const uint32_t n = toU32(value);
+      if (keyIs("width")) panel_.width = static_cast<uint16_t>(n);
+      if (keyIs("height")) panel_.height = static_cast<uint16_t>(n);
+      if (keyIs("rowBytes")) panel_.rowBytes = static_cast<uint16_t>(n);
+      if (keyIs("assetBytes")) panel_.assetBytes = n;
+      break;
+    }
     case Ctx::LevelObj:
       // Grids are read for the requested page only; every other page's grid is
       // noise for this pass.
@@ -251,6 +266,8 @@ void ManifestParser::onNumber(const char* value, size_t len) {
           const uint8_t clamped = n > 255 ? 255 : static_cast<uint8_t>(n);
           if (keyIs("cols")) result.grid[slot].cols = clamped;
           if (keyIs("rows")) result.grid[slot].rows = clamped;
+          if (keyIs("defaultTileX")) result.grid[slot].defaultCol = clamped;
+          if (keyIs("defaultTileY")) result.grid[slot].defaultRow = clamped;
         }
       }
       break;

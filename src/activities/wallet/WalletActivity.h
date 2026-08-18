@@ -43,6 +43,9 @@ class WalletActivity final : public Activity {
   void openSelected();
 
   std::unique_ptr<wallet::ItemEntry[]> entries_;
+  // What the manifest says it was built for. Only read when the wallet is
+  // refused for being built for another panel, where the message names both.
+  wallet::DeclaredPanel declared_;
   uint16_t stored_ = 0;
   uint32_t seen_ = 0;
   wallet::Error error_ = wallet::Error::None;

@@ -71,6 +71,9 @@ const char* errorText(const Error error) {
       return tr(STR_WALLET_VERSION);
     case Error::NoItems:
       return tr(STR_WALLET_EMPTY);
+    case Error::PanelMismatch:
+      // The screen names both geometries itself; this is only the fallback.
+      return tr(STR_WALLET_PANEL_OTHER);
     case Error::NoAsset:
     case Error::NotInManifest:
       return tr(STR_WALLET_ASSET_MISSING);
@@ -87,9 +90,20 @@ const char* errorText(const Error error) {
   return "";
 }
 
-bool Store::listItems(ItemEntry* out, const uint16_t max, uint16_t& stored, uint32_t& seen, Error& error) {
+PanelGeometry livePanel(const GfxRenderer& renderer) {
+  PanelGeometry live;
+  live.width = renderer.getDisplayWidth();
+  live.height = renderer.getDisplayHeight();
+  live.rowBytes = renderer.getDisplayWidthBytes();
+  live.bufferBytes = static_cast<uint32_t>(renderer.getBufferSize());
+  return live;
+}
+
+bool Store::listItems(ItemEntry* out, const uint16_t max, const GfxRenderer& renderer, uint16_t& stored,
+                      uint32_t& seen, DeclaredPanel& declared, Error& error) {
   stored = 0;
   seen = 0;
+  declared = DeclaredPanel{};
   error = Error::None;
 
   auto parser = makeUniqueNoThrow<ManifestParser>();
@@ -100,6 +114,18 @@ bool Store::listItems(ItemEntry* out, const uint16_t max, uint16_t& stored, uint
   }
   parser->beginList(out, max);
   if (!feedManifest(*parser, error)) return false;
+
+  declared = parser->panel();
+  // Before anything else: one asset set per wallet, so a set built for another
+  // panel cannot be shown at all and must not be half-opened.
+  if (!panelMatches(declared, livePanel(renderer))) {
+    LOG_ERR(kLogTag, "manifest panel %s %ux%u/%lu, device %ux%u/%u", declared.name,
+            static_cast<unsigned>(declared.width), static_cast<unsigned>(declared.height),
+            static_cast<unsigned long>(declared.assetBytes), static_cast<unsigned>(renderer.getDisplayWidth()),
+            static_cast<unsigned>(renderer.getDisplayHeight()), static_cast<unsigned>(renderer.getBufferSize()));
+    error = Error::PanelMismatch;
+    return false;
+  }
 
   stored = parser->itemsStored();
   seen = parser->itemsSeen();
@@ -169,43 +195,48 @@ bool Store::loadAssetIntoFrameBuffer(const char* assetId, GfxRenderer& renderer,
 
   uint8_t raw[kAssetHeaderBytes];
   const int gotHeader = file.read(raw, sizeof(raw));
-  if (gotHeader != static_cast<int>(sizeof(raw)) || !parseAssetHeader(raw, sizeof(raw), header)) {
-    LOG_ERR(kLogTag, "bad asset header %s", path);
+  if (gotHeader != static_cast<int>(sizeof(raw))) {
+    LOG_ERR(kLogTag, "short header %s", path);
     file.close();
     error = Error::BadAsset;
     return false;
   }
 
-  if ((header.flags & kFlagEncrypted) != 0) {
-    // P1 ships no crypto. Drawing the ciphertext would put noise on the panel
-    // and look like a hardware fault, so it is refused with a message instead.
-    file.close();
-    error = Error::AssetEncrypted;
-    return false;
-  }
-  if (header.bitDepth != kBitDepth1) {
-    // bitDepth 2 is reserved in the format and not implemented here.
-    LOG_ERR(kLogTag, "bitDepth %u unsupported", static_cast<unsigned>(header.bitDepth));
-    file.close();
-    error = Error::BadAsset;
-    return false;
+  // One gate, shared with the host preview and the tests, so a disagreement
+  // about the header layout or the panel geometry cannot hide on one side
+  // (WalletAsset.h, checkAssetForPanel).
+  const PanelGeometry live = livePanel(renderer);
+  switch (checkAssetForPanel(raw, sizeof(raw), live, header)) {
+    case AssetCheck::Ok:
+      break;
+    case AssetCheck::Malformed:
+      LOG_ERR(kLogTag, "bad asset header %s", path);
+      file.close();
+      error = Error::BadAsset;
+      return false;
+    case AssetCheck::Encrypted:
+      // P1 ships no crypto. Drawing the ciphertext would put noise on the panel
+      // and look like a hardware fault, so it is refused with a message instead.
+      file.close();
+      error = Error::AssetEncrypted;
+      return false;
+    case AssetCheck::BitDepth:
+      // bitDepth 2 is reserved in the format and not implemented here.
+      LOG_ERR(kLogTag, "bitDepth %u unsupported", static_cast<unsigned>(header.bitDepth));
+      file.close();
+      error = Error::BadAsset;
+      return false;
+    case AssetCheck::WrongPanel:
+      LOG_ERR(kLogTag, "asset %ux%u/%lu bytes, panel %ux%u/%lu", static_cast<unsigned>(header.width),
+              static_cast<unsigned>(header.height), static_cast<unsigned long>(header.rawLen),
+              static_cast<unsigned>(live.width), static_cast<unsigned>(live.height),
+              static_cast<unsigned long>(live.bufferBytes));
+      file.close();
+      error = Error::AssetWrongSize;
+      return false;
   }
 
-  // The payload must be exactly this panel's framebuffer -- not 48,000 bytes by
-  // constant. The X4 is 800x480 (BoardConfig.h:670,685-690); another device in
-  // the line is its own size, and an asset built for the wrong one is refused
-  // rather than drawn shifted.
-  const size_t want = renderer.getBufferSize();
-  if (header.rawLen != want || header.width != renderer.getDisplayWidth() ||
-      header.height != renderer.getDisplayHeight()) {
-    LOG_ERR(kLogTag, "asset %ux%u/%lu bytes, panel %ux%u/%u", static_cast<unsigned>(header.width),
-            static_cast<unsigned>(header.height), static_cast<unsigned long>(header.rawLen),
-            static_cast<unsigned>(renderer.getDisplayWidth()), static_cast<unsigned>(renderer.getDisplayHeight()),
-            static_cast<unsigned>(want));
-    file.close();
-    error = Error::AssetWrongSize;
-    return false;
-  }
+  const size_t want = live.bufferBytes;
 
   // The one read that matters. Straight into the framebuffer: the payload is
   // already panel-native (row-major, panelWidthBytes per row, MSB first, bit 1 =

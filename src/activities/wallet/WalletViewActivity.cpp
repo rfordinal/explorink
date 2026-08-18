@@ -31,7 +31,7 @@ void WalletViewActivity::onEnter() {
   pageIndex_ = 0;
   level_ = wallet::Level::Fit;
   col_ = 0;
-  row_ = 0;
+  row_ = 0;  // FIT is one tile; the focal hint only matters from DETAIL on.
   // HALF on entry to an item: the list is on the panel and a differential
   // refresh cannot clear a frame it never saw (../../../docs/refresh-modes.md).
   showCurrent(HalDisplay::HALF_REFRESH);
@@ -83,13 +83,22 @@ void WalletViewActivity::loop() {
   }
 }
 
+void WalletViewActivity::jumpToLevelDefault() {
+  const wallet::LevelGrid& grid = currentGrid();
+  const uint8_t cols = grid.cols > 0 ? grid.cols : 1;
+  const uint8_t rows = grid.rows > 0 ? grid.rows : 1;
+  col_ = grid.defaultCol < cols ? grid.defaultCol : 0;
+  row_ = grid.defaultRow < rows ? grid.defaultRow : 0;
+}
+
 void WalletViewActivity::cycleLevel() {
   level_ = wallet::nextLevel(level_);
-  // Back to the top-left tile of the new level. Carrying a tile coordinate
-  // across a level change would land the rider somewhere they did not point at:
-  // the grids have different sizes, so there is no honest mapping.
-  col_ = 0;
-  row_ = 0;
+  // Not the top-left tile: the manifest names a focal tile per level and a 1:1
+  // grid points at where the text starts, not at the margin
+  // (WalletManifestParser.h, LevelGrid). Carrying the old coordinate across
+  // instead would land the rider somewhere they never pointed at -- the grids
+  // are different sizes, so there is no honest mapping between them.
+  jumpToLevelDefault();
   // HALF on a level change: the whole image changes, and the previous level is
   // a different picture, not a shifted one.
   showCurrent(HalDisplay::HALF_REFRESH);
@@ -123,7 +132,8 @@ bool WalletViewActivity::stepPage(const int delta) {
   if (next == pageIndex_) return false;
   pageIndex_ = next;
   // A new page is a new document surface: start at its FIT view, not at the tile
-  // coordinate that happened to be on screen.
+  // coordinate that happened to be on screen. FIT is 1x1, so the focal tile of
+  // the new page's grid is picked up when showCurrent() reads it.
   level_ = wallet::Level::Fit;
   col_ = 0;
   row_ = 0;
@@ -156,7 +166,11 @@ void WalletViewActivity::showCurrent(const HalDisplay::RefreshMode mode) {
   LOG_INF(kLogTag, "item %d page %d %s %u,%u v%lu", itemIndex_, pageIndex_, wallet::levelName(level_),
           static_cast<unsigned>(col_), static_cast<unsigned>(row_), static_cast<unsigned long>(header.version));
   // header.presentation says which way up the generator laid the document out.
-  // Nothing acts on it: the device rotates nothing, the rider turns the device.
+  // The generator writes 1 (upright for a device held in portrait) and rotates
+  // the bits at build time to make it so, which is the orientation the rest of
+  // the UI already uses -- confirmed on real output (docs/wallet-viewer.md,
+  // "What the pictures showed"). Nothing acts on the field: the device rotates
+  // nothing either way.
   renderer.displayBuffer(mode);
 }
 

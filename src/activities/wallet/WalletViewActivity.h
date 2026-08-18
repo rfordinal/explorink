@@ -10,7 +10,9 @@
 // ## The display path
 //
 // A wallet asset is already the framebuffer. The generator on the laptop did
-// every rotation, scale, dither and pack at build time, so a screen is:
+// every rotation, scale, dither and pack at build time -- its rotation is the
+// exact inverse of GfxRenderer's Portrait transform, so the page stands upright
+// on a device held the way the rest of the UI expects. So a screen is:
 //
 //     open -> skip the 32-byte header -> read the payload into the framebuffer
 //     -> displayBuffer()
@@ -56,6 +58,8 @@ class WalletViewActivity final : public Activity {
   bool stepTile(int dCol, int dRow);
   bool stepPage(int delta);
   void cycleLevel();
+  // Where a level opens: the manifest's focal tile for it, clamped into the grid.
+  void jumpToLevelDefault();
   const wallet::LevelGrid& currentGrid() const { return grid_[static_cast<uint8_t>(level_)]; }
 
   const int itemIndex_;
