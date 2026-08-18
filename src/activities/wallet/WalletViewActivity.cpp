@@ -389,7 +389,13 @@ void WalletViewActivity::showCurrent(const HalDisplay::RefreshMode mode) {
   // is the same window of the same page, and only the waveform differs (P2b,
   // ../../../docs/wallet-grey.md). Off by default, so a card with no grey assets
   // and a build nobody switched behave exactly as before.
-  if (wallet::grey::enabled() && page.greyPlanes.present) {
+  // The document decides, the switch overrides. `CMD:WALLETGREY on` forces grey
+  // wherever the assets exist (a lab affordance for comparing the two on the
+  // panel); left alone, a document gets grey only if it asked for it. Grey costs
+  // 2,604 ms a frame against ~570 ms, so it is not something to hand a rider by
+  // default (../../../docs/wallet-grey.md).
+  const bool greyWanted = wallet::grey::enabled() || page.wantsGrey;
+  if (greyWanted && page.greyPlanes.present) {
     bool fatal = false;
     if (showGreyPage(page, fatal)) return;
     if (fatal) {

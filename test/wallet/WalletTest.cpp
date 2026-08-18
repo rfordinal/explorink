@@ -213,6 +213,49 @@ TEST(WalletManifest, LookupReturnsGridsForEveryLevel) {
   EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::OneToOne)].rows, 4);
 }
 
+TEST(WalletManifest, GreyIsAPropertyOfTheDocument) {
+  // Grey costs 2,604 ms a frame against ~570 ms for 1bpp (measured on the panel,
+  // docs/wallet-grey.md), so it is per document and not a card-wide mode: a scan
+  // wants it, a page of text the rider pans does not. The device follows the
+  // manifest; CMD:WALLETGREY is a lab override on top.
+  const char* greyDoc = R"({"formatVersion":1,"items":[{"title":"Scan","grey":true,"pages":[{"levels":{
+      "fit":{"cols":1,"rows":1,"assets":[{"assetId":"0123456789abcdef","type":1,"col":0,"row":0}]}}}]}]})";
+  ManifestParser parser;
+  parser.beginLookup(0, 0, Level::Fit, 0, 0);
+  feedChunked(parser, greyDoc, 11);
+  EXPECT_TRUE(parser.lookup().wantsGrey);
+}
+
+TEST(WalletManifest, ADocumentWithoutTheFlagAsksForNoGrey) {
+  // Absent means false. A card written before grey existed must not start
+  // rendering grey frames because a later firmware learned how.
+  const char* plainDoc = R"({"formatVersion":1,"items":[{"title":"Text","pages":[{"levels":{
+      "fit":{"cols":1,"rows":1,"assets":[{"assetId":"0123456789abcdef","type":1,"col":0,"row":0}]}}}]}]})";
+  ManifestParser parser;
+  parser.beginLookup(0, 0, Level::Fit, 0, 0);
+  feedChunked(parser, plainDoc, 11);
+  EXPECT_FALSE(parser.lookup().wantsGrey);
+}
+
+TEST(WalletManifest, TheGreyFlagIsReadFromTheWantedItemOnly) {
+  // Two documents, only the second is grey. Asking for item 0 must not inherit
+  // item 1's answer -- the parser walks one stream and the flag is per item.
+  const char* twoDocs = R"({"formatVersion":1,"items":[
+      {"title":"Text","pages":[{"levels":{"fit":{"cols":1,"rows":1,"assets":[
+        {"assetId":"0123456789abcdef","type":1,"col":0,"row":0}]}}}]},
+      {"title":"Scan","grey":true,"pages":[{"levels":{"fit":{"cols":1,"rows":1,"assets":[
+        {"assetId":"fedcba9876543210","type":1,"col":0,"row":0}]}}}]}]})";
+  ManifestParser first;
+  first.beginLookup(0, 0, Level::Fit, 0, 0);
+  feedChunked(first, twoDocs, 17);
+  EXPECT_FALSE(first.lookup().wantsGrey) << "item 0 is not the grey one";
+
+  ManifestParser second;
+  second.beginLookup(1, 0, Level::Fit, 0, 0);
+  feedChunked(second, twoDocs, 17);
+  EXPECT_TRUE(second.lookup().wantsGrey) << "item 1 is";
+}
+
 TEST(WalletManifest, LookupPicksTheRightTile) {
   ManifestParser parser;
   parser.beginLookup(0, 0, Level::Detail, 1, 1);

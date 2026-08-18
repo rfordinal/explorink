@@ -59,6 +59,11 @@ struct LevelGrid {
 };
 
 struct PageLookup {
+  // The document's own answer to "show me in grey", read off the manifest item.
+  // Grey is a per-document property (docs/wallet-grey.md): worth 2,604 ms a frame
+  // for a scan or a photo, not for a page of text the rider pans around. The
+  // CMD:WALLETGREY switch is a lab override on top of this, never the policy.
+  bool wantsGrey = false;
   bool itemFound = false;
   bool pageFound = false;
   bool assetFound = false;
