@@ -25,18 +25,22 @@ inline constexpr uint32_t kSupportedFormatVersion = 1;
 
 enum class Error : uint8_t {
   None = 0,
-  NoManifest,         // nothing at kManifestPath
-  ManifestUnreadable, // opened, but the JSON did not parse
-  ManifestVersion,    // formatVersion this firmware does not know
-  PanelMismatch,      // built for another panel, and the manifest says so
-  NoItems,            // parsed fine, carries nothing
-  NoAsset,            // the manifest names an assetId with no file behind it
-  BadAsset,           // wrong magic, wrong bit depth, header short
-  AssetEncrypted,     // flags bit 0 set -- a later phase's job
-  AssetWrongSize,     // rawLen is not this panel's framebuffer
-  ShortRead,          // the payload ended early
-  NoFrameBuffer,      // the framebuffer is lent out
-  NotInManifest,      // no such item / page / tile
+  NoManifest,          // nothing at kManifestPath
+  ManifestUnreadable,  // opened, but the JSON did not parse
+  ManifestVersion,     // formatVersion this firmware does not know
+  PanelMismatch,       // built for another panel, and the manifest says so
+  NoItems,             // parsed fine, carries nothing
+  NoAsset,             // the manifest names an assetId with no file behind it
+  BadAsset,            // wrong magic, wrong bit depth, header short
+  AssetEncrypted,      // flags bit 0 set -- a later phase's job
+  AssetWrongSize,      // rawLen is not this panel's framebuffer
+  ShortRead,           // the payload ended early
+  NoFrameBuffer,       // the framebuffer is lent out
+  NotInManifest,       // no such item / page / tile
+  NoCodes,             // the item carries no machine-readable codes
+  CodeNotACode,        // the manifest called it a code, the header disagrees
+  CodeHashMismatch,    // the payload does not hash to what the manifest promised
+  CodeUnmarked,        // unverified, and the marker had nowhere to go
 };
 
 // Translated one-line reason, for the empty state and the missing-asset screen.
@@ -60,6 +64,13 @@ struct Store {
   static bool listItems(ItemEntry* out, uint16_t max, const GfxRenderer& renderer, uint16_t& stored, uint32_t& seen,
                         DeclaredPanel& declared, Error& error);
 
+  // One item's codes: how many it has across all its pages, and the one at
+  // `codeIndex`. Re-run per screen, same reasoning as lookupPage().
+  //
+  // `codeIndex` out of range is not an error for the count -- a caller asking
+  // only "does this item have codes" passes 0 and reads `out.codeCount`.
+  static bool lookupCode(int itemIndex, int codeIndex, CodeLookup& out, Error& error);
+
   // One item, one page: the grid of all three levels, the requested level's
   // whole-page image if it has one, and the assetId of the named tile. Re-run per
   // screen; see WalletManifestParser.h for why that is cheaper than caching.
@@ -77,6 +88,20 @@ struct Store {
   //
   // The caller refreshes; this function never touches the panel.
   static bool loadAssetIntoFrameBuffer(const char* assetId, GfxRenderer& renderer, AssetHeader& header, Error& error);
+
+  // One machine code into the framebuffer, **hashed before it can be shown**.
+  //
+  // Same single read as loadAssetIntoFrameBuffer() -- and then the sha256 of the
+  // bytes now sitting in the framebuffer, against the manifest's hash (or the
+  // header's 8-byte prefix where the manifest states none). Nothing is drawn: the
+  // caller refreshes only if this returned true, so a payload that fails the hash
+  // never reaches the panel.
+  //
+  // Hashing the framebuffer rather than re-reading the file is what makes this
+  // one read instead of two: the payload *is* the framebuffer, so the bytes to
+  // hash are already in RAM. ~8 ms of CPU against ~65 ms of card
+  // (docs/wallet-viewer.md, "Why the hash is checked here and nowhere else").
+  static bool loadCodeIntoFrameBuffer(const CodeEntry& code, GfxRenderer& renderer, AssetHeader& header, Error& error);
 };
 
 // One open whole-page image, and an arbitrary window blitted out of it.

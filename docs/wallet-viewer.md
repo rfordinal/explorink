@@ -1,14 +1,16 @@
 # The wallet viewer
 
 Papers a rider may have to show somebody -- passport, licence, insurance card,
-registration -- kept on the SD card and drawn on the panel with no phone, no
-network and no map. Phase P1: **read-only viewing only**. No crypto, no BLE, no
-grey, no write path.
+registration, a boarding pass -- kept on the SD card and drawn on the panel with
+no phone, no network and no map. **Read-only viewing only.** No crypto, no BLE,
+no grey, no write path.
 
-Two screens:
+Three screens:
 
 - `WalletActivity` -- the list of documents (`src/activities/wallet/WalletActivity.h`).
 - `WalletViewActivity` -- one asset, one whole screen (`src/activities/wallet/WalletViewActivity.h`).
+- `WalletCodeActivity` -- one machine-readable code, fullscreen, meant to be read
+  by a scanner off the glass (`src/activities/wallet/WalletCodeActivity.h`). P2.
 
 Home menu row **Wallet**, between *Sync map tiles* and *Settings*
 (`src/activities/home/HomeActivity.cpp:14-21`, `:121-134`), opening through
@@ -47,7 +49,7 @@ An asset file is a 32-byte cleartext header, then the payload:
 | offset | size | field |
 |---|---|---|
 | 0 | 4 | magic `EWA1` |
-| 4 | 1 | assetType 1=FIT 2=DETAIL_TILE 3=ONE_TO_ONE_TILE 4=MACHINE_CODE |
+| 4 | 1 | assetType 1=FIT 2=DETAIL_TILE 3=ONE_TO_ONE_TILE 4=MACHINE_CODE 5=PAGE_IMAGE |
 | 5 | 1 | bitDepth (1 today; 2 = 4-level grey is reserved, **not implemented**) |
 | 6 | 1 | tileCol |
 | 7 | 1 | tileRow |
@@ -58,11 +60,12 @@ An asset file is a 32-byte cleartext header, then the payload:
 | 20 | 1 | flags, bit0 = encrypted (0 in P1) |
 | 21 | 1 | presentation, 0 = upright in landscape, 1 = upright in portrait |
 | 22 | 2 | reserved |
-| 24 | 8 | first 8 bytes of sha256 of the payload |
+| 24 | 8 | first 8 bytes of sha256 of the payload -- checked for a machine code, ignored for everything else |
 
 Parsed by `parseAssetHeader()` (`src/activities/wallet/WalletAsset.h:89-106`).
-Read off the format contract, not off a real file -- **no generator exists yet**,
-so nothing here has been checked against bytes a tool wrote.
+Every field has since been checked against bytes `tools/walletgen.py` wrote --
+tile, page image and machine code (see "Read against real generator output" and
+"Rendered and looked at").
 
 `assetId` is 16 hex characters and the file lives in a directory named by its
 first two: `buildAssetPath()`
@@ -246,8 +249,18 @@ grid points at 1,1. Verified on real output both ways: tile 1,1 of the demo page
 1:1 level opens on body text at full size where 0,0 would have opened on the
 top-left margin, and the 1:1 page image's focal point 800,859 does the same.
 
-Browse: UP/DOWN (also LEFT/RIGHT) move the selection with hard stops, CONFIRM
-opens, BACK goes home (`WalletActivity.cpp:loop`).
+Browse: UP/DOWN move the selection with hard stops, CONFIRM opens the document,
+**LEFT/RIGHT open its machine-readable codes**, BACK goes home
+(`WalletActivity.cpp:loop`).
+
+LEFT/RIGHT used to be a second way to move the selection, and P2 took that away
+-- brief section 13 puts the code walk there. What it costs: the selection now
+moves on the side pair only, and the side pair has no hint box on the X4, so
+nothing on screen says how to move it. Accepted, for two reasons: the side pair
+is where this device puts list movement everywhere else, and the front pair's
+hints now read "Code", which is the thing a rider would never have guessed. The
+row itself says how many codes a document has, so LEFT/RIGHT doing nothing is
+explained on screen rather than felt as a dead button.
 
 ## Whole-screen paging was rejected, and design B replaced it
 
@@ -463,6 +476,314 @@ Host-side friction worth knowing, from the run: a raw pyserial reader needs
 `dtr=True` or the C3's CDC never sees the write at all, and `mapcmd.py` eats the
 first lines of the reply.
 
+## The code screen
+
+Phase P2. `WalletCodeActivity` (`src/activities/wallet/WalletCodeActivity.h`), one
+machine-readable code per screen, meant to be read by a **scanner** off the glass
+rather than by a person.
+
+That is the whole reason this screen exists separately from the document viewer.
+A wrong pixel on a passport scan is cosmetic. A wrong pixel in a barcode is a
+rider at a gate with a pass that will not scan and no way to tell why. Every
+decision below follows from that one sentence.
+
+The asset is an ordinary full-screen panel-native tile, `assetType 4`,
+`bitDepth 1`, so the read path is `Store::loadAssetIntoFrameBuffer()`'s and
+nothing about the display path changed.
+
+### The manifest contract
+
+Per page, beside `levels` (`WalletManifestParser.cpp`, `Ctx::CodesArr` /
+`Ctx::Code`):
+
+```json
+"codes": [{"id": "c001", "symbology": "qr", "payload": "...", "verified": true,
+           "assetId": "16 hex", "moduleSize": 8, "quietZone": 4,
+           "codeWidthPx": 384, "codeHeightPx": 384, "sha256": "..."}]
+```
+
+Read into `CodeEntry` (`src/activities/wallet/WalletAsset.h`, "Machine-readable
+codes"). Two fields are deliberately dropped:
+
+- **`payload` is read by nobody.** The device draws a bitmap; it encodes nothing,
+  so the decoded text has no use here. It is also the one field that can exceed
+  the parser's 512-byte token buffer -- a boarding-pass payload runs to hundreds
+  of characters -- and an overlong string value is dropped without a callback
+  (`lib/JsonParser/StreamingJsonParser.cpp:226-249`), so it costs this parser
+  nothing and breaks nothing. Pinned by
+  `WalletCodeManifest.AnOverlongPayloadBreaksNothing`.
+- **`rleLen`** is the sidecar's length, which no firmware in P1 or P2 reads.
+
+`moduleSize`, `quietZone`, `codeWidthPx` and `codeHeightPx` are parsed and
+logged. **Nothing on the device acts on them** -- the label placement reads the
+framebuffer instead, see below -- so a generator that states them wrong cannot
+move a pixel here.
+
+### The code walk
+
+Brief section 13, as implemented:
+
+| where | button | what happens |
+|---|---|---|
+| browse | RIGHT | opens the item's **first** code |
+| browse | LEFT | opens the item's **last** code -- the other way round the ring |
+| browse | either, no codes | nothing at all. No refresh, no message |
+| code screen | RIGHT / LEFT | next / previous code, **cycling** |
+| code screen | BACK | back to the browse list |
+| code screen | CONFIRM, UP, DOWN | nothing |
+
+Codes belong to a **page** in the manifest and the walk is **item-wide**: the
+codes of page 0, then page 1, in manifest order (`ManifestParser::commitCode()`).
+A rider with a two-page boarding pass thinks of "the codes on this ticket", not
+"page 2's code". `WalletCodeManifest.CodesOfEveryPageAreOneWalk` pins the order.
+
+Cycling, not clamping -- the opposite of the document viewer's arrows, on purpose.
+A page has edges because paper has edges; a set of two codes at a gate does not,
+and a rider flipping between a boarding pass and a bag tag should not have to
+remember which end of the list they are at.
+
+CONFIRM is inert because there is no zoom for a code: it is already drawn as large
+as the panel allows, and a scanner needs the quiet zone more than the rider needs
+a bigger picture. The side pair is inert because a code is exactly one screen --
+nothing to pan -- and every page's codes are already in this one walk, so there is
+no page to turn either.
+
+**The browse row states the count** ("2 pages, 1 code",
+`WalletActivity.cpp:drawRow`). Without it, "this document has no code" and "that
+button does nothing" look identical, and this codebase does not do silent
+omissions elsewhere either (the truncated-list line above). The count is filled by
+the same list pass that fills the titles -- `ItemEntry::codeCount`, two bytes a
+row, against a second manifest pass per row.
+
+A code whose `assetId` is not 16 hex characters is refused (same rule as
+everywhere else) **but still counted**: the count is what the manifest claims the
+document has, and a broken entry the rider can see and report beats one the device
+hides. Pinned by `WalletCodeManifest.ACodeWhoseAssetIdIsNotSixteenHexIsNoCode`.
+
+### Why the hash is checked here and nowhere else
+
+The header carries the first 8 bytes of the payload's sha256 and the manifest
+carries all 32 (`AssetHeader::sha256Prefix`, `CodeEntry::sha256`). Both are
+ignored for a document tile and for a page image. For a code, the payload is
+hashed before anything reaches the panel (`Store::loadCodeIntoFrameBuffer()`,
+`WalletStore.cpp`).
+
+The asymmetry is the point:
+
+- a corrupt **document tile** is a smudge on a passport scan. The rider sees it
+  and knows;
+- a corrupt **barcode** is silent. It looks exactly like a barcode, and the
+  failure surfaces at the gate, in front of somebody with a scanner;
+- a **page image** is read a window at a time, so hashing the whole file would
+  cost several times the read it was guarding.
+
+**One read, not two.** The brief called for a verify pass plus a draw pass, about
+two reads of 48 KB. It is one: the payload *is* the framebuffer, so after the read
+the bytes to hash are already in RAM. ~65 ms of card (measured, "Measured on the
+X4") plus the hash of 48 KB in software, and nothing has been drawn yet -- the
+caller refreshes only if the hash matched, so a failed hash never puts a bitmap on
+the panel. The RenderLock is held across the read, the hash and the refresh, so
+nothing can write those bytes in between (`WalletCodeActivity::showCurrent`).
+
+The hash cost on the device is **not measured** -- estimated at under 10 ms from
+~25 cycles a byte at 160 MHz, which would be under 2 % of the frame. Settling it
+needs one `micros()` pair around the hash with the log open. **Open**, and it does
+not change the decision at any plausible value: the frame is dominated by a
+1,684 ms `HALF` waveform.
+
+Which hash is the authority (`checkPayloadHash()`,
+`src/activities/wallet/WalletSha256.h`):
+
+| the manifest's `sha256` | authority | cover |
+|---|---|---|
+| 64 hex characters | the manifest, all 32 bytes | 256 bits |
+| absent, short, long, or not hex | the header's 8-byte prefix | 64 bits |
+
+A short hash is **never** accepted as a hash -- silently taking 63 characters
+would turn the check into a formality
+(`WalletSha256.HexParseRefusesAnythingThatIsNotSixtyFourHex`).
+
+**This detects corruption, not tampering.** Anybody who can write the manifest can
+write the payload beside it, and P2 ships no signature. A half-written card, a bad
+sector or an interrupted sync cannot put a wrong barcode in front of a gate agent;
+a hostile card can. That is a P3 problem (the phase that adds encryption), and
+saying otherwise here would be worse than saying nothing.
+
+sha256 is implemented a **second time** in this tree
+(`src/activities/wallet/WalletSha256.h`; mbedtls is the first, used for the OTA
+image at `src/network/FirmwareFlasher.cpp:129-224`). Reason: the host tests do not
+link mbedtls, and the hash-mismatch path is precisely the path that has to be
+proved to fire against real generator bytes. A verify step nobody can test on the
+host is a verify step nobody has tested. It costs ~1 KB of flash and is pinned to
+the FIPS-180-4 vectors (`WalletSha256.MatchesTheStandardVectors`), including the
+55- and 56-byte lengths where a hand-written `finish()` goes wrong.
+
+The gate also checks the **type**: `checkCodeAsset()` refuses an asset that is not
+`assetType 4` even when it is the right shape for the panel. A `codes` entry
+pointing at a document tile is a generator or a sync bug, and drawing page three of
+an insurance policy where a boarding pass belongs is worse than drawing nothing.
+
+### Unverified codes are shown, marked
+
+The manifest's `verified` is the generator's own round trip: it decodes the code,
+regenerates it clean, renders the device asset, and decodes the code **back out of
+that asset** (`tools/walletgen.py`, `verify_code_asset`). Brief section 11: only a
+verified code is a trusted fullscreen code.
+
+Two ways to honour that, and this is the one chosen:
+
+**An unverified code appears in the walk and is drawn with an explicit marker --
+"NOT VERIFIED - may not scan". If the marker cannot be placed, the code is not
+drawn at all.**
+
+Why, against hiding it:
+
+- hiding it makes a dead button. LEFT/RIGHT would do nothing and the rider would
+  have no way to tell "this document has no code" from "this device does not trust
+  the code it has". The browse row would say 1 code and pressing would do nothing:
+  worse than either honest answer;
+- `verified` false says the laptop's decoder could not read it back. That is not
+  the same as "this will not scan" -- a different scanner at a gate may well read
+  it, and the rider is the one standing there. Making that call for them,
+  invisibly, is the kind of quiet decision this codebase refuses elsewhere;
+- brief section 11 is still satisfied: it is drawn, and it is never *presented as
+  trusted*. The marker is a hard requirement, not a decoration -- no marker, no
+  draw.
+
+The gate is one pure function with exactly one call site
+(`codeVerdict()`, `WalletAsset.h`; called from
+`WalletCodeActivity::showCurrent()`):
+
+| loaded and hashed | manifest `verified` | marker placed | verdict |
+|---|---|---|---|
+| no | -- | -- | `RefuseAsset` -- failure screen |
+| yes | yes | yes | `Draw` |
+| yes | yes | no | `Draw` -- a verified code needs no marker |
+| yes | no | yes | `Draw`, marked |
+| yes | no | no | `RefuseUnmarked` -- failure screen |
+
+`verified` **defaults to false**. A manifest that says nothing has verified
+nothing, and the safe reading of silence is "not verified"
+(`WalletCodeManifest.UnverifiedAndMissingVerifiedBothReadAsUnverified`).
+
+### The label, and why it reads the framebuffer
+
+One line, centred, at the bottom of the logical screen: the symbology, upper-cased
+(`symbologyLabel()`), plus the unverified marker when there is one. Nothing else --
+no code index, no payload, no button hints. **The quiet zone is part of the code**:
+a status line across a quiet zone breaks a scan exactly as a mark across a module
+does.
+
+The obvious placement is "below the code, using `codeHeightPx` and the fact that
+the generator centres it". That was rejected. It is an assumption about a tool in
+another repo, guarding the one thing on this screen that must not be drawn over.
+
+Instead the framebuffer is asked: `logicalBandIsBlank()` (`WalletAsset.h`) walks
+the band the label would occupy and returns false if there is a single inked
+pixel. No assumption, and it degrades correctly -- a tall symbology that fills the
+panel simply gets no label, and if that code is unverified it is refused instead.
+
+The band is a **panel column range, not a row range**. Logical portrait `(x, y)`
+maps to panel `(y, panelHeight - 1 - x)`
+(`GfxRenderer::rotateCoordinates()`, `lib/GfxRenderer/GfxRenderer.cpp:216-223`), so
+a horizontal band of the page is a vertical slice of panel memory across every
+panel row. Getting that the wrong way round would check the wrong 480 columns and
+pass a band that is not blank at all --
+`WalletCodeLabel.TheBandIsCheckedInPanelColumnsNotRows` puts one pixel of ink in
+the band and asserts the label is refused.
+
+The band is at the very bottom edge (10 px margin, 4 px pad either side of the
+text) and no taller than the text, because the further from the code the smaller
+the chance of sitting in its quiet zone. **How far is far enough is reasoned, not
+measured** -- nothing has been scanned off this panel yet.
+
+`logicalBandIsBlank()` knows one logical-to-panel mapping, the Portrait one the
+assets are generated for (`presentation = 1`). In any other orientation the band
+cannot be located, so no label is drawn at all and an unverified code is refused
+(`WalletCodeActivity::drawLabel`).
+
+### Refresh: HALF, and never FAST
+
+Every code frame -- entry and every step of the walk -- is `HALF_REFRESH`.
+
+`FAST` is differential: it drives only the pixels that differ from the RED plane
+(`docs/refresh-modes.md`), so stepping from one code to the next would leave the
+previous code's modules as ghosts under this one. A scanner reads contrast between
+neighbouring modules and nothing else, so that is the one artefact this screen
+cannot afford. Brief section 12's rule -- scanning reliability beats saving a
+refresh -- costs 1,684 ms a frame instead of 500 ms, and this is exactly the screen
+where that is the right trade.
+
+**`FULL` was considered and rejected.** On the X4 `HALF` (`0xD7`) and `FULL`
+(`0xF7`) both rewrite both planes and clear the panel absolutely; `FULL` only adds
+inversion passes on the way (`docs/refresh-modes.md`, "What each one selects on the
+X4"). So `HALF` is the strongest *clean* this panel has, and `FULL` would buy a
+flash storm and an untimed wait in front of somebody holding a scanner, for no
+extra cleanliness. That reading is **off the driver source, not measured** --
+`FULL` has never been timed on this device.
+
+If a real scan test later fails on ghosting, `FULL` is the first thing to try, and
+it needs a reason in a comment when it lands (this repo's rule). Until a scanner
+has been pointed at the glass, nothing here is settled by measurement.
+
+### Rendered and looked at, 2026-08-18
+
+`test/wallet/fixtures/codes/` is verbatim generator output:
+
+```
+tools/walletgen.py --demo --paper a4 --panel x4 --title "Boarding pass" \
+    --code "qr:M1DOE/JOHN       EABC123 BTSFRAAF 0123 250Y012C0045 100" \
+    --code "pdf417:M1DOE/JOHN EABC123 BTSFRAAF"
+```
+
+Both codes came back `verified` from the generator's own round trip. Read back
+through the firmware's own code with `wallet_preview --code N` and **looked at**:
+
+| what | QR (c001) | PDF417 (c002) |
+|---|---|---|
+| header | type 4, 800x480, rawLen 48,000, presentation 1 | same |
+| hash | **MATCH** against the manifest's sha256 | **MATCH** |
+| modules | 29x29 at 12 px | 120x27 at 3 px |
+| drawn box incl. quiet zone | 444x444, manifest says 444x444 | 384x105, manifest says 384x105 |
+| margins | 66 px each side, quiet zone needs 48 | 60 px each side, needs 12 |
+| centring | 0 px off on both axes | 0 px on x, 1 px on y (an odd height) |
+| share of the 480 px logical width | 92.5 % | 80.0 % |
+| label band (logical y 772..794) | blank -- the label fits | blank |
+| ink | 15.56 % | 4.35 % |
+
+Judged by eye off `code_qr-portrait.png`: **upright, centred, module grid crisp
+with hard black/white edges and no dither or smear, quiet zone clearly wider than
+the four modules asked for, and as large as a 480 px-wide panel allows.** The
+PDF417 is centred and crisp too, and its 3 px modules are the honest worry on this
+screen -- a wide symbology on a 480 px panel gets four times less module than a QR
+does. That is a generator-side trade (module size falls out of the matrix width),
+not something this screen can fix, and whether 3 px scans off e-ink glass is
+**open** until somebody points a scanner at it.
+
+One extra check, outside the firmware: both PNGs -- the ones the firmware's own
+reader wrote -- decode back to the exact payloads through `zxing-cpp` on the
+laptop. So the round trip closes through this side's read path as well as the
+generator's. **It closes on a PNG, not on the panel.**
+
+### Nothing has been scanned off the panel
+
+The one test that can prove this feature works has not been run. It needs a real
+scanner, a person, and the device in their hand; everything above is bytes agreeing
+with bytes.
+
+What is still unknown, and only that test can answer:
+
+- whether e-ink contrast is enough for a scanner at all, at 12 px modules and at
+  3 px;
+- whether the panel's surface reflection defeats a phone camera at a normal angle;
+- whether `HALF` leaves ghosting a scanner can see, and whether `FULL` would fix
+  it;
+- whether the label at the bottom edge is far enough from the quiet zone;
+- what the backlight, if any, does to a scan.
+
+Until then the honest claim is: **the right bytes reach the framebuffer, and the
+picture looks right.**
+
 ## Refresh policy
 
 Per `docs/refresh-modes.md`. `FULL` is never used anywhere here.
@@ -477,6 +798,8 @@ Per `docs/refresh-modes.md`. `FULL` is never used anywhere here.
 | page change | `HALF` | a new document surface |
 | back to the list | `HALF` | clearing a full-page document |
 | any failure screen | `HALF` | replacing a full-page image with text |
+| **entering a code** | `HALF` | see below -- a code is never `FAST` |
+| **stepping to the next code** | `HALF` | same |
 
 No grayscale path exists here and none should be added: grey costs a second
 waveform pass (`docs/eink-grayscale.md`).
@@ -488,6 +811,10 @@ page counter, no button hints. Every pixel belongs to a paper somebody may have
 to read. The cost is discoverability: the button map is only in this document and
 in the user guide, not on the screen. **Open** -- worth revisiting after the
 first real use, and worth measuring rather than guessing.
+
+The code screen has **one** exception, and it is not a relaxation of this rule:
+one line naming the symbology, drawn only where the framebuffer proves there is
+no ink. See "The label, and why it reads the framebuffer".
 
 ## Failure states
 
@@ -511,6 +838,10 @@ Strings: `lib/I18n/translations/english.yaml`, `STR_WALLET_*`. Mapping:
 | `rawLen` / `width` / `height` is not this panel | "This page was built for another screen" |
 | framebuffer lent out | "Screen buffer is busy" |
 | item, page or tile not in the manifest | "This page is not on the card" |
+| the item has no codes at all | "This document has no codes" -- unreachable from browse, which checks the count first |
+| a code asset that is not `assetType` 4 | "This code file is damaged" |
+| a code whose payload does not hash | "This code does not match its checksum" + "Not shown: a wrong code is worse than none" |
+| an unverified code with nowhere to put the marker | "No room to mark this code unverified" |
 
 A failed lookup also zeroes the level grids, so the arrows have nowhere to step
 rather than asking for tiles that may not exist either
@@ -706,23 +1037,49 @@ There is no write, rename, delete, move or truncate call anywhere under
 often the only offline copy of a rider's documents, and a device that can destroy
 it is worse than one that cannot show it.
 
-## What is deliberately absent in P1
+## What is deliberately absent
 
 - **Encryption.** `flags` bit 0 is parsed and refused, never decrypted.
-- **sha256 verification.** `sha256_prefix` is parsed and carried
-  (`AssetHeader::sha256Prefix`) and checked by nobody. It lands in the phase that
-  adds encryption, where the payload is authenticated anyway -- hashing 48 KB
-  here would need a second read of bytes the framebuffer has already swallowed.
+- **sha256 verification of a document tile or a page image.** Still parsed and
+  checked by nobody there. A machine code is the exception and the only one --
+  see "Why the hash is checked here and nowhere else".
 - **BLE.** Nothing in the wallet opens a radio. Assets arrive by whatever put
   them on the card.
 - **Grey.** `bitDepth` 2 is refused.
-- **Machine codes.** `assetType` 4 and the manifest's `codes` array are parsed
-  past, not rendered.
+- ~~**Machine codes.**~~ Done in P2 -- `assetType` 4 and the manifest's `codes`
+  array are read and drawn. See "The code screen".
 - **Any write path.** See above.
-- **A generator.** Nothing on the laptop writes these files yet. Until one does,
-  the viewer has never been fed a real asset.
+- ~~**A generator.**~~ `tools/walletgen.py` (parent repo) writes these files, and
+  everything in this document that says "real generator output" means its bytes.
 
 ## Cost
+
+### P2, the code screen
+
+Measured against the branch tip before this work, `pio run -e default`,
+`riscv32-esp-elf-size -A`, both builds on the same machine:
+
+| | before P2 | with P2 | delta |
+|---|---|---|---|
+| `firmware.bin` | 3,956,480 | 3,963,552 | **+7,072** |
+| `.flash.text` | 2,183,814 | 2,188,942 | +5,128 |
+| `.flash.rodata` | 1,653,128 | 1,655,080 | +1,952 |
+| `.dram0.data` | 18,145 | 18,145 | 0 |
+| `.dram0.bss` | 41,176 | 41,176 | **0** |
+| `.iram0.text` | 87,350 | 87,350 | 0 |
+
+**No static RAM at all.** The rodata is the 10 new `STR_WALLET_CODE*` strings
+across 31 language arrays (~195 bytes a string, the same rate P1 paid) plus
+sha256's 256-byte round-constant table. The text is sha256 (~1 KB), the code
+activity, and the parser's code mode.
+
+Heap while the code screen is up, **derived from the type sizes, not measured**:
+one `CodeEntry` (~110 bytes: a 17-byte assetId, a 65-byte hash, a 12-byte
+symbology, four `uint16_t`) plus the activity object, and the same transient
+~750-byte `ManifestParser` every other lookup allocates and frees. No scratch
+buffer: the hash reads the framebuffer where it lies.
+
+### P1, the viewer
 
 Measured against the branch point `51bfbbc0`, `pio run -e default`,
 `riscv32-esp-elf-size -A`:
@@ -761,8 +1118,9 @@ Heap, **derived from the type sizes, not measured on hardware**:
 
 ## Status
 
-- Format layout, path mapping, level cycle, manifest shape, the panel gate:
-  **host-tested**, `test/wallet/WalletTest.cpp`, 30 cases, `pio run -t unit-tests`.
+- Format layout, path mapping, level cycle, manifest shape, the panel gate, the
+  codes array, the code walk, the hash and the label band: **host-tested**,
+  `test/wallet/WalletTest.cpp`, 56 cases, `pio run -t unit-tests`.
 - Byte order, ink polarity, tile order, orientation: **checked against real
   generator output** and looked at as pictures, 2026-08-18 -- see above. This is
   the strongest evidence that exists short of hardware, and it covers exactly the
@@ -786,6 +1144,15 @@ Heap, **derived from the type sizes, not measured on hardware**:
   against the measured 283. If it wins, the shipped path should move to it; if it
   loses, the estimate was wrong and that is worth writing down. Until then
   `windowed` is what ships. **Open.**
+- **P2, the code screen: nothing has been on the panel and nothing has been
+  scanned.** The manifest fields, the walk order, the hash (match and mismatch),
+  the unverified verdict and the label band are **host-tested** against verbatim
+  generator output; the two codes were **rendered and looked at** as PNGs and both
+  decode back through `zxing-cpp` on the laptop. The refresh choice and the
+  `FULL`-vs-`HALF` reasoning are **read off the driver source**. The hash's
+  millisecond cost is **estimated, not measured**. Whether any of it scans off
+  e-ink glass is **completely open** -- see "Nothing has been scanned off the
+  panel".
 - Still open after the on-panel session: whether FIT is legible in daylight,
   whether HALF on every page turn is too slow to page through a document, the real
   heap figures (nobody has run `heap_caps_get_info()` with a wallet on screen), and

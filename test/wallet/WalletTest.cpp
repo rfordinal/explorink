@@ -7,6 +7,7 @@
 
 #include "WalletAsset.h"
 #include "WalletManifestParser.h"
+#include "WalletSha256.h"
 #include "WalletSidecar.h"
 
 // The two pure halves of the wallet viewer: the 32-byte asset header, and the
@@ -143,9 +144,9 @@ TEST(WalletAssetPath, MapsAssetIdToTwoLevelPath) {
 
 TEST(WalletAssetPath, RejectsAnythingThatIsNotSixteenHex) {
   char path[kAssetPathBufBytes];
-  EXPECT_FALSE(buildAssetPath("0123456789abcde", path, sizeof(path)));   // 15
-  EXPECT_FALSE(buildAssetPath("0123456789abcdef0", path, sizeof(path))); // 17
-  EXPECT_FALSE(buildAssetPath("0123456789abcdeg", path, sizeof(path))); // 'g'
+  EXPECT_FALSE(buildAssetPath("0123456789abcde", path, sizeof(path)));    // 15
+  EXPECT_FALSE(buildAssetPath("0123456789abcdef0", path, sizeof(path)));  // 17
+  EXPECT_FALSE(buildAssetPath("0123456789abcdeg", path, sizeof(path)));   // 'g'
   EXPECT_FALSE(buildAssetPath(nullptr, path, sizeof(path)));
   // The reason the check exists: a manifest must not be able to name a file
   // outside the wallet directory.
@@ -292,8 +293,7 @@ TEST(WalletManifest, TitleTruncationLandsOnACodepointBoundary) {
   // not left as half a sequence.
   std::string title;
   for (int i = 0; i < 30; ++i) title += "\xc3\xa1";  // 'a' with acute, 2 bytes each
-  const std::string json = std::string(R"({"formatVersion":1,"items":[{"title":")") + title +
-                           R"(","pages":[]}]})";
+  const std::string json = std::string(R"({"formatVersion":1,"items":[{"title":")") + title + R"(","pages":[]}]})";
   ItemEntry items[2];
   ManifestParser parser;
   parser.beginList(items, 2);
@@ -696,8 +696,8 @@ TEST(WalletWindow, EveryClampedStepStays8Aligned) {
 
 TEST(WalletPageImageGate, AcceptsAPageImageThatIsNotPanelShaped) {
   const PageImageSpec page = a4OneToOne();
-  const auto bytes = makeHeader(/*type=*/5, /*bitDepth=*/1, /*col=*/0, /*row=*/0, page.nativeWidth, page.nativeHeight,
-                                page.rawLen);
+  const auto bytes =
+      makeHeader(/*type=*/5, /*bitDepth=*/1, /*col=*/0, /*row=*/0, page.nativeWidth, page.nativeHeight, page.rawLen);
   AssetHeader h;
   // The thing the tile gate would refuse: rawLen is 585,718, not the panel's
   // 48,000. A page image is checked against its own geometry instead.
@@ -848,4 +848,405 @@ TEST(WalletWindow, NativeXRunsDownThePageAndNativeYRunsAcrossItInverted) {
   // And native (0, 0) -- the other end of the y axis -- is the document's top
   // RIGHT, which is why panning left means increasing native y.
   EXPECT_TRUE(logicalWhite(fb, panel, panel.height - 1, 0));
+}
+
+// ---------------------------------------------------------------------------
+// Machine-readable codes (P2)
+//
+// fixtures/codes/ is verbatim output of
+//
+//   tools/walletgen.py --demo --paper a4 --panel x4 --title "Boarding pass"
+//       --code "qr:M1DOE/JOHN       EABC123 BTSFRAAF 0123 250Y012C0045 100"
+//       --code "pdf417:M1DOE/JOHN EABC123 BTSFRAAF"
+//
+// -- the manifest plus the two code assets' sidecars. Both codes came back
+// `verified` from the generator's own decode round trip, so these are bytes a
+// scanner has already read once, on the laptop.
+//
+// The one thing none of this covers: nothing has been scanned off the panel.
+// See docs/wallet-viewer.md.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::vector<uint8_t> codeFixturePayload(const char* name) {
+  const std::vector<uint8_t> blob = readFixture(name);
+  std::vector<uint8_t> payload;
+  if (!wallet::host::decodeSidecarPayload(blob, payload)) return {};
+  return payload;
+}
+
+std::vector<uint8_t> codeFixtureHeader(const char* name) {
+  const std::vector<uint8_t> blob = readFixture(name);
+  if (blob.size() < kAssetHeaderBytes) return {};
+  return std::vector<uint8_t>(blob.begin(), blob.begin() + kAssetHeaderBytes);
+}
+
+CodeLookup codeLookupIn(const char* manifestFixture, int item, int index) {
+  const std::vector<uint8_t> raw = readFixture(manifestFixture);
+  ManifestParser parser;
+  parser.beginCodeLookup(item, index);
+  parser.feed(reinterpret_cast<const char*>(raw.data()), raw.size());
+  return parser.codes();
+}
+
+std::string toHex(const uint8_t* bytes, size_t len) {
+  static const char* digits = "0123456789abcdef";
+  std::string out;
+  for (size_t i = 0; i < len; ++i) {
+    out.push_back(digits[bytes[i] >> 4]);
+    out.push_back(digits[bytes[i] & 0x0F]);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST(WalletSha256, MatchesTheStandardVectors) {
+  // FIPS 180-4 / NIST examples. This is a second sha256 in the tree (mbedtls is
+  // the first, src/network/FirmwareFlasher.cpp) and the only reason it exists is
+  // that the host tests cannot link mbedtls -- so it has to be pinned to
+  // something outside itself, or it only agrees with whoever wrote it.
+  uint8_t digest[kSha256Bytes];
+
+  Sha256 empty;
+  empty.finish(digest);
+  EXPECT_EQ(toHex(digest, sizeof(digest)), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+
+  Sha256 abc;
+  abc.update(reinterpret_cast<const uint8_t*>("abc"), 3);
+  abc.finish(digest);
+  EXPECT_EQ(toHex(digest, sizeof(digest)), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+  Sha256 twoBlocks;
+  const char* text = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+  twoBlocks.update(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+  twoBlocks.finish(digest);
+  EXPECT_EQ(toHex(digest, sizeof(digest)), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+
+  // Fed one byte at a time it must land in the same place: the wallet hashes a
+  // 48,000-byte framebuffer in one call, but the sidecar tests and any later
+  // chunked reader do not.
+  Sha256 dribbled;
+  for (const char* p = text; *p != '\0'; ++p) dribbled.update(reinterpret_cast<const uint8_t*>(p), 1);
+  dribbled.finish(digest);
+  EXPECT_EQ(toHex(digest, sizeof(digest)), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+
+  // A length that lands exactly on the padding boundary -- 55 and 56 bytes are
+  // where a hand-written finish() goes wrong.
+  const std::string fiftyFive(55, 'a');
+  Sha256 s55;
+  s55.update(reinterpret_cast<const uint8_t*>(fiftyFive.data()), fiftyFive.size());
+  s55.finish(digest);
+  EXPECT_EQ(toHex(digest, sizeof(digest)), "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318");
+  const std::string fiftySix(56, 'a');
+  Sha256 s56;
+  s56.update(reinterpret_cast<const uint8_t*>(fiftySix.data()), fiftySix.size());
+  s56.finish(digest);
+  EXPECT_EQ(toHex(digest, sizeof(digest)), "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a");
+}
+
+TEST(WalletSha256, HexParseRefusesAnythingThatIsNotSixtyFourHex) {
+  uint8_t out[kSha256Bytes];
+  EXPECT_TRUE(sha256FromHex("4e748db4a304c0859a31e25706e5e22af8af768301f65c5a84d1f9762ae85f9d", out));
+  EXPECT_FALSE(sha256FromHex(nullptr, out));
+  EXPECT_FALSE(sha256FromHex("", out));
+  // 63 characters. A truncated hash silently accepted would turn the whole verify
+  // step into a formality.
+  EXPECT_FALSE(sha256FromHex("4e748db4a304c0859a31e25706e5e22af8af768301f65c5a84d1f9762ae85f9", out));
+  // 65.
+  EXPECT_FALSE(sha256FromHex("4e748db4a304c0859a31e25706e5e22af8af768301f65c5a84d1f9762ae85f9dd", out));
+  EXPECT_FALSE(sha256FromHex("4e748db4a304c0859a31e25706e5e22af8af768301f65c5a84d1f9762ae85fzz", out));
+}
+
+TEST(WalletCodeManifest, ReadsEveryFieldOfEveryCodeTheGeneratorWrote) {
+  const CodeLookup first = codeLookupIn("codes/manifest.json", 0, 0);
+  ASSERT_TRUE(first.itemFound);
+  EXPECT_STREQ(first.title, "Boarding pass");
+  EXPECT_EQ(first.codeCount, 2);
+  ASSERT_TRUE(first.code.present);
+  EXPECT_STREQ(first.code.id, "c001");
+  EXPECT_STREQ(first.code.symbology, "qr");
+  EXPECT_STREQ(first.code.assetId, "f3e7250a407c088b");
+  EXPECT_TRUE(first.code.verified);
+  EXPECT_EQ(first.code.moduleSize, 12);
+  EXPECT_EQ(first.code.quietZone, 4);
+  EXPECT_EQ(first.code.codeWidthPx, 444);
+  EXPECT_EQ(first.code.codeHeightPx, 444);
+  EXPECT_STREQ(first.code.sha256, "4e748db4a304c0859a31e25706e5e22af8af768301f65c5a84d1f9762ae85f9d");
+}
+
+TEST(WalletCodeManifest, TheWalkIsManifestOrder) {
+  // RIGHT from the browse list opens index 0 and steps up; LEFT opens the last.
+  // Both have to land on the code the manifest lists there.
+  const CodeLookup second = codeLookupIn("codes/manifest.json", 0, 1);
+  ASSERT_TRUE(second.code.present);
+  EXPECT_EQ(second.codeCount, 2);
+  EXPECT_STREQ(second.code.id, "c002");
+  EXPECT_STREQ(second.code.symbology, "pdf417");
+  EXPECT_STREQ(second.code.assetId, "0e706e8d6bc5dd91");
+  EXPECT_EQ(second.code.moduleSize, 3);
+
+  // Past the end: the count still comes out, so the caller can clamp or cycle
+  // rather than guess. The count is the whole reason an out-of-range index is not
+  // an error here.
+  const CodeLookup past = codeLookupIn("codes/manifest.json", 0, 2);
+  EXPECT_TRUE(past.itemFound);
+  EXPECT_EQ(past.codeCount, 2);
+  EXPECT_FALSE(past.code.present);
+
+  // A negative index cannot match a cursor, so it finds nothing and still counts.
+  const CodeLookup negative = codeLookupIn("codes/manifest.json", 0, -1);
+  EXPECT_EQ(negative.codeCount, 2);
+  EXPECT_FALSE(negative.code.present);
+
+  // No such item.
+  const CodeLookup noItem = codeLookupIn("codes/manifest.json", 4, 0);
+  EXPECT_FALSE(noItem.itemFound);
+  EXPECT_EQ(noItem.codeCount, 0);
+}
+
+TEST(WalletCodeManifest, TheBrowseListCountsCodesPerItemInTheSamePass) {
+  // What makes LEFT/RIGHT discoverable: the row says how many codes there are, so
+  // a dead button and a document with no code look different on screen.
+  const std::vector<uint8_t> raw = readFixture("codes/manifest.json");
+  ASSERT_FALSE(raw.empty());
+  ItemEntry items[4];
+  ManifestParser parser;
+  parser.beginList(items, 4);
+  parser.feed(reinterpret_cast<const char*>(raw.data()), raw.size());
+  ASSERT_EQ(parser.itemsStored(), 1);
+  EXPECT_STREQ(items[0].title, "Boarding pass");
+  EXPECT_EQ(items[0].pageCount, 1);
+  EXPECT_EQ(items[0].codeCount, 2);
+
+  // And the pre-P2 fixture, which has no codes anywhere: zero, not garbage.
+  const std::vector<uint8_t> old = readFixture("manifest.json");
+  ASSERT_FALSE(old.empty());
+  ItemEntry plain[4];
+  ManifestParser second;
+  second.beginList(plain, 4);
+  second.feed(reinterpret_cast<const char*>(old.data()), old.size());
+  ASSERT_GE(second.itemsStored(), 1);
+  EXPECT_EQ(plain[0].codeCount, 0);
+}
+
+TEST(WalletCodeManifest, UnverifiedAndMissingVerifiedBothReadAsUnverified) {
+  const char* json = R"({"formatVersion":1,"items":[{"title":"Ticket","pages":[
+      {"levels":{},"codes":[
+        {"id":"c001","symbology":"qr","verified":false,"assetId":"1111111111111111","sha256":"ab"},
+        {"id":"c002","symbology":"aztec","assetId":"2222222222222222"},
+        {"id":"c003","symbology":"qr","verified":true,"assetId":"3333333333333333"}]}]}]})";
+
+  ManifestParser a;
+  a.beginCodeLookup(0, 0);
+  a.feed(json, std::strlen(json));
+  ASSERT_TRUE(a.codes().code.present);
+  EXPECT_FALSE(a.codes().code.verified) << "verified:false must read as false";
+  EXPECT_EQ(a.codes().codeCount, 3);
+
+  ManifestParser b;
+  b.beginCodeLookup(0, 1);
+  b.feed(json, std::strlen(json));
+  ASSERT_TRUE(b.codes().code.present);
+  // Silence is not consent. A manifest that says nothing has verified nothing.
+  EXPECT_FALSE(b.codes().code.verified) << "a missing `verified` must read as false";
+
+  ManifestParser c;
+  c.beginCodeLookup(0, 2);
+  c.feed(json, std::strlen(json));
+  ASSERT_TRUE(c.codes().code.present);
+  EXPECT_TRUE(c.codes().code.verified);
+}
+
+TEST(WalletCodeManifest, ACodeWhoseAssetIdIsNotSixteenHexIsNoCode) {
+  // The id becomes a path. Refused here, before it can become one -- and it still
+  // counts, because the count is what the manifest claims the document has.
+  const char* json = R"({"formatVersion":1,"items":[{"title":"T","pages":[
+      {"levels":{},"codes":[{"id":"c001","symbology":"qr","verified":true,"assetId":"../../etc/passwd"}]}]}]})";
+  ManifestParser parser;
+  parser.beginCodeLookup(0, 0);
+  parser.feed(json, std::strlen(json));
+  EXPECT_TRUE(parser.codes().itemFound);
+  EXPECT_EQ(parser.codes().codeCount, 1);
+  EXPECT_FALSE(parser.codes().code.present);
+}
+
+TEST(WalletCodeManifest, CodesOfEveryPageAreOneWalk) {
+  // Codes belong to a page in the manifest; a rider walks the codes of a
+  // document. So page 1's code follows page 0's in one ring.
+  const char* json = R"({"formatVersion":1,"items":[{"title":"Two pages","pages":[
+      {"levels":{},"codes":[{"id":"c001","symbology":"qr","verified":true,"assetId":"1111111111111111"}]},
+      {"levels":{},"codes":[{"id":"c002","symbology":"ean13","verified":true,"assetId":"2222222222222222"}]}]}]})";
+  ManifestParser first;
+  first.beginCodeLookup(0, 0);
+  first.feed(json, std::strlen(json));
+  EXPECT_EQ(first.codes().codeCount, 2);
+  EXPECT_STREQ(first.codes().code.id, "c001");
+
+  ManifestParser second;
+  second.beginCodeLookup(0, 1);
+  second.feed(json, std::strlen(json));
+  EXPECT_STREQ(second.codes().code.id, "c002");
+  EXPECT_STREQ(second.codes().code.symbology, "ean13");
+}
+
+TEST(WalletCodeManifest, AnOverlongPayloadBreaksNothing) {
+  // A boarding-pass payload runs to hundreds of characters and can exceed the
+  // parser's 512-byte token buffer, where the value is dropped without a callback
+  // (StreamingJsonParser.cpp:226-249). The device reads no payload, so this must
+  // cost nothing -- and above all must not lose the fields after it.
+  std::string json = R"({"formatVersion":1,"items":[{"title":"Big","pages":[{"levels":{},"codes":[
+      {"id":"c001","symbology":"pdf417","payload":")";
+  json += std::string(900, 'M');
+  json += R"(","verified":true,"assetId":"abcdef0123456789","moduleSize":3}]}]}]})";
+
+  ManifestParser parser;
+  parser.beginCodeLookup(0, 0);
+  parser.feed(json.c_str(), json.size());
+  EXPECT_FALSE(parser.hasError());
+  ASSERT_TRUE(parser.codes().code.present);
+  EXPECT_STREQ(parser.codes().code.assetId, "abcdef0123456789");
+  EXPECT_TRUE(parser.codes().code.verified);
+  EXPECT_EQ(parser.codes().code.moduleSize, 3);
+}
+
+TEST(WalletCodeGate, AcceptsAMachineCodeAndRefusesADocumentTile) {
+  const std::vector<uint8_t> header = codeFixtureHeader("codes/f3/f3e7250a407c088b.rle");
+  ASSERT_EQ(header.size(), kAssetHeaderBytes);
+  AssetHeader parsed;
+  // The generator's own bytes: assetType 4, one panel frame.
+  EXPECT_EQ(checkCodeAsset(header.data(), header.size(), kPanelX4, parsed), AssetCheck::Ok);
+  EXPECT_EQ(parsed.assetType, AssetType::MachineCode);
+  EXPECT_EQ(parsed.presentation, 1);
+
+  // A FIT tile is the right shape and the wrong thing. Drawing page three of an
+  // insurance policy where a boarding pass belongs is worse than drawing nothing.
+  const auto fit = makeHeader(/*type=*/1);
+  EXPECT_EQ(checkCodeAsset(fit.data(), fit.size(), kPanelX4, parsed), AssetCheck::NotACode);
+  // And the panel gate still runs first: wrong screen beats wrong type.
+  EXPECT_EQ(checkCodeAsset(header.data(), header.size(), kPanelX3, parsed), AssetCheck::WrongPanel);
+}
+
+TEST(WalletCodeHash, RealGeneratorBytesMatchTheManifestHash) {
+  const CodeLookup found = codeLookupIn("codes/manifest.json", 0, 0);
+  ASSERT_TRUE(found.code.present);
+  const std::vector<uint8_t> payload = codeFixturePayload("codes/f3/f3e7250a407c088b.rle");
+  ASSERT_EQ(payload.size(), 48000u);
+  const std::vector<uint8_t> header = codeFixtureHeader("codes/f3/f3e7250a407c088b.rle");
+  AssetHeader parsed;
+  ASSERT_TRUE(parseAssetHeader(header.data(), header.size(), parsed));
+
+  const HashResult full = checkPayloadHash(payload.data(), payload.size(), found.code.sha256, parsed.sha256Prefix);
+  EXPECT_TRUE(full.ok);
+  EXPECT_EQ(full.authority, HashAuthority::Full);
+
+  // The header's 8-byte prefix is the same hash, and agrees. Two implementations
+  // of the format meeting again: the generator wrote both fields, this side hashes
+  // the payload and gets both back.
+  const HashResult prefixOnly = checkPayloadHash(payload.data(), payload.size(), "", parsed.sha256Prefix);
+  EXPECT_TRUE(prefixOnly.ok);
+  EXPECT_EQ(prefixOnly.authority, HashAuthority::Prefix);
+}
+
+TEST(WalletCodeHash, OneCorruptedByteRefusesTheCodeAndTheVerdictSaysSo) {
+  // The path that matters, proved to fire. A garbage document tile is cosmetic; a
+  // garbage barcode is a rider at a gate with a pass that will not scan, so this
+  // check is the one thing P2 adds that must never be skipped.
+  const CodeLookup found = codeLookupIn("codes/manifest.json", 0, 0);
+  ASSERT_TRUE(found.code.present);
+  std::vector<uint8_t> payload = codeFixturePayload("codes/f3/f3e7250a407c088b.rle");
+  ASSERT_EQ(payload.size(), 48000u);
+  const std::vector<uint8_t> header = codeFixtureHeader("codes/f3/f3e7250a407c088b.rle");
+  AssetHeader parsed;
+  ASSERT_TRUE(parseAssetHeader(header.data(), header.size(), parsed));
+
+  // One bit, in the middle of the code, is all it takes to turn a module the wrong
+  // colour -- and all it takes to fail the hash.
+  const size_t middle = payload.size() / 2;
+  payload[middle] = static_cast<uint8_t>(payload[middle] ^ 0x01);
+
+  const HashResult full = checkPayloadHash(payload.data(), payload.size(), found.code.sha256, parsed.sha256Prefix);
+  EXPECT_FALSE(full.ok) << "a flipped bit must not pass the manifest hash";
+  const HashResult prefix = checkPayloadHash(payload.data(), payload.size(), "", parsed.sha256Prefix);
+  EXPECT_FALSE(prefix.ok) << "nor the header prefix";
+
+  // And the verdict that selects the failure screen. WalletCodeActivity has
+  // exactly one call to codeVerdict() and exactly one path for RefuseAsset, which
+  // is drawFailure() -- so this is the screen, as close as a host test gets to it.
+  EXPECT_EQ(codeVerdict(/*loadedAndHashed=*/false, found.code.verified, /*markerPlaced=*/true),
+            CodeVerdict::RefuseAsset);
+  EXPECT_EQ(codeVerdict(/*loadedAndHashed=*/false, false, false), CodeVerdict::RefuseAsset);
+
+  // A truncated payload is a different fault and must also fail, not hash the
+  // short buffer and pass.
+  payload.resize(payload.size() - 100);
+  EXPECT_FALSE(checkPayloadHash(payload.data(), payload.size(), found.code.sha256, parsed.sha256Prefix).ok);
+  EXPECT_FALSE(checkPayloadHash(nullptr, 0, found.code.sha256, parsed.sha256Prefix).ok);
+}
+
+TEST(WalletCodeVerdict, AnUnverifiedCodeIsShownOnlyMarked) {
+  // The choice, as an assertion. An unverified code is not hidden -- hiding it
+  // makes a dead button and a document with no code look the same -- but it is
+  // never shown unmarked, because that is the lie this feature must not tell.
+  EXPECT_EQ(codeVerdict(true, /*verified=*/true, /*marked=*/true), CodeVerdict::Draw);
+  EXPECT_EQ(codeVerdict(true, /*verified=*/true, /*marked=*/false), CodeVerdict::Draw)
+      << "a verified code needs no marker, so a full-panel code still draws";
+  EXPECT_EQ(codeVerdict(true, /*verified=*/false, /*marked=*/true), CodeVerdict::Draw);
+  EXPECT_EQ(codeVerdict(true, /*verified=*/false, /*marked=*/false), CodeVerdict::RefuseUnmarked);
+}
+
+TEST(WalletCodeLabel, TheBandIsCheckedInPanelColumnsNotRows) {
+  const PanelGeometry panel = kPanelX4;
+  std::vector<uint8_t> fb(panel.bufferBytes, 0xFF);
+  // A blank framebuffer: every band is blank.
+  EXPECT_TRUE(logicalBandIsBlank(fb.data(), panel, 770, 794));
+
+  // One pixel of ink at logical (300, 780) -- inside the band. A band checked as a
+  // range of panel *rows* instead of columns would miss it entirely, which is the
+  // bug that would let a label land on a code.
+  const int logicalX = 300;
+  const int logicalY = 780;
+  const int phyX = logicalY;
+  const int phyY = panel.height - 1 - logicalX;
+  fb[static_cast<size_t>(phyY) * panel.rowBytes + phyX / 8] &= static_cast<uint8_t>(~(0x80u >> (phyX % 8)));
+  EXPECT_FALSE(logicalBandIsBlank(fb.data(), panel, 770, 794)) << "ink inside the band must block the label";
+  // A band above it is still clear.
+  EXPECT_TRUE(logicalBandIsBlank(fb.data(), panel, 700, 760));
+
+  // Degenerate asks are refused rather than answered "blank".
+  EXPECT_FALSE(logicalBandIsBlank(nullptr, panel, 700, 760));
+  EXPECT_FALSE(logicalBandIsBlank(fb.data(), panel, 760, 760));
+  EXPECT_FALSE(logicalBandIsBlank(fb.data(), panel, 900, 950)) << "past the logical bottom is not blank space";
+}
+
+TEST(WalletCodeLabel, TheRealQrLeavesTheLabelBandBlank) {
+  // The QR fixture is 444x444 px of code plus quiet zone on a 480x800 logical
+  // screen, so there is white below it. Measured off the bytes, not assumed from
+  // the manifest.
+  const std::vector<uint8_t> payload = codeFixturePayload("codes/f3/f3e7250a407c088b.rle");
+  ASSERT_EQ(payload.size(), 48000u);
+  const PanelGeometry panel = kPanelX4;
+  EXPECT_TRUE(logicalBandIsBlank(payload.data(), panel, 772, 794));
+  // And the code itself is where the manifest says: the middle band is not blank.
+  EXPECT_FALSE(logicalBandIsBlank(payload.data(), panel, 380, 420));
+}
+
+TEST(WalletCodeLabel, SymbologyIsUpperCasedNotTranslated) {
+  char out[kSymbologyBufBytes];
+  symbologyLabel("qr", out, sizeof(out));
+  EXPECT_STREQ(out, "QR");
+  symbologyLabel("pdf417", out, sizeof(out));
+  EXPECT_STREQ(out, "PDF417");
+  symbologyLabel("datamatrix", out, sizeof(out));
+  EXPECT_STREQ(out, "DATAMATRIX") << "the longest symbology the generator emits must survive whole";
+  // A manifest that left the field out still gets a legible label.
+  symbologyLabel("", out, sizeof(out));
+  EXPECT_STREQ(out, "CODE");
+  symbologyLabel(nullptr, out, sizeof(out));
+  EXPECT_STREQ(out, "CODE");
+  // And a longer one is cut, never overrun.
+  char small[4];
+  symbologyLabel("datamatrix", small, sizeof(small));
+  EXPECT_STREQ(small, "DAT");
 }

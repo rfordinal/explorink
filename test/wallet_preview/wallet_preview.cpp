@@ -16,7 +16,15 @@
 //
 //   wallet_preview --tree DIR [--panel x4|x3] [--item 0 --page 0
 //                  --level fit|detail|one_to_one --col 0 --row 0]
-//                  [--asset <16 hex>] [--win-x N --win-y N] --out PREFIX
+//                  [--asset <16 hex>] [--win-x N --win-y N] [--code N] --out PREFIX
+//
+// `--code N` renders the item's Nth machine-readable code instead of a document
+// level (P2). It runs the device's own code path: ManifestParser's code lookup,
+// checkCodeAsset(), checkPayloadHash() against the manifest's sha256, and the
+// blank-band test the symbology label uses to find space. It also measures the
+// drawn code's bounding box off the pixels and compares it with the manifest's
+// codeWidthPx / codeHeightPx -- so "is it centred, is the quiet zone intact, is it
+// as large as the panel allows" comes out as numbers next to the picture.
 //
 // When the level carries a design-B `pageImage`, the window at (--win-x, --win-y)
 // is blitted out of it row by row -- the same row maths PageReader uses on the
@@ -179,7 +187,8 @@ void usage() {
   std::fprintf(stderr,
                "usage: wallet_preview --tree DIR --out PREFIX [--panel x4|x3]\n"
                "                     [--asset <16 hex> | --item N --page N\n"
-               "                      --level fit|detail|one_to_one --col N --row N]\n");
+               "                      --level fit|detail|one_to_one --col N --row N]\n"
+               "                     [--code N]\n");
 }
 
 }  // namespace
@@ -196,21 +205,35 @@ int main(int argc, char** argv) {
   int row = 0;
   long winX = -1;
   long winY = -1;
+  int codeIndex = -1;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const bool hasNext = i + 1 < argc;
-    if (arg == "--tree" && hasNext) tree = argv[++i];
-    else if (arg == "--out" && hasNext) out = argv[++i];
-    else if (arg == "--panel" && hasNext) panelName = argv[++i];
-    else if (arg == "--asset" && hasNext) assetId = argv[++i];
-    else if (arg == "--level" && hasNext) levelName = argv[++i];
-    else if (arg == "--item" && hasNext) item = std::atoi(argv[++i]);
-    else if (arg == "--page" && hasNext) page = std::atoi(argv[++i]);
-    else if (arg == "--col" && hasNext) col = std::atoi(argv[++i]);
-    else if (arg == "--row" && hasNext) row = std::atoi(argv[++i]);
-    else if (arg == "--win-x" && hasNext) winX = std::atol(argv[++i]);
-    else if (arg == "--win-y" && hasNext) winY = std::atol(argv[++i]);
+    if (arg == "--tree" && hasNext)
+      tree = argv[++i];
+    else if (arg == "--out" && hasNext)
+      out = argv[++i];
+    else if (arg == "--panel" && hasNext)
+      panelName = argv[++i];
+    else if (arg == "--asset" && hasNext)
+      assetId = argv[++i];
+    else if (arg == "--level" && hasNext)
+      levelName = argv[++i];
+    else if (arg == "--item" && hasNext)
+      item = std::atoi(argv[++i]);
+    else if (arg == "--page" && hasNext)
+      page = std::atoi(argv[++i]);
+    else if (arg == "--col" && hasNext)
+      col = std::atoi(argv[++i]);
+    else if (arg == "--row" && hasNext)
+      row = std::atoi(argv[++i]);
+    else if (arg == "--win-x" && hasNext)
+      winX = std::atol(argv[++i]);
+    else if (arg == "--win-y" && hasNext)
+      winY = std::atol(argv[++i]);
+    else if (arg == "--code" && hasNext)
+      codeIndex = std::atoi(argv[++i]);
     else {
       usage();
       return 2;
@@ -222,7 +245,8 @@ int main(int argc, char** argv) {
   }
 
   wallet::PanelGeometry panel = wallet::kPanelX4;
-  if (panelName == "x3") panel = wallet::kPanelX3;
+  if (panelName == "x3")
+    panel = wallet::kPanelX3;
   else if (panelName != "x4") {
     std::fprintf(stderr, "unknown panel %s\n", panelName.c_str());
     return 2;
@@ -237,14 +261,36 @@ int main(int argc, char** argv) {
   // Resolve the asset through the manifest unless one was named outright.
   wallet::DeclaredPanel declared;
   wallet::PageImageSpec pageImage;
-  if (assetId.empty()) {
+  wallet::CodeEntry code;
+  if (codeIndex >= 0) {
+    wallet::ManifestParser parser;
+    parser.beginCodeLookup(item, codeIndex);
+    if (!feedManifest(tree, parser)) return 1;
+    const wallet::CodeLookup& found = parser.codes();
+    std::printf("manifest    : formatVersion %u, walletVersion %u\n", parser.formatVersion(), parser.walletVersion());
+    if (!found.itemFound) {
+      std::fprintf(stderr, "item %d is not in the manifest\n", item);
+      return 1;
+    }
+    std::printf("item        : \"%s\", %u code(s)\n", found.title, found.codeCount);
+    if (!found.code.present) {
+      std::fprintf(stderr, "item %d has no code at index %d\n", item, codeIndex);
+      return 1;
+    }
+    code = found.code;
+    std::printf("code        : %s %s, %s, module %u px, quiet zone %u modules, %ux%u px drawn\n", code.id,
+                code.symbology, code.verified ? "VERIFIED" : "NOT VERIFIED", code.moduleSize, code.quietZone,
+                code.codeWidthPx, code.codeHeightPx);
+    std::printf("manifest sha: %s\n",
+                code.sha256[0] != '\0' ? code.sha256 : "(none -- header prefix is the authority)");
+    assetId = code.assetId;
+  } else if (assetId.empty()) {
     wallet::ManifestParser parser;
     parser.beginLookup(item, page, level, static_cast<uint8_t>(col), static_cast<uint8_t>(row));
     if (!feedManifest(tree, parser)) return 1;
     declared = parser.panel();
     const wallet::PageLookup& found = parser.lookup();
-    std::printf("manifest    : formatVersion %u, walletVersion %u\n", parser.formatVersion(),
-                parser.walletVersion());
+    std::printf("manifest    : formatVersion %u, walletVersion %u\n", parser.formatVersion(), parser.walletVersion());
     if (declared.present) {
       std::printf("declares    : panel %s %ux%u, %u B/row, %u B/asset -- %s\n", declared.name, declared.width,
                   declared.height, declared.rowBytes, declared.assetBytes,
@@ -303,17 +349,20 @@ int main(int argc, char** argv) {
   }
 
   wallet::AssetHeader header;
-  const wallet::AssetCheck check = pageImage.present
-                                       ? wallet::checkPageImage(file.data(), file.size(), pageImage, panel, header)
-                                       : wallet::checkAssetForPanel(file.data(), file.size(), panel, header);
-  std::printf("header      : type %u, bitDepth %u, tile %u,%u, %ux%u, rawLen %u, version %u, flags %u, "
-              "presentation %u\n",
-              static_cast<unsigned>(header.assetType), header.bitDepth, header.tileCol, header.tileRow, header.width,
-              header.height, header.rawLen, header.version, header.flags, header.presentation);
+  const wallet::AssetCheck check =
+      codeIndex >= 0 ? wallet::checkCodeAsset(file.data(), file.size(), panel, header)
+                     : (pageImage.present ? wallet::checkPageImage(file.data(), file.size(), pageImage, panel, header)
+                                          : wallet::checkAssetForPanel(file.data(), file.size(), panel, header));
+  std::printf(
+      "header      : type %u, bitDepth %u, tile %u,%u, %ux%u, rawLen %u, version %u, flags %u, "
+      "presentation %u\n",
+      static_cast<unsigned>(header.assetType), header.bitDepth, header.tileCol, header.tileRow, header.width,
+      header.height, header.rawLen, header.version, header.flags, header.presentation);
   if (check != wallet::AssetCheck::Ok) {
-    static const char* names[] = {"Ok", "Malformed", "Encrypted", "BitDepth", "WrongPanel", "PageImageMismatch"};
-    std::fprintf(stderr, "refused: %s (panel %ux%u, %u B/row, %u B/asset)\n",
-                 names[static_cast<unsigned>(check)], panel.width, panel.height, panel.rowBytes, panel.bufferBytes);
+    static const char* names[] = {"Ok",         "Malformed",         "Encrypted", "BitDepth",
+                                  "WrongPanel", "PageImageMismatch", "NotACode"};
+    std::fprintf(stderr, "refused: %s (panel %ux%u, %u B/row, %u B/asset)\n", names[static_cast<unsigned>(check)],
+                 panel.width, panel.height, panel.rowBytes, panel.bufferBytes);
     return 1;
   }
 
@@ -330,12 +379,11 @@ int main(int argc, char** argv) {
     // out row by row, which is PageReader::readWindow()'s arithmetic with a
     // memcpy where the device has a seek and a read.
     const uint32_t limitX = wallet::maxWindowX(pageImage, panel.rowBytes);
-    const uint32_t x = wallet::clampWindowOrigin(winX < 0 ? static_cast<int32_t>(pageImage.focalX)
-                                                         : static_cast<int32_t>(winX),
-                                                 limitX, 0);
-    const uint32_t y = wallet::clampWindowOrigin(winY < 0 ? static_cast<int32_t>(pageImage.focalY)
-                                                         : static_cast<int32_t>(winY),
-                                                 pageImage.nativeHeight, panel.height);
+    const uint32_t x = wallet::clampWindowOrigin(
+        winX < 0 ? static_cast<int32_t>(pageImage.focalX) : static_cast<int32_t>(winX), limitX, 0);
+    const uint32_t y =
+        wallet::clampWindowOrigin(winY < 0 ? static_cast<int32_t>(pageImage.focalY) : static_cast<int32_t>(winY),
+                                  pageImage.nativeHeight, panel.height);
     if ((x % 8) != 0) {
       std::fprintf(stderr, "window x=%u is not 8-aligned\n", x);
       return 1;
@@ -352,8 +400,7 @@ int main(int argc, char** argv) {
       std::memcpy(fb.data() + static_cast<size_t>(r) * panel.rowBytes, file.data() + off, panel.rowBytes);
     }
   } else {
-    fb.assign(file.begin() + wallet::kAssetHeaderBytes,
-              file.begin() + wallet::kAssetHeaderBytes + header.rawLen);
+    fb.assign(file.begin() + wallet::kAssetHeaderBytes, file.begin() + wallet::kAssetHeaderBytes + header.rawLen);
   }
 
   size_t inked = 0;
@@ -365,6 +412,62 @@ int main(int argc, char** argv) {
   std::printf("ink         : %.2f %% of %d pixels\n",
               100.0 * static_cast<double>(inked) / (static_cast<double>(panel.width) * panel.height),
               panel.width * panel.height);
+
+  if (codeIndex >= 0) {
+    // The hash the device checks before it draws anything, run here on the same
+    // bytes with the same function.
+    const wallet::HashResult hash =
+        wallet::checkPayloadHash(fb.data(), header.rawLen, code.sha256, header.sha256Prefix);
+    std::printf("hash        : %s against the %s\n", hash.ok ? "MATCH" : "MISMATCH",
+                hash.authority == wallet::HashAuthority::Full ? "manifest's sha256" : "header's 8-byte prefix");
+    if (!hash.ok) {
+      std::fprintf(stderr, "the payload does not hash to what the manifest promised\n");
+      return 1;
+    }
+
+    // The drawn code's bounding box, measured off the pixels in LOGICAL portrait
+    // coordinates -- what a rider sees. Nothing here trusts the manifest; the
+    // manifest is printed beside it so the two can be compared.
+    const int logicalW = panel.height;
+    const int logicalH = panel.width;
+    int minX = logicalW, minY = logicalH, maxX = -1, maxY = -1;
+    for (int y = 0; y < logicalH; ++y) {
+      for (int x = 0; x < logicalW; ++x) {
+        const int phyX = y;
+        const int phyY = panel.height - 1 - x;
+        if (isWhite(fb, panel.rowBytes, phyX, phyY)) continue;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < 0) {
+      std::fprintf(stderr, "the code asset has no ink at all\n");
+      return 1;
+    }
+    const int drawnW = maxX - minX + 1;
+    const int drawnH = maxY - minY + 1;
+    const int qzPx = static_cast<int>(code.quietZone) * static_cast<int>(code.moduleSize);
+    std::printf("modules     : %dx%d px of dark modules at %u px per module\n", drawnW, drawnH, code.moduleSize);
+    std::printf("with quiet  : %dx%d px, manifest says %ux%u\n", drawnW + 2 * qzPx, drawnH + 2 * qzPx, code.codeWidthPx,
+                code.codeHeightPx);
+    std::printf("margins     : left %d, right %d, top %d, bottom %d px (quiet zone needs %d)\n", minX,
+                logicalW - 1 - maxX, minY, logicalH - 1 - maxY, qzPx);
+    std::printf("centred     : x off by %d px, y off by %d px\n", minX - (logicalW - 1 - maxX),
+                minY - (logicalH - 1 - maxY));
+    std::printf("headroom    : %.1f %% of the logical %dx%d screen used by the code plus its quiet zone\n",
+                100.0 * static_cast<double>(drawnW + 2 * qzPx) / logicalW, logicalW, logicalH);
+
+    // The band the symbology label would use, tested exactly as the device tests
+    // it. `lineHeight` is not known here, so a 14 px line plus the device's 4 px
+    // pad and 10 px bottom margin stands in for it (WalletCodeActivity.cpp).
+    const int bandBottom = logicalH - 10;
+    const int bandTop = bandBottom - 14 - 4;
+    std::printf("label band  : logical y %d..%d is %s\n", bandTop, bandBottom + 4,
+                wallet::logicalBandIsBlank(fb.data(), panel, bandTop, bandBottom + 4) ? "blank -- label fits"
+                                                                                      : "INKED -- no label");
+  }
 
   const std::vector<uint8_t> landscape = panelImage(fb, panel);
   if (!writeGreyPng(out + ".png", landscape, panel.width, panel.height)) {
