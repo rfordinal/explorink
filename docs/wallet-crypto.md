@@ -203,18 +203,85 @@ applied again when the unlock screen opens.
 It slows a person at the device. It does nothing about the flash-image case, and
 the hard stop at ten exists precisely because a 2^12 PIN loses to unlimited tries.
 
-## Provisioning: a test path, and it says so
+## The test commands, and the flag that keeps them out of a release
 
-The wallet key and the PIN are supposed to arrive from the phone over BLE (P4/P6).
-That app does not exist, so the laptop writes `provision.json` and a serial command
-pushes it in:
+Five serial commands exist purely so a host can drive the crypto path with nobody
+at the device. **All five are gated behind `-DENABLE_WALLET_TEST_CMDS=1`, which is
+set in `[env:default]` and in no release environment** -- `gh_release`,
+`gh_release_rc`, `slim` and `sticky` all leave it unset, so a shipping binary cannot
+carry them (`platformio.ini`, `src/main.cpp`).
 
 ```
 CMD:WALLETPROVISION <keyhex64> <pin> <salthex32> <iters> [force]
-  -> WALLETPROVISION_OK iters=50000 pbkdf2_us=...
-CMD:WALLETLOCK        -> WALLETLOCK_OK          drops K from RAM
-CMD:WALLETPBKDF2 <n>  -> WALLETPBKDF2_OK iters=n us=... ms=... iters_per_s=...
+                      -> WALLETPROVISION_OK iters=50000 provision_us=<n>
+CMD:WALLETUNLOCK <pinsymbols>
+                      -> WALLETUNLOCK_OK unwrap_us=<n>
+                      -> WALLETUNLOCK_ERR <reason> attempts=<n> of 10 wait_ms=<n>
+CMD:WALLETSTATUS      -> WALLETSTATUS provisioned=1 unlocked=0 attempts=0 of 10
+                         wait_ms=0 manifest=enc items=-1 idle_left_ms=0 iters=50000
+CMD:WALLETLOCK        -> WALLETLOCK_OK was_unlocked=1
+CMD:WALLETPBKDF2 <n>  -> WALLETPBKDF2_OK iters=n us=<n> ms=<n> iters_per_s=<n>
 ```
+
+Measured, by building the same environment both ways: the five commands cost
+**4,928 bytes of flash** (`firmware.bin` 3,982,048 with them, 3,977,120 without;
+`.flash.text` -3,362, `.rodata` -1,568) and **no RAM**. With the flag at 0 the build
+is clean -- no unused-variable or dead-code warnings -- so the gate is a real
+compile-out, not a runtime `if`.
+
+**The trade in that flag, stated because it is a real one.** The commands are ON in
+the environment everybody builds and flashes day to day, not opt-in through
+`platformio.local.ini` like the grayscale bench. Reason: PIN entry is four physical
+buttons, so without them the entire list under "What the host tests cannot reach"
+stays unreached unless a person is standing at the device -- and a verification path
+that needs an untracked file edited first is one that stops being run. What it costs
+is that a **dev** device accepts "unlock this wallet" over USB, which is already
+inside the threat boundary above: a device in hand with a cable is readable. A
+release build has neither the commands nor that exposure.
+
+### CMD:WALLETUNLOCK drives the real path
+
+It calls `KeyStore::tryUnlock()` -- **the same function the PIN screen calls**, with
+the same unwrap, the same rate limiter and the same session. That is deliberate: a
+test command that installed K directly would verify nothing about the thing it is
+meant to verify, and the paths could then drift without anybody noticing.
+
+So a wrong PIN over serial **consumes an attempt**, gets the same refusal a person
+gets, and moves the same persisted counter. `attempts=<n> of 10` and `wait_ms=<n>`
+come out of the reply, so the limiter can be walked from a script: three free, then
+1 s, 2, 4, 8, 16, 30 (capped), then `locked_out` at ten. The reasons are stable
+one-word tokens -- `wrong_pin`, `rate_limited`, `locked_out`, `not_provisioned`,
+`malformed_pin` -- and they are part of the command's contract, pinned by
+`WalletUnlockOutcomes.EveryResultHasItsOwnStableToken`. `malformed_pin` costs no
+attempt: a typo is not a guess.
+
+`not_provisioned` prints a second line saying to run `CMD:WALLETPROVISION` first.
+
+**The rate-limit gate is the session's, not the screen's** (`Session::armRetryDelay`
+/ `retryWaitMs`). Both paths arm and read one gate, so neither can be used to step
+around a delay the other is enforcing, and `CMD:WALLETLOCK` deliberately does **not**
+reset it -- locking must not be a way to clear a penalty.
+
+### CMD:WALLETSTATUS, so a check reads state instead of guessing it
+
+One line: provisioned, unlocked, the attempt count and the cap, the delay being
+enforced, which manifest is on the card (`enc` / `json` / `none`), the item count,
+the idle time left on the key, and the provisioned iteration count.
+
+`items=-1` means **not knowable right now**, not zero -- an encrypted tree with no
+key held cannot be counted, because the titles are inside the manifest. Two
+different answers, two different values.
+
+### CMD:WALLETLOCK says whether it did anything
+
+`was_unlocked=1` if it dropped a key, `0` if the wallet was already locked. A script
+proving the unlock path twice in one session needs to tell those apart.
+
+## Provisioning: a test path, and it says so
+
+The wallet key and the PIN are supposed to arrive from the phone over BLE (P4/P6).
+That app does not exist, so the laptop writes `provision.json` and
+`CMD:WALLETPROVISION` (above) pushes it in.
 
 **The key crosses a USB cable in the clear and lands in any serial log of that
 session.** The command logs two loud lines saying so every time it runs, and it is
@@ -236,7 +303,7 @@ host tests; the NVS write itself is not (see below).
 The format doc's **50,000 iterations is a placeholder off a laptop rate** and says
 so. `CMD:WALLETPBKDF2 <n>` times the real thing on the chip at full clock (power
 saving is dropped for every `CMD:` first -- at 10 MHz the number would be a lie,
-`power-management.md`), and `CMD:WALLETPROVISION` reports `pbkdf2_us` for the count
+`power-management.md`), and `CMD:WALLETPROVISION` reports `provision_us` for the count
 it just provisioned, so a real provisioning also produces the figure.
 
 **Nothing has run it.** This phase had no device access, and an estimate is what the
@@ -327,8 +394,9 @@ hardware.
   -- **read off the source, never executed here**;
 - NVS: every `Preferences` call, the device secret's first generation, and whether
   the failure counter survives a power cycle in practice;
-- the unlock screen: dots, the delay, the lockout message, and that the PIN is never
-  spelled on the panel;
+- the unlock screen's *drawing*: dots, the delay message, the lockout message, and
+  that the PIN is never spelled on the panel. Its *logic* is now reachable from a
+  host through `CMD:WALLETUNLOCK`, which runs the same `KeyStore::tryUnlock()`;
 - `esp_fill_random`'s quality;
 - the PBKDF2 timing, which is the whole point of the command above;
 - the real heap figures.
@@ -345,10 +413,16 @@ hardware.
 - The encrypted tree **rendered host-side** through the device's own reader code
   (`wallet_preview --key`): the decrypted QR is **byte-identical** to the cleartext
   tree's render and still decodes to the exact payload through `zxing-cpp`.
-- Flash and static RAM: **measured** (`+15,232` bytes of binary, `+48` bytes of
-  `.bss` against the P2 tip).
+- Flash and static RAM: **measured**. Against the P2 tip: `+17,216` bytes of binary
+  with the test commands compiled in, `+12,288` without them, and `+48` bytes of
+  `.bss` (the session key holder) either way.
 - mbedtls calls, NVS, the unlock screen, the idle timeout, the sleep wipe:
-  **written and compiled, never run.** No device access in this phase.
+  **written and compiled, never run** on this side. `CMD:WALLETUNLOCK` now makes all
+  of them reachable from a host with nobody at the device, which is what they were
+  waiting for.
+- The serial reply tokens and the rate-limit sequence a host script keys on:
+  **host-tested** (`WalletUnlockOutcomes.*`), so a rename or an unmapped result fails
+  a test instead of a script.
 - PBKDF2 iterations per second on the C3: **not measured.** The command is there;
   the number is the next thing anybody with the device should collect.
 - Heap: **derived**, with two log lines waiting to replace the derivation.

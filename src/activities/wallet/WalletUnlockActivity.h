@@ -56,8 +56,6 @@ class WalletUnlockActivity final : public Activity {
   char entry_[wallet::kPinBufBytes] = {0};
   size_t length_ = 0;
   uint8_t failures_ = 0;
-  // millis() when the rate limiter's delay expires.
-  uint32_t retryAtMs_ = 0;
   bool lockedOut_ = false;
   bool noWrap_ = false;
   bool lastAttemptWrong_ = false;

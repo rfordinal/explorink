@@ -1880,3 +1880,41 @@ TEST(WalletCryptoWipe, SecureWipeClearsEveryByte) {
   // A zero length is a no-op, not a crash.
   secureWipe(key, 0);
 }
+
+TEST(WalletUnlockOutcomes, EveryResultHasItsOwnStableToken) {
+  // These tokens are the serial contract: a host script greps
+  // `WALLETUNLOCK_ERR wrong_pin` and friends, so each result needs its own word and
+  // renaming one breaks a caller. Asserted rather than trusted, because a switch
+  // that falls through to "?" would look fine on screen and silently break a script.
+  const UnlockResult all[] = {UnlockResult::Ok,      UnlockResult::NotProvisioned, UnlockResult::Malformed,
+                              UnlockResult::Waiting, UnlockResult::LockedOut,      UnlockResult::BadPin};
+  std::vector<std::string> seen;
+  for (const UnlockResult result : all) {
+    const std::string name = unlockResultName(result);
+    EXPECT_FALSE(name.empty());
+    EXPECT_STRNE(name.c_str(), "?") << "an unmapped result reaches the wire as '?'";
+    EXPECT_EQ(name.find(' '), std::string::npos) << "'" << name << "' has a space: the reply is space-separated";
+    EXPECT_EQ(std::count(seen.begin(), seen.end(), name), 0) << "'" << name << "' is used twice";
+    seen.push_back(name);
+  }
+  EXPECT_EQ(seen.size(), 6u);
+  // The two a host script keys on most, spelled out so a rename fails here.
+  EXPECT_STREQ(unlockResultName(UnlockResult::BadPin), "wrong_pin");
+  EXPECT_STREQ(unlockResultName(UnlockResult::LockedOut), "locked_out");
+  EXPECT_STREQ(unlockResultName(UnlockResult::Waiting), "rate_limited");
+  EXPECT_STREQ(unlockResultName(UnlockResult::NotProvisioned), "not_provisioned");
+}
+
+TEST(WalletUnlockOutcomes, TheDelayAHostWillWatchIsTheOneTheScreenEnforces) {
+  // CMD:WALLETUNLOCK reports wait_ms straight out of pinFailureDelayMs() via the
+  // session's gate, and the PIN screen reads the same gate. So the sequence a host
+  // sees walking the limiter is exactly this, and it is worth pinning as a sequence
+  // rather than as six separate cases.
+  const uint32_t expected[] = {0, 0, 0, 0, 1000, 2000, 4000, 8000, 16000, 30000};
+  for (uint8_t failures = 0; failures < 10; ++failures) {
+    EXPECT_EQ(pinFailureDelayMs(failures), expected[failures]) << "after " << static_cast<int>(failures) << " failures";
+  }
+  // And the tenth failure is not a delay at all: it is the end.
+  EXPECT_TRUE(pinIsLockedOut(kMaxPinFailures));
+  EXPECT_FALSE(pinIsLockedOut(kMaxPinFailures - 1));
+}

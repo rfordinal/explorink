@@ -37,6 +37,7 @@
 #include "activities/wallet/WalletAsset.h"
 #include "activities/wallet/WalletCryptoDevice.h"
 #include "activities/wallet/WalletKeyStore.h"
+#include "activities/wallet/WalletStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
@@ -1121,6 +1122,7 @@ void loop() {
           // its route path exists either.
           logSerial.printf("GOTO_WALLET_OK item=%d code=%d\n", itemArg, codeArg);
         }
+#if defined(ENABLE_WALLET_TEST_CMDS) && ENABLE_WALLET_TEST_CMDS
       } else if (cmd.startsWith("WALLETPROVISION ")) {
         // ## TEST PATH. Not how a device gets provisioned in the end.
         //
@@ -1211,12 +1213,83 @@ void loop() {
           logSerial.printf("WALLETPBKDF2_OK iters=%lu us=%lu ms=%lu iters_per_s=%lu\n", itersArg,
                            static_cast<unsigned long>(elapsed), static_cast<unsigned long>(elapsed / 1000), perSecond);
         }
+      } else if (cmd.startsWith("WALLETUNLOCK ")) {
+        // ## TEST PATH. The same two warnings as WALLETPROVISION apply.
+        //
+        // PIN entry is four physical buttons, so without this nobody can verify the
+        // whole crypto path -- manifest decrypt, asset decrypt, the wrong-key refusal,
+        // the code screen on an encrypted tree -- unless a person is standing at the
+        // device. That is precisely the list the host tests cannot reach
+        // (docs/wallet-crypto.md).
+        //
+        // It drives the REAL path: KeyStore::tryUnlock(), the same call the PIN screen
+        // makes, with the same unwrap, the same rate limiter and the same session. A
+        // command that installed K directly would verify nothing about the thing it is
+        // meant to verify.
+        char pinText[16] = {0};
+        if (sscanf(cmd.c_str(), "WALLETUNLOCK %15s", pinText) != 1) {
+          logSerial.printf("WALLETUNLOCK_ERR usage attempts=%u\n", static_cast<unsigned>(wallet::KeyStore::failures()));
+        } else {
+          LOG_ERR("MAIN", "*** TEST PATH: CMD:WALLETUNLOCK opened the wallet from the host, not from a person. ***");
+          LOG_ERR("MAIN",
+                  "*** The PIN crossed a USB cable in the clear. Replaced by nothing -- it is a test seam. ***");
+          uint32_t unwrapMicros = 0;
+          uint32_t waitMs = 0;
+          uint8_t failures = 0;
+          const wallet::UnlockResult result = wallet::KeyStore::tryUnlock(pinText, unwrapMicros, failures, waitMs);
+          // The typed PIN does not get to stay in the command buffer.
+          wallet::secureWipe(pinText, sizeof(pinText));
+          if (result == wallet::UnlockResult::Ok) {
+            logSerial.printf("WALLETUNLOCK_OK unwrap_us=%lu\n", static_cast<unsigned long>(unwrapMicros));
+          } else {
+            // attempts is the count AFTER this one, and wait_ms is the delay now being
+            // enforced -- so a host can watch the limiter double without guessing.
+            logSerial.printf("WALLETUNLOCK_ERR %s attempts=%u of %u wait_ms=%lu\n", wallet::unlockResultName(result),
+                             static_cast<unsigned>(failures), static_cast<unsigned>(wallet::kMaxPinFailures),
+                             static_cast<unsigned long>(waitMs));
+            if (result == wallet::UnlockResult::NotProvisioned) {
+              logSerial.printf("WALLETUNLOCK_ERR no wrap in NVS: run CMD:WALLETPROVISION first\n");
+            }
+          }
+        }
+      } else if (cmd == "WALLETSTATUS") {
+        // One line, so a host-driven check reads state instead of inferring it from a
+        // screenshot. Every field is cheap: two Storage::exists calls and NVS reads.
+        const wallet::Session& session = wallet::Session::instance();
+        const char* manifestKind =
+            wallet::treeIsEncrypted() ? "enc" : (Storage.exists(wallet::kManifestPath) ? "json" : "none");
+        // The item count needs the manifest, so it is only knowable for a cleartext
+        // tree or an unlocked encrypted one. -1 means "not knowable right now" rather
+        // than "zero", which are different answers.
+        int items = -1;
+        if (!(wallet::treeIsEncrypted() && !session.hasKey()) && manifestKind[0] != 'n') {
+          uint16_t stored = 0;
+          uint32_t seen = 0;
+          wallet::DeclaredPanel declared;
+          wallet::Error error = wallet::Error::None;
+          auto rows = makeUniqueNoThrow<wallet::ItemEntry[]>(4);
+          if (rows && wallet::Store::listItems(rows.get(), 4, renderer, stored, seen, declared, error)) {
+            items = static_cast<int>(seen);
+          }
+        }
+        logSerial.printf(
+            "WALLETSTATUS provisioned=%d unlocked=%d attempts=%u of %u wait_ms=%lu manifest=%s items=%d "
+            "idle_left_ms=%lu iters=%lu\n",
+            wallet::KeyStore::isProvisioned() ? 1 : 0, session.hasKey() ? 1 : 0,
+            static_cast<unsigned>(wallet::KeyStore::failures()), static_cast<unsigned>(wallet::kMaxPinFailures),
+            static_cast<unsigned long>(session.retryWaitMs()), manifestKind, items,
+            static_cast<unsigned long>(session.idleLeftMs()),
+            static_cast<unsigned long>(wallet::KeyStore::iterations()));
       } else if (cmd == "WALLETLOCK") {
         // The explicit lock, and the only way to drop the key without sleeping or
         // waiting out the idle timeout. Also how a host script proves the unlock path
-        // twice in one session.
+        // twice in one session -- which is why the reply distinguishes "locked it" from
+        // "it was already locked": a script needs to know whether its lock did
+        // anything.
+        const bool wasUnlocked = wallet::Session::instance().hasKey();
         wallet::Session::instance().clear("CMD:WALLETLOCK");
-        logSerial.printf("WALLETLOCK_OK\n");
+        logSerial.printf("WALLETLOCK_OK was_unlocked=%d\n", wasUnlocked ? 1 : 0);
+#endif  // ENABLE_WALLET_TEST_CMDS
       } else if (cmd == "GOTO_TILESYNC") {
         // The sync screen was the one screen a host could not reach. Its grid --
         // outlined squares for missing tiles, dots for the freshness check queue

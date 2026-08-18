@@ -1,5 +1,6 @@
 #include "WalletKeyStore.h"
 
+#include <Arduino.h>
 #include <Logging.h>
 #include <Preferences.h>
 
@@ -149,6 +150,59 @@ bool KeyStore::unwrap(const char* pin, const size_t pinLen, uint8_t out[kWalletK
   // A failure is a wrong PIN or an altered wrap, and GCM cannot say which. The
   // caller counts it against the rate limiter either way.
   return ok;
+}
+
+UnlockResult KeyStore::tryUnlock(const char* pinText, uint32_t& unwrapMicros, uint8_t& failures, uint32_t& waitMs) {
+  unwrapMicros = 0;
+  waitMs = 0;
+  failures = KeyStore::failures();
+
+  char pin[kPinBufBytes];
+  size_t pinLen = 0;
+  if (!normalisePin(pinText, pin, sizeof(pin), pinLen)) {
+    // Not a PIN at all. Refused without touching the counter: a typo must not spend
+    // one of ten attempts.
+    secureWipe(pin, sizeof(pin));
+    return UnlockResult::Malformed;
+  }
+  if (!isProvisioned()) {
+    secureWipe(pin, sizeof(pin));
+    return UnlockResult::NotProvisioned;
+  }
+  if (pinIsLockedOut(failures)) {
+    secureWipe(pin, sizeof(pin));
+    return UnlockResult::LockedOut;
+  }
+  // The delay is re-armed from the persisted count every time an unlock path starts,
+  // so a reboot cannot skip it, and the gate is shared with the PIN screen.
+  Session& session = Session::instance();
+  session.armRetryDelay(failures);
+  waitMs = session.retryWaitMs();
+  if (waitMs > 0) {
+    secureWipe(pin, sizeof(pin));
+    return UnlockResult::Waiting;
+  }
+
+  uint8_t key[kWalletKeyLen];
+  const uint32_t startedUs = micros();
+  const bool ok = unwrap(pin, pinLen, key);
+  unwrapMicros = micros() - startedUs;
+  secureWipe(pin, sizeof(pin));
+
+  if (!ok) {
+    secureWipe(key, sizeof(key));
+    recordFailure();
+    failures = KeyStore::failures();
+    session.armRetryDelay(failures);
+    waitMs = session.retryWaitMs();
+    return pinIsLockedOut(failures) ? UnlockResult::LockedOut : UnlockResult::BadPin;
+  }
+
+  session.setKey(key);
+  secureWipe(key, sizeof(key));
+  clearFailures();
+  failures = 0;
+  return UnlockResult::Ok;
 }
 
 uint8_t KeyStore::failures() {

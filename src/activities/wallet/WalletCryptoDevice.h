@@ -73,6 +73,14 @@ class Session {
   // kIdleTimeoutMs of no wallet screen touching it, so a device left on a table
   // unlocked locks itself.
   void touch();
+  // Milliseconds until the next unlock attempt is allowed, 0 when it may go now.
+  uint32_t retryWaitMs() const;
+  // Milliseconds of idle left before the key dies, 0 when there is no key.
+  uint32_t idleLeftMs() const;
+  // Arms the rate limiter's delay for `failures` consecutive failures. Lives here
+  // rather than in the PIN screen so the screen and CMD:WALLETUNLOCK share one gate
+  // -- otherwise a host command could step around a delay the screen is enforcing.
+  void armRetryDelay(uint8_t failures);
   // True when it cleared the key. Checked from the wallet screens' loop().
   bool expireIfIdle();
 
@@ -83,6 +91,10 @@ class Session {
   uint8_t key_[kWalletKeyLen] = {0};
   bool hasKey_ = false;
   uint32_t lastTouchMs_ = 0;
+  // When the next unlock attempt may run. RAM only: the *count* is persisted, and
+  // the delay is re-armed from it whenever an unlock path starts, so a power cycle
+  // does not hand out a free fast retry.
+  uint32_t retryAtMs_ = 0;
 };
 
 }  // namespace wallet
