@@ -19,6 +19,7 @@
 #include <WiFi.h>
 #include <builtinFonts/all.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -33,6 +34,7 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#include "activities/wallet/WalletAsset.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
@@ -558,6 +560,224 @@ void setup() {
   allowSleepAt = millis() + 2000;
 }
 
+// --- CMD:WALLETBENCH -------------------------------------------------------
+//
+// Measures what a design-B wallet window actually costs off the card. Design B
+// stores one whole-page image per zoom level in panel-native order and blits an
+// arbitrary window out of it, which turns one 48,000-byte sequential read into
+// 480 strided reads of one panel row each. Whether that is affordable is the
+// only thing standing between B and pre-cut overlapping tiles
+// (docs/wallet-viewer.md, "Whole-screen paging was rejected").
+//
+// Three modes, same file, same window:
+//
+//   windowed    480 reads of rowBytes at `stride`, straight into the framebuffer.
+//               Design B's real per-frame cost.
+//   sequential  one read of the whole framebuffer from the payload start. The
+//               baseline the ratio is against -- what tiles cost today.
+//   oversized   the same 480 rows, but pulling 512 bytes per row and keeping the
+//               rowBytes that matter. If the card's block size dominates, this
+//               costs about the same as `windowed` and the small read was already
+//               a whole block; if it is much worse, the small read was being
+//               served from a cache.
+//
+// What it does NOT measure, and must not be read as measuring: any decrypt (P1
+// has none), any panel refresh (deliberately outside the timed section -- a FAST
+// waveform is 500 ms and would swamp the card entirely), the cost of opening the
+// file (opened once, outside the timing, which is what design B would do too),
+// more than one file, or more than one card.
+//
+// Usage: CMD:WALLETBENCH <path-under-/trailink> <stride> <x> <y> <iters>
+//   stride  bytes per row of the source image (not the panel's rowBytes)
+//   x, y    window origin in native pixels; x must be a multiple of 8, because
+//           an 8-aligned window is the whole reason B needs no bit rotation
+//   iters   1..kWalletBenchMaxIters
+namespace {
+
+constexpr int kWalletBenchMaxIters = 32;
+constexpr size_t kWalletBenchOversizedRead = 512;
+
+// Both static, not stack. The 512-byte oversized read is over the 256-byte
+// guidance for a stack buffer in this tree, and the sample array wants to
+// outlive the RenderLock scope so the summary can be printed with the lock
+// released. 512 + 3 * 32 * 4 = 896 bytes of .bss, and no heap at all -- the
+// point of the exercise is the card, not the allocator.
+uint8_t walletBenchScratch[kWalletBenchOversizedRead];
+uint32_t walletBenchSamples[3][kWalletBenchMaxIters];
+
+uint32_t walletBenchMedian(uint32_t* samples, const int count) {
+  // Insertion sort in place: count is at most 32 and this runs once, after the
+  // timed section.
+  for (int i = 1; i < count; ++i) {
+    const uint32_t key = samples[i];
+    int j = i - 1;
+    while (j >= 0 && samples[j] > key) {
+      samples[j + 1] = samples[j];
+      --j;
+    }
+    samples[j + 1] = key;
+  }
+  return count % 2 == 1 ? samples[count / 2] : (samples[count / 2 - 1] + samples[count / 2]) / 2;
+}
+
+void walletBenchReport(const char* mode, uint32_t* samples, const int count, const size_t payloadBytes,
+                       const size_t readBytes) {
+  uint32_t total = 0;
+  for (int i = 0; i < count; ++i) total += samples[i];
+  const uint32_t lo = *std::min_element(samples, samples + count);
+  const uint32_t hi = *std::max_element(samples, samples + count);
+  const uint32_t med = walletBenchMedian(samples, count);  // sorts in place; do this last
+  const double kbps = med > 0 ? (static_cast<double>(payloadBytes) * 1000.0) / static_cast<double>(med) : 0.0;
+  logSerial.printf("WALLETBENCH mode=%s total_ms=%.2f min_ms=%.2f med_ms=%.2f max_ms=%.2f payload_kbps=%.1f read_bytes=%u\n",
+                   mode, total / 1000.0, lo / 1000.0, med / 1000.0, hi / 1000.0, kbps,
+                   static_cast<unsigned>(readBytes));
+}
+
+void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t originX, const uint32_t originY,
+                    int iters) {
+  if (iters < 1) iters = 1;
+  if (iters > kWalletBenchMaxIters) iters = kWalletBenchMaxIters;
+
+  if (!renderer.hasFrameBuffer()) {
+    logSerial.printf("WALLETBENCH_ERR no framebuffer\n");
+    return;
+  }
+  const uint32_t rowBytes = display.getDisplayWidthBytes();
+  const uint32_t rows = display.getDisplayHeight();
+  const size_t bufferBytes = display.getBufferSize();
+  uint8_t* const fb = renderer.getFrameBuffer();
+
+  if ((originX % 8) != 0) {
+    // Not a limitation of the card: a window that does not start on a byte
+    // needs every row bit-rotated, which is the cost design B exists to avoid.
+    logSerial.printf("WALLETBENCH_ERR x=%lu is not a multiple of 8\n", static_cast<unsigned long>(originX));
+    return;
+  }
+  const uint32_t xByte = originX / 8;
+  if (stride < xByte + rowBytes) {
+    logSerial.printf("WALLETBENCH_ERR stride=%lu too small for x=%lu + %lu row bytes\n",
+                     static_cast<unsigned long>(stride), static_cast<unsigned long>(originX),
+                     static_cast<unsigned long>(rowBytes));
+    return;
+  }
+
+  char path[128];
+  if (snprintf(path, sizeof(path), "/trailink/%s", relPath) >= static_cast<int>(sizeof(path))) {
+    logSerial.printf("WALLETBENCH_ERR path too long\n");
+    return;
+  }
+
+  HalFile file;
+  if (!Storage.openFileForRead("WBENCH", path, file)) {
+    logSerial.printf("WALLETBENCH_ERR cannot open %s\n", path);
+    return;
+  }
+  const size_t fileBytes = file.size();
+
+  // Skip a wallet asset header if there is one. Reuses the reader's own parse
+  // (src/activities/wallet/WalletAsset.h) rather than assuming an offset: a
+  // whole-page image for design B is not a panel-sized asset, so the panel gate
+  // would refuse it, but its header is the same 32 bytes.
+  uint32_t base = 0;
+  uint8_t head[wallet::kAssetHeaderBytes];
+  wallet::AssetHeader header;
+  if (file.read(head, sizeof(head)) == static_cast<int>(sizeof(head)) &&
+      wallet::parseAssetHeader(head, sizeof(head), header)) {
+    base = wallet::kAssetHeaderBytes;
+  }
+
+  const uint64_t lastRowEnd =
+      static_cast<uint64_t>(base) + static_cast<uint64_t>(originY + rows - 1) * stride + xByte + rowBytes;
+  if (lastRowEnd > fileBytes) {
+    logSerial.printf("WALLETBENCH_ERR window runs past EOF: needs %llu bytes, file is %u\n",
+                     static_cast<unsigned long long>(lastRowEnd), static_cast<unsigned>(fileBytes));
+    file.close();
+    return;
+  }
+  if (base + bufferBytes > fileBytes) {
+    logSerial.printf("WALLETBENCH_ERR file too small for the sequential baseline\n");
+    file.close();
+    return;
+  }
+
+  // A legend, so the three lines below need no doc to read: the min/med/max are
+  // per frame, one frame being one whole window.
+  logSerial.printf("WALLETBENCH fields=total_ms,min|med|max_ms_per_frame,payload_kbps,read_bytes\n");
+  logSerial.printf("WALLETBENCH file=%s bytes=%u base=%lu stride=%lu win=%lu,%lu rows=%lu rowbytes=%lu iters=%d\n", path,
+                   static_cast<unsigned>(fileBytes), static_cast<unsigned long>(base),
+                   static_cast<unsigned long>(stride), static_cast<unsigned long>(originX),
+                   static_cast<unsigned long>(originY), static_cast<unsigned long>(rows),
+                   static_cast<unsigned long>(rowBytes), iters);
+
+  size_t oversizedRead = 0;
+  bool shortRead = false;
+
+  {
+    // The framebuffer is the destination and the render task owns it too. Held
+    // across every iteration of every mode: nothing may repaint in the middle of
+    // a measurement, and the summary is printed after the lock goes away so CDC
+    // writes are outside both the lock and the timing.
+    RenderLock lock;
+
+    for (int i = 0; i < iters; ++i) {
+      // 1. windowed
+      const uint32_t t0 = micros();
+      for (uint32_t r = 0; r < rows; ++r) {
+        const uint32_t off = base + (originY + r) * stride + xByte;
+        if (!file.seekSet(off) || file.read(fb + r * rowBytes, rowBytes) != static_cast<int>(rowBytes)) {
+          shortRead = true;
+          break;
+        }
+      }
+      walletBenchSamples[0][i] = micros() - t0;
+
+      // 2. sequential baseline, from the payload start
+      const uint32_t t1 = micros();
+      if (!file.seekSet(base) || file.read(fb, bufferBytes) != static_cast<int>(bufferBytes)) shortRead = true;
+      walletBenchSamples[1][i] = micros() - t1;
+
+      // 3. oversized row reads
+      size_t pulled = 0;
+      const uint32_t t2 = micros();
+      for (uint32_t r = 0; r < rows; ++r) {
+        const uint32_t off = base + (originY + r) * stride + xByte;
+        size_t want = kWalletBenchOversizedRead;
+        if (off + want > fileBytes) want = fileBytes - off;
+        if (!file.seekSet(off)) {
+          shortRead = true;
+          break;
+        }
+        const int got = file.read(walletBenchScratch, want);
+        if (got < static_cast<int>(rowBytes)) {
+          shortRead = true;
+          break;
+        }
+        pulled += static_cast<size_t>(got);
+        memcpy(fb + r * rowBytes, walletBenchScratch, rowBytes);
+      }
+      walletBenchSamples[2][i] = micros() - t2;
+      oversizedRead = pulled;
+    }
+  }
+
+  file.close();
+
+  walletBenchReport("windowed", walletBenchSamples[0], iters, bufferBytes, bufferBytes);
+  walletBenchReport("sequential", walletBenchSamples[1], iters, bufferBytes, bufferBytes);
+  walletBenchReport("oversized", walletBenchSamples[2], iters, bufferBytes, oversizedRead);
+  logSerial.printf("WALLETBENCH note=no-decrypt,no-refresh,file-kept-open,one-file,one-card,fixed-mode-order\n");
+  if (shortRead) {
+    logSerial.printf("WALLETBENCH_ERR a read came up short -- the numbers above are not trustworthy\n");
+    return;
+  }
+  // The framebuffer now holds whatever the last read left in it and the panel
+  // still shows the previous frame. Nothing refreshes here on purpose; the next
+  // activity repaint fixes it.
+  logSerial.printf("WALLETBENCH_OK\n");
+}
+
+}  // namespace
+
 void loop() {
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
@@ -799,6 +1019,21 @@ void loop() {
         }
         LOG_DBG("MAIN", "goToMap() returned");
         logSerial.printf("GOTO_MAP_OK\n");
+      } else if (cmd.startsWith("WALLETBENCH ")) {
+        // Card-read benchmark for the wallet's pan design. powerManager
+        // .setPowerSaving(false) already ran for every CMD above -- at 10 MHz
+        // every one of these numbers would be a lie.
+        char relPath[96] = {0};
+        unsigned long strideArg = 0;
+        unsigned long xArg = 0;
+        unsigned long yArg = 0;
+        int itersArg = 0;
+        if (sscanf(cmd.c_str(), "WALLETBENCH %95s %lu %lu %lu %d", relPath, &strideArg, &xArg, &yArg, &itersArg) != 5) {
+          logSerial.printf("WALLETBENCH_ERR usage: CMD:WALLETBENCH <path-under-/trailink> <stride> <x> <y> <iters>\n");
+        } else {
+          walletBenchRun(relPath, static_cast<uint32_t>(strideArg), static_cast<uint32_t>(xArg),
+                         static_cast<uint32_t>(yArg), itersArg);
+        }
       } else if (cmd == "GOTO_TILESYNC") {
         // The sync screen was the one screen a host could not reach. Its grid --
         // outlined squares for missing tiles, dots for the freshness check queue
