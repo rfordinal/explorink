@@ -1313,20 +1313,27 @@ void loop() {
         // host: entering the activity is not enough, because it opens on the
         // AP/station picker (CrossPointWebServerActivity.cpp, onEnter).
         //
-        // Hotspot only. Station mode still needs the network picker, and the
-        // brief prefers the device's own hotspot precisely so nobody has to
-        // configure a hotel network (brief 35-37).
+        // Both modes. The brief prefers the device's own hotspot so nobody has
+        // to configure a hotel network (brief 35-37), but a laptop measuring
+        // throughput cannot join that hotspot without dropping its own network,
+        // so station mode -- which auto-connects from stored credentials -- is
+        // the one a host can actually measure over.
         String arg = cmd.length() > 14 ? cmd.substring(15) : String();
         arg.trim();
-        if (!arg.isEmpty() && arg != "ap") {
-          logSerial.printf("GOTO_WEBSERVER_ERR usage: CMD:GOTO_WEBSERVER [ap] -- station mode needs the picker\n");
-        } else {
+        if (arg.isEmpty()) arg = "ap";
+        if (arg == "ap") {
           LOG_DBG("MAIN", "CMD:GOTO_WEBSERVER received, hotspot mode");
           activityManager.goToWebServerHotspot();
-          // The AP takes a moment to come up; the activity prints WEBSERVER_UP
-          // with the SSID and IP when it does. This line only says the request
-          // was accepted.
           logSerial.printf("GOTO_WEBSERVER_OK mode=ap\n");
+        } else if (arg == "sta") {
+          // Station mode auto-connects from stored credentials, so this is
+          // host-drivable too -- and it is the mode a laptop can measure without
+          // leaving its own network to join the device's hotspot.
+          LOG_DBG("MAIN", "CMD:GOTO_WEBSERVER received, station mode");
+          activityManager.goToWebServerStation();
+          logSerial.printf("GOTO_WEBSERVER_OK mode=sta\n");
+        } else {
+          logSerial.printf("GOTO_WEBSERVER_ERR usage: CMD:GOTO_WEBSERVER [ap|sta]\n");
         }
 #endif  // ENABLE_WALLET_TEST_CMDS
       }
