@@ -926,24 +926,40 @@ One thing that looked like a bug and was not: the demo PDF417 is the landscape
 variant, so it stands **vertical** on a portrait screen. That is the code the
 generator was asked for, drawn correctly.
 
-### Nothing has been scanned off the panel
+### Scanned off the panel — 2026-08-18, all eight codes read
 
-The one test that can prove this feature works has not been run. It needs a real
-scanner, a person, and the device in their hand; everything above is bytes agreeing
-with bytes.
+The one test no amount of byte-checking could stand in for has been run. Binary
+Eye 1.75.2 (F-Droid, `zxing-cpp`) on a phone, each code straight off the glass:
 
-What is still unknown, and only that test can answer:
+| code | module | verdict |
+|---|---|---|
+| pdf417 portrait | **2 px (~0.23 mm)** | **reads** |
+| pdf417 landscape | 4 px | reads |
+| qr, both orientations | 9 px | reads |
+| aztec, both orientations | 10 px | reads |
+| code128, both orientations | 2 px and 4 px | reads |
 
-- whether e-ink contrast is enough for a scanner at all, at 12 px modules and at
-  3 px;
-- whether the panel's surface reflection defeats a phone camera at a normal angle;
-- whether `HALF` leaves ghosting a scanner can see, and whether `FULL` would fix
-  it;
-- whether the label at the bottom edge is far enough from the quiet zone;
-- what the backlight, if any, does to a scan.
+So e-ink contrast is enough, the surface reflection does not defeat a camera at a
+normal angle, `HALF` leaves no ghosting a decoder trips over, and the label at the
+bottom edge is far enough from the quiet zone. The 2 px PDF417 reading is the
+notable one: a real 115-character IATA boarding pass at the bottom edge of the
+X-dimension handheld imagers specify, and it read anyway. **The landscape variant
+is headroom, not a requirement** — nobody has to turn the device sideways at a
+gate.
 
-Until then the honest claim is: **the right bytes reach the framebuffer, and the
-picture looks right.**
+Two limits, stated because the claim will be repeated:
+
+- **A phone camera is not a gate imager.** Airline and rail scanners bring their
+  own illumination and optics, and some retail scanners are laser rather than
+  imaging. Failure here would have been decisive; success is strong evidence, not
+  a guarantee.
+- **Binary Eye is `zxing-cpp`-based**, the same decoder family the generator uses
+  to verify its own output, so the decode half is not independent of our
+  toolchain. What was independent, and what was actually under test, is the
+  physical path: glass, ambient light, optics, a real lens at a real distance.
+
+Still unmeasured: what a backlight would do to a scan, and any scanner that is not
+a phone.
 
 ## Refresh policy
 
@@ -1327,7 +1343,7 @@ Heap, **derived from the type sizes, not measured on hardware**:
   refresh choice and the `FULL`-vs-`HALF` reasoning are **read off the driver
   source**. The hash's millisecond cost is **estimated, not measured**. Whether any
   of it scans off e-ink glass is **completely open** -- see "Nothing has been
-  scanned off the panel".
+  scanned off the panel" -- which is no longer true, see "Scanned off the panel".
 - **P3, encryption: written and compiled, never run on hardware.** The CTR
   arithmetic, the manifest envelope, the KEK formula, the PIN codec and the rate
   limiter are **host-tested** against verbatim encrypted generator output with an
