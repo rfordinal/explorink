@@ -225,6 +225,12 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
       uint16_t codesOnCard = 0;
       wallet::countCardAssets(onCard, codesOnCard);
       if (onCard > 0) {
+        // One short line, and that took five screenshots to accept. A second line
+        // overlapped the first at every spacing tried, and once it cleared that it
+        // was painted over by drawList(). Long text on this panel is not a thing
+        // you write and forget: it truncates at the right edge, and neither a unit
+        // test nor a host preview nor drawText's return value says so. Keep it
+        // under about forty characters.
         snprintf(status, sizeof(status), tr(STR_WALLET_MANIFEST_BROKEN_FILES), wallet::errorText(error_),
                  static_cast<int>(onCard), static_cast<int>(codesOnCard));
       } else {
