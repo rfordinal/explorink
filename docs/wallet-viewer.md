@@ -14,6 +14,22 @@ Home menu row **Wallet**, between *Sync map tiles* and *Settings*
 (`src/activities/home/HomeActivity.cpp:14-21`, `:121-134`), opening through
 `ActivityManager::goToWallet()` (`src/activities/ActivityManager.cpp:222`).
 
+## Confirmed on the panel, 2026-08-18
+
+Flashed, assets pushed to the card over BLE, checked from device screenshots:
+
+- the **Wallet** row in the home menu opens the browse screen;
+- the **empty state** is honest -- a missing wallet says so instead of showing a
+  blank list;
+- **browse** lists the item with its page count;
+- **FIT** draws the whole page;
+- **DETAIL** steps tiles;
+- **1:1** opens on the manifest's focal tile, not on the top-left margin.
+
+So the display path, the manifest read, the refresh policy and the button map all
+work on real hardware against real generated assets. Everything below that is
+marked open is open for a different reason -- design, not plumbing.
+
 ## On the card
 
 ```
@@ -214,6 +230,80 @@ have opened on the top-left margin.
 Browse: UP/DOWN (also LEFT/RIGHT) move the selection with hard stops, CONFIRM
 opens, BACK goes home (`WalletActivity.cpp:loop`).
 
+## Whole-screen paging was rejected
+
+**The maintainer used it and turned it down, 2026-08-18.** The viewer works; the
+*interaction* is wrong. He wants to look at an arbitrary **part** of a document, so
+a pan must move by a fraction of the view, not a whole screen per press. One press
+one screen is fine for turning pages and useless for finding the line with the
+policy number on it.
+
+That kills pre-cut non-overlapping tiles as the only mechanism, because a
+non-overlapping grid can only ever land on multiples of a whole screen. Two
+candidates replace it, and **neither is in the format yet**:
+
+- **B: one whole-page image per zoom level**, panel-native order, and the device
+  blits an arbitrary window out of it. In native order a logical-horizontal pan is
+  pure row selection and a logical-vertical pan is a byte shift inside rows, so an
+  8-aligned step needs no bit rotation at all. Storage is smaller than tiles --
+  one image instead of an overlapping grid. The cost is that a window becomes 480
+  strided reads of one panel row instead of one 48,000-byte sequential read.
+- **A: overlapping tiles at 50 %** (fallback). Keeps the single-read blit exactly
+  as it is today, at 49 tiles per A4 1:1 page instead of 16.
+
+**The whole decision turns on one number nobody has measured**: what those 480
+strided reads cost. An estimate off the measured 550-608 KB/s sequential figure
+puts it at 0.25-0.9 s, which spans "free next to a 500 ms waveform" and "twice the
+refresh" -- an estimate that wide decides nothing. So it gets measured before
+either design is written down: `CMD:WALLETBENCH`, below.
+
+The **button map above survives either design** -- the same six buttons, the same
+roles, the same overloaded pair. Only the step size changes: a fraction of the
+view instead of a whole one. What is open is the step size itself, and whether a
+level change still lands on a focal tile or on a focal *point*.
+
+### CMD:WALLETBENCH
+
+`src/main.cpp`, in the same dispatch as `CMD:GOTO_MAP` and `CMD:SCREENSHOT`
+(which all drop power saving first -- at 10 MHz every timing on this device is a
+lie, `docs/power-management.md`).
+
+```
+CMD:WALLETBENCH <path-under-/trailink> <stride> <x> <y> <iters>
+```
+
+`stride` is the source image's bytes per row, not the panel's. `x` must be a
+multiple of 8: an 8-aligned window is the whole reason design B needs no bit
+rotation, so an unaligned request is refused rather than silently measured. Three
+modes, same file, same window, `iters` times each (1..32), reported as min /
+median / max plus the implied KB/s over payload bytes:
+
+| mode | what it does | what it tells us |
+|---|---|---|
+| `windowed` | 480 seeks + 480 reads of `rowBytes`, straight into the framebuffer | design B's real per-frame cost |
+| `sequential` | one read of the whole framebuffer from the payload start | the baseline the ratio is against -- what a tile costs today |
+| `oversized` | the same 480 rows, pulling 512 bytes each and keeping `rowBytes` | whether the card's block size dominates. Same cost as `windowed` means the 100-byte read was already a whole block; much worse means the small read was being served from a cache. Either answer is useful |
+
+Everything goes through `HalStorage`/`HalFile`, never raw SdFat, per this repo's
+threading rule. A `RenderLock` is held across every iteration of every mode: the
+destination is the framebuffer, which the render task also owns, and nothing may
+repaint in the middle of a measurement. The summary prints after the lock is
+released, so CDC writes are outside both the lock and the timed section.
+
+Two static buffers, 896 bytes of `.bss` and no heap: the 512-byte oversized-read
+scratch (over the 256-byte guidance for a stack buffer in this tree, so it is not
+on the stack) and a 3 x 32 sample array that has to outlive the lock scope.
+
+**What it does not measure**, and must not be read as measuring: any decrypt (P1
+has none), any panel refresh (deliberately outside the timed section -- a FAST
+waveform is 500 ms and would swamp the card completely), the cost of opening the
+file (opened once, outside the timing, which is what design B would do too), more
+than one file, more than one card, and any order other than the fixed
+windowed-sequential-oversized one. SdFat keeps a single 512-byte block cache, so a
+rerun with the modes reversed is the sanity check on that last point.
+
+Status: **written and building, never run.** The numbers do not exist yet.
+
 ## Refresh policy
 
 Per `docs/refresh-modes.md`. `FULL` is never used anywhere here.
@@ -371,6 +461,44 @@ either side; they are places the written contract and the code disagreed.
   measurement. Not this side's problem to fix, but the 1:1 level is only "actual
   size" if that number is right.
 
+## The menu icon
+
+Lucide `wallet`, at 32 px, through the SDK's own pipeline
+(`freeink-sdk/libs/assets/Icons/tools/gen_icons.py`) -- the repo rule for any
+static icon (`CLAUDE.md`, "Icons: prefer Lucide"). It lives in
+`src/components/icons/wallet.h` as `WalletIcon`, is mapped from `UIIcon::Wallet`
+in `src/components/themes/lyra/LyraTheme.cpp` (`iconForName`, the 32 px table) and
+is picked by `HomeActivity`. Cost: **128 bytes of rodata** -- exactly the 32x32
+bitmap -- plus 16 bytes of switch, and no RAM.
+
+Two traps found on the way, both worth knowing before the next icon:
+
+- **`UIIcon::File` has no 32 px entry.** The wallet row was on `File`, which only
+  exists in `iconForName`'s 24 px table, so `drawIcon` was never called and the row
+  drew no icon at all while every other row drew one. Only the Lyra theme draws
+  main-menu icons; `BaseTheme::drawButtonMenu` ignores its `rowIcon` argument
+  entirely (`BaseTheme.cpp:745-772`).
+- **`gen_icons.py` output is not in the layout `drawIcon()` wants.**
+  `GfxRenderer::drawIcon()` plots source `(row, col)` at screen
+  `(x + size - 1 - row, y + col)` -- a quarter turn (`GfxRenderer.cpp:1231-1249`).
+  Every hand-drawn icon in `src/components/icons/` is stored pre-turned to cancel
+  it; the generator explicitly does not pre-rotate. So the generated bytes were
+  turned here before committing: `src[row][col] = upright[col][31 - row]`. Checked
+  by rendering both layouts as ASCII before and after -- without the turn the
+  wallet lands on the panel lying on its side.
+
+  **This means `src/components/icons/search24.h` is drawn rotated a quarter turn
+  today** (OPDS browser, `OpdsBookBrowserActivity.cpp:203`). It is generator output
+  consumed straight by `drawIcon`, and nobody noticed because a magnifying glass
+  rotated 90 degrees still reads as a magnifying glass -- its handle points the
+  wrong way. Not fixed here: it is a different screen and wants its own look on the
+  panel. **Open.**
+
+One more thing about reproducing this file: `rsvg-convert` is not installed on the
+machine it was generated on, so the raster came from `cairosvg` through a PATH
+stand-in taking the same arguments. A regeneration with real librsvg may differ by
+an antialiased pixel.
+
 ## Read-only by construction
 
 There is no write, rename, delete, move or truncate call anywhere under
@@ -401,15 +529,18 @@ Measured against the branch point `51bfbbc0`, `pio run -e default`,
 
 | | baseline | with the wallet | delta |
 |---|---|---|---|
-| `firmware.bin` | 3,939,600 | 3,950,496 | **+10,896** |
-| `.flash.text` | 2,171,060 | 2,179,432 | +8,372 |
-| `.flash.rodata` | 1,649,008 | 1,651,528 | +2,520 |
+| `firmware.bin` | 3,939,600 | 3,953,264 | **+13,664** |
+| `.flash.text` | 2,171,060 | 2,181,130 | +10,070 |
+| `.flash.rodata` | 1,649,008 | 1,652,608 | +3,600 |
 | `.dram0.data` | 18,145 | 18,145 | **0** |
-| `.dram0.bss` | 40,152 | 40,152 | **0** |
+| `.dram0.bss` | 40,152 | 41,048 | +896 |
 | `.iram0.text` | 87,350 | 87,350 | 0 |
 
-The rodata is mostly the 21 new `STR_WALLET_*` strings across 31 language arrays.
-Static RAM is unchanged: the wallet has no globals.
+The rodata is mostly the 21 new `STR_WALLET_*` strings across 31 language arrays,
+plus 128 bytes of menu icon. The `.bss` is `CMD:WALLETBENCH`'s two static buffers
+and nothing else -- the viewer itself has no globals. Measured separately, in the
+same way: the icon is **+144 bytes of binary** (128 rodata + 16 text) and no RAM;
+`CMD:WALLETBENCH` is **+2,624 bytes of binary** and the 896 bytes of `.bss`.
 
 Heap, **derived from the type sizes, not measured on hardware**:
 
@@ -437,12 +568,18 @@ Heap, **derived from the type sizes, not measured on hardware**:
   things a unit test on hand-written bytes could not.
 - Byte order, bit polarity, framebuffer accessors, refresh modes, button
   mapping: **read off the code**, cited above.
-- Flash and static RAM: **measured** on the two builds above.
+- Flash and static RAM: **measured** on the builds above, and the icon and the
+  bench command measured separately by building with each reverted.
+- Menu entry, empty state, browse, FIT, DETAIL and 1:1's focal tile: **confirmed on
+  the panel**, 2026-08-18, from device screenshots with assets pushed over BLE.
 - Heap: **derived** from type sizes. Nobody has run `heap_caps_get_info()` with a
   wallet on screen.
-- **Nothing here has run on hardware.** No device was flashed. What the preview
-  cannot answer stays open: whether FIT is legible on e-ink in daylight (the PNG
-  says the bits are right, not that a 217 PPI page dithered to one bit reads on
-  glass), whether a 4x4 1:1 grid is navigable with six buttons in gloves, whether
-  HALF on every page turn is too slow to page through a passport, and the real
-  heap figures. One session on the X4 settles all of it.
+- **The pan step is undecided.** Whole-screen paging was used and rejected;
+  designs A and B are both unwritten, and B needs the `CMD:WALLETBENCH` numbers
+  before anyone can choose. **Open, and blocking the format.**
+- `CMD:WALLETBENCH` itself: **written and building, never run.** No card figures
+  exist yet.
+- Still open after the on-panel session: whether FIT is legible in daylight,
+  whether HALF on every page turn is too slow to page through a document, the real
+  heap figures (nobody has run `heap_caps_get_info()` with a wallet on screen), and
+  `search24.h`'s quarter turn.

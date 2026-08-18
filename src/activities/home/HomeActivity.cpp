@@ -120,15 +120,15 @@ void HomeActivity::render(RenderLock&&) {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP),     tr(STR_TILE_SYNC),
                                               tr(STR_WALLET),        tr(STR_PREVIEW), tr(STR_SETTINGS_TITLE)};
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, File, Image, Settings};
+  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Wallet, Image, Settings};
 #else
   const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC), tr(STR_WALLET),
                                               tr(STR_SETTINGS_TITLE)};
   // Bluetooth, not Wifi: tile sync goes over BLE and nothing else, and a WiFi
-  // glyph sends a rider to the wrong settings page. File is a placeholder for
-  // the wallet, same as Bookmark is for the map -- no Lucide asset is wired into
-  // the UIIcon set yet (../../../CLAUDE.md, "Icons: prefer Lucide").
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, File, Settings};
+  // glyph sends a rider to the wrong settings page. Wallet is Lucide `wallet`
+  // through gen_icons.py (components/icons/wallet.h) -- Map is still on the
+  // Bookmark placeholder.
+  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Wallet, Settings};
 #endif
 
   GUI.drawButtonMenu(

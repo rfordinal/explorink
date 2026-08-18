@@ -118,6 +118,7 @@ enum UIIcon {
   Hotspot,
   Bookmark,
   Bluetooth,
+  Wallet,
 };
 
 // Default theme implementation (Classic Theme)
