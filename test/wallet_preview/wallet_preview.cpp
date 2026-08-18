@@ -16,7 +16,13 @@
 //
 //   wallet_preview --tree DIR [--panel x4|x3] [--item 0 --page 0
 //                  --level fit|detail|one_to_one --col 0 --row 0]
-//                  [--asset <16 hex>] --out PREFIX
+//                  [--asset <16 hex>] [--win-x N --win-y N] --out PREFIX
+//
+// When the level carries a design-B `pageImage`, the window at (--win-x, --win-y)
+// is blitted out of it row by row -- the same row maths PageReader uses on the
+// device, so an off-by-one stride or a mis-clamped origin shows up as a visibly
+// wrong picture. Origins default to the manifest's focal point and are clamped
+// exactly as the device clamps them.
 //
 // Writes PREFIX.png (the panel's own 800x480 landscape frame) and
 // PREFIX-portrait.png (the same bits read the way a rider holds the device).
@@ -188,6 +194,8 @@ int main(int argc, char** argv) {
   int page = 0;
   int col = 0;
   int row = 0;
+  long winX = -1;
+  long winY = -1;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -201,6 +209,8 @@ int main(int argc, char** argv) {
     else if (arg == "--page" && hasNext) page = std::atoi(argv[++i]);
     else if (arg == "--col" && hasNext) col = std::atoi(argv[++i]);
     else if (arg == "--row" && hasNext) row = std::atoi(argv[++i]);
+    else if (arg == "--win-x" && hasNext) winX = std::atol(argv[++i]);
+    else if (arg == "--win-y" && hasNext) winY = std::atol(argv[++i]);
     else {
       usage();
       return 2;
@@ -226,6 +236,7 @@ int main(int argc, char** argv) {
 
   // Resolve the asset through the manifest unless one was named outright.
   wallet::DeclaredPanel declared;
+  wallet::PageImageSpec pageImage;
   if (assetId.empty()) {
     wallet::ManifestParser parser;
     parser.beginLookup(item, page, level, static_cast<uint8_t>(col), static_cast<uint8_t>(row));
@@ -251,7 +262,15 @@ int main(int argc, char** argv) {
       std::printf("grid %-11s: %ux%u\n", wallet::levelName(static_cast<wallet::Level>(i)), found.grid[i].cols,
                   found.grid[i].rows);
     }
-    assetId = found.assetId;
+    pageImage = found.pageImage;
+    if (pageImage.present) {
+      std::printf("page image  : %s %ux%u, %u B/row, rawLen %u, step %u,%u, focal %u,%u\n", pageImage.assetId,
+                  pageImage.nativeWidth, pageImage.nativeHeight, pageImage.rowBytes, pageImage.rawLen,
+                  pageImage.windowStepX, pageImage.windowStepY, pageImage.focalX, pageImage.focalY);
+      assetId = pageImage.assetId;
+    } else {
+      assetId = found.assetId;
+    }
   }
 
   char path[512];
@@ -284,26 +303,58 @@ int main(int argc, char** argv) {
   }
 
   wallet::AssetHeader header;
-  const wallet::AssetCheck check = wallet::checkAssetForPanel(file.data(), file.size(), panel, header);
+  const wallet::AssetCheck check = pageImage.present
+                                       ? wallet::checkPageImage(file.data(), file.size(), pageImage, panel, header)
+                                       : wallet::checkAssetForPanel(file.data(), file.size(), panel, header);
   std::printf("header      : type %u, bitDepth %u, tile %u,%u, %ux%u, rawLen %u, version %u, flags %u, "
               "presentation %u\n",
               static_cast<unsigned>(header.assetType), header.bitDepth, header.tileCol, header.tileRow, header.width,
               header.height, header.rawLen, header.version, header.flags, header.presentation);
   if (check != wallet::AssetCheck::Ok) {
-    static const char* names[] = {"Ok", "Malformed", "Encrypted", "BitDepth", "WrongPanel"};
+    static const char* names[] = {"Ok", "Malformed", "Encrypted", "BitDepth", "WrongPanel", "PageImageMismatch"};
     std::fprintf(stderr, "refused: %s (panel %ux%u, %u B/row, %u B/asset)\n",
                  names[static_cast<unsigned>(check)], panel.width, panel.height, panel.rowBytes, panel.bufferBytes);
     return 1;
   }
 
-  if (file.size() < wallet::kAssetHeaderBytes + header.rawLen) {
+  if (!pageImage.present && file.size() < wallet::kAssetHeaderBytes + header.rawLen) {
     std::fprintf(stderr, "short payload: %zu bytes of file, header wants %u after 32\n", file.size(), header.rawLen);
     return 1;
   }
   // The device reads straight into the framebuffer; here the vector *is* the
   // framebuffer. Same bytes, same offset, no transform.
-  const std::vector<uint8_t> fb(file.begin() + wallet::kAssetHeaderBytes,
-                                file.begin() + wallet::kAssetHeaderBytes + header.rawLen);
+  std::vector<uint8_t> fb;
+  if (pageImage.present) {
+    // Design B. Clamp the origin the way the device does -- x against a byte
+    // count times eight so it cannot come out unaligned -- then lift the window
+    // out row by row, which is PageReader::readWindow()'s arithmetic with a
+    // memcpy where the device has a seek and a read.
+    const uint32_t limitX = wallet::maxWindowX(pageImage, panel.rowBytes);
+    const uint32_t x = wallet::clampWindowOrigin(winX < 0 ? static_cast<int32_t>(pageImage.focalX)
+                                                         : static_cast<int32_t>(winX),
+                                                 limitX, 0);
+    const uint32_t y = wallet::clampWindowOrigin(winY < 0 ? static_cast<int32_t>(pageImage.focalY)
+                                                         : static_cast<int32_t>(winY),
+                                                 pageImage.nativeHeight, panel.height);
+    if ((x % 8) != 0) {
+      std::fprintf(stderr, "window x=%u is not 8-aligned\n", x);
+      return 1;
+    }
+    std::printf("window      : %u,%u of %ux%u (x limit %u)\n", x, y, pageImage.nativeWidth, pageImage.nativeHeight,
+                limitX);
+    fb.resize(panel.bufferBytes);
+    for (uint32_t r = 0; r < panel.height; ++r) {
+      const size_t off = wallet::kAssetHeaderBytes + static_cast<size_t>(y + r) * pageImage.rowBytes + x / 8;
+      if (off + panel.rowBytes > file.size()) {
+        std::fprintf(stderr, "row %u runs past the file\n", r);
+        return 1;
+      }
+      std::memcpy(fb.data() + static_cast<size_t>(r) * panel.rowBytes, file.data() + off, panel.rowBytes);
+    }
+  } else {
+    fb.assign(file.begin() + wallet::kAssetHeaderBytes,
+              file.begin() + wallet::kAssetHeaderBytes + header.rawLen);
+  }
 
   size_t inked = 0;
   for (int y = 0; y < panel.height; ++y) {

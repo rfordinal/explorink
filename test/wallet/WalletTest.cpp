@@ -619,3 +619,233 @@ TEST(WalletGeneratedTree, FocalTileHintComesOutOfTheManifest) {
   EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::OneToOne)].defaultCol, 1);
   EXPECT_EQ(out.grid[static_cast<uint8_t>(Level::OneToOne)].defaultRow, 1);
 }
+
+// ---------------------------------------------------------------------------
+// Design B: one whole-page image per level, an arbitrary window blitted out
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The measured shape: an A4 1:1 page image, 2576x1819 native, 322 bytes a row.
+PageImageSpec a4OneToOne() {
+  PageImageSpec page;
+  page.present = true;
+  std::strcpy(page.assetId, "abcdef0123456789");
+  page.nativeWidth = 2576;
+  page.nativeHeight = 1819;
+  page.rowBytes = 322;
+  page.rawLen = 322u * 1819u;
+  page.windowStepX = 400;
+  page.windowStepY = 240;
+  page.focalX = 888;
+  page.focalY = 480;
+  return page;
+}
+
+}  // namespace
+
+TEST(WalletWindow, ClampsAndNeverWraps) {
+  // Mid-range moves are untouched.
+  EXPECT_EQ(clampWindowOrigin(400, 2576, 800), 400u);
+  // Past the right edge stops at span - window, it does not come back round.
+  EXPECT_EQ(clampWindowOrigin(2400, 2576, 800), 1776u);
+  EXPECT_EQ(clampWindowOrigin(999999, 2576, 800), 1776u);
+  // Before the left edge stops at zero, it does not go negative or wrap.
+  EXPECT_EQ(clampWindowOrigin(-1, 2576, 800), 0u);
+  EXPECT_EQ(clampWindowOrigin(-999999, 2576, 800), 0u);
+  // An image no bigger than the window is pinned.
+  EXPECT_EQ(clampWindowOrigin(0, 800, 800), 0u);
+  EXPECT_EQ(clampWindowOrigin(100, 800, 800), 0u);
+  EXPECT_EQ(clampWindowOrigin(100, 480, 800), 0u);
+}
+
+TEST(WalletWindow, TheXLimitIsAByteCountSoItIsAlways8Aligned) {
+  const PageImageSpec page = a4OneToOne();
+  // 322 - 100 = 222 bytes of travel = 1776 px, which is what the pixel maths
+  // gives here too (2576 - 800).
+  EXPECT_EQ(maxWindowX(page, 100), 1776u);
+  EXPECT_EQ(maxWindowX(page, 100) % 8, 0u);
+
+  // The point of deriving it from bytes: an image whose nativeWidth is not a
+  // multiple of 8 still cannot produce an unaligned limit.
+  PageImageSpec odd = page;
+  odd.nativeWidth = 2570;
+  EXPECT_EQ(maxWindowX(odd, 100) % 8, 0u);
+  // And a page narrower than the panel cannot pan at all.
+  PageImageSpec narrow = page;
+  narrow.rowBytes = 100;
+  EXPECT_EQ(maxWindowX(narrow, 100), 0u);
+}
+
+TEST(WalletWindow, EveryClampedStepStays8Aligned) {
+  const PageImageSpec page = a4OneToOne();
+  const uint32_t limit = maxWindowX(page, 100);
+  uint32_t x = page.focalX;
+  ASSERT_EQ(x % 8, 0u) << "the generator must hand over an 8-aligned focal point";
+  for (int i = 0; i < 12; ++i) {
+    x = clampWindowOrigin(static_cast<int32_t>(x) + page.windowStepX, limit, 0);
+    EXPECT_EQ(x % 8, 0u) << "step " << i;
+  }
+  EXPECT_EQ(x, limit) << "walking right must end at the edge, not past it";
+  for (int i = 0; i < 20; ++i) {
+    x = clampWindowOrigin(static_cast<int32_t>(x) - page.windowStepX, limit, 0);
+    EXPECT_EQ(x % 8, 0u) << "back-step " << i;
+  }
+  EXPECT_EQ(x, 0u);
+}
+
+TEST(WalletPageImageGate, AcceptsAPageImageThatIsNotPanelShaped) {
+  const PageImageSpec page = a4OneToOne();
+  const auto bytes = makeHeader(/*type=*/5, /*bitDepth=*/1, /*col=*/0, /*row=*/0, page.nativeWidth, page.nativeHeight,
+                                page.rawLen);
+  AssetHeader h;
+  // The thing the tile gate would refuse: rawLen is 585,718, not the panel's
+  // 48,000. A page image is checked against its own geometry instead.
+  EXPECT_EQ(checkAssetForPanel(bytes.data(), bytes.size(), kPanelX4, h), AssetCheck::WrongPanel);
+  EXPECT_EQ(checkPageImage(bytes.data(), bytes.size(), page, kPanelX4, h), AssetCheck::Ok);
+  // And byte-identical on the other panel, because nothing about it is cut to a
+  // screen. This is the reason design B needs no per-panel asset set at 1:1.
+  EXPECT_EQ(checkPageImage(bytes.data(), bytes.size(), page, kPanelX3, h), AssetCheck::Ok);
+}
+
+TEST(WalletPageImageGate, RefusesAHeaderThatDisagreesWithTheManifest) {
+  const PageImageSpec page = a4OneToOne();
+  AssetHeader h;
+
+  // Right shape, wrong type: a tile claiming to be a page image, or the reverse.
+  const auto tile = makeHeader(/*type=*/3, 1, 0, 0, page.nativeWidth, page.nativeHeight, page.rawLen);
+  EXPECT_EQ(checkPageImage(tile.data(), tile.size(), page, kPanelX4, h), AssetCheck::PageImageMismatch);
+
+  // Header says one size, the manifest promised another.
+  const auto wrongSize = makeHeader(5, 1, 0, 0, 2000, page.nativeHeight, page.rawLen);
+  EXPECT_EQ(checkPageImage(wrongSize.data(), wrongSize.size(), page, kPanelX4, h), AssetCheck::PageImageMismatch);
+
+  // rowBytes * nativeHeight has to be rawLen. This is the structural check that
+  // replaces the panel check.
+  PageImageSpec badMath = page;
+  badMath.rawLen = page.rawLen + 1;
+  const auto matching = makeHeader(5, 1, 0, 0, page.nativeWidth, page.nativeHeight, badMath.rawLen);
+  EXPECT_EQ(checkPageImage(matching.data(), matching.size(), badMath, kPanelX4, h), AssetCheck::PageImageMismatch);
+
+  // Encrypted and grey are refused before any of that, same as a tile.
+  const auto enc = makeHeader(5, 1, 0, 0, page.nativeWidth, page.nativeHeight, page.rawLen, 7, kFlagEncrypted);
+  EXPECT_EQ(checkPageImage(enc.data(), enc.size(), page, kPanelX4, h), AssetCheck::Encrypted);
+  const auto grey = makeHeader(5, 2, 0, 0, page.nativeWidth, page.nativeHeight, page.rawLen);
+  EXPECT_EQ(checkPageImage(grey.data(), grey.size(), page, kPanelX4, h), AssetCheck::BitDepth);
+}
+
+TEST(WalletPageImageGate, RefusesAPageSmallerThanThePanel) {
+  // No window can fill the screen out of this, which is a wrong-device problem
+  // rather than a corrupt file -- so WrongPanel, not PageImageMismatch.
+  PageImageSpec small;
+  small.present = true;
+  std::strcpy(small.assetId, "abcdef0123456789");
+  small.nativeWidth = 640;
+  small.nativeHeight = 400;
+  small.rowBytes = 80;
+  small.rawLen = 80u * 400u;
+  const auto bytes = makeHeader(5, 1, 0, 0, small.nativeWidth, small.nativeHeight, small.rawLen);
+  AssetHeader h;
+  EXPECT_EQ(checkPageImage(bytes.data(), bytes.size(), small, kPanelX4, h), AssetCheck::WrongPanel);
+}
+
+TEST(WalletManifest, PageImageIsReadForTheRequestedLevelOnly) {
+  const char* json = R"({"formatVersion":1,"walletVersion":9,"items":[{"title":"Licence","pages":[{
+      "levels":{
+        "fit":{"cols":1,"rows":1,"assets":[{"assetId":"1111111111111111","col":0,"row":0}],
+               "pageImage":{"assetId":"aaaaaaaaaaaaaaaa","nativeWidth":800,"nativeHeight":480,
+                            "rowBytes":100,"rawLen":48000,"sha256":"ff","windowStepX":0,"windowStepY":0,
+                            "focalX":0,"focalY":0}},
+        "one_to_one":{"cols":4,"rows":4,"assets":[],
+               "pageImage":{"assetId":"bbbbbbbbbbbbbbbb","nativeWidth":2576,"nativeHeight":1819,
+                            "rowBytes":322,"rawLen":585718,"sha256":"ee","windowStepX":400,"windowStepY":240,
+                            "focalX":888,"focalY":480}}}}]}]})";
+
+  ManifestParser oneToOne;
+  oneToOne.beginLookup(0, 0, Level::OneToOne, 0, 0);
+  oneToOne.feed(json, std::strlen(json));
+  const PageLookup& big = oneToOne.lookup();
+  ASSERT_TRUE(big.pageFound);
+  ASSERT_TRUE(big.pageImage.present);
+  EXPECT_STREQ(big.pageImage.assetId, "bbbbbbbbbbbbbbbb");
+  EXPECT_EQ(big.pageImage.nativeWidth, 2576);
+  EXPECT_EQ(big.pageImage.nativeHeight, 1819);
+  EXPECT_EQ(big.pageImage.rowBytes, 322);
+  EXPECT_EQ(big.pageImage.rawLen, 585718u);
+  EXPECT_EQ(big.pageImage.windowStepX, 400);
+  EXPECT_EQ(big.pageImage.windowStepY, 240);
+  EXPECT_EQ(big.pageImage.focalX, 888);
+  EXPECT_EQ(big.pageImage.focalY, 480);
+  // A level whose assets array is empty still opens, because the page image is a
+  // source in its own right.
+  EXPECT_FALSE(big.assetFound);
+
+  // The FIT lookup gets FIT's page image, not the 1:1 one.
+  ManifestParser fit;
+  fit.beginLookup(0, 0, Level::Fit, 0, 0);
+  fit.feed(json, std::strlen(json));
+  ASSERT_TRUE(fit.lookup().pageImage.present);
+  EXPECT_STREQ(fit.lookup().pageImage.assetId, "aaaaaaaaaaaaaaaa");
+  EXPECT_TRUE(fit.lookup().assetFound) << "and the tile is still there beside it";
+  EXPECT_STREQ(fit.lookup().assetId, "1111111111111111");
+
+  // DETAIL has neither in this manifest.
+  ManifestParser detail;
+  detail.beginLookup(0, 0, Level::Detail, 0, 0);
+  detail.feed(json, std::strlen(json));
+  EXPECT_FALSE(detail.lookup().pageImage.present);
+  EXPECT_FALSE(detail.lookup().assetFound);
+}
+
+TEST(WalletManifest, PageImageWithABadAssetIdIsNoPageImage) {
+  // The id becomes a path, so the same 16-hex rule applies here as everywhere.
+  const char* json = R"({"formatVersion":1,"items":[{"title":"T","pages":[{"levels":{
+      "fit":{"cols":1,"rows":1,"assets":[],
+             "pageImage":{"assetId":"../../etc","nativeWidth":800,"nativeHeight":480,
+                          "rowBytes":100,"rawLen":48000}}}}]}]})";
+  ManifestParser parser;
+  parser.beginLookup(0, 0, Level::Fit, 0, 0);
+  parser.feed(json, std::strlen(json));
+  EXPECT_TRUE(parser.lookup().pageFound);
+  EXPECT_FALSE(parser.lookup().pageImage.present);
+}
+
+TEST(WalletManifest, ATreeWithNoPageImagesStillReadsAsTiles) {
+  // The committed generator fixture predates design B. The tile path must not
+  // have moved under it.
+  const std::vector<uint8_t> raw = readFixture("manifest.json");
+  ASSERT_FALSE(raw.empty());
+  ManifestParser parser;
+  parser.beginLookup(0, 0, Level::Detail, 1, 1);
+  parser.feed(reinterpret_cast<const char*>(raw.data()), raw.size());
+  EXPECT_FALSE(parser.lookup().pageImage.present);
+  EXPECT_TRUE(parser.lookup().assetFound);
+  EXPECT_STREQ(parser.lookup().assetId, "806dfe66748d208f");
+}
+
+TEST(WalletWindow, NativeXRunsDownThePageAndNativeYRunsAcrossItInverted) {
+  // The invariant the viewer's button wiring depends on, stated as an assertion
+  // rather than left in a comment. GfxRenderer maps logical portrait (x, y) to
+  // panel (y, panelHeight - 1 - x), so in a stored page image native x is the
+  // document's vertical axis -- and it is the byte-offset axis, which is why it is
+  // the one that must stay 8-aligned -- while native y is its horizontal axis,
+  // inverted: the largest native y is the document's LEFT edge.
+  //
+  // Verified visually too: the host preview renders native (0, max) of a real
+  // generated 1:1 page image as the top-left of the page, title and left margin
+  // (docs/wallet-viewer.md, "Two sources per level").
+  const PanelGeometry panel = kPanelX4;
+
+  // A framebuffer with exactly one pixel of ink, at panel (0, height - 1).
+  std::vector<uint8_t> fb(panel.bufferBytes, 0xFF);
+  const size_t byteIndex = static_cast<size_t>(panel.height - 1) * panel.rowBytes + 0;
+  fb[byteIndex] &= static_cast<uint8_t>(~0x80);  // clear the MSB: bit 0 = ink
+
+  // Read logically, that pixel is the document's top-left corner.
+  EXPECT_FALSE(logicalWhite(fb, panel, 0, 0)) << "native (0, height-1) must be logical (0,0)";
+  EXPECT_TRUE(logicalWhite(fb, panel, 1, 0));
+  EXPECT_TRUE(logicalWhite(fb, panel, 0, 1));
+  // And native (0, 0) -- the other end of the y axis -- is the document's top
+  // RIGHT, which is why panning left means increasing native y.
+  EXPECT_TRUE(logicalWhite(fb, panel, panel.height - 1, 0));
+}

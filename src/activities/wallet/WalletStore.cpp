@@ -157,14 +157,134 @@ bool Store::lookupPage(const int itemIndex, const int pageIndex, const Level lev
     error = Error::NotInManifest;
     return false;
   }
-  if (!out.assetFound) {
-    // The page exists and the level does not carry this tile. The viewer clamps
-    // its arrows off the grid, so this is a manifest that disagrees with itself.
-    LOG_ERR(kLogTag, "no %s tile %u,%u for item %d page %d", levelName(level), static_cast<unsigned>(col),
-            static_cast<unsigned>(row), itemIndex, pageIndex);
+  // Either source will do. A design-B level carries a page image and may carry no
+  // tiles at all; a card generated before design B carries only tiles.
+  if (!out.assetFound && !out.pageImage.present) {
+    LOG_ERR(kLogTag, "no %s source for item %d page %d (tile %u,%u)", levelName(level), itemIndex, pageIndex,
+            static_cast<unsigned>(col), static_cast<unsigned>(row));
     error = Error::NotInManifest;
     return false;
   }
+  return true;
+}
+
+bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Error& error) {
+  error = Error::None;
+  if (!page.present || !isValidAssetId(page.assetId)) {
+    error = Error::NotInManifest;
+    return false;
+  }
+  // Already the right file: a pan must not pay for an open.
+  if (open_ && std::strcmp(spec_.assetId, page.assetId) == 0) {
+    spec_ = page;
+    return true;
+  }
+  close();
+
+  char path[kAssetPathBufBytes];
+  if (!buildAssetPath(page.assetId, path, sizeof(path))) {
+    error = Error::BadAsset;
+    return false;
+  }
+  if (!Storage.openFileForRead(kLogTag, path, file_)) {
+    LOG_ERR(kLogTag, "no page image %s", path);
+    error = Error::NoAsset;
+    return false;
+  }
+
+  uint8_t raw[kAssetHeaderBytes];
+  if (file_.read(raw, sizeof(raw)) != static_cast<int>(sizeof(raw))) {
+    LOG_ERR(kLogTag, "short page-image header %s", path);
+    file_.close();
+    error = Error::BadAsset;
+    return false;
+  }
+
+  const PanelGeometry live = livePanel(renderer);
+  switch (checkPageImage(raw, sizeof(raw), page, live, header_)) {
+    case AssetCheck::Ok:
+      break;
+    case AssetCheck::Encrypted:
+      file_.close();
+      error = Error::AssetEncrypted;
+      return false;
+    case AssetCheck::WrongPanel:
+      // The page image is narrower or shorter than this panel, so no window can
+      // fill the screen. A wrong-device problem, not a corrupt file.
+      LOG_ERR(kLogTag, "page image %ux%u/%u B row is smaller than the %ux%u/%u panel",
+              static_cast<unsigned>(page.nativeWidth), static_cast<unsigned>(page.nativeHeight),
+              static_cast<unsigned>(page.rowBytes), static_cast<unsigned>(live.width),
+              static_cast<unsigned>(live.height), static_cast<unsigned>(live.rowBytes));
+      file_.close();
+      error = Error::AssetWrongSize;
+      return false;
+    case AssetCheck::Malformed:
+    case AssetCheck::BitDepth:
+    case AssetCheck::PageImageMismatch:
+      LOG_ERR(kLogTag, "page image %s does not match the manifest", path);
+      file_.close();
+      error = Error::BadAsset;
+      return false;
+  }
+
+  spec_ = page;
+  open_ = true;
+  LOG_INF(kLogTag, "page image open: %s %ux%u, %u B/row, step %u,%u", page.assetId,
+          static_cast<unsigned>(page.nativeWidth), static_cast<unsigned>(page.nativeHeight),
+          static_cast<unsigned>(page.rowBytes), static_cast<unsigned>(page.windowStepX),
+          static_cast<unsigned>(page.windowStepY));
+  return true;
+}
+
+void PageReader::close() {
+  if (open_ || file_.isOpen()) file_.close();
+  open_ = false;
+  spec_ = PageImageSpec{};
+  header_ = AssetHeader{};
+}
+
+bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& renderer, Error& error) {
+  error = Error::None;
+  if (!open_) {
+    error = Error::NotInManifest;
+    return false;
+  }
+  if (!renderer.hasFrameBuffer()) {
+    error = Error::NoFrameBuffer;
+    return false;
+  }
+  if ((x % 8) != 0) {
+    // The caller clamps against maxWindowX(), which is a byte count times 8 and
+    // so cannot be unaligned. Reaching here means a caller invented an origin.
+    LOG_ERR(kLogTag, "window x=%lu is not 8-aligned", static_cast<unsigned long>(x));
+    error = Error::BadAsset;
+    return false;
+  }
+
+  const uint32_t rowBytes = renderer.getDisplayWidthBytes();
+  const uint32_t rows = renderer.getDisplayHeight();
+  const uint32_t xByte = x / 8;
+  if (xByte + rowBytes > spec_.rowBytes || y + rows > spec_.nativeHeight) {
+    LOG_ERR(kLogTag, "window %lu,%lu does not fit %ux%u", static_cast<unsigned long>(x),
+            static_cast<unsigned long>(y), static_cast<unsigned>(spec_.nativeWidth),
+            static_cast<unsigned>(spec_.nativeHeight));
+    error = Error::AssetWrongSize;
+    return false;
+  }
+
+  uint8_t* const fb = renderer.getFrameBuffer();
+  for (uint32_t r = 0; r < rows; ++r) {
+    const uint32_t offset = kAssetHeaderBytes + (y + r) * spec_.rowBytes + xByte;
+    if (!file_.seekSet(offset) || file_.read(fb + r * rowBytes, rowBytes) != static_cast<int>(rowBytes)) {
+      LOG_ERR(kLogTag, "page-image row %lu short at offset %lu", static_cast<unsigned long>(r),
+              static_cast<unsigned long>(offset));
+      error = Error::ShortRead;
+      return false;
+    }
+  }
+  // header_.sha256Prefix is still unchecked here, same as the tile path -- and a
+  // window is a fraction of the payload, so a whole-file hash would cost more than
+  // the read it is guarding.
   return true;
 }
 
