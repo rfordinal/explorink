@@ -13,7 +13,9 @@ Only while the **map screen** or the **sync map tiles** screen is open.
 (`src/activities/map/MapActivity.cpp:1314`), which builds the GATT table and
 starts advertising (`BlePositionServer.cpp:295-320`). `end()` stops it and
 deinits the stack (`BlePositionServer.cpp:351`), because the NimBLE host plus
-controller is 64.5 KB of heap — measured, `map-memory.md`.
+controller is 57 KB of heap — measured 2026-08-10 after the BLE config trim
+(56,972 B; 64,544 B before it), `map-memory.md:203`. The pre-trim 64.5 KB figure
+was still quoted here until 2026-08-18.
 
 So advertising is not a background beacon. It is a statement that the rider is
 looking at the map right now, and the phone app treats it as one: the OS watches
