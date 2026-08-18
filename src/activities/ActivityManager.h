@@ -113,7 +113,14 @@ class ActivityManager {
   void goToTileSync();
   // The offline document wallet: browse first, then one screen per page
   // (WalletActivity.h). Read-only -- nothing on the device can change the card.
-  void goToWallet();
+  //
+  // `itemIndex` and `codeIndex` are what `CMD:GOTO_WALLET` passes so a host script
+  // can land straight on a document, or on one of its machine-readable codes,
+  // without a person pressing three buttons first. -1 for either means "stop
+  // here": the home menu and every internal caller pass nothing and get the browse
+  // list, unchanged. An index the wallet does not have is refused on screen by
+  // WalletActivity, never clamped (docs/wallet-viewer.md, "CMD:GOTO_WALLET").
+  void goToWallet(int itemIndex = -1, int codeIndex = -1);
   void goToPreview();
   void goToSleep(bool fromTimeout = false);
   void goToBoot();

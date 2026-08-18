@@ -258,9 +258,9 @@ LEFT/RIGHT used to be a second way to move the selection, and P2 took that away
 moves on the side pair only, and the side pair has no hint box on the X4, so
 nothing on screen says how to move it. Accepted, for two reasons: the side pair
 is where this device puts list movement everywhere else, and the front pair's
-hints now read "Code", which is the thing a rider would never have guessed. The
-row itself says how many codes a document has, so LEFT/RIGHT doing nothing is
-explained on screen rather than felt as a dead button.
+hints now read `< Code` and `Code >`, which is the thing a rider would never have
+guessed. The row itself says how many codes a document has, so LEFT/RIGHT doing
+nothing is explained on screen rather than felt as a dead button.
 
 ## Whole-screen paging was rejected, and design B replaced it
 
@@ -523,24 +523,83 @@ move a pixel here.
 
 Brief section 13, as implemented:
 
-| where | button | what happens |
-|---|---|---|
-| browse | RIGHT | opens the item's **first** code |
-| browse | LEFT | opens the item's **last** code -- the other way round the ring |
-| browse | either, no codes | nothing at all. No refresh, no message |
-| code screen | RIGHT / LEFT | next / previous code, **cycling** |
-| code screen | BACK | back to the browse list |
-| code screen | CONFIRM, UP, DOWN | nothing |
+| where | button | hint | what happens |
+|---|---|---|---|
+| browse | RIGHT | `Code >` | opens the item's **first** code |
+| browse | LEFT | `< Code` | opens the item's **last** code -- the other way round the ring |
+| browse | either, no codes | as above | nothing at all. No refresh, no message |
+| code screen | RIGHT | `Code >` | next code, wrapping |
+| code screen | LEFT | `< Code` | previous code, wrapping |
+| code screen | BACK | `Back` | back to the browse list |
+| code screen | CONFIRM, UP, DOWN | -- | nothing |
 
 Codes belong to a **page** in the manifest and the walk is **item-wide**: the
 codes of page 0, then page 1, in manifest order (`ManifestParser::commitCode()`).
 A rider with a two-page boarding pass thinks of "the codes on this ticket", not
 "page 2's code". `WalletCodeManifest.CodesOfEveryPageAreOneWalk` pins the order.
 
-Cycling, not clamping -- the opposite of the document viewer's arrows, on purpose.
-A page has edges because paper has edges; a set of two codes at a gate does not,
-and a rider flipping between a boarding pass and a bag tag should not have to
-remember which end of the list they are at.
+#### The walk wraps; the document pan clamps
+
+Two different behaviours on the same two buttons, so the reason is stated rather
+than left to be discovered:
+
+- a **document** pan clamps. A page has edges because paper has edges, and a press
+  at the edge doing nothing is what a sheet of paper does;
+- the **code** walk wraps. A document's codes have no edges and no spatial
+  meaning -- a rider at a gate flips between a boarding pass and a bag tag, and
+  should not have to remember which end of a two-item list they are at. On a ring
+  of two, which is the common case, clamping would leave one of the two buttons
+  dead half the time.
+
+One function decides it, `wallet::walkCodeIndex()` (`WalletAsset.h`), and the
+browse screen's entry points are steps on the same ring rather than a second rule:
+RIGHT steps on from before the start (index 0), LEFT steps back off the beginning
+(the last code). A ring of one returns where it started, so the caller spends no
+refresh; a ring of none returns -1, its cue to do nothing. An index left over from
+a shorter manifest cannot walk out of range either, which is how the code screen
+recovers when the card changed under it. Pinned by
+`WalletCodeWalk.WrapsAtBothEndsAndTheBrowseEntryIsTheSameRing`.
+
+#### The hints are directional
+
+`< Code` and `Code >`, one per front button
+(`STR_WALLET_CODE_PREV` / `STR_WALLET_CODE_NEXT`), passed to
+`mapLabels(back, confirm, previous, next)` which swaps them itself when the nav
+direction is swapped -- so the arrow always points where the button goes.
+
+They started as two boxes both reading `Code`, and that cost a real
+misdiagnosis on the panel, 2026-08-18: the maintainer could not tell which button
+went which way, pressed the left one, landed on the **last** code -- a landscape
+PDF417, which stands vertical on a portrait screen -- and concluded the code was
+drawn in the wrong orientation. It was not. **A label that forces a guess is a
+defect**, not a cosmetic gap, because the guess becomes a bug report about
+something that works.
+
+Widths, **measured** with the firmware's own `ubuntu_10` table through
+`EpdFont::getTextDimensions()` -- the same call `GfxRenderer::getTextWidth()` makes
+on the device -- against the 106 px hint box
+(`src/components/themes/BaseTheme.cpp:165`), where the text is centred and anything
+wider spills over both borders:
+
+| label | width | verdict |
+|---|---|---|
+| `< Code` | 65 px | 41 px of slack |
+| `Code >` | 65 px | 41 px |
+| `Back` | 45 px | for scale |
+| `Select` | 60 px | for scale |
+| `Prev code` | 92 px | **rejected** -- 14 px left for every other language |
+| `Next code` | 95 px | **rejected** -- 11 px |
+
+That is why the labels are the short arrow form and not words. `<` and `>` are both
+in the face (checked with `EpdFont::hasCodepoint()`), as are the Cyrillic and
+Latin-1 ranges a translation would need.
+
+`WalletCodeHints.*` reads the labels **out of every translation file** and measures
+what it finds, rather than carrying its own copy of the string: the risk is a
+translator writing something longer, and a test with a hardcoded copy cannot see
+that. It also asserts the two labels differ and that at least one carries a
+direction. Both checks were **proved to fail** on a deliberately long, identical
+pair (215 px) before being committed.
 
 CONFIRM is inert because there is no zoom for a code: it is already drawn as large
 as the panel allows, and a scanner needs the quiet zone more than the rider needs
@@ -764,6 +823,95 @@ One extra check, outside the firmware: both PNGs -- the ones the firmware's own
 reader wrote -- decode back to the exact payloads through `zxing-cpp` on the
 laptop. So the round trip closes through this side's read path as well as the
 generator's. **It closes on a PNG, not on the panel.**
+
+### CMD:GOTO_WALLET
+
+`src/main.cpp`, in the same dispatch as `CMD:GOTO_MAP` and `CMD:GOTO_TILESYNC`
+(which all drop power saving first -- at 10 MHz every timing on this device is a
+lie, `docs/power-management.md`).
+
+```
+CMD:GOTO_WALLET              the browse list
+CMD:GOTO_WALLET 0            open document 0
+CMD:GOTO_WALLET 0 3          open document 0's code 3, fullscreen
+```
+
+**It exists so a verification round does not need a person at the device.** The
+wallet was three presses deep -- Down, Down, Select -- and every asset push meant
+walking back into it, so every look at the screen cost somebody standing there.
+That is how a screen ends up checked once and never again; the same argument that
+bought `CMD:GOTO_TILESYNC`. The code index matters more than the item index: a code
+screen is *four* presses deep and there was no other way for a host script to land
+on one and screenshot it.
+
+Replies `GOTO_WALLET_OK item=<n> code=<n>` for a well-formed request, or
+`GOTO_WALLET_ERR usage: ...` for one it refuses.
+
+What it refuses, and where (`wallet::parseGotoWalletArgs()`, `WalletAsset.h`):
+
+| argument | outcome |
+|---|---|
+| nothing | the browse list |
+| `0` | document 0 |
+| `0 3` | document 0, code 3 |
+| `-1`, `x`, `0x2`, `1.5` | `GOTO_WALLET_ERR` -- refused, not coerced |
+| `1 2 3` | `GOTO_WALLET_ERR` -- a third argument is a typo, not a feature |
+| `99999` | `GOTO_WALLET_ERR` -- no wallet has ten thousand documents |
+
+A refusal leaves both indices at -1, so a caller that ignores the return value still
+cannot open the wrong document. `WalletGotoArgs.*` covers every row.
+
+**Range is checked in the activity, not in the command, and never clamped.**
+Nothing outside the manifest knows how many documents a wallet holds, and the
+manifest is only read once `WalletActivity::onEnter()` runs -- which happens after
+the command handler has already replied. So:
+
+- the **command** validates syntax and replies `OK`, exactly as `CMD:GOTO_MAP`
+  replies `OK` without checking that its route path exists;
+- the **activity** checks the index against the real list. Out of range logs
+  `GOTO_WALLET: no item 9 (wallet has 2)` and puts *"No document 9 in this
+  wallet"* on the panel, then shows the list
+  (`WalletActivity::applyGotoTarget()`). Clamping to document 0 was rejected
+  outright: a host script that mistypes an index would be handed the wrong
+  document and believe it got what it asked for, which is the worst possible
+  failure for an automated loop.
+
+The panel message matters as much as the log line, because a host-driven loop
+verifies by screenshot -- a refusal that only appears in the serial log is invisible
+to the thing doing the checking.
+
+Two implementation notes worth knowing before the next screen gets a `GOTO_`:
+
+- **The request travels in the activity's constructor**, not through a global.
+  `goToWallet(item, code)` builds `WalletActivity` with them and
+  `applyGotoTarget()` consumes them once in `onEnter()`. Once, deliberately:
+  coming back out of the code screen must land on the list, not reopen the same
+  code for ever.
+- **Pushing a child activity from `onEnter()` is supported.**
+  `ActivityManager::loop()` empties `pendingActivity` before it calls `onEnter()`
+  and handles a new pending action on its next iteration
+  (`ActivityManager.cpp:153-159`). The list frame is skipped entirely when a target
+  was reached, so landing on a code costs one `HALF` refresh instead of two and does
+  not flash the list on the way.
+
+The code index needed no contortion in the activity API, so the full three-argument
+form shipped.
+
+### Confirmed on the panel, 2026-08-18
+
+Flashed and used:
+
+- **codes render** and the walk works;
+- the drawn framebuffer was **byte-diffed against the stored asset** and differs by
+  **133 bytes** -- the symbology label and nothing else. So the read path puts the
+  asset on the panel unchanged, measured rather than reasoned, and the label lands
+  where the blank-band test said it would;
+- the two front hints both read `Code`, which cost a misdiagnosis and was fixed in
+  the same pass (see "The hints are directional").
+
+One thing that looked like a bug and was not: the demo PDF417 is the landscape
+variant, so it stands **vertical** on a portrait screen. That is the code the
+generator was asked for, drawn correctly.
 
 ### Nothing has been scanned off the panel
 
@@ -1061,23 +1209,28 @@ Measured against the branch tip before this work, `pio run -e default`,
 
 | | before P2 | with P2 | delta |
 |---|---|---|---|
-| `firmware.bin` | 3,956,480 | 3,963,552 | **+7,072** |
-| `.flash.text` | 2,183,814 | 2,188,942 | +5,128 |
-| `.flash.rodata` | 1,653,128 | 1,655,080 | +1,952 |
+| `firmware.bin` | 3,956,480 | 3,964,832 | **+8,352** |
+| `.flash.text` | 2,183,814 | 2,189,548 | +5,734 |
+| `.flash.rodata` | 1,653,128 | 1,655,760 | +2,632 |
 | `.dram0.data` | 18,145 | 18,145 | 0 |
 | `.dram0.bss` | 41,176 | 41,176 | **0** |
 | `.iram0.text` | 87,350 | 87,350 | 0 |
 
-**No static RAM at all.** The rodata is the 10 new `STR_WALLET_CODE*` strings
-across 31 language arrays (~195 bytes a string, the same rate P1 paid) plus
-sha256's 256-byte round-constant table. The text is sha256 (~1 KB), the code
-activity, and the parser's code mode.
+**No static RAM at all.** The rodata is the 12 new `STR_WALLET_*` strings across 31
+language arrays (~195 bytes a string, the same rate P1 paid) plus sha256's 256-byte
+round-constant table. The text is sha256 (~1 KB), the code activity, the parser's
+code mode and `CMD:GOTO_WALLET`.
+
+The first figure of this table was +7,072, before the directional hints and
+`CMD:GOTO_WALLET` were added in the same pass; both numbers were measured the same
+way, against the same baseline.
 
 Heap while the code screen is up, **derived from the type sizes, not measured**:
 one `CodeEntry` (~110 bytes: a 17-byte assetId, a 65-byte hash, a 12-byte
 symbology, four `uint16_t`) plus the activity object, and the same transient
 ~750-byte `ManifestParser` every other lookup allocates and frees. No scratch
-buffer: the hash reads the framebuffer where it lies.
+buffer: the hash reads the framebuffer where it lies. The browse screen grew a
+64-byte message buffer for a refused `CMD:GOTO_WALLET` index and two ints.
 
 ### P1, the viewer
 
@@ -1120,7 +1273,7 @@ Heap, **derived from the type sizes, not measured on hardware**:
 
 - Format layout, path mapping, level cycle, manifest shape, the panel gate, the
   codes array, the code walk, the hash and the label band: **host-tested**,
-  `test/wallet/WalletTest.cpp`, 56 cases, `pio run -t unit-tests`.
+  `test/wallet/WalletTest.cpp`, 61 cases, `pio run -t unit-tests`.
 - Byte order, ink polarity, tile order, orientation: **checked against real
   generator output** and looked at as pictures, 2026-08-18 -- see above. This is
   the strongest evidence that exists short of hardware, and it covers exactly the
@@ -1144,15 +1297,18 @@ Heap, **derived from the type sizes, not measured on hardware**:
   against the measured 283. If it wins, the shipped path should move to it; if it
   loses, the estimate was wrong and that is worth writing down. Until then
   `windowed` is what ships. **Open.**
-- **P2, the code screen: nothing has been on the panel and nothing has been
-  scanned.** The manifest fields, the walk order, the hash (match and mismatch),
-  the unverified verdict and the label band are **host-tested** against verbatim
-  generator output; the two codes were **rendered and looked at** as PNGs and both
-  decode back through `zxing-cpp` on the laptop. The refresh choice and the
-  `FULL`-vs-`HALF` reasoning are **read off the driver source**. The hash's
-  millisecond cost is **estimated, not measured**. Whether any of it scans off
-  e-ink glass is **completely open** -- see "Nothing has been scanned off the
-  panel".
+- **P2, the code screen: on the panel, not yet scanned.** Rendering and the walk
+  are **confirmed on the panel** 2026-08-18, and the drawn framebuffer was
+  **byte-diffed** against the stored asset -- 133 bytes of difference, all label.
+  The manifest fields, the walk order and its wrap, the hash (match and mismatch),
+  the unverified verdict, the label band and `CMD:GOTO_WALLET`'s arguments are
+  **host-tested** against verbatim generator output; the two codes were **rendered
+  and looked at** as PNGs and both decode back through `zxing-cpp` on the laptop.
+  The hint-label widths are **measured** with the firmware's own font table. The
+  refresh choice and the `FULL`-vs-`HALF` reasoning are **read off the driver
+  source**. The hash's millisecond cost is **estimated, not measured**. Whether any
+  of it scans off e-ink glass is **completely open** -- see "Nothing has been
+  scanned off the panel".
 - Still open after the on-panel session: whether FIT is legible in daylight,
   whether HALF on every page turn is too slow to page through a document, the real
   heap figures (nobody has run `heap_caps_get_info()` with a wallet on screen), and

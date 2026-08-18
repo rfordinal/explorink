@@ -639,9 +639,9 @@ void walletBenchReport(const char* mode, uint32_t* samples, const int count, con
   const uint32_t hi = *std::max_element(samples, samples + count);
   const uint32_t med = walletBenchMedian(samples, count);  // sorts in place; do this last
   const double kbps = med > 0 ? (static_cast<double>(payloadBytes) * 1000.0) / static_cast<double>(med) : 0.0;
-  logSerial.printf("WALLETBENCH mode=%s total_ms=%.2f min_ms=%.2f med_ms=%.2f max_ms=%.2f payload_kbps=%.1f read_bytes=%u\n",
-                   mode, total / 1000.0, lo / 1000.0, med / 1000.0, hi / 1000.0, kbps,
-                   static_cast<unsigned>(readBytes));
+  logSerial.printf(
+      "WALLETBENCH mode=%s total_ms=%.2f min_ms=%.2f med_ms=%.2f max_ms=%.2f payload_kbps=%.1f read_bytes=%u\n", mode,
+      total / 1000.0, lo / 1000.0, med / 1000.0, hi / 1000.0, kbps, static_cast<unsigned>(readBytes));
 }
 
 void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t originX, const uint32_t originY,
@@ -714,8 +714,8 @@ void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t o
   // A legend, so the three lines below need no doc to read: the min/med/max are
   // per frame, one frame being one whole window.
   logSerial.printf("WALLETBENCH fields=total_ms,min|med|max_ms_per_frame,payload_kbps,read_bytes\n");
-  logSerial.printf("WALLETBENCH file=%s bytes=%u base=%lu stride=%lu win=%lu,%lu rows=%lu rowbytes=%lu iters=%d\n", path,
-                   static_cast<unsigned>(fileBytes), static_cast<unsigned long>(base),
+  logSerial.printf("WALLETBENCH file=%s bytes=%u base=%lu stride=%lu win=%lu,%lu rows=%lu rowbytes=%lu iters=%d\n",
+                   path, static_cast<unsigned>(fileBytes), static_cast<unsigned long>(base),
                    static_cast<unsigned long>(stride), static_cast<unsigned long>(originX),
                    static_cast<unsigned long>(originY), static_cast<unsigned long>(rows),
                    static_cast<unsigned long>(rowBytes), iters);
@@ -1079,6 +1079,38 @@ void loop() {
         } else {
           walletBenchRun(relPath, static_cast<uint32_t>(strideArg), static_cast<uint32_t>(xArg),
                          static_cast<uint32_t>(yArg), itersArg);
+        }
+      } else if (cmd == "GOTO_WALLET" || cmd.startsWith("GOTO_WALLET ")) {
+        // The wallet was three button presses deep: Down, Down, Select, and then a
+        // walk back into it after every asset push. That made every verification
+        // round cost a person standing at the device, which is how a screen ends up
+        // checked once and never again -- the same reason GOTO_TILESYNC below
+        // exists.
+        //
+        // With an item and a code index a host script can land directly on one code
+        // and screenshot it, which is what the P2 code screen needs and cannot get
+        // any other way (docs/wallet-viewer.md, "CMD:GOTO_WALLET").
+        //
+        // Power saving is already off for every CMD: above. The wallet opens no
+        // radio at all, so the NimBLE hang GOTO_MAP guards against cannot apply
+        // here -- it inherits the same call for consistency, not necessity.
+        int itemArg = -1;
+        int codeArg = -1;
+        String args = cmd.substring(11);
+        args.trim();
+        if (!wallet::parseGotoWalletArgs(args.c_str(), itemArg, codeArg)) {
+          // Refused, not coerced: a mistyped index must not silently show document 0.
+          logSerial.printf("GOTO_WALLET_ERR usage: CMD:GOTO_WALLET [<item> [<code>]]\n");
+        } else {
+          LOG_DBG("MAIN", "CMD:GOTO_WALLET received, item %d code %d", itemArg, codeArg);
+          activityManager.goToWallet(itemArg, codeArg);
+          LOG_DBG("MAIN", "goToWallet() returned");
+          // OK means the request was well formed and the screen is armed. Whether the
+          // index exists is only knowable once WalletActivity has read the manifest,
+          // which happens after this returns -- it logs GOTO_WALLET: no item N and
+          // says so on the panel. Same shape as GOTO_MAP, which does not check that
+          // its route path exists either.
+          logSerial.printf("GOTO_WALLET_OK item=%d code=%d\n", itemArg, codeArg);
         }
       } else if (cmd == "GOTO_TILESYNC") {
         // The sync screen was the one screen a host could not reach. Its grid --

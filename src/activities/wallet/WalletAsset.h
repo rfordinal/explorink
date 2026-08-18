@@ -425,6 +425,77 @@ inline bool logicalBandIsBlank(const uint8_t* fb, const PanelGeometry& panel, in
   return true;
 }
 
+// Where LEFT/RIGHT land on the code ring.
+//
+// **The walk wraps; it does not clamp.** That is the opposite of the document
+// viewer's arrows, on purpose: a page has edges because paper has edges, and a
+// press at the edge doing nothing is what a sheet of paper does. A document's two
+// or three codes have no edges and no spatial meaning -- a rider at a gate flips
+// between a boarding pass and a bag tag and should not have to remember which end
+// of the list they are at. A ring of two is also the common case, where clamping
+// would make one of the two buttons dead half the time.
+//
+// One function, two call sites, so the browse screen's entry point is a step on
+// the same ring rather than a second rule:
+//
+//   browse RIGHT -> walkCodeIndex(-1, +1, count) == 0            (the first code)
+//   browse LEFT  -> walkCodeIndex(0,  -1, count) == count - 1    (the last)
+//   code screen  -> walkCodeIndex(current, +/-1, count)
+//
+// Returns -1 for an item with no codes, which is the caller's cue to do nothing.
+// A ring of one returns `from` unchanged, so the caller sees "no move" and spends
+// no refresh.
+inline int walkCodeIndex(int from, int delta, uint16_t count) {
+  if (count == 0) return -1;
+  const int n = static_cast<int>(count);
+  int next = from + delta;
+  // Modulo, written out: `%` on a negative left operand is implementation-defined
+  // territory nobody should have to think about at a gate.
+  while (next < 0) next += n;
+  while (next >= n) next -= n;
+  return next;
+}
+
+// Parses `CMD:GOTO_WALLET`'s optional arguments: nothing, an item index, or an
+// item and a code index.
+//
+//   ""      -> item -1, code -1   (the browse list)
+//   "0"     -> item  0, code -1   (open document 0)
+//   "0 3"   -> item  0, code  3   (open document 0's code 3)
+//
+// False for anything else -- a negative number, a non-number, a third argument.
+// Refused rather than coerced: a host script that mistypes an index should be told,
+// not silently shown document 0 (../../../docs/wallet-viewer.md, "CMD:GOTO_WALLET").
+//
+// Range is NOT checked here; nothing outside the manifest knows how many documents
+// a wallet has. WalletActivity checks it against the real list and says so on the
+// panel and in the log.
+inline bool parseGotoWalletArgs(const char* args, int& itemIndex, int& codeIndex) {
+  itemIndex = -1;
+  codeIndex = -1;
+  if (args == nullptr) return true;
+
+  int values[2] = {0, 0};
+  int found = 0;
+  size_t i = 0;
+  for (;;) {
+    while (args[i] == ' ' || args[i] == '\t') ++i;
+    if (args[i] == '\0') break;
+    if (args[i] < '0' || args[i] > '9') return false;  // no signs, no letters
+    if (found >= 2) return false;                      // a third argument is a typo, not a feature
+    int value = 0;
+    while (args[i] >= '0' && args[i] <= '9') {
+      value = value * 10 + (args[i] - '0');
+      if (value > 9999) return false;  // no wallet has ten thousand documents
+      ++i;
+    }
+    values[found++] = value;
+  }
+  if (found >= 1) itemIndex = values[0];
+  if (found >= 2) codeIndex = values[1];
+  return true;
+}
+
 // "qr" -> "QR", "pdf417" -> "PDF417". A symbology is a technical identifier, not
 // prose: it is never translated, only upper-cased for the label. ASCII only,
 // which is all a symbology name ever is.

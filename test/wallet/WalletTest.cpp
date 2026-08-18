@@ -5,10 +5,12 @@
 #include <string>
 #include <vector>
 
+#include "EpdFont.h"
 #include "WalletAsset.h"
 #include "WalletManifestParser.h"
 #include "WalletSha256.h"
 #include "WalletSidecar.h"
+#include "builtinFonts/ubuntu_10_regular.h"
 
 // The two pure halves of the wallet viewer: the 32-byte asset header, and the
 // manifest reader. Both run here with no Storage, no renderer and no panel --
@@ -1249,4 +1251,183 @@ TEST(WalletCodeLabel, SymbologyIsUpperCasedNotTranslated) {
   char small[4];
   symbologyLabel("datamatrix", small, sizeof(small));
   EXPECT_STREQ(small, "DAT");
+}
+
+// ---------------------------------------------------------------------------
+// The code walk's ends, and CMD:GOTO_WALLET's arguments
+// ---------------------------------------------------------------------------
+
+TEST(WalletCodeWalk, WrapsAtBothEndsAndTheBrowseEntryIsTheSameRing) {
+  // The stated rule: the code walk WRAPS where the document pan CLAMPS. Two
+  // different behaviours on the same buttons, so the difference is asserted here
+  // rather than left to a comment (docs/wallet-viewer.md, "The walk wraps").
+  EXPECT_EQ(walkCodeIndex(0, +1, 3), 1);
+  EXPECT_EQ(walkCodeIndex(1, +1, 3), 2);
+  EXPECT_EQ(walkCodeIndex(2, +1, 3), 0) << "RIGHT off the last code comes back to the first";
+  EXPECT_EQ(walkCodeIndex(0, -1, 3), 2) << "LEFT off the first code goes to the last";
+
+  // The browse screen's entry points are steps on the same ring: RIGHT steps on
+  // from before the start, LEFT steps back off the beginning.
+  EXPECT_EQ(walkCodeIndex(-1, +1, 3), 0);
+  EXPECT_EQ(walkCodeIndex(0, -1, 3), 2);
+
+  // A ring of one returns where it started, which is the caller's cue to spend no
+  // refresh. A ring of none returns -1, which is its cue to do nothing at all.
+  EXPECT_EQ(walkCodeIndex(0, +1, 1), 0);
+  EXPECT_EQ(walkCodeIndex(0, -1, 1), 0);
+  EXPECT_EQ(walkCodeIndex(-1, +1, 1), 0) << "browse RIGHT still opens the only code";
+  EXPECT_EQ(walkCodeIndex(0, -1, 1), 0) << "and browse LEFT opens the same one";
+  EXPECT_EQ(walkCodeIndex(0, +1, 0), -1);
+  EXPECT_EQ(walkCodeIndex(-1, +1, 0), -1);
+
+  // An index left over from a shorter manifest cannot walk out of range: this is
+  // how the code screen recovers when the card changed under it.
+  EXPECT_EQ(walkCodeIndex(9, +1, 2), 0);
+  EXPECT_EQ(walkCodeIndex(-9, +1, 2), 0);
+}
+
+TEST(WalletGotoArgs, NothingAnItemOrAnItemAndACode) {
+  int item = 99;
+  int code = 99;
+
+  // No arguments: the browse list.
+  ASSERT_TRUE(parseGotoWalletArgs("", item, code));
+  EXPECT_EQ(item, -1);
+  EXPECT_EQ(code, -1);
+  ASSERT_TRUE(parseGotoWalletArgs(nullptr, item, code));
+  EXPECT_EQ(item, -1);
+  // Whitespace only is still no arguments -- String::trim() should have removed it,
+  // and this must not depend on that.
+  ASSERT_TRUE(parseGotoWalletArgs("   ", item, code));
+  EXPECT_EQ(item, -1);
+  EXPECT_EQ(code, -1);
+
+  ASSERT_TRUE(parseGotoWalletArgs("0", item, code));
+  EXPECT_EQ(item, 0);
+  EXPECT_EQ(code, -1);
+
+  ASSERT_TRUE(parseGotoWalletArgs("2 3", item, code));
+  EXPECT_EQ(item, 2);
+  EXPECT_EQ(code, 3);
+  // Extra spacing between the two, as a host script's printf may well produce.
+  ASSERT_TRUE(parseGotoWalletArgs("  12   7 ", item, code));
+  EXPECT_EQ(item, 12);
+  EXPECT_EQ(code, 7);
+}
+
+TEST(WalletGotoArgs, RefusesEverythingItCannotMean) {
+  int item = 0;
+  int code = 0;
+  // A mistyped index must be told, not coerced into document 0.
+  EXPECT_FALSE(parseGotoWalletArgs("x", item, code));
+  EXPECT_FALSE(parseGotoWalletArgs("0x2", item, code));
+  EXPECT_FALSE(parseGotoWalletArgs("-1", item, code)) << "no negative index: -1 is the internal 'no target'";
+  EXPECT_FALSE(parseGotoWalletArgs("1 -1", item, code));
+  EXPECT_FALSE(parseGotoWalletArgs("1 2 3", item, code)) << "a third argument is a typo, not a feature";
+  EXPECT_FALSE(parseGotoWalletArgs("1.5", item, code));
+  EXPECT_FALSE(parseGotoWalletArgs("99999", item, code)) << "no wallet has ten thousand documents";
+  // And a refusal leaves the outputs at 'no target', so a caller that ignores the
+  // return value still cannot open the wrong document.
+  EXPECT_EQ(item, -1);
+  EXPECT_EQ(code, -1);
+}
+
+// ---------------------------------------------------------------------------
+// The hint labels have to fit the hint box
+//
+// This is measured with the firmware's OWN font table -- ubuntu_10, the face
+// UI_10_FONT_ID maps to (src/main.cpp:109) -- through the firmware's own
+// EpdFont::getTextDimensions(), which is what GfxRenderer::getTextWidth() calls on
+// the device. So a label that overflows the box fails here rather than on the
+// panel.
+//
+// It reads the label text out of every translation file, not out of a copy in this
+// test: the risk is a translator writing something longer, and a test carrying its
+// own copy of the string cannot see that.
+//
+// The box is 106 px wide and the text is centred in it
+// (src/components/themes/BaseTheme.cpp:165, :182-186), so anything wider spills
+// over the border on both sides.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kHintBoxWidth = 106;
+
+// The value of `key` in a yaml translation file, or "" when the file does not
+// carry it -- most languages fall back to English and state nothing.
+std::string yamlValue(const std::string& path, const std::string& key) {
+  FILE* fh = std::fopen(path.c_str(), "rb");
+  if (fh == nullptr) return "";
+  std::string out;
+  char line[512];
+  const std::string prefix = key + ":";
+  while (std::fgets(line, sizeof(line), fh) != nullptr) {
+    std::string text(line);
+    if (text.compare(0, prefix.size(), prefix) != 0) continue;
+    const size_t open = text.find('"');
+    const size_t close = text.rfind('"');
+    if (open != std::string::npos && close > open) out = text.substr(open + 1, close - open - 1);
+    break;
+  }
+  std::fclose(fh);
+  return out;
+}
+
+int uiTenWidth(const std::string& text) {
+  int width = 0;
+  int height = 0;
+  EpdFont(&ubuntu_10_regular).getTextDimensions(text.c_str(), &width, &height);
+  return width;
+}
+
+}  // namespace
+
+TEST(WalletCodeHints, TheTwoFrontHintsAreDirectionalAndDistinguishable) {
+  const std::string dir = std::string(WALLET_I18N_DIR);
+  const std::string prev = yamlValue(dir + "/english.yaml", "STR_WALLET_CODE_PREV");
+  const std::string next = yamlValue(dir + "/english.yaml", "STR_WALLET_CODE_NEXT");
+  ASSERT_FALSE(prev.empty()) << "STR_WALLET_CODE_PREV missing from english.yaml";
+  ASSERT_FALSE(next.empty()) << "STR_WALLET_CODE_NEXT missing from english.yaml";
+
+  // The defect being fixed: two hint boxes with the same text. The maintainer
+  // could not tell which button went which way, pressed one, landed on the last
+  // code and concluded the code was drawn wrong.
+  EXPECT_NE(prev, next) << "the two hints must not read the same";
+  // And distinguishable at a glance means more than a different string: each has to
+  // carry a direction the other does not.
+  EXPECT_TRUE(prev.find('<') != std::string::npos || next.find('>') != std::string::npos)
+      << "neither label carries a direction";
+}
+
+TEST(WalletCodeHints, EveryTranslationOfThemFitsTheHintBox) {
+  // Measured against the real face, for every language that states them. Today
+  // that is English alone -- the rest fall back -- so this test grows cover on its
+  // own as translations arrive.
+  static const char* kLanguages[] = {
+      "arabic",     "belarusian", "bosnian", "catalan",       "czech",         "danish",    "dutch",     "english",
+      "finnish",    "french",     "german",  "hebrew",        "hungarian",     "indonesia", "italian",   "kazakh",
+      "lithuanian", "norwegian",  "polish",  "portuguese-BR", "portuguese-PT", "romanian",  "russian",   "slovak",
+      "slovenian",  "spanish",    "swedish", "turkish",       "ukrainian",     "valencian", "vietnamese"};
+  const std::string dir = std::string(WALLET_I18N_DIR);
+
+  int stated = 0;
+  for (const char* language : kLanguages) {
+    const std::string path = dir + "/" + language + ".yaml";
+    for (const char* key : {"STR_WALLET_CODE_PREV", "STR_WALLET_CODE_NEXT"}) {
+      const std::string label = yamlValue(path, key);
+      if (label.empty()) continue;
+      ++stated;
+      const int width = uiTenWidth(label);
+      EXPECT_GT(width, 0) << language << " " << key << " measured as nothing: a glyph the face lacks";
+      EXPECT_LE(width, kHintBoxWidth) << language << " " << key << " is " << width << " px, box is " << kHintBoxWidth;
+    }
+  }
+  EXPECT_EQ(stated, 2) << "English states both and nobody else does yet; update this count with the translations";
+
+  // The rejected alternative, kept as a number: "Prev code" / "Next code" measure
+  // 92 and 95 px, which fits English and leaves ten pixels for every other
+  // language. That is why the labels are the short arrow form.
+  EXPECT_GT(uiTenWidth("Prev code"), kHintBoxWidth - 20);
+  EXPECT_GT(uiTenWidth("Next code"), kHintBoxWidth - 20);
 }
