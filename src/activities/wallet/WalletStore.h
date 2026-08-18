@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "WalletAsset.h"
+#include "WalletCrypto.h"
 #include "WalletManifestParser.h"
 
 class GfxRenderer;
@@ -19,6 +20,10 @@ class GfxRenderer;
 namespace wallet {
 
 inline constexpr const char* kManifestPath = "/trailink/wallet/manifest.json";
+// The encrypted tree's manifest, and its one backup. A tree is either fully
+// encrypted or fully cleartext, never mixed, and which one it is, is stated by
+// which of these two files exists (parent repo docs/wallet-format.md, section 3).
+inline constexpr const char* kManifestBakPath = "/trailink/wallet/manifest.bak";
 // Bumped when the on-card layout changes shape. A manifest from the future is
 // refused with a message, never half-read.
 inline constexpr uint32_t kSupportedFormatVersion = 1;
@@ -37,6 +42,10 @@ enum class Error : uint8_t {
   ShortRead,           // the payload ended early
   NoFrameBuffer,       // the framebuffer is lent out
   NotInManifest,       // no such item / page / tile
+  Locked,              // the tree is encrypted and no key is held: unlock first
+  ManifestTooBig,      // an encrypted manifest above the RAM cap, or no heap for it
+  ManifestAuth,        // the GCM tag did not verify: wrong key, or an altered file
+  AssetDecrypt,        // the payload did not decrypt to its plaintext
   NoCodes,             // the item carries no machine-readable codes
   CodeNotACode,        // the manifest called it a code, the header disagrees
   CodeHashMismatch,    // the payload does not hash to what the manifest promised
@@ -51,6 +60,12 @@ const char* errorText(Error error);
 // The panel this device actually has, read off the live renderer. Never a
 // constant (WalletAsset.h, PanelGeometry).
 PanelGeometry livePanel(const GfxRenderer& renderer);
+
+// True when the card carries an encrypted tree, i.e. `manifest.enc` exists. Asked
+// before anything else, because an encrypted tree needs the key first and a
+// cleartext one must keep working exactly as it did (a card in the field may be
+// either).
+bool treeIsEncrypted();
 
 struct Store {
   // Fills `out` with up to `max` items in manifest order. `seen` counts every
@@ -143,6 +158,10 @@ class PageReader {
   PageImageSpec spec_;
   AssetHeader header_;
   bool open_ = false;
+  // Built once on open() and reused for every row: the IV depends on the asset and
+  // its version, not on the window. Only the CTR *offset* changes per row.
+  bool encrypted_ = false;
+  uint8_t iv_[kAssetIvLen] = {0};
 };
 
 }  // namespace wallet

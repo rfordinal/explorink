@@ -8,6 +8,8 @@
 
 #include <cstring>
 
+#include "WalletCryptoDevice.h"
+
 namespace wallet {
 
 namespace {
@@ -17,10 +19,111 @@ constexpr const char* kLogTag = "WALLET";
 // size. 256 bytes is the same bite HalStorage::readFileToStream() defaults to.
 constexpr size_t kFeedChunk = 256;
 
+// Reads an encrypted manifest, verifies its tag and feeds the plaintext to the
+// parser.
+//
+// **The whole file has to be in RAM before one byte of it is parsed.** GCM only
+// authenticates once it has seen everything, and parsing unauthenticated JSON is
+// the mistake this design exists to avoid -- so there is no streaming path here and
+// there must not be one. The size is capped rather than trusted, and the buffer is
+// one allocation used twice: the ciphertext goes in, the plaintext comes out in
+// place (mbedtls allows output == input, gcm.c's guard refuses only a partial
+// overlap).
+bool feedEncryptedManifest(ManifestParser& parser, Error& error) {
+  HalFile file;
+  if (!Storage.openFileForRead(kLogTag, kManifestEncPath, file)) {
+    error = Error::NoManifest;
+    return false;
+  }
+  const size_t fileSize = static_cast<size_t>(file.size());
+  if (fileSize > kMaxEncryptedManifestBytes) {
+    LOG_ERR(kLogTag, "encrypted manifest is %u bytes, cap is %u", static_cast<unsigned>(fileSize),
+            static_cast<unsigned>(kMaxEncryptedManifestBytes));
+    file.close();
+    error = Error::ManifestTooBig;
+    return false;
+  }
+  if (fileSize < kManifestEnvelopeLen + kGcmTagLen) {
+    file.close();
+    error = Error::ManifestAuth;
+    return false;
+  }
+
+  const uint8_t* key = Session::instance().key();
+  if (key == nullptr) {
+    file.close();
+    error = Error::Locked;
+    return false;
+  }
+
+  auto buffer = makeUniqueNoThrow<uint8_t[]>(fileSize);
+  if (!buffer) {
+    // The cap is what turns this from an OOM into a message, but the allocation can
+    // still fail below the cap when BLE holds the big blocks.
+    LOG_ERR(kLogTag, "OOM: %u bytes for the encrypted manifest", static_cast<unsigned>(fileSize));
+    file.close();
+    error = Error::ManifestTooBig;
+    return false;
+  }
+  const int got = file.read(buffer.get(), fileSize);
+  file.close();
+  if (got != static_cast<int>(fileSize)) {
+    LOG_ERR(kLogTag, "short read %d of %u from the encrypted manifest", got, static_cast<unsigned>(fileSize));
+    error = Error::ManifestAuth;
+    return false;
+  }
+
+  ManifestEnvelope envelope;
+  if (!parseManifestEnvelope(buffer.get(), fileSize, envelope)) {
+    LOG_ERR(kLogTag, "not an EWM1 manifest, or its lengths disagree");
+    error = Error::ManifestAuth;
+    return false;
+  }
+  uint8_t* cipher = buffer.get() + envelope.ciphertextOffset;
+  if (!gcmDecryptInPlace(key, envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset, kGcmTagLen, cipher,
+                         envelope.ciphertextLen)) {
+    // Wrong key or an altered file, and GCM cannot tell those apart. Nothing has
+    // been parsed and nothing will be.
+    error = Error::ManifestAuth;
+    return false;
+  }
+
+  // Only now, with the tag verified, does the JSON exist as far as this code is
+  // concerned. Fed in the same 256-byte bites as the cleartext path so the parser
+  // sees no difference at all.
+  for (size_t at = 0; at < envelope.ciphertextLen && !parser.hasError(); at += kFeedChunk) {
+    const size_t take = (at + kFeedChunk <= envelope.ciphertextLen) ? kFeedChunk : envelope.ciphertextLen - at;
+    parser.feed(reinterpret_cast<const char*>(cipher + at), take);
+  }
+  // The plaintext held every title in the wallet; it does not get to sit in a freed
+  // heap block afterwards.
+  secureWipe(buffer.get(), fileSize);
+  return true;
+}
+
 // Runs a prepared parser over the manifest file. The parser is heap-allocated by
 // the caller (it carries StreamingJsonParser's 512-byte token buffer, which has
 // no business on the main task's stack).
 bool feedManifest(ManifestParser& parser, Error& error) {
+  if (treeIsEncrypted()) {
+    if (!feedEncryptedManifest(parser, error)) return false;
+    // Fall through to the same version and error checks the cleartext path runs:
+    // an encrypted manifest is still a manifest.
+    if (parser.hasError()) {
+      error = Error::ManifestUnreadable;
+      return false;
+    }
+    if (parser.formatVersion() == 0) {
+      error = Error::ManifestUnreadable;
+      return false;
+    }
+    if (parser.formatVersion() != kSupportedFormatVersion) {
+      error = Error::ManifestVersion;
+      return false;
+    }
+    error = Error::None;
+    return true;
+  }
   if (!Storage.exists(kManifestPath)) {
     error = Error::NoManifest;
     return false;
@@ -86,6 +189,14 @@ const char* errorText(const Error error) {
       return tr(STR_WALLET_ASSET_SIZE);
     case Error::NoFrameBuffer:
       return tr(STR_WALLET_ASSET_BUSY);
+    case Error::Locked:
+      return tr(STR_WALLET_LOCKED);
+    case Error::ManifestTooBig:
+      return tr(STR_WALLET_TOO_BIG);
+    case Error::ManifestAuth:
+      return tr(STR_WALLET_BAD_KEY);
+    case Error::AssetDecrypt:
+      return tr(STR_WALLET_ASSET_DECRYPT);
     case Error::NoCodes:
       return tr(STR_WALLET_CODE_NONE);
     case Error::CodeNotACode:
@@ -97,6 +208,8 @@ const char* errorText(const Error error) {
   }
   return "";
 }
+
+bool treeIsEncrypted() { return Storage.exists(kManifestEncPath); }
 
 PanelGeometry livePanel(const GfxRenderer& renderer) {
   PanelGeometry live;
@@ -244,7 +357,8 @@ bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Er
   }
 
   const PanelGeometry live = livePanel(renderer);
-  switch (checkPageImage(raw, sizeof(raw), page, live, header_)) {
+  const bool haveKey = Session::instance().key() != nullptr;
+  switch (checkPageImage(raw, sizeof(raw), page, live, header_, haveKey)) {
     case AssetCheck::Ok:
       break;
     case AssetCheck::Encrypted:
@@ -271,6 +385,13 @@ bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Er
       return false;
   }
 
+  encrypted_ = (header_.flags & kFlagEncrypted) != 0;
+  if (encrypted_ && !buildAssetIv(page.assetId, header_.version, iv_)) {
+    LOG_ERR(kLogTag, "page image %s has no usable IV", page.assetId);
+    file_.close();
+    error = Error::BadAsset;
+    return false;
+  }
   spec_ = page;
   open_ = true;
   LOG_INF(kLogTag, "page image open: %s %ux%u, %u B/row, step %u,%u", page.assetId,
@@ -285,6 +406,8 @@ void PageReader::close() {
   open_ = false;
   spec_ = PageImageSpec{};
   header_ = AssetHeader{};
+  encrypted_ = false;
+  secureWipe(iv_, sizeof(iv_));
 }
 
 bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& renderer, Error& error) {
@@ -315,16 +438,39 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
     return false;
   }
 
+  const uint8_t* const key = encrypted_ ? Session::instance().key() : nullptr;
+  if (encrypted_ && key == nullptr) {
+    error = Error::Locked;
+    return false;
+  }
+
   uint8_t* const fb = renderer.getFrameBuffer();
   for (uint32_t r = 0; r < rows; ++r) {
-    const uint32_t offset = kAssetHeaderBytes + (y + r) * spec_.rowBytes + xByte;
+    // Two offsets, and they are not the same number: the file offset includes the
+    // 32-byte cleartext header, the CTR offset does not. The keystream is indexed
+    // from the first byte of the PAYLOAD.
+    const uint32_t payloadOffset = (y + r) * spec_.rowBytes + xByte;
+    const uint32_t offset = kAssetHeaderBytes + payloadOffset;
     if (!file_.seekSet(offset) || file_.read(fb + r * rowBytes, rowBytes) != static_cast<int>(rowBytes)) {
       LOG_ERR(kLogTag, "page-image row %lu short at offset %lu", static_cast<unsigned long>(r),
               static_cast<unsigned long>(offset));
       error = Error::ShortRead;
       return false;
     }
+    if (encrypted_ && !ctrDecryptInPlace(key, iv_, payloadOffset, fb + r * rowBytes, rowBytes)) {
+      error = Error::AssetDecrypt;
+      return false;
+    }
   }
+  // This is the whole reason the format uses CTR. Every one of those 480 rows starts
+  // at an arbitrary, generally unaligned payload offset, and CTR reaches it by
+  // starting the counter at offset / 16 and dropping offset % 16 bytes of keystream.
+  // Anything chained would have forced a decrypt from byte zero per row -- 480 times
+  // up to 585 KB (docs/wallet-crypto.md, "Why CTR").
+  //
+  // No plaintext hash check here: a window is a fraction of the payload, so there is
+  // nothing to check it against. A wrong key cannot get this far anyway -- the
+  // manifest that named this asset would not have authenticated.
   // header_.sha256Prefix is still unchecked here, same as the tile path -- and a
   // window is a fraction of the payload, so a whole-file hash would cost more than
   // the read it is guarding.
@@ -375,8 +521,11 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
   // about the header layout or the panel geometry cannot hide on one side
   // (WalletAsset.h, checkAssetForPanel).
   const PanelGeometry live = livePanel(renderer);
-  const AssetCheck check = gate == Gate::Code ? checkCodeAsset(raw, sizeof(raw), live, header)
-                                              : checkAssetForPanel(raw, sizeof(raw), live, header);
+  // A key in hand is what lets an encrypted asset through the gate at all; without
+  // one it is refused rather than drawn as noise.
+  const bool haveKey = Session::instance().key() != nullptr;
+  const AssetCheck check = gate == Gate::Code ? checkCodeAsset(raw, sizeof(raw), live, header, haveKey)
+                                              : checkAssetForPanel(raw, sizeof(raw), live, header, haveKey);
   switch (check) {
     case AssetCheck::Ok:
       break;
@@ -435,6 +584,34 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
     return false;
   }
 
+  if ((header.flags & kFlagEncrypted) != 0) {
+    // Decrypted where it lies. The read already put the ciphertext in the
+    // framebuffer and a second 48 KB buffer would not fit
+    // (../../../docs/map-memory.md:57), so CTR runs over those bytes in place --
+    // one screen, offset 0, one pass.
+    uint8_t iv[kAssetIvLen];
+    const uint8_t* key = Session::instance().key();
+    if (key == nullptr || !buildAssetIv(assetId, header.version, iv)) {
+      error = Error::Locked;
+      return false;
+    }
+    if (!ctrDecryptInPlace(key, iv, 0, renderer.getFrameBuffer(), want)) {
+      error = Error::AssetDecrypt;
+      return false;
+    }
+    // The header's sha256 prefix covers the PLAINTEXT, so it is checked here and
+    // nowhere earlier -- and on an encrypted asset it earns its keep twice: it
+    // catches a corrupt payload as before, and it catches a wrong key, which would
+    // otherwise put 48 KB of noise on the panel looking like a hardware fault. It
+    // is not a MAC: an attacker who can rewrite the card rewrites this prefix with
+    // it. Only the manifest is authenticated.
+    const HashResult hash = checkPayloadHash(renderer.getFrameBuffer(), want, nullptr, header.sha256Prefix);
+    if (!hash.ok) {
+      LOG_ERR(kLogTag, "%s decrypted to something that is not its plaintext (wrong key, or corrupt)", path);
+      error = Error::AssetDecrypt;
+      return false;
+    }
+  }
   return true;
 }
 

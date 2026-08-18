@@ -35,6 +35,8 @@
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "activities/wallet/WalletAsset.h"
+#include "activities/wallet/WalletCryptoDevice.h"
+#include "activities/wallet/WalletKeyStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
@@ -238,6 +240,13 @@ static bool loadSleepFrameBuffer() {
 
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
+  // The wallet key goes first, before anything here can fail or take a lock. Deep
+  // sleep is a chip reset on wake, so RAM does not survive it -- but "the RAM is
+  // gone anyway" is an argument about what usually happens, and a key is wiped
+  // because it is asked to be, not because something else probably did it
+  // (docs/wallet-crypto.md, "The key's lifetime").
+  wallet::Session::instance().clear("sleep");
+
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
   // Read from the live activity, before goToSleep() tears it down, for the same
@@ -1112,6 +1121,102 @@ void loop() {
           // its route path exists either.
           logSerial.printf("GOTO_WALLET_OK item=%d code=%d\n", itemArg, codeArg);
         }
+      } else if (cmd.startsWith("WALLETPROVISION ")) {
+        // ## TEST PATH. Not how a device gets provisioned in the end.
+        //
+        // The wallet key and the PIN are supposed to arrive from the phone over BLE
+        // (P4/P6). That app does not exist, so the laptop writes provision.json and
+        // this command pushes it in -- which means the key crosses a USB cable in the
+        // clear and is visible in any serial log of this session. It is a test seam
+        // and the log says so every time it runs.
+        //
+        // Replaced by BLE provisioning; when that lands, this goes.
+        char keyHex[80] = {0};
+        char pinText[16] = {0};
+        char saltHex[48] = {0};
+        unsigned long itersArg = 0;
+        char forceArg[16] = {0};
+        const int fields = sscanf(cmd.c_str(), "WALLETPROVISION %79s %15s %47s %lu %15s", keyHex, pinText, saltHex,
+                                  &itersArg, forceArg);
+        if (fields < 4) {
+          logSerial.printf(
+              "WALLETPROVISION_ERR usage: CMD:WALLETPROVISION <keyhex64> <pin> <salthex32> <iters> [force]\n");
+        } else {
+          const bool force = fields >= 5 && strcmp(forceArg, "force") == 0;
+          LOG_ERR("MAIN", "*** TEST PATH: CMD:WALLETPROVISION carries the wallet key in the clear over USB. ***");
+          LOG_ERR("MAIN",
+                  "*** Replaced by BLE provisioning (P4/P6). Never use it on a device holding real papers. ***");
+          uint8_t key[wallet::kWalletKeyLen];
+          uint8_t salt[wallet::kPbkdf2SaltLen];
+          char pin[wallet::kPinBufBytes];
+          size_t pinLen = 0;
+          const bool keyOk = wallet::hexToBytes(keyHex, key, sizeof(key));
+          const bool saltOk = wallet::hexToBytes(saltHex, salt, sizeof(salt));
+          const bool pinOk = wallet::normalisePin(pinText, pin, sizeof(pin), pinLen);
+          if (!keyOk) {
+            logSerial.printf("WALLETPROVISION_ERR key must be %u hex characters\n",
+                             static_cast<unsigned>(wallet::kWalletKeyLen * 2));
+          } else if (!saltOk) {
+            logSerial.printf("WALLETPROVISION_ERR salt must be %u hex characters\n",
+                             static_cast<unsigned>(wallet::kPbkdf2SaltLen * 2));
+          } else if (!pinOk) {
+            logSerial.printf("WALLETPROVISION_ERR pin must be %u-%u of U/D/L/R\n",
+                             static_cast<unsigned>(wallet::kPinMinLen), static_cast<unsigned>(wallet::kPinMaxLen));
+          } else if (itersArg == 0 || itersArg > wallet::kMaxProvisionIterations) {
+            logSerial.printf("WALLETPROVISION_ERR iterations must be 1..%lu\n",
+                             static_cast<unsigned long>(wallet::kMaxProvisionIterations));
+          } else {
+            // Timed around the provisioning itself rather than with a second PBKDF2 run:
+            // the derivation inside it is the same work an unlock pays, and running it
+            // twice would double a wait that already blocks the main loop.
+            const uint32_t startedUs = micros();
+            const bool ok = wallet::KeyStore::provision(key, pin, pinLen, salt, sizeof(salt),
+                                                        static_cast<uint32_t>(itersArg), force);
+            const uint32_t micros1 = micros() - startedUs;
+            wallet::secureWipe(key, sizeof(key));
+            wallet::secureWipe(pin, sizeof(pin));
+            if (ok) {
+              // Provisioning invalidates any session key: it may be a different wallet.
+              wallet::Session::instance().clear("provisioned");
+              // provision_us is PBKDF2 plus the wrap plus the NVS writes -- an upper bound
+              // on what an unlock costs, not the clean PBKDF2 figure. For that, use
+              // CMD:WALLETPBKDF2.
+              logSerial.printf("WALLETPROVISION_OK iters=%lu provision_us=%lu\n", itersArg,
+                               static_cast<unsigned long>(micros1));
+            } else {
+              logSerial.printf("WALLETPROVISION_ERR refused (already provisioned? pass 'force')\n");
+            }
+          }
+        }
+      } else if (cmd.startsWith("WALLETPBKDF2 ")) {
+        // The measurement the format doc is waiting for. Its 50,000 iterations came
+        // off a laptop rate and is explicitly unverified; this times the real thing on
+        // the chip, at full clock (power saving is already off for every CMD: above --
+        // at 10 MHz the number would be a lie, docs/power-management.md).
+        //
+        // Capped: this runs to completion inside the main loop and the task watchdog
+        // panics after 5 s (sdkconfig.defaults, CONFIG_ESP_TASK_WDT_TIMEOUT_S=5). The
+        // answer being looked for is the largest count under 1 s, so the cap is never in
+        // the way -- and if a run does trip the watchdog, the reboot IS the answer that
+        // the count is too large.
+        unsigned long itersArg = 0;
+        if (sscanf(cmd.c_str(), "WALLETPBKDF2 %lu", &itersArg) != 1 || itersArg == 0 ||
+            itersArg > wallet::kMaxProvisionIterations) {
+          logSerial.printf("WALLETPBKDF2_ERR usage: CMD:WALLETPBKDF2 <iterations up to %lu>\n",
+                           static_cast<unsigned long>(wallet::kMaxProvisionIterations));
+        } else {
+          const uint32_t elapsed = wallet::timePbkdf2Micros(static_cast<uint32_t>(itersArg));
+          const unsigned long perSecond =
+              elapsed > 0 ? static_cast<unsigned long>((itersArg * 1000000ULL) / elapsed) : 0;
+          logSerial.printf("WALLETPBKDF2_OK iters=%lu us=%lu ms=%lu iters_per_s=%lu\n", itersArg,
+                           static_cast<unsigned long>(elapsed), static_cast<unsigned long>(elapsed / 1000), perSecond);
+        }
+      } else if (cmd == "WALLETLOCK") {
+        // The explicit lock, and the only way to drop the key without sleeping or
+        // waiting out the idle timeout. Also how a host script proves the unlock path
+        // twice in one session.
+        wallet::Session::instance().clear("CMD:WALLETLOCK");
+        logSerial.printf("WALLETLOCK_OK\n");
       } else if (cmd == "GOTO_TILESYNC") {
         // The sync screen was the one screen a host could not reach. Its grid --
         // outlined squares for missing tiles, dots for the freshness check queue

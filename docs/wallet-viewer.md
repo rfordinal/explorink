@@ -11,6 +11,13 @@ Three screens:
 - `WalletViewActivity` -- one asset, one whole screen (`src/activities/wallet/WalletViewActivity.h`).
 - `WalletCodeActivity` -- one machine-readable code, fullscreen, meant to be read
   by a scanner off the glass (`src/activities/wallet/WalletCodeActivity.h`). P2.
+- `WalletUnlockActivity` -- the direction PIN, the only way into an encrypted
+  wallet (`src/activities/wallet/WalletUnlockActivity.h`). P3.
+
+**Encryption is a separate document.** The crypto path, the key's lifetime, the
+threat boundary, the provisioning test path and the PBKDF2 measurement are
+[`wallet-crypto.md`](wallet-crypto.md). Everything below is the viewer, and works
+the same whether the tree is encrypted or not.
 
 Home menu row **Wallet**, between *Sync map tiles* and *Settings*
 (`src/activities/home/HomeActivity.cpp:14-21`, `:121-134`), opening through
@@ -35,9 +42,15 @@ marked open is open for a different reason -- design, not plumbing.
 ## On the card
 
 ```
-/trailink/wallet/manifest.json          plaintext in P1
+/trailink/wallet/manifest.json          cleartext tree only
+/trailink/wallet/manifest.enc           encrypted tree only (wallet-crypto.md)
+/trailink/wallet/manifest.bak           previous good manifest.enc -- not read yet
 /trailink/wallet/<2 hex>/<16 hex>.dat   one asset = one full screen
 ```
+
+A tree is either fully encrypted or fully cleartext, never mixed, and which one it
+is, is stated by which manifest file exists (`treeIsEncrypted()`). **Both must keep
+working**: a card in the field may be either.
 
 Paths relative to `/trailink`, same root as the map
 (`src/activities/map/MapActivity.cpp:54`). The manifest path and the wallet
@@ -990,6 +1003,10 @@ Strings: `lib/I18n/translations/english.yaml`, `STR_WALLET_*`. Mapping:
 | a code asset that is not `assetType` 4 | "This code file is damaged" |
 | a code whose payload does not hash | "This code does not match its checksum" + "Not shown: a wrong code is worse than none" |
 | an unverified code with nowhere to put the marker | "No room to mark this code unverified" |
+| an encrypted tree and no key held | "Wallet is locked" -- normally unreachable, the PIN screen comes first |
+| the manifest's GCM tag does not verify | "Wrong key, or the wallet list was altered" |
+| an encrypted manifest over the 32 KB cap, or no heap for it | "Wallet list is too big for this device" |
+| an asset that did not decrypt to its plaintext | "This page did not decrypt" |
 
 A failed lookup also zeroes the level grids, so the arrows have nowhere to step
 rather than asking for tiles that may not exist either
@@ -1187,7 +1204,9 @@ it is worse than one that cannot show it.
 
 ## What is deliberately absent
 
-- **Encryption.** `flags` bit 0 is parsed and refused, never decrypted.
+- ~~**Encryption.**~~ Done in P3 -- `flags` bit 0 is decrypted with the session
+  key, and refused with a message when there is no key.
+  [`wallet-crypto.md`](wallet-crypto.md).
 - **sha256 verification of a document tile or a page image.** Still parsed and
   checked by nobody there. A machine code is the exception and the only one --
   see "Why the hash is checked here and nowhere else".
@@ -1273,7 +1292,7 @@ Heap, **derived from the type sizes, not measured on hardware**:
 
 - Format layout, path mapping, level cycle, manifest shape, the panel gate, the
   codes array, the code walk, the hash and the label band: **host-tested**,
-  `test/wallet/WalletTest.cpp`, 61 cases, `pio run -t unit-tests`.
+  `test/wallet/WalletTest.cpp`, 75 cases, `pio run -t unit-tests`.
 - Byte order, ink polarity, tile order, orientation: **checked against real
   generator output** and looked at as pictures, 2026-08-18 -- see above. This is
   the strongest evidence that exists short of hardware, and it covers exactly the
@@ -1309,6 +1328,13 @@ Heap, **derived from the type sizes, not measured on hardware**:
   source**. The hash's millisecond cost is **estimated, not measured**. Whether any
   of it scans off e-ink glass is **completely open** -- see "Nothing has been
   scanned off the panel".
+- **P3, encryption: written and compiled, never run on hardware.** The CTR
+  arithmetic, the manifest envelope, the KEK formula, the PIN codec and the rate
+  limiter are **host-tested** against verbatim encrypted generator output with an
+  independent crypto library, and an encrypted tree **renders byte-identically** to
+  its cleartext twin through `wallet_preview --key`. mbedtls's own calls, NVS, the
+  unlock screen and the PBKDF2 timing are **unverified** --
+  [`wallet-crypto.md`](wallet-crypto.md) says exactly what and how to settle it.
 - Still open after the on-panel session: whether FIT is legible in daylight,
   whether HALF on every page turn is too slow to page through a document, the real
   heap figures (nobody has run `heap_caps_get_info()` with a wallet on screen), and

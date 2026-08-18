@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -7,6 +8,8 @@
 
 #include "EpdFont.h"
 #include "WalletAsset.h"
+#include "WalletCrypto.h"
+#include "WalletCryptoHost.h"
 #include "WalletManifestParser.h"
 #include "WalletSha256.h"
 #include "WalletSidecar.h"
@@ -1430,4 +1433,450 @@ TEST(WalletCodeHints, EveryTranslationOfThemFitsTheHintBox) {
   // language. That is why the labels are the short arrow form.
   EXPECT_GT(uiTenWidth("Prev code"), kHintBoxWidth - 20);
   EXPECT_GT(uiTenWidth("Next code"), kHintBoxWidth - 20);
+}
+
+// ---------------------------------------------------------------------------
+// Wallet crypto v1 (P3)
+//
+// fixtures/enc/ is verbatim output of
+//
+//   tools/walletgen.py --demo --paper a4 --panel x4 --title "Boarding pass"
+//       --code "qr:M1DOE/JOHN ..." --key <the test key below> --pin UDLRUD
+//
+// -- `manifest.enc` and the encrypted QR asset. The key is
+// 000102...1f, a deliberately non-secret test key committed on purpose; a real
+// wallet key never leaves a 0600 file on the laptop.
+//
+// The asset ids are panel-and-content scoped, so the encrypted QR asset has the
+// SAME id as the cleartext one in fixtures/codes -- which means its plaintext must
+// hash to the same value the cleartext tree's manifest states. That is the
+// cross-tree check below, and it needs no expected-plaintext fixture at all.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The committed test key, and the wallet it was built for.
+const uint8_t kTestKey[kWalletKeyLen] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+                                         0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                                         0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f};
+constexpr const char* kEncCodeAssetId = "f3e7250a407c088b";
+// The plaintext's sha256, as the CLEARTEXT tree's manifest states it. Nothing in
+// the encrypted fixture carries this value.
+constexpr const char* kEncCodePlainSha = "4e748db4a304c0859a31e25706e5e22af8af768301f65c5a84d1f9762ae85f9d";
+
+std::vector<uint8_t> encFixture(const char* name) { return readFixture(name); }
+
+}  // namespace
+
+TEST(WalletCryptoIv, AssetIvIsTheIdThenTheVersionThenZero) {
+  uint8_t iv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, 1, iv));
+  const uint8_t want[kAssetIvLen] = {0xf3, 0xe7, 0x25, 0x0a, 0x40, 0x7c, 0x08, 0x8b,
+                                     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  EXPECT_EQ(std::memcmp(iv, want, sizeof(iv)), 0);
+
+  // The version is little endian, and it is the only thing that changes between two
+  // versions of the same asset -- which is what stops one keystream covering two
+  // plaintexts.
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, 0x01020304u, iv));
+  EXPECT_EQ(iv[8], 0x04);
+  EXPECT_EQ(iv[9], 0x03);
+  EXPECT_EQ(iv[10], 0x02);
+  EXPECT_EQ(iv[11], 0x01);
+  // The trailing word is the block counter and starts at zero.
+  for (size_t i = 12; i < kAssetIvLen; ++i) EXPECT_EQ(iv[i], 0);
+
+  // An id that is not 16 hex characters never becomes an IV, same rule as the path.
+  EXPECT_FALSE(buildAssetIv("../../etc/passwd", 1, iv));
+  EXPECT_FALSE(buildAssetIv("f3e7250a407c088", 1, iv));
+  EXPECT_FALSE(buildAssetIv(nullptr, 1, iv));
+}
+
+TEST(WalletCryptoCtr, OffsetSplitsIntoABlockAndARemainder) {
+  // The whole reason the format uses CTR: a windowed read reaches an arbitrary
+  // payload offset by starting the counter at offset / 16 and dropping offset % 16
+  // bytes of keystream.
+  EXPECT_EQ(ctrStartForOffset(0).block, 0u);
+  EXPECT_EQ(ctrStartForOffset(0).skip, 0);
+  EXPECT_EQ(ctrStartForOffset(1).block, 0u);
+  EXPECT_EQ(ctrStartForOffset(1).skip, 1);
+  EXPECT_EQ(ctrStartForOffset(15).block, 0u);
+  EXPECT_EQ(ctrStartForOffset(15).skip, 15);
+  EXPECT_EQ(ctrStartForOffset(16).block, 1u);
+  EXPECT_EQ(ctrStartForOffset(16).skip, 0);
+  EXPECT_EQ(ctrStartForOffset(17).block, 1u);
+  EXPECT_EQ(ctrStartForOffset(17).skip, 1);
+  // A real row offset from a design-B window: row 1 of a 322-byte-stride page image.
+  EXPECT_EQ(ctrStartForOffset(322).block, 20u);
+  EXPECT_EQ(ctrStartForOffset(322).skip, 2);
+}
+
+TEST(WalletCryptoCtr, CounterAdvancesBigEndianAcrossAByteBoundary) {
+  uint8_t iv[kAssetIvLen] = {0};
+  uint8_t out[kAesBlockLen];
+
+  advanceCounter(iv, 0, out);
+  for (size_t i = 0; i < kAesBlockLen; ++i) EXPECT_EQ(out[i], 0) << i;
+
+  advanceCounter(iv, 1, out);
+  EXPECT_EQ(out[15], 1);
+  advanceCounter(iv, 255, out);
+  EXPECT_EQ(out[15], 255);
+  EXPECT_EQ(out[14], 0);
+  // 256 has to carry into the next byte up, not wrap in place.
+  advanceCounter(iv, 256, out);
+  EXPECT_EQ(out[15], 0);
+  EXPECT_EQ(out[14], 1);
+  advanceCounter(iv, 65535, out);
+  EXPECT_EQ(out[15], 255);
+  EXPECT_EQ(out[14], 255);
+  EXPECT_EQ(out[13], 0);
+
+  // And it carries out of the low word into the version word, which is what the
+  // format's "the whole 128-bit block increments" sentence means. An asset large
+  // enough to need this does not exist today, but the arithmetic must not be the
+  // reason.
+  uint8_t ff[kAssetIvLen] = {0};
+  ff[12] = ff[13] = ff[14] = ff[15] = 0xFF;
+  advanceCounter(ff, 1, out);
+  EXPECT_EQ(out[15], 0);
+  EXPECT_EQ(out[12], 0);
+  EXPECT_EQ(out[11], 1) << "the carry has to reach the version word";
+}
+
+TEST(WalletCryptoCtr, DecryptsRealGeneratorCiphertextToTheRightPlaintext) {
+  const std::vector<uint8_t> file = encFixture("enc/f3/f3e7250a407c088b.dat");
+  ASSERT_EQ(file.size(), 48032u) << "fixtures/enc asset missing";
+
+  AssetHeader header;
+  ASSERT_TRUE(parseAssetHeader(file.data(), file.size(), header));
+  EXPECT_EQ(header.assetType, AssetType::MachineCode);
+  EXPECT_NE(header.flags & kFlagEncrypted, 0) << "the generator must mark it encrypted";
+  EXPECT_EQ(header.rawLen, 48000u);
+
+  // The tile gate refuses it without a key and accepts it with one. That flag is the
+  // whole difference between "noise on the panel" and "a document".
+  AssetHeader gated;
+  EXPECT_EQ(checkAssetForPanel(file.data(), file.size(), kPanelX4, gated), AssetCheck::Encrypted);
+  EXPECT_EQ(checkAssetForPanel(file.data(), file.size(), kPanelX4, gated, /*allowEncrypted=*/true), AssetCheck::Ok);
+  EXPECT_EQ(checkCodeAsset(file.data(), file.size(), kPanelX4, gated, true), AssetCheck::Ok);
+
+  uint8_t iv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, header.version, iv));
+
+  // Whole payload at offset 0, in place, exactly as the device does it.
+  std::vector<uint8_t> plain(file.begin() + kAssetHeaderBytes, file.end());
+  wallet::host::ctrXor(kTestKey, iv, 0, plain.data(), plain.size());
+
+  // Cross-tree: this is the same asset the CLEARTEXT fixture carries, so the
+  // decrypted bytes must hash to what that tree's manifest states.
+  const HashResult full = checkPayloadHash(plain.data(), plain.size(), kEncCodePlainSha, header.sha256Prefix);
+  EXPECT_TRUE(full.ok) << "decrypted plaintext does not match the cleartext tree's sha256";
+  EXPECT_EQ(full.authority, HashAuthority::Full);
+  // And the header's 8-byte prefix covers the PLAINTEXT, not the ciphertext.
+  EXPECT_TRUE(checkPayloadHash(plain.data(), plain.size(), "", header.sha256Prefix).ok);
+  EXPECT_FALSE(checkPayloadHash(file.data() + kAssetHeaderBytes, plain.size(), "", header.sha256Prefix).ok)
+      << "the prefix must not match the ciphertext";
+
+  // The picture is a real QR again: ink between 1 % and 20 %, and the label band
+  // blank, exactly as the cleartext one measured.
+  const int inked = logicalBandInk(plain, kPanelX4, 0, kPanelX4.height, 0, kPanelX4.width);
+  EXPECT_GT(inked, kPanelX4.width * kPanelX4.height / 100);
+  EXPECT_LT(inked, kPanelX4.width * kPanelX4.height / 5);
+  EXPECT_TRUE(logicalBandIsBlank(plain.data(), kPanelX4, 772, 794));
+}
+
+TEST(WalletCryptoCtr, EveryRowOffsetADesignBWindowUsesDecryptsIndependently) {
+  // The property the windowed read depends on, against real ciphertext: decrypting
+  // a slice starting at an arbitrary offset must give the same bytes as decrypting
+  // the whole payload and taking that slice. If this failed, design B would need a
+  // full decrypt per row -- 480 of them per frame.
+  const std::vector<uint8_t> file = encFixture("enc/f3/f3e7250a407c088b.dat");
+  ASSERT_EQ(file.size(), 48032u);
+  AssetHeader header;
+  ASSERT_TRUE(parseAssetHeader(file.data(), file.size(), header));
+  uint8_t iv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, header.version, iv));
+
+  std::vector<uint8_t> whole(file.begin() + kAssetHeaderBytes, file.end());
+  wallet::host::ctrXor(kTestKey, iv, 0, whole.data(), whole.size());
+
+  // 0 and 1 and 15 and 16 and 17 are the block-boundary cases; 100 is one panel row;
+  // 322 and 644 are rows of a real 1:1 page image's stride; the last one is the tail.
+  const size_t offsets[] = {0, 1, 15, 16, 17, 99, 100, 322, 644, 4800, 47900, 47999};
+  for (const size_t offset : offsets) {
+    const size_t len = std::min<size_t>(100, whole.size() - offset);
+    std::vector<uint8_t> slice(file.begin() + kAssetHeaderBytes + offset,
+                               file.begin() + kAssetHeaderBytes + offset + len);
+    wallet::host::ctrXor(kTestKey, iv, static_cast<uint32_t>(offset), slice.data(), slice.size());
+    EXPECT_EQ(std::memcmp(slice.data(), whole.data() + offset, len), 0) << "offset " << offset;
+  }
+}
+
+TEST(WalletCryptoCtr, TheWrongKeyIsCaughtByThePlaintextHashAndNotDrawn) {
+  // A wrong key turns 48 KB into noise that looks exactly like a hardware fault on
+  // the panel. The header's plaintext prefix is what catches it -- the one place the
+  // hash earns its keep beyond corruption.
+  const std::vector<uint8_t> file = encFixture("enc/f3/f3e7250a407c088b.dat");
+  ASSERT_EQ(file.size(), 48032u);
+  AssetHeader header;
+  ASSERT_TRUE(parseAssetHeader(file.data(), file.size(), header));
+  uint8_t iv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, header.version, iv));
+
+  uint8_t wrongKey[kWalletKeyLen];
+  std::memcpy(wrongKey, kTestKey, sizeof(wrongKey));
+  wrongKey[31] ^= 0x01;  // one bit
+
+  std::vector<uint8_t> plain(file.begin() + kAssetHeaderBytes, file.end());
+  wallet::host::ctrXor(wrongKey, iv, 0, plain.data(), plain.size());
+  EXPECT_FALSE(checkPayloadHash(plain.data(), plain.size(), kEncCodePlainSha, header.sha256Prefix).ok)
+      << "a one-bit-wrong key must not pass the plaintext hash";
+  EXPECT_FALSE(checkPayloadHash(plain.data(), plain.size(), "", header.sha256Prefix).ok);
+
+  // The right IV with the wrong version is the same failure: a version bump changes
+  // the keystream, which is what keeps one keystream to one plaintext.
+  uint8_t otherIv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, header.version + 1, otherIv));
+  std::vector<uint8_t> again(file.begin() + kAssetHeaderBytes, file.end());
+  wallet::host::ctrXor(kTestKey, otherIv, 0, again.data(), again.size());
+  EXPECT_FALSE(checkPayloadHash(again.data(), again.size(), "", header.sha256Prefix).ok);
+}
+
+TEST(WalletCryptoManifest, EnvelopeParsesAndTheTagVerifies) {
+  const std::vector<uint8_t> blob = encFixture("enc/manifest.enc");
+  ASSERT_FALSE(blob.empty()) << "fixtures/enc/manifest.enc missing";
+
+  ManifestEnvelope envelope;
+  ASSERT_TRUE(parseManifestEnvelope(blob.data(), blob.size(), envelope));
+  EXPECT_TRUE(envelope.valid);
+  EXPECT_EQ(envelope.ciphertextOffset, kManifestEnvelopeLen);
+  EXPECT_EQ(envelope.plaintextLen, envelope.ciphertextLen);
+  EXPECT_EQ(envelope.tagOffset, kManifestEnvelopeLen + envelope.ciphertextLen);
+  EXPECT_LE(blob.size(), kMaxEncryptedManifestBytes) << "the fixture must be under the cap";
+
+  std::vector<uint8_t> plain(envelope.ciphertextLen);
+  ASSERT_TRUE(wallet::host::gcmDecrypt(kTestKey, envelope.nonce, kGcmNonceLen, blob.data() + envelope.tagOffset,
+                                       kGcmTagLen, blob.data() + envelope.ciphertextOffset, envelope.ciphertextLen,
+                                       plain.data()));
+
+  // And it is a manifest the firmware's own parser reads, encryption or not.
+  ManifestParser parser;
+  ItemEntry items[4];
+  parser.beginList(items, 4);
+  parser.feed(reinterpret_cast<const char*>(plain.data()), plain.size());
+  EXPECT_FALSE(parser.hasError());
+  EXPECT_EQ(parser.formatVersion(), 1u);
+  ASSERT_EQ(parser.itemsStored(), 1);
+  EXPECT_STREQ(items[0].title, "Boarding pass") << "the title only exists after the tag verified";
+  EXPECT_EQ(items[0].codeCount, 1);
+}
+
+TEST(WalletCryptoManifest, OneFlippedBitAnywhereFailsTheTag) {
+  const std::vector<uint8_t> blob = encFixture("enc/manifest.enc");
+  ASSERT_FALSE(blob.empty());
+  ManifestEnvelope envelope;
+  ASSERT_TRUE(parseManifestEnvelope(blob.data(), blob.size(), envelope));
+
+  // Three places, three ways to be wrong, and all three must be refused BEFORE any
+  // byte is parsed: a flipped ciphertext bit, a flipped tag bit, and the wrong key.
+  const size_t targets[] = {envelope.ciphertextOffset, envelope.ciphertextOffset + envelope.ciphertextLen / 2,
+                            envelope.tagOffset, envelope.tagOffset + kGcmTagLen - 1};
+  for (const size_t at : targets) {
+    std::vector<uint8_t> broken = blob;
+    broken[at] ^= 0x01;
+    std::vector<uint8_t> plain(envelope.ciphertextLen);
+    EXPECT_FALSE(wallet::host::gcmDecrypt(kTestKey, envelope.nonce, kGcmNonceLen, broken.data() + envelope.tagOffset,
+                                          kGcmTagLen, broken.data() + envelope.ciphertextOffset, envelope.ciphertextLen,
+                                          plain.data()))
+        << "flipped bit at " << at << " must fail the tag";
+  }
+
+  uint8_t wrongKey[kWalletKeyLen];
+  std::memcpy(wrongKey, kTestKey, sizeof(wrongKey));
+  wrongKey[0] ^= 0x80;
+  std::vector<uint8_t> plain(envelope.ciphertextLen);
+  EXPECT_FALSE(wallet::host::gcmDecrypt(wrongKey, envelope.nonce, kGcmNonceLen, blob.data() + envelope.tagOffset,
+                                        kGcmTagLen, blob.data() + envelope.ciphertextOffset, envelope.ciphertextLen,
+                                        plain.data()))
+      << "the wrong key must fail the tag, not produce garbage JSON";
+}
+
+TEST(WalletCryptoManifest, EnvelopeRefusesWhatItCannotBe) {
+  const std::vector<uint8_t> blob = encFixture("enc/manifest.enc");
+  ASSERT_FALSE(blob.empty());
+  ManifestEnvelope envelope;
+
+  EXPECT_FALSE(parseManifestEnvelope(nullptr, blob.size(), envelope));
+  // Too short to hold an envelope and a tag.
+  EXPECT_FALSE(parseManifestEnvelope(blob.data(), kManifestEnvelopeLen + kGcmTagLen - 1, envelope));
+
+  std::vector<uint8_t> bad = blob;
+  bad[0] = 'X';
+  EXPECT_FALSE(parseManifestEnvelope(bad.data(), bad.size(), envelope)) << "wrong magic";
+
+  bad = blob;
+  bad[4] = 2;
+  EXPECT_FALSE(parseManifestEnvelope(bad.data(), bad.size(), envelope)) << "a version this firmware does not know";
+
+  // plaintextLen has to agree with the file's shape. It is OUTSIDE the tag -- the
+  // generator seals with no associated data -- so this check is the only thing that
+  // catches a spliced length.
+  bad = blob;
+  bad[18] = static_cast<uint8_t>(bad[18] + 1);
+  EXPECT_FALSE(parseManifestEnvelope(bad.data(), bad.size(), envelope)) << "a length that disagrees with the file";
+
+  // A cap above the fixture, and a real refusal above it. The cap exists so an
+  // oversized manifest gets a message instead of an allocation failure.
+  EXPECT_GT(kMaxEncryptedManifestBytes, blob.size());
+  EXPECT_EQ(kMaxEncryptedManifestBytes, 32u * 1024u);
+}
+
+TEST(WalletCryptoKek, ThePasswordIsPinThenSecretAndTheWrapRoundTrips) {
+  // The formula, end to end, with OpenSSL standing in for mbedtls: the KEK is
+  // PBKDF2(PIN bytes || deviceSecret), and it wraps K with AES-256-GCM.
+  const char* pin = "UDLRUD";
+  uint8_t secret[kDeviceSecretLen];
+  for (size_t i = 0; i < sizeof(secret); ++i) secret[i] = static_cast<uint8_t>(0xA0 + i);
+  const uint8_t salt[kPbkdf2SaltLen] = {0x78, 0xa3, 0x20, 0x45, 0xfc, 0x9d, 0x47, 0x94,
+                                        0x87, 0x73, 0x18, 0xcd, 0x4d, 0x2a, 0xce, 0xc3};
+
+  uint8_t password[kKekPasswordBufBytes];
+  size_t passwordLen = 0;
+  ASSERT_TRUE(buildKekPassword(pin, std::strlen(pin), secret, sizeof(secret), password, sizeof(password), passwordLen));
+  EXPECT_EQ(passwordLen, std::strlen(pin) + sizeof(secret));
+  EXPECT_EQ(std::memcmp(password, "UDLRUD", 6), 0) << "the PIN's ASCII comes first";
+  EXPECT_EQ(std::memcmp(password + 6, secret, sizeof(secret)), 0) << "then the device secret, nothing between";
+
+  // A short PIN, a wrong-sized secret and a small buffer are all refused rather
+  // than padded into something that half works.
+  size_t ignored = 0;
+  EXPECT_FALSE(buildKekPassword("UDL", 3, secret, sizeof(secret), password, sizeof(password), ignored));
+  EXPECT_FALSE(buildKekPassword(pin, std::strlen(pin), secret, 31, password, sizeof(password), ignored));
+  EXPECT_FALSE(buildKekPassword(pin, std::strlen(pin), secret, sizeof(secret), password, 8, ignored));
+
+  // Two iteration counts, one of them small enough to keep the test fast; the real
+  // count is a device measurement (docs/wallet-crypto.md).
+  uint8_t kek[kWalletKeyLen];
+  ASSERT_TRUE(wallet::host::pbkdf2(password, passwordLen, salt, sizeof(salt), 1000, kek));
+
+  // Wrap K, unwrap it, get K back.
+  uint8_t wrapped[kWrappedKeyLen];
+  for (size_t i = 0; i < kGcmNonceLen; ++i) wrapped[i] = static_cast<uint8_t>(i + 1);
+  ASSERT_TRUE(wallet::host::gcmEncrypt(kek, wrapped, kGcmNonceLen, kTestKey, kWalletKeyLen, wrapped + kGcmNonceLen,
+                                       wrapped + kGcmNonceLen + kWalletKeyLen, kGcmTagLen));
+  uint8_t unwrapped[kWalletKeyLen];
+  ASSERT_TRUE(wallet::host::gcmDecrypt(kek, wrapped, kGcmNonceLen, wrapped + kGcmNonceLen + kWalletKeyLen, kGcmTagLen,
+                                       wrapped + kGcmNonceLen, kWalletKeyLen, unwrapped));
+  EXPECT_EQ(std::memcmp(unwrapped, kTestKey, kWalletKeyLen), 0);
+
+  // One wrong symbol in the PIN and the unwrap fails. Not "gives a wrong key" --
+  // fails, because the wrap is authenticated.
+  uint8_t wrongPassword[kKekPasswordBufBytes];
+  size_t wrongLen = 0;
+  ASSERT_TRUE(buildKekPassword("UDLRUU", 6, secret, sizeof(secret), wrongPassword, sizeof(wrongPassword), wrongLen));
+  uint8_t wrongKek[kWalletKeyLen];
+  ASSERT_TRUE(wallet::host::pbkdf2(wrongPassword, wrongLen, salt, sizeof(salt), 1000, wrongKek));
+  EXPECT_NE(std::memcmp(wrongKek, kek, sizeof(kek)), 0);
+  EXPECT_FALSE(wallet::host::gcmDecrypt(wrongKek, wrapped, kGcmNonceLen, wrapped + kGcmNonceLen + kWalletKeyLen,
+                                        kGcmTagLen, wrapped + kGcmNonceLen, kWalletKeyLen, unwrapped))
+      << "a wrong PIN must fail the unwrap, not return a plausible key";
+
+  // And the device secret matters as much as the PIN: same PIN, another device, no
+  // unwrap. That is what makes a leaked provisioning file not a wrap.
+  uint8_t otherSecret[kDeviceSecretLen];
+  std::memcpy(otherSecret, secret, sizeof(otherSecret));
+  otherSecret[0] ^= 0x01;
+  uint8_t otherPassword[kKekPasswordBufBytes];
+  size_t otherLen = 0;
+  ASSERT_TRUE(buildKekPassword(pin, std::strlen(pin), otherSecret, sizeof(otherSecret), otherPassword,
+                               sizeof(otherPassword), otherLen));
+  uint8_t otherKek[kWalletKeyLen];
+  ASSERT_TRUE(wallet::host::pbkdf2(otherPassword, otherLen, salt, sizeof(salt), 1000, otherKek));
+  EXPECT_FALSE(wallet::host::gcmDecrypt(otherKek, wrapped, kGcmNonceLen, wrapped + kGcmNonceLen + kWalletKeyLen,
+                                        kGcmTagLen, wrapped + kGcmNonceLen, kWalletKeyLen, unwrapped));
+}
+
+TEST(WalletCryptoPin, NormalisesAndRefusesWhatCannotBeAPin) {
+  char out[kPinBufBytes];
+  size_t len = 0;
+
+  ASSERT_TRUE(normalisePin("UDLRUD", out, sizeof(out), len));
+  EXPECT_EQ(len, 6u);
+  EXPECT_STREQ(out, "UDLRUD");
+  // Lower case is the same PIN: the symbols are directions, not letters a rider
+  // types with a shift key.
+  ASSERT_TRUE(normalisePin("udlrud", out, sizeof(out), len));
+  EXPECT_STREQ(out, "UDLRUD");
+  ASSERT_TRUE(normalisePin("UUUUUUUUUU", out, sizeof(out), len));
+  EXPECT_EQ(len, kPinMaxLen);
+
+  // Too short, too long, and not a direction. Refused here so a typo is a message
+  // rather than an attempt spent against the rate limiter.
+  EXPECT_FALSE(normalisePin("UDLR", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePin("UUUUUUUUUUU", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePin("UDLR1D", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePin("UDLR D", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePin("", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePin(nullptr, out, sizeof(out), len));
+  EXPECT_EQ(len, 0u) << "a refusal must not leave a length behind";
+
+  // The four symbols round-trip through their ASCII, which is what the KDF password
+  // is built from.
+  for (const char c : std::string("UDLR")) {
+    PinSymbol symbol = PinSymbol::Up;
+    ASSERT_TRUE(pinSymbolFromChar(c, symbol));
+    EXPECT_EQ(pinSymbolChar(symbol), c);
+  }
+}
+
+TEST(WalletCryptoRateLimit, FreeTriesThenDoublingThenAHardStop) {
+  // The state machine, as stated in the brief: a few free failures, exponential
+  // delay after them, and a hard lockout at ten.
+  EXPECT_EQ(pinFailureDelayMs(0), 0u);
+  EXPECT_EQ(pinFailureDelayMs(3), 0u) << "three fat-fingered presses cost nothing";
+  EXPECT_EQ(pinFailureDelayMs(4), 1000u);
+  EXPECT_EQ(pinFailureDelayMs(5), 2000u);
+  EXPECT_EQ(pinFailureDelayMs(6), 4000u);
+  EXPECT_EQ(pinFailureDelayMs(7), 8000u);
+  EXPECT_EQ(pinFailureDelayMs(8), 16000u);
+  // Capped, so the screen never looks hung.
+  EXPECT_EQ(pinFailureDelayMs(9), 30000u);
+  EXPECT_EQ(pinFailureDelayMs(200), 30000u);
+
+  EXPECT_FALSE(pinIsLockedOut(9));
+  EXPECT_TRUE(pinIsLockedOut(10));
+  EXPECT_TRUE(pinIsLockedOut(255));
+  EXPECT_EQ(kMaxPinFailures, 10);
+}
+
+TEST(WalletCryptoHex, ExactLengthOrNothing) {
+  uint8_t key[kWalletKeyLen];
+  EXPECT_TRUE(hexToBytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", key, sizeof(key)));
+  EXPECT_EQ(std::memcmp(key, kTestKey, sizeof(key)), 0);
+  // Upper case is the same key.
+  EXPECT_TRUE(hexToBytes("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F", key, sizeof(key)));
+  EXPECT_EQ(std::memcmp(key, kTestKey, sizeof(key)), 0);
+
+  // One character short, one long, one wrong: all refused. A key that is
+  // zero-padded into place would half work, which is worse than not working.
+  EXPECT_FALSE(hexToBytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1", key, sizeof(key)));
+  EXPECT_FALSE(hexToBytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00", key, sizeof(key)));
+  EXPECT_FALSE(hexToBytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1ezz", key, sizeof(key)));
+  EXPECT_FALSE(hexToBytes("", key, sizeof(key)));
+  EXPECT_FALSE(hexToBytes(nullptr, key, sizeof(key)));
+
+  uint8_t salt[kPbkdf2SaltLen];
+  EXPECT_TRUE(hexToBytes("78a32045fc9d4794877318cd4d2acec3", salt, sizeof(salt)));
+  EXPECT_EQ(salt[0], 0x78);
+  EXPECT_EQ(salt[15], 0xc3);
+}
+
+TEST(WalletCryptoWipe, SecureWipeClearsEveryByte) {
+  uint8_t key[kWalletKeyLen];
+  std::memcpy(key, kTestKey, sizeof(key));
+  secureWipe(key, sizeof(key));
+  for (size_t i = 0; i < sizeof(key); ++i) EXPECT_EQ(key[i], 0) << i;
+  // A zero length is a no-op, not a crash.
+  secureWipe(key, 0);
 }

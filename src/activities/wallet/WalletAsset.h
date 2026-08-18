@@ -322,9 +322,15 @@ enum class AssetCheck : uint8_t {
 
 // Shared head of both gates: the things that are wrong regardless of what shape
 // the asset is meant to be.
-inline AssetCheck checkAssetCommon(const uint8_t* bytes, size_t len, AssetHeader& out) {
+//
+// `allowEncrypted` is what the wallet key buys. Without a key an encrypted asset is
+// refused, because drawing ciphertext puts noise on the panel and looks like a
+// hardware fault; with one it is accepted here and decrypted after the read
+// (WalletStore.cpp, `readWholeScreen`). The default is false so every caller that
+// has no key -- the host preview, the tests -- keeps the P1 behaviour.
+inline AssetCheck checkAssetCommon(const uint8_t* bytes, size_t len, AssetHeader& out, bool allowEncrypted = false) {
   if (!parseAssetHeader(bytes, len, out)) return AssetCheck::Malformed;
-  if ((out.flags & kFlagEncrypted) != 0) return AssetCheck::Encrypted;
+  if (!allowEncrypted && (out.flags & kFlagEncrypted) != 0) return AssetCheck::Encrypted;
   if (out.bitDepth != kBitDepth1) return AssetCheck::BitDepth;
   return AssetCheck::Ok;
 }
@@ -333,8 +339,8 @@ inline AssetCheck checkAssetCommon(const uint8_t* bytes, size_t len, AssetHeader
 // window fitting inside it. Deliberately NOT against the panel's width and
 // height -- see PageImageSpec.
 inline AssetCheck checkPageImage(const uint8_t* bytes, size_t len, const PageImageSpec& page, const PanelGeometry& live,
-                                 AssetHeader& out) {
-  const AssetCheck common = checkAssetCommon(bytes, len, out);
+                                 AssetHeader& out, bool allowEncrypted = false) {
+  const AssetCheck common = checkAssetCommon(bytes, len, out, allowEncrypted);
   if (common != AssetCheck::Ok) return common;
   if (out.assetType != AssetType::PageImage) return AssetCheck::PageImageMismatch;
   // The file must agree with what the manifest promised about it.
@@ -349,8 +355,9 @@ inline AssetCheck checkPageImage(const uint8_t* bytes, size_t len, const PageIma
 }
 
 // A tile asset: exactly one panel frame, checked against the panel.
-inline AssetCheck checkAssetForPanel(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out) {
-  const AssetCheck common = checkAssetCommon(bytes, len, out);
+inline AssetCheck checkAssetForPanel(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out,
+                                     bool allowEncrypted = false) {
+  const AssetCheck common = checkAssetCommon(bytes, len, out, allowEncrypted);
   if (common != AssetCheck::Ok) return common;
   if (live.bufferBytes == 0 || out.rawLen != live.bufferBytes) return AssetCheck::WrongPanel;
   if (out.width != live.width || out.height != live.height) return AssetCheck::WrongPanel;
@@ -361,8 +368,9 @@ inline AssetCheck checkAssetForPanel(const uint8_t* bytes, size_t len, const Pan
 // code. A manifest entry pointing at a document tile is a generator or a sync
 // bug, and drawing page three of an insurance policy where a boarding pass
 // should be is worse than drawing nothing.
-inline AssetCheck checkCodeAsset(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out) {
-  const AssetCheck panelCheck = checkAssetForPanel(bytes, len, live, out);
+inline AssetCheck checkCodeAsset(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out,
+                                 bool allowEncrypted = false) {
+  const AssetCheck panelCheck = checkAssetForPanel(bytes, len, live, out, allowEncrypted);
   if (panelCheck != AssetCheck::Ok) return panelCheck;
   if (out.assetType != AssetType::MachineCode) return AssetCheck::NotACode;
   return AssetCheck::Ok;

@@ -243,7 +243,15 @@ gate.
 [`docs/home-screen.md`](./docs/home-screen.md) is the Home screen: the brand
 block's asset pipeline (two generator scripts, one traced SVG), the seven rows
 and why three of them draw dimmed, and how a row is dimmed on a panel with no
-grey. Verified on the X4 2026-08-21; input handling still untested.
+grey. Verified on the X4 2026-08-21; input handling still untested. **On this
+branch the Wallet row is not dimmed**, because this is the branch its activity
+lives on.
+
+[`docs/wallet-viewer.md`](./docs/wallet-viewer.md) is the offline document wallet:
+the screens, the pan design, the button map and the fullscreen machine codes.
+[`docs/wallet-crypto.md`](./docs/wallet-crypto.md) is its encryption -- the crypto
+path, the key's lifetime, and the threat boundary, which stops at "card removed" and
+explicitly does **not** cover a device in somebody's hand with a cable.
 
 ## Credits
 
