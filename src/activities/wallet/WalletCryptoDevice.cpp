@@ -160,9 +160,28 @@ void Session::clear(const char* reason) {
   secureWipe(key_, sizeof(key_));
   hasKey_ = false;
   lastTouchMs_ = 0;
+  // The retry gate is deliberately NOT reset: locking must not be a way to clear a
+  // delay the rate limiter is enforcing.
 }
 
 void Session::touch() { lastTouchMs_ = millis(); }
+
+uint32_t Session::retryWaitMs() const {
+  if (retryAtMs_ == 0) return 0;
+  const int32_t left = static_cast<int32_t>(retryAtMs_ - millis());
+  return left > 0 ? static_cast<uint32_t>(left) : 0;
+}
+
+uint32_t Session::idleLeftMs() const {
+  if (!hasKey_) return 0;
+  const uint32_t gone = millis() - lastTouchMs_;
+  return gone >= kIdleTimeoutMs ? 0 : kIdleTimeoutMs - gone;
+}
+
+void Session::armRetryDelay(const uint8_t failures) {
+  const uint32_t delay = pinFailureDelayMs(failures);
+  retryAtMs_ = delay > 0 ? millis() + delay : 0;
+}
 
 bool Session::expireIfIdle() {
   if (!hasKey_) return false;

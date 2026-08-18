@@ -306,6 +306,39 @@ inline uint32_t pinFailureDelayMs(uint8_t failures) {
 
 inline bool pinIsLockedOut(uint8_t failures) { return failures >= kMaxPinFailures; }
 
+// What one unlock attempt did. Shared by the PIN screen and by
+// CMD:WALLETUNLOCK, because they run the same attempt through the same code
+// (KeyStore::tryUnlock).
+enum class UnlockResult : uint8_t {
+  Ok = 0,
+  NotProvisioned,  // no wrap in NVS: provision first
+  Malformed,       // not 6..10 of U/D/L/R, so not spent against the limiter
+  Waiting,         // the rate limiter's delay has not run out
+  LockedOut,       // ten failures: the wrap is refused until re-provisioning
+  BadPin,          // the unwrap did not authenticate
+};
+
+// A stable one-word token per outcome, for the serial reply and the log. Stable on
+// purpose: a host script greps these, so they are part of the command's contract
+// and renaming one breaks a caller.
+inline const char* unlockResultName(UnlockResult result) {
+  switch (result) {
+    case UnlockResult::Ok:
+      return "ok";
+    case UnlockResult::NotProvisioned:
+      return "not_provisioned";
+    case UnlockResult::Malformed:
+      return "malformed_pin";
+    case UnlockResult::Waiting:
+      return "rate_limited";
+    case UnlockResult::LockedOut:
+      return "locked_out";
+    case UnlockResult::BadPin:
+      return "wrong_pin";
+  }
+  return "?";
+}
+
 // ---------------------------------------------------------------------------
 // The wrapped key, as it sits in NVS
 // ---------------------------------------------------------------------------

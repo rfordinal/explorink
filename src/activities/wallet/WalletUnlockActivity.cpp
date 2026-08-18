@@ -34,10 +34,9 @@ void WalletUnlockActivity::onEnter() {
   noWrap_ = !wallet::KeyStore::isProvisioned();
   failures_ = wallet::KeyStore::failures();
   lockedOut_ = wallet::pinIsLockedOut(failures_);
-  // The delay the persisted failure count already earned. A power cycle does not
-  // buy a fresh set of guesses, so the wait is applied on entry too.
-  const uint32_t delay = wallet::pinFailureDelayMs(failures_);
-  retryAtMs_ = delay > 0 ? millis() + delay : 0;
+  // The delay the persisted failure count already earned. A power cycle does not buy
+  // a fresh set of guesses, so the wait is armed on entry too.
+  wallet::Session::instance().armRetryDelay(failures_);
   // Attributable heap: the 10-second MEM line says what was free at some moment,
   // this says what was free with THIS screen up. Asked for by the phase that has to
   // report the wallet's resident heap (docs/wallet-crypto.md).
@@ -56,10 +55,10 @@ void WalletUnlockActivity::onExit() {
 }
 
 uint32_t WalletUnlockActivity::waitSecondsLeft() const {
-  if (retryAtMs_ == 0) return 0;
-  const uint32_t now = millis();
-  if (static_cast<int32_t>(retryAtMs_ - now) <= 0) return 0;
-  return (retryAtMs_ - now + 999) / 1000;
+  // The gate is the session's, not this screen's: CMD:WALLETUNLOCK arms the same one,
+  // so neither path can be used to step around a delay the other is enforcing.
+  const uint32_t left = wallet::Session::instance().retryWaitMs();
+  return left == 0 ? 0 : (left + 999) / 1000;
 }
 
 void WalletUnlockActivity::loop() {
@@ -121,41 +120,35 @@ void WalletUnlockActivity::backspace() {
 }
 
 void WalletUnlockActivity::submit() {
-  if (length_ < wallet::kPinMinLen) {
-    // Too short to be the PIN, so it is not spent against the rate limiter.
-    render(HalDisplay::FAST_REFRESH);
-    return;
-  }
-  if (waitSecondsLeft() > 0) {
-    render(HalDisplay::FAST_REFRESH);
-    return;
-  }
-
-  uint8_t key[wallet::kWalletKeyLen];
-  const bool ok = wallet::KeyStore::unwrap(entry_, length_, key);
+  // One attempt, through the one shared path -- the same KeyStore::tryUnlock() that
+  // CMD:WALLETUNLOCK drives, so what a host verifies is what a rider gets.
+  uint32_t unwrapMicros = 0;
+  uint32_t waitMs = 0;
+  const wallet::UnlockResult result = wallet::KeyStore::tryUnlock(entry_, unwrapMicros, failures_, waitMs);
   // Whatever happened, the typed PIN is done with.
   wallet::secureWipe(entry_, sizeof(entry_));
   length_ = 0;
 
-  if (!ok) {
-    wallet::secureWipe(key, sizeof(key));
-    wallet::KeyStore::recordFailure();
-    failures_ = wallet::KeyStore::failures();
-    lockedOut_ = wallet::pinIsLockedOut(failures_);
-    const uint32_t delay = wallet::pinFailureDelayMs(failures_);
-    retryAtMs_ = delay > 0 ? millis() + delay : 0;
-    lastAttemptWrong_ = true;
-    render(HalDisplay::HALF_REFRESH);
+  lockedOut_ = result == wallet::UnlockResult::LockedOut;
+  noWrap_ = result == wallet::UnlockResult::NotProvisioned;
+  lastAttemptWrong_ = result == wallet::UnlockResult::BadPin;
+
+  if (result == wallet::UnlockResult::Ok) {
+    LOG_INF(kLogTag, "unlocked in %lu us; opening the wallet (item %d code %d)",
+            static_cast<unsigned long>(unwrapMicros), openItem_, openCode_);
+    // Replace, not push: the PIN screen has no business staying on the stack behind
+    // an unlocked wallet, and BACK out of the browse list should go home.
+    activityManager.goToWallet(openItem_, openCode_);
     return;
   }
 
-  wallet::Session::instance().setKey(key);
-  wallet::secureWipe(key, sizeof(key));
-  wallet::KeyStore::clearFailures();
-  LOG_INF(kLogTag, "unlocked; opening the wallet (item %d code %d)", openItem_, openCode_);
-  // Replace, not push: the PIN screen has no business staying on the stack behind
-  // an unlocked wallet, and BACK out of the browse list should go home.
-  activityManager.goToWallet(openItem_, openCode_);
+  LOG_ERR(kLogTag, "unlock refused: %s (%u failures)", wallet::unlockResultName(result),
+          static_cast<unsigned>(failures_));
+  // Malformed and Waiting are cheap answers to a half-finished entry, so they get a
+  // FAST redraw; a real refusal replaces the screen's message and gets a clean one.
+  render(result == wallet::UnlockResult::Malformed || result == wallet::UnlockResult::Waiting
+             ? HalDisplay::FAST_REFRESH
+             : HalDisplay::HALF_REFRESH);
 }
 
 void WalletUnlockActivity::render(const HalDisplay::RefreshMode mode) {
