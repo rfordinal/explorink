@@ -1,5 +1,7 @@
 #include "CrossPointWebServer.h"
 
+#include "activities/wallet/WalletSha256.h"
+
 #include <ArduinoJson.h>
 #include <FsHelpers.h>
 #include <HalGPIO.h>
@@ -136,6 +138,12 @@ void CrossPointWebServer::begin() {
 
   server->on("/api/status", HTTP_GET, [this] { handleStatus(); });
   server->on("/api/files", HTTP_GET, [this] { handleFileListData(); });
+  // Integrity for the Wi-Fi transport. `/upload` answers success as soon as the
+  // write returns; the BLE receiver reads the finished file back off the card and
+  // CRC32s it before renaming (MapTransferReceiver.cpp). Wallet sync may only
+  // call an asset "on device" after a checksum (brief 28), so the phone needs a
+  // way to ask what the card actually holds.
+  server->on("/api/hash", HTTP_GET, [this] { handleHash(); });
   server->on("/download", HTTP_GET, [this] { handleDownload(); });
 
   // Upload endpoint with special handling for multipart form data
@@ -511,6 +519,57 @@ void CrossPointWebServer::handleFileListData() const {
   // End of streamed response, empty chunk to signal client
   server->sendContent("");
   LOG_DBG("WEB", "Served file listing page for path: %s", currentPath.c_str());
+}
+
+void CrossPointWebServer::handleHash() const {
+  if (!server->hasArg("path")) {
+    server->send(400, "text/plain", "Missing path");
+    return;
+  }
+  String itemPath = server->arg("path");
+  if (itemPath.isEmpty() || itemPath == "/") {
+    server->send(400, "text/plain", "Invalid path");
+    return;
+  }
+  if (!itemPath.startsWith("/")) {
+    itemPath = "/" + itemPath;
+  }
+  if (!Storage.exists(itemPath.c_str())) {
+    server->send(404, "text/plain", "Item not found");
+    return;
+  }
+  HalFile file = Storage.open(itemPath.c_str());
+  if (!file) {
+    server->send(500, "text/plain", "Failed to open file");
+    return;
+  }
+  if (file.isDirectory()) {
+    server->send(400, "text/plain", "Path is a directory");
+    return;
+  }
+
+  // Streamed in 1 KB bites on purpose: this runs on the web server task while a
+  // wallet may be open, and a 48 KB asset must not need a 48 KB buffer to be
+  // hashed. Same reason the wallet reader never buffers an asset.
+  wallet::Sha256 sha;
+  uint8_t buf[1024];
+  size_t total = 0;
+  while (true) {
+    const int got = file.read(buf, sizeof(buf));
+    if (got <= 0) break;
+    sha.update(buf, static_cast<size_t>(got));
+    total += static_cast<size_t>(got);
+  }
+  uint8_t digest[wallet::kSha256Bytes];
+  sha.finish(digest);
+  char hex[wallet::kSha256HexBufBytes] = {0};
+  for (size_t i = 0; i < wallet::kSha256Bytes; ++i) {
+    snprintf(hex + i * 2, 3, "%02x", digest[i]);
+  }
+
+  char body[128];
+  snprintf(body, sizeof(body), "{\"size\":%u,\"sha256\":\"%s\"}", static_cast<unsigned>(total), hex);
+  server->send(200, "application/json", body);
 }
 
 void CrossPointWebServer::handleDownload() const {
