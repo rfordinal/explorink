@@ -1650,9 +1650,14 @@ TEST(WalletCryptoManifest, EnvelopeParsesAndTheTagVerifies) {
   ManifestEnvelope envelope;
   ASSERT_TRUE(parseManifestEnvelope(blob.data(), blob.size(), envelope));
   EXPECT_TRUE(envelope.valid);
-  EXPECT_EQ(envelope.ciphertextOffset, kManifestEnvelopeLen);
+  // The committed fixture is a **v1** envelope, written before the cleartext
+  // walletVersion field existed. It stays v1 on purpose: a card in the field must
+  // not become unreadable when the container grows.
+  EXPECT_EQ(envelope.ciphertextOffset, kManifestEnvelopeLenV1);
+  EXPECT_FALSE(envelope.hasWalletVersion);
+  EXPECT_EQ(envelope.walletVersion, 0u);
   EXPECT_EQ(envelope.plaintextLen, envelope.ciphertextLen);
-  EXPECT_EQ(envelope.tagOffset, kManifestEnvelopeLen + envelope.ciphertextLen);
+  EXPECT_EQ(envelope.tagOffset, kManifestEnvelopeLenV1 + envelope.ciphertextLen);
   EXPECT_LE(blob.size(), kMaxEncryptedManifestBytes) << "the fixture must be under the cap";
 
   std::vector<uint8_t> plain(envelope.ciphertextLen);
@@ -1670,6 +1675,67 @@ TEST(WalletCryptoManifest, EnvelopeParsesAndTheTagVerifies) {
   ASSERT_EQ(parser.itemsStored(), 1);
   EXPECT_STREQ(items[0].title, "Boarding pass") << "the title only exists after the tag verified";
   EXPECT_EQ(items[0].codeCount, 1);
+}
+
+// A v2 envelope built from the v1 fixture: same sealed bytes, header grown by the
+// cleartext u32 walletVersion. Synthesised rather than committed as a second
+// fixture so the two cannot drift apart.
+static std::vector<uint8_t> v2FromV1(const std::vector<uint8_t>& v1, uint32_t walletVersion) {
+  std::vector<uint8_t> out;
+  out.reserve(v1.size() + 4);
+  out.insert(out.end(), v1.begin(), v1.begin() + kManifestEnvelopeLenV1);
+  out[4] = kManifestEncVersion;
+  for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>((walletVersion >> (8 * i)) & 0xFF));
+  out.insert(out.end(), v1.begin() + kManifestEnvelopeLenV1, v1.end());
+  return out;
+}
+
+TEST(WalletCryptoManifest, V2CarriesAWalletVersionReadableWithoutTheKey) {
+  const std::vector<uint8_t> v1 = encFixture("enc/manifest.enc");
+  ASSERT_FALSE(v1.empty());
+  const std::vector<uint8_t> v2 = v2FromV1(v1, 147);
+
+  ManifestEnvelope envelope;
+  ASSERT_TRUE(parseManifestEnvelope(v2.data(), v2.size(), envelope));
+  EXPECT_TRUE(envelope.hasWalletVersion);
+  EXPECT_EQ(envelope.walletVersion, 147u);
+  EXPECT_EQ(envelope.ciphertextOffset, kManifestEnvelopeLen);
+  EXPECT_EQ(envelope.plaintextLen, envelope.ciphertextLen);
+
+  // No key was involved in reading it -- that is the whole point. The phone must
+  // be able to compute pending work against a locked wallet (brief 23-26, 54).
+  std::vector<uint8_t> plain(envelope.ciphertextLen);
+  ASSERT_TRUE(wallet::host::gcmDecrypt(kTestKey, envelope.nonce, kGcmNonceLen, v2.data() + envelope.tagOffset,
+                                       kGcmTagLen, v2.data() + envelope.ciphertextOffset, envelope.ciphertextLen,
+                                       plain.data()));
+}
+
+TEST(WalletCryptoManifest, TheWalletVersionIsNotAuthenticated) {
+  // It sits outside the GCM tag, so tampering with it cannot be detected. The
+  // manifest must still decrypt -- the field is a hint, every asset is verified by
+  // its own hash -- and nothing may treat it as trustworthy.
+  const std::vector<uint8_t> v1 = encFixture("enc/manifest.enc");
+  ASSERT_FALSE(v1.empty());
+  std::vector<uint8_t> v2 = v2FromV1(v1, 5);
+  v2[kManifestEnvelopeLenV1] ^= 0xFF;  // first byte of walletVersion
+
+  ManifestEnvelope envelope;
+  ASSERT_TRUE(parseManifestEnvelope(v2.data(), v2.size(), envelope));
+  EXPECT_NE(envelope.walletVersion, 5u) << "the tamper must be visible in the value";
+  std::vector<uint8_t> plain(envelope.ciphertextLen);
+  EXPECT_TRUE(wallet::host::gcmDecrypt(kTestKey, envelope.nonce, kGcmNonceLen, v2.data() + envelope.tagOffset,
+                                       kGcmTagLen, v2.data() + envelope.ciphertextOffset, envelope.ciphertextLen,
+                                       plain.data()))
+      << "a tampered version must not break the manifest";
+}
+
+TEST(WalletCryptoManifest, AnUnknownContainerVersionIsRefused) {
+  const std::vector<uint8_t> v1 = encFixture("enc/manifest.enc");
+  ASSERT_FALSE(v1.empty());
+  std::vector<uint8_t> bad = v1;
+  bad[4] = 9;
+  ManifestEnvelope envelope;
+  EXPECT_FALSE(parseManifestEnvelope(bad.data(), bad.size(), envelope));
 }
 
 TEST(WalletCryptoManifest, OneFlippedBitAnywhereFailsTheTag) {

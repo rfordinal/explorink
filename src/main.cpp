@@ -1272,12 +1272,18 @@ void loop() {
             items = static_cast<int>(seen);
           }
         }
+        // Readable with no key: the phone needs it to compute pending work while
+        // the wallet is locked. -1 means the card does not say (cleartext tree, or
+        // a v1 envelope written before the field existed).
+        long cardVersion = -1;
+        uint32_t cv = 0;
+        if (wallet::readCardWalletVersion(cv)) cardVersion = static_cast<long>(cv);
         logSerial.printf(
             "WALLETSTATUS provisioned=%d unlocked=%d attempts=%u of %u wait_ms=%lu manifest=%s items=%d "
-            "idle_left_ms=%lu iters=%lu\n",
+            "walletVersion=%ld idle_left_ms=%lu iters=%lu\n",
             wallet::KeyStore::isProvisioned() ? 1 : 0, session.hasKey() ? 1 : 0,
             static_cast<unsigned>(wallet::KeyStore::failures()), static_cast<unsigned>(wallet::kMaxPinFailures),
-            static_cast<unsigned long>(session.retryWaitMs()), manifestKind, items,
+            static_cast<unsigned long>(session.retryWaitMs()), manifestKind, items, cardVersion,
             static_cast<unsigned long>(session.idleLeftMs()),
             static_cast<unsigned long>(wallet::KeyStore::iterations()));
       } else if (cmd == "WALLETLOCK") {

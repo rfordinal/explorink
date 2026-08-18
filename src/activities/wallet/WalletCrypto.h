@@ -144,11 +144,18 @@ inline void ctrXorInPlace(BlockEncrypt encrypt, void* ctx, const uint8_t iv[kAss
 // ---------------------------------------------------------------------------
 
 inline constexpr uint8_t kManifestMagic[4] = {'E', 'W', 'M', '1'};
-inline constexpr uint8_t kManifestEncVersion = 1;
+// v1: no version field. v2 adds a cleartext u32 walletVersion after
+// plaintextLen, so a **locked** device can still say which version the card
+// holds -- background sync computes pending work with no key present
+// (brief 23-26, 54). Both are read; a v1 card must not become unreadable.
+inline constexpr uint8_t kManifestEncVersionV1 = 1;
+inline constexpr uint8_t kManifestEncVersion = 2;
 inline constexpr size_t kGcmNonceLen = 12;
 inline constexpr size_t kGcmTagLen = 16;
-// magic(4) | version(1) | flags(1) | nonce(12) | plaintextLen(4)
-inline constexpr size_t kManifestEnvelopeLen = 22;
+// v1: magic(4) | version(1) | flags(1) | nonce(12) | plaintextLen(4)
+// v2: ... | walletVersion(4)
+inline constexpr size_t kManifestEnvelopeLenV1 = 22;
+inline constexpr size_t kManifestEnvelopeLen = 26;
 
 inline constexpr const char* kManifestEncPath = "/trailink/wallet/manifest.enc";
 
@@ -163,10 +170,24 @@ inline constexpr const char* kManifestEncPath = "/trailink/wallet/manifest.enc";
 // (../../../docs/wallet-crypto.md, "The manifest has to fit in RAM").
 inline constexpr size_t kMaxEncryptedManifestBytes = 32u * 1024u;
 
+// Reads only the cleartext envelope of manifest.enc -- 26 bytes, no key, no
+// decryption, so it answers while the wallet is locked. Returns false when the
+// card has no encrypted manifest or the envelope is a v1 that does not carry a
+// version. See ManifestEnvelope::walletVersion for why this value is a hint and
+// never a trust anchor.
+bool readCardWalletVersion(uint32_t& out);
+
 struct ManifestEnvelope {
   bool valid = false;
   uint8_t nonce[kGcmNonceLen] = {0};
   uint32_t plaintextLen = 0;
+  // 0 means "this card does not say" -- a v1 envelope, not version zero.
+  // **Never authenticated**: it sits outside the GCM tag, so a flipped bit here
+  // is not caught by anything. Worst case it makes the phone re-send work it did
+  // not need to, because every asset is still verified by its own hash. Do not
+  // treat it as trustworthy, and do not gate anything destructive on it.
+  uint32_t walletVersion = 0;
+  bool hasWalletVersion = false;
   // Where the ciphertext starts and how long it is; the 16-byte tag follows it.
   size_t ciphertextOffset = 0;
   size_t ciphertextLen = 0;
@@ -182,18 +203,29 @@ struct ManifestEnvelope {
 inline bool parseManifestEnvelope(const uint8_t* bytes, size_t fileLen, ManifestEnvelope& out) {
   out = ManifestEnvelope{};
   if (bytes == nullptr) return false;
-  if (fileLen < kManifestEnvelopeLen + kGcmTagLen) return false;
+  if (fileLen < kManifestEnvelopeLenV1 + kGcmTagLen) return false;
   if (std::memcmp(bytes, kManifestMagic, sizeof(kManifestMagic)) != 0) return false;
-  if (bytes[4] != kManifestEncVersion) return false;
-  // bytes[5] is flags; no flag is defined in v1, and an unknown one is not a
-  // reason to refuse a file the tag will authenticate anyway.
+  const uint8_t container = bytes[4];
+  size_t envelopeLen = 0;
+  if (container == kManifestEncVersionV1) {
+    envelopeLen = kManifestEnvelopeLenV1;
+  } else if (container == kManifestEncVersion) {
+    envelopeLen = kManifestEnvelopeLen;
+    if (fileLen < envelopeLen + kGcmTagLen) return false;
+    out.walletVersion = readLe32(bytes + 22);
+    out.hasWalletVersion = true;
+  } else {
+    return false;
+  }
+  // bytes[5] is flags; none is defined, and an unknown one is not a reason to
+  // refuse a file the tag will authenticate anyway.
   std::memcpy(out.nonce, bytes + 6, kGcmNonceLen);
   out.plaintextLen = readLe32(bytes + 18);
-  out.ciphertextOffset = kManifestEnvelopeLen;
-  const size_t sealed = fileLen - kManifestEnvelopeLen;
+  out.ciphertextOffset = envelopeLen;
+  const size_t sealed = fileLen - envelopeLen;
   if (sealed < kGcmTagLen) return false;
   out.ciphertextLen = sealed - kGcmTagLen;
-  out.tagOffset = kManifestEnvelopeLen + out.ciphertextLen;
+  out.tagOffset = envelopeLen + out.ciphertextLen;
   // The header's promise has to match the file's shape before anything is
   // decrypted -- a mismatch here means the file is truncated or spliced.
   if (out.plaintextLen != out.ciphertextLen) return false;
