@@ -215,7 +215,24 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
              static_cast<int>(declared_.width), static_cast<int>(declared_.height), static_cast<int>(live.width),
              static_cast<int>(live.height));
   } else if (stored_ == 0) {
-    snprintf(status, sizeof(status), "%s", wallet::errorText(error_));
+    // A failed manifest must not read as an empty wallet. The rider needs to know
+    // whether the documents are still on the card -- "something is wrong, here is
+    // what is here" and "your documents are gone" are different messages, and only
+    // one of them is true here (brief 32). Headers are cleartext, so the count
+    // works with no key and no manifest.
+    if (error_ == wallet::Error::ManifestUnreadable || error_ == wallet::Error::NoManifest) {
+      uint16_t onCard = 0;
+      uint16_t codesOnCard = 0;
+      wallet::countCardAssets(onCard, codesOnCard);
+      if (onCard > 0) {
+        snprintf(status, sizeof(status), tr(STR_WALLET_MANIFEST_BROKEN_FILES), wallet::errorText(error_),
+                 static_cast<int>(onCard), static_cast<int>(codesOnCard));
+      } else {
+        snprintf(status, sizeof(status), "%s", wallet::errorText(error_));
+      }
+    } else {
+      snprintf(status, sizeof(status), "%s", wallet::errorText(error_));
+    }
   } else if (seen_ > stored_) {
     // A truncated list must say so out loud. Silently hiding a document the
     // rider synced is the kind of quiet lie this codebase refuses elsewhere too
