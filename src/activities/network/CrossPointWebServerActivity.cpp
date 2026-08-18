@@ -234,9 +234,6 @@ void CrossPointWebServerActivity::startAccessPoint() {
   LOG_DBG("WEBACT", "Access Point started!");
   LOG_DBG("WEBACT", "SSID: %s", AP_SSID);
   LOG_DBG("WEBACT", "IP: %s", connectedIP.c_str());
-  // One stable line a host script can grep for; the LOG_DBG lines above are
-  // level-gated and their format is not a contract.
-  logSerial.printf("WEBSERVER_UP ssid=%s ip=%s\n", AP_SSID, connectedIP.c_str());
 
   // Start mDNS for hostname resolution
   restartMdns(AP_HOSTNAME, "WEBACT");
@@ -265,6 +262,12 @@ void CrossPointWebServerActivity::startWebServer() {
   if (webServer->isRunning()) {
     state = WebServerActivityState::SERVER_RUNNING;
     LOG_DBG("WEBACT", "Web server started successfully");
+    // One stable line a host script can grep for, printed on **both** paths --
+    // AP and station. The LOG_DBG lines are level-gated and their format is not
+    // a contract. First cut printed this only in startAccessPoint() and a
+    // station-mode measurement had nothing to key on.
+    logSerial.printf("WEBSERVER_UP mode=%s ssid=%s ip=%s\n", isApMode ? "ap" : "sta", connectedSSID.c_str(),
+                     connectedIP.c_str());
     lastWifiBars = isApMode ? 0 : barsForRssi(WiFi.RSSI(), 0);
 
     // Force an immediate render since we're transitioning from a subactivity
