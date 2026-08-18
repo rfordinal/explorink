@@ -25,7 +25,8 @@
 //   CONFIRM      cycle level: FIT -> DETAIL -> 1:1 -> FIT
 //   LEFT/RIGHT   step tile column at the current level, clamped
 //   UP/DOWN      step tile row at the current level, clamped
-//                ... except at FIT, which is one tile: there they turn the page
+//                ... except on a level with one tile row (always FIT), where
+//                there is no row to step and they turn the page instead
 //   BACK         back to the browse list
 //
 // UP/DOWN are the two side buttons and LEFT/RIGHT two of the four front buttons

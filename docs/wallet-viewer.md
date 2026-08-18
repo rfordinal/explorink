@@ -143,7 +143,7 @@ therefore does two jobs.
 | CONFIRM (front) | cycle level: FIT -> DETAIL -> 1:1 -> FIT |
 | LEFT / RIGHT (front) | step tile column at the current level, clamped |
 | UP / DOWN (side) | step tile row at the current level, clamped |
-| UP / DOWN (side) **at FIT** | previous / next page |
+| UP / DOWN (side), on a level with one tile row | previous / next page |
 | BACK (front) | back to the browse list |
 
 Why the side pair carries pages:
@@ -151,8 +151,9 @@ Why the side pair carries pages:
 - The repo's existing convention already puts page turning on the side buttons --
   that is what `Button::PageBack` / `PageForward` are
   (`src/MappedInputManager.cpp:77-98`).
-- At FIT the level is exactly one tile, so the row arrows have nothing to step.
-  Overloading a pair that is idle beats overloading one that is not.
+- On a level with a single tile row -- always true at FIT, which is 1x1 -- the row
+  arrows have nothing to step. Overloading a pair that is idle beats overloading
+  one that is not.
 - FIT is where a reader flips pages anyway. DETAIL and 1:1 are for inspecting one
   region of the page in front of you; flipping to another page from inside a
   zoomed corner is not a move anybody makes.
