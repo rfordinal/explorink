@@ -25,6 +25,7 @@ enum class HomeMenuItem {
   FILE_TRANSFER,
   MAP,
   TILE_SYNC,
+  WALLET,
   PREVIEW,
   SETTINGS_MENU
 };
@@ -110,6 +111,9 @@ class ActivityManager {
   // than a map-menu item: it is preparation done at home, not something a rider
   // stops mid-trail for, and it starts its own BLE (TileSyncActivity.h).
   void goToTileSync();
+  // The offline document wallet: browse first, then one screen per page
+  // (WalletActivity.h). Read-only -- nothing on the device can change the card.
+  void goToWallet();
   void goToPreview();
   void goToSleep(bool fromTimeout = false);
   void goToBoot();

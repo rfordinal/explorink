@@ -12,12 +12,12 @@
 #include "fontIds.h"
 
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-// File transfer, Map, Sync tiles, Preview, Settings
-int HomeActivity::getMenuItemCount() const { return 5; }
+// File transfer, Map, Sync tiles, Wallet, Preview, Settings
+int HomeActivity::getMenuItemCount() const { return 6; }
 #else
-// File transfer, Map, Sync tiles, Settings -- the grayscale bench is a
+// File transfer, Map, Sync tiles, Wallet, Settings -- the grayscale bench is a
 // build-flag lab instrument and stays out of a rider's menu (platformio.ini).
-int HomeActivity::getMenuItemCount() const { return 4; }
+int HomeActivity::getMenuItemCount() const { return 5; }
 #endif
 
 void HomeActivity::onEnter() {
@@ -44,6 +44,9 @@ void HomeActivity::loop() {
 
       case HomeMenuItem::TILE_SYNC:
         onTileSyncOpen();
+        break;
+      case HomeMenuItem::WALLET:
+        onWalletOpen();
         break;
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
       case HomeMenuItem::PREVIEW:
@@ -115,15 +118,17 @@ void HomeActivity::render(RenderLock&&) {
   // (see docs/firmware-implementation-plan.md Phase 2), swap for a real one
   // once the icon pipeline work happens.
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-  const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC), tr(STR_PREVIEW),
-                                              tr(STR_SETTINGS_TITLE)};
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Image, Settings};
+  const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP),     tr(STR_TILE_SYNC),
+                                              tr(STR_WALLET),        tr(STR_PREVIEW), tr(STR_SETTINGS_TITLE)};
+  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, File, Image, Settings};
 #else
-  const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC),
+  const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC), tr(STR_WALLET),
                                               tr(STR_SETTINGS_TITLE)};
   // Bluetooth, not Wifi: tile sync goes over BLE and nothing else, and a WiFi
-  // glyph sends a rider to the wrong settings page.
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Settings};
+  // glyph sends a rider to the wrong settings page. File is a placeholder for
+  // the wallet, same as Bookmark is for the map -- no Lucide asset is wired into
+  // the UIIcon set yet (../../../CLAUDE.md, "Icons: prefer Lucide").
+  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, File, Settings};
 #endif
 
   GUI.drawButtonMenu(
@@ -150,6 +155,8 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 void HomeActivity::onMapOpen() { activityManager.goToRouteSelect(); }
 
 void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
+
+void HomeActivity::onWalletOpen() { activityManager.goToWallet(); }
 
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
 void HomeActivity::onPreviewOpen() { activityManager.goToPreview(); }

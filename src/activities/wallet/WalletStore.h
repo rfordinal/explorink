@@ -1,0 +1,62 @@
+#pragma once
+
+#include <cstdint>
+
+#include "WalletAsset.h"
+#include "WalletManifestParser.h"
+
+class GfxRenderer;
+
+// The card side of the wallet: the manifest, and one asset into the framebuffer.
+//
+// Read-only by construction. There is no write, rename, delete or truncate path
+// anywhere in this file or in the two activities above it, and there must never
+// be one: the card is the only offline copy of a rider's documents, and a device
+// that can destroy it is worse than one that cannot show it
+// (../../../docs/wallet-viewer.md).
+namespace wallet {
+
+inline constexpr const char* kManifestPath = "/trailink/wallet/manifest.json";
+// Bumped when the on-card layout changes shape. A manifest from the future is
+// refused with a message, never half-read.
+inline constexpr uint32_t kSupportedFormatVersion = 1;
+
+enum class Error : uint8_t {
+  None = 0,
+  NoManifest,         // nothing at kManifestPath
+  ManifestUnreadable, // opened, but the JSON did not parse
+  ManifestVersion,    // formatVersion this firmware does not know
+  NoItems,            // parsed fine, carries nothing
+  NoAsset,            // the manifest names an assetId with no file behind it
+  BadAsset,           // wrong magic, wrong bit depth, header short
+  AssetEncrypted,     // flags bit 0 set -- a later phase's job
+  AssetWrongSize,     // rawLen is not this panel's framebuffer
+  ShortRead,          // the payload ended early
+  NoFrameBuffer,      // the framebuffer is lent out
+  NotInManifest,      // no such item / page / tile
+};
+
+// Translated one-line reason, for the empty state and the missing-asset screen.
+const char* errorText(Error error);
+
+struct Store {
+  // Fills `out` with up to `max` items in manifest order. `seen` counts every
+  // item the manifest holds, so a truncated list can say so.
+  static bool listItems(ItemEntry* out, uint16_t max, uint16_t& stored, uint32_t& seen, Error& error);
+
+  // One item, one page: the grid of all three levels plus the assetId of the
+  // named tile. Re-run per screen; see WalletManifestParser.h for why that is
+  // cheaper than caching.
+  static bool lookupPage(int itemIndex, int pageIndex, Level level, uint8_t col, uint8_t row, PageLookup& out,
+                         Error& error);
+
+  // Open, skip the 32-byte header, read the payload straight into the
+  // framebuffer, and hand back the header. No scratch buffer exists anywhere on
+  // this path: the destination is the framebuffer itself, so a screen costs zero
+  // extra RAM. Same move as the sleep frame (src/main.cpp:216-234).
+  //
+  // The caller refreshes; this function never touches the panel.
+  static bool loadAssetIntoFrameBuffer(const char* assetId, GfxRenderer& renderer, AssetHeader& header, Error& error);
+};
+
+}  // namespace wallet

@@ -19,6 +19,8 @@ class HomeActivity final : public Activity {
     ++i;
     if (item == HomeMenuItem::TILE_SYNC) return i;
     ++i;
+    if (item == HomeMenuItem::WALLET) return i;
+    ++i;
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     if (item == HomeMenuItem::PREVIEW) return i;
     ++i;
@@ -33,6 +35,7 @@ class HomeActivity final : public Activity {
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
     if (idx == i++) return HomeMenuItem::MAP;
     if (idx == i++) return HomeMenuItem::TILE_SYNC;
+    if (idx == i++) return HomeMenuItem::WALLET;
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     if (idx == i++) return HomeMenuItem::PREVIEW;
 #endif
@@ -43,6 +46,7 @@ class HomeActivity final : public Activity {
   void onFileTransferOpen();
   void onMapOpen();
   void onTileSyncOpen();
+  void onWalletOpen();
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   void onPreviewOpen();
 #endif

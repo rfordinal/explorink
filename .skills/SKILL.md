@@ -1085,7 +1085,8 @@ Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
 `docs/route-navigation.md`, `docs/map-header-status.md`,
 `docs/power-management.md`, `docs/sleep-screen.md`,
 `docs/map-observation-mode.md`, `docs/map-memory.md`, `docs/zoom-rungs.md`,
-`docs/map-menu.md`, `docs/place-labels.md`, `docs/refresh-modes.md`.
+`docs/map-menu.md`, `docs/place-labels.md`, `docs/refresh-modes.md`,
+`docs/wallet-viewer.md`.
 Extend one before adding another.
 
 `docs/power-plan.md` is not a topic doc -- it is the running power-measurement
