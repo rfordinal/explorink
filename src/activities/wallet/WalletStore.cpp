@@ -43,7 +43,7 @@ bool feedEncryptedManifest(ManifestParser& parser, Error& error) {
     error = Error::ManifestTooBig;
     return false;
   }
-  if (fileSize < kManifestEnvelopeLen + kGcmTagLen) {
+  if (fileSize < kManifestEnvelopeLenV1 + kGcmTagLen) {
     file.close();
     error = Error::ManifestAuth;
     return false;
@@ -210,6 +210,23 @@ const char* errorText(const Error error) {
 }
 
 bool treeIsEncrypted() { return Storage.exists(kManifestEncPath); }
+
+bool readCardWalletVersion(uint32_t& out) {
+  out = 0;
+  if (!Storage.exists(kManifestEncPath)) return false;
+  HalFile file;
+  if (!Storage.openFileForRead(kLogTag, kManifestEncPath, file)) return false;
+  // Only the envelope, and only its cleartext part: 26 bytes off the front, no
+  // key involved. This is what lets a locked device answer "which version do I
+  // hold" so the phone can compute pending work without a PIN (brief 23-26, 54).
+  uint8_t head[kManifestEnvelopeLen] = {0};
+  const int got = file.read(head, sizeof(head));
+  if (got != static_cast<int>(sizeof(head))) return false;
+  if (std::memcmp(head, kManifestMagic, sizeof(kManifestMagic)) != 0) return false;
+  if (head[4] != kManifestEncVersion) return false;  // v1 carries no version
+  out = readLe32(head + 22);
+  return true;
+}
 
 PanelGeometry livePanel(const GfxRenderer& renderer) {
   PanelGeometry live;
