@@ -13,7 +13,7 @@
 #include "util/TaskWatchdog.h"
 
 namespace {
-constexpr const char* HOSTNAME = "crosspoint";
+constexpr const char* HOSTNAME = "explorink";
 }  // namespace
 
 void CalibreConnectActivity::onEnter() {
@@ -80,7 +80,7 @@ void CalibreConnectActivity::startWebServer() {
     LOG_DBG("CAL", "mDNS started: http://%s.local/", HOSTNAME);
   }
 
-  webServer.reset(new CrossPointWebServer());
+  webServer.reset(new ExplorInkWebServer());
   webServer->begin();
 
   if (webServer->isRunning()) {

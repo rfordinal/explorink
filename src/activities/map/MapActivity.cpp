@@ -554,7 +554,7 @@ void drawCompassArc(GfxRenderer& renderer, int cx, int cy, int radius, float sta
 }
 
 // Static thresholds, no hysteresis: unlike the WiFi indicator's
-// barsForRssi() (CrossPointWebServerActivity.cpp:53), this header redraws
+// barsForRssi() (ExplorInkWebServerActivity.cpp:53), this header redraws
 // only on a map redraw (not continuously), so there is no per-frame flicker
 // for hysteresis to guard against. Same dBm bands as that WiFi indicator --
 // BLE and WiFi share the 2.4 GHz band, so the same signal-to-bars mapping
@@ -1611,7 +1611,7 @@ void MapActivity::drawHeaderStatusStrip() {
   drawnLinkConnected_ = connected;
   if (!connected) {
     // X across the bar slot, same "not present" convention as the WiFi
-    // indicator (CrossPointWebServerActivity.cpp:483-486).
+    // indicator (ExplorInkWebServerActivity.cpp:483-486).
     renderer.drawLine(barsLeft, iconTop, barsLeft + kHeaderBleBarsWidth, iconBottom, 2, true);
     renderer.drawLine(barsLeft, iconBottom, barsLeft + kHeaderBleBarsWidth, iconTop, 2, true);
     drawnBleBars_ = 0;

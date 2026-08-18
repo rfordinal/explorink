@@ -150,7 +150,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  // Same mechanism CrossPointWebServerActivity/OtaUpdateActivity/etc. use --
+  // Same mechanism ExplorInkWebServerActivity/OtaUpdateActivity/etc. use --
   // don't let the device auto-sleep (and drop off USB) while the BLE
   // peripheral is running and might receive a position update any moment.
   bool preventAutoSleep() override;
