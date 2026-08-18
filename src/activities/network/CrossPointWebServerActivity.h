@@ -33,6 +33,7 @@ class CrossPointWebServerActivity final : public Activity {
   // Network mode
   NetworkMode networkMode = NetworkMode::JOIN_NETWORK;
   bool isApMode = false;
+  bool preselectHotspot = false;
 
   // Web server - owned by this activity
   std::unique_ptr<CrossPointWebServer> webServer;
@@ -61,8 +62,17 @@ class CrossPointWebServerActivity final : public Activity {
   void startWebServer();
 
  public:
-  explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("CrossPointWebServer", renderer, mappedInput) {}
+  // `preselectHotspot` skips the mode-selection screen and goes straight to AP
+  // mode. It exists so a host script can reach a running web server without a
+  // person pressing buttons -- the Wi-Fi Fast Sync throughput this project needs
+  // to measure (docs/wallet-plan.md, P7) was unmeasurable otherwise.
+  //
+  // Hotspot only, deliberately: station mode still needs the network picker, and
+  // the brief prefers the device's own hotspot anyway so nobody configures a
+  // hotel network (brief 35-37).
+  explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                       const bool preselectHotspot = false)
+      : Activity("CrossPointWebServer", renderer, mappedInput), preselectHotspot(preselectHotspot) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

@@ -221,6 +221,10 @@ void ActivityManager::goToRouteSelect() {
 
 void ActivityManager::goToTileSync() { replaceActivity(std::make_unique<TileSyncActivity>(renderer, mappedInput)); }
 
+void ActivityManager::goToWebServerHotspot() {
+  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, /*preselectHotspot=*/true));
+}
+
 void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
   // An encrypted tree with no key in the session cannot list anything -- the titles
   // are inside the encrypted manifest -- so the PIN screen comes first and carries
