@@ -1305,6 +1305,30 @@ void loop() {
         activityManager.goToTileSync();
         LOG_DBG("MAIN", "goToTileSync() returned");
         logSerial.printf("GOTO_TILESYNC_OK\n");
+#if defined(ENABLE_WALLET_TEST_CMDS) && ENABLE_WALLET_TEST_CMDS
+      } else if (cmd == "GOTO_WEBSERVER" || cmd.startsWith("GOTO_WEBSERVER ")) {
+        // Wi-Fi Fast Sync's throughput has never been measured, and it is the
+        // number that decides whether USB is worth building at all
+        // (docs/wallet-usb-sync.md). The web server screen was unreachable from a
+        // host: entering the activity is not enough, because it opens on the
+        // AP/station picker (CrossPointWebServerActivity.cpp, onEnter).
+        //
+        // Hotspot only. Station mode still needs the network picker, and the
+        // brief prefers the device's own hotspot precisely so nobody has to
+        // configure a hotel network (brief 35-37).
+        String arg = cmd.length() > 14 ? cmd.substring(15) : String();
+        arg.trim();
+        if (!arg.isEmpty() && arg != "ap") {
+          logSerial.printf("GOTO_WEBSERVER_ERR usage: CMD:GOTO_WEBSERVER [ap] -- station mode needs the picker\n");
+        } else {
+          LOG_DBG("MAIN", "CMD:GOTO_WEBSERVER received, hotspot mode");
+          activityManager.goToWebServerHotspot();
+          // The AP takes a moment to come up; the activity prints WEBSERVER_UP
+          // with the SSID and IP when it does. This line only says the request
+          // was accepted.
+          logSerial.printf("GOTO_WEBSERVER_OK mode=ap\n");
+        }
+#endif  // ENABLE_WALLET_TEST_CMDS
       }
     }
   }

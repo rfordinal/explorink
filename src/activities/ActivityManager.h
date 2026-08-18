@@ -111,6 +111,9 @@ class ActivityManager {
   // than a map-menu item: it is preparation done at home, not something a rider
   // stops mid-trail for, and it starts its own BLE (TileSyncActivity.h).
   void goToTileSync();
+  // Straight into AP mode with the mode picker skipped -- host-driven entry, see
+  // CrossPointWebServerActivity's constructor for why hotspot only.
+  void goToWebServerHotspot();
   // The offline document wallet: browse first, then one screen per page
   // (WalletActivity.h). Read-only -- nothing on the device can change the card.
   //

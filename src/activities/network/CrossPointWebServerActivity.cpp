@@ -4,6 +4,7 @@
 #include <ESPmDNS.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <WiFi.h>
 
 #include <cstddef>
@@ -73,6 +74,15 @@ void CrossPointWebServerActivity::onEnter() {
   connectedSSID.clear();
   lastHandleClientTime = 0;
   requestUpdate();
+
+  // A host-driven entry skips the picker. Same call the picker's callback makes,
+  // so AP mode is reached through one path either way -- nothing here is a
+  // shortcut around what a person's press would do.
+  if (preselectHotspot) {
+    LOG_DBG("WEBACT", "hotspot preselected by the caller, skipping mode selection");
+    onNetworkModeSelected(NetworkMode::CREATE_HOTSPOT);
+    return;
+  }
 
   // Launch network mode selection subactivity
   LOG_DBG("WEBACT", "Launching NetworkModeSelectionActivity...");
@@ -224,6 +234,9 @@ void CrossPointWebServerActivity::startAccessPoint() {
   LOG_DBG("WEBACT", "Access Point started!");
   LOG_DBG("WEBACT", "SSID: %s", AP_SSID);
   LOG_DBG("WEBACT", "IP: %s", connectedIP.c_str());
+  // One stable line a host script can grep for; the LOG_DBG lines above are
+  // level-gated and their format is not a contract.
+  logSerial.printf("WEBSERVER_UP ssid=%s ip=%s\n", AP_SSID, connectedIP.c_str());
 
   // Start mDNS for hostname resolution
   restartMdns(AP_HOSTNAME, "WEBACT");
