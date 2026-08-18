@@ -291,11 +291,38 @@ The three `windowed` figures are three window origins -- top-left, focal,
 bottom-right clamped. **Offset does not matter**: 1.5 % spread across the whole
 image. So a window costs what a window costs, wherever it is.
 
-**Decision: design B, against the 400 ms gate.** 283 ms of card against a 500 ms
-FAST waveform means a pan is about **785 ms**, versus about **565 ms** for a
-whole-screen tile step. A pan costs ~40 % more than a page-turn did and buys the
-interaction the device is for. Design A is not implemented and should not be
+**Decision: design B, against the 400 ms gate.** A pan is about **850 ms**,
+against about **633 ms** for a whole-screen tile step: 285 ms or 65 ms of card
+time, plus a 500 ms FAST waveform, plus the controller RAM write that the
+waveform figure excludes (~68 ms, derived, [`refresh-modes.md`](refresh-modes.md)).
+
+An earlier version of this line said 785 ms and 565 ms. Both were low by the same
+~68 ms, because they added card time to the waveform alone. **The ~220 ms gap
+between the two designs is unaffected** -- it is card time only, and card time is
+the only thing the two designs differ in. Rule that follows: `refresh-modes.md`'s
+millisecond figures are *waveform*, not *frame*. Adding them to anything means
+adding the RAM write too.
+
+A pan costs ~35 % more than a page-turn did and buys the interaction the device is
+for. Design A is not implemented and should not be
 unless something later disqualifies B.
+
+### Conditions, and what three iterations is worth
+
+X4, one card, one file kept open across all iterations, **3 iterations per
+window** (spread under 1.5 %), no decrypt, no refresh inside the timed section,
+one document, and a **fixed mode order** -- `windowed`, `sequential`,
+`oversized`, `stream`. SdFat holds a single 512-byte block cache, so the first
+mode measured is the one that pays for a cold cache, and the order is not neutral.
+
+**Open: rerun with the order reversed.** Until that exists, the ranking is
+trustworthy and the absolute figures carry an unquantified first-mover penalty on
+`windowed`, the mode the decision rests on -- which biases *against* the design
+that was chosen, so the decision is safe either way.
+
+Three iterations is thin on purpose. It is enough to separate 285 ms from 613 ms.
+It is not enough to claim 285 over 290, and no conclusion here depends on that
+difference.
 
 ### Two beliefs the numbers corrected
 
@@ -304,13 +331,18 @@ unless something later disqualifies B.
   -- the map's tile reads, which reopen a file per tile). This one is a single open
   file read straight through. **Different access pattern, different number. Cite
   whichever matches the pattern; do not average them.**
-- **`oversized` was slower because of backward seeks, not block size.** It was
-  written to ask whether the card's block size already dominates a 100-byte read.
-  It answered something else: a 512-byte read over a 322-byte stride overshoots the
-  row, so every read is followed by a seek *backwards*. 613 ms against 283. Seek
-  direction costs; block size never entered into it. The mode answered a different
-  question than it was asked, and a more useful one -- which is the argument for
-  keeping a mode whose result you cannot predict.
+- **`oversized` was slower, and backward seeks are the likely reason -- read, not
+  measured.** The mode was written to ask whether the card's block size already
+  dominates a 100-byte read. It answered something else: 613 ms against 283. The
+  explanation on offer is that a 512-byte read over a 322-byte stride must
+  overshoot the row, so every read is followed by a seek *backwards* -- but
+  **nothing in the bench observed a seek**, and the arithmetic is where that
+  reading comes from, not the instrument. What would settle it: rerun mode 3
+  against a page image whose stride is >= 512 (a wider level, or a synthetic
+  file), where no overshoot is possible. If it stays slow there, the cause is
+  something else. Either way the mode answered a different question than it was
+  asked, which is the argument for keeping a mode whose result you cannot
+  predict.
 
 ### The pan step, and what a level opens at
 
@@ -659,6 +691,13 @@ One more thing about reproducing this file: `rsvg-convert` is not installed on t
 machine it was generated on, so the raster came from `cairosvg` through a PATH
 stand-in taking the same arguments. A regeneration with real librsvg may differ by
 an antialiased pixel.
+
+## Open: the browse header says `1 documents`
+
+Seen on the panel 2026-08-18. The count is not pluralised, so a single-item wallet
+reads `1 documents`. i18n needs a real plural form for the count, not a suffix
+glued on -- Slovak alone has three, and the string table has no plural mechanism
+today.
 
 ## Read-only by construction
 
