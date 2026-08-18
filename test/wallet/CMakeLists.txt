@@ -12,6 +12,10 @@ add_executable(WalletTest
 target_include_directories(WalletTest PRIVATE
   ${REPO_ROOT}/src/activities/wallet
   ${REPO_ROOT}/lib/JsonParser
+  # GrayShade.h only: the grey plane encoding, constexpr, no renderer and no panel
+  # (lib/GfxRenderer/GrayShade.h). WalletAsset.h states the wallet's grey levels in
+  # terms of it rather than repeating the table.
+  ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/test/wallet_preview

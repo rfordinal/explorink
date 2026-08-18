@@ -16,6 +16,16 @@ Everything below marked **verified** is read off the code. Everything marked
 > [`optimization/01-render-pipeline.md`](optimization/01-render-pipeline.md),
 > step 8. Grey on the map needs a bounded display list first.
 
+> **A second real user, 2026-08-18: the wallet viewer.** It does not draw its grey
+> either -- the laptop generator bakes the base frame and both planes, and the
+> device streams them off the card straight into controller RAM with
+> `writeGrayscalePlaneStrip()`. So a grey wallet page costs three windowed reads and
+> four driver calls instead of 13 callbacks, and the caller takes on the cleanup
+> `GrayscaleFrame` would otherwise handle. Layout, sequence and refresh rules:
+> [`wallet-grey.md`](wallet-grey.md). One consequence for this document:
+> `CMD:SCREENSHOT_GRAY` cannot see that grey, because there is no draw callback to
+> replay -- see "Getting grey off the device".
+
 ## The panel
 
 X4 is an SSD1677. X3 is a UC8253. Both drivers are linked into one binary; the
@@ -485,7 +495,10 @@ PGM and prints the per-level pixel counts; `tools/test_greyshot.py` round-trips
 the decoder against synthetic planes with no device attached.
 
 **What it can and cannot see.** The replay re-renders the last `GrayscaleFrame`
-callback, so it only ever shows grey that went through *this* layer. The sleep
+callback, so it only ever shows grey that went through *this* layer. The wallet's
+grey does not: its planes are baked on the laptop and streamed from the card, with
+no callback anywhere, so a grey wallet page answers `planeBytes == 0` and the
+record of it is a photograph ([`wallet-grey.md`](wallet-grey.md)). The sleep
 screen and the reader's images draw their planes themselves and register nothing,
 so on a stock build -- bench off, nothing else using the layer -- the command
 answers `planeBytes == 0` and the dump is 1-bit. That is honest, not broken. It

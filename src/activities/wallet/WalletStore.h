@@ -78,6 +78,24 @@ bool treeIsEncrypted();
 // authority (brief 43).
 void countCardAssets(uint16_t& assets, uint16_t& codes);
 
+// One window of one 1bpp plane, row by row, straight into `dest`.
+//
+// The whole seek-read-decrypt arithmetic of a page-image window, in one place,
+// because there are two callers of it and they must not drift: the 1bpp page
+// reader (one plane, `planeBase` 0) and the grey page reader (three planes, one
+// `planeBase` each -- ../../../docs/wallet-grey.md).
+//
+// `planeBase` is a PAYLOAD offset, not a file offset: the 32-byte cleartext header
+// is added for the seek and left out of the CTR offset, because the keystream is
+// indexed from the first byte of the payload. Getting that one wrong decrypts to
+// noise 32 bytes out of phase, which looks like a wrong key.
+//
+// `key` null means the asset is cleartext. `dest` rows are `destRowBytes` apart,
+// which is the panel's stride; `srcRowBytes` is the image's, which is larger.
+bool readPlaneWindow(HalFile& file, const uint8_t* key, const uint8_t iv[kAssetIvLen], uint32_t planeBase,
+                     uint32_t srcRowBytes, uint32_t xByte, uint32_t y, uint32_t rows, uint8_t* dest,
+                     uint32_t destRowBytes, Error& error);
+
 struct Store {
   // Fills `out` with up to `max` items in manifest order. `seen` counts every
   // item the manifest holds, so a truncated list can say so.

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "GrayShade.h"
 #include "WalletSha256.h"
 
 // One wallet asset = one whole screen, already in panel-native byte order.
@@ -45,6 +46,24 @@ enum class AssetType : uint8_t {
   // blits an arbitrary window out of it. The pan step is a fraction of the view
   // instead of a whole screen (../../../docs/wallet-viewer.md, "Design B").
   PageImage = 5,
+  // P2b grey. Both carry page-image geometry -- the whole page, not the panel --
+  // and both describe the same four levels. They differ in what a reader has to
+  // do with the bytes (../../../docs/wallet-grey.md).
+  //
+  // 2 bits per pixel, 4 pixels per byte, MSB-first, 0 = black, 1 = dark grey,
+  // 2 = light grey, 3 = white, row stride (width + 3) / 4. Legible as an image,
+  // and the form the host preview renders into a four-level PNG. **The device
+  // does not draw this one**: turning it into panel planes would cost a pass of
+  // bit shuffling per band on top of the read, and GreyPlanes already carries
+  // the result.
+  PageImageGrey = 6,
+  // The baked form, and the one the device draws: the BW base frame, then the
+  // LSB plane, then the MSB plane, concatenated. Three 1bpp planes, each
+  // `rowBytes` x `nativeHeight`, all in the same panel-native order as every
+  // other asset -- so a window out of plane 0 is what displayGrayscaleBase()
+  // wants and a band out of planes 1 and 2 is what writeGrayscalePlaneStrip()
+  // wants, with no per-band render in between.
+  GreyPlanes = 7,
 };
 
 // Which of the three zoom levels a screen belongs to. Deliberately separate
@@ -76,9 +95,98 @@ struct AssetHeader {
 // rather than drawn, because the bytes would be noise on the panel.
 inline constexpr uint8_t kFlagEncrypted = 0x01;
 
-// Only 1 bpp exists today. bitDepth 2 (4-level grey) is reserved in the format
-// and not implemented: grey costs a second waveform pass (docs/eink-grayscale.md).
+// 1 bpp is every document tile and every 1bpp page image. bitDepth 2 means the
+// asset describes the panel's four grey levels -- assetType 6 stores them 2 bits
+// to a pixel, assetType 7 stores them as three 1bpp planes, and both say 2,
+// because the depth field describes the *picture*, not the stride of one plane
+// (../../../docs/wallet-grey.md, "Both grey types say bitDepth 2").
 inline constexpr uint8_t kBitDepth1 = 1;
+inline constexpr uint8_t kBitDepth2 = 2;
+
+// --- Grey levels and the plane encoding ------------------------------------
+//
+// The stored 2bpp value, dark to light. Same numbering as the renderer's own
+// bitmap decode (lib/GfxRenderer/GfxRenderer.cpp:446-459) and as the format doc
+// (parent repo docs/wallet-format.md, section 5): 0 = black, 3 = white.
+//
+// GrayShade is the firmware's own name for the same four levels and numbers them
+// the other way round (how much ink). The two are mapped here, once, so nothing
+// downstream reinvents the table -- and the plane bits below come out of
+// GrayShade.h's constexpr encoding rather than being written a second time.
+inline constexpr uint8_t kGreyValueBlack = 0;
+inline constexpr uint8_t kGreyValueDarkGray = 1;
+inline constexpr uint8_t kGreyValueLightGray = 2;
+inline constexpr uint8_t kGreyValueWhite = 3;
+inline constexpr uint8_t kGreyValues = 4;
+
+constexpr GrayShade greyShadeFromValue(const uint8_t value) {
+  switch (value & 0x3) {
+    case kGreyValueBlack:
+      return GrayShade::Black;
+    case kGreyValueDarkGray:
+      return GrayShade::DarkGray;
+    case kGreyValueLightGray:
+      return GrayShade::LightGray;
+    default:
+      return GrayShade::White;
+  }
+}
+
+constexpr uint8_t greyValueFromShade(const GrayShade shade) {
+  switch (shade) {
+    case GrayShade::Black:
+      return kGreyValueBlack;
+    case GrayShade::DarkGray:
+      return kGreyValueDarkGray;
+    case GrayShade::LightGray:
+      return kGreyValueLightGray;
+    case GrayShade::White:
+      return kGreyValueWhite;
+  }
+  return kGreyValueWhite;
+}
+
+// The three planes of a GreyPlanes asset, in file order.
+enum class GreyPlane : uint8_t { Base = 0, Lsb = 1, Msb = 2 };
+inline constexpr uint8_t kGreyPlaneCount = 3;
+
+// The bit a level sets in each plane. **Two different conventions meet here and
+// both are load-bearing:**
+//
+//   Base  -- the framebuffer's: bit 1 = white, bit 0 = ink. Black AND both greys
+//            are ink, because a grey pixel is a black pixel the planes lighten
+//            (docs/eink-grayscale.md). Lose the planes and grey reads black.
+//   Lsb / Msb -- the controller's: bit 1 = nudge this pixel. That is what
+//            clearScreen(0x00) plus drawPixel(state=false) leaves in the strip
+//            scratch GrayscaleFrame streams (GfxRenderer.cpp:452-457), so a
+//            baked plane must hold exactly the same bits.
+//
+// Msb is set for both greys (the superset), Lsb only for dark grey.
+constexpr bool greyPlaneBit(const GrayShade shade, const GreyPlane plane) {
+  switch (plane) {
+    case GreyPlane::Base:
+      return !grayInks(shade, GrayPass::Base);
+    case GreyPlane::Lsb:
+      return grayInks(shade, GrayPass::Lsb);
+    case GreyPlane::Msb:
+      return grayInks(shade, GrayPass::Msb);
+  }
+  return false;
+}
+
+// The reverse: the level three plane bits encode. Nothing on the device needs it
+// -- the device streams the planes without looking at them -- but the host
+// preview and the tests do, and it must be the exact inverse of the table above
+// or a byte-layout bug hides.
+constexpr uint8_t greyValueFromPlaneBits(const bool baseBit, const bool lsbBit, const bool msbBit) {
+  if (baseBit) return kGreyValueWhite;  // white: no ink, no nudge
+  if (!msbBit) return kGreyValueBlack;  // ink, never nudged
+  return lsbBit ? kGreyValueDarkGray : kGreyValueLightGray;
+}
+
+// Row strides. A 2bpp row packs 4 pixels to a byte; a plane row packs 8.
+constexpr uint32_t greyRowBytes2bpp(const uint32_t width) { return (width + 3u) / 4u; }
+constexpr uint32_t greyPlaneRowBytes(const uint32_t width) { return (width + 7u) / 8u; }
 
 inline uint16_t readLe16(const uint8_t* p) {
   return static_cast<uint16_t>(static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8));
@@ -316,7 +424,7 @@ enum class AssetCheck : uint8_t {
   Encrypted,          // flags bit 0 -- a later phase's job
   BitDepth,           // not 1 bpp
   WrongPanel,         // rawLen / width / height is not this panel's, or the window does not fit
-  PageImageMismatch,  // a page image whose header disagrees with the manifest
+  PageImageMismatch,  // a page image (1bpp or grey) whose header disagrees with the manifest
   NotACode,           // the manifest called it a code, the header says otherwise
 };
 
@@ -328,10 +436,14 @@ enum class AssetCheck : uint8_t {
 // hardware fault; with one it is accepted here and decrypted after the read
 // (WalletStore.cpp, `readWholeScreen`). The default is false so every caller that
 // has no key -- the host preview, the tests -- keeps the P1 behaviour.
-inline AssetCheck checkAssetCommon(const uint8_t* bytes, size_t len, AssetHeader& out, bool allowEncrypted = false) {
+inline AssetCheck checkAssetCommon(const uint8_t* bytes, size_t len, AssetHeader& out, bool allowEncrypted = false,
+                                   uint8_t wantBitDepth = kBitDepth1) {
   if (!parseAssetHeader(bytes, len, out)) return AssetCheck::Malformed;
   if (!allowEncrypted && (out.flags & kFlagEncrypted) != 0) return AssetCheck::Encrypted;
-  if (out.bitDepth != kBitDepth1) return AssetCheck::BitDepth;
+  // Exact, never "at least": a 1bpp reader handed 2bpp bytes would draw the page
+  // at half width, and a grey reader handed 1bpp bytes would read the second and
+  // third plane out of the next file's worth of nothing. Both are refusals.
+  if (out.bitDepth != wantBitDepth) return AssetCheck::BitDepth;
   return AssetCheck::Ok;
 }
 
@@ -352,6 +464,65 @@ inline AssetCheck checkPageImage(const uint8_t* bytes, size_t len, const PageIma
   // cannot fill it, and that is a wrong-device problem, not a corrupt file.
   if (page.rowBytes < live.rowBytes || page.nativeHeight < live.height) return AssetCheck::WrongPanel;
   return AssetCheck::Ok;
+}
+
+// --- Grey page images ------------------------------------------------------
+//
+// Same PageImageSpec, and the fields keep their meaning: `rowBytes` is the stride
+// of ONE row of ONE plane (grey planes) or of one 2bpp row (grey image), and
+// `rawLen` is the whole payload -- three planes for assetType 7, one image for
+// assetType 6. So a grey planes asset is three times a 1bpp page and a grey image
+// is twice it.
+
+// Bytes of one plane, and where each plane starts inside the payload.
+inline uint32_t greyPlaneBytes(const PageImageSpec& page) {
+  return static_cast<uint32_t>(page.rowBytes) * page.nativeHeight;
+}
+
+inline uint32_t greyPlaneOffset(const PageImageSpec& page, const GreyPlane plane) {
+  return greyPlaneBytes(page) * static_cast<uint32_t>(plane);
+}
+
+// Shared geometry checks for both grey forms: the header must agree with the
+// manifest, the stride must be able to hold the width, and the panel window must
+// fit inside the page. `payloadBytes` is what this form's rawLen has to be.
+inline AssetCheck checkGreyGeometry(const AssetHeader& header, const PageImageSpec& page, const PanelGeometry& live,
+                                    uint32_t payloadBytes, uint32_t pixelsPerByte) {
+  if (header.width != page.nativeWidth || header.height != page.nativeHeight) return AssetCheck::PageImageMismatch;
+  if (page.rowBytes == 0 || page.nativeHeight == 0 || page.nativeWidth == 0) return AssetCheck::PageImageMismatch;
+  // A stride too narrow for the width cannot be right, and it is the one bug that
+  // draws a *plausible* picture -- every row shifted a little further than the
+  // last, which reads as a skewed document rather than as a broken file.
+  if (static_cast<uint32_t>(page.rowBytes) * pixelsPerByte < page.nativeWidth) return AssetCheck::PageImageMismatch;
+  if (payloadBytes != page.rawLen) return AssetCheck::PageImageMismatch;
+  if (header.rawLen != page.rawLen) return AssetCheck::PageImageMismatch;
+  // The window has to fit. Checked in the plane's own 1bpp stride, because that is
+  // what a panel row is read out of; the 2bpp form is not read by the device at
+  // all, so it is checked against the same 1bpp requirement on purpose -- a grey
+  // image narrower than the panel is a wrong-device asset either way.
+  const uint32_t planeRowBytes = pixelsPerByte == 8u ? page.rowBytes : greyPlaneRowBytes(page.nativeWidth);
+  if (planeRowBytes < live.rowBytes || page.nativeHeight < live.height) return AssetCheck::WrongPanel;
+  return AssetCheck::Ok;
+}
+
+// The baked planes the device draws.
+inline AssetCheck checkGreyPlanes(const uint8_t* bytes, size_t len, const PageImageSpec& page,
+                                  const PanelGeometry& live, AssetHeader& out, bool allowEncrypted = false) {
+  const AssetCheck common = checkAssetCommon(bytes, len, out, allowEncrypted, kBitDepth2);
+  if (common != AssetCheck::Ok) return common;
+  if (out.assetType != AssetType::GreyPlanes) return AssetCheck::PageImageMismatch;
+  return checkGreyGeometry(out, page, live, greyPlaneBytes(page) * kGreyPlaneCount, 8u);
+}
+
+// The 2bpp form. Gated here rather than in the host tool so both forms are
+// refused by the same file -- the device does not read it, and the moment
+// something does, this is the gate it goes through.
+inline AssetCheck checkGreyImage(const uint8_t* bytes, size_t len, const PageImageSpec& page, const PanelGeometry& live,
+                                 AssetHeader& out, bool allowEncrypted = false) {
+  const AssetCheck common = checkAssetCommon(bytes, len, out, allowEncrypted, kBitDepth2);
+  if (common != AssetCheck::Ok) return common;
+  if (out.assetType != AssetType::PageImageGrey) return AssetCheck::PageImageMismatch;
+  return checkGreyGeometry(out, page, live, static_cast<uint32_t>(page.rowBytes) * page.nativeHeight, 4u);
 }
 
 // A tile asset: exactly one panel frame, checked against the panel.
