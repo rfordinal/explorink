@@ -78,9 +78,9 @@ void CrossPointWebServerActivity::onEnter() {
   // A host-driven entry skips the picker. Same call the picker's callback makes,
   // so AP mode is reached through one path either way -- nothing here is a
   // shortcut around what a person's press would do.
-  if (preselectHotspot) {
-    LOG_DBG("WEBACT", "hotspot preselected by the caller, skipping mode selection");
-    onNetworkModeSelected(NetworkMode::CREATE_HOTSPOT);
+  if (hasPreselect) {
+    LOG_DBG("WEBACT", "mode preselected by the caller, skipping mode selection");
+    onNetworkModeSelected(preselectedMode);
     return;
   }
 

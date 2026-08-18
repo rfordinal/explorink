@@ -114,6 +114,7 @@ class ActivityManager {
   // Straight into AP mode with the mode picker skipped -- host-driven entry, see
   // CrossPointWebServerActivity's constructor for why hotspot only.
   void goToWebServerHotspot();
+  void goToWebServerStation();
   // The offline document wallet: browse first, then one screen per page
   // (WalletActivity.h). Read-only -- nothing on the device can change the card.
   //

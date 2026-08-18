@@ -222,7 +222,11 @@ void ActivityManager::goToRouteSelect() {
 void ActivityManager::goToTileSync() { replaceActivity(std::make_unique<TileSyncActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToWebServerHotspot() {
-  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, /*preselectHotspot=*/true));
+  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, NetworkMode::CREATE_HOTSPOT));
+}
+
+void ActivityManager::goToWebServerStation() {
+  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, NetworkMode::JOIN_NETWORK));
 }
 
 void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
