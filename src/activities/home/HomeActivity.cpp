@@ -33,7 +33,7 @@ const HomeActivity::Row* HomeActivity::rows() {
       {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore, true},
       {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips, false},
       {HomeMenuItem::PINS, StrId::STR_HOME_PINS, &icon_pins, false},
-      {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet, false},
+      {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet, true},
       {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync, true},
       {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer, true},
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
@@ -88,6 +88,9 @@ void HomeActivity::activate(const int index) {
       break;
     case HomeMenuItem::TILE_SYNC:
       onTileSyncOpen();
+      break;
+    case HomeMenuItem::WALLET:
+      onWalletOpen();
       break;
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     case HomeMenuItem::PREVIEW:
@@ -192,6 +195,8 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 void HomeActivity::onMapOpen() { activityManager.goToRouteSelect(); }
 
 void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
+
+void HomeActivity::onWalletOpen() { activityManager.goToWallet(); }
 
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
 void HomeActivity::onPreviewOpen() { activityManager.goToPreview(); }

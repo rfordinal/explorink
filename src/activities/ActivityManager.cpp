@@ -24,6 +24,7 @@
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
+#include "wallet/WalletActivity.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -217,6 +218,8 @@ void ActivityManager::goToRouteSelect() {
 }
 
 void ActivityManager::goToTileSync() { replaceActivity(std::make_unique<TileSyncActivity>(renderer, mappedInput)); }
+
+void ActivityManager::goToWallet() { replaceActivity(std::make_unique<WalletActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToPreview() {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH

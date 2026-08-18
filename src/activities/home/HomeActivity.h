@@ -11,9 +11,13 @@ class HomeActivity final : public Activity {
   const HomeMenuItem initialMenuItem;
 
   // The menu, in the order it is drawn. `enabled == false` draws the row dimmed
-  // and refuses selection -- Trips has no activity at all, Pins lives inside the
-  // map's own popup, and Wallet's activity is on the wallet-viewer branch and not
-  // on develop yet (../../../docs/home-screen.md).
+  // and refuses selection -- Trips has no activity at all and Pins lives inside
+  // the map's own popup (../../../docs/home-screen.md).
+  //
+  // **Wallet is enabled on this branch**, because this is the branch its activity
+  // lives on. On develop the same row is there with `enabled == false`, which is
+  // why a rebase lands here every time: keep develop's table, flip that one flag,
+  // and add the WALLET case to activate().
   struct Row {
     HomeMenuItem item;
     StrId label;
@@ -35,6 +39,7 @@ class HomeActivity final : public Activity {
   void onFileTransferOpen();
   void onMapOpen();
   void onTileSyncOpen();
+  void onWalletOpen();
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   void onPreviewOpen();
 #endif
