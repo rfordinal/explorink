@@ -62,11 +62,11 @@ void WalletViewActivity::loop() {
     return;
   }
 
-  // The overloaded pair. At FIT the level is a single tile, so there is no row to
-  // step and the side buttons turn the page instead.
-  const bool onePage = currentGrid().rows <= 1 && currentGrid().cols <= 1;
+  // The overloaded pair. A level with a single tile row -- always the case at
+  // FIT -- has no row to step, so there the side buttons turn the page instead.
+  const bool singleRow = currentGrid().rows <= 1;
   if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-    if (level_ == wallet::Level::Fit || onePage) {
+    if (singleRow) {
       if (stepPage(-1)) showCurrent(HalDisplay::HALF_REFRESH);
     } else if (stepTile(0, -1)) {
       showCurrent(HalDisplay::FAST_REFRESH);
@@ -74,7 +74,7 @@ void WalletViewActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    if (level_ == wallet::Level::Fit || onePage) {
+    if (singleRow) {
       if (stepPage(+1)) showCurrent(HalDisplay::HALF_REFRESH);
     } else if (stepTile(0, +1)) {
       showCurrent(HalDisplay::FAST_REFRESH);
