@@ -124,17 +124,21 @@ inline bool isValidAssetId(const char* assetId) {
   return i == kAssetIdLen;
 }
 
-// Builds "/trailink/wallet/<first 2 of id>/<id>.dat". False for an id that is
-// not 16 hex characters, or a buffer that would not hold the path.
-inline bool buildAssetPath(const char* assetId, char* out, size_t outLen) {
-  if (out == nullptr || !isValidAssetId(assetId)) return false;
-  const size_t dirLen = std::strlen(kWalletDir);
-  const size_t needed = dirLen + 1 /* '/' */ + 2 + 1 /* '/' */ + kAssetIdLen + 4 /* ".dat" */ + 1;
+// Builds "<root>/<first 2 of id>/<id>.dat". False for an id that is not 16 hex
+// characters, or a buffer that would not hold the path.
+//
+// The root is a parameter so the host preview tool (test/wallet_preview) walks a
+// generated tree in a temp directory through the *same* shard-and-name mapping
+// the device uses on the card. One mapping, two roots.
+inline bool buildAssetPathIn(const char* root, const char* assetId, char* out, size_t outLen) {
+  if (out == nullptr || root == nullptr || !isValidAssetId(assetId)) return false;
+  const size_t rootLen = std::strlen(root);
+  const size_t needed = rootLen + 1 /* '/' */ + 2 + 1 /* '/' */ + kAssetIdLen + 4 /* ".dat" */ + 1;
   if (outLen < needed) return false;
 
   size_t at = 0;
-  std::memcpy(out + at, kWalletDir, dirLen);
-  at += dirLen;
+  std::memcpy(out + at, root, rootLen);
+  at += rootLen;
   out[at++] = '/';
   out[at++] = assetId[0];
   out[at++] = assetId[1];
@@ -145,6 +149,81 @@ inline bool buildAssetPath(const char* assetId, char* out, size_t outLen) {
   at += 4;
   out[at] = '\0';
   return true;
+}
+
+// On the card: "/trailink/wallet/<first 2 of id>/<id>.dat".
+inline bool buildAssetPath(const char* assetId, char* out, size_t outLen) {
+  return buildAssetPathIn(kWalletDir, assetId, out, outLen);
+}
+
+// The panel an asset was built for, and the panel it is being drawn on.
+//
+// Never a constant. 48,000 bytes is the X4 (800x480, 100 B/row); the X3 is
+// 792x528 at 99 B/row = 52,272 bytes
+// (freeink-sdk/libs/display/FreeInkDisplay/include/FreeInkDisplay.h:47-54). The
+// device fills this in from the live renderer; the host preview fills it in from
+// its --panel flag. Same struct, same checks, both sides.
+struct PanelGeometry {
+  uint16_t width = 0;
+  uint16_t height = 0;
+  uint16_t rowBytes = 0;
+  uint32_t bufferBytes = 0;
+};
+
+// The two panels that exist today, for the preview tool and the tests. The
+// device never uses these -- it reads the live renderer.
+inline constexpr PanelGeometry kPanelX4 = {800, 480, 100, 48000};
+inline constexpr PanelGeometry kPanelX3 = {792, 528, 99, 52272};
+
+// What the manifest's "panel" object declares. One asset set per wallet, and the
+// wallet says which panel it was built for.
+//
+//   "panel": {"name":"x4","width":800,"height":480,"rowBytes":100,"assetBytes":48000}
+//
+// A manifest with no "panel" object predates that field. Treated as "the live
+// panel", with the per-asset header check as the real gate -- see
+// ../../../docs/wallet-viewer.md, "The manifest names the panel".
+inline constexpr size_t kPanelNameBufBytes = 12;
+
+struct DeclaredPanel {
+  bool present = false;
+  char name[kPanelNameBufBytes] = {0};
+  uint16_t width = 0;
+  uint16_t height = 0;
+  uint16_t rowBytes = 0;
+  uint32_t assetBytes = 0;
+};
+
+// A field the manifest left out (0) is not compared: it declared nothing about
+// it. A field it did declare must match exactly.
+inline bool panelMatches(const DeclaredPanel& declared, const PanelGeometry& live) {
+  if (!declared.present) return true;
+  if (declared.width != 0 && declared.width != live.width) return false;
+  if (declared.height != 0 && declared.height != live.height) return false;
+  if (declared.rowBytes != 0 && declared.rowBytes != live.rowBytes) return false;
+  if (declared.assetBytes != 0 && declared.assetBytes != live.bufferBytes) return false;
+  return true;
+}
+
+// Why an asset cannot be drawn, or Ok. The single gate every reader passes
+// through -- the device (WalletStore::loadAssetIntoFrameBuffer), the host
+// preview (test/wallet_preview) and the tests all call this one function, so a
+// disagreement about the header layout cannot hide on one side.
+enum class AssetCheck : uint8_t {
+  Ok = 0,
+  Malformed,   // bad magic, or fewer than 32 bytes
+  Encrypted,   // flags bit 0 -- a later phase's job
+  BitDepth,    // not 1 bpp
+  WrongPanel,  // rawLen / width / height is not this panel's
+};
+
+inline AssetCheck checkAssetForPanel(const uint8_t* bytes, size_t len, const PanelGeometry& live, AssetHeader& out) {
+  if (!parseAssetHeader(bytes, len, out)) return AssetCheck::Malformed;
+  if ((out.flags & kFlagEncrypted) != 0) return AssetCheck::Encrypted;
+  if (out.bitDepth != kBitDepth1) return AssetCheck::BitDepth;
+  if (live.bufferBytes == 0 || out.rawLen != live.bufferBytes) return AssetCheck::WrongPanel;
+  if (out.width != live.width || out.height != live.height) return AssetCheck::WrongPanel;
+  return AssetCheck::Ok;
 }
 
 // The level a manifest key names. "fit", "detail", "one_to_one" -- anything

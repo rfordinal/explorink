@@ -33,7 +33,7 @@ void WalletActivity::onEnter() {
     stored_ = 0;
     seen_ = 0;
     error_ = wallet::Error::ManifestUnreadable;
-  } else if (!wallet::Store::listItems(entries_.get(), kMaxItems, stored_, seen_, error_)) {
+  } else if (!wallet::Store::listItems(entries_.get(), kMaxItems, renderer, stored_, seen_, declared_, error_)) {
     LOG_INF(kLogTag, "no list: error %u", static_cast<unsigned>(error_));
   }
   selected_ = 0;
@@ -106,7 +106,14 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
 
   const int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing / 2;
   char status[112];
-  if (stored_ == 0) {
+  if (error_ == wallet::Error::PanelMismatch) {
+    // Name both panels. "Wrong screen" without saying which is a dead end for
+    // whoever has to fix the card.
+    const wallet::PanelGeometry live = wallet::livePanel(renderer);
+    snprintf(status, sizeof(status), tr(STR_WALLET_PANEL_MISMATCH),
+             declared_.name[0] != '\0' ? declared_.name : "?", static_cast<int>(declared_.width),
+             static_cast<int>(declared_.height), static_cast<int>(live.width), static_cast<int>(live.height));
+  } else if (stored_ == 0) {
     snprintf(status, sizeof(status), "%s", wallet::errorText(error_));
   } else if (seen_ > stored_) {
     // A truncated list must say so out loud. Silently hiding a document the

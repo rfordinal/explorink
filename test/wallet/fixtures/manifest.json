@@ -1,0 +1,234 @@
+{
+  "formatVersion": 1,
+  "walletVersion": 1,
+  "items": [
+    {
+      "id": "38c37e815214c036",
+      "title": "Demo A4 Page",
+      "createdAt": "2026-08-18T10:41:19Z",
+      "sortOrder": 0,
+      "pages": [
+        {
+          "id": "p001",
+          "paper": "a4",
+          "levels": {
+            "fit": {
+              "cols": 1,
+              "rows": 1,
+              "defaultTileX": 0,
+              "defaultTileY": 0,
+              "assets": [
+                {
+                  "assetId": "3acec0373d3c4ba0",
+                  "type": 1,
+                  "col": 0,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "6c10184552fe7dfcd1d98b313f3c08d3996d889a6108d52ffeaf90d66f0882eb",
+                  "rleLen": 17025
+                }
+              ]
+            },
+            "detail": {
+              "cols": 2,
+              "rows": 2,
+              "defaultTileX": 0,
+              "defaultTileY": 0,
+              "assets": [
+                {
+                  "assetId": "75a0318f2f18f3aa",
+                  "type": 2,
+                  "col": 0,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "bf0abfa10a9e5b2ca73e5aba37f798c884f7694a60a59ad950a3fc3213fee668",
+                  "rleLen": 25427
+                },
+                {
+                  "assetId": "528fe4f078c347b0",
+                  "type": 2,
+                  "col": 1,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "ba60eb06842f70ff16e2b520b255e7b4657fa5603345ab91965b70b7750be8d6",
+                  "rleLen": 7645
+                },
+                {
+                  "assetId": "ec9dabaeb66ecb67",
+                  "type": 2,
+                  "col": 0,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "03032f0ea023edae998c8ed48d10bbcb561731c731c1ab55150aebd861510067",
+                  "rleLen": 16414
+                },
+                {
+                  "assetId": "806dfe66748d208f",
+                  "type": 2,
+                  "col": 1,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "044a4bb5f9de0d8cb5ee4e31018e8c22f2e7b7e0f1a146d037c711080e9980bb",
+                  "rleLen": 11006
+                }
+              ]
+            },
+            "one_to_one": {
+              "cols": 4,
+              "rows": 4,
+              "defaultTileX": 1,
+              "defaultTileY": 1,
+              "assets": [
+                {
+                  "assetId": "956590792ae548f2",
+                  "type": 3,
+                  "col": 0,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "44d1c977af187b78fef633dce5092df9975eadcc1ffaad1f4350176d78ab0ceb",
+                  "rleLen": 19066
+                },
+                {
+                  "assetId": "54a131ccf14536c5",
+                  "type": 3,
+                  "col": 1,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "65f45c1f97d49a1684f631ed6218aa3c1543cf9b01bac29472ddb2a343472e37",
+                  "rleLen": 24843
+                },
+                {
+                  "assetId": "bb1f5170f80c5ea1",
+                  "type": 3,
+                  "col": 2,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "d5db265f031f9e4007599dd4f19c4561cf85311d4e4a58f18215a2a99a9e40ea",
+                  "rleLen": 9606
+                },
+                {
+                  "assetId": "10f7b9a74b76eaa9",
+                  "type": 3,
+                  "col": 3,
+                  "row": 0,
+                  "rawLen": 48000,
+                  "sha256": "ec5f67ca461115af767e33b18adb13401c35fd74c30aa8f8d9fd3e2eed78dc6f",
+                  "rleLen": 1381
+                },
+                {
+                  "assetId": "0c3e6853c0179664",
+                  "type": 3,
+                  "col": 0,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "7287edc56811eda7d7f9abf88322665e698f3c219ec032e2fb75a0bb342c8c1a",
+                  "rleLen": 24560
+                },
+                {
+                  "assetId": "51598ccc45954475",
+                  "type": 3,
+                  "col": 1,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "b10e7903d3c231e25d64b71dddcf08db08afd11e0adbe3f59b4cbb195dc95459",
+                  "rleLen": 30260
+                },
+                {
+                  "assetId": "df9a6043e4dc21da",
+                  "type": 3,
+                  "col": 2,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "701d696b28e30b52b024b67099ca93b0efe572c9a4e4f64c171f9633edd5050c",
+                  "rleLen": 16887
+                },
+                {
+                  "assetId": "22b1498e4db71e96",
+                  "type": 3,
+                  "col": 3,
+                  "row": 1,
+                  "rawLen": 48000,
+                  "sha256": "4c3b0f94123937c14dc6b33ec9a88fb56d95f659dc35f4f17edc7ffaafc7e425",
+                  "rleLen": 6041
+                },
+                {
+                  "assetId": "8ea954d4c3f1d10f",
+                  "type": 3,
+                  "col": 0,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "abd12ebd03908201e95f16204561a729a744393e4a95702f1a4927f2b0116e9f",
+                  "rleLen": 5106
+                },
+                {
+                  "assetId": "83d529b5e0099b15",
+                  "type": 3,
+                  "col": 1,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "0173b237fe6005addcbd4fec49bd4a918c71b221f704b27fc4af0685631ed818",
+                  "rleLen": 19879
+                },
+                {
+                  "assetId": "d66e147c93f3fab0",
+                  "type": 3,
+                  "col": 2,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "d35e43be5e62a7d3dae939dac1da5f8aaae3a898856a169b5c8b5fd709424666",
+                  "rleLen": 7595
+                },
+                {
+                  "assetId": "6a2a963712fa8828",
+                  "type": 3,
+                  "col": 3,
+                  "row": 2,
+                  "rawLen": 48000,
+                  "sha256": "9e42cb47c8874f4fd1a939da79541e5ca186aca364c186c428d060df0ad1f6af",
+                  "rleLen": 830
+                },
+                {
+                  "assetId": "07351a5da267e848",
+                  "type": 3,
+                  "col": 0,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "9c37e16bc0f624616cd0c1da562c1f508139ebbf18e194772017007b36e4044e",
+                  "rleLen": 857
+                },
+                {
+                  "assetId": "da77bb5b5f5aaf15",
+                  "type": 3,
+                  "col": 1,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "9e42cb47c8874f4fd1a939da79541e5ca186aca364c186c428d060df0ad1f6af",
+                  "rleLen": 830
+                },
+                {
+                  "assetId": "6a03ed4a1a51e556",
+                  "type": 3,
+                  "col": 2,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "9e42cb47c8874f4fd1a939da79541e5ca186aca364c186c428d060df0ad1f6af",
+                  "rleLen": 830
+                },
+                {
+                  "assetId": "068b85ef4299f388",
+                  "type": 3,
+                  "col": 3,
+                  "row": 3,
+                  "rawLen": 48000,
+                  "sha256": "9e42cb47c8874f4fd1a939da79541e5ca186aca364c186c428d060df0ad1f6af",
+                  "rleLen": 830
+                }
+              ]
+            }
+          },
+          "codes": []
+        }
+      ]
+    }
+  ]
+}

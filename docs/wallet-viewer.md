@@ -99,10 +99,35 @@ against 48,000:
 `freeink-sdk/libs/display/FreeInkDisplay/include/FreeInkDisplay.h:47-54`,
 `freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h:685-690` (X4).
 
-Consequence, and an **open gap**: the manifest carries no panel identity, so a
-wallet built for the X4 and put on an X3 shows "This page was built for another
-screen" on every page. Whoever builds the generator has to decide whether the
-manifest names a panel or the card carries one asset set per panel.
+### The manifest names the panel
+
+One asset set per wallet, and the manifest declares which panel the set was built
+for. **Decided 2026-08-18**; the alternative (per-panel asset sets in one wallet)
+was rejected -- it triples a card's size for a device the rider does not own.
+
+```json
+"panel": {"name":"x4","width":800,"height":480,"rowBytes":100,"assetBytes":48000}
+```
+
+Parsed into `DeclaredPanel` (`src/activities/wallet/WalletAsset.h:188-195`) and
+checked by `panelMatches()` (`:199-206`). The browse screen checks it **first**,
+before it lists anything (`WalletStore.cpp:118-130`): a set built for another
+panel cannot be drawn at all, so half-opening it would only waste a refresh. On a
+mismatch the list is empty and the status line names both geometries --
+`STR_WALLET_PANEL_MISMATCH`, "Built for x4 (800x480), this device is 792x528"
+(`WalletActivity.cpp:renderScreen`). "Wrong screen" without saying which is a
+dead end for whoever has to fix the card.
+
+A manifest with **no** `panel` object is a tree generated before the field
+existed. Those are treated as the live panel's geometry, and the per-asset header
+check does the real work -- every asset states its own `width`, `height` and
+`rawLen`, and one that disagrees is refused with "built for another screen". So an
+old tree on the wrong device fails per asset instead of up front, which is worse
+messaging and equally safe. A field the manifest states as 0 is likewise not
+compared: it declared nothing about it.
+
+`--panel x4|x3` on the generator side; X4 = 800x480 / 100 / 48,000, X3 =
+792x528 / 99 / 52,272.
 
 ## The manifest is streamed, never held
 
@@ -162,11 +187,29 @@ Why the side pair carries pages:
 the reader's side-button swap setting does **not** apply here. Deliberate: the
 same two buttons also step tile rows, where up must mean up.
 
+**This map is a signed-off decision, 2026-08-18, not a placeholder.** Two
+alternatives were on the table and both lost:
+
+- **Touch swipe for pages.** The device this is for is on a motorcycle or a
+  trail. A swipe is useless in gloves, and the wallet is a screen a rider opens
+  precisely when they are standing at a roadside being asked for a document.
+- **Hold-to-page on the side buttons.** Slower than a press for the common case,
+  and it has to be taught -- a held button that does something different from the
+  same button pressed is a thing a rider learns from a manual, not from the
+  screen. The level-dependent split needs no teaching: at FIT there is no row to
+  step, so nothing is taken away.
+
 Arrows clamp at the edges and never wrap (`WalletViewActivity.cpp:stepTile`) --
-what a sheet of paper does. A level change resets to the top-left tile
-(`cycleLevel`), because the three grids have different sizes and there is no
-honest mapping between their coordinates. A page change resets to FIT
-(`stepPage`).
+what a sheet of paper does. A page change resets to FIT (`stepPage`).
+
+A level change does **not** carry the tile coordinate across: the three grids are
+different sizes, so there is no honest mapping between their coordinates. It
+opens at the level's **focal tile** instead, which the manifest names per level
+as `defaultTileX`/`defaultTileY` (`WalletManifestParser.h`, `LevelGrid`;
+`WalletViewActivity.cpp:jumpToLevelDefault`). The generator's rule is the centre
+biased top-left, so a 4x4 1:1 grid points at 1,1. Verified on real output: tile
+1,1 of the demo page's 1:1 level opens on body text at full size, where 0,0 would
+have opened on the top-left margin.
 
 Browse: UP/DOWN (also LEFT/RIGHT) move the selection with hard stops, CONFIRM
 opens, BACK goes home (`WalletActivity.cpp:loop`).
@@ -206,6 +249,7 @@ Strings: `lib/I18n/translations/english.yaml`, `STR_WALLET_*`. Mapping:
 
 | state | shown |
 |---|---|
+| manifest declares another panel | "Built for x4 (800x480), this device is 792x528" -- both, always |
 | no `manifest.json` | "No wallet on the card" |
 | manifest is not JSON, or carries no `formatVersion` | "Wallet list is unreadable" |
 | `formatVersion` is not 1 | "Wallet needs newer firmware" |
@@ -222,6 +266,110 @@ Strings: `lib/I18n/translations/english.yaml`, `STR_WALLET_*`. Mapping:
 A failed lookup also zeroes the level grids, so the arrows have nowhere to step
 rather than asking for tiles that may not exist either
 (`WalletViewActivity.cpp:showCurrent`).
+
+## Read against real generator output
+
+The format was implemented **twice from one written contract** -- once in the
+generator (`tools/walletgen.py`, parent repo) and once here -- and for a while the
+two had never met. A unit test on hand-authored bytes cannot close that: it agrees
+with whichever side wrote it.
+
+`test/wallet_preview/wallet_preview.cpp` closes it. It reads a generated wallet
+tree through the firmware's **own** code -- `ManifestParser`, `buildAssetPathIn()`,
+`parseAssetHeader()`, `checkAssetForPanel()` -- and expands the payload to a PNG
+exactly as the panel does: row-major, `rowBytes` per physical row, MSB first,
+bit 1 = white. It writes two images per asset:
+
+- `PREFIX.png` -- the panel's own 800x480 landscape frame, what the framebuffer
+  literally holds.
+- `PREFIX-portrait.png` -- the same bits through
+  `logical (x,y) -> physical (y, panelHeight - 1 - x)`, which is
+  `GfxRenderer::rotateCoordinates()` for `Portrait`
+  (`lib/GfxRenderer/GfxRenderer.cpp:216-223`). This is what a rider sees.
+
+Run it: `pio run -t wallet-preview` renders the committed fixture, or point the
+binary at a whole tree:
+
+```
+build/test/wallet_preview/wallet_preview --tree DIR --level detail --col 1 --row 0 \
+    --out /tmp/tile
+```
+
+A tree with only sidecars is read through them (`test/wallet_preview/WalletSidecar.h`
+decodes EWRL on the host; the firmware has no EWRL reader in P1).
+
+### What the pictures showed, 2026-08-18
+
+Generated with `walletgen.py --demo --paper a4`, rendered through the reader,
+**looked at**:
+
+| asset | verdict |
+|---|---|
+| FIT, portrait view | **upright**, correct polarity -- black text on white, title at the top, reads left to right |
+| FIT, panel view | rotated 90 degrees, as it must be: the panel holds the page sideways and the portrait read un-rotates it |
+| DETAIL 0,0 | top-left quarter -- title and the first paragraphs |
+| DETAIL 1,0 | the right-hand continuation of the same lines. **col increases to the right** |
+| DETAIL 0,1 | the lower half -- table, swatches, footer. **row increases downward** |
+| DETAIL 1,1 | bottom-right quarter |
+| 1:1 tile 1,1 | body text at full size, legible |
+
+So: the generator's build-time rotation is the exact inverse of the firmware's
+portrait transform, the ink polarity matches, and the manifest's `col`/`row` mean
+what the arrows assume. Ink coverage 6.87 % on the FIT page -- an inverted
+polarity would read about 93 %.
+
+### The test that keeps it that way
+
+`test/wallet/fixtures/` holds **verbatim generator output**: the demo
+`manifest.json` and the FIT asset's `.rle` sidecar (17 KB, versus 48 KB for the
+`.dat`; the sidecar carries the 32-byte header verbatim as a prefix, so the `.dat`
+can be rebuilt from it byte for byte). `WalletGeneratedTree.*` asserts against it:
+the item and grids come out of the real manifest, the real assetId maps to the
+file the generator wrote, the header parses field for field (including
+`presentation = 1`), and the decoded pixels are checked five ways:
+
+1. **Polarity** -- ink between 1 % and 20 % of the panel.
+2. **Margins** -- the top and bottom 10 % of the logical page carry exactly zero ink.
+3. **Which way up** -- the title band outinks the footer band five to one.
+4. **Which way round** -- the left column band outinks the right margin five to one.
+5. **Bit order inside a byte** -- the transition rate across a byte boundary,
+   against the rate inside bytes.
+
+Check 5 exists because checks 1-4 **do not catch** an intra-byte bit reversal:
+reversing every byte keeps the margins white and the bands dense, it only
+scrambles pixels within each group of eight. Correlation catches it -- adjacent
+pixels agree far more often than pixels seven apart, so a reversal pushes the
+byte-boundary transition rate up. Measured on this fixture: **0.887 correct,
+1.254 reversed**, threshold 1.05.
+
+All five checks were **proved to fail** on deliberately broken payloads before
+being committed -- inverted bits, a 180-degree rotation, and a payload packed in
+logical portrait order instead of panel order. A check that cannot fail is worth
+nothing.
+
+## Where the two implementations did not line up
+
+Found by reading the generator and rendering its output. None of these is a bug in
+either side; they are places the written contract and the code disagreed.
+
+- **`type` in the manifest is a number, not a string.** The contract sketch showed
+  `"type":"FIT"`; the generator writes `"type":1`. Harmless here -- the reader
+  never looks at the manifest's `type`, it trusts the asset header's `assetType` --
+  but a later phase that does read it must expect an integer.
+- **`defaultTileX` / `defaultTileY` exist and the contract did not mention them.**
+  Now honoured: a level opens at its focal tile (above).
+- **`presentation` defaults to 1 (portrait), not 0.** The generator rotates at
+  build time so the document stands upright on a device held in portrait -- the
+  same orientation the rest of the UI uses. The earlier assumption here was that
+  the rider turns the device sideways. They do not. Nothing in the code acted on
+  the field either way, but the doc said the wrong thing.
+- **48,000 is the X4 only.** The X3's 792x528 panel needs 52,272 bytes at 99 bytes
+  a row. Settled by the `panel` object above.
+- **The generator's `DEVICE_PPI = 217` is its own unverified assumption**
+  (`walletgen.py`, the comment says so). Every 1:1 grid size derives from it, so
+  the 4x4 grid for A4 is a guess about the panel's physical size, not a
+  measurement. Not this side's problem to fix, but the 1:1 level is only "actual
+  size" if that number is right.
 
 ## Read-only by construction
 
@@ -253,14 +401,14 @@ Measured against the branch point `51bfbbc0`, `pio run -e default`,
 
 | | baseline | with the wallet | delta |
 |---|---|---|---|
-| `firmware.bin` | 3,939,600 | 3,949,392 | **+9,792** |
-| `.flash.text` | 2,171,060 | 2,178,670 | +7,610 |
-| `.flash.rodata` | 1,649,008 | 1,651,192 | +2,184 |
+| `firmware.bin` | 3,939,600 | 3,950,496 | **+10,896** |
+| `.flash.text` | 2,171,060 | 2,179,432 | +8,372 |
+| `.flash.rodata` | 1,649,008 | 1,651,528 | +2,520 |
 | `.dram0.data` | 18,145 | 18,145 | **0** |
 | `.dram0.bss` | 40,152 | 40,152 | **0** |
 | `.iram0.text` | 87,350 | 87,350 | 0 |
 
-The rodata is mostly the 19 new `STR_WALLET_*` strings across 31 language arrays.
+The rodata is mostly the 21 new `STR_WALLET_*` strings across 31 language arrays.
 Static RAM is unchanged: the wallet has no globals.
 
 Heap, **derived from the type sizes, not measured on hardware**:
@@ -281,15 +429,20 @@ Heap, **derived from the type sizes, not measured on hardware**:
 
 ## Status
 
-- Format layout, path mapping, level cycle, manifest shape: **host-tested**,
-  `test/wallet/WalletTest.cpp`, 18 cases, `pio run -t unit-tests`.
+- Format layout, path mapping, level cycle, manifest shape, the panel gate:
+  **host-tested**, `test/wallet/WalletTest.cpp`, 30 cases, `pio run -t unit-tests`.
+- Byte order, ink polarity, tile order, orientation: **checked against real
+  generator output** and looked at as pictures, 2026-08-18 -- see above. This is
+  the strongest evidence that exists short of hardware, and it covers exactly the
+  things a unit test on hand-written bytes could not.
 - Byte order, bit polarity, framebuffer accessors, refresh modes, button
   mapping: **read off the code**, cited above.
 - Flash and static RAM: **measured** on the two builds above.
 - Heap: **derived** from type sizes. Nobody has run `heap_caps_get_info()` with a
   wallet on screen.
-- **Nothing here has run on hardware.** No device was flashed, no asset file has
-  ever existed. Everything about how a real document looks on the panel -- whether
-  FIT is legible at all, whether a 4x4 1:1 grid is navigable with six buttons,
-  whether HALF on every page turn is too slow to page through a passport -- is
-  **open** and needs a generator plus one session on the X4.
+- **Nothing here has run on hardware.** No device was flashed. What the preview
+  cannot answer stays open: whether FIT is legible on e-ink in daylight (the PNG
+  says the bits are right, not that a 217 PPI page dithered to one bit reads on
+  glass), whether a 4x4 1:1 grid is navigable with six buttons in gloves, whether
+  HALF on every page turn is too slow to page through a passport, and the real
+  heap figures. One session on the X4 settles all of it.
