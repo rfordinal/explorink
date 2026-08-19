@@ -10,6 +10,7 @@ pin_parking = text:P
 pin_dest    = flag-triangle-right
 pin_meet    = circle-dot
 pin_camp    = tent
+pin_favorite = heart
 pin_c1      = digit:1
 pin_c2      = digit:2
 pin_c3      = digit:3

@@ -27,14 +27,16 @@ struct PinType {
   const char* name;  // ASCII fallback for console replies; UI uses PinLabels.h
 };
 
-// 5 named slots plus #1-#5. Raising this is this constant plus catalogue rows.
-inline constexpr size_t kPinSlotCount = 10;
+// 6 named slots plus #1-#5. Raising this is this constant plus catalogue rows.
+inline constexpr size_t kPinSlotCount = 11;
 
 // static constexpr, so the table lands in flash and not DRAM (CLAUDE.md,
 // Resource Protocol 6).
 inline constexpr PinType kPinCatalog[kPinSlotCount] = {
-    {"base", "Base"},   {"parking", "Parking"}, {"dest", "Destination"}, {"meet", "Meet"}, {"camp", "Camp"},
-    {"c1", "#1"},       {"c2", "#2"},           {"c3", "#3"},            {"c4", "#4"},     {"c5", "#5"},
+    {"base", "Base"}, {"parking", "Parking"}, {"dest", "Destination"},
+    {"meet", "Meet"}, {"camp", "Camp"},       {"favorite", "Favorite"},
+    {"c1", "#1"},     {"c2", "#2"},           {"c3", "#3"},
+    {"c4", "#4"},     {"c5", "#5"},
 };
 
 // Slots held for keys this build does not know. A record written by a newer
