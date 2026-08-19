@@ -5,9 +5,11 @@ page is a photograph of a paper document, which is the one thing on this device
 that might actually want them. **P2b builds both versions of the same page and a
 switch between them, so a person can decide on the glass.** It does not decide.
 
-Status: **built, host-verified, not yet on a panel.** Everything below marked
-*measured* is measured on the host; everything about how it *looks* and what it
-*costs on the device* is open and named as such at the bottom.
+Status: **built, host-verified, one frame seen on a panel** (2026-08-18: it
+rendered, it cost 2,604 ms, and it exposed two defects in the instruments that were
+supposed to watch it -- see "What a host can see of a grey frame"). Everything below
+marked *measured* is measured on the host unless it names the panel; everything
+about how it *looks* is still open and named as such at the bottom.
 
 The viewer itself is `docs/wallet-viewer.md`; the panel mechanism is
 `docs/eink-grayscale.md`; the crypto is `docs/wallet-crypto.md`. This file is
@@ -247,22 +249,114 @@ session has no hands, so:
 CMD:GOTO_WALLET 0          # open the document
 CMD:WALLETGREY off         # 1bpp
 CMD:SCREENSHOT             # the 1bpp frame -- a real 1bpp page
-CMD:WALLETGREY on          # the screen repaints itself in grey
-CMD:SCREENSHOT_GRAY        # ... and this is where it gets interesting, see below
-CMD:WALLETGREY status      # the numbers of both last frames
+CMD:WALLETGREY on          # QUEUES a repaint; the reply describes the frame BEFORE it
+CMD:WALLETGREY status      # poll until repaint_pending=0, then read the numbers
+CMD:SCREENSHOT_GRAY        # the grey frame itself, both planes (tools/greyshot.py)
 ```
+
+**The order matters, and it bit us.** `CMD:WALLETGREY on` returns from the serial
+handler; the repaint happens in the next `WalletViewActivity::loop()`
+(`WalletViewActivity.cpp:79`) and takes ~2.6 s. So the reply to `on` **always**
+describes the frame before the flip. Read `repaint_pending` and poll; the numbers
+are stable once it is 0.
 
 `CMD:SCREENSHOT` of a grey page is **a solid dark page**, and that is not a bug:
 the framebuffer holds the base frame, where black and both greys are all ink
 (`docs/eink-grayscale.md`, "Getting grey off the device").
 
-**`CMD:SCREENSHOT_GRAY` cannot see this grey either**, and the reason is worth
-knowing: it replays the last `GrayscaleFrame` **draw callback**, and the wallet
-has no callback -- the planes came off the card and were streamed straight to the
-controller. It will answer `planeBytes == 0`. So for the wallet, the record of a
-grey frame is **a photograph of the panel**, plus the host-side PNG of the same
-window for what the firmware asked for. Open: a plane sink for baked planes would
-close that gap, and nothing needs it yet.
+## What a host can see of a grey frame
+
+**Both defects this section documents were found on hardware on 2026-08-18 and
+fixed on 2026-08-19.** Before the fix the status counter said `grey_rendered=0`
+while the panel carried a grey frame, and `CMD:SCREENSHOT_GRAY` answered
+`planes=0` for a page that was visibly grey -- so the only instrument that worked
+was a human eye.
+
+**The one sentence to keep:** after the fix a host can see, without touching the
+panel, **whether a grey frame ever rendered** (`grey_frames`), **whether the glass
+still carries it** (`grey_on_panel`, modulo a reboot), **what the last attempt
+cost** (the `mode=grey` line) and **the frame's own plane bytes**
+(`CMD:SCREENSHOT_GRAY`, which for the wallet re-reads them off the card); what it
+still cannot see is **whether those bytes are the bytes the controller received**,
+and **what the panel makes of them** -- both need the glass.
+
+### The status line, and what each field is for
+
+```
+WALLETGREY_OK enabled=1 base=half grey_frames=3 grey_attempts=4 grey_on_panel=1 \
+              last_outcome=ok repaint_pending=0 capture=1
+WALLETGREY mode=grey card_base_us=... base_us=... ... total_us=... card_bytes=...
+WALLETGREY mode=1bpp card_us=... refresh_us=... total_us=... card_bytes=...
+```
+
+| field | means | cleared by |
+|---|---|---|
+| `grey_frames` | grey frames finished since boot. **This is "did grey render?"** | nothing -- monotonic |
+| `grey_attempts` | calls to `GreyPageReader::render()`, however they ended | nothing |
+| `grey_on_panel` | the picture on the glass right now is that frame | the next BW frame, a failed attempt, leaving the screen -- and a reboot loses it while the panel keeps the picture |
+| `last_outcome` | how the last attempt ended (`greyOutcomeName()`), `none` before any | -- |
+| `repaint_pending` | a flip is queued and its frame is **not drawn yet** | the repaint being drawn |
+| `capture` | `CMD:SCREENSHOT_GRAY` has a source and will send both planes | -- |
+
+The `mode=grey` line is **the last frame that finished**, not the last attempt: a
+failed attempt no longer zeroes the only measurement of a working one.
+
+**What `grey_rendered` actually counted**, for the record, because the name was the
+whole problem: it was `GreyTimings::rendered` of the **last attempt**, and
+`render()` zeroes its timings struct on entry (`WalletGreyPage.cpp:177`). So one
+capability refusal -- `NoScratch`, which draws nothing and is not the card's fault
+-- erased every trace that grey had ever worked. On top of that it was read too
+early, per the ordering note above. It carried neither of the two facts its name
+implied. `wallet::GreyLedger` (`src/activities/wallet/WalletGreyStatus.h`) now keeps
+them apart, and seven host tests pin the semantics.
+
+### Capturing a grey wallet page
+
+`CMD:SCREENSHOT_GRAY` works on a wallet grey page. It did not before 2026-08-19,
+and the reason is the whole design of the channel: it replays the last
+`GrayscaleFrame` **draw callback**, and the wallet has no callback -- the generator
+baked the planes and `render()` streamed them from the card to controller RAM
+without drawing a pixel.
+
+`GrayscaleFrame` now takes a second kind of source, a **plane producer**
+(`GrayPlaneSource`, `lib/GfxRenderer/GrayscaleFrame.h`), and
+`GreyPageReader::render()` registers itself as one on success, remembering the
+window it just streamed. A replay asks the producer for each band and gets the same
+`readPlaneRows()` call the panel path made -- same window, same stride, same
+decrypt offsets.
+
+**Why a producer and not a buffered fallback.** The alternative was for
+`CMD:SCREENSHOT_GRAY` to send whatever plane bytes the wallet last streamed, which
+means keeping them: 96,000 bytes of DRAM on a device with ~380 KB and no PSRAM,
+which is exactly the cost `GrayscaleFrame` was designed to avoid. A producer costs
+**8 bytes of registration** and the 8 KB band the replay allocates and frees, and
+it cannot drift from the panel path because it *is* the panel path's read. The
+price is that a capture re-reads 96 KB off the card (~570 ms expected, unmeasured)
+and needs the wallet still unlocked and the file still open. A locked session or a
+pulled card makes the producer refuse **mid-dump**: the header already promised three
+blobs, so a host gets the BW frame plus whatever bands got out and `greyshot.py`
+says `truncated: N of 144000 bytes`. That is the honest outcome -- padding the rest
+with zeros would hand a host a picture that was never on the glass -- and the reason
+is in the device log (`grey capture band y=... refused: locked`), which prints once
+the payload mute is lifted.
+
+Rules it keeps:
+
+- **Nothing refreshes.** A producer replay touches no framebuffer, no controller
+  RAM, no waveform -- and unlike the callback path it does not even set a render
+  mode or a strip target. It also must not call `waitRefreshComplete()`, which can
+  make the SDK print to Serial mid-payload (`EpdBus.cpp:220`) and corrupt the dump.
+- **The registration dies before the data does.** `close()`, the destructor and
+  `ActivityManager::exitActivity` (`GrayscaleFrame::clearSource()`) all drop it, and
+  every BW frame the viewer draws drops it too (`noteBwFrameOnPanel()`) -- once a
+  1bpp page is on the glass, those planes are not what a host would be looking at.
+- **A new grey render drops it first, re-arms last.** A pan re-registers with the
+  new window; a failed attempt leaves nothing registered.
+
+`tools/greyshot.py` in the parent repo needs **no change** -- the wire format is
+untouched. What changes in its output for a wallet page: `planes=48000` instead of
+`0`, `exact=1`, and a real 4-level PGM instead of the "nothing has rendered grey
+since boot" message.
 
 ## What grey costs
 
@@ -280,8 +374,14 @@ WALLETGREY mode=1bpp card_us=... refresh_us=... total_us=... card_bytes=...
 Card time and panel time are separate on purpose: the plan predicted card time
 would be irrelevant next to the waveform, and this is what settles it.
 
-**Nothing here has been measured on a device yet.** What is known, and where it
-comes from:
+**One frame has been through the panel.** On 2026-08-18 the device's own
+`WALLETGREY mode=grey` line reported `total_ms=2604` with a 1,684 ms base
+waveform -- instrument: that log line, read over serial by the session that found
+the two defects above. That is a single frame of one window and the per-stage
+numbers below are still expectations, not a measurement; a clean sweep (both
+modes, several windows, HALF and FAST bases) is still owed.
+
+What is known, and where it comes from:
 
 | stage | expectation | where the number comes from |
 |---|---|---|
@@ -307,6 +407,19 @@ RAM and flash, measured by building both ways
 | static RAM | 59,372 B | 59,420 B | **+48 B** |
 | flash | 3,971,011 B | 3,976,631 B | **+5,620 B** |
 
+The status ledger and the capture producer (2026-08-19), measured the same way
+against the branch tip before them:
+
+| | before | after | delta |
+|---|---|---|---|
+| static RAM | 59,420 B | 59,444 B | **+24 B** |
+| flash | 3,976,691 B | 3,977,891 B | **+1,200 B** |
+
+The 24 bytes are the ledger (two counters, three flags, one `GreyTimings`, minus
+the two statics it replaced) plus 8 bytes of plane-source registration in
+`GrayscaleFrame`. **No plane shadow**: a capture allocates the same 8 KB band the
+render does, and frees it.
+
 Plus, at run time: **8,000 bytes** of band scratch during a grey render only, and
 ~150 bytes for the second open reader inside the (heap-allocated) view activity.
 No second framebuffer, no page-sized buffer, on either path -- same rule as the
@@ -316,24 +429,46 @@ rest of the wallet.
 
 Host side, all green:
 
-- **461 host tests** (444 before, 17 new). The new ones cover the encoding table
-  against the LUT table, the 2bpp packing order, both strides, the two gates and
-  every way they refuse, the plane offsets, the manifest keys, and the encrypted
-  row offsets.
+- **474 host tests** (444 before P2b, 17 for the grey layout, 10 for the status
+  ledger and the capture path). They cover the encoding table against the LUT
+  table, the 2bpp packing order, both strides, the two gates and every way they
+  refuse, the plane offsets, the manifest keys, the encrypted row offsets, every
+  transition of the status ledger, and the band walk the capture path performs --
+  including that its three blobs decode, through `greyshot.py`'s own rule, to the
+  levels the generator baked.
 - **The two forms are decoded independently and compared pixel for pixel**, in
   the tests and in the preview. This is the only check that can catch a wrong bit
   order, because the device streams planes without looking at them.
-- **The assertions were proved able to fail.** With `greyPlaneBit()`'s LSB case
-  mutated to the MSB expression, three tests failed and the preview reported
-  `DISAGREE on 66800 of 384000 pixels` plus `WARNING one of the two greys is
-  absent`. Reverted; green again. (The brief's warning about a stale test binary
-  is real -- the binary's mtime was checked against the run.)
+- **The assertions were proved able to fail.** Three mutations, each reverted and
+  re-run green:
+  - `greyPlaneBit()`'s LSB case set to the MSB expression -- three tests failed and
+    the preview reported `DISAGREE on 66800 of 384000 pixels` plus `WARNING one of
+    the two greys is absent`;
+  - `GreyLedger::noteAttempt()` returned to the old per-attempt semantics
+    (`frames_ = 1` on Ok, zeroed otherwise) -- two `WalletGreyLedger` tests failed
+    (`AFailedAttemptAfterAGoodFrameDoesNotUncountIt`,
+    `ABwFrameTakesGreyOffTheGlassButNotOutOfTheCount`), which is the defect
+    reproduced as a test;
+  - the capture band walk reading rows at the window origin instead of
+    `window + band + row` -- all three `WalletGreyCapture` tests failed.
+
+  (The warning about a stale test binary is real -- the binary's mtime was checked
+  against every run.)
+- **`tools/greyshot.py` decodes the capture payload byte for byte.**
+  `wallet_preview --grey` writes `<out>-capture.bin`, the three blobs exactly as
+  `CMD:SCREENSHOT_GRAY` lays them out, and greyshot's own `split_blobs()` +
+  `decode_levels()` were run against it off-device: 384,000 pixels, level shares
+  30.34 / 17.40 / 34.50 / 17.77 %, **0 anomalies**, and the PGM it wrote is
+  identical to `wallet_preview`'s own portrait PNG of the same window. So the layout
+  the firmware would emit and the layout the host tool expects are the same layout.
 
 The tools:
 
 ```
 wallet_preview --synth-grey DIR                       # a synthetic grey tree
-wallet_preview --tree DIR --grey --out PREFIX         # four levels, as a PNG
+wallet_preview --tree DIR --grey --out PREFIX         # four levels as a PNG, plus
+                                                     # PREFIX-capture.bin: the exact
+                                                     # CMD:SCREENSHOT_GRAY payload
 wallet_preview --tree DIR --grey --win-x 800 --win-y 480 --out PREFIX
 wallet_preview --tree DIR --out PREFIX                # the 1bpp page, same window
 ```
@@ -363,8 +498,15 @@ question:
   judgement, at arm's length, on the glass. Nothing on the laptop can answer it,
   and the two mid tones are exactly where the panel's own contrast decides
   (`docs/eink-grayscale.md`, "Grey scale" page).
-- **What a grey frame actually costs**, per stage. The instrument is in; the
-  numbers are not.
+- **What a grey frame actually costs**, per stage. One total came off the panel
+  (2,604 ms, 2026-08-18); the per-stage split has not been read yet.
+- **Whether a capture is bit-identical to what the controller got.** The producer
+  makes the same `readPlaneRows()` call the panel path made, and the host tests say
+  the band walk and the decode agree -- but code cannot diff itself against
+  controller RAM. `CMD:SCREENSHOT_GRAY` against a photograph of the same page is
+  what would settle it.
+- **What a capture costs.** 96 KB re-read off the card plus three 48 KB serial
+  blobs; ~570 ms of card time expected, unmeasured.
 - **Whether a FAST base frame works.** `CMD:WALLETGREY on fast` versus `half`,
   same window, photographed. `SleepActivity` says a wrong base state gives
   blotchy greys; nothing here has tried it.

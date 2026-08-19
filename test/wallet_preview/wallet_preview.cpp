@@ -311,6 +311,62 @@ bool decodeGreyWindow(const std::vector<uint8_t>& file, const wallet::PageImageS
   return true;
 }
 
+// --- what CMD:SCREENSHOT_GRAY would send for this window ----------------------
+//
+// The device's capture path does not draw anything: the wallet's planes were baked
+// by the generator and streamed to controller RAM, so a grey wallet page is
+// captured by RE-READING the same window band by band through a plane producer
+// (GrayPlaneSource, firmware lib/GfxRenderer/GrayscaleFrame.h). This assembles the
+// same three blobs here, off the same file, with the same arithmetic, so the bytes
+// a host will decode can be looked at without a panel
+// (../../docs/wallet-grey.md, "What a host can see of a grey frame").
+
+// GrayscaleFrame::STRIP_ROWS on the device: 80 physical rows, 8,000 bytes a band.
+constexpr uint32_t kCaptureBandRows = 80;
+
+// tools/greyshot.py's decode, from its own docstring: fb bit 1 -> white; else MSB 0
+// -> black; else LSB 0 -> light grey, LSB 1 -> dark grey.
+uint8_t greyshotLevelAt(const uint8_t* bw, const uint8_t* lsb, const uint8_t* msb, uint32_t x) {
+  const uint32_t index = x / 8u;
+  const uint8_t bit = static_cast<uint8_t>(7 - (x % 8));
+  const bool white = ((bw[index] >> bit) & 1) != 0;
+  if (white) return 3;
+  if (((msb[index] >> bit) & 1) == 0) return 0;
+  return ((lsb[index] >> bit) & 1) == 0 ? 2 : 1;
+}
+
+// BW frame, then LSB plane, then MSB plane -- each panel.rowBytes * panel.height
+// bytes in physical row order, which is the SCREENSHOT_GRAY payload layout.
+bool buildCapturePayload(const std::vector<uint8_t>& file, const wallet::PageImageSpec& spec,
+                         const wallet::PanelGeometry& panel, uint32_t x, uint32_t y, bool encrypted, const uint8_t* key,
+                         const uint8_t* iv, std::vector<uint8_t>& payload) {
+  const wallet::GreyPlane order[3] = {wallet::GreyPlane::Base, wallet::GreyPlane::Lsb, wallet::GreyPlane::Msb};
+  payload.clear();
+  payload.reserve(static_cast<size_t>(panel.rowBytes) * panel.height * 3u);
+  for (const wallet::GreyPlane plane : order) {
+    const uint32_t planeBase = wallet::greyPlaneOffset(spec, plane);
+    // The base plane goes into the framebuffer in one window read; the two nudge
+    // planes go band by band. Both end up as the same bytes in the same order, and
+    // walking bands for all three is what proves that.
+    for (uint32_t band = 0; band < panel.height; band += kCaptureBandRows) {
+      const uint32_t rows = std::min<uint32_t>(kCaptureBandRows, panel.height - band);
+      for (uint32_t r = 0; r < rows; ++r) {
+        const uint32_t payloadOffset = planeBase + (y + band + r) * spec.rowBytes + x / 8u;
+        const size_t off = wallet::kAssetHeaderBytes + payloadOffset;
+        if (off + panel.rowBytes > file.size()) {
+          std::fprintf(stderr, "capture row %u of plane %d runs past the file\n", band + r, static_cast<int>(plane));
+          return false;
+        }
+        std::vector<uint8_t> row(file.begin() + static_cast<long>(off),
+                                 file.begin() + static_cast<long>(off + panel.rowBytes));
+        if (encrypted) wallet::host::ctrXor(key, iv, payloadOffset, row.data(), row.size());
+        payload.insert(payload.end(), row.begin(), row.end());
+      }
+    }
+  }
+  return true;
+}
+
 // Reads a grey asset, gates it the way the device gates it, and hands back the
 // header and the file.
 bool loadGreyAsset(const std::string& tree, const wallet::PageImageSpec& spec, const wallet::PanelGeometry& panel,
@@ -381,6 +437,38 @@ int renderGrey(const std::string& tree, const wallet::PageImageSpec& planes, con
       if (!wallet::buildAssetIv(planes.assetId, header.version, iv)) return 1;
     }
     if (!decodeGreyWindow(file, planes, panel, true, x, y, encrypted, key, iv, fromPlanes)) return 1;
+
+    // The capture payload, and a check that it decodes to the same picture the
+    // window decoded to. Two things can go wrong in the capture path and neither is
+    // visible on the panel: the band arithmetic, and the host tool's decode rule.
+    std::vector<uint8_t> capture;
+    if (!buildCapturePayload(file, planes, panel, x, y, encrypted, key, iv, capture)) return 1;
+    const size_t blob = static_cast<size_t>(panel.rowBytes) * panel.height;
+    size_t differ = 0;
+    for (uint32_t r = 0; r < panel.height; ++r) {
+      const size_t off = static_cast<size_t>(r) * panel.rowBytes;
+      for (uint32_t px = 0; px < panel.width; ++px) {
+        const uint8_t got = greyshotLevelAt(&capture[off], &capture[blob + off], &capture[2 * blob + off], px);
+        if (got != fromPlanes[static_cast<size_t>(r) * panel.width + px]) ++differ;
+      }
+    }
+    const std::string capturePath = out + "-capture.bin";
+    FILE* cf = std::fopen(capturePath.c_str(), "wb");
+    if (cf == nullptr || std::fwrite(capture.data(), 1, capture.size(), cf) != capture.size()) {
+      std::fprintf(stderr, "cannot write %s\n", capturePath.c_str());
+      if (cf != nullptr) std::fclose(cf);
+      return 1;
+    }
+    std::fclose(cf);
+    std::printf("capture      : %zu bytes (BW+LSB+MSB, bands of %u rows) -> %s\n", capture.size(), kCaptureBandRows,
+                capturePath.c_str());
+    if (differ == 0) {
+      std::printf("capture      : greyshot.py's decode of it agrees with the window on all %zu pixels\n",
+                  fromPlanes.size());
+    } else {
+      std::printf("capture      : DISAGREE on %zu of %zu pixels -- the band walk or the decode rule is wrong\n", differ,
+                  fromPlanes.size());
+    }
   }
   if (haveImage) {
     std::vector<uint8_t> file;

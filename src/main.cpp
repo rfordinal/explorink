@@ -894,9 +894,12 @@ void loop() {
       if (cmd == "SCREENSHOT_GRAY") {
         // Grey is not in any buffer to dump: the planes are streamed to the
         // controller band by band and the scratch is freed, and in the
-        // framebuffer a grey pixel is *black*. So the planes are re-rendered
-        // here from the last grey frame's own draw callback -- bit-identical to
-        // what the panel got, 8 KB of scratch, no 96 KB shadow.
+        // framebuffer a grey pixel is *black*. So the planes are produced again
+        // here from whatever put grey on the panel -- the last grey frame's own
+        // draw callback, or, for a page whose planes were baked by the generator
+        // and never drawn (the wallet), a producer that re-reads them off the
+        // card. Both are bit-identical to what the panel got, both cost the same
+        // 8 KB band, and neither keeps a 96 KB shadow.
         //
         // Wire format:
         //   SCREENSHOT_GRAY_START:<totalBytes>:<planeBytes>:<exact 0|1>\n
@@ -1329,12 +1332,40 @@ void loop() {
           logSerial.printf("WALLETGREY_ERR usage: CMD:WALLETGREY [on|off|toggle|status] [half|fast]\n");
         } else {
           // Every number the last frame of each kind measured, in microseconds,
-          // so the comparison is captured rather than retold. `grey_rendered=0`
-          // means no grey frame has happened since boot -- the fields are then
-          // zeros and not a measurement.
-          const wallet::GreyTimings& t = wallet::grey::lastGrey();
-          logSerial.printf("WALLETGREY_OK enabled=%d base=%s grey_rendered=%d\n", wallet::grey::enabled() ? 1 : 0,
-                           wallet::grey::baseModeName(), t.rendered ? 1 : 0);
+          // so the comparison is captured rather than retold.
+          //
+          // Read these four in this order; each answers a different question and
+          // the field that used to answer all of them (`grey_rendered`) answered
+          // none (docs/wallet-grey.md, "What a host can see of a grey frame"):
+          //
+          //   grey_frames=N      grey frames finished since boot. Monotonic, never
+          //                      cleared. **This is "did grey render?".** The
+          //                      mode=grey line below is frame N's numbers; all
+          //                      zeros while N is 0.
+          //   grey_on_panel=1    the picture on the glass right now is that frame.
+          //                      Cleared by the next BW frame. Cannot survive a
+          //                      reboot -- e-ink keeps the picture, the flag does
+          //                      not.
+          //   last_outcome=X     how the last attempt ended, `none` before any.
+          //                      A capability answer (no_grey_support, no_scratch)
+          //                      means the 1bpp page was drawn instead.
+          //   repaint_pending=1  a flip is queued and the frame it asks for has NOT
+          //                      been drawn yet -- so everything above describes the
+          //                      frame BEFORE it. `CMD:WALLETGREY on` always
+          //                      replies with this set: the repaint happens in the
+          //                      next loop() and takes ~2.6 s. Poll until it is 0.
+          //
+          // capture=1 means CMD:SCREENSHOT_GRAY has a source for this frame and
+          // will send both planes.
+          const wallet::GreyLedger& status = wallet::grey::status();
+          const wallet::GreyTimings& t = status.lastGrey();
+          logSerial.printf(
+              "WALLETGREY_OK enabled=%d base=%s grey_frames=%lu grey_attempts=%lu grey_on_panel=%d last_outcome=%s "
+              "repaint_pending=%d capture=%d\n",
+              wallet::grey::enabled() ? 1 : 0, wallet::grey::baseModeName(),
+              static_cast<unsigned long>(status.frames()), static_cast<unsigned long>(status.attempts()),
+              status.onPanel() ? 1 : 0, status.lastOutcomeName(), status.repaintPending() ? 1 : 0,
+              GrayscaleFrame::hasSource() ? 1 : 0);
           logSerial.printf(
               "WALLETGREY mode=grey card_base_us=%lu base_us=%lu card_planes_us=%lu planes_us=%lu nudge_us=%lu "
               "cleanup_us=%lu total_us=%lu card_bytes=%lu\n",

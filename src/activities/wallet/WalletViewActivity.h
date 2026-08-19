@@ -76,6 +76,7 @@ class WalletViewActivity final : public Activity {
                      uint16_t pageCount);
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
 
  private:
@@ -88,6 +89,9 @@ class WalletViewActivity final : public Activity {
   // one card read plus the refresh that follows it. Printed in the same
   // WALLETGREY line shape as the grey stages, so a host captures both.
   void logOneBppCost(uint32_t cardUs, uint32_t refreshUs, uint32_t cardBytes);
+  // Called by every path that puts a BW frame on the panel: refresh cadence, the
+  // status ledger and the grey capture registration all turn over together.
+  void noteBwFrameOnPanel();
   void drawFailure(HalDisplay::RefreshMode mode);
   // `down` moves toward the bottom of the document, `across` toward its left --
   // see the axis note in the .cpp, this is not the same thing as native x and y.

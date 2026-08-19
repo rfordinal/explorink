@@ -25,38 +25,6 @@ constexpr int kBandRows = GrayscaleFrame::STRIP_ROWS;
 
 }  // namespace
 
-const char* greyOutcomeName(const GreyOutcome outcome) {
-  switch (outcome) {
-    case GreyOutcome::Ok:
-      return "ok";
-    case GreyOutcome::NotOpen:
-      return "not_open";
-    case GreyOutcome::NoFrameBuffer:
-      return "no_framebuffer";
-    case GreyOutcome::NoGreySupport:
-      return "no_grey_support";
-    case GreyOutcome::NoScratch:
-      return "no_scratch";
-    case GreyOutcome::Missing:
-      return "missing";
-    case GreyOutcome::BadAsset:
-      return "bad_asset";
-    case GreyOutcome::WrongPanel:
-      return "wrong_panel";
-    case GreyOutcome::Unaligned:
-      return "unaligned";
-    case GreyOutcome::OutOfRange:
-      return "out_of_range";
-    case GreyOutcome::Locked:
-      return "locked";
-    case GreyOutcome::ShortRead:
-      return "short_read";
-    case GreyOutcome::DecryptFailed:
-      return "decrypt_failed";
-  }
-  return "?";
-}
-
 Error greyOutcomeToError(const GreyOutcome outcome) {
   switch (outcome) {
     case GreyOutcome::Ok:
@@ -152,12 +120,40 @@ GreyOutcome GreyPageReader::open(const PageImageSpec& page, const GfxRenderer& r
 }
 
 void GreyPageReader::close() {
+  // Before the file goes: a producer that cannot read is worse than no producer.
+  releaseReplaySource();
   if (open_ || file_.isOpen()) file_.close();
   open_ = false;
   spec_ = PageImageSpec{};
   header_ = AssetHeader{};
   encrypted_ = false;
   secureWipe(iv_, sizeof(iv_));
+}
+
+void GreyPageReader::releaseReplaySource() {
+  GrayscaleFrame::clearPlaneSource(this);
+  replayArmed_ = false;
+}
+
+bool GreyPageReader::planeBandThunk(void* const ctx, const bool lsbPlane, uint8_t* const rows, const int yStart,
+                                    const int numRows) {
+  return static_cast<GreyPageReader*>(ctx)->fillPlaneBand(lsbPlane, rows, yStart, numRows);
+}
+
+bool GreyPageReader::fillPlaneBand(const bool lsbPlane, uint8_t* const rows, const int yStart, const int numRows) {
+  if (!open_ || !replayArmed_ || rows == nullptr || numRows <= 0 || yStart < 0) return false;
+  const uint32_t y = replayY_ + static_cast<uint32_t>(yStart);
+  if (y + static_cast<uint32_t>(numRows) > spec_.nativeHeight) return false;
+  // The same call the panel path makes, with the same window and the same stride.
+  // That is the whole argument for a producer over a buffer: there is no second
+  // implementation to drift.
+  const GreyOutcome outcome = readPlaneRows(lsbPlane ? GreyPlane::Lsb : GreyPlane::Msb, replayXByte_, y,
+                                            static_cast<uint32_t>(numRows), rows, replayRowBytes_);
+  if (outcome != GreyOutcome::Ok) {
+    LOG_ERR(kLogTag, "grey capture band y=%lu refused: %s", static_cast<unsigned long>(y), greyOutcomeName(outcome));
+    return false;
+  }
+  return true;
 }
 
 GreyOutcome GreyPageReader::readPlaneRows(const GreyPlane plane, const uint32_t xByte, const uint32_t y,
@@ -175,6 +171,9 @@ GreyOutcome GreyPageReader::readPlaneRows(const GreyPlane plane, const uint32_t 
 GreyOutcome GreyPageReader::render(const uint32_t x, const uint32_t y, GfxRenderer& renderer,
                                    const HalDisplay::RefreshMode baseMode, GreyTimings& timings) {
   timings = GreyTimings{};
+  // A new frame starts: whatever window the capture path was armed for is history
+  // from here on, whether this attempt succeeds or not.
+  releaseReplaySource();
   if (!open_) return GreyOutcome::NotOpen;
   if (!renderer.hasFrameBuffer()) return GreyOutcome::NoFrameBuffer;
   // Asked before anything is drawn, because the answer decides whether the caller
@@ -280,8 +279,18 @@ GreyOutcome GreyPageReader::render(const uint32_t x, const uint32_t y, GfxRender
   renderer.resyncControllerBwRam();
   timings.cleanupUs = micros() - tGrey;
 
-  timings.rendered = true;
   timings.totalUs = micros() - tStart;
+
+  // The panel now carries these exact plane bytes, and nothing kept them: the band
+  // scratch is about to be freed. Arm the capture path to read them again on demand
+  // so CMD:SCREENSHOT_GRAY can answer for a wallet page at all (docs/wallet-grey.md,
+  // "What a host can see of a grey frame"). Eight bytes of registration, not a
+  // 96,000 byte shadow.
+  replayXByte_ = xByte;
+  replayY_ = y;
+  replayRowBytes_ = rowBytes;
+  replayArmed_ = true;
+  GrayscaleFrame::setPlaneSource(GrayPlaneSource{this, &GreyPageReader::planeBandThunk});
   return GreyOutcome::Ok;
 }
 
@@ -293,8 +302,7 @@ namespace {
 
 bool enabled_ = false;
 HalDisplay::RefreshMode baseMode_ = HalDisplay::HALF_REFRESH;
-bool repaintRequested_ = false;
-GreyTimings lastGrey_;
+GreyLedger ledger_;
 uint32_t lastOneBppCardUs_ = 0;
 uint32_t lastOneBppRefreshUs_ = 0;
 uint32_t lastOneBppCardBytes_ = 0;
@@ -304,7 +312,7 @@ uint32_t lastOneBppCardBytes_ = 0;
 bool enabled() { return enabled_; }
 
 void setEnabled(const bool on) {
-  if (enabled_ != on) repaintRequested_ = true;
+  if (enabled_ != on) ledger_.requestRepaint();
   enabled_ = on;
 }
 
@@ -316,19 +324,19 @@ bool toggle() {
 HalDisplay::RefreshMode baseMode() { return baseMode_; }
 
 void setBaseMode(const HalDisplay::RefreshMode mode) {
-  if (baseMode_ != mode) repaintRequested_ = true;
+  if (baseMode_ != mode) ledger_.requestRepaint();
   baseMode_ = mode;
 }
 
 const char* baseModeName() { return baseMode_ == HalDisplay::FAST_REFRESH ? "fast" : "half"; }
 
-bool consumeRepaintRequest() {
-  const bool wanted = repaintRequested_;
-  repaintRequested_ = false;
-  return wanted;
-}
+bool consumeRepaintRequest() { return ledger_.consumeRepaint(); }
 
-void recordGrey(const GreyTimings& timings) { lastGrey_ = timings; }
+void noteGreyAttempt(const GreyOutcome outcome, const GreyTimings& timings) { ledger_.noteAttempt(outcome, timings); }
+
+void noteBwFrame() { ledger_.noteBwFrame(); }
+
+const GreyLedger& status() { return ledger_; }
 
 void recordOneBpp(const uint32_t cardUs, const uint32_t refreshUs, const uint32_t cardBytes) {
   lastOneBppCardUs_ = cardUs;
@@ -336,7 +344,6 @@ void recordOneBpp(const uint32_t cardUs, const uint32_t refreshUs, const uint32_
   lastOneBppCardBytes_ = cardBytes;
 }
 
-const GreyTimings& lastGrey() { return lastGrey_; }
 uint32_t lastOneBppCardUs() { return lastOneBppCardUs_; }
 uint32_t lastOneBppRefreshUs() { return lastOneBppRefreshUs_; }
 uint32_t lastOneBppCardBytes() { return lastOneBppCardBytes_; }

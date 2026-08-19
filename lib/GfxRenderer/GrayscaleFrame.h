@@ -96,6 +96,26 @@ struct GrayPlaneSink {
   void (*fn)(void* ctx, bool lsbPlane, const uint8_t* rows, int yStart, int numRows) = nullptr;
 };
 
+// Where a plane band comes FROM when no draw callback produced it. The mirror of
+// GrayPlaneSink: fill `rows` (panelWidthBytes * numRows bytes, framebuffer layout)
+// with this plane's bits for physical rows [yStart, yStart + numRows), and return
+// false to abort the replay.
+//
+// This exists for pre-baked planes. The wallet's grey page streams plane bytes it
+// read off the SD card straight to controller RAM -- nothing draws a pixel, so
+// there is no callback to re-run and CMD:SCREENSHOT_GRAY used to answer
+// `planes=0` for a page that was visibly grey on the glass
+// (../../docs/wallet-grey.md, "What a host can see of a grey frame"). A producer
+// re-reads those same bytes on demand, which keeps the 96,000 byte shadow out of
+// DRAM exactly as the callback replay does.
+//
+// Bands are asked for in y order, LSB plane first, then MSB -- the same order the
+// sink receives them in, and the same order the panel got them in.
+struct GrayPlaneSource {
+  void* ctx = nullptr;
+  bool (*fn)(void* ctx, bool lsbPlane, uint8_t* rows, int yStart, int numRows) = nullptr;
+};
+
 class GrayscaleFrame {
  public:
   // One band of physical rows at a time: 100 bytes/row * 80 = 8,000 bytes.
@@ -152,8 +172,21 @@ class GrayscaleFrame {
   // demand into whatever sink asks for them. Same 8 KB band scratch, same
   // callback, so the planes are bit-identical to what was sent to the panel.
 
-  // True when a full grey frame has been rendered and its source is still
-  // valid, i.e. replayPlanes() has something to replay.
+  // Register a plane producer as the thing that put grey on the panel, for a
+  // frame whose planes were never drawn (the wallet's baked planes). Replaces any
+  // remembered draw callback: only one picture is on the glass. Marks the source
+  // exact -- the producer re-reads the same bytes the panel got.
+  //
+  // The ctx must outlive the registration. Same rule and same escape hatch as the
+  // draw callback: clearPlaneSource() when the object dies, and
+  // ActivityManager::exitActivity calls clearSource() for every activity.
+  static void setPlaneSource(const GrayPlaneSource& source);
+  // Forget the plane producer, but only if it is still `ctx`'s. Passing nullptr
+  // clears whatever is registered.
+  static void clearPlaneSource(const void* ctx);
+
+  // True when a grey frame has been rendered and its source is still valid, i.e.
+  // replayPlanes() has something to replay -- a draw callback or a plane producer.
   static bool hasSource();
   // False when nudge() has run since the last full frame: the panel then carries
   // grey that no single callback reproduces, so a replay is a subset of what is
@@ -163,10 +196,12 @@ class GrayscaleFrame {
   // ctx pointer dies -- ActivityManager::exitActivity does this for activities.
   static void clearSource();
 
-  // Re-render the last full frame's planes into `sink` instead of the
-  // controller. Does not touch the framebuffer, the panel, or controller RAM.
-  // Returns false when there is no source or the band scratch cannot be
-  // allocated.
+  // Re-produce the last full frame's planes into `sink` instead of the
+  // controller: re-rendered from the remembered draw callback, or re-read through
+  // the remembered plane producer, whichever put grey on the panel. Does not touch
+  // the framebuffer, the panel, or controller RAM. Returns false when there is no
+  // source, the band scratch cannot be allocated, or a producer refused (a locked
+  // wallet, a card pulled out).
   //
   // The caller must hold the render lock: this drives the renderer's strip
   // target, which the render task also uses.
@@ -177,4 +212,10 @@ class GrayscaleFrame {
   // controller, or to `sink` when one is given (nothing reaches the panel
   // then). Returns false on scratch OOM.
   static bool writePlanes(GfxRenderer& renderer, const GrayDrawCallback& draw, const GrayPlaneSink* sink = nullptr);
+
+  // The producer's half of the same loop: no render mode, no strip target, no
+  // drawing -- the bytes arrive already in plane form. Sink only; a producer never
+  // feeds the panel, because the code that registered one already streamed those
+  // bytes there itself.
+  static bool replayFromPlaneSource(GfxRenderer& renderer, const GrayPlaneSource& source, const GrayPlaneSink& sink);
 };

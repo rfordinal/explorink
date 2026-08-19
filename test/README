@@ -30,7 +30,9 @@ Three targets here are host tools, not gtest suites, so ctest does not run them:
                module box, centring and label band -- same doc, "The code
                screen". `--key <64 hex>` renders an ENCRYPTED tree: GCM tag
                first, then AES-256-CTR per asset -- docs/wallet-crypto.md.
-               `--grey` renders the level's grey asset as four visible levels and
-               cross-checks the baked planes against the 2bpp image;
+               `--grey` renders the level's grey asset as four visible levels,
+               cross-checks the baked planes against the 2bpp image, and writes
+               <out>-capture.bin -- the exact CMD:SCREENSHOT_GRAY payload for that
+               window, which tools/greyshot.py decodes off-device;
                `--synth-grey DIR` writes a synthetic grey tree to render --
                docs/wallet-grey.md
