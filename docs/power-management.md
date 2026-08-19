@@ -273,9 +273,11 @@ measured currents for it
 
 Three things this settles.
 
-- **The 32.768 kHz crystal question is worth 16x on the parked floor**, not the
-  "good vs excellent" that `power-plan.md` claimed before this. 2.3 mA is about
-  ten days on the 650 mAh cell; 140 uA is months.
+- **The 32.768 kHz crystal is worth 16x on the parked floor** -- 2.3 mA is about
+  ten days on the 650 mAh cell, 140 uA is months. **And the X4 cannot have it**,
+  for a reason found 2026-08-19 and written up in the next section. So the X4's
+  parked ceiling is the 2.3 mA column plus the board's own floor; the 140 uA
+  column is a requirement for a future board, not an option for this one.
 - The datasheet's 130 uA light-sleep figure (Table 5-9) is the **no-BLE** number
   and does not apply to any state this firmware wants.
 - It cross-checks our own scale: 24.0 mA measured at 160 MHz with the radio up
@@ -324,6 +326,62 @@ this option in scenarios such as BLE connection state" (`:418-423`).
 The full option set, and where the plan for it lives:
 [`power-idle-sleep.md`](power-idle-sleep.md).
 
+## The X4 cannot have a 32.768 kHz crystal: GPIO1 is already the button ladder
+
+**Read off Espressif's register header and our own driver, 2026-08-19. This
+answers a question that had been marked BLOCKING since 2026-08-15, with no flash
+and no meter.**
+
+On ESP32-C3 the 32 kHz crystal pins are not a wiring choice. They are fixed in
+silicon, one to one:
+
+```
+#define IO_MUX_GPIO0_REG   PERIPHS_IO_MUX_XTAL_32K_P_U
+#define IO_MUX_GPIO1_REG   PERIPHS_IO_MUX_XTAL_32K_N_U
+```
+
+(ESP-IDF `components/soc/esp32c3/register/soc/io_mux_reg.h:96-97`.) A 32.768 kHz
+crystal can therefore only be soldered across **GPIO0 and GPIO1**, nowhere else.
+
+**GPIO1 on the X4 is the button ADC ladder.** `BUTTON_ADC_PIN_1 = 1` and
+`BUTTON_ADC_PIN_2 = 2`
+(`freeink-sdk/libs/hardware/InputManager/include/InputManager.h:67-68`), read with
+`analogRead()` for every button press on any board whose `inputStyle` is
+`XteinkAdcLadder` -- which the X4's profile is
+(`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h:687`). Those buttons
+work, on hardware, every day.
+
+So the pin is taken. A crystal across GPIO0/GPIO1 would sit on the same node as
+the resistor ladder and load it; the buttons and the clock cannot both be there.
+
+**One loophole, stated so nobody thinks it was overlooked.** There is also an
+*external oscillator* mode, which needs only `XTAL_32K_P` -- GPIO0 -- and leaves
+GPIO1 alone (`components/soc/esp32c3/include/soc/clk_tree_defs.h:31-33`). A
+packaged 32 kHz oscillator costs more than a crystal and has no reason to be in a
+reader, so this is treated as ruled out, not proven absent. If it ever matters, it
+is the same one-build test with `CONFIG_RTC_CLK_SRC_EXT_OSC=y` instead of
+`EXT_CRYS`.
+
+**Why this evidence beats a teardown photo.** A photo says what is on the board
+and can be misread. This says the pin is doing something else and demonstrably
+working -- which cannot be true at the same time as a crystal being there.
+
+Three consequences:
+
+- **X4's parked floor cannot go below the 2.3 mA column** plus whatever the board
+  itself draws. Light sleep is still the large win -- 12 mA to 2.3 mA at the SoC --
+  but the 140 uA number is off the table for this hardware.
+- **A future board that wants 140 uA has to move the buttons off GPIO1**, i.e.
+  give up the OEM resistor ladder for digital buttons. Worth stating in any
+  hardware conversation about a successor, because it is free at design time and
+  impossible afterwards.
+- **On X4 Pro the question is open and separate, and looks better.** That is an
+  ESP32-S3, where the same pins are GPIO15 and GPIO16
+  (`components/soc/esp32s3/register/soc/io_mux_reg.h:109-110`), and its profile
+  already uses `InputStyle::DigitalButtons` rather than the ladder
+  (`BoardConfig.h:1065`). So nothing structural blocks a crystal there. Check it
+  when a dev unit arrives.
+
 ## The board's own floor is unpriced, and it bounds every sleep state
 
 **Read off the code 2026-08-19. Open on hardware.**
@@ -340,7 +398,8 @@ Today's "off" measures near zero only because cutting the latch
 (`lib/hal/HalPowerManager.cpp:100-109`) removes the whole board from the battery.
 
 **Consequence for every number in this file.** If that floor is 1 mA or more, the
-SoC's 5 uA deep sleep is irrelevant and most of the crystal's 16x is unreachable.
+SoC's 5 uA deep sleep is irrelevant, and on X4 it is the only term left to argue
+about at all now that the crystal is ruled out.
 It has never been measured, it needs a uA meter in series with the battery -- the
 `power.csv` instrument cannot see microamps and a USB meter charges the cell --
 and it is the first experiment in
@@ -490,8 +549,9 @@ run should try to confirm or kill, ordered by how much it is suspected to cost.
 (`:951-952`). Without controller modem sleep the BT baseband stays powered
 between connection events instead of powering down and waking for each one.
 This is a `custom_sdkconfig` entry (`platformio.ini:85`), not a code change.
-Open: whether the X4 carries an external 32.768 kHz crystal, which decides
-which low-power clock mode is available.
+(Answered 2026-08-19: the X4 has no external 32.768 kHz crystal and cannot --
+see "The X4 cannot have a 32.768 kHz crystal" above -- so `MAIN_XTAL` is the only
+low-power clock mode available on this board.)
 
 **2. No ESP-IDF power management at all.** `sdkconfig.default:1634` --
 `# CONFIG_PM_ENABLE is not set`. So there is no dynamic frequency scaling and

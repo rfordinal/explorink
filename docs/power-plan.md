@@ -245,14 +245,17 @@ connection events and wakes for each one.
   never light-sleep (`power-management.md`, "`CONFIG_PM_ENABLE` alone saves
   nothing while the radio is up"; full set in `power-idle-sleep.md`). Found
   2026-08-19 by reading the pinned IDF, not by burning a run on it.
-- Constrained by the clock source, and the size of that is now known.
-  Espressif's own measurement of a C3 BLE peripheral: light sleep is **2.3 mA**
-  on the main crystal and **140 uA** on an external 32.768 kHz crystal
-  (`power-management.md`, "What a C3 actually draws asleep"). So the crystal
-  question is **16x on the parked floor**, not the "good vs excellent" this line
-  used to claim. The internal 136 kHz RC is not an option at all -- its accuracy
-  is "a lot larger than 500ppm which is required in Bluetooth communication"
-  (IDF Kconfig), i.e. it cannot hold a connection.
+- Constrained by the clock source, and **the X4's choice is already made for it.**
+  Espressif's own measurement of a C3 BLE peripheral: light sleep is **2.3 mA** on
+  the main crystal and **140 uA** on an external 32.768 kHz crystal
+  (`power-management.md`, "What a C3 actually draws asleep") -- 16x. But the X4
+  **cannot carry that crystal**: on C3 it can only be soldered across GPIO0/GPIO1,
+  and GPIO1 is the button ADC ladder (`power-management.md`, "The X4 cannot have a
+  32.768 kHz crystal"). So route B on X4 lands on the 2.3 mA column plus the
+  board's own floor, and the 140 uA column is a requirement for a future board.
+  The internal 136 kHz RC is not an option either -- its accuracy is "a lot larger
+  than 500ppm which is required in Bluetooth communication" (IDF Kconfig), i.e. it
+  cannot hold a connection.
 
 ### C. Duty-cycle the whole link
 
@@ -354,7 +357,7 @@ problem it was meant to avoid.
 | Class | Examples | Build |
 |---|---|---|
 | Runtime states | idle, advertising, connected, light sleep, deep sleep + timer | **one** binary, bit-identical across the whole comparison, zero rebuilds |
-| Compile-time options | the 32.768 kHz crystal, `CONFIG_PM_ENABLE`, the main-XTAL PU flag | one binary per option, all from the **same frozen base**, differing only in that option |
+| Compile-time options | `CONFIG_PM_ENABLE`, the main-XTAL PU flag, `CONFIG_ESP_PHY_MAC_BB_PD` | one binary per option, all from the **same frozen base**, differing only in that option |
 
 The first class is what the power lab screen exists for
 ([`power-idle-sleep.md`](power-idle-sleep.md), "The power lab screen"): selecting
@@ -479,8 +482,11 @@ Phase 2 -- baseline the four states:
       Coarse -- redo the arithmetic from `batt_mv` once the card is read.
 - [ ] Runs for states 1, 2 and 4. State 2 (map, no phone) minus state 3 is the
       only clean way to price the radio.
-- [ ] Answer the crystal question -- it gates route B and nothing else in the
-      list can substitute for it.
+- [x] **Answer the crystal question** (2026-08-19). The X4 cannot have an
+      external 32.768 kHz crystal: on C3 it is fixable only to GPIO0/GPIO1 and
+      GPIO1 is the button ADC ladder. No flash, no meter -- decided from
+      Espressif's register header and our own driver
+      (`power-management.md`, "The X4 cannot have a 32.768 kHz crystal").
 - [ ] Write all four voltage slopes into `power-management.md`, with the
       caveats each one carries.
 - [ ] One inline-meter cross-check, documented as system-plus-charging.
@@ -513,12 +519,11 @@ Route A -- **start here**. Ordered by measured lever size, biggest first:
 
 Route B (only if route A lands short of 9 mA):
 
-- [ ] Settle the external 32.768 kHz crystal question first. **Zero
-      instruments**: build with `CONFIG_RTC_CLK_SRC_EXT_CRYS=y` +
-      `CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y` and read the boot log -- the
-      controller prints `32.768kHz XTAL not detected, fall back to main XTAL as
-      Bluetooth sleep clock` when the board has none (`power-idle-sleep.md`,
-      experiment 2).
+- [x] **Crystal question settled 2026-08-19: no, and not fixable on X4.** GPIO1
+      carries the button ladder, and on C3 that is one of the two crystal pins.
+      The boot-log test is no longer needed; if it is ever run on another board,
+      the controller prints `32.768kHz XTAL not detected, fall back to main XTAL
+      as Bluetooth sleep clock` when there is none.
 - [ ] Price the **board's own floor** -- deep sleep with the battery latch held
       HIGH instead of cut, measured with a uA meter in series with the battery.
       X4 has no switched rails, so SD, the divider, the regulator and the panel
@@ -618,17 +623,18 @@ Phase 4 -- tune what the measurements expose:
   own floor is unpriced"). If that floor is 1 mA or more it bounds every deep
   state and most of what the crystal could buy. Needs a uA meter in series with
   the battery; `power.csv` cannot see microamps and a USB meter charges the cell.
-- **Does the X4 have an external 32.768 kHz crystal? BLOCKING.** Decides which
-  BLE low-power clock modes are available, and therefore how much light sleep can
-  save. **Now sized: 16x on the parked floor** -- 2.3 mA on the main crystal
-  versus 140 uA with the crystal (`power-management.md`, "What a C3 actually
-  draws asleep"). Settle it from a boot log, no instrument needed
-  (`power-idle-sleep.md`, experiment 2). Promoted to blocking 2026-08-15: it gates route B,
-  which is the only route with a measured path to the three-day target. The
-  config today selects the internal RC (`sdkconfig.defaults:1568`), but that is
-  a default, **not evidence about the board**. Settle it by inspecting the
-  board or by building with `CONFIG_RTC_CLK_SRC_EXT_CRYS=y` and seeing whether
-  the clock calibrates -- do not infer it from the sdkconfig.
+- ~~**Does the X4 have an external 32.768 kHz crystal? BLOCKING.**~~
+  **ANSWERED 2026-08-19: no, and it cannot.** On C3 the crystal is fixable only
+  across GPIO0/GPIO1 (Espressif's own IO-MUX header) and GPIO1 is the X4's button
+  ADC ladder, which works on hardware every day. Full argument, the one loophole
+  it leaves, and what it means for a future board:
+  `power-management.md`, "The X4 cannot have a 32.768 kHz crystal".
+  It was blocking from 2026-08-15 because it gates route B and sizes the prize --
+  16x on the parked floor. The prize on **this** board is therefore the 2.3 mA
+  column, not 140 uA, and route B is still worth building for it: 24 mA today.
+  Cost of the answer: no flash, no meter, one read of a register header. The
+  earlier plan here was to infer it from a boot log; the pin map is stronger,
+  because a pin that already does something else cannot also hold a crystal.
 - **How long does a viewport reset take at a reduced clock?** A reset is
   already close to two seconds at 160 MHz and a large share of it is software
   floating point, which scales with the clock. Whatever else changes, the

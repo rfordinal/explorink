@@ -35,6 +35,11 @@ Four facts kill the obvious designs before they start.
 - **No wake-on-BLE from deep sleep.** The C3 does have a BT wake source
   (`SOC_PM_SUPPORT_BT_WAKEUP` is 1, `soc_caps.h:446`) but it is a **light
   sleep** source; deep sleep powers the radio down and drops the link. **[primary]**
+- **It cannot carry a 32.768 kHz crystal either.** On C3 that crystal is fixable
+  only across GPIO0/GPIO1, and GPIO1 is the button ADC ladder
+  ([`power-management.md`](power-management.md), "The X4 cannot have a 32.768 kHz
+  crystal"). So the cheap sleep clock is not available and the parked floor lands
+  on the main-crystal column. **[primary]**, **[repo]**
 - **Today's deep sleep is a power-off, not a sleep.** `startDeepSleep()` drives
   GPIO13 -- the battery latch MOSFET -- LOW and holds it
   (`lib/hal/HalPowerManager.cpp:100-109`), which disconnects the MCU from the
@@ -51,9 +56,11 @@ light sleep on the main crystal **2.3 mA**, light sleep on an external
 
 Two consequences for this design. **Light sleep is the whole win**: it is the
 only state that turns 12-24 mA into single milliamps while the radio still
-works. And **the crystal question is worth 16x on the parked floor**, not the
-"good vs excellent" the campaign plan claimed -- ten days versus months on the
-650 mAh cell.
+works. And **the crystal column is not available to the X4** -- it would be 16x,
+ten days against months, but GPIO1 is the button ladder and on C3 that is one of
+the two crystal pins (see above). So the target for this board is the **2.3 mA
+column plus the board's own floor**, and the 140 uA column is a requirement to
+put on a future board rather than an experiment to run on this one.
 
 Those are **SoC** numbers on a devkit. Our board's own floor sits on top, and
 nobody has priced it.
@@ -302,13 +309,16 @@ validate the real thing.
    floor bounds every deep state and most of the crystal's value with it;
    10-100 uA means the deep states are real. Also proves timer wake fires and
    the device boots from it.
-2. **The crystal question, with no instrument at all.** Build with
+2. ~~**The crystal question, with no instrument at all.**~~ **ANSWERED
+   2026-08-19, and it needed no experiment at all.** The X4 cannot have the
+   crystal: on C3 it is fixable only across GPIO0/GPIO1 and GPIO1 is the button
+   ADC ladder ([`power-management.md`](power-management.md), "The X4 cannot have a
+   32.768 kHz crystal"). The planned boot-log test -- build with
    `CONFIG_RTC_CLK_SRC_EXT_CRYS=y` plus
-   `CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y` and read the boot log. The
-   controller prints, verbatim, `32.768kHz XTAL not detected, fall back to main
-   XTAL as Bluetooth sleep clock` when the board has none
-   (`bt.c:1693-1697`). **[primary]** That is the whole experiment, and it
-   decides 2.3 mA versus 140 uA.
+   `CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y` and watch for `32.768kHz XTAL not
+   detected, fall back to main XTAL as Bluetooth sleep clock` (`bt.c:1693-1697`)
+   -- is still the right test **on another board**, and X4 Pro is the one worth
+   running it on. **[primary]**
 3. **The `CONFIG_PM_ENABLE` smoke test -- go/no-go for S2.** One branch with the
    seven-option set above and an `esp_pm_configure()` of max 160 / min 80 /
    light sleep enabled. Bench it on `tools/blefakephone.py` with a **control run
@@ -328,14 +338,14 @@ validate the real thing.
    duty-cycled variant is revived. Serial timestamps from reset to first
    rendered fix.
 
-Order, decided 2026-08-19: **2, then 3, then 1.** Experiment 2 is one build and a
-log line, and its answer sets how much effort 3 deserves -- a board with the crystal
-makes months of standby the prize and worth fighting a driver bug for; without it the
-ceiling is 2.3 mA plus the board floor. Experiment 3 is the only **unconditional**
-one: without light sleep there is no state below 80 MHz with a live radio at all, so
-if the SPI panel or the SD card breaks under DFS, the crystal is moot. Experiment 1
-comes last only because it needs the meter -- not because it matters least; it is
-what says whether to keep pushing.
+Order, revised 2026-08-19 once experiment 2 answered itself: **3, then 1.**
+Experiment 3 is the only **unconditional** one -- without light sleep there is no
+state below 80 MHz with a live radio at all -- and now that the crystal is ruled
+out it is also the *only* remaining way to move the number on this board.
+Experiment 1 comes second because it needs the meter, not because it matters
+least: with the crystal gone, the board's own floor is the last unknown term in
+the parked budget, so it is what says whether 2.3 mA plus the floor is good enough
+to stop at.
 
 **Deep sleep survives as an instrument even though it is rejected as a feature.**
 Experiment 1 needs it: the board's own floor cannot be separated from the SoC's
@@ -352,8 +362,11 @@ comparable to the run before it.
 
 - **What is the board's own floor with the latch held?** Bounds everything above.
   Experiment 1.
-- **Does the X4 have an external 32.768 kHz crystal?** Worth 16x on the parked
-  floor. Experiment 2.
+- ~~**Does the X4 have an external 32.768 kHz crystal?**~~ **Answered
+  2026-08-19: no, and it cannot** -- GPIO1 is the button ladder and on C3 that is
+  a crystal pin. Open on **X4 Pro**, which is an S3 with the same pins at
+  GPIO15/GPIO16 and digital buttons rather than a ladder, so nothing structural
+  is in the way there.
 - **Does anything break under DFS plus light sleep** -- SPI panel, ADC ladder,
   SD, USB CDC? Experiment 3. Expect to find at least one.
 - **What advertising address does NimBLE use here, and is it stable across sleep
