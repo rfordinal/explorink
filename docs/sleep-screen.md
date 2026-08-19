@@ -262,13 +262,27 @@ and the new shape. With the sleep screen's moon that makes the way into sleep tw
 windowed refreshes -- still less panel time than the single whole-panel `HALF` it
 was before 2026-08-19.
 
-No-op, leaving the live marker alone, when there is no viewport on the panel (the
-waiting banner) or no valid patch to erase with. Drawing over the live marker
-without erasing it would stack two markers.
+No-op, leaving the frame alone, unless `markerPatchValid_` is set with a positive
+`markerBoxDrawn_` and the screen is not in Observe. That flag is the one that
+means "a marker is on the panel at `markerDrawnX_/Y_` and this patch erases it" --
+it is set right after the marker is painted, and the two marker-less frames
+(`renderWaiting()`, `renderLoadingTiles()`) clear it. Observe is excluded because
+`renderViewport()` sets the patch there but deliberately draws no marker: its
+anchor is a pan target the rider chose, and a marker glyph on it would claim to be
+a fix.
 
-**Not verified on hardware yet** (2026-08-19). Needs a look at the glass: the
-small marker is findable on a dense frame, and no fragment of the live marker is
-left around it.
+**The first version guarded on `viewportDrawn_` instead, and it never fired.** That
+flag means "a live viewport a fix can move a marker inside", not "there is a map on
+the panel": `renderViewport()` sets it to `!showingPersistedFix_`, so a frame drawn
+from the persisted fix -- which is every map session with no phone connected --
+leaves it false. Cost a hardware pass to find, and the log said it outright:
+`sleep marker skipped (viewport=0 patch=1)` with a perfectly good map and marker on
+the glass.
+
+**The skip path is verified; the marker itself is not** (2026-08-19). The wrong
+guard was caught on hardware and the right one is a code read. Still needs a look
+at the glass: the small marker is findable on a dense frame, and no fragment of the
+live marker is left around it.
 
 ### It did not work from the map: `MapActivity::onExit()` wiped the frame first (fixed 2026-08-19)
 

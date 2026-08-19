@@ -3861,12 +3861,26 @@ bool MapActivity::saveMarkerPatch(int cx, int cy) {
 }
 
 void MapActivity::drawSleepMarker() {
-  // Nothing to swap: no viewport on the panel (the waiting banner), or no valid
-  // patch to erase the live marker with. Leaving the live marker is the correct
-  // fallback -- drawing the small one over it would stack two markers, and the
-  // map under the live one exists nowhere but this patch.
-  if (!viewportDrawn_ || !markerPatchValid_ || !markerPatch_) {
-    LOG_DBG(kLogTag, "sleep marker skipped (viewport=%d patch=%d)", (int)viewportDrawn_, (int)markerPatchValid_);
+  // Three conditions, and NOT viewportDrawn_ -- which is the wrong flag and cost
+  // a hardware pass to learn (2026-08-19, "sleep marker skipped (viewport=0
+  // patch=1)" with a perfectly good map and marker on the glass). It means "a
+  // live viewport a fix can move a marker inside": renderViewport() sets it to
+  // `!showingPersistedFix_`, so a frame drawn from the persisted fix -- what every
+  // map session shows with no phone connected -- leaves it false.
+  //
+  // markerPatchValid_ is the flag that answers the real question. It is set right
+  // after markerDrawnX_/Y_ are recorded and the marker is painted
+  // (renderViewport(), moveMarker()), so it means exactly "a marker is on the
+  // panel at markerDrawnX_/Y_ and this patch erases it". renderWaiting() and
+  // renderLoadingTiles(), the two marker-less frames, clear it.
+  //
+  // Observe is its own case: renderViewport() sets the patch but deliberately
+  // draws NO marker there, because the anchor is a pan target the rider chose and
+  // a marker glyph on it would claim to be a fix. Drawing a sleep marker on it
+  // would make exactly that claim.
+  if (!markerPatchValid_ || !markerPatch_ || markerBoxDrawn_ <= 0 || screenMode_ == MapScreenMode::Observe) {
+    LOG_DBG(kLogTag, "sleep marker skipped (patch=%d box=%d observe=%d)", (int)markerPatchValid_, (int)markerBoxDrawn_,
+            (int)(screenMode_ == MapScreenMode::Observe));
     return;
   }
 
