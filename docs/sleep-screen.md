@@ -216,19 +216,50 @@ SETTINGS.sleepScreen == QUICK_RESUME ||
 `QUICK_RESUME_SLEEP_SCREEN` enum: `QUICK_RESUME_NEVER = 0, QUICK_RESUME_AFTER_TIMEOUT = 1`
 (`CrossPointSettings.h:172-175`).
 
-If true, `renderLastScreenSleepScreen()` (`:281-291`) runs instead of anything
-above: it leaves whatever is already on the e-ink panel — from *any* activity,
-reader or not — and overlays a small moon icon bottom-left, without a
-full-screen flash. Only the X3 half of that is differential: X3 gets
-`displayGrayscaleBase(FAST_REFRESH)`, X4 and the rest get
-`displayBuffer(HALF_REFRESH)` (`SleepActivity.cpp:281-291`), which is **not**
-differential — it repaints the whole panel, to the same pixels plus the moon.
-It looks like the content was left alone because the frame it repaints is the
-frame that was already there, not because the pixels were skipped. Which mode
-means what, and why never `FULL_REFRESH`: [`refresh-modes.md`](refresh-modes.md).
-This is the one path that is
-genuinely screen-agnostic: a Map screen frozen with a moon icon on it is a
-real, working sleep screen, not a designed one.
+If true, `renderLastScreenSleepScreen()` runs instead of anything above: it
+leaves whatever is already in the framebuffer -- from *any* activity, reader or
+not -- and overlays a small moon icon bottom-left. X3 gets
+`displayGrayscaleBase(FAST_REFRESH)`; X4 and the rest get a windowed refresh of
+just the moon's rectangle (`displayBufferWindow()`), which costs the same 500 ms
+a whole-panel `FAST` would and leaves every pixel outside that rectangle
+physically untouched. Which mode means what, and why never `FULL_REFRESH`:
+[`refresh-modes.md`](refresh-modes.md).
+
+The X4 path was a whole-panel `displayBuffer(HALF_REFRESH)` until 2026-08-19 --
+1,684 ms repainting the entire glass to the same pixels plus a moon. It *looked*
+differential because the frame it repainted was the frame already there, not
+because any pixel was skipped.
+
+### It did not work from the map: `MapActivity::onExit()` wiped the frame first (fixed 2026-08-19)
+
+"Leaves whatever is already in the framebuffer" is only as good as what the
+outgoing activity leaves there. `MapActivity::onExit()` ended with
+`renderer.clearScreen()` plus a whole-panel `HALF_REFRESH`, and `onExit()` runs
+in `exitActivity()` (`src/activities/ActivityManager.cpp:140`) **before**
+`SleepActivity::onEnter()`. So sleeping from the map went:
+
+1. `enterDeepSleep()` calls `activityManager.goToSleep()` (`src/main.cpp:254`)
+2. `MapActivity::onExit()` blanks the framebuffer and pushes white to the panel
+3. `renderLastScreenSleepScreen()` draws the moon onto an all-white buffer
+
+Reported off the device as "a clean white screen instead of the map". Both halves
+of quick resume were affected, not just the sleep screen: `saveSleepFrameBuffer()`
+runs *after* `goToSleep()` (`src/main.cpp:260`), so the white frame was what got
+written to `/.crosspoint/sleep_frame.bin` and restored on wake too.
+
+`MapActivity` and `BmpViewerActivity` (`:142`) are the only two activities in the
+tree that wipe the panel in `onExit()` -- which is exactly why quick resume worked
+from Home and the reader and not from the map. The fix replaces the map's wipe
+with `renderer.requestCleanNextFrame()`, a one-shot request the *arriving* screen
+spends ([`refresh-modes.md`](refresh-modes.md), "Handing the clean forward"), and
+skips even that when a quick-resume sleep is what we are exiting into:
+`enterDeepSleep()` writes that decision to `APP_STATE.showBootScreen` before
+`goToSleep()` runs, so `onExit()` reads the same bool one activity later.
+`BmpViewerActivity` still wipes; nothing has asked it not to.
+
+**Not verified on hardware yet** (2026-08-19). A hardware pass has to check: sleep
+from the map shows the map plus the moon, wake restores it, sleep from Home is
+unchanged, and no map ghost survives under the menu on a normal exit.
 
 The frame this restores from is saved/loaded around deep sleep by
 `saveSleepFrameBuffer()` / `loadSleepFrameBuffer()` (`main.cpp:203-222`).

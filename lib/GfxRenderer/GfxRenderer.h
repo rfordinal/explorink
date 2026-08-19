@@ -76,6 +76,21 @@ class GfxRenderer {
   mutable int _stripRows = 0;
   mutable bool _stripActive = false;
 
+  // One-shot "the next whole-panel frame must clear the glass" request. Set by
+  // requestCleanNextFrame(), consumed by the next displayBuffer()/Async(),
+  // which promotes a FAST to HALF. Exists so a screen that knows it is leaving
+  // a dense frame behind can hand the clean to whoever paints next, instead of
+  // spending a whole HALF refresh painting white nobody sees
+  // (docs/refresh-modes.md: "coming back from another screen ... asks for
+  // HALF_REFRESH"). Mutable because the display path is const.
+  mutable bool _cleanNextFrame = false;
+
+  // Resolves a requested refresh mode against _cleanNextFrame and spends the
+  // request. Only the whole-panel paths call it: displayBufferWindow() leaves
+  // the request standing, because a windowed differential update addresses only
+  // its rectangle and cannot clear the rest of the glass.
+  HalDisplay::RefreshMode takeCleanRefreshMode(HalDisplay::RefreshMode requested) const;
+
   // CJK UI font fallback map: primary (built-in, Latin-only) UI font id -> a
   // size-matched SD-card font id that carries CJK glyphs. When a string drawn
   // or measured with a mapped primary font contains a CJK codepoint the primary
@@ -166,6 +181,12 @@ class GfxRenderer {
   int getScreenHeight() const;
   void tapToLogical(float nx, float ny, int& outX, int& outY) const;
   void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
+  // Ask for the next whole-panel refresh to clear the glass: a FAST request is
+  // promoted to HALF once, then the request is spent. For the activity that is
+  // leaving a dense frame (the map) so the activity arriving does not paint
+  // FAST over it and keep its ghost. A windowed refresh does not spend the
+  // request -- it cannot clean the panel.
+  void requestCleanNextFrame() const { _cleanNextFrame = true; }
   // Non-blocking refresh: starts the waveform and returns so CPU work (e.g.
   // grayscale strip rendering) can overlap the panel's refresh time. The
   // framebuffer must stay untouched until waitRefreshComplete(). Falls back to

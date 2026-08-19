@@ -270,12 +270,23 @@ void SleepActivity::renderLocationSleepScreen() const {
 
 void SleepActivity::renderLastScreenSleepScreen() const {
   const auto pageHeight = renderer.getScreenHeight();
-  renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
+  const int moonY = pageHeight - MOONICON_HEIGHT;
+  renderer.drawImage(MoonIcon, 0, moonY, MOONICON_WIDTH, MOONICON_HEIGHT);
   if (gpio.deviceIsX3()) {
     // The controller still holds the displayed page, so its differential base
     // waveform can add the moon without a full-screen flash.
     renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
-  } else {
+    return;
+  }
+  // Only the moon changed, so only the moon is addressed: a windowed refresh
+  // costs the same 500 ms a whole-panel FAST does (area does not enter into the
+  // waveform, docs/refresh-modes.md) but a whole-panel HALF would cost 1,684 ms
+  // and reseed the glass -- the same picture, three times the panel time, on the
+  // way into sleep. Everything outside the rectangle keeps what is physically
+  // there, which is the whole point of this mode.
+  if (!renderer.displayBufferWindow(0, moonY, MOONICON_WIDTH, MOONICON_HEIGHT)) {
+    // Rect refused (empty or offscreen): the moon still has to appear, so fall
+    // back to the whole-panel clean this path used before.
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
 }
