@@ -369,16 +369,25 @@ And **GPIO0 is the X4's battery ADC**: `batteryAdc = 0` in the profile literal
 (`power-plan.md`, run 1). So **both** crystal pins carry live, hardware-verified DC
 analog functions.
 
-**The mechanism, corrected 2026-08-19 after review.** This section first argued that
-a crystal would "load the ladder and the buttons would not work". That is wrong: a
-quartz crystal is a DC open circuit and would not measurably disturb a DC resistor
-divider. The argument runs the other way -- the kilo-ohm ladder network on GPIO1 and
-the battery divider on GPIO0 would **kill the microwatt 32 kHz oscillation**. A
-crystal fitted there could never function as a sleep clock.
+**The mechanism, corrected twice.** This section first argued that a crystal would
+load the ladder and the buttons would stop working. Wrong: a quartz crystal is a DC
+open circuit and would not measurably disturb a DC resistor divider.
 
-So what is proven is **functional absence**, which is all the power work needs: no
-32 kHz clock is available on this board. Physical absence is neither proven nor
-relevant.
+**The argument that does not need any electronics** is stronger, and it is the one to
+rely on. `XTAL_32K_P`/`XTAL_32K_N` and the ADC are **two analog functions of the same
+two pads**. Enabling the 32 kHz oscillator takes GPIO0 and GPIO1 for the crystal, so
+the button ladder and the battery reading stop working -- whatever is or is not
+soldered on the board. **[read]** So the conclusion holds in the form the power work
+needs: **no usable 32 kHz clock exists on X4**, and buying one would cost the buttons
+and `batt_mv`.
+
+The electrical half -- that a kilo-ohm ladder network would in any case kill a
+microwatt oscillation -- is **[assumed]**: nobody has seen this board's resistor
+values. It is not load-bearing and is kept only because it explains why a fitted
+crystal would not work even if the firmware left the pads alone.
+
+So what is proven is **functional absence**, which is all the power work needs. Physical
+absence is neither proven nor relevant.
 
 **The one-pin loophole is closed too.** There is also an *external oscillator*
 mode, which needs only `XTAL_32K_P` -- GPIO0 -- and leaves GPIO1 alone

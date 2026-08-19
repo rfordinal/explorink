@@ -219,7 +219,9 @@ Both platforms can implement that:
   path, already verified end to end 2026-08-11 (`../../docs/ble-app-wake.md`).
 - **iOS**: a standing `connect()` plus Core Bluetooth **state preservation and
   restoration** -- connection requests do not time out, and the system relaunches
-  the app when the peripheral appears. **[primary]** for the mechanism existing;
+  the app when the peripheral appears. **[primary, reported]** -- the mechanism comes
+  from Apple's Core Bluetooth background guide and TN3115 as read by a research pass,
+  not opened directly here; verify before a design leans on it.
   **[open]** for its behaviour on this product, and it carries Apple-documented
   gaps (a force-quit stops it until the user reopens the app, toggling Bluetooth
   in Settings stops it, and a background wake gets only seconds of runtime).
@@ -263,13 +265,16 @@ Per iteration of `loop()` in `src/main.cpp`, on the map screen:
 
 Two things that are **not** in the way, checked rather than assumed:
 
-- **The FreeRTOS tick is 1000 Hz** (`sdkconfig.defaults:1943`), so `delay(10)` is ten
+- **The FreeRTOS tick is 1000 Hz** (the ESP-IDF/Arduino default; not overridden in
+  `platformio.ini`'s `custom_sdkconfig`, so it stays 1000 unless someone sets
+  `CONFIG_FREERTOS_HZ` there), so `delay(10)` is ten
   ticks and tickless idle has a window to sleep in. The cadence is not structurally
   hostile to light sleep.
 - **Nothing on the map screen holds a power lock.** `HalPowerManager::Lock` appears in
   exactly two places -- deep-sleep preparation (`src/main.cpp:239`) and rendering
   (`src/activities/ActivityManager.cpp:58`) -- both scoped and short. No map path pins
-  the clock for the duration.
+  the clock for the duration. Grepped across `src/`, `lib/` and `freeink-sdk/libs/`:
+  no other holder, and no raw `esp_pm_lock` use anywhere in the tree.
 
 ### The open question this design turns on
 
