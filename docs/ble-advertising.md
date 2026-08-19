@@ -187,6 +187,12 @@ but it is the one parameter an iOS client may reject the whole set over, and a
 rejected set means the phone keeps its own defaults rather than ours. Logged in
 the parent repo's `docs/BUGS.md`.
 
+**Caveat: QA1931 is in Apple's archive.** The current source is the Accessory Design
+Guidelines for Apple Devices PDF, which nobody has checked against these numbers. The
+2-6 s range and the advertising grid are quoted from the archived Q&A -- treat them as
+the right shape and verify the exact values before changing a parameter on their
+authority. **[open]**
+
 **Not measured against an iPhone.** Nobody has connected an iOS central to this
 firmware. What is above is the documented rule and the code's values, nothing more.
 

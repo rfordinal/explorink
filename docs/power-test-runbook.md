@@ -42,7 +42,9 @@ All of this is laptop work. Do it whenever a session has no device access.
   item 2 of `power-idle-sleep.md`, "How this gets guarded": inputs are parked /
   queued work / transfer active / recent input, output is the tick cadence. No
   hardware in it. Host tests configure the same way the native map preview does
-  (`README.md`, "Native map preview"):
+  (`README.md`, "Native map preview"); registration is per-test-directory via
+  `gtest_discover_tests` (e.g. `test/map_tile_path/CMakeLists.txt:14`), the top-level
+  `test/CMakeLists.txt` only calls `enable_testing()`:
 
   ```
   cmake -S test -B build/test -DCMAKE_BUILD_TYPE=Release
@@ -79,10 +81,17 @@ Experiment 3's build must contain, and nothing more:
 - [ ] Behind `-DENABLE_POWER_LAB=1`, `default` and `slim` only. Precedent:
       `ENABLE_PREVIEW_BENCH` (`src/activities/ActivityManager.cpp:221-222`,
       `platformio.ini:233`) **[repo]**.
-- [ ] A residency counter: fraction of wall time in light sleep, readable from
-      `power.csv` and over BLE. Mechanism is an implementation task -- IDF's PM
-      profiling (`CONFIG_PM_PROFILING`, `esp_pm_dump_locks()`) is the candidate
-      **[assumed]** -- verify it exists in the pinned IDF before relying on it.
+- [ ] A residency counter. **`CONFIG_PM_PROFILING`** makes `esp_pm_dump_locks()`
+      report "what time the chip spends in each power saving mode" (ESP-IDF
+      `components/esp_pm/Kconfig:37-48`; `esp_pm_dump_locks()` declared in
+      `components/esp_pm/include/esp_pm.h:197`) **[primary]**.
+      **The trap is in the same help text**: it "does incur some run-time overhead, so
+      should typically be disabled in production builds". So the residency build is not
+      the draw build, and a frozen-baseline series cannot get both numbers from one
+      binary -- take residency first as its own short bench, then the slope on a
+      profiling-free build. `CONFIG_PM_TRACE` is the alternative with no software
+      overhead: it signals idle entry and exit on GPIOs (`Kconfig:50-57`) and needs a
+      scope.
 - [ ] An evidence channel that survives light sleep: `power.csv` is mandatory;
       `stats` over BLE from the lab screen is optional (it is wired to
       `MapActivity` and `TileSyncActivity` today through `fillMapPowerStats()`,
