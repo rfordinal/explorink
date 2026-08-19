@@ -399,9 +399,24 @@ The assembled path was then **measured at 6,060 ms** (banner at t=934, live map 
 the glass at t=6994, no route). The boot is the small half of it: the map's own
 entry work dominates, which is where to look if this needs to be faster.
 
-Skipping the promoted splash takes ~1,683 ms off that, so the expectation is
-**~4.4 s** -- **not yet verified on hardware**, unlike the 6,060 ms it is measured
-against.
+Skipping the promoted splash then **measured 4,036 ms** (build
+`0.1.0-dev-map-wake-resume-9c3ba1ee`), against 5,807 ms for the same milestones on
+the build before it -- `wake into map` in the log to the live map's refresh
+completing, which is the pair both runs captured:
+
+```
+[1189] wake into map, route ""
+[3447] framebuffer ready in 2193 ms
+[5225]   Wait complete: refresh (1683 ms)     <- and nothing before it
+```
+
+**1,771 ms saved, one refresh instead of two.** Slightly more than the 1,683 ms of
+panel time predicted, because the splash also did its own framebuffer work
+(`clearScreen()`, the logo, three text draws) that no longer runs either.
+
+The splash still costs 500 ms on an ordinary map entry, unpromoted, in the same
+run (`[85383] Wait complete: refresh (499 ms)`) -- so it is skipped on the wake
+path only, which is what was intended.
 
 Not restored, and worth being explicit about since "exactly as before" is the
 obvious expectation:
@@ -435,7 +450,9 @@ cleared` line from the preceding wake, plus the operator knowing Back was held.
 Proving the decline's cause from the log alone needs the decision persisted
 somewhere the CDC gap cannot swallow.
 
-The splash skip above is **newer than that pass and unverified**.
+The splash skip was verified separately on build
+`0.1.0-dev-map-wake-resume-9c3ba1ee`: no logo frame on the wake, one refresh
+instead of two, and the 4,036 ms above.
 
 The frame this restores from is saved/loaded around deep sleep by
 `saveSleepFrameBuffer()` / `loadSleepFrameBuffer()` (`main.cpp:203-222`).
