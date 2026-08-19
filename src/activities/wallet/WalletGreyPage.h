@@ -7,6 +7,7 @@
 
 #include "WalletAsset.h"
 #include "WalletCrypto.h"
+#include "WalletGreyStatus.h"
 #include "WalletStore.h"
 
 class GfxRenderer;
@@ -34,54 +35,10 @@ class GfxRenderer;
 //     everything it has to say; the caller returns and lets the panel settle.
 namespace wallet {
 
-// Why a grey frame did not happen. Deliberately NOT wallet::Error: two of these
-// are capability answers ("this panel cannot", "there was no heap"), and the right
-// response to those is to draw the 1bpp version of the same page, not to put a
-// message on the screen. greyOutcomeToError() maps the rest onto the errors the
-// failure screen already knows how to say.
-enum class GreyOutcome : uint8_t {
-  Ok = 0,
-  NotOpen,        // render() before a successful open()
-  NoFrameBuffer,  // the framebuffer is lent out
-  NoGreySupport,  // supportsStripGrayscale() is false: X3 inverted, or another panel
-  NoScratch,      // no heap for the 8 KB plane band -- nothing was drawn
-  Missing,        // no file behind the manifest's assetId
-  BadAsset,       // magic, bit depth, type, or a header that disagrees with the manifest
-  WrongPanel,     // the page is smaller than this panel, so no window can fill it
-  Unaligned,      // a window x that is not a multiple of 8 -- a caller bug, refused
-  OutOfRange,     // the window does not fit the page
-  Locked,         // encrypted and no key held
-  ShortRead,      // a plane row ended early
-  DecryptFailed,  // CTR refused
-};
-
-const char* greyOutcomeName(GreyOutcome outcome);
-
-// True for the two outcomes that say "not here, not now" rather than "this card is
-// wrong": the caller should quietly fall back to the 1bpp page instead of replacing
-// the rider's document with an error.
-inline bool greyOutcomeIsCapability(const GreyOutcome outcome) {
-  return outcome == GreyOutcome::NoGreySupport || outcome == GreyOutcome::NoScratch;
-}
-
+// GreyOutcome, greyOutcomeName(), greyOutcomeIsCapability(), GreyTimings and the
+// status ledger live in WalletGreyStatus.h: no panel, no card, host-testable, and
+// the one place the meaning of every number CMD:WALLETGREY prints is decided.
 Error greyOutcomeToError(GreyOutcome outcome);
-
-// Per-stage cost of one grey frame, in microseconds, so the comparison against the
-// 1bpp path is a measurement and not an estimate. Card time and waveform time are
-// kept apart on purpose -- the plan predicted card time would be irrelevant next to
-// the waveform, and this is what settles it (docs/wallet-grey.md, "What grey
-// costs").
-struct GreyTimings {
-  uint32_t baseCardUs = 0;     // reading the base plane's window into the framebuffer
-  uint32_t baseDisplayUs = 0;  // the base refresh (HALF by default)
-  uint32_t planeCardUs = 0;    // reading both planes, band by band
-  uint32_t planeWriteUs = 0;   // streaming those bands to controller RAM
-  uint32_t nudgeUs = 0;        // displayGrayBuffer(): the grey waveform itself
-  uint32_t cleanupUs = 0;      // RED resync + BW resync, not optional
-  uint32_t totalUs = 0;
-  uint32_t cardBytes = 0;  // how much came off the card for this frame
-  bool rendered = false;   // false = the panel does not carry a grey frame
-};
 
 // One open GreyPlanes asset, and the whole grey sequence for one window.
 //
@@ -118,9 +75,29 @@ class GreyPageReader {
   GreyOutcome render(uint32_t x, uint32_t y, GfxRenderer& renderer, HalDisplay::RefreshMode baseMode,
                      GreyTimings& timings);
 
+  // Drop this reader's grey capture registration. **The caller must do this the
+  // moment a BW frame replaces the grey one** -- a 1bpp page, a tile grid, a
+  // failure screen -- because from then on the planes this reader would hand out
+  // do not match the glass, and CMD:SCREENSHOT_GRAY would call them exact.
+  //
+  // render() arms the registration itself on success, and re-arming is what a pan
+  // does; close() and the destructor release it. Safe to call when nothing is
+  // armed.
+  void releaseReplaySource();
+
  private:
   GreyOutcome readPlaneRows(GreyPlane plane, uint32_t xByte, uint32_t y, uint32_t rows, uint8_t* dest,
                             uint32_t destRowBytes);
+
+  // The grey capture path. GrayscaleFrame replays a *drawn* frame by re-running its
+  // draw callback; a wallet grey frame was never drawn -- the generator baked the
+  // planes and render() streamed them from the card to controller RAM. So this
+  // reader registers itself as a plane PRODUCER instead and re-reads the same
+  // window on demand, which is bit-identical by construction and costs the same
+  // 8 KB band as the panel path (docs/wallet-grey.md, "What a host can see of a
+  // grey frame").
+  static bool planeBandThunk(void* ctx, bool lsbPlane, uint8_t* rows, int yStart, int numRows);
+  bool fillPlaneBand(bool lsbPlane, uint8_t* rows, int yStart, int numRows);
 
   HalFile file_;
   PageImageSpec spec_;
@@ -128,6 +105,12 @@ class GreyPageReader {
   bool open_ = false;
   bool encrypted_ = false;
   uint8_t iv_[kAssetIvLen] = {0};
+  // The window the last successful render() streamed to the panel, so the producer
+  // above can read exactly those bytes again. Panel geometry cannot change under it.
+  uint32_t replayXByte_ = 0;
+  uint32_t replayY_ = 0;
+  uint32_t replayRowBytes_ = 0;
+  bool replayArmed_ = false;
 };
 
 // The A/B switch, and the last measured cost of each side of it.
@@ -153,15 +136,27 @@ void setBaseMode(HalDisplay::RefreshMode mode);
 const char* baseModeName();
 
 // True once after anything changed the mode, so the screen on the panel can
-// repaint itself instead of the rider having to leave and come back.
+// repaint itself instead of the rider having to leave and come back. Until it is
+// consumed AND the frame is drawn, status()'s numbers describe the frame BEFORE the
+// flip -- which is why status() publishes the pending flag too.
 bool consumeRepaintRequest();
 
-void recordGrey(const GreyTimings& timings);
+// One grey render attempt and how it ended, on every path out of
+// GreyPageReader::render(). Was recordGrey(), which stored a per-attempt bool the
+// next attempt erased; see WalletGreyStatus.h for what that cost.
+void noteGreyAttempt(GreyOutcome outcome, const GreyTimings& timings);
+// A BW frame went to the panel: the 1bpp page, a tile grid, a failure screen. The
+// panel no longer carries grey, and the count of grey frames stands.
+void noteBwFrame();
+
+// Everything CMD:WALLETGREY status reports about grey frames. Read it, do not
+// duplicate its fields.
+const GreyLedger& status();
+
 // The 1bpp comparison point, measured on the same page in the same session: the
 // card read and the refresh that follows it.
 void recordOneBpp(uint32_t cardUs, uint32_t refreshUs, uint32_t cardBytes);
 
-const GreyTimings& lastGrey();
 uint32_t lastOneBppCardUs();
 uint32_t lastOneBppRefreshUs();
 uint32_t lastOneBppCardBytes();

@@ -10,6 +10,7 @@
 #include "WalletAsset.h"
 #include "WalletCrypto.h"
 #include "WalletCryptoHost.h"
+#include "WalletGreyStatus.h"
 #include "WalletGreySynth.h"
 #include "WalletManifestParser.h"
 #include "WalletSha256.h"
@@ -2453,5 +2454,308 @@ TEST(WalletGreyManifest, ACardWithNoGreyAssetsReadsExactlyAsItDidBefore) {
     EXPECT_TRUE(parser.lookup().itemFound);
     EXPECT_FALSE(parser.lookup().greyPlanes.present) << levelName(level);
     EXPECT_FALSE(parser.lookup().greyImage.present) << levelName(level);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The grey status ledger. Two defects found on hardware 2026-08-18 live here:
+// `grey_rendered` said 0 while the panel carried a 2,604 ms grey frame, and
+// CMD:SCREENSHOT_GRAY could not capture a grey wallet page at all
+// (docs/wallet-grey.md, "What a host can see of a grey frame").
+//
+// Every test below fails under the old semantics -- one per-attempt bool, taken
+// from the timings struct that render() zeroes on entry.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+wallet::GreyTimings aFrameCosting(const uint32_t totalUs) {
+  wallet::GreyTimings t;
+  t.baseCardUs = 283'000;
+  t.baseDisplayUs = 1'684'000;
+  t.planeCardUs = 566'000;
+  t.planeWriteUs = 49'000;
+  t.nudgeUs = 144'000;
+  t.cleanupUs = 22'000;
+  t.totalUs = totalUs;
+  t.cardBytes = 144'000;
+  return t;
+}
+
+}  // namespace
+
+TEST(WalletGreyLedger, NothingHasRenderedGreyUntilAFrameFinishes) {
+  const wallet::GreyLedger ledger;
+  EXPECT_EQ(ledger.frames(), 0u);
+  EXPECT_EQ(ledger.attempts(), 0u);
+  EXPECT_FALSE(ledger.onPanel());
+  EXPECT_FALSE(ledger.repaintPending());
+  // Not "ok". Ok is the enum's zero value, and a host reading `last_outcome=ok`
+  // before anything was tried would believe a frame happened.
+  EXPECT_STREQ(ledger.lastOutcomeName(), "none");
+  EXPECT_EQ(ledger.lastGrey().totalUs, 0u);
+}
+
+TEST(WalletGreyLedger, AFinishedFrameIsCountedAndOwnsTheNumbers) {
+  wallet::GreyLedger ledger;
+  ledger.noteAttempt(wallet::GreyOutcome::Ok, aFrameCosting(2'604'000));
+  EXPECT_EQ(ledger.frames(), 1u);
+  EXPECT_EQ(ledger.attempts(), 1u);
+  EXPECT_TRUE(ledger.onPanel());
+  EXPECT_STREQ(ledger.lastOutcomeName(), "ok");
+  EXPECT_EQ(ledger.lastGrey().totalUs, 2'604'000u);
+  EXPECT_EQ(ledger.lastGrey().baseDisplayUs, 1'684'000u);
+}
+
+TEST(WalletGreyLedger, AFailedAttemptAfterAGoodFrameDoesNotUncountIt) {
+  // THE defect. The old field was the last attempt's bool, so one capability
+  // refusal -- which draws nothing and is not the card's fault -- erased every
+  // trace that grey had ever worked, and zeroed the only measurement of it.
+  wallet::GreyLedger ledger;
+  ledger.noteAttempt(wallet::GreyOutcome::Ok, aFrameCosting(2'604'000));
+  ledger.noteAttempt(wallet::GreyOutcome::NoScratch, wallet::GreyTimings{});
+
+  EXPECT_EQ(ledger.frames(), 1u) << "a grey frame that rendered stays rendered";
+  EXPECT_EQ(ledger.attempts(), 2u);
+  EXPECT_FALSE(ledger.onPanel()) << "the caller drew the 1bpp page instead";
+  EXPECT_STREQ(ledger.lastOutcomeName(), "no_scratch");
+  EXPECT_EQ(ledger.lastGrey().totalUs, 2'604'000u) << "the last real frame keeps its numbers";
+}
+
+TEST(WalletGreyLedger, ABwFrameTakesGreyOffTheGlassButNotOutOfTheCount) {
+  wallet::GreyLedger ledger;
+  ledger.noteAttempt(wallet::GreyOutcome::Ok, aFrameCosting(2'604'000));
+  ledger.noteBwFrame();
+  EXPECT_FALSE(ledger.onPanel());
+  EXPECT_EQ(ledger.frames(), 1u);
+  EXPECT_STREQ(ledger.lastOutcomeName(), "ok") << "how the last attempt ended did not change";
+  // And grey comes back without the count restarting.
+  ledger.noteAttempt(wallet::GreyOutcome::Ok, aFrameCosting(2'588'000));
+  EXPECT_TRUE(ledger.onPanel());
+  EXPECT_EQ(ledger.frames(), 2u);
+  EXPECT_EQ(ledger.lastGrey().totalUs, 2'588'000u);
+}
+
+TEST(WalletGreyLedger, AQueuedRepaintIsPendingUntilTheFrameItAsksForIsDrawn) {
+  // The other half of the defect: CMD:WALLETGREY on replies from the serial
+  // handler, and the frame it asks for is drawn in the next loop(), ~2.6 s later.
+  // A host that read the reply saw the state BEFORE its own flip and had no way to
+  // know it.
+  wallet::GreyLedger ledger;
+  ledger.requestRepaint();
+  EXPECT_TRUE(ledger.repaintPending());
+  EXPECT_EQ(ledger.frames(), 0u) << "the flip is queued; no frame exists yet";
+
+  EXPECT_TRUE(ledger.consumeRepaint()) << "the screen picks the request up";
+  EXPECT_FALSE(ledger.repaintPending());
+  EXPECT_FALSE(ledger.consumeRepaint()) << "and only once";
+
+  ledger.noteAttempt(wallet::GreyOutcome::Ok, aFrameCosting(2'604'000));
+  EXPECT_EQ(ledger.frames(), 1u);
+  EXPECT_FALSE(ledger.repaintPending());
+}
+
+TEST(WalletGreyLedger, EveryOutcomeHasItsOwnStableToken) {
+  // A host greps `last_outcome=`, so these are wire names: distinct, lower case,
+  // no spaces.
+  const wallet::GreyOutcome all[] = {wallet::GreyOutcome::Ok,
+                                     wallet::GreyOutcome::NotOpen,
+                                     wallet::GreyOutcome::NoFrameBuffer,
+                                     wallet::GreyOutcome::NoGreySupport,
+                                     wallet::GreyOutcome::NoScratch,
+                                     wallet::GreyOutcome::Missing,
+                                     wallet::GreyOutcome::BadAsset,
+                                     wallet::GreyOutcome::WrongPanel,
+                                     wallet::GreyOutcome::Unaligned,
+                                     wallet::GreyOutcome::OutOfRange,
+                                     wallet::GreyOutcome::Locked,
+                                     wallet::GreyOutcome::ShortRead,
+                                     wallet::GreyOutcome::DecryptFailed};
+  std::vector<std::string> names;
+  for (const wallet::GreyOutcome outcome : all) {
+    const std::string name = wallet::greyOutcomeName(outcome);
+    EXPECT_FALSE(name.empty());
+    EXPECT_STRNE(name.c_str(), "?") << "an outcome the switch forgot";
+    EXPECT_EQ(name.find(' '), std::string::npos) << name;
+    for (const char c : name) EXPECT_TRUE((c >= 'a' && c <= 'z') || c == '_') << name;
+    names.push_back(name);
+  }
+  EXPECT_STRNE(names.front().c_str(), "none") << "`none` means no attempt, not an outcome";
+  std::sort(names.begin(), names.end());
+  EXPECT_EQ(std::unique(names.begin(), names.end()), names.end()) << "two outcomes share a token";
+}
+
+TEST(WalletGreyLedger, OnlyTheTwoCapabilityOutcomesFallBackToTheOnebppPage) {
+  // A capability answer means "not here, not now" and the rider gets the same
+  // document in 1bpp. Everything else is a wrong card and must reach the failure
+  // screen -- silently drawing something else would hide it.
+  EXPECT_TRUE(wallet::greyOutcomeIsCapability(wallet::GreyOutcome::NoGreySupport));
+  EXPECT_TRUE(wallet::greyOutcomeIsCapability(wallet::GreyOutcome::NoScratch));
+  for (const wallet::GreyOutcome outcome :
+       {wallet::GreyOutcome::Missing, wallet::GreyOutcome::BadAsset, wallet::GreyOutcome::Locked,
+        wallet::GreyOutcome::ShortRead, wallet::GreyOutcome::DecryptFailed, wallet::GreyOutcome::OutOfRange,
+        wallet::GreyOutcome::Unaligned, wallet::GreyOutcome::WrongPanel, wallet::GreyOutcome::NotOpen,
+        wallet::GreyOutcome::NoFrameBuffer}) {
+    EXPECT_FALSE(wallet::greyOutcomeIsCapability(outcome)) << wallet::greyOutcomeName(outcome);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The grey capture path: what CMD:SCREENSHOT_GRAY sends for a wallet page.
+//
+// A wallet grey frame is never drawn -- the generator baked the planes and the
+// device streamed them from the card to controller RAM band by band, then freed
+// the scratch. So the capture path re-reads the same window through a plane
+// producer, band by band, in the same order. These tests pin the two things that
+// can silently go wrong in that: the band arithmetic (a band-relative y, or an x
+// byte scaled per band, and the picture shears) and the wire decode
+// tools/greyshot.py performs on the other end.
+//
+// What they cannot prove: that the bytes on the wire equal the bytes the
+// controller received. Only the panel can settle that -- see docs/wallet-grey.md.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The band height the device cuts a plane window into: GrayscaleFrame::STRIP_ROWS.
+// Not includable here (that header needs a panel), so the tests below run several
+// heights, including ones the panel height does not divide.
+constexpr uint32_t kDeviceBandRows = 80;
+
+// One plane of one window, assembled the way the capture path assembles it: band by
+// band, each band read at `windowY + bandStart` with the panel's own row stride.
+// `bandRows` is the band height; the last band is short when it does not divide.
+std::vector<uint8_t> captureBandsOfPlane(const std::vector<uint8_t>& payload, const wallet::PageImageSpec& spec,
+                                         const wallet::GreyPlane plane, const uint32_t windowX, const uint32_t windowY,
+                                         const uint32_t panelRowBytes, const uint32_t panelRows,
+                                         const uint32_t bandRows, const uint8_t* key = nullptr,
+                                         const uint8_t* iv = nullptr) {
+  const uint32_t planeBase = wallet::greyPlaneOffset(spec, plane);
+  std::vector<uint8_t> blob;
+  blob.reserve(static_cast<size_t>(panelRowBytes) * panelRows);
+  for (uint32_t band = 0; band < panelRows; band += bandRows) {
+    const uint32_t rows = std::min(bandRows, panelRows - band);
+    for (uint32_t r = 0; r < rows; ++r) {
+      const uint32_t payloadOffset = planeBase + (windowY + band + r) * spec.rowBytes + windowX / 8u;
+      std::vector<uint8_t> row(payload.begin() + payloadOffset, payload.begin() + payloadOffset + panelRowBytes);
+      if (key != nullptr) wallet::host::ctrXor(key, iv, payloadOffset, row.data(), row.size());
+      blob.insert(blob.end(), row.begin(), row.end());
+    }
+  }
+  return blob;
+}
+
+// The whole window in one read, which is what the panel path does for the BASE
+// plane -- one 480-row window straight into the framebuffer. The bands of the same
+// plane must come out byte for byte identical to this.
+std::vector<uint8_t> wholeWindowOfPlane(const std::vector<uint8_t>& payload, const wallet::PageImageSpec& spec,
+                                        const wallet::GreyPlane plane, const uint32_t windowX, const uint32_t windowY,
+                                        const uint32_t panelRowBytes, const uint32_t panelRows) {
+  return captureBandsOfPlane(payload, spec, plane, windowX, windowY, panelRowBytes, panelRows, panelRows);
+}
+
+// tools/greyshot.py's own decode, from its docstring: fb bit 1 -> white; else MSB 0
+// -> black; else LSB 0 -> light grey, LSB 1 -> dark grey. The numbering is
+// GfxRenderer's (0 black, 1 dark, 2 light, 3 white).
+uint8_t greyshotLevelAt(const uint8_t* bw, const uint8_t* lsb, const uint8_t* msb, const uint32_t x) {
+  const uint32_t index = x / 8u;
+  const uint8_t bit = static_cast<uint8_t>(7 - (x % 8));
+  const bool white = ((bw[index] >> bit) & 1) != 0;
+  if (white) return 3;
+  if (((msb[index] >> bit) & 1) == 0) return 0;
+  return ((lsb[index] >> bit) & 1) == 0 ? 2 : 1;
+}
+
+}  // namespace
+
+TEST(WalletGreyCapture, TheBandsOfAPlaneAreTheWholeWindowByteForByte) {
+  // Read as bands or read in one go, the bytes are the same bytes -- for every band
+  // height, including the ones that leave a short last band, and for a window that
+  // starts on neither an 8-pixel column boundary of the page nor a band row.
+  const wallet::host::GreyPage& page = greyPagePannable();
+  const wallet::PageImageSpec spec = greyPlanesSpec(page);
+  const uint32_t x = 8;
+  const uint32_t y = 7;
+
+  for (const wallet::GreyPlane plane : {wallet::GreyPlane::Base, wallet::GreyPlane::Lsb, wallet::GreyPlane::Msb}) {
+    const std::vector<uint8_t> whole =
+        wholeWindowOfPlane(page.planes, spec, plane, x, y, kPanelX4.rowBytes, kPanelX4.height);
+    ASSERT_EQ(whole.size(), static_cast<size_t>(kPanelX4.rowBytes) * kPanelX4.height);
+    for (const uint32_t bandRows : {kDeviceBandRows, 1u, 7u, 70u, 100u, 479u, 480u, 500u}) {
+      const std::vector<uint8_t> banded =
+          captureBandsOfPlane(page.planes, spec, plane, x, y, kPanelX4.rowBytes, kPanelX4.height, bandRows);
+      EXPECT_EQ(banded, whole) << "plane " << static_cast<int>(plane) << " in bands of " << bandRows;
+    }
+  }
+}
+
+TEST(WalletGreyCapture, TheThreeBlobsDecodeToThePagesOwnLevels) {
+  // The end-to-end claim of the channel: the payload a host receives -- BW frame,
+  // then LSB, then MSB, each 48,000 bytes in physical row order -- decodes through
+  // greyshot.py's rule to exactly the levels the generator baked. The BW blob is
+  // the framebuffer, which for a grey wallet page IS the base plane's window.
+  const wallet::host::GreyPage& page = greyPagePannable();
+  const wallet::PageImageSpec spec = greyPlanesSpec(page);
+  const uint32_t x = 8;
+  const uint32_t y = 7;
+  const uint32_t rowBytes = kPanelX4.rowBytes;
+
+  const std::vector<uint8_t> bw =
+      wholeWindowOfPlane(page.planes, spec, wallet::GreyPlane::Base, x, y, rowBytes, kPanelX4.height);
+  const std::vector<uint8_t> lsb =
+      captureBandsOfPlane(page.planes, spec, wallet::GreyPlane::Lsb, x, y, rowBytes, kPanelX4.height, kDeviceBandRows);
+  const std::vector<uint8_t> msb =
+      captureBandsOfPlane(page.planes, spec, wallet::GreyPlane::Msb, x, y, rowBytes, kPanelX4.height, kDeviceBandRows);
+
+  size_t histogram[wallet::kGreyValues] = {0, 0, 0, 0};
+  for (uint32_t r = 0; r < kPanelX4.height; ++r) {
+    const size_t off = static_cast<size_t>(r) * rowBytes;
+    for (uint32_t px = 0; px < kPanelX4.width; ++px) {
+      const uint8_t got = greyshotLevelAt(&bw[off], &lsb[off], &msb[off], px);
+      const uint8_t want = page.levels[static_cast<size_t>(y + r) * page.width + x + px];
+      ASSERT_EQ(got, want) << "row " << r << " px " << px;
+      ++histogram[got];
+    }
+  }
+  // Both mid tones present, or the check above could pass on a picture with no grey
+  // in it at all.
+  EXPECT_GT(histogram[1], 0u) << "no dark grey in the window";
+  EXPECT_GT(histogram[2], 0u) << "no light grey in the window";
+}
+
+TEST(WalletGreyCapture, AnEncryptedPageCapturesBandByBandAtEachRowsOwnOffset) {
+  // The producer re-reads through the same readPlaneWindow() the panel path used, so
+  // a captured band is decrypted at the row's payload offset -- not at the band's.
+  // Get that wrong and the first band is right and every later one is noise, which
+  // is exactly the bug that would look like a bad panel.
+  const wallet::host::GreyPage& page = greyPagePannable();
+  const wallet::PageImageSpec spec = greyPlanesSpec(page);
+  uint8_t key[wallet::kWalletKeyLen];
+  for (size_t i = 0; i < sizeof(key); ++i) key[i] = static_cast<uint8_t>(0x40 + i);
+  uint8_t iv[wallet::kAssetIvLen];
+  ASSERT_TRUE(wallet::buildAssetIv(spec.assetId, /*version=*/1, iv));
+
+  std::vector<uint8_t> cipher = page.planes;
+  wallet::host::ctrXor(key, iv, 0, cipher.data(), cipher.size());
+  ASSERT_NE(cipher, page.planes);
+
+  const uint32_t x = 8;
+  const uint32_t y = 7;
+  const uint32_t rowBytes = kPanelX4.rowBytes;
+  const std::vector<uint8_t> bw = captureBandsOfPlane(cipher, spec, wallet::GreyPlane::Base, x, y, rowBytes,
+                                                      kPanelX4.height, kDeviceBandRows, key, iv);
+  const std::vector<uint8_t> lsb = captureBandsOfPlane(cipher, spec, wallet::GreyPlane::Lsb, x, y, rowBytes,
+                                                       kPanelX4.height, kDeviceBandRows, key, iv);
+  const std::vector<uint8_t> msb = captureBandsOfPlane(cipher, spec, wallet::GreyPlane::Msb, x, y, rowBytes,
+                                                       kPanelX4.height, kDeviceBandRows, key, iv);
+
+  // Every band, not just the first: the last band starts at row 400 of the window.
+  for (uint32_t r = 0; r < kPanelX4.height; ++r) {
+    const size_t off = static_cast<size_t>(r) * rowBytes;
+    for (uint32_t px = 0; px < kPanelX4.width; px += 37) {
+      const uint8_t got = greyshotLevelAt(&bw[off], &lsb[off], &msb[off], px);
+      const uint8_t want = page.levels[static_cast<size_t>(y + r) * page.width + x + px];
+      ASSERT_EQ(got, want) << "row " << r << " px " << px;
+    }
   }
 }

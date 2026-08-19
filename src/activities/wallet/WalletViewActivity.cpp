@@ -55,6 +55,16 @@ void WalletViewActivity::onEnter() {
   showCurrent(HalDisplay::HALF_REFRESH);
 }
 
+void WalletViewActivity::onExit() {
+  // Leaving means the next screen paints its own frame, so the grey one is off the
+  // glass -- the status must not keep claiming the panel carries it. The capture
+  // registration goes for the same reason plus a harder one: this reader is about to
+  // be deleted, and ActivityManager::exitActivity drops it too.
+  wallet::grey::noteBwFrame();
+  greyPage_.releaseReplaySource();
+  Activity::onExit();
+}
+
 void WalletViewActivity::loop() {
   Activity::loop();
 
@@ -318,7 +328,7 @@ bool WalletViewActivity::showGreyPage(const wallet::PageLookup& page, bool& fata
     RenderLock lock;
     outcome = greyPage_.render(winNativeX_, winNativeY_, renderer, wallet::grey::baseMode(), timings);
   }
-  wallet::grey::recordGrey(timings);
+  wallet::grey::noteGreyAttempt(outcome, timings);
   if (outcome != wallet::GreyOutcome::Ok) {
     LOG_ERR(kLogTag, "grey frame failed: %s", wallet::greyOutcomeName(outcome));
     fatal = !wallet::greyOutcomeIsCapability(outcome);
@@ -326,7 +336,7 @@ bool WalletViewActivity::showGreyPage(const wallet::PageLookup& page, bool& fata
     usingGrey_ = false;
     // Whatever the panel now holds, the cleanup ran inside render(), so the next
     // refresh is an ordinary one. The failure screen the caller draws is HALF.
-    lastFrameWasGrey_ = false;
+    noteBwFrameOnPanel();
     return false;
   }
 
@@ -345,6 +355,17 @@ bool WalletViewActivity::showGreyPage(const wallet::PageLookup& page, bool& fata
           static_cast<unsigned long>(timings.totalUs / 1000), static_cast<unsigned long>(timings.cardBytes),
           static_cast<unsigned long>(winNativeX_), static_cast<unsigned long>(winNativeY_));
   return true;
+}
+
+// Every BW frame this screen puts on the panel goes through here. Three facts move
+// together and getting them out of step is how a host ends up believing the wrong
+// picture: the refresh cadence (grey residue needs a HALF after it), the status
+// ledger's "the glass carries grey" flag, and the capture registration -- whose
+// planes describe the grey frame this BW frame just replaced.
+void WalletViewActivity::noteBwFrameOnPanel() {
+  lastFrameWasGrey_ = false;
+  wallet::grey::noteBwFrame();
+  greyPage_.releaseReplaySource();
 }
 
 void WalletViewActivity::logOneBppCost(const uint32_t cardUs, const uint32_t refreshUs, const uint32_t cardBytes) {
@@ -447,7 +468,7 @@ void WalletViewActivity::showCurrent(const HalDisplay::RefreshMode mode) {
       drawFailure(HalDisplay::HALF_REFRESH);
       return;
     }
-    lastFrameWasGrey_ = false;
+    noteBwFrameOnPanel();
     // The comparison point the grey numbers are read against, measured on the same
     // page in the same session rather than quoted from a doc.
     logOneBppCost(cardUs, refreshUs,
@@ -496,7 +517,7 @@ void WalletViewActivity::showCurrent(const HalDisplay::RefreshMode mode) {
     drawFailure(HalDisplay::HALF_REFRESH);
     return;
   }
-  lastFrameWasGrey_ = false;
+  noteBwFrameOnPanel();
   logOneBppCost(cardUs, refreshUs, header.rawLen);
 
   error_ = wallet::Error::None;
@@ -540,5 +561,5 @@ void WalletViewActivity::drawFailure(const HalDisplay::RefreshMode mode) {
   // A full HALF frame is also the cadence that clears grey residue, which is why
   // every failure screen here is HALF and why this is the right place to forget the
   // grey frame that was on the panel.
-  lastFrameWasGrey_ = false;
+  noteBwFrameOnPanel();
 }

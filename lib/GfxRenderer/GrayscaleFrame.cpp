@@ -52,26 +52,80 @@ void GrayPainter::centeredText(const int fontId, const int y, const char* text, 
 }
 
 namespace {
-// The last full grey frame's draw callback, so its planes can be re-rendered on
-// demand (screenshot channel) instead of shadowed in 96,000 bytes of DRAM.
-// Eight bytes of state, and a stale ctx pointer here would be a use-after-free
-// -- hence clearSource() on every activity exit.
+// What put grey on the panel, so its planes can be produced again on demand
+// (screenshot channel) instead of shadowed in 96,000 bytes of DRAM. Exactly one of
+// the two is ever set: one picture, one source.
+//
+//   lastSource       the draw callback of a rendered frame -- re-run it
+//   lastPlaneSource  a producer of pre-baked plane bands -- re-read them
+//
+// Sixteen bytes of state, and a stale ctx pointer in either would be a
+// use-after-free -- hence clearSource() on every activity exit.
 GrayDrawCallback lastSource;
+GrayPlaneSource lastPlaneSource;
 bool lastSourceExact = false;
 }  // namespace
 
-bool GrayscaleFrame::hasSource() { return lastSource.fn != nullptr; }
+void GrayscaleFrame::setPlaneSource(const GrayPlaneSource& source) {
+  lastSource = GrayDrawCallback{};
+  lastPlaneSource = source;
+  lastSourceExact = source.fn != nullptr;
+}
+
+void GrayscaleFrame::clearPlaneSource(const void* ctx) {
+  if (lastPlaneSource.fn == nullptr) return;
+  if (ctx != nullptr && lastPlaneSource.ctx != ctx) return;
+  lastPlaneSource = GrayPlaneSource{};
+  lastSourceExact = false;
+}
+
+bool GrayscaleFrame::hasSource() { return lastSource.fn != nullptr || lastPlaneSource.fn != nullptr; }
 
 bool GrayscaleFrame::sourceIsExact() { return lastSourceExact; }
 
 void GrayscaleFrame::clearSource() {
   lastSource = GrayDrawCallback{};
+  lastPlaneSource = GrayPlaneSource{};
   lastSourceExact = false;
 }
 
 bool GrayscaleFrame::replayPlanes(GfxRenderer& renderer, const GrayPlaneSink& sink) {
-  if (lastSource.fn == nullptr || sink.fn == nullptr) return false;
+  if (sink.fn == nullptr) return false;
+  if (lastPlaneSource.fn != nullptr) return replayFromPlaneSource(renderer, lastPlaneSource, sink);
+  if (lastSource.fn == nullptr) return false;
   return writePlanes(renderer, lastSource, &sink);
+}
+
+bool GrayscaleFrame::replayFromPlaneSource(GfxRenderer& renderer, const GrayPlaneSource& source,
+                                           const GrayPlaneSink& sink) {
+  const int panelRows = renderer.getDisplayHeight();
+  const int rowBytes = renderer.getDisplayWidthBytes();
+  const size_t scratchBytes = static_cast<size_t>(rowBytes) * STRIP_ROWS;
+
+  // The same 8,000 byte band the panel path uses, allocated and freed here. This is
+  // the whole reason a producer beats a shadow buffer: two planes are 96,000 bytes
+  // and this is 8,000 of them, for the duration of one screenshot.
+  auto scratch = makeUniqueNoThrow<uint8_t[]>(scratchBytes);
+  if (!scratch) {
+    LOG_ERR("GRAY", "OOM: grayscale replay scratch (%u bytes)", static_cast<unsigned>(scratchBytes));
+    return false;
+  }
+
+  // Nothing here talks to the controller, so there is nothing to wait for -- and
+  // waitRefreshComplete() must NOT be called: it can make the SDK print straight to
+  // Serial (EpdBus.cpp:220), which is exactly what corrupts a binary dump.
+  for (int plane = 0; plane < 2; ++plane) {
+    const bool lsbPlane = (plane == 0);
+    for (int y = 0; y < panelRows; y += STRIP_ROWS) {
+      const int bandRows = (panelRows - y < STRIP_ROWS) ? (panelRows - y) : STRIP_ROWS;
+      if (!source.fn(source.ctx, lsbPlane, scratch.get(), y, bandRows)) {
+        LOG_ERR("GRAY", "plane source refused band y=%d rows=%d", y, bandRows);
+        return false;
+      }
+      sink.fn(sink.ctx, lsbPlane, scratch.get(), y, bandRows);
+    }
+  }
+  return true;
 }
 
 bool GrayscaleFrame::writePlanes(GfxRenderer& renderer, const GrayDrawCallback& draw, const GrayPlaneSink* sink) {
@@ -173,8 +227,10 @@ GrayscaleFrame::Timings GrayscaleFrame::render(GfxRenderer& renderer, const Gray
   timings.cleanupMs = static_cast<uint16_t>(millis() - tGray);
 
   // Remember what drew this frame, so the screenshot channel can re-render its
-  // planes instead of the firmware shadowing them.
+  // planes instead of the firmware shadowing them. A drawn frame replaces any
+  // registered plane producer: one picture, one source.
   lastSource = draw;
+  lastPlaneSource = GrayPlaneSource{};
   lastSourceExact = true;
 
   timings.grayscale = true;

@@ -23,8 +23,8 @@ Everything below marked **verified** is read off the code. Everything marked
 > four driver calls instead of 13 callbacks, and the caller takes on the cleanup
 > `GrayscaleFrame` would otherwise handle. Layout, sequence and refresh rules:
 > [`wallet-grey.md`](wallet-grey.md). One consequence for this document:
-> `CMD:SCREENSHOT_GRAY` cannot see that grey, because there is no draw callback to
-> replay -- see "Getting grey off the device".
+> `CMD:SCREENSHOT_GRAY` has no draw callback to replay for that page, so it replays
+> a **plane producer** instead -- see "Getting grey off the device".
 
 ## The panel
 
@@ -469,10 +469,26 @@ The interesting part is where the planes come from. **Nothing shadows them.** Th
 planes are streamed to the controller band by band and the scratch is freed, so
 by the time a host asks, the only copies are in controller RAM and in the
 particles. Keeping a shadow would cost 96,000 bytes of DRAM. Instead
-`GrayscaleFrame` remembers the last full frame's **draw callback** — 8 bytes —
-and `replayPlanes()` re-renders both planes into a sink through the same banded
-loop that fed the panel (`GrayscaleFrame.cpp`). Bit-identical output, 8 KB of
-scratch, no persistent cost.
+`GrayscaleFrame` remembers **what produced** the last frame's planes — 8 bytes —
+and `replayPlanes()` produces them again into a sink through the same banded loop
+that fed the panel (`GrayscaleFrame.cpp`). Bit-identical output, 8 KB of scratch,
+no persistent cost.
+
+There are two kinds of source, and exactly one is registered at a time — one
+picture, one source:
+
+| source | registered by | replay |
+|---|---|---|
+| `GrayDrawCallback` | `GrayscaleFrame::render()` | re-runs the draw, band by band, into the sink |
+| `GrayPlaneSource` | `setPlaneSource()` | asks the producer for each band's plane bytes |
+
+The producer exists for **pre-baked** planes, which no callback can reproduce: the
+wallet's grey page reads its planes off the SD card and streams them straight to
+controller RAM, so `GreyPageReader::render()` registers itself as a producer that
+re-reads the same window on demand ([`wallet-grey.md`](wallet-grey.md), "What a
+host can see of a grey frame"). Same 8 KB band, same bytes, still no shadow. A
+producer never feeds the panel — the code that registered one already did that
+itself.
 
 Two consequences of that design, both reported in the header:
 
@@ -494,16 +510,15 @@ Host side, in the parent repo: `tools/greyshot.py` grabs and decodes to a 4-leve
 PGM and prints the per-level pixel counts; `tools/test_greyshot.py` round-trips
 the decoder against synthetic planes with no device attached.
 
-**What it can and cannot see.** The replay re-renders the last `GrayscaleFrame`
-callback, so it only ever shows grey that went through *this* layer. The wallet's
-grey does not: its planes are baked on the laptop and streamed from the card, with
-no callback anywhere, so a grey wallet page answers `planeBytes == 0` and the
-record of it is a photograph ([`wallet-grey.md`](wallet-grey.md)). The sleep
-screen and the reader's images draw their planes themselves and register nothing,
-so on a stock build -- bench off, nothing else using the layer -- the command
-answers `planeBytes == 0` and the dump is 1-bit. That is honest, not broken. It
-becomes useful the moment anything renders through `GrayscaleFrame`: the bench
-today, a still overlay later, or those two paths if they are ever moved onto it.
+**What it can and cannot see.** The replay only ever shows grey that **registered
+a source** — a frame rendered through `GrayscaleFrame::render()`, or a path that
+called `setPlaneSource()`. Two paths do, as of 2026-08-19: the grey bench, and the
+wallet's grey page (a producer, since 2026-08-19; before that a grey wallet page
+answered `planeBytes == 0` and only a photograph recorded it). The sleep screen and
+the reader's images drive the planes themselves and register nothing, so a grey
+frame from either still answers `planeBytes == 0` and the dump is 1-bit. That is
+honest, not broken — and the fix for each is one `setPlaneSource()` call by
+whatever knows how to produce its bands again.
 
 A photograph is still worth taking. The dump proves what the firmware *asked*
 for; only the panel shows whether dark grey and light grey are actually far
