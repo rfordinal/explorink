@@ -204,8 +204,8 @@ void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
 
-void ActivityManager::goToMap(const char* routePath) {
-  replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput, routePath));
+void ActivityManager::goToMap(const char* routePath, bool resumedFromSleep) {
+  replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput, routePath, resumedFromSleep));
 }
 
 void ActivityManager::goToRouteSelect() {
@@ -303,6 +303,15 @@ bool ActivityManager::isReaderActivity() const {
   return std::any_of(stackActivities.begin(), stackActivities.end(),
                      [](const auto& activity) { return activity->isReaderActivity(); }) ||
          (currentActivity && currentActivity->isReaderActivity());
+}
+
+bool ActivityManager::isMapActivity() const {
+  // Stack as well as current, matching isReaderActivity above: the map can have a
+  // pushed activity above it, and sleeping from there is still sleeping from the
+  // map as far as the wake is concerned.
+  return std::any_of(stackActivities.begin(), stackActivities.end(),
+                     [](const auto& activity) { return activity->isMapActivity(); }) ||
+         (currentActivity && currentActivity->isMapActivity());
 }
 
 bool ActivityManager::handleForcedRefresh() { return currentActivity && currentActivity->handleForcedRefresh(); }

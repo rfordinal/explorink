@@ -230,6 +230,82 @@ The X4 path was a whole-panel `displayBuffer(HALF_REFRESH)` until 2026-08-19 --
 differential because the frame it repainted was the frame already there, not
 because any pixel was skipped.
 
+### The marker is swapped for a small one on the way into sleep
+
+The frame the panel holds through the whole sleep is a live map frame, marker and
+all. Every live marker states a heading: Ride and Cycle draw a triangle pointing
+along it, Hike draws a watch hand off its ring (`MapActivity::drawPositionMarker`).
+On a sleeping device that is a claim about the past dressed as the present -- the
+position is frozen and the heading is whatever held before the sleep.
+
+So `MapActivity::onExit()` calls `drawSleepMarker()` when a quick-resume sleep is
+the destination (gated on `APP_STATE.showBootScreen`, the same bool the
+clean-frame request reads). It erases the live marker through the existing patch
+-- the same `writeFramebufferRegion()` erase `moveMarker()` does, and for the same
+reason: in single-buffer mode the map under a marker exists nowhere else -- and
+draws Hike's shape **minus the hand**: white halo, black ring, centre dot.
+
+Sizes are in `MapMarkerMetrics.h` (`kSleepMarker*`): ring 27 px, stroke 2, dot 9,
+halo 5, against the live marker's 54 px ring -- so exactly half of it, with Hike's
+dot:ring ratio of 1/3 kept. Deliberately not scaled by zoom rung like the live
+marker is: it is not tracking anything, so a size that moved with the rung would
+only make it harder to recognise. The stroke does not scale either -- 2 px is the
+panel's floor, and the live marker's 3 px is what this shape should not be
+mistaken for.
+
+**The sizes were judged on the glass, not calculated.** The first pass shipped ring
+18 / dot 6 / halo 3; on the panel that read as findable but too small, and the
+maintainer asked for half again, which is where 27 / 9 / 5 comes from. What makes
+it findable is the shape staying recognisable rather than its area: the white halo
+punches a hole in the map ink, and small enough, the ring stroke and the dot read
+as one blob.
+
+Cost is one windowed refresh (500 ms), over the *live* marker's box, which is
+larger than and concentric with the sleep one so a single window covers the erase
+and the new shape. With the sleep screen's moon that makes the way into sleep two
+windowed refreshes -- still less panel time than the single whole-panel `HALF` it
+was before 2026-08-19.
+
+No-op, leaving the frame alone, unless `markerPatchValid_` is set with a positive
+`markerBoxDrawn_` and the screen is not in Observe. That flag is the one that
+means "a marker is on the panel at `markerDrawnX_/Y_` and this patch erases it" --
+it is set right after the marker is painted, and the two marker-less frames
+(`renderWaiting()`, `renderLoadingTiles()`) clear it. Observe is excluded because
+`renderViewport()` sets the patch there but deliberately draws no marker: its
+anchor is a pan target the rider chose, and a marker glyph on it would claim to be
+a fix. **Read off `MapActivity.cpp:4590-4592`, not tested.** Nobody has slept the
+device from Observe and looked. What would settle it: enter Observe, pan away from
+the fix, sleep, and check no marker appears on the pan target.
+
+**The first version guarded on `viewportDrawn_` instead, and it never fired.** That
+flag means "a live viewport a fix can move a marker inside", not "there is a map on
+the panel": `renderViewport()` sets it to `!showingPersistedFix_`, so a frame drawn
+from the persisted fix -- which is every map session with no phone connected --
+leaves it false. Cost a hardware pass to find, and the log said it outright:
+`sleep marker skipped (viewport=0 patch=1)` with a perfectly good map and marker on
+the glass.
+
+**Verified on the X4 2026-08-19**, build `0.1.0-dev-map-wake-resume-de74b73a`. The
+log shows it running rather than skipping, and the two windowed refreshes it
+predicted:
+
+```
+[45604] [DBG] [ACT] Exiting activity: Map
+[46105]   Wait complete: refresh (500 ms)     <- the sleep marker's window
+[46132] [DBG] [ACT] Entering activity: Sleep
+[46632]   Wait complete: refresh (499 ms)     <- the moon's window
+```
+
+1,000 ms for the way into sleep, against the single whole-panel `HALF` of 1,684 ms
+it was before. The maintainer confirmed the marker is findable on a real frame,
+which is what drove the resize above.
+
+The resize to 27 / 9 / 5 was then flashed (`51828f22`) and the maintainer confirmed
+it on the glass. **Eye only, no log capture of that pass** -- the confirmation is
+that it reads well, not that any number was measured. The new constants are in the
+flashed binary: `drawSleepMarker()`'s immediates in `firmware.elf` carry 27, 13,
+18, 36, 9, 4 and 2, and none of the old set's 24.
+
 ### It did not work from the map: `MapActivity::onExit()` wiped the frame first (fixed 2026-08-19)
 
 "Leaves whatever is already in the framebuffer" is only as good as what the
@@ -271,7 +347,7 @@ One windowed `FAST` on each, where the pre-fix build logged a `HALF` (the map's
 wipe) plus a `HALF` (the sleep screen). The maintainer confirmed the panel shows
 **the map** with the moon, not white, which is the reported bug closed.
 
-### The restored frame is on the glass for about 150 ms, and nobody sees it
+### The restored frame is on the glass for about 150 ms (derived), and nobody sees it
 
 The wake half works and is invisible. Two wakes in the same run, identical:
 
@@ -282,8 +358,11 @@ The wake half works and is invisible. Two wakes in the same run, identical:
 ```
 
 So the map is alone on the panel for roughly 150 ms before Home starts painting
-over it. Asked to watch for it, the maintainer saw Home, not the map -- which is
-what that number predicts on e-ink, and is **not** evidence the restore failed.
+over it. **Derived, not measured**: the restore's `HALF` completes at t=2834 and
+Home's completes at t=3485 taking 500 ms, so its waveform began around 2985.
+Nothing timed the gap directly. Asked to watch for it, the maintainer saw Home, not
+the map -- which is what that number predicts on e-ink, and is **not** evidence the
+restore failed.
 The log settles that instead: `loadSleepFrameBuffer()` returning false routes to
 `goToBoot()` (`src/main.cpp`), which would log `Entering activity: Boot`. The run
 has zero of those, so the frame loaded and painted both times.
@@ -293,15 +372,173 @@ the map, the whole sleep-frame save/load round trip restores an image nobody can
 perceive.** That is upstream quick resume's design, not a regression from this
 change, but it is the reason the routing half is worth building -- see below.
 
-### Open: wake returns to Home, not to the map
+### Wake back into the map
 
-`APP_STATE.lastSleepFromReader` is the only "what was the app doing" signal the
-boot routing has, and `MapActivity` does not set it, so a wake from the map routes
-to `goHome()` like any other. Returning into the map needs a `lastSleepActivity`
-plus the route path persisted in `CrossPointState` (`routePath_` is a bare member
-of `MapActivity` today, `MapActivity.h:682`, and does not survive the sleep).
-Boot-to-first-map-frame time is unmeasured; the 1,683 ms restore above is the
-frame paint alone, not the boot before it.
+A wake from the map used to route to `goHome()` like any other, because
+`APP_STATE.lastSleepFromReader` was the only "what was the app doing" signal the
+boot routing had and `MapActivity` does not set it. Three pieces of state close
+that, all in `CrossPointState` (`/.crosspoint/state.json`, which survives power
+loss -- RTC memory does not):
+
+| field | written by | read by |
+|---|---|---|
+| `lastSleepActivity` | `enterDeepSleep()`, from `activityManager.isMapActivity()` | the boot routing |
+| `lastSleepRoutePath` | `MapActivity::onEnter()` | the boot routing, only when `lastSleepActivity` says Map |
+| `mapActivityLoadCount` | the boot routing, before entering | cleared by `MapActivity::loop()` |
+
+`isMapActivity()` is a virtual on `Activity` (`Activity.h`, default false) overridden
+in `MapActivity`, walked over the stack by `ActivityManager::isMapActivity()` --
+the same shape as `isReaderActivity()`. It is not a comparison against the
+activity's `name`: that string is a log label, and routing a boot on a log label
+breaks silently the day the label moves.
+
+`enterDeepSleep()` reads it *before* `goToSleep()` tears the activity down, for the
+same reason `lastSleepFromReader` is read there: afterwards there is nothing left
+to ask.
+
+The route needs its own field because `MapActivity::routePath_` is a bare member
+that dies with the activity, and the picker is a separate screen -- without it a
+wake would land in the map with the route silently gone. It is only ever read when
+`lastSleepActivity` says Map, so a stale value cannot resurrect a route on its own.
+
+#### Two ways out, because a map that cannot start must not trap the device
+
+`mapActivityLoadCount` is the same contract `readerActivityLoadCount` has
+(`main.cpp`, `EpubReaderActivity.cpp:226`): counted up before entering, cleared
+once the activity is demonstrably alive. Nonzero at boot declines the resume and
+lands on Home. Without it, firmware that cannot get through
+`MapActivity::onEnter()` fails again on every wake and there is no way back to a
+usable screen -- a panic reboots into the crash report, but a **hang** does not.
+
+It is cleared on `MapActivity`'s first `loop()` tick rather than at the end of
+`onEnter()`: reaching a `loop()` tick proves `onEnter()` returned, which a hang
+inside the first render would not. The write is value-checked, so it costs one SD
+write per wake and nothing on an ordinary map entry.
+
+The second way out is a held **Back** at boot, which the reader resume already
+had.
+
+#### Two intermediate frames are skipped on this path, for the same reason
+
+E-ink holds the sleep screen -- the map with its moon -- for the whole boot,
+because nothing repaints the panel until the live map is ready. That is better
+feedback than any "waking up" graphic, and it is free. So both frames that would
+otherwise cover it are skipped:
+
+**Inferred, not observed.** It follows from e-ink bistability and from nothing
+repainting the panel before the map frame, and no pass reported a blank panel
+during a wake -- but nobody was asked to watch for one, and this conclusion is what
+the whole justification for skipping two frames rests on. What would settle it:
+watch the panel through a wake and say whether the map with its moon is visible the
+whole ~4 s.
+
+**The quick-resume restore paint** (`main.cpp`). Normally the wake loads the saved
+frame, adds a loading icon and spends a whole-panel `HALF` (1,684 ms) showing it.
+On the way into the map that frame lives a few seconds before `MapActivity`'s own
+entry `HALF` (`pendingEntryCleanRefresh_`) rewrites every one of its pixels.
+`loadSleepFrameBuffer()` still runs, for its *other* job -- deleting
+`sleep_frame.bin`, which a later unrelated quick resume would otherwise restore.
+
+**The "reading tiles" splash** (`MapActivity::renderLoadingTiles()`, skipped via the
+`resumedFromSleep` constructor flag that `goToMap()` passes). Its own comment
+justifies it as feedback for "the only viewport reset with no feedback of any kind
+in front of it" -- a premise that is false here. And it is not cheap on this path:
+it asks `FAST_REFRESH` (`MapActivity.cpp`), but the driver promotes the first paint
+after a wake (`_needsInitialFull`, `Ssd1677Driver.cpp:364-373`), so the request
+becomes a whole-panel `HALF`.
+
+**Measured on the X4 2026-08-19**, one wake with no route:
+
+```
+[934]  Starting TrailInk version 0.1.0-dev-map-wake-resume-5a40cc85
+[1187] wake into map, route ""
+[2984]   Wait complete: refresh (1683 ms)     <- renderLoadingTiles(), promoted
+[5194] framebuffer ready in 2166 ms
+[6994]   Wait complete: refresh (1683 ms)     <- the live map
+```
+
+1,683 ms for a picture with a ~2.2 s lifetime. The same frame on an ordinary map
+entry cost 500 ms in the same run (`RouteSelect -> Map`: 500 ms then 1,683 ms),
+which is what makes the promotion the cause rather than the frame itself.
+
+The route path never paid this: with a route, `onEnter()` calls
+`renderRouteOverview()` instead and there is no splash. Measured in the same run,
+one `HALF` (1,684 ms) and no second one.
+
+The flag is passed in rather than inferred from `APP_STATE.mapActivityLoadCount`,
+which is nonzero for a slightly different reason and stops being nonzero at a
+different moment.
+
+#### What it costs, and what "resume" does not include
+
+**Measured on the X4 2026-08-19**, off the run that verified the map-exit fix, so
+these are the parts rather than the assembled path:
+
+| stage | time | where it goes |
+|---|---|---|
+| reset to first paint ready | ~1,150 ms | derived: the restore's `HALF` completes at t=2834 and takes 1,683 ms |
+| `MapActivity::onEnter()` | 5,019 ms | logged as `New max loop duration` |
+| ... of which framebuffer | 2,530 ms | `framebuffer ready in 2530 ms`, 1,311 ms of it reading the card |
+| ... of which panel | 1,683 ms | the entry `HALF` |
+
+The assembled path was then **measured at 6,060 ms** (banner at t=934, live map on
+the glass at t=6994, no route). The boot is the small half of it: the map's own
+entry work dominates, which is where to look if this needs to be faster.
+
+Skipping the promoted splash then **measured 4,036 ms** (build
+`0.1.0-dev-map-wake-resume-9c3ba1ee`), against 5,807 ms for the same milestones on
+the build before it -- `wake into map` in the log to the live map's refresh
+completing, which is the pair both runs captured:
+
+```
+[1189] wake into map, route ""
+[3447] framebuffer ready in 2193 ms
+[5225]   Wait complete: refresh (1683 ms)     <- and nothing before it
+```
+
+**1,771 ms saved, one refresh instead of two.** Slightly more than the 1,683 ms of
+panel time predicted, because the splash also did its own framebuffer work
+(`clearScreen()`, the logo, three text draws) that no longer runs either.
+
+The splash still costs 500 ms on an ordinary map entry, unpromoted, in the same
+run (`[85383] Wait complete: refresh (499 ms)`) -- so it is skipped on the wake
+path only, which is what was intended.
+
+Not restored, and worth being explicit about since "exactly as before" is the
+obvious expectation:
+
+- **`screenMode_` resets to `Follow`** (`MapActivity.cpp`, `onEnter()`). Falling
+  asleep with the menu or observation mode open wakes into Follow. A deliberate
+  choice, not an oversight.
+- **The BLE link.** The server restarts in ~60 ms (measured, `BlePositionServer.begin()
+  returned` at t=537473 against entry at 537413) but the phone has to reconnect, and
+  nothing on the device can make it.
+- Zoom, ride mode, marker step and the last fix were already persisted in
+  `CrossPointSettings` before this change (`mapZoomStep[]`, `mapMode`,
+  `mapMarkerStep[]`, `mapHasLastFix`), so those do come back as they were.
+
+**Verified on the X4 2026-08-19**, build `0.1.0-dev-map-wake-resume-5a40cc85`, via
+`tools/quick_resume_gate.py` in the parent repo:
+
+- sleep from the map wakes into the map: `wake into map, route ""` then
+  `Entering activity: Map`, and the guard round-trips (`wake-into-map guard
+  cleared` at t=7128)
+- the route comes back: `wake into map, route "/trailink/trips/baba-serp.tir"` then
+  `route "Baba serpentina 503" loaded: 122 points`
+- a held Back lands on Home, and sleeping from Home is unaffected
+
+One gap worth naming: the **`wake into map declined` line was not captured** for
+the held-Back wake. It is logged in the first ~1.2 s, exactly the window USB CDC
+re-enumeration eats -- only 2 of 5 boots in that run captured their banner at all.
+So the log shows the decline happened and cannot show *why*; a stuck
+`mapActivityLoadCount` would look identical. What rules that out is the `guard
+cleared` line from the preceding wake, plus the operator knowing Back was held.
+Proving the decline's cause from the log alone needs the decision persisted
+somewhere the CDC gap cannot swallow.
+
+The splash skip was verified separately on build
+`0.1.0-dev-map-wake-resume-9c3ba1ee`: no logo frame on the wake, one refresh
+instead of two, and the 4,036 ms above.
 
 The frame this restores from is saved/loaded around deep sleep by
 `saveSleepFrameBuffer()` / `loadSleepFrameBuffer()` (`main.cpp:203-222`).

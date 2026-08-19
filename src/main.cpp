@@ -238,6 +238,10 @@ static bool loadSleepFrameBuffer() {
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  // Read from the live activity, before goToSleep() tears it down, for the same
+  // reason lastSleepFromReader is: afterwards there is nothing left to ask.
+  APP_STATE.lastSleepActivity =
+      activityManager.isMapActivity() ? CrossPointState::SLEEP_ACTIVITY_MAP : CrossPointState::SLEEP_ACTIVITY_OTHER;
 
   const bool isQuickResumeSleep =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
@@ -430,6 +434,20 @@ void setup() {
                                                         : BootResume::Splash;
   bool allowFastInitialReaderRefresh = false;
 
+  // Resume straight back into the map when that is where the sleep came from. Held
+  // off by a held Back button (the same escape hatch the reader resume has) and by
+  // the load-count guard, so firmware that cannot get through MapActivity::onEnter
+  // cannot trap the device in a wake-crash-wake loop.
+  const bool resumeIntoMap =
+      resume == BootResume::QuickResume && APP_STATE.lastSleepActivity == CrossPointState::SLEEP_ACTIVITY_MAP &&
+      APP_STATE.mapActivityLoadCount == 0 && !mappedInputManager.isPressed(MappedInputManager::Button::Back);
+  if (resume == BootResume::QuickResume && !resumeIntoMap &&
+      APP_STATE.lastSleepActivity == CrossPointState::SLEEP_ACTIVITY_MAP) {
+    LOG_INF("MAIN", "wake into map declined (loadCount=%u, back=%d)",
+            static_cast<unsigned>(APP_STATE.mapActivityLoadCount),
+            static_cast<int>(mappedInputManager.isPressed(MappedInputManager::Button::Back)));
+  }
+
   setupDisplayAndFonts(resume != BootResume::Splash);
 
   switch (resume) {
@@ -443,7 +461,17 @@ void setup() {
       // us in a quick-resume-with-no-frame loop on the next boot.
       APP_STATE.showBootScreen = true;
       APP_STATE.saveToFile();
-      if (loadSleepFrameBuffer()) {
+      if (resumeIntoMap) {
+        // No paint here. MapActivity's entry frame is a whole-panel HALF
+        // (pendingEntryCleanRefresh_) that rewrites every pixel this would have
+        // drawn, so painting first would spend 1,684 ms on a frame with a lifetime
+        // of a few seconds -- and the panel is not blank meanwhile: e-ink holds the
+        // sleep screen, i.e. the map with its moon, until the live map lands on it.
+        // loadSleepFrameBuffer() still runs, for its other job: it removes
+        // sleep_frame.bin, and a file left behind would be restored by some later,
+        // unrelated quick resume.
+        (void)loadSleepFrameBuffer();
+      } else if (loadSleepFrameBuffer()) {
         const bool useDifferentialRefresh = gpio.deviceIsX3();
         if (useDifferentialRefresh) {
           // begin() clears the X3 controller RAM, so restore the saved frame as
@@ -483,6 +511,17 @@ void setup() {
     // through to the sleep-wake "resume reader" logic, which fires on stale
     // openEpubPath + lastSleepFromReader from a prior session.
     activityManager.goHome();
+  } else if (resumeIntoMap) {
+    // Counted up before entering, cleared by MapActivity's first loop() tick. A
+    // wake that never reaches that tick leaves the count standing, and the next
+    // wake declines and lands on Home -- the same contract readerActivityLoadCount
+    // has below.
+    APP_STATE.mapActivityLoadCount++;
+    APP_STATE.saveToFile();
+    const auto& routePath = APP_STATE.lastSleepRoutePath;
+    LOG_INF("MAIN", "wake into map, route \"%s\"", routePath.c_str());
+    activityManager.goToMap(routePath.empty() ? nullptr : routePath.c_str(),
+                            /*resumedFromSleep=*/true);
   } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
              mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
     // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity

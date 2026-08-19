@@ -29,6 +29,9 @@ void CrossPointState::toJson(JsonDocument& doc) const {
   doc["readerActivityLoadCount"] = readerActivityLoadCount;
   doc["lastSleepFromReader"] = lastSleepFromReader;
   doc["showBootScreen"] = showBootScreen;
+  doc["lastSleepActivity"] = lastSleepActivity;
+  doc["lastSleepRoutePath"] = lastSleepRoutePath;
+  doc["mapActivityLoadCount"] = mapActivityLoadCount;
 }
 
 bool CrossPointState::fromJson(JsonVariantConst doc) {
@@ -51,5 +54,10 @@ bool CrossPointState::fromJson(JsonVariantConst doc) {
   readerActivityLoadCount = doc["readerActivityLoadCount"] | static_cast<uint8_t>(0);
   lastSleepFromReader = doc["lastSleepFromReader"] | false;
   showBootScreen = doc["showBootScreen"] | true;
+  // Defaults chosen so a state file written by an older build (no such keys)
+  // reads as "did not sleep from the map", i.e. the pre-existing behaviour.
+  lastSleepActivity = doc["lastSleepActivity"] | static_cast<uint8_t>(SLEEP_ACTIVITY_OTHER);
+  lastSleepRoutePath = doc["lastSleepRoutePath"] | "";
+  mapActivityLoadCount = doc["mapActivityLoadCount"] | static_cast<uint8_t>(0);
   return true;
 }

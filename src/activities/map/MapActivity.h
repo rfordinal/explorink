@@ -145,7 +145,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // RouteSelectActivity passes what the rider picked; every other caller --
   // `CMD:GOTO_MAP` over serial, the OOM fallbacks -- passes nothing and gets the
   // map exactly as it was before routes existed.
-  MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath = nullptr);
+  MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath = nullptr,
+              bool resumedFromSleep = false);
+
+  bool isMapActivity() const override { return true; }
 
   void onEnter() override;
   void onExit() override;
@@ -219,6 +222,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // False when the read did not fit or the box is off-panel, which is what
   // forces the next fix to re-anchor instead of leaving a marker behind.
   bool saveMarkerPatch(int cx, int cy);
+  // Swaps the live per-mode marker for the small ring-and-dot of
+  // MapMarkerMetrics.h's kSleepMarker* on the way into a quick-resume sleep, and
+  // refreshes just that box. Called from onExit(), where the patch and the
+  // renderer are both still alive and the frame about to be handed to
+  // SleepActivity is the frame that will sit on the glass for the whole sleep.
+  // No-op unless there is a marker on the panel and a valid patch to erase it
+  // with -- the map under a marker exists nowhere else in single-buffer mode.
+  void drawSleepMarker();
   // headingStep is always 0-15 (MapHeading's domain) -- callers do any
   // channel-specific conversion before calling this, so the projection and
   // the debug readout only ever see one heading representation.
@@ -680,6 +691,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // pointer: the activity that chose it is deleted the moment this one is
   // constructed (main.cpp's exitActivity).
   char routePath_[MapRouteSource::kMaxPathLen] = {};
+  // Entered by the wake-into-map routing rather than by a person choosing Map.
+  // Only difference it makes: the "reading tiles" splash is skipped, see onEnter().
+  // Passed in rather than inferred from APP_STATE.mapActivityLoadCount, which is
+  // nonzero for a slightly different reason and stops being nonzero at a different
+  // moment.
+  bool resumedFromSleep_ = false;
   // True while the panel holds the route overview rather than a follow frame.
   // Fixes are still recorded in that state but do not redraw -- see
   // renderRouteOverview().

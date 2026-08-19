@@ -1711,8 +1711,9 @@ void MapActivity::drawDebugLine(int y, char* text) {
   renderer.drawText(UI_10_FONT_ID, kTextX, y, text, true);
 }
 
-MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath)
-    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot) {
+MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath,
+                         bool resumedFromSleep)
+    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot), resumedFromSleep_(resumedFromSleep) {
   if (routePath != nullptr && routePath[0] != '\0') {
     // Truncation would open the wrong file or none, so a path that does not fit
     // is refused outright rather than shortened.
@@ -1790,6 +1791,13 @@ void MapActivity::onEnter() {
   }
 
   publishLadders();
+
+  // Published for the wake-side routing, which has no other way to learn it:
+  // routePath_ dies with this activity and the route picker is a separate screen.
+  // Not saved here -- enterDeepSleep() writes the whole state file on the way out,
+  // and this value is only ever read when lastSleepActivity says the sleep came
+  // from the map.
+  APP_STATE.lastSleepRoutePath = routePath_;
   // The `missing` command's list, read straight out of the store rather than
   // copied in -- MISSING_TILES was loaded from the card in setup() and keeps
   // growing while this screen is open, so a copy would go stale mid-session.
@@ -1930,7 +1938,18 @@ void MapActivity::onEnter() {
     // Before the read, not after: this is the only viewport reset with no
     // feedback of any kind in front of it (a zoom or menu redraw gets the busy
     // badge through showBusy()). See renderLoadingTiles().
-    renderLoadingTiles();
+    //
+    // Except on a wake into the map, where that premise is false and the frame is
+    // expensive. False, because e-ink is still holding the sleep screen -- the map
+    // with its moon -- for the whole boot, which says "where you were, waking up"
+    // better than a logo does. Expensive, because the driver promotes the first
+    // paint after a wake (_needsInitialFull, Ssd1677Driver.cpp), so this frame's
+    // FAST request becomes a whole-panel HALF: measured 1,683 ms on 2026-08-19
+    // against 500 ms for the same frame on an ordinary map entry, spent on a
+    // picture that lives ~2.2 s before renderViewport() replaces it.
+    if (!resumedFromSleep_) {
+      renderLoadingTiles();
+    }
     renderViewport(lastLatE7_, lastLonE7_, lastHeading_, lastDrawnSeq_);
   } else {
     renderWaiting();
@@ -1940,6 +1959,15 @@ void MapActivity::onEnter() {
 
 void MapActivity::onExit() {
   Activity::onExit();
+
+  // Before anything is torn down: on the way into a quick-resume sleep the frame
+  // on the panel right now is the frame that sits there for the whole sleep, so
+  // the live marker gets swapped for one that does not claim a heading. Gated on
+  // the same bool the clean-frame request at the end of this function reads --
+  // enterDeepSleep() writes it before goToSleep() runs (main.cpp).
+  if (!APP_STATE.showBootScreen) {
+    drawSleepMarker();
+  }
 
   // A step landed on in the last few seconds before leaving must survive.
   // This is the one save that is not debounced, because there is no next
@@ -2014,6 +2042,16 @@ void MapActivity::onExit() {
 
 void MapActivity::loop() {
   Activity::loop();
+
+  // The wake-into-map guard is spent here rather than at the end of onEnter():
+  // reaching a loop() tick proves onEnter() returned, which a hang inside the
+  // first render would not. Value-checked so this is one SD write per wake and
+  // nothing at all on an ordinary map entry (CLAUDE.md, write throttling).
+  if (APP_STATE.mapActivityLoadCount != 0) {
+    APP_STATE.mapActivityLoadCount = 0;
+    APP_STATE.saveToFile();
+    LOG_DBG(kLogTag, "wake-into-map guard cleared");
+  }
 
   // The pin confirmation goes away on its own timer, or on the first button --
   // whichever comes first. Before the popup below gets the input: a rider who
@@ -3820,6 +3858,60 @@ bool MapActivity::saveMarkerPatch(int cx, int cy) {
   int x, y, w, h;
   markerRect(cx, cy, x, y, w, h);
   return renderer.readFramebufferRegion(x, y, w, h, markerPatch_.get(), markerPatchCapacity_) != 0;
+}
+
+void MapActivity::drawSleepMarker() {
+  // Three conditions, and NOT viewportDrawn_ -- which is the wrong flag and cost
+  // a hardware pass to learn (2026-08-19, "sleep marker skipped (viewport=0
+  // patch=1)" with a perfectly good map and marker on the glass). It means "a
+  // live viewport a fix can move a marker inside": renderViewport() sets it to
+  // `!showingPersistedFix_`, so a frame drawn from the persisted fix -- what every
+  // map session shows with no phone connected -- leaves it false.
+  //
+  // markerPatchValid_ is the flag that answers the real question. It is set right
+  // after markerDrawnX_/Y_ are recorded and the marker is painted
+  // (renderViewport(), moveMarker()), so it means exactly "a marker is on the
+  // panel at markerDrawnX_/Y_ and this patch erases it". renderWaiting() and
+  // renderLoadingTiles(), the two marker-less frames, clear it.
+  //
+  // Observe is its own case: renderViewport() sets the patch but deliberately
+  // draws NO marker there, because the anchor is a pan target the rider chose and
+  // a marker glyph on it would claim to be a fix. Drawing a sleep marker on it
+  // would make exactly that claim.
+  if (!markerPatchValid_ || !markerPatch_ || markerBoxDrawn_ <= 0 || screenMode_ == MapScreenMode::Observe) {
+    LOG_DBG(kLogTag, "sleep marker skipped (patch=%d box=%d observe=%d)", (int)markerPatchValid_, (int)markerBoxDrawn_,
+            (int)(screenMode_ == MapScreenMode::Observe));
+    return;
+  }
+
+  int x, y, w, h;
+  markerRect(markerDrawnX_, markerDrawnY_, x, y, w, h);
+  // Same erase moveMarker() does, and for the same reason.
+  renderer.writeFramebufferRegion(x, y, w, h, markerPatch_.get());
+
+  const int cx = markerDrawnX_;
+  const int cy = markerDrawnY_;
+  const int haloRadius = kSleepMarkerRing / 2 + kSleepMarkerHalo;
+  renderer.fillRoundedRect(cx - haloRadius, cy - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius, Color::White);
+  const int radius = kSleepMarkerRing / 2;
+  renderer.drawRoundedRect(cx - radius, cy - radius, kSleepMarkerRing, kSleepMarkerRing, kSleepMarkerRingWidth, radius,
+                           true);
+  renderer.fillRoundedRect(cx - kSleepMarkerDot / 2, cy - kSleepMarkerDot / 2, kSleepMarkerDot, kSleepMarkerDot,
+                           kSleepMarkerDot / 2, Color::Black);
+
+  // The box refreshed is the *live* marker's, which is larger than the sleep one
+  // and concentric with it, so one window covers both the erase and the new
+  // shape. Costs 500 ms, the same as any windowed refresh whatever its area
+  // (MapMarkerMetrics.h) -- and the sleep screen's moon is a second one, so the
+  // way into sleep is two windowed refreshes rather than the whole-panel HALF it
+  // used to be.
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "sleep marker window refused at %d,%d %dx%d", x, y, w, h);
+  }
+  // The patch describes the background under a marker that is no longer there.
+  // Nothing in this activity runs again, but a stale-valid patch is not a thing
+  // to leave set.
+  markerPatchValid_ = false;
 }
 
 void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {

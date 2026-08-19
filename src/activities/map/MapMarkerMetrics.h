@@ -26,6 +26,38 @@ constexpr int kMarkerRideTipLen = 25;
 constexpr int kMarkerRideBaseHalfW = 18;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
 
+// The sleep marker: what replaces the live marker on the way into a quick-resume
+// sleep (MapActivity::drawSleepMarker). Deliberately NOT scaled by rung -- it is
+// not tracking anything any more, so a size that varies with zoom would only
+// make it harder to recognise.
+//
+// Shape is Hike's minus the heading hand: ring plus centre dot. That shape is
+// the point. It says "this is where you were" and, unlike every live marker,
+// says nothing about which way you face -- which on a sleeping device would be a
+// claim about the past dressed as the present. The white halo is what makes it
+// findable at this size: it punches a hole in the map ink underneath.
+//
+// Sizes were judged on the glass, not calculated. First pass was ring 18 / dot 6
+// / halo 3; on the panel that read as findable but too small, and the maintainer
+// asked for half again, so these are those scaled by 3/2 (2026-08-19). Ring 27 is
+// exactly half the live marker's 54, and the dot keeps Hike's dot:ring ratio of
+// 1/3.
+//
+// What makes it findable is the shape staying recognisable, not its area: the
+// white halo punches a hole in the map ink, and small enough, the ring stroke and
+// the dot read as one blob. Per CLAUDE.md a laptop PNG is the wrong medium for
+// this call, so it goes on the panel and gets looked at.
+constexpr int kSleepMarkerRing = 27;
+// Does not scale with the ring. 2 px is the panel's stroke floor
+// (markerMetricsFor() drops to it for every rung below full), and the live
+// marker's 3 px is what this shape should NOT be mistaken for.
+constexpr int kSleepMarkerRingWidth = 2;
+constexpr int kSleepMarkerDot = 9;
+// 4.5 rounded up, which also lands on the live marker's own full-scale halo
+// (kMarkerHaloMargin): the halo's job is punching a hole in the map ink, and that
+// does not get easier on a smaller marker.
+constexpr int kSleepMarkerHalo = 5;
+
 // The marker, at one rung's scale. Every length the marker draws with, so that
 // nothing reads a full-size constant directly and quietly ignores the scale.
 //

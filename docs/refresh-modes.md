@@ -54,6 +54,12 @@ A 1,684 ms whole-panel refresh painting white, which the arriving screen
 overwrote with a 500 ms `FAST` -- two refreshes, ~2,184 ms, and a white flash in
 between that the rider sees on every exit from the map.
 
+**Derived, not measured**: 1,684 + 500 from the two figures below. The pre-fix
+build was never run under the gate -- the two-refresh pattern is what the code
+says it did, and the gate's pre-fix expectation was only ever tested against a
+synthetic log. `docs/firmware-builds/2026-08-17-319a8c5f-map-entry-half-refresh.bin`
+(parent repo) predates the fix and would settle it in one map-to-Home exit.
+
 `GfxRenderer::requestCleanNextFrame()` (`GfxRenderer.h`) replaces it with a
 one-shot request. The next whole-panel `displayBuffer()` or
 `displayBufferAsync()` runs it through `takeCleanRefreshMode()`
