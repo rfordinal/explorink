@@ -1960,6 +1960,15 @@ void MapActivity::onEnter() {
 void MapActivity::onExit() {
   Activity::onExit();
 
+  // Before anything is torn down: on the way into a quick-resume sleep the frame
+  // on the panel right now is the frame that sits there for the whole sleep, so
+  // the live marker gets swapped for one that does not claim a heading. Gated on
+  // the same bool the clean-frame request at the end of this function reads --
+  // enterDeepSleep() writes it before goToSleep() runs (main.cpp).
+  if (!APP_STATE.showBootScreen) {
+    drawSleepMarker();
+  }
+
   // A step landed on in the last few seconds before leaving must survive.
   // This is the one save that is not debounced, because there is no next
   // loop() to debounce into -- and it is still guarded by the value check,
@@ -3849,6 +3858,46 @@ bool MapActivity::saveMarkerPatch(int cx, int cy) {
   int x, y, w, h;
   markerRect(cx, cy, x, y, w, h);
   return renderer.readFramebufferRegion(x, y, w, h, markerPatch_.get(), markerPatchCapacity_) != 0;
+}
+
+void MapActivity::drawSleepMarker() {
+  // Nothing to swap: no viewport on the panel (the waiting banner), or no valid
+  // patch to erase the live marker with. Leaving the live marker is the correct
+  // fallback -- drawing the small one over it would stack two markers, and the
+  // map under the live one exists nowhere but this patch.
+  if (!viewportDrawn_ || !markerPatchValid_ || !markerPatch_) {
+    LOG_DBG(kLogTag, "sleep marker skipped (viewport=%d patch=%d)", (int)viewportDrawn_, (int)markerPatchValid_);
+    return;
+  }
+
+  int x, y, w, h;
+  markerRect(markerDrawnX_, markerDrawnY_, x, y, w, h);
+  // Same erase moveMarker() does, and for the same reason.
+  renderer.writeFramebufferRegion(x, y, w, h, markerPatch_.get());
+
+  const int cx = markerDrawnX_;
+  const int cy = markerDrawnY_;
+  const int haloRadius = kSleepMarkerRing / 2 + kSleepMarkerHalo;
+  renderer.fillRoundedRect(cx - haloRadius, cy - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius, Color::White);
+  const int radius = kSleepMarkerRing / 2;
+  renderer.drawRoundedRect(cx - radius, cy - radius, kSleepMarkerRing, kSleepMarkerRing, kSleepMarkerRingWidth, radius,
+                           true);
+  renderer.fillRoundedRect(cx - kSleepMarkerDot / 2, cy - kSleepMarkerDot / 2, kSleepMarkerDot, kSleepMarkerDot,
+                           kSleepMarkerDot / 2, Color::Black);
+
+  // The box refreshed is the *live* marker's, which is larger than the sleep one
+  // and concentric with it, so one window covers both the erase and the new
+  // shape. Costs 500 ms, the same as any windowed refresh whatever its area
+  // (MapMarkerMetrics.h) -- and the sleep screen's moon is a second one, so the
+  // way into sleep is two windowed refreshes rather than the whole-panel HALF it
+  // used to be.
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "sleep marker window refused at %d,%d %dx%d", x, y, w, h);
+  }
+  // The patch describes the background under a marker that is no longer there.
+  // Nothing in this activity runs again, but a stale-valid patch is not a thing
+  // to leave set.
+  markerPatchValid_ = false;
 }
 
 void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {

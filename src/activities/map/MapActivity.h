@@ -222,6 +222,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // False when the read did not fit or the box is off-panel, which is what
   // forces the next fix to re-anchor instead of leaving a marker behind.
   bool saveMarkerPatch(int cx, int cy);
+  // Swaps the live per-mode marker for the small ring-and-dot of
+  // MapMarkerMetrics.h's kSleepMarker* on the way into a quick-resume sleep, and
+  // refreshes just that box. Called from onExit(), where the patch and the
+  // renderer are both still alive and the frame about to be handed to
+  // SleepActivity is the frame that will sit on the glass for the whole sleep.
+  // No-op unless there is a marker on the panel and a valid patch to erase it
+  // with -- the map under a marker exists nowhere else in single-buffer mode.
+  void drawSleepMarker();
   // headingStep is always 0-15 (MapHeading's domain) -- callers do any
   // channel-specific conversion before calling this, so the projection and
   // the debug readout only ever see one heading representation.

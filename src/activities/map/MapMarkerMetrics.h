@@ -26,6 +26,28 @@ constexpr int kMarkerRideTipLen = 25;
 constexpr int kMarkerRideBaseHalfW = 18;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
 
+// The sleep marker: what replaces the live marker on the way into a quick-resume
+// sleep (MapActivity::drawSleepMarker). Deliberately NOT scaled by rung -- it is
+// not tracking anything any more, so a size that varies with zoom would only
+// make it harder to recognise.
+//
+// Shape is Hike's minus the heading hand: ring plus centre dot. That shape is
+// the point. It says "this is where you were" and, unlike every live marker,
+// says nothing about which way you face -- which on a sleeping device would be a
+// claim about the past dressed as the present. The white halo is what makes it
+// findable at this size: it punches a hole in the map ink underneath.
+//
+// Sizes are a judgement call, not a measurement. Ring is 18 against the live
+// marker's 54, so a third of it, and the dot keeps Hike's dot:ring ratio (1/3).
+// Below roughly this the ring's 2 px stroke and the dot start reading as one
+// blob on this panel and the shape stops being recognisable -- which is the
+// thing that makes it findable, not its area. Judged on the glass, per
+// CLAUDE.md: a laptop PNG is the wrong medium for this call.
+constexpr int kSleepMarkerRing = 18;
+constexpr int kSleepMarkerRingWidth = 2;  // 2 px is the panel's stroke floor, see markerMetricsFor()
+constexpr int kSleepMarkerDot = 6;
+constexpr int kSleepMarkerHalo = 3;
+
 // The marker, at one rung's scale. Every length the marker draws with, so that
 // nothing reads a full-size constant directly and quietly ignores the scale.
 //

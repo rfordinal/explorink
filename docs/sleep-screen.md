@@ -230,6 +230,46 @@ The X4 path was a whole-panel `displayBuffer(HALF_REFRESH)` until 2026-08-19 --
 differential because the frame it repainted was the frame already there, not
 because any pixel was skipped.
 
+### The marker is swapped for a small one on the way into sleep
+
+The frame the panel holds through the whole sleep is a live map frame, marker and
+all. Every live marker states a heading: Ride and Cycle draw a triangle pointing
+along it, Hike draws a watch hand off its ring (`MapActivity::drawPositionMarker`).
+On a sleeping device that is a claim about the past dressed as the present -- the
+position is frozen and the heading is whatever held before the sleep.
+
+So `MapActivity::onExit()` calls `drawSleepMarker()` when a quick-resume sleep is
+the destination (gated on `APP_STATE.showBootScreen`, the same bool the
+clean-frame request reads). It erases the live marker through the existing patch
+-- the same `writeFramebufferRegion()` erase `moveMarker()` does, and for the same
+reason: in single-buffer mode the map under a marker exists nowhere else -- and
+draws Hike's shape **minus the hand**: white halo, black ring, centre dot.
+
+Sizes are in `MapMarkerMetrics.h` (`kSleepMarker*`): ring 18 px, stroke 2, dot 6,
+halo 3, against the live marker's 54 px ring. Deliberately not scaled by zoom rung
+like the live marker is -- it is not tracking anything, so a size that moved with
+the rung would only make it harder to recognise.
+
+**The sizes are a judgement call, not a measurement.** What makes it findable is
+the shape being recognisable, not its area: the white halo punches a hole in the
+map ink, and below roughly this size the 2 px ring stroke and the dot start
+reading as one blob. Judged on the glass, per CLAUDE.md -- a laptop PNG is the
+wrong medium for it.
+
+Cost is one windowed refresh (500 ms), over the *live* marker's box, which is
+larger than and concentric with the sleep one so a single window covers the erase
+and the new shape. With the sleep screen's moon that makes the way into sleep two
+windowed refreshes -- still less panel time than the single whole-panel `HALF` it
+was before 2026-08-19.
+
+No-op, leaving the live marker alone, when there is no viewport on the panel (the
+waiting banner) or no valid patch to erase with. Drawing over the live marker
+without erasing it would stack two markers.
+
+**Not verified on hardware yet** (2026-08-19). Needs a look at the glass: the
+small marker is findable on a dense frame, and no fragment of the live marker is
+left around it.
+
 ### It did not work from the map: `MapActivity::onExit()` wiped the frame first (fixed 2026-08-19)
 
 "Leaves whatever is already in the framebuffer" is only as good as what the
