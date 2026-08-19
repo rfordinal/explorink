@@ -245,16 +245,20 @@ clean-frame request reads). It erases the live marker through the existing patch
 reason: in single-buffer mode the map under a marker exists nowhere else -- and
 draws Hike's shape **minus the hand**: white halo, black ring, centre dot.
 
-Sizes are in `MapMarkerMetrics.h` (`kSleepMarker*`): ring 18 px, stroke 2, dot 6,
-halo 3, against the live marker's 54 px ring. Deliberately not scaled by zoom rung
-like the live marker is -- it is not tracking anything, so a size that moved with
-the rung would only make it harder to recognise.
+Sizes are in `MapMarkerMetrics.h` (`kSleepMarker*`): ring 27 px, stroke 2, dot 9,
+halo 5, against the live marker's 54 px ring -- so exactly half of it, with Hike's
+dot:ring ratio of 1/3 kept. Deliberately not scaled by zoom rung like the live
+marker is: it is not tracking anything, so a size that moved with the rung would
+only make it harder to recognise. The stroke does not scale either -- 2 px is the
+panel's floor, and the live marker's 3 px is what this shape should not be
+mistaken for.
 
-**The sizes are a judgement call, not a measurement.** What makes it findable is
-the shape being recognisable, not its area: the white halo punches a hole in the
-map ink, and below roughly this size the 2 px ring stroke and the dot start
-reading as one blob. Judged on the glass, per CLAUDE.md -- a laptop PNG is the
-wrong medium for it.
+**The sizes were judged on the glass, not calculated.** The first pass shipped ring
+18 / dot 6 / halo 3; on the panel that read as findable but too small, and the
+maintainer asked for half again, which is where 27 / 9 / 5 comes from. What makes
+it findable is the shape staying recognisable rather than its area: the white halo
+punches a hole in the map ink, and small enough, the ring stroke and the dot read
+as one blob.
 
 Cost is one windowed refresh (500 ms), over the *live* marker's box, which is
 larger than and concentric with the sleep one so a single window covers the erase
@@ -279,10 +283,20 @@ leaves it false. Cost a hardware pass to find, and the log said it outright:
 `sleep marker skipped (viewport=0 patch=1)` with a perfectly good map and marker on
 the glass.
 
-**The skip path is verified; the marker itself is not** (2026-08-19). The wrong
-guard was caught on hardware and the right one is a code read. Still needs a look
-at the glass: the small marker is findable on a dense frame, and no fragment of the
-live marker is left around it.
+**Verified on the X4 2026-08-19**, build `0.1.0-dev-map-wake-resume-de74b73a`. The
+log shows it running rather than skipping, and the two windowed refreshes it
+predicted:
+
+```
+[45604] [DBG] [ACT] Exiting activity: Map
+[46105]   Wait complete: refresh (500 ms)     <- the sleep marker's window
+[46132] [DBG] [ACT] Entering activity: Sleep
+[46632]   Wait complete: refresh (499 ms)     <- the moon's window
+```
+
+1,000 ms for the way into sleep, against the single whole-panel `HALF` of 1,684 ms
+it was before. The maintainer confirmed the marker is findable on a real frame,
+which is what drove the resize above. **The resize itself is not yet on hardware.**
 
 ### It did not work from the map: `MapActivity::onExit()` wiped the frame first (fixed 2026-08-19)
 
