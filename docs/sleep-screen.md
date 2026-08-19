@@ -257,9 +257,51 @@ skips even that when a quick-resume sleep is what we are exiting into:
 `goToSleep()` runs, so `onExit()` reads the same bool one activity later.
 `BmpViewerActivity` still wipes; nothing has asked it not to.
 
-**Not verified on hardware yet** (2026-08-19). A hardware pass has to check: sleep
-from the map shows the map plus the moon, wake restores it, sleep from Home is
-unchanged, and no map ghost survives under the menu on a normal exit.
+**Measured on the X4 2026-08-19**, build `0.1.0-dev-map-exit-clean-8a5851cc`,
+off the device's refresh log (`tools/quick_resume_gate.py` in the parent repo):
+
+```
+[558894] Exiting activity: Map    [558990] Entering activity: Sleep
+[559491]   Wait complete: refresh (500 ms)      <- windowed moon
+[ 14501] Exiting activity: Home   [ 14501] Entering activity: Sleep
+[ 15002]   Wait complete: refresh (500 ms)      <- same, from Home
+```
+
+One windowed `FAST` on each, where the pre-fix build logged a `HALF` (the map's
+wipe) plus a `HALF` (the sleep screen). The maintainer confirmed the panel shows
+**the map** with the moon, not white, which is the reported bug closed.
+
+### The restored frame is on the glass for about 150 ms, and nobody sees it
+
+The wake half works and is invisible. Two wakes in the same run, identical:
+
+```
+[2834]   Wait complete: refresh (1683 ms)     restored frame + loading icon
+[2878] [DBG] [ACT] Entering activity: Home
+[3485]   Wait complete: refresh (500 ms)      Home, so its waveform began ~2985
+```
+
+So the map is alone on the panel for roughly 150 ms before Home starts painting
+over it. Asked to watch for it, the maintainer saw Home, not the map -- which is
+what that number predicts on e-ink, and is **not** evidence the restore failed.
+The log settles that instead: `loadSleepFrameBuffer()` returning false routes to
+`goToBoot()` (`src/main.cpp`), which would log `Entering activity: Boot`. The run
+has zero of those, so the frame loaded and painted both times.
+
+The consequence is worth stating plainly: **without a wake path that returns to
+the map, the whole sleep-frame save/load round trip restores an image nobody can
+perceive.** That is upstream quick resume's design, not a regression from this
+change, but it is the reason the routing half is worth building -- see below.
+
+### Open: wake returns to Home, not to the map
+
+`APP_STATE.lastSleepFromReader` is the only "what was the app doing" signal the
+boot routing has, and `MapActivity` does not set it, so a wake from the map routes
+to `goHome()` like any other. Returning into the map needs a `lastSleepActivity`
+plus the route path persisted in `CrossPointState` (`routePath_` is a bare member
+of `MapActivity` today, `MapActivity.h:682`, and does not survive the sleep).
+Boot-to-first-map-frame time is unmeasured; the 1,683 ms restore above is the
+frame paint alone, not the boot before it.
 
 The frame this restores from is saved/loaded around deep sleep by
 `saveSleepFrameBuffer()` / `loadSleepFrameBuffer()` (`main.cpp:203-222`).
