@@ -10,6 +10,11 @@ Findings themselves do **not** live here. They go in
 [`power-management.md`](power-management.md), which is the topic doc. This is
 the campaign.
 
+The runnable procedures -- order of work, per-experiment steps, the pre-flash
+checklist, the instrument fallbacks and the stop conditions -- are in
+[`power-test-runbook.md`](power-test-runbook.md). This file stays the campaign and
+its methodology; the runbook is what a session follows.
+
 The parked map screen has its own design doc since 2026-08-19:
 [`power-idle-sleep.md`](power-idle-sleep.md) -- what parks the device, what wakes
 it, the power lab screen, and the experiment order. It supersedes route C below.

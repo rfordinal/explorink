@@ -420,6 +420,11 @@ validate the real thing.
 
 ## Experiments, cheapest and most decisive first
 
+Each one is written out as a followable procedure -- config lines, bench setup,
+duration, pass and fail criteria, and what makes us stop -- in
+[`power-test-runbook.md`](power-test-runbook.md). What follows is the why and the
+order.
+
 1. **The board floor, and whether deep sleep can keep the battery latch.**
    Drive GPIO13 HIGH instead of LOW before the existing hold in
    `startDeepSleep()`, arm `esp_sleep_enable_timer_wakeup()`, panel deep-slept as
