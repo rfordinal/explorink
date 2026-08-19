@@ -153,9 +153,11 @@ waiting for a fix. Not a state. The tail of route A.
 Light sleep between radio events, with the config set above. Two sub-cases, and
 the important claim is that **one mechanism covers both**:
 
-- **Link up.** The device light-sleeps between connection events. A write from
-  the phone wakes it within about one connection interval. Nothing on the device
-  has to decide anything.
+- **Link up.** The device light-sleeps between connection events. A write from the
+  phone wakes the radio within about one connection interval -- and the application
+  reacts up to one loop period later, which is what makes the parked cadence a
+  latency decision and not only a power one ("S2's missing half" below). Nothing on
+  the device has to decide anything.
 - **Link down** (rider walked away with the phone, supervision timeout dropped
   the link). The device keeps **advertising**, slowly, and light-sleeps between
   advertising events -- which is exactly what the 2.3 mA figure measures, since
@@ -231,6 +233,116 @@ now:
 2. **Apple-sanctioned intervals and connection parameters.** See
    [`ble-advertising.md`](ble-advertising.md), "What iOS expects", for where the
    current values sit and the one that is already out of range.
+
+## S2's missing half: parking our own loop
+
+The 2.3 mA figure is the floor of a firmware whose **CPU is idle**. Ours is not: the
+main loop runs at roughly 100 Hz and every tick does a little work. Turning on light
+sleep without addressing that buys a fraction of what the number promises. This
+section is that design work. **Nothing here is built or measured.**
+
+### What actually runs every tick today
+
+Per iteration of `loop()` in `src/main.cpp`, on the map screen:
+
+- **Two ADC conversions for the button ladder.** `gpio.update()` reaches
+  `InputManager::readButtonAdc()`, which `analogRead()`s both ladder pins on every
+  poll (`freeink-sdk/libs/hardware/InputManager/src/InputManager.cpp`, the
+  `XteinkAdcLadder` branch). At 100 Hz that is ~200 conversions a second, and it is
+  the largest per-tick item that is pure overhead while nobody is touching the
+  device. Already on the campaign's ideas list ("gate the ADC button ladder"),
+  unmeasured.
+- **`MapActivity::loop()`**: pin popup service, input handling, `getLatest()` for a
+  new fix, the command console poll on **both** transports, `updateHeaderStatus()`,
+  `serviceAdvertising()`, the indication slot, and the redraw/save deadline compares.
+  Individually a handful of integer compares -- the code says so and it is right --
+  but collectively they are the reason the tick exists at all.
+- **`POWER_TELEMETRY.onLoop()`** and **`PowerLog::tick()`**, the latter a no-op on
+  all but one iteration a minute, when it writes a row to the SD card.
+- Then `delay(10)`.
+
+Two things that are **not** in the way, checked rather than assumed:
+
+- **The FreeRTOS tick is 1000 Hz** (`sdkconfig.defaults:1943`), so `delay(10)` is ten
+  ticks and tickless idle has a window to sleep in. The cadence is not structurally
+  hostile to light sleep.
+- **Nothing on the map screen holds a power lock.** `HalPowerManager::Lock` appears in
+  exactly two places -- deep-sleep preparation (`src/main.cpp:239`) and rendering
+  (`src/activities/ActivityManager.cpp:58`) -- both scoped and short. No map path pins
+  the clock for the duration.
+
+### The open question this design turns on
+
+**Is 100 wakes a second fatal to residency, or merely wasteful?** Unmeasured, and it
+decides how much of the below is needed. Light-sleep entry and exit cost on C3 is not
+published for this case and we have not measured it. If overhead is a few hundred
+microseconds, a 10 ms cadence still sleeps most of the time and the win comes mostly
+from **dropping the per-tick work**, not from slowing the tick. If overhead is
+milliseconds, the cadence itself has to grow.
+
+**Measure before designing further.** Experiment 3 answers it as a side effect: the
+same bench run that proves light sleep works can report residency, and the lab
+screen's `loops` counter already exists to show the tick rate against it.
+
+### The parked policy, if the cadence does have to grow
+
+- **Loop cadence.** `delay(10)` becomes a parked value. The ceiling is set by what it
+  delays, not by power: a fix arriving over BLE is handled by the NimBLE host task
+  immediately, but **our reaction to it waits for the next tick**, so the parked
+  cadence is added to the fix-to-pixel latency. For a parked device that is fine, and
+  the first fix un-parks us anyway. Correction to an earlier claim in this file: a
+  phone write wakes the *radio* within one connection interval; it wakes *the
+  application* up to one loop period later.
+- **Gate the ADC ladder.** Poll it every Nth parked tick, or not at all. The cost is
+  input latency: the ladder is polled, never interrupt-driven, so the worst-case delay
+  between a press and it being seen is the poll period. The **power button is
+  different** -- GPIO3 is a real digital line, so it can wake light sleep directly and
+  stays the responsive way back. Whether a ladder press swings its pin far enough to
+  trigger a light-sleep level wake is **speculation**; it is a cheap thing to try and
+  would make all the buttons responsive while parked.
+- **Give every per-tick item a parked budget**, listed above so a reviewer can check a
+  diff against it. Most are already cheap; the ones with real cost are the ADC poll,
+  the two console polls and `updateHeaderStatus()`.
+- **`serviceAdvertising()` is safe to slow down**: its retry is already rate-limited
+  to `kAdvertisingRetryMs` = 1000 ms
+  (`lib/BlePositionServer/include/BlePositionServer.h:460`), so a parked cadence at or
+  under a second changes nothing about how advertising recovers.
+- **Pause `PowerLog` while parked.** A once-a-minute SD write is noise beside 24 mA
+  and a real share of a 2-3 mA floor -- it is the instrument becoming the thing that
+  stops the target being met (already `power-plan.md`, phase 4).
+
+### How this gets guarded, so the next map change cannot quietly undo it
+
+The point is not to write the rule down. It is to make the rule **fail loudly** when
+someone adds a timer to the map screen six months from now, without them having read
+this file.
+
+1. **Put the policy in the `Activity` interface, next to the two bools that already
+   live there.** `preventAutoSleep()` and `preventThrottle()` are the precedent: the
+   screen answers the question, and `main.cpp` obeys. A third member -- an idle
+   cadence, defaulting to today's behaviour -- means **a new activity author has to
+   answer it**, and a new per-tick timer in `MapActivity` has to get its budget from
+   somewhere visible. That is a structural guard rather than a documentation one, and
+   it is the most valuable item in this list.
+2. **One pure function, one host test.** The cadence decision has pure inputs --
+   parked or not, queued work, transfer active, recent user input -- so it belongs in
+   a function with no hardware in it, and a host test pins the table of expected
+   answers. That is the only guard that fires at **CI time**, before a build reaches a
+   device.
+3. **A field tripwire in `power.csv`, from columns that already exist.** `loops` is
+   logged per row today, and the parked state is going in as a new column for the lab
+   screen. The invariant is then checkable by a script over any run: **while parked,
+   `loops` per minute must stay under its budget.** A regression shows up as a 50x
+   jump in a column nobody had to remember to look at.
+4. **A runtime canary.** When parked and the accumulated loop-busy time for a minute
+   exceeds its budget, log one line naming it. Turns "somebody added a per-tick call"
+   from a silent extra milliamp into a visible warning on the next serial session.
+5. **A review question, in the doc and in a comment beside `MapActivity::loop()`**:
+   does this change add work to a parked tick? Weakest of the five, and still worth
+   having, because it is the one that catches the case at the moment it is written.
+
+Items 1 and 2 are the ones that actually guard. Items 3 and 4 catch what slips
+through. Item 5 catches what a careful author would have caught anyway.
 
 ## The power lab screen
 
@@ -334,8 +446,10 @@ validate the real thing.
    light sleep enabled. Bench it on `tools/blefakephone.py` with a **control run
    on the last known-good build**, per the 2026-08-16 rule. Watch: does the link
    hold, do the SPI panel, the ADC ladder and the SD card survive APB movement,
-   does a phone write land inside the latency budget. **Expect USB serial to die
-   when sleep engages** -- that is the feature working, not a fault; evidence has
+   does a phone write land inside the latency budget. **Also report residency** --
+   what fraction of wall time was actually spent in light sleep at the current 100 Hz
+   loop -- because that single number decides how much of "S2's missing half" has to
+   be built. **Expect USB serial to die when sleep engages** -- that is the feature working, not a fault; evidence has
    to come from `power.csv` and BLE. Refutes: any driver that breaks under DFS
    plus light sleep names the next work item and, if it is the panel, may kill S2
    as configured.
@@ -387,6 +501,13 @@ comparable to the run before it.
   **X4 Pro**, an S3 whose crystal pins are GPIO15/GPIO16 and which uses digital
   buttons -- nothing *known* is in the way there, though its RE'd profile has an
   unlocated battery ADC and those two pins are ADC2 channels.
+- **Does a 100 Hz loop destroy light-sleep residency, or only waste a little?**
+  Decides how much of the parked-loop design is needed. Light-sleep entry/exit cost on
+  C3 is unpublished for this case and unmeasured by us. Experiment 3 reports it as a
+  side effect.
+- **Can a ladder button press trigger a light-sleep GPIO level wake?** If yes, all the
+  buttons stay responsive while parked and the ADC poll can be gated hard. If no, the
+  power button is the only responsive way back. Speculation today; cheap to try.
 - **What does the internal 136 kHz RC cost as the BLE sleep clock, parked and never
   connected?** Unmeasured anywhere, needs no hardware change, and it is the only
   remaining route to a sub-milliamp floor on X4. Experiment 6.
