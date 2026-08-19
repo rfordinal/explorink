@@ -36,7 +36,8 @@ Four facts kill the obvious designs before they start.
   (`SOC_PM_SUPPORT_BT_WAKEUP` is 1, `soc_caps.h:446`) but it is a **light
   sleep** source; deep sleep powers the radio down and drops the link. **[primary]**
 - **It cannot carry a 32.768 kHz crystal either.** On C3 that crystal is fixable
-  only across GPIO0/GPIO1, and GPIO1 is the button ADC ladder
+  only across GPIO0/GPIO1; GPIO1 is the button ADC ladder and GPIO0 is the battery
+  divider
   ([`power-management.md`](power-management.md), "The X4 cannot have a 32.768 kHz
   crystal"). So the cheap sleep clock is not available and the parked floor lands
   on the main-crystal column. **[primary]**, **[repo]**
@@ -56,11 +57,20 @@ light sleep on the main crystal **2.3 mA**, light sleep on an external
 
 Two consequences for this design. **Light sleep is the whole win**: it is the
 only state that turns 12-24 mA into single milliamps while the radio still
-works. And **the crystal column is not available to the X4** -- it would be 16x,
-ten days against months, but GPIO1 is the button ladder and on C3 that is one of
-the two crystal pins (see above). So the target for this board is the **2.3 mA
-column plus the board's own floor**, and the 140 uA column is a requirement to
-put on a future board rather than an experiment to run on this one.
+works. And **the crystal column is not available to the X4** -- it would be 16x, ten
+days against months, but both crystal pins already carry analog duty (see above). So
+the target for this board is the **2.3 mA column plus the board's own floor**, and
+the 140 uA column is a requirement to put on a future board rather than an experiment
+to run on this one.
+
+Two things to keep straight about that 2.3 mA. It is a **devkit SoC** figure for an
+advertising, not-connected peripheral with an **idle CPU**, so it presumes S2 also
+parks our own 100 Hz map loop -- which is design work not done here. And it is the
+floor for a build that can hold connections; there is a third clock option
+(`RTC_SLOW`, the internal RC) that needs no crystal and no pins, is forbidden for
+connections but not for advertising, and is measured nowhere. Both caveats:
+[`power-management.md`](power-management.md), "What a C3 actually draws asleep" and
+"The X4 cannot have a 32.768 kHz crystal".
 
 Those are **SoC** numbers on a devkit. Our board's own floor sits on top, and
 nobody has priced it.
@@ -310,9 +320,9 @@ validate the real thing.
    10-100 uA means the deep states are real. Also proves timer wake fires and
    the device boots from it.
 2. ~~**The crystal question, with no instrument at all.**~~ **ANSWERED
-   2026-08-19, and it needed no experiment at all.** The X4 cannot have the
-   crystal: on C3 it is fixable only across GPIO0/GPIO1 and GPIO1 is the button
-   ADC ladder ([`power-management.md`](power-management.md), "The X4 cannot have a
+   2026-08-19, and it needed no experiment at all.** The X4 cannot have a working
+   crystal: on C3 it is fixable only across GPIO0/GPIO1, and those are the button
+   ADC ladder and the battery divider ([`power-management.md`](power-management.md), "The X4 cannot have a
    32.768 kHz crystal"). The planned boot-log test -- build with
    `CONFIG_RTC_CLK_SRC_EXT_CRYS=y` plus
    `CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y` and watch for `32.768kHz XTAL not
@@ -337,8 +347,17 @@ validate the real thing.
 5. **Boot-to-map-with-a-fix after a timer wake.** Only needed if some
    duty-cycled variant is revived. Serial timestamps from reset to first
    rendered fix.
+6. **The `RTC_SLOW` advertising-only variant** -- one config line
+   (`CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW=y`), same bench as experiment 3, parked and
+   never connected. This is the only path to a sub-milliamp parked floor left on X4,
+   because the internal RC needs no crystal and no pins. It cannot hold a connection
+   (`>500 ppm`), so a single binary cannot be both -- which is exactly why it is worth
+   knowing the number before deciding whether that trade is interesting. Refutes: if
+   it lands near 2.3 mA anyway, the crystal really was the only path and X4 stops at
+   the main-XTAL column.
 
-Order, revised 2026-08-19 once experiment 2 answered itself: **3, then 1.**
+Order, revised 2026-08-19 once experiment 2 answered itself: **3, then 1**, with
+experiment 6 riding along on 3's bench.
 Experiment 3 is the only **unconditional** one -- without light sleep there is no
 state below 80 MHz with a live radio at all -- and now that the crystal is ruled
 out it is also the *only* remaining way to move the number on this board.
@@ -363,10 +382,14 @@ comparable to the run before it.
 - **What is the board's own floor with the latch held?** Bounds everything above.
   Experiment 1.
 - ~~**Does the X4 have an external 32.768 kHz crystal?**~~ **Answered
-  2026-08-19: no, and it cannot** -- GPIO1 is the button ladder and on C3 that is
-  a crystal pin. Open on **X4 Pro**, which is an S3 with the same pins at
-  GPIO15/GPIO16 and digital buttons rather than a ladder, so nothing structural
-  is in the way there.
+  2026-08-19: no, and it cannot carry a working one** -- GPIO1 is the button ladder,
+  GPIO0 is the battery divider, and on C3 those are the two crystal pins. Open on
+  **X4 Pro**, an S3 whose crystal pins are GPIO15/GPIO16 and which uses digital
+  buttons -- nothing *known* is in the way there, though its RE'd profile has an
+  unlocated battery ADC and those two pins are ADC2 channels.
+- **What does the internal 136 kHz RC cost as the BLE sleep clock, parked and never
+  connected?** Unmeasured anywhere, needs no hardware change, and it is the only
+  remaining route to a sub-milliamp floor on X4. Experiment 6.
 - **Does anything break under DFS plus light sleep** -- SPI panel, ADC ladder,
   SD, USB CDC? Experiment 3. Expect to find at least one.
 - **What advertising address does NimBLE use here, and is it stable across sleep

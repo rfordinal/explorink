@@ -250,9 +250,13 @@ connection events and wakes for each one.
   the main crystal and **140 uA** on an external 32.768 kHz crystal
   (`power-management.md`, "What a C3 actually draws asleep") -- 16x. But the X4
   **cannot carry that crystal**: on C3 it can only be soldered across GPIO0/GPIO1,
-  and GPIO1 is the button ADC ladder (`power-management.md`, "The X4 cannot have a
-  32.768 kHz crystal"). So route B on X4 lands on the 2.3 mA column plus the
-  board's own floor, and the 140 uA column is a requirement for a future board.
+  and those two pins are the button ADC ladder and the battery divider
+  (`power-management.md`, "The X4 cannot have a 32.768 kHz crystal"). So route B on
+  X4 lands on the 2.3 mA column plus the board's own floor, and the 140 uA column is
+  a requirement for a future board. One caveat kept honest: that ceiling is for a
+  build that holds connections. The internal 136 kHz RC needs no crystal and no pins
+  and is forbidden only for the connection state, so a parked advertising-only build
+  is unpriced -- experiment 6 in `power-idle-sleep.md`.
   The internal 136 kHz RC is not an option either -- its accuracy is "a lot larger
   than 500ppm which is required in Bluetooth communication" (IDF Kconfig), i.e. it
   cannot hold a connection.
@@ -482,10 +486,10 @@ Phase 2 -- baseline the four states:
       Coarse -- redo the arithmetic from `batt_mv` once the card is read.
 - [ ] Runs for states 1, 2 and 4. State 2 (map, no phone) minus state 3 is the
       only clean way to price the radio.
-- [x] **Answer the crystal question** (2026-08-19). The X4 cannot have an
-      external 32.768 kHz crystal: on C3 it is fixable only to GPIO0/GPIO1 and
-      GPIO1 is the button ADC ladder. No flash, no meter -- decided from
-      Espressif's register header and our own driver
+- [x] **Answer the crystal question** (2026-08-19). The X4 cannot have a working
+      external 32.768 kHz crystal: on C3 it is fixable only to GPIO0/GPIO1, and
+      those carry the button ADC ladder and the battery divider. No flash, no
+      meter -- decided from Espressif's register header and our own driver
       (`power-management.md`, "The X4 cannot have a 32.768 kHz crystal").
 - [ ] Write all four voltage slopes into `power-management.md`, with the
       caveats each one carries.
@@ -520,7 +524,8 @@ Route A -- **start here**. Ordered by measured lever size, biggest first:
 Route B (only if route A lands short of 9 mA):
 
 - [x] **Crystal question settled 2026-08-19: no, and not fixable on X4.** GPIO1
-      carries the button ladder, and on C3 that is one of the two crystal pins.
+      carries the button ladder and GPIO0 the battery divider, which on C3 are
+      exactly the two crystal pins.
       The boot-log test is no longer needed; if it is ever run on another board,
       the controller prints `32.768kHz XTAL not detected, fall back to main XTAL
       as Bluetooth sleep clock` when there is none.
@@ -631,7 +636,9 @@ Phase 4 -- tune what the measurements expose:
   `power-management.md`, "The X4 cannot have a 32.768 kHz crystal".
   It was blocking from 2026-08-15 because it gates route B and sizes the prize --
   16x on the parked floor. The prize on **this** board is therefore the 2.3 mA
-  column, not 140 uA, and route B is still worth building for it: 24 mA today.
+  column, not 140 uA, and route B is still worth building for it: 24 mA today. The
+  sub-milliamp door is not fully shut, only the crystal one: the internal 136 kHz RC
+  is legal for advertising and unpriced (experiment 6).
   Cost of the answer: no flash, no meter, one read of a register header. The
   earlier plan here was to infer it from a boot log; the pin map is stronger,
   because a pin that already does something else cannot also hold a crystal.

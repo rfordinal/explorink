@@ -284,8 +284,19 @@ Three things this settles.
   (run 2, `power-plan.md`) sits on the datasheet's 16-21 mA modem-sleep active
   band plus board overhead.
 
-A devkit is not this board. Everything above is the **SoC** term; the board's own
-floor sits on top of it and is unpriced -- next section but one.
+**What that row actually measures**, because it is easy to over-read: the example is
+`bleprph`-derived, so it is a **connectable peripheral advertising and not
+connected**, at NimBLE's fast default interval, with DFS 160/80/40, tickless light
+sleep, MAC and baseband powered down, on an Espressif devkit. Vendor-typical, not a
+specified figure -- no measurement date or hardware is given.
+
+Two caveats before quoting 2.3 mA as our parked floor. A devkit is not this board:
+everything above is the **SoC** term and the board's own floor sits on top, unpriced
+(next section but one). And **the example's CPU is idle**, while ours is not: a 10 ms
+loop, roughly a hundred ladder ADC reads a second, and `preventAutoSleep()` true for
+the whole ride ("Where the power goes on the map screen"). So 2.3 mA is the floor of
+a firmware that has **also** parked its own main loop, which is design work S2 has
+not done yet.
 
 ## `CONFIG_PM_ENABLE` alone saves nothing while the radio is up
 
@@ -351,36 +362,75 @@ crystal can therefore only be soldered across **GPIO0 and GPIO1**, nowhere else.
 (`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h:687`). Those buttons
 work, on hardware, every day.
 
-So the pin is taken. A crystal across GPIO0/GPIO1 would sit on the same node as
-the resistor ladder and load it; the buttons and the clock cannot both be there.
+And **GPIO0 is the X4's battery ADC**: `batteryAdc = 0` in the profile literal
+(`BoardConfig.h:695`, the field after `InputPins` per the struct order at
+`:559-565`), the board has `NO_GAUGE` so `BatteryMonitor` reads that pin with
+`analogReadMilliVolts()`, and `batt_mv` produced sane rows across an 11.5 h run
+(`power-plan.md`, run 1). So **both** crystal pins carry live, hardware-verified DC
+analog functions.
 
-**One loophole, stated so nobody thinks it was overlooked.** There is also an
-*external oscillator* mode, which needs only `XTAL_32K_P` -- GPIO0 -- and leaves
-GPIO1 alone (`components/soc/esp32c3/include/soc/clk_tree_defs.h:31-33`). A
-packaged 32 kHz oscillator costs more than a crystal and has no reason to be in a
-reader, so this is treated as ruled out, not proven absent. If it ever matters, it
-is the same one-build test with `CONFIG_RTC_CLK_SRC_EXT_OSC=y` instead of
-`EXT_CRYS`.
+**The mechanism, corrected 2026-08-19 after review.** This section first argued that
+a crystal would "load the ladder and the buttons would not work". That is wrong: a
+quartz crystal is a DC open circuit and would not measurably disturb a DC resistor
+divider. The argument runs the other way -- the kilo-ohm ladder network on GPIO1 and
+the battery divider on GPIO0 would **kill the microwatt 32 kHz oscillation**. A
+crystal fitted there could never function as a sleep clock.
 
-**Why this evidence beats a teardown photo.** A photo says what is on the board
-and can be misread. This says the pin is doing something else and demonstrably
-working -- which cannot be true at the same time as a crystal being there.
+So what is proven is **functional absence**, which is all the power work needs: no
+32 kHz clock is available on this board. Physical absence is neither proven nor
+relevant.
+
+**The one-pin loophole is closed too.** There is also an *external oscillator*
+mode, which needs only `XTAL_32K_P` -- GPIO0 -- and leaves GPIO1 alone
+(`components/soc/esp32c3/include/soc/clk_tree_defs.h:31-33`). That looked like a gap
+until GPIO0 turned out to be the battery divider: a 32 kHz clock signal and a
+divider that demonstrably reads a stable battery voltage cannot share the node. So
+the `CONFIG_RTC_CLK_SRC_EXT_OSC` variant of the test is pointless on X4 as well.
+
+**What this evidence is and is not.** It is stronger than a teardown photo for the
+question that matters -- a pin doing verified analog duty cannot also carry a working
+32 kHz oscillator -- and useless for the question that does not: it says nothing
+about whether a part is physically on the board.
 
 Three consequences:
 
 - **X4's parked floor cannot go below the 2.3 mA column** plus whatever the board
-  itself draws. Light sleep is still the large win -- 12 mA to 2.3 mA at the SoC --
-  but the 140 uA number is off the table for this hardware.
-- **A future board that wants 140 uA has to move the buttons off GPIO1**, i.e.
-  give up the OEM resistor ladder for digital buttons. Worth stating in any
-  hardware conversation about a successor, because it is free at design time and
-  impossible afterwards.
-- **On X4 Pro the question is open and separate, and looks better.** That is an
-  ESP32-S3, where the same pins are GPIO15 and GPIO16
-  (`components/soc/esp32s3/register/soc/io_mux_reg.h:109-110`), and its profile
-  already uses `InputStyle::DigitalButtons` rather than the ladder
-  (`BoardConfig.h:1065`). So nothing structural blocks a crystal there. Check it
-  when a dev unit arrives.
+  itself draws, **for a firmware that also holds BLE connections.** Light sleep is
+  still the large win -- 12 mA to 2.3 mA at the SoC, against 24 mA measured today.
+- **A third clock exists and nobody has priced it.** `BT_CTRL_LPCLK_SEL_RTC_SLOW`
+  uses the internal 136 kHz RC: no crystal, no pins, and light sleep may power the
+  main crystal down. The Kconfig forbids it for the **connection** state -- its
+  accuracy is "a lot larger than 500ppm" (`Kconfig.in:418-424`) -- which is why this
+  tree dismissed it, correctly, for riding. But the **parked, advertising-only** case
+  has no timing contract with anybody, and its current is measured nowhere:
+  Espressif's example ships no RTC_SLOW configuration. So "140 uA is unreachable on
+  X4" is true of a connection-holding build and **unproven in general**. Cheapest way
+  to settle it: one config line on the same bench as the light-sleep smoke test.
+  Caveat: the clock is a compile-time choice, so one binary cannot be both. Whether
+  it could become a runtime choice is **speculation** -- the controller takes its
+  sleep clock from the init-time `esp_bt_controller_config_t`, and this firmware
+  already tears the whole BLE stack down and back up per screen, so there may be a
+  seam there. Nobody has looked.
+- **A future board that wants the crystal has to free both pins**: the buttons off
+  GPIO1 (i.e. give up the OEM resistor ladder for digital buttons) **and the battery
+  divider off GPIO0**. Stating only the button half -- as this section did until
+  review caught it -- ships half a requirement into a board design, where it is free
+  at design time and impossible afterwards.
+- **On X4 Pro the question is open and separate.** That is an ESP32-S3, where the
+  same pins are GPIO15 and GPIO16
+  (`components/soc/esp32s3/register/soc/io_mux_reg.h:109-110`), and its profile uses
+  `InputStyle::DigitalButtons` rather than the ladder (`BoardConfig.h:1066`) and
+  assigns neither pin. So **nothing known** blocks a crystal there -- not "nothing
+  structural": that profile is reverse-engineered and incomplete, its `batteryAdc` is
+  not isolated yet, and on S3 GPIO15/GPIO16 are `ADC2_CH4`/`ADC2_CH5`
+  (`soc/esp32s3/include/soc/adc_channel.h:51,54`), which makes them plausible homes
+  for exactly that unlocated battery ADC. Same collision, one board later.
+  The prize there is also smaller: the same Espressif table puts **S3 at 230 uA**, not
+  140 (`power_save/README.md:136`), before the X4 Pro's 8 MB PSRAM adds its own
+  light-sleep draw. Check it when a dev unit arrives -- the boot-log test
+  (`CONFIG_RTC_CLK_SRC_EXT_CRYS=y` plus `CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y`,
+  watching for `32.768kHz XTAL not detected`) is the right way, and X4 Pro is now the
+  only board worth running it on.
 
 ## The board's own floor is unpriced, and it bounds every sleep state
 
