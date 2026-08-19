@@ -77,6 +77,10 @@ on the public site until a real 72-hour run has happened on hardware.
 - **The 10 MHz open question is answered, from data already on the card**: an
   earlier boot held a connected BLE link for ~7.8 h at `cpu_mhz=10`. Route A's
   throttle split is unblocked.
+  **Refuted 2026-08-16, and this bullet is why two builds hung the X4 solid.**
+  That boot was a device *believing* it was connected, not a live link. See the
+  open questions below and `power-management.md`, "A connected BLE link does NOT
+  survive 10 MHz".
 - Because of that, **the throttle split is the first change to test**, not
   modem sleep. Ordering changed the same day, on the data.
 - Nothing has been changed to save power yet. That is still deliberate.
@@ -155,6 +159,13 @@ The map screen never lets the device rest, and it takes four steps to see why:
    (`sdkconfig.defaults:1680`), so the idle task does not light-sleep -- it
    spins at 160 MHz. Roughly 99 % of the run was full-clock idling.
 
+**Steps 1-3 stopped describing the code on 2026-08-17.** The bool is split, the
+map screen does throttle, and the throttled alternative is **80 MHz** while the
+BLE controller is enabled -- not the 10 MHz named above
+(`lib/hal/HalPowerManager.h`, `BLE_SAFE_FREQ`; route A below). The
+decomposition is kept as what run 1 measured, not as a reading of today's
+firmware.
+
 The radio adds to it but is not the main cost:
 
 - **`CONFIG_BT_CTRL_MODEM_SLEEP` is not set** (`sdkconfig.defaults:993`), so the
@@ -176,22 +187,33 @@ above. None is measured. They exist to order the work, not to be quoted.
 ### A. Throttle the CPU, sleep the modem
 
 Split `preventAutoSleep()` into `preventAutoSleep()` + `preventThrottle()` so
-the map can drop to 10 MHz while it is only waiting for a fix, and set
+the map can leave the pinned 160 MHz while it is only waiting for a fix, and set
 `CONFIG_BT_CTRL_MODEM_SLEEP=y`.
 
-- Estimate: 44 mA -> 15-25 mA, so **26-43 h**.
-- **Unblocked 2026-08-15**: a live NimBLE link does survive 10 MHz (see open
-  questions). **This is the first change to test.**
-- The measurement is what promotes it. 98.5 % of run 1 sat at 160 MHz and only
+- Estimate: 44 mA -> 15-25 mA, so **26-43 h**. Written against a 10 MHz
+  throttle, so read it as an upper bound on the saving -- the floor is 80.
+- **The floor is 80 MHz, not 10 -- corrected 2026-08-16.** Two builds that
+  throttled to 10 MHz with the controller up hung the device solid. Below
+  80 MHz the CPU leaves the PLL for the crystal and APB follows it down; the
+  controller's `ESP_PM_APB_FREQ_MAX` defence is compiled out because
+  `CONFIG_PM_ENABLE` is not set (`power-management.md`, "Why 10 MHz breaks
+  BLE"). The floor is enforced inside `HalPowerManager::lowPowerFloorMhz()`
+  from `esp_bt_controller_get_status()`, not by a guard at the call site.
+- **Shipped 2026-08-17 and bench-verified**: the throttle engages with a central
+  connected, the link holds, `throttled_ms` 93.8 % of wall against run 2's
+  0.02 %. Draw not yet measured -- prediction to refute is 24.0 -> 14-19 mA.
+- The measurement is what promoted it. 98.5 % of run 1 sat at 160 MHz and only
   1.3 % of that did any work, so the throttle is the largest single lever in
   the tree, and it is no longer a guess about where the milliamps are.
-- Probably still does not reach 9 mA on its own -- the CPU does not stop, it
-  only slows. If it lands under 10 mA, route B is unnecessary and three days is
-  already done.
+- **It cannot reach 9 mA, and the 80 MHz floor is why.** The CPU does not stop,
+  it halves, and it may not go lower for as long as the radio is up. Anything
+  below the floor needs route B (which compiles the APB locks back in) or the
+  radio switched off entirely. There is no gradual clock ramp between the two.
 - Two things the implementation must get right, both from run 1's counters:
   - **Release the throttle around drawing.** A viewport reset is ~2 s at
-    160 MHz; at 10 MHz it would be tens of seconds. Run 1 drew 62 times an
-    hour, so this is the difference between usable and not.
+    160 MHz and roughly doubles at 80 (arithmetic, not measured). Run 1 drew 62
+    times an hour, so drawing runs at full clock --
+    `MapActivity::kickFullClock()`.
   - **`preventAutoSleep()` must stay true while `preventThrottle()` goes
     false.** The split releases the clock, not the sleep guard.
 
@@ -203,6 +225,12 @@ connection events and wakes for each one.
 - Estimate at 5 % duty: 35 mA awake + ~1 mA asleep = **~2.7 mA**, an order of
   magnitude past the target.
 - **This is where three days actually lives.**
+- **And it is the only legal way under 80 MHz while the radio is up.** Every
+  `ESP_PM_APB_FREQ_MAX` lock site in the BLE controller sits inside
+  `#ifdef CONFIG_PM_ENABLE` (`power-management.md`, "Why 10 MHz breaks BLE"), so
+  this flag is not merely what enables light sleep -- it is what makes any
+  sub-80 MHz state with a live controller supported at all. Route A's floor is a
+  consequence of not having it.
 - Riskiest item in the campaign: APB frequency moves under drivers that may not
   take PM locks -- SPI panel, ADC, USB CDC.
 - Constrained by the clock source. `CONFIG_RTC_CLK_SRC_INT_RC=y`
@@ -277,7 +305,7 @@ The four states worth isolating, in this order:
 
 | # | State | What it isolates |
 |---|---|---|
-| 1 | Home screen, untouched | the idle floor, including the 10 MHz throttle actually engaging |
+| 1 | Home screen, untouched | the idle floor, including the 10 MHz throttle actually engaging -- no BLE controller up, so this is the one state where the floor really is 10 |
 | 2 | Map screen, no phone connected | BLE advertising + pinned 160 MHz, no traffic |
 | 3 | Map screen, phone connected, fix every 10 s | the real riding case |
 | 4 | Tile sync, transfer running | the worst case |
@@ -456,19 +484,27 @@ Phase 4 -- tune what the measurements expose:
 ## Open questions
 
 - ~~**Does an established NimBLE link survive a drop to 10 MHz?**~~
-  **ANSWERED 2026-08-15: yes.** Found in `power.csv` data that was already on
-  the card, not by a new run. An earlier boot logged **466 of 513 minute rows
-  with `cpu_mhz=10` and `ble=2` simultaneously** -- `ble=2` means
-  `connIntervalMs() > 0`, i.e. a live connection, not just advertising
-  (`src/PowerLog.cpp:25-27`). That is ~7.8 hours of connected link at the low
-  clock. The old hardware-verified finding stands and is about something else:
-  `NimBLEDevice::init()` hangs when *entered* in low-power mode
-  (`power-management.md`). Steady state is fine.
-  Two caveats on that same boot: it was **not the map screen** (the heap
-  profile differs and `preventAutoSleep()` would have pinned the clock), and it
-  contains **two charging jumps**, so its apparent 3.0 mA draw is contaminated
-  and must not be quoted. The link finding survives both; the draw figure does
-  not.
+  **ANSWERED 2026-08-16: no.** This file answered "yes" on 2026-08-15 and was
+  wrong, and the wrong answer is what justified two flashes that both hung the
+  device solid. The correction is kept here rather than deleted, because the bad
+  inference is the lesson.
+  **Bench-measured with a control run**, same rig: the throttling build took one
+  fix and went to total serial silence, never recovering; the control build held
+  the link for 22 fixes over two minutes (`power-management.md`, "A connected BLE
+  link does NOT survive 10 MHz").
+  The refuted evidence was `power.csv` showing 466 of 513 rows with `cpu_mhz=10`
+  and `ble=2` together. `ble=2` only means `connIntervalUnits_` is non-zero
+  (`src/PowerLog.cpp:25-27`), and that field is cleared in
+  `onCentralDisconnect()` (`lib/BlePositionServer/src/BlePositionServer.cpp:722`)
+  -- which never runs if the link dies in a way NimBLE's disconnect callback does
+  not service. So the rows say the device *believed* a central was there, and
+  nothing more. **A counter derived from a cached field is only as good as the
+  path that clears it**; a belief like that needs a second, independent signal --
+  traffic arriving.
+  Standing rule out of it: **never take the CPU below 80 MHz while the BT
+  controller is enabled.** The separately verified `NimBLEDevice::init()` hang is
+  the same violation, met earlier only because init is the first register
+  conversation with the BT MAC.
 - **Does the X4 have an external 32.768 kHz crystal? BLOCKING.** Decides which
   BLE low-power clock modes are available, and therefore how much modem sleep
   and light sleep can save. Promoted to blocking 2026-08-15: it gates route B,
