@@ -798,6 +798,15 @@ happens there -- `renderViewport()` calls `record()` on every hatched tile --
 so it is record on the trail, fetch at home, and the two are never on screen
 together.
 
+**What this is not: a pre-trip cache.** Both paths fill squares the device
+already recorded as missing, which means the rider has already been there and
+looked at a hatched hole. Nothing here can request ground nobody has ridden: no
+bounding box, no corridor around a loaded route, no "put Slovenia on the card
+before Friday". Saying this screen is "preparation" is true only in the sense of
+preparing for a **repeat** of a ride. The feature that would cover a new trip, and
+the four pieces it needs, is written down in the parent repo's
+`docs/roadmap.md`, "Pre-trip caching".
+
 The console state is deliberately **not** shared with the map's. Two screens are
 never up at once, and sharing would put this screen's skip tally and the map's
 zoom in one object for no reason.
