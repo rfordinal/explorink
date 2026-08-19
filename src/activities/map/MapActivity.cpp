@@ -1711,8 +1711,9 @@ void MapActivity::drawDebugLine(int y, char* text) {
   renderer.drawText(UI_10_FONT_ID, kTextX, y, text, true);
 }
 
-MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath)
-    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot) {
+MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath,
+                         bool resumedFromSleep)
+    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot), resumedFromSleep_(resumedFromSleep) {
   if (routePath != nullptr && routePath[0] != '\0') {
     // Truncation would open the wrong file or none, so a path that does not fit
     // is refused outright rather than shortened.
@@ -1937,7 +1938,18 @@ void MapActivity::onEnter() {
     // Before the read, not after: this is the only viewport reset with no
     // feedback of any kind in front of it (a zoom or menu redraw gets the busy
     // badge through showBusy()). See renderLoadingTiles().
-    renderLoadingTiles();
+    //
+    // Except on a wake into the map, where that premise is false and the frame is
+    // expensive. False, because e-ink is still holding the sleep screen -- the map
+    // with its moon -- for the whole boot, which says "where you were, waking up"
+    // better than a logo does. Expensive, because the driver promotes the first
+    // paint after a wake (_needsInitialFull, Ssd1677Driver.cpp), so this frame's
+    // FAST request becomes a whole-panel HALF: measured 1,683 ms on 2026-08-19
+    // against 500 ms for the same frame on an ordinary map entry, spent on a
+    // picture that lives ~2.2 s before renderViewport() replaces it.
+    if (!resumedFromSleep_) {
+      renderLoadingTiles();
+    }
     renderViewport(lastLatE7_, lastLonE7_, lastHeading_, lastDrawnSeq_);
   } else {
     renderWaiting();

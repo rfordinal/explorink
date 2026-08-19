@@ -145,7 +145,8 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // RouteSelectActivity passes what the rider picked; every other caller --
   // `CMD:GOTO_MAP` over serial, the OOM fallbacks -- passes nothing and gets the
   // map exactly as it was before routes existed.
-  MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath = nullptr);
+  MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath = nullptr,
+              bool resumedFromSleep = false);
 
   bool isMapActivity() const override { return true; }
 
@@ -682,6 +683,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // pointer: the activity that chose it is deleted the moment this one is
   // constructed (main.cpp's exitActivity).
   char routePath_[MapRouteSource::kMaxPathLen] = {};
+  // Entered by the wake-into-map routing rather than by a person choosing Map.
+  // Only difference it makes: the "reading tiles" splash is skipped, see onEnter().
+  // Passed in rather than inferred from APP_STATE.mapActivityLoadCount, which is
+  // nonzero for a slightly different reason and stops being nonzero at a different
+  // moment.
+  bool resumedFromSleep_ = false;
   // True while the panel holds the route overview rather than a follow frame.
   // Fixes are still recorded in that state but do not redraw -- see
   // renderRouteOverview().

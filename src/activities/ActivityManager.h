@@ -100,7 +100,7 @@ class ActivityManager {
   // `routePath` is an absolute card path to a .tir route, or nullptr for none
   // (MapActivity.h). `CMD:GOTO_MAP` and every internal fallback pass nothing, so
   // the scripted path into the map is unchanged.
-  void goToMap(const char* routePath = nullptr);
+  void goToMap(const char* routePath = nullptr, bool resumedFromSleep = false);
   // The route picker, on the way into the map -- what the home menu opens.
   // Straight to the map when the card carries no routes: a one-row list whose
   // only row is Skip is a screen that exists to be dismissed

@@ -520,7 +520,8 @@ void setup() {
     APP_STATE.saveToFile();
     const auto& routePath = APP_STATE.lastSleepRoutePath;
     LOG_INF("MAIN", "wake into map, route \"%s\"", routePath.c_str());
-    activityManager.goToMap(routePath.empty() ? nullptr : routePath.c_str());
+    activityManager.goToMap(routePath.empty() ? nullptr : routePath.c_str(),
+                            /*resumedFromSleep=*/true);
   } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
              mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
     // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity

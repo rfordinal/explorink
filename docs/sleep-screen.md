@@ -339,24 +339,54 @@ write per wake and nothing on an ordinary map entry.
 The second way out is a held **Back** at boot, which the reader resume already
 had.
 
-#### The restore paint is skipped on this path
+#### Two intermediate frames are skipped on this path, for the same reason
 
-The quick-resume wake normally loads the saved frame, adds a loading icon and
-spends a whole-panel `HALF` (1,684 ms) showing it. On the way into the map that
-frame has a lifetime of a few seconds -- `MapActivity`'s entry frame is itself a
-whole-panel `HALF` (`pendingEntryCleanRefresh_`) that rewrites every one of those
-pixels. So the paint is skipped and the panel is not blank meanwhile: e-ink holds
-the sleep screen, which is the map with its moon, until the live map lands on it.
+E-ink holds the sleep screen -- the map with its moon -- for the whole boot,
+because nothing repaints the panel until the live map is ready. That is better
+feedback than any "waking up" graphic, and it is free. So both frames that would
+otherwise cover it are skipped:
 
-`loadSleepFrameBuffer()` still runs on this path, for its *other* job -- it deletes
-`sleep_frame.bin`. A file left behind would be restored by some later, unrelated
-quick resume.
+**The quick-resume restore paint** (`main.cpp`). Normally the wake loads the saved
+frame, adds a loading icon and spends a whole-panel `HALF` (1,684 ms) showing it.
+On the way into the map that frame lives a few seconds before `MapActivity`'s own
+entry `HALF` (`pendingEntryCleanRefresh_`) rewrites every one of its pixels.
+`loadSleepFrameBuffer()` still runs, for its *other* job -- deleting
+`sleep_frame.bin`, which a later unrelated quick resume would otherwise restore.
+
+**The "reading tiles" splash** (`MapActivity::renderLoadingTiles()`, skipped via the
+`resumedFromSleep` constructor flag that `goToMap()` passes). Its own comment
+justifies it as feedback for "the only viewport reset with no feedback of any kind
+in front of it" -- a premise that is false here. And it is not cheap on this path:
+it asks `FAST_REFRESH` (`MapActivity.cpp`), but the driver promotes the first paint
+after a wake (`_needsInitialFull`, `Ssd1677Driver.cpp:364-373`), so the request
+becomes a whole-panel `HALF`.
+
+**Measured on the X4 2026-08-19**, one wake with no route:
+
+```
+[934]  Starting TrailInk version 0.1.0-dev-map-wake-resume-5a40cc85
+[1187] wake into map, route ""
+[2984]   Wait complete: refresh (1683 ms)     <- renderLoadingTiles(), promoted
+[5194] framebuffer ready in 2166 ms
+[6994]   Wait complete: refresh (1683 ms)     <- the live map
+```
+
+1,683 ms for a picture with a ~2.2 s lifetime. The same frame on an ordinary map
+entry cost 500 ms in the same run (`RouteSelect -> Map`: 500 ms then 1,683 ms),
+which is what makes the promotion the cause rather than the frame itself.
+
+The route path never paid this: with a route, `onEnter()` calls
+`renderRouteOverview()` instead and there is no splash. Measured in the same run,
+one `HALF` (1,684 ms) and no second one.
+
+The flag is passed in rather than inferred from `APP_STATE.mapActivityLoadCount`,
+which is nonzero for a slightly different reason and stops being nonzero at a
+different moment.
 
 #### What it costs, and what "resume" does not include
 
-**Measured on the X4 2026-08-19** (before this change, off the same run that
-verified the map-exit fix -- so these are the parts being assembled, not a
-measurement of the assembled path):
+**Measured on the X4 2026-08-19**, off the run that verified the map-exit fix, so
+these are the parts rather than the assembled path:
 
 | stage | time | where it goes |
 |---|---|---|
@@ -365,9 +395,13 @@ measurement of the assembled path):
 | ... of which framebuffer | 2,530 ms | `framebuffer ready in 2530 ms`, 1,311 ms of it reading the card |
 | ... of which panel | 1,683 ms | the entry `HALF` |
 
-So **wake to a live map is around 6 s**, and the boot is the small half of it. The
-map's own entry work dominates, which is where to look if this needs to be faster.
-Still unmeasured on the assembled path -- the numbers above are its parts.
+The assembled path was then **measured at 6,060 ms** (banner at t=934, live map on
+the glass at t=6994, no route). The boot is the small half of it: the map's own
+entry work dominates, which is where to look if this needs to be faster.
+
+Skipping the promoted splash takes ~1,683 ms off that, so the expectation is
+**~4.4 s** -- **not yet verified on hardware**, unlike the 6,060 ms it is measured
+against.
 
 Not restored, and worth being explicit about since "exactly as before" is the
 obvious expectation:
@@ -382,9 +416,26 @@ obvious expectation:
   `CrossPointSettings` before this change (`mapZoomStep[]`, `mapMode`,
   `mapMarkerStep[]`, `mapHasLastFix`), so those do come back as they were.
 
-**Not verified on hardware yet.** A pass has to check: sleep from the map wakes
-into the map and not Home, the route comes back with it, a held Back still lands on
-Home, and sleeping from Home is unaffected.
+**Verified on the X4 2026-08-19**, build `0.1.0-dev-map-wake-resume-5a40cc85`, via
+`tools/quick_resume_gate.py` in the parent repo:
+
+- sleep from the map wakes into the map: `wake into map, route ""` then
+  `Entering activity: Map`, and the guard round-trips (`wake-into-map guard
+  cleared` at t=7128)
+- the route comes back: `wake into map, route "/trailink/trips/baba-serp.tir"` then
+  `route "Baba serpentina 503" loaded: 122 points`
+- a held Back lands on Home, and sleeping from Home is unaffected
+
+One gap worth naming: the **`wake into map declined` line was not captured** for
+the held-Back wake. It is logged in the first ~1.2 s, exactly the window USB CDC
+re-enumeration eats -- only 2 of 5 boots in that run captured their banner at all.
+So the log shows the decline happened and cannot show *why*; a stuck
+`mapActivityLoadCount` would look identical. What rules that out is the `guard
+cleared` line from the preceding wake, plus the operator knowing Back was held.
+Proving the decline's cause from the log alone needs the decision persisted
+somewhere the CDC gap cannot swallow.
+
+The splash skip above is **newer than that pass and unverified**.
 
 The frame this restores from is saved/loaded around deep sleep by
 `saveSleepFrameBuffer()` / `loadSleepFrameBuffer()` (`main.cpp:203-222`).

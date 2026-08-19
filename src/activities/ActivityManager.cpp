@@ -204,8 +204,8 @@ void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
 
-void ActivityManager::goToMap(const char* routePath) {
-  replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput, routePath));
+void ActivityManager::goToMap(const char* routePath, bool resumedFromSleep) {
+  replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput, routePath, resumedFromSleep));
 }
 
 void ActivityManager::goToRouteSelect() {
