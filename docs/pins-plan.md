@@ -138,8 +138,11 @@ Taken 2026-08-15. Each closed a real fork; the reason is why it stays closed.
 - **Pin History UI and Restore.** The data is written from day one; only the
   screen is missing. `pin log` covers recovery meanwhile.
 - **Long-press SELECT.**
-- **Everything on the phone.** No map picker, no coordinate screen, no history
-  export. The wire path (`pin set`) exists; the app does not use it.
+- ~~**Everything on the phone.**~~ -- the app grew a Pins screen 2026-08-19: it
+  reads `pin list`, saves at a pasted or shared coordinate, deletes, and pages
+  `pin log` (parent `docs/android-pins.md`). Still deferred there: a **map
+  picker**, which needs a rendered map on the phone, and a history export. The
+  device is unchanged by it -- decision 7 holds, the app keeps no copy.
 - **Trips**, and the track / black-box log.
 - ~~**Per-pin visibility**~~ -- built 2026-08-17 after all, as a settings bitmask
   plus a row in the Pins list (`pins.md`, "Off-screen markers"). It stayed out of
@@ -433,7 +436,7 @@ cases.
 |---|---|
 | Fast entry to Pins | yes — CONFIRM menu row (long-press deferred) |
 | Create from the device's current position | yes (= last fix from the phone) |
-| Phone can send a pin at a chosen position | wire path only (`pin set`); no app UI |
+| Phone can send a pin at a chosen position | yes -- app UI since 2026-08-19, on the same `pin set`; not on hardware yet |
 | Base, Parking, Destination, Meet, Camp, `#1`–`#3` | yes, plus `#4`, `#5` |
 | Show an existing pin on the map | yes |
 | Delete confirmed | yes |
@@ -452,8 +455,9 @@ cases.
 | A damaged last record does not invalidate older ones | yes |
 | The model allows more custom pins and black-box logging later | yes — one constant, and a record format built to be shared |
 
-Two rows are honestly partial: on-device Restore is deferred, and the phone side
-is a wire path with nothing driving it.
+One row is honestly partial: on-device Restore is deferred. The phone row was a
+wire path with nothing driving it until 2026-08-19, when the app got a Pins screen
+on the same commands -- built, host-tested, unverified on hardware.
 
 ## Rules the implementer works under
 

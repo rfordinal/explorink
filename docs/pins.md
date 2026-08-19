@@ -533,10 +533,18 @@ Written as `820 m` (10 m steps) below 1 km, `4.2 km` below 10 km, `37 km` above.
 
 ## What is not built yet
 
-The per-fix edge-marker redraw and the panel measurement it needs (above). The
-phone side stays a wire path -- `pin set` exists, no app uses it. The Pin History
-UI and Restore stay deferred; `pin log` plus `pin set` recover a pin today. Long-
-press SELECT, trips, per-pin visibility and log rotation stay deferred as planned.
+The per-fix edge-marker redraw and the panel measurement it needs (above). The Pin
+History UI and Restore stay deferred; `pin log` plus `pin set` recover a pin today.
+Long-press SELECT, trips, per-pin visibility and log rotation stay deferred as
+planned.
+
+**The phone side is no longer a wire path.** The Android app drives `pin list`,
+`pin set`, `pin del` and `pin log` from its own Pins screen as of 2026-08-19 --
+what it adds is a coordinate the rider chose (pasted text, a shared maps link) and
+a real `utc`, the two things this device cannot produce. It holds no copy and
+reconciles nothing, so nothing changes on this side: the card is still the only
+store. The parent repo's `docs/android-pins.md` is that side, and none of it has
+run against hardware either.
 
 **Nothing in this feature has run on the panel.** Every geometry and button claim
 above is read off the code. What a hardware pass has to check:
