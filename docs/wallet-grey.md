@@ -425,6 +425,40 @@ Plus, at run time: **8,000 bytes** of band scratch during a grey render only, an
 No second framebuffer, no page-sized buffer, on either path -- same rule as the
 rest of the wallet.
 
+## Verified on the panel, on an encrypted page the phone made -- 2026-08-19
+
+The whole grey path ran end to end against an asset chain no host produced: a page
+imported on the phone with grey asked for, packed and encrypted by the phone, sent
+over BLE, and read off the card by the device.
+
+What the phone ships for one grey document, per zoom level: **three FIT assets**, not
+one -- 48,032 B (1bpp base), 96,032 B (the 2bpp image) and 144,032 B (the three baked
+planes). The device needs the base and the planes; the 2bpp form is the portable one
+and is what a different renderer would use.
+
+```
+[WALLETGREY] grey planes open: 20df9a53124fef30 800x480, 100 B/row, 48000 B/plane, step 0,0, encrypted
+[WALLETVIEW] WALLETGREY mode=grey base=half ... total_ms=2617 card_bytes=144000 win=0,0
+WALLETGREY_OK enabled=0 base=half grey_frames=1 grey_attempts=1 grey_on_panel=1 last_outcome=ok repaint_pending=0 capture=1
+```
+
+**Read `enabled=0` next to `grey_frames=1` carefully: that is the per-document policy
+working.** The switch is off and grey rendered anyway, because the manifest entry asks
+for it. This is exactly the reading the old `grey_rendered` field could not give --
+it would have said `0` here, and it was the same field a person would have used to
+decide the feature was broken.
+
+The capture came off the same page through `tools/greyshot.py`: 384,000 pixels,
+**87.9 % white, 6.2 % light grey, 3.5 % dark grey, 2.3 % black**, 0 anomalies. Both
+mid tones present, so no plane collapsed. The shares are document-shaped, not
+pattern-shaped -- a text page is mostly paper, unlike the synthetic test pattern's
+even 30/17/34/18 split.
+
+**Looked at, on the glass**: the four levels are four distinct tones in the gradient
+patch, and body text is clearly cleaner than the 1bpp dither of the same page. That
+is the human judgement the phase asked for, and it says grey is worth its 2.6 s on a
+document.
+
 ## Verification, and what it can and cannot prove
 
 Host side, all green:
@@ -498,15 +532,33 @@ question:
   judgement, at arm's length, on the glass. Nothing on the laptop can answer it,
   and the two mid tones are exactly where the panel's own contrast decides
   (`docs/eink-grayscale.md`, "Grey scale" page).
-- **What a grey frame actually costs**, per stage. One total came off the panel
-  (2,604 ms, 2026-08-18); the per-stage split has not been read yet.
+- ~~**What a grey frame actually costs**, per stage.~~ **Measured 2026-08-19** on an
+  encrypted grey page the phone produced, X4, window 0,0:
+
+  | stage | us | what it is |
+  |---|---|---|
+  | `card_base_us` | 203,435 | read + decrypt the 1bpp base image, 48,000 B |
+  | `base_us` | 1,770,723 | the panel's own base refresh |
+  | `card_planes_us` | 410,596 | read + decrypt the three planes, 144,000 B |
+  | `planes_us` | 45,558 | stream the planes to the controller |
+  | `nudge_us` | 143,452 | the grey nudge waveform |
+  | `cleanup_us` | 43,345 | `cleanupGrayscaleBuffers()` |
+  | **total** | **2,617,160** | 2,617 ms |
+
+  So **the panel's base refresh is 68 % of it** and every byte of card and crypto
+  work together is 23 %. Streaming the planes is 1.7 %. The 2,604 ms total measured
+  2026-08-18 on a cleartext page holds: decrypting 192 KB costs about 13 ms of the
+  difference, which is inside the noise of one measurement each.
 - **Whether a capture is bit-identical to what the controller got.** The producer
   makes the same `readPlaneRows()` call the panel path made, and the host tests say
   the band walk and the decode agree -- but code cannot diff itself against
   controller RAM. `CMD:SCREENSHOT_GRAY` against a photograph of the same page is
   what would settle it.
 - **What a capture costs.** 96 KB re-read off the card plus three 48 KB serial
-  blobs; ~570 ms of card time expected, unmeasured.
+  blobs; ~570 ms of card time expected, **still unmeasured** -- the capture ran on
+  the panel 2026-08-19 and its payload decoded, but the device log of that run was
+  not kept, so no stage timing came out of it. One `CMD:SCREENSHOT_GRAY` with the
+  serial log captured settles it.
 - **Whether a FAST base frame works.** `CMD:WALLETGREY on fast` versus `half`,
   same window, photographed. `SleepActivity` says a wrong base state gives
   blotchy greys; nothing here has tried it.
