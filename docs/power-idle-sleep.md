@@ -161,7 +161,7 @@ advertise for a second or two, sleep again -- does not survive arithmetic:
 
 - Every wake is a **full boot** (deep-sleep wake is a chip reset), so SD mount,
   fonts, settings and a NimBLE init at 57 KB of heap
-  (`docs/map-memory.md:203`) happen every cycle. Boot-to-advertising time is
+  (`map-memory.md:203`) happen every cycle. Boot-to-advertising time is
   **[open]** -- no C3 figure exists in the datasheet or IDF docs and nobody has
   timed this firmware -- but 1.5-3 s is the realistic band.
 - At ~3.5 s awake at ~30-50 mA per cycle, a 20-120 s cadence averages roughly
