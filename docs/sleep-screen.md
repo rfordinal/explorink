@@ -273,7 +273,9 @@ it is set right after the marker is painted, and the two marker-less frames
 (`renderWaiting()`, `renderLoadingTiles()`) clear it. Observe is excluded because
 `renderViewport()` sets the patch there but deliberately draws no marker: its
 anchor is a pan target the rider chose, and a marker glyph on it would claim to be
-a fix.
+a fix. **Read off `MapActivity.cpp:4590-4592`, not tested.** Nobody has slept the
+device from Observe and looked. What would settle it: enter Observe, pan away from
+the fix, sleep, and check no marker appears on the pan target.
 
 **The first version guarded on `viewportDrawn_` instead, and it never fired.** That
 flag means "a live viewport a fix can move a marker inside", not "there is a map on
@@ -296,7 +298,13 @@ predicted:
 
 1,000 ms for the way into sleep, against the single whole-panel `HALF` of 1,684 ms
 it was before. The maintainer confirmed the marker is findable on a real frame,
-which is what drove the resize above. **The resize itself is not yet on hardware.**
+which is what drove the resize above.
+
+The resize to 27 / 9 / 5 was then flashed (`51828f22`) and the maintainer confirmed
+it on the glass. **Eye only, no log capture of that pass** -- the confirmation is
+that it reads well, not that any number was measured. The new constants are in the
+flashed binary: `drawSleepMarker()`'s immediates in `firmware.elf` carry 27, 13,
+18, 36, 9, 4 and 2, and none of the old set's 24.
 
 ### It did not work from the map: `MapActivity::onExit()` wiped the frame first (fixed 2026-08-19)
 
@@ -339,7 +347,7 @@ One windowed `FAST` on each, where the pre-fix build logged a `HALF` (the map's
 wipe) plus a `HALF` (the sleep screen). The maintainer confirmed the panel shows
 **the map** with the moon, not white, which is the reported bug closed.
 
-### The restored frame is on the glass for about 150 ms, and nobody sees it
+### The restored frame is on the glass for about 150 ms (derived), and nobody sees it
 
 The wake half works and is invisible. Two wakes in the same run, identical:
 
@@ -350,8 +358,11 @@ The wake half works and is invisible. Two wakes in the same run, identical:
 ```
 
 So the map is alone on the panel for roughly 150 ms before Home starts painting
-over it. Asked to watch for it, the maintainer saw Home, not the map -- which is
-what that number predicts on e-ink, and is **not** evidence the restore failed.
+over it. **Derived, not measured**: the restore's `HALF` completes at t=2834 and
+Home's completes at t=3485 taking 500 ms, so its waveform began around 2985.
+Nothing timed the gap directly. Asked to watch for it, the maintainer saw Home, not
+the map -- which is what that number predicts on e-ink, and is **not** evidence the
+restore failed.
 The log settles that instead: `loadSleepFrameBuffer()` returning false routes to
 `goToBoot()` (`src/main.cpp`), which would log `Entering activity: Boot`. The run
 has zero of those, so the frame loaded and painted both times.
@@ -413,6 +424,13 @@ E-ink holds the sleep screen -- the map with its moon -- for the whole boot,
 because nothing repaints the panel until the live map is ready. That is better
 feedback than any "waking up" graphic, and it is free. So both frames that would
 otherwise cover it are skipped:
+
+**Inferred, not observed.** It follows from e-ink bistability and from nothing
+repainting the panel before the map frame, and no pass reported a blank panel
+during a wake -- but nobody was asked to watch for one, and this conclusion is what
+the whole justification for skipping two frames rests on. What would settle it:
+watch the panel through a wake and say whether the map with its moon is visible the
+whole ~4 s.
 
 **The quick-resume restore paint** (`main.cpp`). Normally the wake loads the saved
 frame, adds a loading icon and spends a whole-panel `HALF` (1,684 ms) showing it.
