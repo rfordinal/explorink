@@ -1554,20 +1554,30 @@ void GfxRenderer::invertScreen() const {
   }
 }
 
+// Spend a pending requestCleanNextFrame(): a FAST cannot clear the glass, so it
+// becomes a HALF. HALF and FULL already clear absolutely, so they pass through
+// and still spend the request (docs/refresh-modes.md, "What each one selects").
+HalDisplay::RefreshMode GfxRenderer::takeCleanRefreshMode(const HalDisplay::RefreshMode requested) const {
+  if (!_cleanNextFrame) return requested;
+  _cleanNextFrame = false;
+  return requested == HalDisplay::FAST_REFRESH ? HalDisplay::HALF_REFRESH : requested;
+}
+
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const {
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
-  display.displayBuffer(refreshMode, fadingFix);
+  display.displayBuffer(takeCleanRefreshMode(refreshMode), fadingFix);
 }
 
 void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) const {
+  const auto mode = takeCleanRefreshMode(refreshMode);
   // The async path has no turn-off-screen hook, which the sunlight fading fix
   // relies on; keep those users on the blocking path.
   if (fadingFix) {
-    display.displayBuffer(refreshMode, fadingFix);
+    display.displayBuffer(mode, fadingFix);
     return;
   }
-  display.displayBufferAsync(refreshMode);
+  display.displayBufferAsync(mode);
 }
 
 bool GfxRenderer::displayBufferWindow(int x, int y, int w, int h) const {

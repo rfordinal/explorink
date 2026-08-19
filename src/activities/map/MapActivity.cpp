@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+// APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
+#include "CrossPointState.h"
 #include "GfxRendererCanvas.h"
 #include "HeldTilesStore.h"
 #include "MapFollow.h"
@@ -1991,8 +1993,23 @@ void MapActivity::onExit() {
   markerPatchCapacity_ = 0;
   markerPatchValid_ = false;
 
-  renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  // The map leaves a dense frame on the glass, and every screen it can exit
+  // into paints FAST (HomeActivity.cpp, TileSyncActivity.cpp,
+  // RouteSelectActivity.cpp) -- a differential mode cannot clear this frame, so
+  // its ghost would sit under the menu. This used to be `clearScreen()` plus a
+  // whole-panel HALF here: a 1,684 ms refresh painting white that the next
+  // screen overwrote 500 ms later, for two refreshes and a visible flash
+  // between them. Handing the clean forward instead costs one refresh total and
+  // the arriving screen is what the rider sees appear.
+  //
+  // Not requested when a quick-resume sleep is what we are exiting into:
+  // SleepActivity keeps the frame on purpose there and only adds a moon to it.
+  // enterDeepSleep() has already written that decision to
+  // APP_STATE.showBootScreen before goToSleep() runs this (main.cpp), so this is
+  // the same bool, read one activity later.
+  if (APP_STATE.showBootScreen) {
+    renderer.requestCleanNextFrame();
+  }
 }
 
 void MapActivity::loop() {

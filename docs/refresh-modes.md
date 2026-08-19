@@ -36,6 +36,56 @@ So: **`FULL` does not clean better than `HALF`. It cleans the same and flashes.*
   `CMD:SHOWIMAGE` (`main.cpp:688-690`), where a host-pushed framebuffer is being
   judged for dither quality and any ghosting at all would be judged with it.
 
+## Handing the clean forward: `requestCleanNextFrame()`
+
+The rule above says the frame *arriving* from another screen asks for `HALF`. But
+every menu screen paints `FAST` unconditionally -- `HomeActivity.cpp:141` (default
+argument), `TileSyncActivity.cpp:1101`, `RouteSelectActivity.cpp:141` -- and they
+got away with it because the screen *leaving* cleaned up first.
+
+`MapActivity::onExit()` used to do that cleaning the expensive way:
+
+```cpp
+renderer.clearScreen();
+renderer.displayBuffer(HalDisplay::HALF_REFRESH);   // removed 2026-08-19
+```
+
+A 1,684 ms whole-panel refresh painting white, which the arriving screen
+overwrote with a 500 ms `FAST` -- two refreshes, ~2,184 ms, and a white flash in
+between that the rider sees on every exit from the map.
+
+`GfxRenderer::requestCleanNextFrame()` (`GfxRenderer.h`) replaces it with a
+one-shot request. The next whole-panel `displayBuffer()` or
+`displayBufferAsync()` runs it through `takeCleanRefreshMode()`
+(`GfxRenderer.cpp:1557-1565`): a `FAST` becomes a `HALF`, a `HALF`/`FULL` passes
+through, and either way the request is spent. So the map's exit costs one
+refresh instead of two, and what appears on the glass is the menu rather than
+white.
+
+`displayBufferWindow()` deliberately does **not** spend the request: a windowed
+differential update addresses only its rectangle and cannot clear the rest of
+the glass, so a pending clean has to survive it.
+
+Same shape as the driver's own `_needsInitialFull`
+(`Ssd1677Driver.cpp:364-373`) -- a one-shot "the next frame must clear"
+promotion -- lifted to where an activity can ask for it. Read off the source; the
+panel-time claim is the 500/1,684 ms pair measured below.
+
+**Measured on the X4 2026-08-19**, build `0.1.0-dev-map-exit-clean-8a5851cc`,
+off the device's own refresh log (`tools/quick_resume_gate.py` in the parent
+repo):
+
+```
+[547736] Exiting activity: Map
+[547801] Entering activity: Home
+[549537]   Wait complete: refresh (1683 ms)     <- one refresh, promoted
+```
+
+One `HALF` where the pre-fix build logged a `HALF` and then a `FAST`. The
+maintainer confirmed no map ghost under the menu on the same run. The promotion
+is the load-bearing part and it does happen: a promotion that silently did not
+would read 500 ms here.
+
 ## What the driver promotes behind your back
 
 Three cases, all in `Ssd1677Driver::displayImpl()` (`Ssd1677Driver.cpp:355-394`):
