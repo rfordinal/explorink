@@ -307,6 +307,68 @@ hike mode; that should be enough.
 5. **Temperature moves both the cell and the ADC.** A winter ride and a desk
    run are not the same experiment. Record where a run happened.
 
+## The frozen baseline: this campaign flashes a stale branch on purpose
+
+**Exemption granted by the maintainer 2026-08-19.** The parent repo's `CLAUDE.md`
+says: only flash a rebased branch, re-check whether `develop` moved right before
+every upload, and rebase if it did. **The power campaign is exempt from that**, and
+its measurement branch stays pinned to one base commit for the whole series.
+
+**Why.** If `develop` moves between run 1 and run 5, a difference in draw can be
+another session's commit rather than the option under test. That is the same
+failure this campaign already walked into once, and no amount of care inside a run
+fixes it afterwards. A comparison is only worth making against a fixed baseline.
+
+**Why this is not "the rule was wrong".** The two rules protect different things.
+The rebase rule exists so a flash cannot put firmware on the device that silently
+lacks another session's fix, leaving someone reasoning about a device that is not
+what they think it is. That risk is about the device's state being misleading. The
+freeze is about numbers being comparable. Neither substitutes for the other, so the
+exemption is not "staleness is fine here" -- it is **"staleness is the design, and
+it must be declared rather than accidental"**.
+
+Four things pay for it. Skipping any one of them turns the exemption into the
+problem it was meant to avoid.
+
+1. **The baseline lives in the data, not in memory.** Every `power.csv` row already
+   carries `build` = `TRAILINK_VERSION`, added 2026-08-16 because 61 boots of mixed
+   firmware were indistinguishable. The measurement branch sets a distinctive
+   string -- `powerlab-<base-hash>-<n>` -- so every row identifies its own baseline
+   and two runs months apart can be told apart or matched.
+2. **Archive the binary, not just the branch.** `docs/firmware-builds/` (gitignored,
+   see its README). The strongest form of a freeze is not "the branch has not
+   moved", it is **"this exact binary is on disk and can be reflashed"**. When
+   another session flashes the device in between, that restores the identical
+   baseline with no rebuild to trust.
+3. **A tripwire on `develop`.** If something lands there that touches the
+   power-relevant surface -- BLE connection parameters, the map loop, refresh
+   cadence, `PowerLog` -- the frozen base stops being conservative and starts being
+   misleading: the work would be optimising a path that no longer exists. Then
+   rebase deliberately and **restart the series**, rather than mixing bases.
+4. **One validation run on rebased code before anything changes the product.** A
+   finding from the frozen baseline is a finding about the frozen baseline until it
+   has been seen on current `develop` once.
+
+**Two classes of build, and only the first is really frozen.**
+
+| Class | Examples | Build |
+|---|---|---|
+| Runtime states | idle, advertising, connected, light sleep, deep sleep + timer | **one** binary, bit-identical across the whole comparison, zero rebuilds |
+| Compile-time options | the 32.768 kHz crystal, `CONFIG_PM_ENABLE`, the main-XTAL PU flag | one binary per option, all from the **same frozen base**, differing only in that option |
+
+The first class is what the power lab screen exists for
+([`power-idle-sleep.md`](power-idle-sleep.md), "The power lab screen"): selecting
+the state at runtime is what makes the binary identical, and an identical binary is
+a stronger comparison than this campaign has ever managed. The second class cannot
+be runtime-selected -- sdkconfig is compile time -- so there the old rule still
+applies in full: **one option per build, per run.** The exemption changes only
+which base they are cut from.
+
+**What the exemption does not solve.** The device is shared. Another session
+flashing its own branch between two runs ends the freeze whatever this file says.
+That is the X4 lock's job, plus telling the human a series is in progress -- and
+rider 2 above, so the baseline can be put back.
+
 ## Methodology: how to do one run
 
 Fixed shape, so runs are comparable:

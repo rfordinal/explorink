@@ -276,6 +276,15 @@ notes), and the field revision that does not self-latch
 One cost: a lab screen that brings up BLE pays the same 57 KB of heap the map
 does, so check the heap after adding it.
 
+**One binary, many states.** Selecting the state at runtime is the whole point: the
+binary stays bit-identical across a comparison, so what the meter sees is the state
+and not a second difference nobody noticed. The compile-time options -- the crystal,
+`CONFIG_PM_ENABLE`, the PU flag -- cannot work that way, so those stay one option per
+build, all cut from the same frozen base. The campaign runs on a deliberately stale
+branch for exactly this reason, with an exemption from the rebase-before-flash rule
+and four conditions attached: [`power-plan.md`](power-plan.md), "The frozen
+baseline".
+
 What the lab screen does **not** do: it prices **states**, not the product. A
 number from it is not an endurance figure, and the map-screen run still has to
 validate the real thing.
@@ -319,9 +328,25 @@ validate the real thing.
    duty-cycled variant is revived. Serial timestamps from reset to first
    rendered fix.
 
-Experiment 3 is the one that decides whether the design exists. Experiments 1
-and 2 are half a day between them and both can refute large parts of it, so they
-come first.
+Order, decided 2026-08-19: **2, then 3, then 1.** Experiment 2 is one build and a
+log line, and its answer sets how much effort 3 deserves -- a board with the crystal
+makes months of standby the prize and worth fighting a driver bug for; without it the
+ceiling is 2.3 mA plus the board floor. Experiment 3 is the only **unconditional**
+one: without light sleep there is no state below 80 MHz with a live radio at all, so
+if the SPI panel or the SD card breaks under DFS, the crystal is moot. Experiment 1
+comes last only because it needs the meter -- not because it matters least; it is
+what says whether to keep pushing.
+
+**Deep sleep survives as an instrument even though it is rejected as a feature.**
+Experiment 1 needs it: the board's own floor cannot be separated from the SoC's
+draw except in a state where the SoC draws almost nothing, and deep sleep with the
+latch **held** is the only such state. Cutting the latch, as today's sleep does,
+disconnects the board and measures nothing. One use, for calibration, then never
+again.
+
+All of these run on the frozen baseline described in
+[`power-plan.md`](power-plan.md), "The frozen baseline" -- so a run's numbers stay
+comparable to the run before it.
 
 ## Open questions
 
