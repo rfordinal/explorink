@@ -222,6 +222,18 @@ measurement gate for each. Start at its
 the air before a phone connects, and when: only while the map or sync-map-tiles
 screen is open, so the advertisement is what the phone app wakes on.
 
+[`docs/power-test-runbook.md`](./docs/power-test-runbook.md) is the procedure a
+session follows to run the power experiments: order of work, exact config, the
+pre-flash checklist, what to do when there is no microamp meter, and the outcome that
+ends each line of work.
+
+[`docs/power-idle-sleep.md`](./docs/power-idle-sleep.md) is the plan for parking
+the device on the map screen -- what a parked state costs, what wakes it without
+the rider touching it, and why deep sleep on a timer is not the answer. The
+behaviour findings behind it are in
+[`docs/power-management.md`](./docs/power-management.md); the measurement campaign
+is [`docs/power-plan.md`](./docs/power-plan.md).
+
 [`docs/map-memory.md`](./docs/map-memory.md) is what the map screen actually
 costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, and
 86 % of that in the BLE stack rather than in the map. Trimming the NimBLE config

@@ -10,6 +10,15 @@ Findings themselves do **not** live here. They go in
 [`power-management.md`](power-management.md), which is the topic doc. This is
 the campaign.
 
+The runnable procedures -- order of work, per-experiment steps, the pre-flash
+checklist, the instrument fallbacks and the stop conditions -- are in
+[`power-test-runbook.md`](power-test-runbook.md). This file stays the campaign and
+its methodology; the runbook is what a session follows.
+
+The parked map screen has its own design doc since 2026-08-19:
+[`power-idle-sleep.md`](power-idle-sleep.md) -- what parks the device, what wakes
+it, the power lab screen, and the experiment order. It supersedes route C below.
+
 Related: [`optimization/07-power-and-lifecycle.md`](optimization/07-power-and-lifecycle.md)
 (the 2026-08-06 code review of the same area -- its step 1 is this plan's
 phase 1).
@@ -77,6 +86,10 @@ on the public site until a real 72-hour run has happened on hardware.
 - **The 10 MHz open question is answered, from data already on the card**: an
   earlier boot held a connected BLE link for ~7.8 h at `cpu_mhz=10`. Route A's
   throttle split is unblocked.
+  **Refuted 2026-08-16, and this bullet is why two builds hung the X4 solid.**
+  That boot was a device *believing* it was connected, not a live link. See the
+  open questions below and `power-management.md`, "A connected BLE link does NOT
+  survive 10 MHz".
 - Because of that, **the throttle split is the first change to test**, not
   modem sleep. Ordering changed the same day, on the data.
 - Nothing has been changed to save power yet. That is still deliberate.
@@ -155,6 +168,13 @@ The map screen never lets the device rest, and it takes four steps to see why:
    (`sdkconfig.defaults:1680`), so the idle task does not light-sleep -- it
    spins at 160 MHz. Roughly 99 % of the run was full-clock idling.
 
+**Steps 1-3 stopped describing the code on 2026-08-17.** The bool is split, the
+map screen does throttle, and the throttled alternative is **80 MHz** while the
+BLE controller is enabled -- not the 10 MHz named above
+(`lib/hal/HalPowerManager.h`, `BLE_SAFE_FREQ`; route A below). The
+decomposition is kept as what run 1 measured, not as a reading of today's
+firmware.
+
 The radio adds to it but is not the main cost:
 
 - **`CONFIG_BT_CTRL_MODEM_SLEEP` is not set** (`sdkconfig.defaults:993`), so the
@@ -176,22 +196,33 @@ above. None is measured. They exist to order the work, not to be quoted.
 ### A. Throttle the CPU, sleep the modem
 
 Split `preventAutoSleep()` into `preventAutoSleep()` + `preventThrottle()` so
-the map can drop to 10 MHz while it is only waiting for a fix, and set
+the map can leave the pinned 160 MHz while it is only waiting for a fix, and set
 `CONFIG_BT_CTRL_MODEM_SLEEP=y`.
 
-- Estimate: 44 mA -> 15-25 mA, so **26-43 h**.
-- **Unblocked 2026-08-15**: a live NimBLE link does survive 10 MHz (see open
-  questions). **This is the first change to test.**
-- The measurement is what promotes it. 98.5 % of run 1 sat at 160 MHz and only
+- Estimate: 44 mA -> 15-25 mA, so **26-43 h**. Written against a 10 MHz
+  throttle, so read it as an upper bound on the saving -- the floor is 80.
+- **The floor is 80 MHz, not 10 -- corrected 2026-08-16.** Two builds that
+  throttled to 10 MHz with the controller up hung the device solid. Below
+  80 MHz the CPU leaves the PLL for the crystal and APB follows it down; the
+  controller's `ESP_PM_APB_FREQ_MAX` defence is compiled out because
+  `CONFIG_PM_ENABLE` is not set (`power-management.md`, "Why 10 MHz breaks
+  BLE"). The floor is enforced inside `HalPowerManager::lowPowerFloorMhz()`
+  from `esp_bt_controller_get_status()`, not by a guard at the call site.
+- **Shipped 2026-08-17 and bench-verified**: the throttle engages with a central
+  connected, the link holds, `throttled_ms` 93.8 % of wall against run 2's
+  0.02 %. Draw not yet measured -- prediction to refute is 24.0 -> 14-19 mA.
+- The measurement is what promoted it. 98.5 % of run 1 sat at 160 MHz and only
   1.3 % of that did any work, so the throttle is the largest single lever in
   the tree, and it is no longer a guess about where the milliamps are.
-- Probably still does not reach 9 mA on its own -- the CPU does not stop, it
-  only slows. If it lands under 10 mA, route B is unnecessary and three days is
-  already done.
+- **It cannot reach 9 mA, and the 80 MHz floor is why.** The CPU does not stop,
+  it halves, and it may not go lower for as long as the radio is up. Anything
+  below the floor needs route B (which compiles the APB locks back in) or the
+  radio switched off entirely. There is no gradual clock ramp between the two.
 - Two things the implementation must get right, both from run 1's counters:
   - **Release the throttle around drawing.** A viewport reset is ~2 s at
-    160 MHz; at 10 MHz it would be tens of seconds. Run 1 drew 62 times an
-    hour, so this is the difference between usable and not.
+    160 MHz and roughly doubles at 80 (arithmetic, not measured). Run 1 drew 62
+    times an hour, so drawing runs at full clock --
+    `MapActivity::kickFullClock()`.
   - **`preventAutoSleep()` must stay true while `preventThrottle()` goes
     false.** The split releases the clock, not the sleep guard.
 
@@ -203,17 +234,49 @@ connection events and wakes for each one.
 - Estimate at 5 % duty: 35 mA awake + ~1 mA asleep = **~2.7 mA**, an order of
   magnitude past the target.
 - **This is where three days actually lives.**
+- **And it is the only legal way under 80 MHz while the radio is up.** Every
+  `ESP_PM_APB_FREQ_MAX` lock site in the BLE controller sits inside
+  `#ifdef CONFIG_PM_ENABLE` (`power-management.md`, "Why 10 MHz breaks BLE"), so
+  this flag is not merely what enables light sleep -- it is what makes any
+  sub-80 MHz state with a live controller supported at all. Route A's floor is a
+  consequence of not having it.
 - Riskiest item in the campaign: APB frequency moves under drivers that may not
   take PM locks -- SPI panel, ADC, USB CDC.
-- Constrained by the clock source. `CONFIG_RTC_CLK_SRC_INT_RC=y`
-  (`sdkconfig.defaults:1568`, and `CONFIG_ESP32C3_RTC_CLK_SRC_INT_RC=y` at
-  3478) means the internal RC oscillator. BLE with light sleep works on the
-  internal RC, but its drift forces wider RX windows, which eats part of the
-  saving. An external 32.768 kHz crystal would be much tighter. Whether X4 has
-  one is still unanswered, and that question is now **blocking**, because it
-  decides whether B is good or excellent.
+- **The flag list is longer than this line says, and one missing option makes
+  the whole route a no-op.** With the low-power clock on the main crystal the
+  controller holds an `ESP_PM_NO_LIGHT_SLEEP` lock for as long as Bluetooth is
+  enabled unless `CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP` is set too --
+  so PM_ENABLE plus tickless idle alone would compile, boot, hold the link and
+  never light-sleep (`power-management.md`, "`CONFIG_PM_ENABLE` alone saves
+  nothing while the radio is up"; full set in `power-idle-sleep.md`). Found
+  2026-08-19 by reading the pinned IDF, not by burning a run on it.
+- Constrained by the clock source, and **the X4's choice is already made for it.**
+  Espressif's own measurement of a C3 BLE peripheral: light sleep is **2.3 mA** on
+  the main crystal and **140 uA** on an external 32.768 kHz crystal
+  (`power-management.md`, "What a C3 actually draws asleep") -- 16x. But the X4
+  **cannot carry that crystal**: on C3 it can only be soldered across GPIO0/GPIO1,
+  and those two pins are the button ADC ladder and the battery divider
+  (`power-management.md`, "The X4 cannot have a 32.768 kHz crystal"). So route B on
+  X4 lands on the 2.3 mA column plus the board's own floor, and the 140 uA column is
+  a requirement for a future board. One caveat kept honest: that ceiling is for a
+  build that holds connections. The internal 136 kHz RC needs no crystal and no pins
+  and is forbidden only for the connection state, so a parked advertising-only build
+  is unpriced -- experiment 6 in `power-idle-sleep.md`.
+  The internal 136 kHz RC is not an option either -- its accuracy is "a lot larger
+  than 500ppm which is required in Bluetooth communication" (IDF Kconfig), i.e. it
+  cannot hold a connection.
 
 ### C. Duty-cycle the whole link
+
+> **Superseded 2026-08-19, on arithmetic** -- see
+> [`power-idle-sleep.md`](power-idle-sleep.md), "S3 -- rejected". Every wake is a
+> full boot, so at any cadence that still resumes without the rider touching the
+> device this averages roughly what route B costs, while adding a lossy wake
+> channel, lost RAM per wake and appear/disappear churn on the phone. The case it
+> was invented for -- parked with no link -- is covered by route B instead: an
+> advertising peripheral light-sleeps between advertising events, so the
+> advertisement can stay on the air continuously at single-milliamp cost. Deep
+> sleep keeps the role it already has: the deliberate power-off.
 
 Do not hold a BLE link at all while walking. The phone sends a fix, the device
 deep-sleeps 30-60 s, wakes on the RTC timer, reconnects, reads, and redraws only
@@ -256,6 +319,68 @@ hike mode; that should be enough.
 5. **Temperature moves both the cell and the ADC.** A winter ride and a desk
    run are not the same experiment. Record where a run happened.
 
+## The frozen baseline: this campaign flashes a stale branch on purpose
+
+**Exemption granted by the maintainer 2026-08-19.** The parent repo's `CLAUDE.md`
+says: only flash a rebased branch, re-check whether `develop` moved right before
+every upload, and rebase if it did. **The power campaign is exempt from that**, and
+its measurement branch stays pinned to one base commit for the whole series.
+
+**Why.** If `develop` moves between run 1 and run 5, a difference in draw can be
+another session's commit rather than the option under test. That is the same
+failure this campaign already walked into once, and no amount of care inside a run
+fixes it afterwards. A comparison is only worth making against a fixed baseline.
+
+**Why this is not "the rule was wrong".** The two rules protect different things.
+The rebase rule exists so a flash cannot put firmware on the device that silently
+lacks another session's fix, leaving someone reasoning about a device that is not
+what they think it is. That risk is about the device's state being misleading. The
+freeze is about numbers being comparable. Neither substitutes for the other, so the
+exemption is not "staleness is fine here" -- it is **"staleness is the design, and
+it must be declared rather than accidental"**.
+
+Four things pay for it. Skipping any one of them turns the exemption into the
+problem it was meant to avoid.
+
+1. **The baseline lives in the data, not in memory.** Every `power.csv` row already
+   carries `build` = `TRAILINK_VERSION`, added 2026-08-16 because 61 boots of mixed
+   firmware were indistinguishable. The measurement branch sets a distinctive
+   string -- `powerlab-<base-hash>-<n>` -- so every row identifies its own baseline
+   and two runs months apart can be told apart or matched.
+2. **Archive the binary, not just the branch.** `docs/firmware-builds/` (gitignored,
+   see its README). The strongest form of a freeze is not "the branch has not
+   moved", it is **"this exact binary is on disk and can be reflashed"**. When
+   another session flashes the device in between, that restores the identical
+   baseline with no rebuild to trust.
+3. **A tripwire on `develop`.** If something lands there that touches the
+   power-relevant surface -- BLE connection parameters, the map loop, refresh
+   cadence, `PowerLog` -- the frozen base stops being conservative and starts being
+   misleading: the work would be optimising a path that no longer exists. Then
+   rebase deliberately and **restart the series**, rather than mixing bases.
+4. **One validation run on rebased code before anything changes the product.** A
+   finding from the frozen baseline is a finding about the frozen baseline until it
+   has been seen on current `develop` once.
+
+**Two classes of build, and only the first is really frozen.**
+
+| Class | Examples | Build |
+|---|---|---|
+| Runtime states | idle, advertising, connected, light sleep, deep sleep + timer | **one** binary, bit-identical across the whole comparison, zero rebuilds |
+| Compile-time options | `CONFIG_PM_ENABLE`, the main-XTAL PU flag, `CONFIG_ESP_PHY_MAC_BB_PD` | one binary per option, all from the **same frozen base**, differing only in that option |
+
+The first class is what the power lab screen exists for
+([`power-idle-sleep.md`](power-idle-sleep.md), "The power lab screen"): selecting
+the state at runtime is what makes the binary identical, and an identical binary is
+a stronger comparison than this campaign has ever managed. The second class cannot
+be runtime-selected -- sdkconfig is compile time -- so there the old rule still
+applies in full: **one option per build, per run.** The exemption changes only
+which base they are cut from.
+
+**What the exemption does not solve.** The device is shared. Another session
+flashing its own branch between two runs ends the freeze whatever this file says.
+That is the X4 lock's job, plus telling the human a series is in progress -- and
+rider 2 above, so the baseline can be put back.
+
 ## Methodology: how to do one run
 
 Fixed shape, so runs are comparable:
@@ -277,7 +402,7 @@ The four states worth isolating, in this order:
 
 | # | State | What it isolates |
 |---|---|---|
-| 1 | Home screen, untouched | the idle floor, including the 10 MHz throttle actually engaging |
+| 1 | Home screen, untouched | the idle floor, including the 10 MHz throttle actually engaging -- no BLE controller up, so this is the one state where the floor really is 10 |
 | 2 | Map screen, no phone connected | BLE advertising + pinned 160 MHz, no traffic |
 | 3 | Map screen, phone connected, fix every 10 s | the real riding case |
 | 4 | Tile sync, transfer running | the worst case |
@@ -366,8 +491,11 @@ Phase 2 -- baseline the four states:
       Coarse -- redo the arithmetic from `batt_mv` once the card is read.
 - [ ] Runs for states 1, 2 and 4. State 2 (map, no phone) minus state 3 is the
       only clean way to price the radio.
-- [ ] Answer the crystal question -- it gates route B and nothing else in the
-      list can substitute for it.
+- [x] **Answer the crystal question** (2026-08-19). The X4 cannot have a working
+      external 32.768 kHz crystal: on C3 it is fixable only to GPIO0/GPIO1, and
+      those carry the button ADC ladder and the battery divider. No flash, no
+      meter -- decided from Espressif's register header and our own driver
+      (`power-management.md`, "The X4 cannot have a 32.768 kHz crystal").
 - [ ] Write all four voltage slopes into `power-management.md`, with the
       caveats each one carries.
 - [ ] One inline-meter cross-check, documented as system-plus-charging.
@@ -400,13 +528,34 @@ Route A -- **start here**. Ordered by measured lever size, biggest first:
 
 Route B (only if route A lands short of 9 mA):
 
-- [ ] Settle the external 32.768 kHz crystal question first.
-- [ ] `CONFIG_PM_ENABLE=y` with DFS and tickless idle. **Riskiest** -- APB
+- [x] **Crystal question settled 2026-08-19: no, and not fixable on X4.** GPIO1
+      carries the button ladder and GPIO0 the battery divider, which on C3 are
+      exactly the two crystal pins.
+      The boot-log test is no longer needed; if it is ever run on another board,
+      the controller prints `32.768kHz XTAL not detected, fall back to main XTAL
+      as Bluetooth sleep clock` when there is none.
+- [ ] Price the **board's own floor** -- deep sleep with the battery latch held
+      HIGH instead of cut, measured with a uA meter in series with the battery.
+      X4 has no switched rails, so SD, the divider, the regulator and the panel
+      controller stay powered in every latched sleep state and nobody knows what
+      that costs (`power-management.md`, "The board's own floor is unpriced").
+      **Do this before the crystal work**: a floor of 1 mA or more spends most of
+      the crystal's 16x before it is earned.
+- [ ] `CONFIG_PM_ENABLE=y` with DFS and tickless idle, **and the full seven-option
+      set** including `CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y` and
+      `CONFIG_ESP_PHY_MAC_BB_PD=y` (`power-idle-sleep.md`). **Riskiest** -- APB
       frequency moves under drivers that may not take PM locks (SPI panel,
-      ADC, USB CDC). Expect to find a driver that does not.
+      ADC, USB CDC). Expect to find a driver that does not. Note USB serial dies
+      when light sleep engages, so evidence comes from `power.csv` and BLE.
+- [ ] The **power lab screen** -- a build-flagged activity that enters one power
+      state deliberately, so states are selected at runtime and the binary is
+      identical across a comparison (`power-idle-sleep.md`, "The power lab
+      screen"). Not a measurement itself; the thing that makes the measurements
+      comparable.
 - [ ] Long run: 12 h minimum, then a real 72 h run before any public claim.
 
-Route C (fallback, and a hike-only profile in its own right):
+Route C (**superseded 2026-08-19** -- kept because the reconnect-cost item below
+is still the right question if any duty-cycled variant is ever revived):
 
 - [ ] Measure what one disconnect-sleep-reconnect cycle costs before building
       anything. If reconnect is expensive the whole route changes shape.
@@ -456,27 +605,48 @@ Phase 4 -- tune what the measurements expose:
 ## Open questions
 
 - ~~**Does an established NimBLE link survive a drop to 10 MHz?**~~
-  **ANSWERED 2026-08-15: yes.** Found in `power.csv` data that was already on
-  the card, not by a new run. An earlier boot logged **466 of 513 minute rows
-  with `cpu_mhz=10` and `ble=2` simultaneously** -- `ble=2` means
-  `connIntervalMs() > 0`, i.e. a live connection, not just advertising
-  (`src/PowerLog.cpp:25-27`). That is ~7.8 hours of connected link at the low
-  clock. The old hardware-verified finding stands and is about something else:
-  `NimBLEDevice::init()` hangs when *entered* in low-power mode
-  (`power-management.md`). Steady state is fine.
-  Two caveats on that same boot: it was **not the map screen** (the heap
-  profile differs and `preventAutoSleep()` would have pinned the clock), and it
-  contains **two charging jumps**, so its apparent 3.0 mA draw is contaminated
-  and must not be quoted. The link finding survives both; the draw figure does
-  not.
-- **Does the X4 have an external 32.768 kHz crystal? BLOCKING.** Decides which
-  BLE low-power clock modes are available, and therefore how much modem sleep
-  and light sleep can save. Promoted to blocking 2026-08-15: it gates route B,
-  which is the only route with a measured path to the three-day target. The
-  config today selects the internal RC (`sdkconfig.defaults:1568`), but that is
-  a default, **not evidence about the board**. Settle it by inspecting the
-  board or by building with `CONFIG_RTC_CLK_SRC_EXT_CRYS=y` and seeing whether
-  the clock calibrates -- do not infer it from the sdkconfig.
+  **ANSWERED 2026-08-16: no.** This file answered "yes" on 2026-08-15 and was
+  wrong, and the wrong answer is what justified two flashes that both hung the
+  device solid. The correction is kept here rather than deleted, because the bad
+  inference is the lesson.
+  **Bench-measured with a control run**, same rig: the throttling build took one
+  fix and went to total serial silence, never recovering; the control build held
+  the link for 22 fixes over two minutes (`power-management.md`, "A connected BLE
+  link does NOT survive 10 MHz").
+  The refuted evidence was `power.csv` showing 466 of 513 rows with `cpu_mhz=10`
+  and `ble=2` together. `ble=2` only means `connIntervalUnits_` is non-zero
+  (`src/PowerLog.cpp:25-27`), and that field is cleared in
+  `onCentralDisconnect()` (`lib/BlePositionServer/src/BlePositionServer.cpp:722`)
+  -- which never runs if the link dies in a way NimBLE's disconnect callback does
+  not service. So the rows say the device *believed* a central was there, and
+  nothing more. **A counter derived from a cached field is only as good as the
+  path that clears it**; a belief like that needs a second, independent signal --
+  traffic arriving.
+  Standing rule out of it: **never take the CPU below 80 MHz while the BT
+  controller is enabled.** The separately verified `NimBLEDevice::init()` hang is
+  the same violation, met earlier only because init is the first register
+  conversation with the BT MAC.
+- **What does the board draw with the battery latch held closed? BLOCKING, and
+  ahead of the crystal.** X4 has no switched peripheral rails, so every sleep
+  state that does not cut the latch keeps the SD card, the battery divider, the
+  regulator and the panel controller powered (`power-management.md`, "The board's
+  own floor is unpriced"). If that floor is 1 mA or more it bounds every deep
+  state and most of what the crystal could buy. Needs a uA meter in series with
+  the battery; `power.csv` cannot see microamps and a USB meter charges the cell.
+- ~~**Does the X4 have an external 32.768 kHz crystal? BLOCKING.**~~
+  **ANSWERED 2026-08-19: no, and it cannot.** On C3 the crystal is fixable only
+  across GPIO0/GPIO1 (Espressif's own IO-MUX header) and GPIO1 is the X4's button
+  ADC ladder, which works on hardware every day. Full argument, the one loophole
+  it leaves, and what it means for a future board:
+  `power-management.md`, "The X4 cannot have a 32.768 kHz crystal".
+  It was blocking from 2026-08-15 because it gates route B and sizes the prize --
+  16x on the parked floor. The prize on **this** board is therefore the 2.3 mA
+  column, not 140 uA, and route B is still worth building for it: 24 mA today. The
+  sub-milliamp door is not fully shut, only the crystal one: the internal 136 kHz RC
+  is legal for advertising and unpriced (experiment 6).
+  Cost of the answer: no flash, no meter, one read of a register header. The
+  earlier plan here was to infer it from a boot log; the pin map is stronger,
+  because a pin that already does something else cannot also hold a crystal.
 - **How long does a viewport reset take at a reduced clock?** A reset is
   already close to two seconds at 160 MHz and a large share of it is software
   floating point, which scales with the clock. Whatever else changes, the

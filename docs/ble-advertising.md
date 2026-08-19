@@ -155,6 +155,41 @@ appeared` latency once the device is actually advertising at the slow
 interval. That is `docs/ble-fix-plan.md`'s H2 — phone paired, app killed, map
 opened, five trials, median compared against 10 s.
 
+## What iOS expects, and where we sit
+
+**Primary source, read 2026-08-19**: Apple's
+[Bluetooth Accessory Design Guidelines Q&A QA1931](https://developer.apple.com/library/archive/qa/qa1931/_index.html).
+It matters because `CLAUDE.md` makes iOS a target for the phone client, and an
+iOS central may simply refuse a parameter set outside these rules.
+
+Advertising, per Apple: 20 ms for at least the first 30 s, then one of
+**152.5, 211.25, 318.75, 417.5, 546.25, 760, 852.5, 1022.5, 1285 ms**.
+
+Ours: the fast phase leaves both bounds at 0 so the host substitutes
+`BLE_GAP_ADV_FAST_INTERVAL1` = 30-60 ms (`BlePositionServer.cpp:217-218`), and
+the slow phase is 200-300 ms (`kSlowMinIntervalUnits`/`kSlowMaxIntervalUnits`,
+`BlePositionServer.h:474-479`). Neither is on Apple's list, though 200-300 ms
+straddles the sanctioned 211.25 ms. Not known to break anything; worth aligning
+when the intervals are next touched -- 211.25 ms for the ordinary slow phase, and
+1022.5 ms is the value to reach for if a parked screen ever advertises for hours
+([`power-idle-sleep.md`](power-idle-sleep.md)).
+
+Connection parameters, per Apple: `Interval Min` >= 15 ms in multiples of 15;
+`Interval Min + 15 ms <= Interval Max`; `Interval Max * (Slave Latency + 1) <=
+2 s`; `Interval Max * (Slave Latency + 1) * 3 < connSupervisionTimeout`;
+`Slave Latency <= 30`; and **2 s <= connSupervisionTimeout <= 6 s**.
+
+Our idle set is 30-50 ms with latency 4 and a supervision timeout of **20 s**
+(`BlePositionServer.h:553-569`, `:591`). Every rule passes except the last:
+**20 s is over Apple's 6 s ceiling.** The timeout was raised deliberately to
+survive mid-ride dropouts, so this is a real trade-off and not an oversight --
+but it is the one parameter an iOS client may reject the whole set over, and a
+rejected set means the phone keeps its own defaults rather than ours. Logged in
+the parent repo's `docs/BUGS.md`.
+
+**Not measured against an iPhone.** Nobody has connected an iOS central to this
+firmware. What is above is the documented rule and the code's values, nothing more.
+
 ## What is in the payload
 
 Read off the code, 2026-08-11. Advertisement:
