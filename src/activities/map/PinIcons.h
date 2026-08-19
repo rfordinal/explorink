@@ -34,14 +34,16 @@ inline const uint8_t* pinGlyphBits(size_t catalogIndex) {
     case 4:
       return kPinGlyphPinCampBits;
     case 5:
-      return kPinGlyphPinC1Bits;
+      return kPinGlyphPinFavoriteBits;
     case 6:
-      return kPinGlyphPinC2Bits;
+      return kPinGlyphPinC1Bits;
     case 7:
-      return kPinGlyphPinC3Bits;
+      return kPinGlyphPinC2Bits;
     case 8:
-      return kPinGlyphPinC4Bits;
+      return kPinGlyphPinC3Bits;
     case 9:
+      return kPinGlyphPinC4Bits;
+    case 10:
       return kPinGlyphPinC5Bits;
     default:
       return kPinGlyphPinC1Bits;

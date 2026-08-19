@@ -25,6 +25,8 @@ inline const char* pinTypeLabel(size_t catalogIndex) {
       return tr(STR_PIN_MEET);
     case 4:
       return tr(STR_PIN_CAMP);
+    case 5:
+      return tr(STR_PIN_FAVORITE);
     default:
       break;
   }

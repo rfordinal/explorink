@@ -1,6 +1,7 @@
 # Pins, as built
 
-User pins on the device: base, parking, destination, meet, camp, `#1`-`#5`. What
+User pins on the device: base, parking, destination, meet, camp, favorite,
+`#1`-`#5`. What
 the rider needs a direction and a distance to right now, not a POI database.
 
 The requirement, the decisions behind it and the phase plan are in
@@ -390,6 +391,7 @@ Glyphs, all chosen at 20-22 px on the glass:
 | Destination | `flag-triangle-right` | a pennant survives at this size; `flag` is busier |
 | Meet | `circle-dot` | `handshake` was mush at this size |
 | Camp | `tent` | |
+| Favorite | `heart` | direct Lucide match, no substitute needed |
 | `#1`-`#5` | baked numerals | Lucide has no numerals, and nothing says "#3" like a 3 |
 
 `text:X` in the manifest bakes characters from a system bold font, so the device

@@ -96,10 +96,10 @@ Taken 2026-08-15. Each closed a real fork; the reason is why it stays closed.
    extra work: pins must survive a reboot anyway, so the choice is a rewritten
    state file versus an append-only log replayed at boot. The log satisfies
    "Delete never erases history" for free.
-4. **Fixed slots: 5 named + `#1`–`#5`.** Base, Parking, Destination, Meet, Camp,
-   `#1`–`#5`. Predictable beats clever: no number handed out by the device, no
-   recycling rules. The cap is one constant. (The RAM argument against long
-   lists was wrong — see the popup ceiling above.)
+4. **Fixed slots: named types + `#1`–`#5`.** Base, Parking, Destination, Meet,
+   Camp, Favorite, `#1`–`#5`. Predictable beats clever: no number handed out by
+   the device, no recycling rules. The cap is one constant. (The RAM argument
+   against long lists was wrong — see the popup ceiling above.)
 5. **The catalogue is soft; the log is hard.** The catalogue (key, label, icon,
    order) is one table in the firmware and is expected to change. The log stores
    a **stable text key**, never an index into that table — an index would change
@@ -168,7 +168,7 @@ One table, one row per type:
 `static constexpr`, so it lands in flash, not DRAM (Resource Protocol 6).
 Adding a type is one row; reordering and relabelling are free.
 
-`kPinSlotCount = 10` today. Raising it is the constant plus catalogue rows.
+`kPinSlotCount = 11` today. Raising it is the constant plus catalogue rows.
 
 ### Active state
 
