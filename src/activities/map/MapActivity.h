@@ -147,6 +147,8 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // map exactly as it was before routes existed.
   MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath = nullptr);
 
+  bool isMapActivity() const override { return true; }
+
   void onEnter() override;
   void onExit() override;
   void loop() override;

@@ -21,6 +21,29 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   bool lastSleepFromReader = false;
   bool showBootScreen = true;
 
+  // Which screen the device went to sleep from, for the wake-side routing.
+  // lastSleepFromReader cannot answer this: it is one bool, and MapActivity does
+  // not set it (see docs/sleep-screen.md, "Hardware finding"). Written by
+  // enterDeepSleep() from the live activity, so it describes the sleep that just
+  // happened and not some earlier one.
+  enum SLEEP_ACTIVITY : uint8_t { SLEEP_ACTIVITY_OTHER = 0, SLEEP_ACTIVITY_MAP = 1 };
+  uint8_t lastSleepActivity = SLEEP_ACTIVITY_OTHER;
+
+  // The route MapActivity had open, so a wake into the map comes back with it.
+  // MapActivity::routePath_ is a bare member and dies with the activity, and the
+  // route picker is a separate screen -- without this, a wake would land in the
+  // map with the route silently gone. Read only when lastSleepActivity is
+  // SLEEP_ACTIVITY_MAP, so a stale value cannot resurrect a route on its own.
+  std::string lastSleepRoutePath;
+
+  // Anti-boot-loop guard for the wake-into-map path, the same shape as
+  // readerActivityLoadCount above: incremented before entering the map, zeroed by
+  // MapActivity once it is actually up. Nonzero at boot means the last attempt
+  // never finished, so the wake routes to Home instead. Without it, firmware that
+  // hangs inside the map hangs again on every wake and there is no way out
+  // (a panic reboots into the crash report; a hang does not).
+  uint8_t mapActivityLoadCount = 0;
+
   static const char* getFilePath() { return "/.crosspoint/state.json"; }
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);

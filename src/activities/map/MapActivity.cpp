@@ -1790,6 +1790,13 @@ void MapActivity::onEnter() {
   }
 
   publishLadders();
+
+  // Published for the wake-side routing, which has no other way to learn it:
+  // routePath_ dies with this activity and the route picker is a separate screen.
+  // Not saved here -- enterDeepSleep() writes the whole state file on the way out,
+  // and this value is only ever read when lastSleepActivity says the sleep came
+  // from the map.
+  APP_STATE.lastSleepRoutePath = routePath_;
   // The `missing` command's list, read straight out of the store rather than
   // copied in -- MISSING_TILES was loaded from the card in setup() and keeps
   // growing while this screen is open, so a copy would go stale mid-session.
@@ -2014,6 +2021,16 @@ void MapActivity::onExit() {
 
 void MapActivity::loop() {
   Activity::loop();
+
+  // The wake-into-map guard is spent here rather than at the end of onEnter():
+  // reaching a loop() tick proves onEnter() returned, which a hang inside the
+  // first render would not. Value-checked so this is one SD write per wake and
+  // nothing at all on an ordinary map entry (CLAUDE.md, write throttling).
+  if (APP_STATE.mapActivityLoadCount != 0) {
+    APP_STATE.mapActivityLoadCount = 0;
+    APP_STATE.saveToFile();
+    LOG_DBG(kLogTag, "wake-into-map guard cleared");
+  }
 
   // The pin confirmation goes away on its own timer, or on the first button --
   // whichever comes first. Before the popup below gets the input: a rider who

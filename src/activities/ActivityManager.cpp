@@ -305,6 +305,15 @@ bool ActivityManager::isReaderActivity() const {
          (currentActivity && currentActivity->isReaderActivity());
 }
 
+bool ActivityManager::isMapActivity() const {
+  // Stack as well as current, matching isReaderActivity above: the map can have a
+  // pushed activity above it, and sleeping from there is still sleeping from the
+  // map as far as the wake is concerned.
+  return std::any_of(stackActivities.begin(), stackActivities.end(),
+                     [](const auto& activity) { return activity->isMapActivity(); }) ||
+         (currentActivity && currentActivity->isMapActivity());
+}
+
 bool ActivityManager::handleForcedRefresh() { return currentActivity && currentActivity->handleForcedRefresh(); }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }

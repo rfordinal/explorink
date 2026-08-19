@@ -129,6 +129,7 @@ class ActivityManager {
   // for any activity that has not overridden it.
   bool preventThrottle() const;
   bool isReaderActivity() const;
+  bool isMapActivity() const;
   bool handleForcedRefresh();
   bool skipLoopDelay() const;
   ScreenshotInfo getScreenshotInfo() const;

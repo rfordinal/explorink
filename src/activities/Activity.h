@@ -60,6 +60,10 @@ class Activity {
   // about it behaves exactly as it did before the split.
   virtual bool preventThrottle() { return preventAutoSleep(); }
   virtual bool isReaderActivity() const { return false; }
+  // Answers the wake-side "resume into the map?" question. Its own virtual rather
+  // than a name comparison: the string "Map" is a log label, and routing a boot on
+  // a log label is the kind of coupling that breaks silently when the label moves.
+  virtual bool isMapActivity() const { return false; }
   // Returns true when the activity schedules its own forced refresh.
   virtual bool handleForcedRefresh() { return false; }
   virtual bool isHomeActivity() const { return false; }

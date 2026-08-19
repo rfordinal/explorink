@@ -293,15 +293,98 @@ the map, the whole sleep-frame save/load round trip restores an image nobody can
 perceive.** That is upstream quick resume's design, not a regression from this
 change, but it is the reason the routing half is worth building -- see below.
 
-### Open: wake returns to Home, not to the map
+### Wake back into the map
 
-`APP_STATE.lastSleepFromReader` is the only "what was the app doing" signal the
-boot routing has, and `MapActivity` does not set it, so a wake from the map routes
-to `goHome()` like any other. Returning into the map needs a `lastSleepActivity`
-plus the route path persisted in `CrossPointState` (`routePath_` is a bare member
-of `MapActivity` today, `MapActivity.h:682`, and does not survive the sleep).
-Boot-to-first-map-frame time is unmeasured; the 1,683 ms restore above is the
-frame paint alone, not the boot before it.
+A wake from the map used to route to `goHome()` like any other, because
+`APP_STATE.lastSleepFromReader` was the only "what was the app doing" signal the
+boot routing had and `MapActivity` does not set it. Three pieces of state close
+that, all in `CrossPointState` (`/.crosspoint/state.json`, which survives power
+loss -- RTC memory does not):
+
+| field | written by | read by |
+|---|---|---|
+| `lastSleepActivity` | `enterDeepSleep()`, from `activityManager.isMapActivity()` | the boot routing |
+| `lastSleepRoutePath` | `MapActivity::onEnter()` | the boot routing, only when `lastSleepActivity` says Map |
+| `mapActivityLoadCount` | the boot routing, before entering | cleared by `MapActivity::loop()` |
+
+`isMapActivity()` is a virtual on `Activity` (`Activity.h`, default false) overridden
+in `MapActivity`, walked over the stack by `ActivityManager::isMapActivity()` --
+the same shape as `isReaderActivity()`. It is not a comparison against the
+activity's `name`: that string is a log label, and routing a boot on a log label
+breaks silently the day the label moves.
+
+`enterDeepSleep()` reads it *before* `goToSleep()` tears the activity down, for the
+same reason `lastSleepFromReader` is read there: afterwards there is nothing left
+to ask.
+
+The route needs its own field because `MapActivity::routePath_` is a bare member
+that dies with the activity, and the picker is a separate screen -- without it a
+wake would land in the map with the route silently gone. It is only ever read when
+`lastSleepActivity` says Map, so a stale value cannot resurrect a route on its own.
+
+#### Two ways out, because a map that cannot start must not trap the device
+
+`mapActivityLoadCount` is the same contract `readerActivityLoadCount` has
+(`main.cpp`, `EpubReaderActivity.cpp:226`): counted up before entering, cleared
+once the activity is demonstrably alive. Nonzero at boot declines the resume and
+lands on Home. Without it, firmware that cannot get through
+`MapActivity::onEnter()` fails again on every wake and there is no way back to a
+usable screen -- a panic reboots into the crash report, but a **hang** does not.
+
+It is cleared on `MapActivity`'s first `loop()` tick rather than at the end of
+`onEnter()`: reaching a `loop()` tick proves `onEnter()` returned, which a hang
+inside the first render would not. The write is value-checked, so it costs one SD
+write per wake and nothing on an ordinary map entry.
+
+The second way out is a held **Back** at boot, which the reader resume already
+had.
+
+#### The restore paint is skipped on this path
+
+The quick-resume wake normally loads the saved frame, adds a loading icon and
+spends a whole-panel `HALF` (1,684 ms) showing it. On the way into the map that
+frame has a lifetime of a few seconds -- `MapActivity`'s entry frame is itself a
+whole-panel `HALF` (`pendingEntryCleanRefresh_`) that rewrites every one of those
+pixels. So the paint is skipped and the panel is not blank meanwhile: e-ink holds
+the sleep screen, which is the map with its moon, until the live map lands on it.
+
+`loadSleepFrameBuffer()` still runs on this path, for its *other* job -- it deletes
+`sleep_frame.bin`. A file left behind would be restored by some later, unrelated
+quick resume.
+
+#### What it costs, and what "resume" does not include
+
+**Measured on the X4 2026-08-19** (before this change, off the same run that
+verified the map-exit fix -- so these are the parts being assembled, not a
+measurement of the assembled path):
+
+| stage | time | where it goes |
+|---|---|---|
+| reset to first paint ready | ~1,150 ms | derived: the restore's `HALF` completes at t=2834 and takes 1,683 ms |
+| `MapActivity::onEnter()` | 5,019 ms | logged as `New max loop duration` |
+| ... of which framebuffer | 2,530 ms | `framebuffer ready in 2530 ms`, 1,311 ms of it reading the card |
+| ... of which panel | 1,683 ms | the entry `HALF` |
+
+So **wake to a live map is around 6 s**, and the boot is the small half of it. The
+map's own entry work dominates, which is where to look if this needs to be faster.
+Still unmeasured on the assembled path -- the numbers above are its parts.
+
+Not restored, and worth being explicit about since "exactly as before" is the
+obvious expectation:
+
+- **`screenMode_` resets to `Follow`** (`MapActivity.cpp`, `onEnter()`). Falling
+  asleep with the menu or observation mode open wakes into Follow. A deliberate
+  choice, not an oversight.
+- **The BLE link.** The server restarts in ~60 ms (measured, `BlePositionServer.begin()
+  returned` at t=537473 against entry at 537413) but the phone has to reconnect, and
+  nothing on the device can make it.
+- Zoom, ride mode, marker step and the last fix were already persisted in
+  `CrossPointSettings` before this change (`mapZoomStep[]`, `mapMode`,
+  `mapMarkerStep[]`, `mapHasLastFix`), so those do come back as they were.
+
+**Not verified on hardware yet.** A pass has to check: sleep from the map wakes
+into the map and not Home, the route comes back with it, a held Back still lands on
+Home, and sleeping from Home is unaffected.
 
 The frame this restores from is saved/loaded around deep sleep by
 `saveSleepFrameBuffer()` / `loadSleepFrameBuffer()` (`main.cpp:203-222`).
