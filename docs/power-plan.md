@@ -10,6 +10,10 @@ Findings themselves do **not** live here. They go in
 [`power-management.md`](power-management.md), which is the topic doc. This is
 the campaign.
 
+The parked map screen has its own design doc since 2026-08-19:
+[`power-idle-sleep.md`](power-idle-sleep.md) -- what parks the device, what wakes
+it, the power lab screen, and the experiment order. It supersedes route C below.
+
 Related: [`optimization/07-power-and-lifecycle.md`](optimization/07-power-and-lifecycle.md)
 (the 2026-08-06 code review of the same area -- its step 1 is this plan's
 phase 1).
@@ -233,15 +237,34 @@ connection events and wakes for each one.
   consequence of not having it.
 - Riskiest item in the campaign: APB frequency moves under drivers that may not
   take PM locks -- SPI panel, ADC, USB CDC.
-- Constrained by the clock source. `CONFIG_RTC_CLK_SRC_INT_RC=y`
-  (`sdkconfig.defaults:1568`, and `CONFIG_ESP32C3_RTC_CLK_SRC_INT_RC=y` at
-  3478) means the internal RC oscillator. BLE with light sleep works on the
-  internal RC, but its drift forces wider RX windows, which eats part of the
-  saving. An external 32.768 kHz crystal would be much tighter. Whether X4 has
-  one is still unanswered, and that question is now **blocking**, because it
-  decides whether B is good or excellent.
+- **The flag list is longer than this line says, and one missing option makes
+  the whole route a no-op.** With the low-power clock on the main crystal the
+  controller holds an `ESP_PM_NO_LIGHT_SLEEP` lock for as long as Bluetooth is
+  enabled unless `CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP` is set too --
+  so PM_ENABLE plus tickless idle alone would compile, boot, hold the link and
+  never light-sleep (`power-management.md`, "`CONFIG_PM_ENABLE` alone saves
+  nothing while the radio is up"; full set in `power-idle-sleep.md`). Found
+  2026-08-19 by reading the pinned IDF, not by burning a run on it.
+- Constrained by the clock source, and the size of that is now known.
+  Espressif's own measurement of a C3 BLE peripheral: light sleep is **2.3 mA**
+  on the main crystal and **140 uA** on an external 32.768 kHz crystal
+  (`power-management.md`, "What a C3 actually draws asleep"). So the crystal
+  question is **16x on the parked floor**, not the "good vs excellent" this line
+  used to claim. The internal 136 kHz RC is not an option at all -- its accuracy
+  is "a lot larger than 500ppm which is required in Bluetooth communication"
+  (IDF Kconfig), i.e. it cannot hold a connection.
 
 ### C. Duty-cycle the whole link
+
+> **Superseded 2026-08-19, on arithmetic** -- see
+> [`power-idle-sleep.md`](power-idle-sleep.md), "S3 -- rejected". Every wake is a
+> full boot, so at any cadence that still resumes without the rider touching the
+> device this averages roughly what route B costs, while adding a lossy wake
+> channel, lost RAM per wake and appear/disappear churn on the phone. The case it
+> was invented for -- parked with no link -- is covered by route B instead: an
+> advertising peripheral light-sleeps between advertising events, so the
+> advertisement can stay on the air continuously at single-milliamp cost. Deep
+> sleep keeps the role it already has: the deliberate power-off.
 
 Do not hold a BLE link at all while walking. The phone sends a fix, the device
 deep-sleeps 30-60 s, wakes on the RTC timer, reconnects, reads, and redraws only
@@ -428,13 +451,34 @@ Route A -- **start here**. Ordered by measured lever size, biggest first:
 
 Route B (only if route A lands short of 9 mA):
 
-- [ ] Settle the external 32.768 kHz crystal question first.
-- [ ] `CONFIG_PM_ENABLE=y` with DFS and tickless idle. **Riskiest** -- APB
+- [ ] Settle the external 32.768 kHz crystal question first. **Zero
+      instruments**: build with `CONFIG_RTC_CLK_SRC_EXT_CRYS=y` +
+      `CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y` and read the boot log -- the
+      controller prints `32.768kHz XTAL not detected, fall back to main XTAL as
+      Bluetooth sleep clock` when the board has none (`power-idle-sleep.md`,
+      experiment 2).
+- [ ] Price the **board's own floor** -- deep sleep with the battery latch held
+      HIGH instead of cut, measured with a uA meter in series with the battery.
+      X4 has no switched rails, so SD, the divider, the regulator and the panel
+      controller stay powered in every latched sleep state and nobody knows what
+      that costs (`power-management.md`, "The board's own floor is unpriced").
+      **Do this before the crystal work**: a floor of 1 mA or more spends most of
+      the crystal's 16x before it is earned.
+- [ ] `CONFIG_PM_ENABLE=y` with DFS and tickless idle, **and the full seven-option
+      set** including `CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y` and
+      `CONFIG_ESP_PHY_MAC_BB_PD=y` (`power-idle-sleep.md`). **Riskiest** -- APB
       frequency moves under drivers that may not take PM locks (SPI panel,
-      ADC, USB CDC). Expect to find a driver that does not.
+      ADC, USB CDC). Expect to find a driver that does not. Note USB serial dies
+      when light sleep engages, so evidence comes from `power.csv` and BLE.
+- [ ] The **power lab screen** -- a build-flagged activity that enters one power
+      state deliberately, so states are selected at runtime and the binary is
+      identical across a comparison (`power-idle-sleep.md`, "The power lab
+      screen"). Not a measurement itself; the thing that makes the measurements
+      comparable.
 - [ ] Long run: 12 h minimum, then a real 72 h run before any public claim.
 
-Route C (fallback, and a hike-only profile in its own right):
+Route C (**superseded 2026-08-19** -- kept because the reconnect-cost item below
+is still the right question if any duty-cycled variant is ever revived):
 
 - [ ] Measure what one disconnect-sleep-reconnect cycle costs before building
       anything. If reconnect is expensive the whole route changes shape.
@@ -505,9 +549,19 @@ Phase 4 -- tune what the measurements expose:
   controller is enabled.** The separately verified `NimBLEDevice::init()` hang is
   the same violation, met earlier only because init is the first register
   conversation with the BT MAC.
+- **What does the board draw with the battery latch held closed? BLOCKING, and
+  ahead of the crystal.** X4 has no switched peripheral rails, so every sleep
+  state that does not cut the latch keeps the SD card, the battery divider, the
+  regulator and the panel controller powered (`power-management.md`, "The board's
+  own floor is unpriced"). If that floor is 1 mA or more it bounds every deep
+  state and most of what the crystal could buy. Needs a uA meter in series with
+  the battery; `power.csv` cannot see microamps and a USB meter charges the cell.
 - **Does the X4 have an external 32.768 kHz crystal? BLOCKING.** Decides which
-  BLE low-power clock modes are available, and therefore how much modem sleep
-  and light sleep can save. Promoted to blocking 2026-08-15: it gates route B,
+  BLE low-power clock modes are available, and therefore how much light sleep can
+  save. **Now sized: 16x on the parked floor** -- 2.3 mA on the main crystal
+  versus 140 uA with the crystal (`power-management.md`, "What a C3 actually
+  draws asleep"). Settle it from a boot log, no instrument needed
+  (`power-idle-sleep.md`, experiment 2). Promoted to blocking 2026-08-15: it gates route B,
   which is the only route with a measured path to the three-day target. The
   config today selects the internal RC (`sdkconfig.defaults:1568`), but that is
   a default, **not evidence about the board**. Settle it by inspecting the

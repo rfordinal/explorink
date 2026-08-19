@@ -256,6 +256,127 @@ in rather than merely requested: `CONFIG_BT_CTRL_SLEEP_MODE_EFF` and
 map held 160 MHz all day. The CPU is now the largest remaining component, and
 an 80 MHz floor is the next thing to try (see "Why 10 MHz breaks BLE").
 
+## What a C3 actually draws asleep, and what light sleep costs with BLE up
+
+**Primary source, read 2026-08-19** from the pinned ESP-IDF on disk (5.5.2.260206,
+`~/.platformio/packages/framework-espidf`): its own NimBLE `power_save` example is
+a `bleprph` peripheral -- our shape of workload -- and Espressif publishes the
+measured currents for it
+(`examples/bluetooth/nimble/power_save/README.md:130-141`; same table in the
+[GitHub copy](https://github.com/espressif/esp-idf/blob/release/v5.5/examples/bluetooth/nimble/power_save/README.md)).
+
+| ESP32-C3, BLE peripheral | Current |
+|---|---|
+| modem sleep, no light sleep | 12 mA |
+| light sleep, **main XTAL** as BLE low-power clock | **2.3 mA** |
+| light sleep, **external 32.768 kHz crystal** | **140 uA** |
+
+Three things this settles.
+
+- **The 32.768 kHz crystal question is worth 16x on the parked floor**, not the
+  "good vs excellent" that `power-plan.md` claimed before this. 2.3 mA is about
+  ten days on the 650 mAh cell; 140 uA is months.
+- The datasheet's 130 uA light-sleep figure (Table 5-9) is the **no-BLE** number
+  and does not apply to any state this firmware wants.
+- It cross-checks our own scale: 24.0 mA measured at 160 MHz with the radio up
+  (run 2, `power-plan.md`) sits on the datasheet's 16-21 mA modem-sleep active
+  band plus board overhead.
+
+A devkit is not this board. Everything above is the **SoC** term; the board's own
+floor sits on top of it and is unpriced -- next section but one.
+
+## `CONFIG_PM_ENABLE` alone saves nothing while the radio is up
+
+**Read off the pinned ESP-IDF source 2026-08-19. Not yet met on hardware, and the
+point is not to meet it.**
+
+With `CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y` -- what this tree sets
+(`platformio.ini:160`) -- the controller **forbids light sleep for the whole time
+Bluetooth is enabled**, unless one further option is set:
+
+1. `s_lp_cntl.no_light_sleep = 1` is set when the low-power clock is the main
+   XTAL and `CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP` is **not** defined
+   (`components/bt/controller/esp32c3/bt.c:1707-1710`) -- and equally when an
+   external 32 kHz crystal was selected but not detected (`:1698-1700`).
+2. That flag makes the controller create and hold an `ESP_PM_NO_LIGHT_SLEEP`
+   lock for as long as it is enabled, with exactly one warning line:
+   `light sleep mode will not be able to apply when bluetooth is enabled.`
+   (`bt.c:1755-1759`).
+3. With the option defined, the main crystal is kept powered through light sleep
+   instead (`esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_ON)`,
+   `bt.c:1720-1722`). That is what the 2.3 mA above pays for.
+
+So a build with `CONFIG_PM_ENABLE=y` and tickless idle but without the PU option
+compiles, boots, runs, holds its link -- and light-sleeps **never** while the map
+screen is up. The symptom would read as "light sleep does not help on this chip",
+which is the wrong lesson to learn from a day-long run.
+
+Kconfig dependencies worth knowing before writing any of this
+(`components/bt/controller/esp32c3/Kconfig.in:410-433`): the PU option
+`depends on ... && FREERTOS_USE_TICKLESS_IDLE`, so tickless idle is mandatory,
+not an optimisation; and `BT_CTRL_LPCLK_SEL_EXT_32K_XTAL` `depends on
+RTC_CLK_SRC_EXT_CRYS || RTC_CLK_SRC_EXT_OSC`, so moving to the crystal means
+moving the RTC clock source too. The same Kconfig also rules out the internal
+oscillator for our use in as many words: the 136 kHz RC's accuracy "is a lot
+larger than 500ppm which is required in Bluetooth communication, so don't select
+this option in scenarios such as BLE connection state" (`:418-423`).
+
+The full option set, and where the plan for it lives:
+[`power-idle-sleep.md`](power-idle-sleep.md).
+
+## The board's own floor is unpriced, and it bounds every sleep state
+
+**Read off the code 2026-08-19. Open on hardware.**
+
+`PowerManager::powerDownRailsForSleep()` drives every switched peripheral rail to
+its off level and latches it through deep sleep -- **and it is a no-op on X4 and
+X3**, whose profiles have no rail-enable pins
+(`freeink-sdk/libs/hardware/PowerManager/src/PowerManager.cpp:73-82`, and the
+comment at its call site in `lib/hal/HalPowerManager.cpp`).
+
+So in any state that keeps the battery latch closed, the SD card, the battery
+divider, the regulator's quiescent current and the panel controller stay powered.
+Today's "off" measures near zero only because cutting the latch
+(`lib/hal/HalPowerManager.cpp:100-109`) removes the whole board from the battery.
+
+**Consequence for every number in this file.** If that floor is 1 mA or more, the
+SoC's 5 uA deep sleep is irrelevant and most of the crystal's 16x is unreachable.
+It has never been measured, it needs a uA meter in series with the battery -- the
+`power.csv` instrument cannot see microamps and a USB meter charges the cell --
+and it is the first experiment in
+[`power-idle-sleep.md`](power-idle-sleep.md).
+
+## Wake sources on this chip: deep sleep is the button, light sleep is anything
+
+**Primary source, ESP-IDF 5.5.2.260206 on disk, read 2026-08-19.**
+
+- **Deep-sleep GPIO wake is GPIO0-5 only** on C3
+  (`SOC_GPIO_DEEP_SLEEP_WAKE_VALID_GPIO_MASK`,
+  `components/soc/esp32c3/include/soc/soc_caps.h:177`). The power button is
+  GPIO3 (`BoardConfig.h:694`) and qualifies. The other buttons are on an ADC
+  ladder (`BoardConfig.h:687`), polled rather than wired to a wake line, so they
+  cannot wake anything.
+- **There is no wake-on-BLE from deep sleep.** The chip does have a BT wake
+  source -- `SOC_PM_SUPPORT_BT_WAKEUP` is 1 (`soc_caps.h:446`) -- but it is a
+  **light sleep** source. Deep sleep powers the radio down and the link is gone.
+- **There is no ULP.** `soc_caps.h` defines no `SOC_ULP*` for C3 at all, so
+  nothing can watch a sensor while the CPU sleeps. Combined with the X4 having no
+  IMU (`BoardConfig.h:707`), the device cannot detect its own motion in any
+  power state.
+
+## `sdkconfig.defaults` is generated and gitignored -- cite `platformio.ini`
+
+The `sdkconfig.defaults:NNNN` citations in this file and in `power-plan.md` point
+at a file that is **not in the repository**: it is generated from
+`platformio.ini`'s `custom_sdkconfig` block and ignored (`.gitignore:34-35`). A
+fresh clone or a new worktree does not have it, and its line numbers move every
+time it is regenerated.
+
+What we actually set lives in `platformio.ini` (`custom_sdkconfig`, the BLE and
+modem-sleep block around `:120-160`). Cite that. Treat a
+`sdkconfig.defaults` line number as a note about the generated snapshot on one
+machine, not as a reference anyone else can follow.
+
 ## The state-3 baseline: ~45 mA over 11.5 hours
 
 **Measured on hardware, 2026-08-15.** The first run long enough to be worth
