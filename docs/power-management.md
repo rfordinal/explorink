@@ -735,6 +735,71 @@ connected-idle current draw looks like with latency 4 instead of 9 -- exactly
 the numbers `power.csv`/`stats` above can catch once one is run with this code
 on.
 
+## The fast set asked for a range, and Android picked its slow end (2026-08-20)
+
+**Measured on an X4 against an S24**, one wallet document over BLE, phone-side log and
+device serial captured together.
+
+The transfer-active request was `12-24 units` (15-30 ms). A connection parameter request
+is a **range**, and the central picks: Android picked 24. The device serial says it
+plainly, with this device's own 20 s supervision timeout as the fingerprint that the
+value came from *this* request being honoured rather than from the phone changing its
+mind:
+
+```
+conn params: requested fast set (12-24 units, latency 0) for a transfer in flight
+conn params: interval 12 units (15 ms), latency 0, timeout 500
+conn params: interval 24 units (30 ms), latency 0, timeout 2000
+```
+
+Throughput follows the interval one for one, inside a single transfer:
+
+| file | size | interval in force | rate |
+|---|---|---|---|
+| manifest | 46 kB | 30 ms | 4.03 kB/s |
+| fit page | 47 kB | 15 ms | **7.27 kB/s** |
+| fit planes | 141 kB | 15 ms | **7.56 kB/s** |
+| detail page | 188 kB | 30 ms | 3.89 kB/s |
+| detail planes | 141 kB | 30 ms | 3.89 kB/s |
+
+So **the "fast" request was what halved the transfer.** The phone had already negotiated
+15 ms through its own `requestConnectionPriority(HIGH)`; every `begin` frame then handed
+the central permission to go back to 30 ms.
+
+**The fix:** `kConnParamsFastMaxUnits` is 12, the same as the min. A single-value range
+has no slow end to pick.
+
+**What it costs, stated rather than waved away.** A central that will not schedule 15 ms
+used to be able to grant 24 (30 ms); now it rejects the request instead, and the link
+keeps whatever is already in force. With no app-side `CONNECTION_PRIORITY_HIGH` that can
+be the idle set at up to 50 ms, which is *slower* than the old worst case. There is no
+retry either: the request fires once per transfer-begin edge, and a NimBLE rejection
+shows up only in NimBLE's own log because `updateConnParams` returns void. Acceptable
+today because the Android app holds HIGH for the whole queue; not acceptable for a client
+that does not.
+
+**iOS, written down now rather than discovered later.** Apple's QA1931 wants
+Interval Max >= Interval Min + 15 ms, so a single-value request is outside what an iPhone
+accepts. A CoreBluetooth client needs its own priority equivalent, or this constant needs
+a second value for that case.
+
+Two things this cost before it was found, both worth keeping in mind next time:
+
+- **A phone-side fix was tried first and measured *worse*.** Holding
+  `CONNECTION_PRIORITY_HIGH` for the whole queue instead of per asset is correct on its
+  own terms and is in the app now, but 582 kB in 143.8 s is 4.05 kB/s against 4.67 kB/s
+  for 575 kB in 123.2 s -- because the device kept overriding it. The central cannot win an
+  argument with a peripheral request it is willing to honour.
+- **The first diagnosis was wrong, and the log said so.** The 30 ms line was read as the
+  *idle* set winning a race with the fast one. It was not: the idle set carries
+  `latency 4` and that line says `latency 0`. Read the whole line, not the number that
+  matches the hypothesis.
+
+Still open: how much of a real ride's disconnect behaviour changes with a 15 ms interval
+held for a whole multi-megabyte transfer. The supervision-timeout arithmetic is
+unaffected ((1+0) * 15 ms * 2 = 30 ms against 20 s), but battery cost at 15 ms held
+longer has not been measured.
+
 ## Letting the map screen throttle hung the device solid (2026-08-16, reverted)
 
 **Measured on hardware. The attempt is reverted; the finding is not.**

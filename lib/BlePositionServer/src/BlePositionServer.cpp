@@ -849,14 +849,18 @@ void BlePositionServer::serviceConnParams(bool transferActive) {
 
   if (transferActive) {
     if (!connParamsTransferWasActive_) {
-      // Transfer begin: fast link, no latency, while it runs. Supervision
-      // timeout check: (1 + latency) * maxInterval * 2 = (1+0) * 30 ms * 2 =
-      // 60 ms, against a 20 s (2000 * 10 ms) timeout -- clears by over 300x.
+      // Transfer begin: fast link, no latency, while it runs. One interval, not a
+      // range: a range lets the central pick its slow end, and Android does --
+      // that is what made a "fast" request halve the throughput
+      // (kConnParamsFastMaxUnits, BlePositionServer.h). Supervision timeout
+      // check: (1 + latency) * interval * 2 = (1+0) * 15 ms * 2 = 30 ms, against
+      // a 20 s (2000 * 10 ms) timeout -- clears by over 600x.
       // See kConnParamsFastTimeoutUnits (BlePositionServer.h) for why 20 s,
       // not the 4 s T6.2 shipped with.
       g_server->updateConnParams(handle, kConnParamsFastMinUnits, kConnParamsFastMaxUnits, kConnParamsFastLatency,
                                  kConnParamsFastTimeoutUnits);
-      LOG_INF("BLEPOS", "conn params: requested fast set (12-24 units, latency 0) for a transfer in flight");
+      LOG_INF("BLEPOS", "conn params: requested fast set (%u units, latency %u) for a transfer in flight",
+              static_cast<unsigned>(kConnParamsFastMinUnits), static_cast<unsigned>(kConnParamsFastLatency));
       // The idle set will need to be asked for again once this transfer
       // ends -- clearing it here rather than waiting for the end transition
       // means a transfer that starts before the previous quiet window
@@ -893,7 +897,9 @@ void BlePositionServer::serviceConnParams(bool transferActive) {
   // margin was never the problem -- a multi-second render/refresh stall was.
   g_server->updateConnParams(handle, kConnParamsIdleMinUnits, kConnParamsIdleMaxUnits, kConnParamsIdleLatency,
                              kConnParamsIdleTimeoutUnits);
-  LOG_INF("BLEPOS", "conn params: requested idle set (24-40 units, latency 4) after %lu ms quiet",
+  LOG_INF("BLEPOS", "conn params: requested idle set (%u-%u units, latency %u) after %lu ms quiet",
+          static_cast<unsigned>(kConnParamsIdleMinUnits), static_cast<unsigned>(kConnParamsIdleMaxUnits),
+          static_cast<unsigned>(kConnParamsIdleLatency),
           static_cast<unsigned long>(now - connParamsQuietSinceMs_));
   connParamsIdleRequested_ = true;
 }
