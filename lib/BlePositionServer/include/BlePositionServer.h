@@ -591,8 +591,45 @@ class BlePositionServer {
   static constexpr uint16_t kConnParamsIdleTimeoutUnits = 2000;
 
   // Transfer-active set: fast, no latency, while bytes are actually moving.
+  //
+  // **Min and max are the same number on purpose, and the range used to be
+  // 12-24.** A connection parameter request is a range, and the central is free
+  // to pick anything in it -- Android picks the slow end. Measured on an X4 and
+  // an S24, 2026-08-20 (../../../docs/power-management.md, "The fast set asked
+  // for a range"): the phone had
+  // already negotiated 12 units on its own (its own
+  // requestConnectionPriority(HIGH)), and then every `begin` frame made this
+  // device ask for 12-24, after which the log read
+  //
+  //     conn params: requested fast set (12-24 units, latency 0)
+  //     conn params: interval 24 units (30 ms), latency 0, timeout 2000
+  //
+  // -- the 2000 being this device's own supervision timeout, so the 30 ms came
+  // from this request being honoured at its slow end, not from the phone
+  // changing its mind. Throughput follows the interval one for one: files that
+  // ran at 15 ms moved at 7.3-7.6 kB/s and files at 30 ms moved at 3.9 kB/s,
+  // inside a single transfer. So the "fast" request was what slowed the
+  // transfer down.
+  //
+  // A single-value range cannot be honoured at a slow end. **The cost, stated
+  // rather than waved away:** a central that will not schedule 15 ms used to be
+  // able to grant 24 (30 ms), and now rejects the request instead -- the link
+  // then keeps whatever is already in force, and with no app-side
+  // CONNECTION_PRIORITY_HIGH that can be the idle set at up to 50 ms, i.e.
+  // slower than the old worst case. There is no retry: the request fires once
+  // per transfer-begin edge and a NimBLE rejection surfaces only in its own log
+  // (updateConnParams returns void). Acceptable today because the phone app
+  // holds HIGH for the whole queue, and worth revisiting for any central that
+  // does not.
+  //
+  // **iOS:** Apple's QA1931 wants Interval Max >= Interval Min + 15 ms, so a
+  // single-value request is outside what an iPhone accepts. A CoreBluetooth
+  // client therefore needs its own equivalent of the Android app's priority
+  // request, or this constant needs a second value for that case. Written down
+  // rather than discovered later (parent repo CLAUDE.md, "The phone app must
+  // stay portable to iOS").
   static constexpr uint16_t kConnParamsFastMinUnits = 12;  // 12 * 1.25 ms = 15 ms
-  static constexpr uint16_t kConnParamsFastMaxUnits = 24;  // 24 * 1.25 ms = 30 ms
+  static constexpr uint16_t kConnParamsFastMaxUnits = 12;  // no slow end to pick
   static constexpr uint16_t kConnParamsFastLatency = 0;
   // 2000 * 10 ms = 20 s, same value and reasoning as
   // kConnParamsIdleTimeoutUnits above -- 29 of the 57 measured disconnects
@@ -601,8 +638,9 @@ class BlePositionServer {
   // a transfer happens to be in flight when it hits. Same margins: 2x the
   // assumed 10 s render+refresh, 2.7x the slowest bench render (7463 ms), 12 s
   // inside the BLE range's 32 s ceiling, 10 s below Android's 30 s ATT
-  // timeout. (1+0)*30 ms*2 = 60 ms against it -- clears by over 300x, wider
-  // than the idle set's margin since latency is 0 here. Cost: a phone that
+  // timeout. (1+0)*15 ms*2 = 30 ms against it -- clears by over 600x (it read
+  // 60 ms and 300x while the fast set's max was 24 units), wider than the idle
+  // set's margin since latency is 0 here. Cost: a phone that
   // drops mid-transfer and is actually gone now reads as connected for up to
   // 20 s instead of 4 s -- 16 s later into kFastAdvertisingMs's 30 s
   // fast-advertising window than before this change.

@@ -138,6 +138,15 @@ Three calls, all available in this NimBLE version:
   current continuously; the map screen already prevents sleep (see plan 07), so
   this is a real battery item and must be scoped to the transfer, not left on.
 
+  **Superseded twice since this was written, and the numbers here are both
+  stale.** The shipped call is `(handle, 12, 12, 0, 2000)`: the timeout went to
+  20 s in 2026-08-14 (a 4 s timeout was measured as the *cause* of 57 of 57
+  disconnects, `../power-management.md`, "Connection parameter requests"), and
+  the max interval went from 24 to 12 in 2026-08-20 because a range lets the
+  central pick its slow end — Android did, and that halved transfer throughput
+  (`../power-management.md`, "The fast set asked for a range"). Read the
+  constants in `BlePositionServer.h`, not this line.
+
 Where to put the scoping: `MapTransferReceiver::handleBegin()` requests the
 fast params on accept, `handleChunk`'s completion path and `abandon()` restore
 the slow ones. Both run on the NimBLE host task, which is where the server
