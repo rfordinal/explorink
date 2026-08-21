@@ -4,9 +4,9 @@ The first screen after boot. One brand block, one list of seven rows, nothing
 live. Redesigned 2026-08-21 from a design sketch: mountain line art with the
 ExplorInk mark and wordmark over it, then the rows.
 
-Status: **built, not yet run on hardware.** Every number below is read off the
-code or measured on the laptop rasteriser. What a device pass has to check is
-listed at the end.
+Status: **verified on the X4 2026-08-21** -- flashed, screenshotted off the panel
+(`tools/screenshot_gate.py`), heap read off serial. What is still unverified is
+button and touch behaviour; see the end.
 
 ## Layout, in device pixels
 
@@ -17,13 +17,17 @@ The panel is 480x800 in Portrait. Lyra is the default theme
 | Band | Top | Height | Where it comes from |
 |---|---|---|---|
 | status header | 5 | 56 | `metrics.topPadding`, `metrics.homeTopPadding` |
-| brand block | 64 | 224 | `kHeaderGap` + `HOMEHEADER_ON_SCREEN_HEIGHT` |
-| rows | 296 | 7 x 64 = 448 | `metrics.menuRowHeight` |
+| brand block | 64 | 224 | `kHeaderGap` + `HOMEHEADER_HEIGHT` |
+| rows | 296 | 7 x 60 = 420 | `kRowHeight` |
 | button hints | 760 | 40 | `metrics.buttonHintsHeight` |
 
-That leaves 16 px of slack above the hints. The rows are **contiguous** -- no
-`menuSpacing` between them, unlike the old four-row menu -- which is what buys
-the brand block its 224 px. `HomeActivity::loop()` walks touches with the row
+That leaves 44 px of air above the hints. The row height is Home's own constant,
+not `metrics.menuRowHeight` (64 in Lyra): at 64 the list ends 16 px above the
+hints, which read as one block on the panel -- judged on the device, not in the
+preview.
+
+The rows are **contiguous** -- no `menuSpacing` between them, unlike the old
+four-row menu -- which is what buys the brand block its 224 px. `HomeActivity::loop()` walks touches with the row
 height as the step for the same reason
 (`src/activities/home/HomeActivity.cpp`, `rowTouch`).
 
@@ -67,9 +71,10 @@ BW mode has two levels: a pixel is black or white (`docs/eink-grayscale.md`).
 So a dimmed row draws in full black and then loses **every second pixel row** to
 white across the row's width (`BaseTheme::drawHomeMenu`, `kDimStep`). Half the
 ink, shape intact. A checkerboard was the other candidate and speckles at this
-text size; the line screen was picked on the laptop rasteriser and is one of the
-things a device pass has to confirm, since a tone that reads as grey on an LCD
-can read as flat on the panel (`../CLAUDE.md`, `CMD:SHOWIMAGE`).
+text size. The line screen was picked on the laptop rasteriser and then held up
+on the glass (2026-08-21), which is the only judge that counts: a tone that reads
+as grey on an LCD can read as flat on the panel (`../CLAUDE.md`,
+`CMD:SHOWIMAGE`).
 
 The selected row is a filled black block with white icon, label and chevron --
 `drawMono1bpp()`'s `state` argument is what makes a white glyph possible
@@ -79,7 +84,8 @@ above the selected row and above the first row: the block is its own boundary.
 ## The assets, and the two scripts that bake them
 
 **Brand block**: `src/images/home-header.svg` -> `src/images/HomeHeader.h`, via
-`scripts/gen_home_header.py`. 480x224, 13 kB of flash.
+`scripts/gen_home_header.py`. 480x224, 13 kB of flash, drawn with
+`drawMono1bpp()`.
 
 * The mountains were traced with potrace from the design sketch, so the art is
   editable vector, not a screenshot. Edit the SVG, re-run the script.
@@ -90,11 +96,23 @@ above the selected row and above the first row: the block is its own boundary.
 * Threshold 215, no dithering. Measured on the laptop rasteriser: dithering
   drops the ink from 13.8 % to 10.0 % of the block and eats the 1-2 px ridge
   lines.
-* The buffer is written **pre-rotated 90 degrees** -- raw 224x480 for art
-  authored 480x224 -- because `GfxRenderer::drawImage()` rotates the origin and
-  not the pixel data, and the blit indexes the source as `w/8` bytes per row.
-  The raw width must be a multiple of 8. Same trap as the wordmark on the boot
-  screen: `docs/sleep-screen.md`, "The wordmark image".
+* **`drawImage()` cannot place a block this wide, and fails silently.** Measured
+  on hardware 2026-08-21: the first pass drew no header at all. `drawImage()`
+  rotates the origin and not the bits, and in Portrait the rotated origin is
+  `(panelHeight - 1 - x) - height` (`lib/GfxRenderer/GfxRenderer.cpp:1211-1215`).
+  Art 480 px wide sits at `x = 0`, so that is `479 - 480 == -1`, and the blit
+  takes `y` as a `uint16_t`: `destY` becomes 65535, `destY >= displayHeight`
+  breaks on the first row
+  (`freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp:217-219`).
+  Nothing is written and nothing is logged.
+
+  So this asset is **not** pre-rotated, unlike `ExplorinkWordmark` and every
+  other bitmap in `src/images/`. `drawMono1bpp()` plots row->y and col->x
+  through `drawPixel()`, applies the orientation itself, and its `state`
+  argument is also what lets the row glyphs draw white on the selected block
+  (`lib/GfxRenderer/GfxRenderer.h:262-278`). The wordmark's pre-rotation trap
+  (`docs/sleep-screen.md`, "The wordmark image") only applies to `drawImage()`
+  callers.
 
 **Row icons**: `src/components/icons/home_icons.h`, via
 `scripts/gen_home_icons.py`. 32 px row glyphs, 22 px chevron, Lucide sources
@@ -106,14 +124,20 @@ two reasons: that one needs `rsvg-convert` (not installed here -- this one falls
 back to cairosvg, like `scripts/gen_pin_icons.py`), and it is square-only, while
 the Explore glyph is the ExplorInk mark at 32x31.
 
-## What a hardware pass has to check
+## Hardware pass, 2026-08-21
 
-* The brand block's fine lines on the panel. 1-2 px strokes at threshold 215
-  looked right on the laptop; the panel is the only judge of whether the ridge
-  hatching resolves or turns to mud.
-* Whether the dimmed rows read as "not yet" and not as "broken render".
-* The 16 px of slack: that the hints strip does not clip the Settings row.
-* Touch: that a tap lands on the row it looks like it lands on, now that the
-  step is 64 px with no gap, and that a tap on a dimmed row does nothing.
-* Heap after the change (`../CLAUDE.md`, "Check heap after firmware changes").
-  The build's static numbers: RAM 17.8 % (58,332 bytes), flash 60.2 %.
+Verified on the X4, panel screenshots via `CMD:SCREENSHOT`:
+
+* The brand block draws, and the traced 1-2 px ridge lines resolve on the glass
+  at threshold 215 -- they do not turn to mud.
+* Dimmed rows read as "not yet", not as a broken render. The line screen holds
+  at this text size.
+* Heap unchanged: `Free 124,124 B, Min Free 123,916 B, MaxAlloc 114,676 B`
+  (serial `[MEM]`, Home screen up, 10 s cadence). Build: RAM 17.8 %
+  (58,332 bytes), flash 60.2 %.
+
+Still unverified -- nothing has driven the input yet:
+
+* That Up/Down skip the three dimmed rows in both directions and wrap.
+* That a tap lands on the row it looks like it lands on, with a 60 px step and
+  no gap between rows, and that a tap on a dimmed row does nothing.

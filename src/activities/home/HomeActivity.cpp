@@ -13,11 +13,17 @@
 
 namespace {
 // The brand block: mountain line art with the logo mark and the wordmark over
-// it, one bitmap (src/images/home-header.svg, scripts/gen_home_header.py). The
-// buffer is pre-rotated, so drawImage() takes the raw dimensions while the
-// centring math uses the on-screen ones -- same constraint as the wordmark on
-// the boot screen (../boot_sleep/BrandSplash.cpp, ../../../docs/sleep-screen.md).
+// it, one bitmap (src/images/home-header.svg, scripts/gen_home_header.py).
+// Drawn with drawMono1bpp(), not drawImage(): drawImage() rotates the origin and
+// not the bits, and in Portrait a 480-tall pre-rotated buffer at x = 0 lands on
+// `(479 - 0) - 480 == -1`, which the blit reads as a uint16_t and drops. That is
+// measured, not read -- the first hardware pass drew no header at all
+// (../../../docs/home-screen.md).
 constexpr int kHeaderGap = 8;
+// Home's own row height, not metrics.menuRowHeight (64 in Lyra): seven rows at 64
+// end 16 px above the button hints, which reads as the list running into them.
+// At 60 the list ends at 716 with 44 px of air, and a 32 px glyph still has room.
+constexpr int kRowHeight = 60;
 }  // namespace
 
 // The menu, in the order it is drawn. Flash-resident: static constexpr, so the
@@ -124,10 +130,9 @@ void HomeActivity::loop() {
 
   // Rows are contiguous now (the brand block eats the space the old menu spent
   // on gaps), so the touch step is the row height itself.
-  const int menuTop = metrics.homeTopPadding + kHeaderGap + HOMEHEADER_ON_SCREEN_HEIGHT + kHeaderGap;
-  const int rowHeight = metrics.menuRowHeight;
+  const int menuTop = metrics.homeTopPadding + kHeaderGap + HOMEHEADER_HEIGHT + kHeaderGap;
   int menuRow = -1;
-  const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, rowHeight, count, 0, INT32_MAX, rowHeight);
+  const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, kRowHeight, count, 0, INT32_MAX, kRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
     if (!rows()[menuRow].enabled) return;
     if (menuTouch == MappedInputManager::RowTouch::Down) {
@@ -157,11 +162,10 @@ void HomeActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
 
   const int headerTop = metrics.homeTopPadding + kHeaderGap;
-  renderer.drawImage(HomeHeader, (pageWidth - HOMEHEADER_ON_SCREEN_WIDTH) / 2, headerTop, HOMEHEADER_WIDTH,
-                     HOMEHEADER_HEIGHT);
+  renderer.drawMono1bpp(HomeHeader, (pageWidth - HOMEHEADER_WIDTH) / 2, headerTop, HOMEHEADER_WIDTH, HOMEHEADER_HEIGHT,
+                        true);
 
-  const int menuTop = headerTop + HOMEHEADER_ON_SCREEN_HEIGHT + kHeaderGap;
-  const int rowHeight = metrics.menuRowHeight;
+  const int menuTop = headerTop + HOMEHEADER_HEIGHT + kHeaderGap;
 
   // The theme draws rows, not menu items: 7 x 12 bytes of stack, well inside the
   // 256-byte local budget (../../../CLAUDE.md, The Resource Protocol).
@@ -171,7 +175,7 @@ void HomeActivity::render(RenderLock&&) {
     drawRows[i] = BaseTheme::HomeRow{I18n::getInstance().get(table[i].label), table[i].icon, table[i].enabled};
   }
   GUI.drawHomeMenu(renderer, Rect{0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight}, drawRows,
-                   kRowCount, selectorIndex, rowHeight);
+                   kRowCount, selectorIndex, kRowHeight);
 
   const auto labels = mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

@@ -243,7 +243,7 @@ gate.
 [`docs/home-screen.md`](./docs/home-screen.md) is the Home screen: the brand
 block's asset pipeline (two generator scripts, one traced SVG), the seven rows
 and why three of them draw dimmed, and how a row is dimmed on a panel with no
-grey. Built 2026-08-21, not yet run on hardware.
+grey. Verified on the X4 2026-08-21; input handling still untested.
 
 ## Credits
 
