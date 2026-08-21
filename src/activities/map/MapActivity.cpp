@@ -2825,6 +2825,10 @@ int32_t MapActivity::riderLonE7() const {
   return screenMode_ == MapScreenMode::Observe ? observeReturnLonE7_ : lastLonE7_;
 }
 
+uint8_t MapActivity::riderHeading() const {
+  return screenMode_ == MapScreenMode::Observe ? observeReturnHeading_ : lastHeading_;
+}
+
 const char* MapActivity::pinSaveRefusal() const {
   // Never write 0,0. With no fix at all there is nothing to save *at*, and a pin
   // off the coast of Ghana is worse than no pin.
@@ -4224,13 +4228,24 @@ void MapActivity::saveLaddersIfChanged() {
   for (uint8_t mode = 0; mode < kMapRideModeCount && !changed; ++mode) {
     changed = SETTINGS.mapZoomStep[mode] != zoomStep_[mode] || SETTINGS.mapMarkerStep[mode] != markerStep_[mode];
   }
+  // **The rider's position, not the frame's anchor.** riderLatE7() and not
+  // lastLatE7_, and the difference is a real bug this replaced (found on
+  // hardware 2026-08-21, docs/map-observation-mode.md, "The pan target is not
+  // the rider"): renderViewport() repoints lastLatE7_ at whatever it draws, so
+  // after a pan, a pin's `Show` or Nearby's `View on map` that variable is the
+  // place the rider was *looking at*. Persisting it wrote the pan target as the
+  // last known fix, and the next entry into the map drew the Follow marker --
+  // ring plus heading arrow -- on it, claiming the rider was standing there.
+  const int32_t fixLatE7 = riderLatE7();
+  const int32_t fixLonE7 = riderLonE7();
+  const uint8_t fixHeading = riderHeading();
   // Only a fix this *session* actually produced, never the one onEnter()
   // just bootstrapped off the card -- otherwise every re-entry would write
   // the same fix straight back at itself. showingPersistedFix_ is exactly
   // that distinction (cleared the moment a real fix lands, see loop()).
   const bool fixChanged = hasReceivedAny_ && !showingPersistedFix_ &&
-                          (!SETTINGS.mapHasLastFix || SETTINGS.mapLastLatE7 != lastLatE7_ ||
-                           SETTINGS.mapLastLonE7 != lastLonE7_ || SETTINGS.mapLastHeading != lastHeading_);
+                          (!SETTINGS.mapHasLastFix || SETTINGS.mapLastLatE7 != fixLatE7 ||
+                           SETTINGS.mapLastLonE7 != fixLonE7 || SETTINGS.mapLastHeading != fixHeading);
   // CLAUDE.md rule 8: never write the settings file on every interaction.
   // The presses (and now fixes) already coalesced into one deadline; this is
   // the second guard, and the one that makes leaving and re-entering the map
@@ -4244,9 +4259,9 @@ void MapActivity::saveLaddersIfChanged() {
   }
   if (fixChanged) {
     SETTINGS.mapHasLastFix = true;
-    SETTINGS.mapLastLatE7 = lastLatE7_;
-    SETTINGS.mapLastLonE7 = lastLonE7_;
-    SETTINGS.mapLastHeading = lastHeading_;
+    SETTINGS.mapLastLatE7 = fixLatE7;
+    SETTINGS.mapLastLonE7 = fixLonE7;
+    SETTINGS.mapLastHeading = fixHeading;
   }
   if (!SETTINGS.saveToFile()) {
     LOG_ERR(kLogTag, "failed to persist map ladder state");

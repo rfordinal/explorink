@@ -90,6 +90,44 @@ would be exactly the kind of claim this mode already avoids for the anchor.
 Skips silently, same as today, when the fix projects off the current
 viewport -- no off-screen arrow, that would be a separate feature.
 
+## The pan target is not the rider, and persistence had that wrong
+
+**Found on hardware 2026-08-21 by the maintainer, through Nearby's `View on
+map`.** The reported symptom: "it moved my position marker onto the water
+source", at a place the rider was not.
+
+The chain, and none of the three links is wrong on its own:
+
+1. `renderViewport()` repoints `lastLatE7_`/`lastLonE7_` at whatever it draws
+   (`MapActivity.cpp`, `renderViewport()`). That is deliberate and load-bearing:
+   a zoom step re-anchors around the same place instead of jumping back to the
+   rider.
+2. So after a pan, a pin's `Show`, or Nearby's `View on map`, those two variables
+   hold **the place being looked at**, not the fix. The code already knew this --
+   it is why `riderLatE7()`/`riderLonE7()` exist and why `observeReturnLatE7_` is
+   a separate field.
+3. The ladder/fix save wrote `SETTINGS.mapLastLatE7 = lastLatE7_`. Which is the
+   pan target.
+
+The effect only shows up later, which is why it survived: the next entry into the
+map bootstraps from the persisted value with `screenMode_ = Follow`, and Follow
+draws the full position marker -- ring plus heading arrow -- at the anchor. So
+the device claims the rider is standing wherever they last looked.
+
+Fixed by persisting `riderLatE7()`, `riderLonE7()` and `riderHeading()`. In
+Observe those return `observeReturn*`, which *is* the rider's last real fix,
+kept up to date by `applyFix()`'s Observe branch. In Follow they are the same
+variables as before, so nothing changes for the normal case.
+
+**Pre-existing, and not a Nearby bug.** Panning away in Observe and leaving the
+map does it, and so does a pin's `Show`; Nearby only made it easy to reach,
+because `View on map` re-anchors on something that can be kilometres away.
+
+Open: whether the ring-and-dot fix marker is distinct enough at a glance from a
+POI square. If the rider's real fix is off the current viewport it is drawn
+nowhere at all (deliberate, above), and that is the case a rider is most likely
+to misread as "I am at the thing I looked at".
+
 ## Zoom while observing: a hold, plus two menu rows
 
 Added and **flashed and verified on the panel 2026-08-17.** Serial log

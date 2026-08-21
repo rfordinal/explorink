@@ -257,6 +257,17 @@ The sheet is `../../../docs/design-shots/nearby-marks-preview.png`. It is a
 **laptop preview render** of the device's own renderer, not a device screenshot,
 and must never be presented as one (`../../../docs/device-preview.md`).
 
+**Found on hardware, 2026-08-21, and fixed:** `View on map` left the device
+believing the rider was standing on the POI. Not a Nearby bug -- the ladder/fix
+save persisted `lastLatE7_`, which `renderViewport()` repoints at whatever it
+draws, so panning in Observe and a pin's `Show` did it too. Nearby made it easy
+to reach because `View on map` re-anchors kilometres away.
+`map-observation-mode.md`, "The pan target is not the rider", has the chain.
+
+**Verified on hardware 2026-08-21:** the header readout. With a destination set
+it read `SE 5.2 km` in the place-name slot, matching the destination pin's own
+edge marker to the same 0.1 km step.
+
 **Not verified -- needs an X4 pass:**
 
 - Nothing here has run on the device. No screen has been on the panel.

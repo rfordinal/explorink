@@ -718,6 +718,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Observe mode is panned away from them (observeReturnLatE7_).
   int32_t riderLatE7() const;
   int32_t riderLonE7() const;
+  // The heading that belongs with those two. Same split for the same reason:
+  // lastHeading_ is the heading the *frame* was drawn with, which after a pan or
+  // a `View on map` is the frame's, not the rider's.
+  uint8_t riderHeading() const;
   // Short confirmation above the button hints -- "Camp saved", or the reason
   // nothing was saved. Saves the pixels underneath and refreshes only its own
   // rectangle, so it costs one small window refresh and leaves the map up; the
