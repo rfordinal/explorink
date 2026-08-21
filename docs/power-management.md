@@ -146,42 +146,49 @@ single run in the whole campaign and the only one on this page that can *fail* i
 an interesting way -- a driver breaking under DFS plus light sleep is the finding
 that ends route B.
 
-### Observation mode is the one map state that can reach 10 MHz
+### Observation mode: why M16 is the run to spend a night on
 
-**A sibling branch is adding it (in progress 2026-08-21): entering observation
-mode stops the BLE server, because a rider panning the map deliberately is not
-asking where they are.** That is a bigger power change than it looks, and the
-reason is a single line of the HAL:
+**The mechanism is the previous section** ("Observe with BLE off drops the floor
+to 10 MHz for free", written by the session that built it, with the
+`nimble_port_deinit()` chain read off the pinned IDF). Merged to `develop` as
+`b8b11535` on `ble-follow-only`, and flashed to the device 2026-08-21 in a
+combined build with the Observe marker fix. **Its own commit says untested on
+hardware**, so the first long run in this state is also that feature's hardware
+test.
 
-`HalPowerManager::lowPowerFloorMhz()` returns `BLE_SAFE_FREQ` (80 MHz) **only
-while the BT controller is enabled**, and `LOW_POWER_FREQ` otherwise -- which on
-X4 is **10 MHz** (`lib/hal/HalPowerManager.cpp:18-27`,
-`lib/hal/HalPowerManager.h:30-32`) **[repo]**. So a map screen with the radio
-genuinely stopped is the only map state whose floor is 10 MHz rather than 80.
-Every other economical map state this campaign has measured is bounded by the
-radio's APB requirement, not by the CPU.
+What this section adds is why it is worth a whole night rather than a slot in a
+list.
 
-**Panning is not slowed by it.** A button press restores the full clock in
-`main.cpp:836`, before the press's effect is acted on, so the 10 MHz floor
-applies between presses and never during a redraw. That is the same mechanism
-that makes an idle Home screen responsive, verified by hand on 2026-08-21 (a
-`DOWN` press moved the menu with the device sitting at 10 MHz).
+**It is the 48 hours of the hike budget.** The scenario the 72-hour target is
+measured against splits into ~24 walking hours and ~48 stopped ones
+(`power-plan.md`, "The scenario the 72 hours has to hold for"), and the stopped
+half is exactly this: map up, nothing arriving, nobody panning. If Observe-idle
+lands near 2-3 mA, the stopped half costs ~130 mAh of a 552 mAh budget and three
+days stops being blocked on light sleep working with the link up. If it lands
+near 8 mA, it does not.
 
-**And it is the natural first consumer of the parked-loop policy.** Observation
-mode has no link to keep responsive, so its parked cadence is bounded by exactly
-one thing: **the ADC button ladder is polled, never interrupt-driven, so the
-parked cadence *is* the worst-case delay between a press and it being seen**
-(`power-idle-sleep.md`, "The parked policy"). 50 ms today, and 200-300 ms would
-still feel instant while cutting the wake count by 4-6x; a second would feel
-broken. That bound is why the policy takes the cadence as data
-(`src/ParkedLoopPolicy.h`) instead of picking a number -- observation mode and
-the following map want different ones.
+**And it is the one state a single long run can actually price**, which matters
+after run 4. Short comparative legs fail inside the voltage plateau, but a single
+state held for 8 hours moves the pack far enough to be read: at 3 mA that is
+~24 mAh, tens of ADC counts, well clear of the counting noise that made run 4's
+legs unreadable (`power-plan.md`, "The plateau problem"). So the instrument this
+campaign already owns can answer this one -- no alternation, no meter.
 
-M16 measures it. The prediction, stated to be refuted: **the cheapest map state
-on shipped hardware, below the 7.7 mA advertising figure**, because it drops both
-the radio and 8/10 of the clock. What would refute it: the 10 MHz APB penalty
-showing up somewhere unexpected -- the SD card, the ADC poll -- and eating the
-saving.
+**It is also the parked-loop policy's natural first consumer.** Observe has no
+link to keep responsive, so its parked cadence is bounded by one thing: the ADC
+button ladder is polled, never interrupt-driven, so **the parked cadence is the
+worst-case delay between a press and it being seen** (`power-idle-sleep.md`, "The
+parked policy"). 50 ms today; 200-300 ms would still feel instant and cut the
+wake count 4-6x; a second would feel broken. That bound is why
+`src/ParkedLoopPolicy.h` takes the cadence as data rather than picking a number.
+
+**Prediction, stated to be refuted:** the cheapest map state on shipped hardware,
+below every figure in the table above, because it drops the radio and 8/10 of the
+clock at once. **What would refute it:** the 10 MHz APB penalty landing somewhere
+unexpected -- the SD write each minute, the ADC poll -- and eating the saving. And
+one functional risk worth watching in the same run: `end()`/`begin()` across the
+Follow/Observe boundary is a NimBLE deinit and re-init, which is the operation
+that hung the device at a low clock back in 2026-08-04.
 
 ### Who decides whether a fix is worth a redraw -- and why M2 is a design question
 
