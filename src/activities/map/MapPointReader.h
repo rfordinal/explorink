@@ -19,10 +19,13 @@
 // ## RAM is O(1) in point count
 //
 // Same rule MapTileReader and MapRouteReader follow. Records stream through a
-// fixed kStreamBufferSize buffer; nothing accumulates. A shard is tens of
-// points, so this buffer is generous rather than tight -- it is sized to hold a
-// whole realistic shard's records in one read, which makes a walk one card
-// access instead of several.
+// fixed kStreamBufferSize buffer; nothing accumulates.
+//
+// The buffer is 64 records, and that is 64 reads for the densest shard measured
+// (Bratislava, 2,602 points -- ../../../docs/point-file-spec.md's table). A
+// rural shard is one or two reads. Sizing it for the city instead would cost
+// 41 kB of DRAM for a screen that has 380 kB in total, so the read count is the
+// right thing to pay.
 //
 // ## Names are a second read, on purpose
 //
@@ -46,9 +49,9 @@
 // no byte swap is ever needed here -- do not add one.
 class MapPointReader {
  public:
-  // 64 records. A z10 shard carries tens of points, so this is normally the
-  // whole array in one read, and it is 1 KB of RAM held only while a shard is
-  // open -- shards are opened one at a time, not all nine at once.
+  // 64 records, 1 KB, held only while a shard is open -- shards are opened one
+  // at a time, not all nine at once. Enough for a whole rural shard in one read
+  // and 64 reads for the densest city one; see the class comment.
   static constexpr size_t kStreamBufferSize = 1024;
 
   static constexpr size_t kHeaderBytes = 48;

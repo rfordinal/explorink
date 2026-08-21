@@ -202,6 +202,12 @@ are **not** in the record -- `readName()` seeks into the name pool and back, so
 the nearest-per-category pass reads 16 bytes per point and pays for a string only
 on a row it prints.
 
+**The read cost is a city problem, not a mountain one.** Measured on a real
+build (`region1`, 2026-08-21): a rural shard is 22 to 500 points, and the
+Bratislava shard is 2,602 -- 41.6 kB of records for one `Nearby` press, off one
+file, through a 1 kB buffer. Zahorie is a few kB. That number is unmeasured *on
+the device*, which is what makes it the first thing a hardware pass should time.
+
 A shard that fails its checksum is skipped whole and the walk continues with the
 next one. One bad file must not hide the eight good ones around it, and a
 half-read shard would put a hospital somewhere there is none.
@@ -264,8 +270,12 @@ and must never be presented as one (`../../../docs/device-preview.md`).
   back bit-identical (0 of 384,000 pixels differed). This is the one item on
   this list the serial path can settle, because everything else here needs
   `MapActivity` running.
-- The card cost of a real query: how long nine shard opens take on the SD path,
-  and whether a menu press is perceptibly slower than the Pins list.
+- The card cost of a real query: how long the shard opens take on the SD path,
+  and whether a menu press is perceptibly slower than the Pins list. **Time it
+  in Bratislava, not in the hills**: the dense shard is 2,602 points and 41.6 kB
+  of records against a rural shard's few kB, so the hills would give a number
+  that flatters the design. The device logs
+  `nearby: N shard(s) read, M missing, K corrupt, B bytes`.
 - The header readout: that it actually replaces the place name, that the 30 s
   floor holds while riding, and that setting a destination repaints at once.
 - `Set destination` writing the log: that the record lands and survives a
