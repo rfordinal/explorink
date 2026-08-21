@@ -94,6 +94,7 @@ not a pull request.
 | Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots and place names, the route line, marker anchor. Confirmed on the panel, not only in the preview. Junction dots and off-screen place markers: **not implemented**. See [`docs/place-labels.md`](./docs/place-labels.md) and [`docs/route-layer.md`](./docs/route-layer.md) |
 | Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
 | Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |
+| Nearby: what useful things are around the rider | built 2026-08-21, **unverified on hardware** — drinking water, shelter, huts, lodging, fuel, medical, pharmacy, rescue, SOS phones, transport out, from the GPS fix over 25 km, with a POI mark layer per category and a destination readout in the header. See [`docs/nearby-menu.md`](./docs/nearby-menu.md) |
 | Route following, off-route warning | **not started** |
 | Companion phone app | exists — [ExplorInk GPS](https://github.com/rfordinal/explorink-android), an Android BLE position sender and ride recorder |
 

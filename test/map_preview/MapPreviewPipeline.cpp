@@ -9,8 +9,11 @@
 
 #include "HeapProbe.h"
 #include "MapHatch.h"
-#include "MapProjection.h"
 #include "MapLabels.h"
+#include "MapPointMarks.h"
+#include "MapPointShards.h"
+#include "MapPointSource.h"
+#include "MapProjection.h"
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
 #include "MapRouteSource.h"
@@ -170,6 +173,30 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   }
   source->begin(config);
 
+  // The point layer is its own grid (z10) and its own files, so it gets its own
+  // range off the same projection and its own file source -- both stream during
+  // the render and one seek cursor cannot serve two readers (MapPointSource.h).
+  StdioFileSource pointFile;
+  std::unique_ptr<MapPointSource> points;
+  if (request.drawPoints && style.pointSquarePx > 0) {
+    const MapViewport::TileRange shards =
+        MapViewport::tileRangeFor(proj, MapPointShards::kShardZoom, SCREEN_WIDTH, SCREEN_HEIGHT);
+    MapPointSource::Config pointConfig;
+    pointConfig.rootDir = request.tilesDir.c_str();
+    pointConfig.range.col0 = shards.col0;
+    pointConfig.range.row0 = shards.row0;
+    pointConfig.range.col1 = shards.col1;
+    pointConfig.range.row1 = shards.row1;
+    pointConfig.categoryMask = request.pointCategoryMask;
+    pointConfig.screenWidth = SCREEN_WIDTH;
+    pointConfig.screenHeight = SCREEN_HEIGHT;
+    // A mark is drawn centred on its point, so the margin is the mark's own
+    // reach and not the widest stroke in the style (MapPointMarks::reachPx).
+    pointConfig.rejectMarginPx = MapPointMarks::reachPx(style);
+    points = std::make_unique<MapPointSource>(pointFile, proj);
+    points->begin(pointConfig);
+  }
+
   result.sourceBytes = sizeof(MapTileSource);
 
   // Everything resident is already allocated. What the render itself costs
@@ -182,7 +209,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   MapLabelScratch labels;
 
   HeapProbe::reset();
-  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr, &labels);
+  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr, &labels, points.get());
   // render() does not draw the marker (MapActivity draws its own mode-specific
   // one). This preview has no travel mode, so it draws the style's puck
   // explicitly -- except in a route overview, which is framed on the route and
@@ -196,6 +223,14 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // The source counts every record it hands out, and the renderer asks for the
   // road layer MapRenderer::kRoadPasses times. What a reader of these numbers
   // wants is ways in the picture, i.e. one walk's worth.
+  if (points) {
+    result.pointsDrawn = points->pointsEmitted();
+    result.pointShardsOpened = points->shardsOpened();
+    result.pointShardsMissing = points->shardsMissing();
+    result.pointShardsCorrupt = points->shardsCorrupt();
+    result.pointBytesRead = points->bytesRead();
+  }
+
   result.waysDrawn = source->waysEmitted() / MapRenderer::kRoadPasses;
   result.waysFiltered = source->waysFiltered() / MapRenderer::kRoadPasses;
   result.waysOffScreen = source->waysOffScreen() / MapRenderer::kRoadPasses;

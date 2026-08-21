@@ -375,6 +375,40 @@ def place_dot_diameter(style):
     return diameter
 
 
+def points_style(style):
+    """layers.points -> the six C values for the POI marks.
+
+    Absent block means the layer is off, so a style file written before the
+    point layer existed keeps generating and simply draws no marks.
+    """
+    points = style.get("layers", {}).get("points")
+    if points is None:
+        print("gen_mapstyle.py: layers.points missing -- POI marks off")
+        return False, False, 0, 0, 0, 0
+
+    safety = bool(points.get("safety_enabled", True))
+    landmark = bool(points.get("landmark_enabled", False))
+    square = _round_px(points.get("square_px", 0), "layers.points.square_px")
+    border = _round_px(points.get("border_px", 1), "layers.points.border_px")
+    glyph = _round_px(points.get("glyph_px", 0), "layers.points.glyph_px")
+    flag = _round_px(points.get("flag_px", 0), "layers.points.flag_px")
+
+    if square and not (safety or landmark):
+        sys.exit("gen_mapstyle.py: layers.points draws a square but both kinds are disabled. "
+                 "Set square_px to 0 to hide the layer -- a hidden layer never opens a shard.")
+    if square and glyph > square - 2:
+        sys.exit(f"gen_mapstyle.py: layers.points.glyph_px {glyph} leaves no room inside a "
+                 f"{square}px square (needs square_px - 2 at most, for the border and a pixel of air)")
+    if square and flag > square // 2:
+        sys.exit(f"gen_mapstyle.py: layers.points.flag_px {flag} is over half the {square}px square; "
+                 "the corner flag would cover the glyph it is meant to qualify")
+    for name, value in (("square_px", square), ("border_px", border), ("glyph_px", glyph),
+                        ("flag_px", flag)):
+        if value > 255:
+            sys.exit(f"gen_mapstyle.py: layers.points.{name} {value}px does not fit a uint8_t")
+    return safety, landmark, square, border, glyph, flag
+
+
 def place_labels(style):
     """Everything layers.places says about labels, as one dict of C values.
 
@@ -469,8 +503,8 @@ def _array(values, comments):
     return lines
 
 
-def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, labels, route_px,
-            marker_x, marker_y, puck_px):
+def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, labels,
+            points_px, route_px, marker_x, marker_y, puck_px):
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
         "#pragma once",
@@ -575,6 +609,12 @@ def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, lan
         f"    .placeLabelGapPx = {labels['gap']},",
         f"    .placeLabelRouteOverlapPct = {labels['route_overlap_pct']},",
         f"    .placeLabelMaxWidthPx = {labels['max_width']},",
+        f"    .pointsSafetyEnabled = {'true' if points_px[0] else 'false'},",
+        f"    .pointsLandmarkEnabled = {'true' if points_px[1] else 'false'},",
+        f"    .pointSquarePx = {points_px[2]},",
+        f"    .pointBorderPx = {points_px[3]},",
+        f"    .pointGlyphPx = {points_px[4]},",
+        f"    .pointFlagPx = {points_px[5]},",
         f"    .routeWidthPx = {route_px[0]},",
         f"    .routeArrowLenPx = {route_px[1]},",
         f"    .routeArrowWidthPx = {route_px[2]},",
@@ -607,6 +647,7 @@ def main(repo_root, style_path=None, output_path=None):
     landuse_px = landuse(style)
     dot_diameter = place_dot_diameter(style)
     labels = place_labels(style)
+    points_px = points_style(style)
     route_px = route(style)
     marker_x, marker_y = marker_anchor(style)
     puck_px = puck(style)
@@ -616,6 +657,9 @@ def main(repo_root, style_path=None, output_path=None):
     print(f"gen_mapstyle.py: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
           f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
           f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
+    print(f"gen_mapstyle.py: POI marks {'safety' if points_px[0] else '-'}"
+          f"{'+landmark' if points_px[1] else ''} square {points_px[2]}px, glyph {points_px[4]}px, "
+          f"flag {points_px[5]}px")
     print(f"gen_mapstyle.py: buildings {'on' if buildings_px[0] else 'off'} "
           f"(outline {buildings_px[1]}px, tone {buildings_px[2]}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "
@@ -639,7 +683,7 @@ def main(repo_root, style_path=None, output_path=None):
 
     with open(output_path, "w") as f:
         f.write(gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, labels,
-                        route_px, marker_x, marker_y, puck_px))
+                        points_px, route_px, marker_x, marker_y, puck_px))
     print(f"gen_mapstyle.py: wrote {output_path}")
 
 

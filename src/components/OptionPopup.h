@@ -85,6 +85,16 @@ class OptionPopup {
     resetRowChrome();
   }
 
+  // Same rows, with a title that is not a translated constant -- a POI's own
+  // name, or a category label chosen at runtime. Everything else is identical to
+  // the StrId form above; the title is the only difference, so this delegates
+  // rather than repeating the field assignments.
+  void showWithValues(const char* titleStr, const std::vector<std::string>& options,
+                      const std::vector<std::string>& values, int currentIndex, std::function<void(int)> onSelect) {
+    showWithValues(StrId::STR_MAP, options, values, currentIndex, std::move(onSelect));
+    title = titleStr;
+  }
+
   // Per-row actions, opt-in.
   //
   // The front Left and Right buttons are **not free** in a popup: they are

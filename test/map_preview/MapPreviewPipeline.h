@@ -87,6 +87,16 @@ struct MapPreviewRequest {
   // makes route styling a two-second laptop edit rather than a flash.
   std::string routePath;
 
+  // The POI layer (safety points now, landmarks later), read from
+  // `<tilesDir>/points/10/<col>/<row>.tip` -- the same root as the tiles,
+  // because it is the same card (../../../docs/point-file-spec.md in the parent
+  // xteink repo). False draws no marks and opens no shard.
+  bool drawPoints = true;
+  // Bit N set = draw safety category id N (MapSafetyCategory). All ones is
+  // every category, which is the map's normal state; one bit is what
+  // `Nearby -> Show on map` does for a single category.
+  uint16_t pointCategoryMask = 0xFFFFu;
+
   // Frame the whole route instead of the lat/lon/heading/zoom above: run
   // MapRouteFit over the loaded route and use what it picks. Exactly what the
   // device does when the rider selects a route (MapActivity's route overview),
@@ -151,6 +161,16 @@ struct MapPreviewResult {
   std::string routeName;
   uint32_t routePoints = 0;
   uint32_t routeBytesRead = 0;
+  // The point layer. `pointShardsOpened` counts files that opened and passed
+  // their header; `pointShardsMissing` is the normal case for a sparse layer
+  // and not an error. A corrupt shard is counted separately because it means
+  // something different: a file that lied rather than an area nobody built.
+  uint32_t pointsDrawn = 0;
+  uint32_t pointShardsOpened = 0;
+  uint32_t pointShardsMissing = 0;
+  uint32_t pointShardsCorrupt = 0;
+  uint32_t pointBytesRead = 0;
+
   // Filled when fitRoute was set and the fit ran. `routeFits` false means even
   // the coarsest rung could not hold the whole route, and the frame shows as
   // much of it as 20 m/px allows.

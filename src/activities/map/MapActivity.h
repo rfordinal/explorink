@@ -13,6 +13,8 @@
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPins.h"
+#include "MapPointQuery.h"
+#include "MapPointSource.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
 #include "MapRouteSource.h"
@@ -522,6 +524,94 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   uint8_t pinsOffscreenRow_ = 0;
   int menuDialogWidth_ = 0;
   int menuVisibleRows_ = 0;
+
+  // ## Nearby (../../docs/nearby-menu.md)
+  //
+  // The POI browser over the point layer: what useful things are around the
+  // rider, answered from the GPS fix over a 25 km radius
+  // (../../../docs/safety-concept.md, "Nearby"). OptionPopup inside this
+  // activity for the same reason Pins is: leaving the map screen would drop the
+  // phone link this activity owns.
+  //
+  // Three screens, and the popups are opened through pendingNearbyPopup_ from
+  // loop(), never from inside a popup callback -- show()ing from a callback
+  // reassigns the std::function currently running (PinPopup says the same).
+  enum class NearbyPopup : uint8_t { None, Menu, Category, Detail };
+  NearbyPopup pendingNearbyPopup_ = NearbyPopup::None;
+  uint8_t pendingNearbyArg_ = 0;
+  void servicePendingNearbyPopup();
+  void openNearbyMenu();
+  void openNearbyCategoryList(uint8_t category);
+  void openNearbyPointDetail(uint8_t hitIndex);
+  // Runs the radius search for the menu's rows. False when there is no fix to
+  // search from, which is the one case the menu refuses outright -- the query
+  // starts at the rider, not at the viewport.
+  bool runNearbyQuery();
+  // Fills the category screen's rows for `category` and records which one it
+  // was, so the detail screen can be reopened without a second search.
+  bool loadNearbyCategory(uint8_t category);
+  // `Show on map` for one category: flips its bit in nearbyCategoryMask_ and
+  // redraws. Not a setting and not persisted -- a temporary layer, gone at the
+  // next boot (safety-concept.md: "Not a persisted setting, no layer manager").
+  void toggleNearbyCategoryOnMap(uint8_t category);
+  // `Set destination`: writes the existing `dest` pin, replacing whatever was
+  // there. No new catalogue row and no v2 log record -- the pin type already
+  // exists (PinCatalog.h) and a `sourceType` field would cost a format version
+  // that older builds skip whole (safety-concept.md, "Set destination").
+  void setNearbyDestination(uint8_t hitIndex);
+  // "0.7 km NE" for a list row, and the label a category row carries.
+  void nearbyRowValue(const MapPointQuery::Hit& hit, char* buf, size_t bufLen) const;
+  static StrId nearbyCategoryLabel(uint8_t category);
+  // The condition line on the detail screen: the first reliability flag the
+  // point carries, worded for that category ("Water quality unverified" rather
+  // than "Not verified" under Water). Empty when the point carries none.
+  static StrId nearbyConditionLabel(uint8_t category, uint8_t flags);
+
+  // Which categories draw their marks on the map right now. Zero -- the default
+  // -- draws none, so the map is unchanged until the rider asks for a layer.
+  // Deliberately not in CrossPointSettings: it is a view, not a preference.
+  uint16_t nearbyCategoryMask_ = 0;
+  // Nearest metres per category from the last search, MapPointQuery::kNoDistance
+  // where the radius held none.
+  uint32_t nearbyDistances_[kSafetyCategoryCount] = {};
+  MapPointQuery::Hit nearbyHits_[MapPointQuery::kMaxHits];
+  uint8_t nearbyHitCount_ = 0;
+  uint8_t nearbyCategory_ = 0;
+  // Which row the category list reopens on, so toggling `Show on map` does not
+  // walk the rider back down the list.
+  uint8_t nearbyRow_ = 0;
+  // The query's own file handle and its scratch, allocated when the rider first
+  // opens Nearby and kept for the rest of the screen's life: the map's own
+  // sources are streaming during a render and one seek cursor cannot serve two
+  // readers.
+  std::unique_ptr<HalFileSource> nearbyFile_;
+  std::unique_ptr<MapPointQuery> nearbyQuery_;
+  // The render-side source for the marks. Allocated in onEnter() next to the
+  // tile source, with its own file handle for the same reason.
+  std::unique_ptr<HalFileSource> pointFile_;
+  std::unique_ptr<MapPointSource> points_;
+
+  // ## The destination readout in the header (../../docs/nearby-menu.md)
+  //
+  // While a destination is set, its sector and distance replace the place name
+  // in the header slot that already exists. Quantised hard and floored at 30 s,
+  // because a value that changes is a waveform pass: pin distance prints in 10 m
+  // steps, which at 30 km/h would repaint about once a second
+  // (docs/map-header-status.md, "The repaint policy").
+  static constexpr uint32_t kDestRepaintMs = 30 * 1000;
+  // Fills `buf` with "NE 4.2 km" for the current destination, quantised. False
+  // when no destination is set or there is no fix to measure from -- and then
+  // the place name keeps the slot.
+  bool destHeaderText(char* buf, size_t bufLen) const;
+  // The quantised value, so a repaint can be skipped when nothing a rider would
+  // read has changed. Distance in the printed unit's own steps, never metres.
+  uint32_t destQuantisedDistance() const;
+  uint8_t destSector() const;
+  bool hasDestination() const;
+  uint32_t drawnDestDistance_ = 0;
+  uint8_t drawnDestSector_ = 0xFF;
+  bool drawnDestPresent_ = false;
+  uint32_t nextDestRepaintMs_ = 0;
 
   // ## Pins (../../../docs/pins-plan.md, phase 3)
   //

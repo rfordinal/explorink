@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "MapPointMarks.h"
+#include "MapPointShards.h"
 // APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
 #include "CrossPointState.h"
 #include "GfxRendererCanvas.h"
@@ -1277,9 +1279,25 @@ void MapActivity::updateHeaderStatus() {
   const int16_t nowMinute = haveClock ? static_cast<int16_t>((localNow % 86400u) / 60u) : -1;
   const bool minuteMoved = nowMinute != drawnClockMinute_;
 
-  if (!structural && !barsMoved && !minuteMoved) return;
-  if (!structural && !minuteMoved && now < nextBarsRepaintMs_) return;
+  // The destination readout. Two classes of change again, and the same split:
+  // a destination appearing or going away changes what the row *means* and
+  // repaints at once, while the printed value moving is capped at once per 30 s.
+  // Pin distance prints in 10 m steps, which at 30 km/h would change about once
+  // a second -- and every change is a real waveform pass
+  // (../../docs/nearby-menu.md, "The header readout").
+  const bool destPresent = hasDestination() && hasReceivedAny_;
+  const bool destAppeared = destPresent != drawnDestPresent_;
+  const bool destMoved = destPresent && drawnDestPresent_ &&
+                         (destQuantisedDistance() != drawnDestDistance_ || destSector() != drawnDestSector_);
+
+  if (!structural && !barsMoved && !minuteMoved && !destAppeared && !destMoved) return;
+  if (!structural && !minuteMoved && !destAppeared && !destMoved && now < nextBarsRepaintMs_) return;
+  // The quantised value moved and nothing more urgent did: hold the row until
+  // the floor is up. This is the whole cap -- without it a rider at road speed
+  // repaints the header every second or two.
+  if (!structural && !barsMoved && !minuteMoved && !destAppeared && destMoved && now < nextDestRepaintMs_) return;
   if (barsMoved) nextBarsRepaintMs_ = now + kHeaderBarsRepaintMs;
+  if (destMoved || destAppeared) nextDestRepaintMs_ = now + kDestRepaintMs;
 
   int x, y, w, h;
 
@@ -1305,7 +1323,10 @@ void MapActivity::updateHeaderStatus() {
   // 480x36 window once a minute instead of a strip; the alternative is a
   // second copy of drawHeaderStatus()'s ordering that has to be kept in step
   // with it forever.
-  if (minuteMoved) {
+  // A destination change is a change to the place-name slot, and
+  // drawHeaderStatusStrip() does not draw that slot -- only the whole-row path
+  // does (and it is the one that gets the clear-then-draw order right).
+  if (minuteMoved || destAppeared || destMoved) {
     drawHeaderStatus();  // clear, battery, strip, place name, separator
     x = 0;
     y = 0;
@@ -1469,13 +1490,25 @@ void MapActivity::drawHeaderStatus() {
 // rather than a guaranteed "suburb of city" pair.
 void MapActivity::drawHeaderPlaceName() {
   char text[MapNearestPlaces::kNameBufferLen * 2 + 4];
-  if (nearestPlaces_.hasFine && nearestPlaces_.hasCoarse) {
+  // A destination takes this slot from the place name, and the priority is
+  // right: a rider who just chose a spring cares less about being near
+  // Solosnica than about which way it is and how far
+  // (../../../docs/safety-concept.md, "The header readout").
+  if (destHeaderText(text, sizeof(text))) {
+    drawnDestDistance_ = destQuantisedDistance();
+    drawnDestSector_ = destSector();
+    drawnDestPresent_ = true;
+  } else if (nearestPlaces_.hasFine && nearestPlaces_.hasCoarse) {
+    drawnDestPresent_ = false;
     snprintf(text, sizeof(text), "%s, %s", nearestPlaces_.fineName, nearestPlaces_.coarseName);
   } else if (nearestPlaces_.hasFine) {
+    drawnDestPresent_ = false;
     snprintf(text, sizeof(text), "%s", nearestPlaces_.fineName);
   } else if (nearestPlaces_.hasCoarse) {
+    drawnDestPresent_ = false;
     snprintf(text, sizeof(text), "%s", nearestPlaces_.coarseName);
   } else {
+    drawnDestPresent_ = false;
     return;  // nothing loaded near the marker -- left blank, not a placeholder
   }
 
@@ -1877,6 +1910,24 @@ void MapActivity::onEnter() {
           static_cast<long>(heapBeforeAlloc) - static_cast<long>(heapAfterAlloc),
           static_cast<unsigned>(sizeof(MapTileSource)));
 
+  // The POI marks' own source and file handle. Allocated whether or not a layer
+  // is switched on: it is 1.3 KB, it is allocated once, and `Nearby -> Show on
+  // map` must not have to allocate on a button press. With no layer on, the
+  // render skips it entirely (nearbyCategoryMask_ == 0), so it costs no card
+  // read either.
+  if (kDefaultMapStyle.pointSquarePx > 0) {
+    pointFile_ = makeUniqueNoThrow<HalFileSource>();
+    if (!pointFile_) {
+      LOG_ERR(kLogTag, "OOM: HalFileSource for the point layer");
+    } else {
+      points_ = makeUniqueNoThrow<MapPointSource>(*pointFile_, proj_);
+      if (!points_) {
+        LOG_ERR(kLogTag, "OOM: MapPointSource (%u bytes)", static_cast<unsigned>(sizeof(MapPointSource)));
+        pointFile_.reset();
+      }
+    }
+  }
+
   // The route the rider picked, if any. Its own file handle next to the tile
   // source's: both stream during a render (MapRouteSource.h). About 1.2 KB, and
   // only when a route was actually chosen -- a skipped picker allocates neither.
@@ -2061,6 +2112,7 @@ void MapActivity::loop() {
   // where the one it asked for actually opens -- before the popup below gets this
   // frame's input, so the new popup is the one that sees the next press.
   if (pendingPinPopup_ != PinPopup::None) servicePendingPinPopup();
+  if (pendingNearbyPopup_ != NearbyPopup::None) servicePendingNearbyPopup();
 
   if (pinNoticeUntilMs_ != 0 &&
       (static_cast<int32_t>(millis() - pinNoticeUntilMs_) >= 0 || mappedInput.wasAnyPressed())) {
@@ -2595,6 +2647,23 @@ void MapActivity::openMapMenu() {
     snprintf(count, sizeof(count), "%u", static_cast<unsigned>(pins_.pinCount()));
     values.emplace_back(count);
   }
+  // Nearby, straight after Pins: both answer a question about the ground around
+  // the rider, and both are reached for while moving. The value column carries
+  // how many categories are drawn on the map right now, because that is the only
+  // part of this feature that is still switched on after the popup closes.
+  const int nearbyIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_NEARBY));
+  if (nearbyCategoryMask_ != 0) {
+    int shown = 0;
+    for (uint8_t c = 0; c < kSafetyCategoryCount; ++c) {
+      if ((nearbyCategoryMask_ & (1u << c)) != 0) ++shown;
+    }
+    char layers[8];
+    snprintf(layers, sizeof(layers), "%d", shown);
+    values.emplace_back(layers);
+  } else {
+    values.emplace_back();
+  }
   const int modeIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_MODE));
   values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
@@ -2625,8 +2694,8 @@ void MapActivity::openMapMenu() {
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
       StrId::STR_MAP, options, values, 0,
-      [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, pinsIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx,
-       reloadIdx, debugInfoIdx](int idx) {
+      [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, pinsIdx, nearbyIdx, modeIdx, rotationIdx, headingIdx,
+       zoomModeIdx, reloadIdx, debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
         // that change nothing on it (zoom mode) put it back
         // instead of re-rendering, and so does a plain dismiss
@@ -2634,7 +2703,7 @@ void MapActivity::openMapMenu() {
         // buffer is not held across a tile read.
         // The pins list opens over the same map, so it keeps the backdrop --
         // openPinsMenu() gives it up itself if its own dialog outgrows the rect.
-        if (idx != zoomModeIdx && idx != pinsIdx) dropMenuBackdrop();
+        if (idx != zoomModeIdx && idx != pinsIdx && idx != nearbyIdx) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
         } else if (idx == pinsIdx) {
@@ -2642,6 +2711,11 @@ void MapActivity::openMapMenu() {
           // own handleInput(), and show()ing from here reassigns the
           // std::function currently executing. loop() opens it next iteration.
           pendingPinPopup_ = PinPopup::List;
+        } else if (idx == nearbyIdx) {
+          // Same deferral, same reason. The radius search runs when the popup
+          // opens, not here: it reads up to nine files off the card and this is
+          // still inside the previous popup's input handler.
+          pendingNearbyPopup_ = NearbyPopup::Menu;
         } else if (idx == zoomInIdx || idx == zoomOutIdx) {
           // The ladder step itself, then render now rather than on
           // stepZoom()'s settle timer: the settle exists to collapse a burst
@@ -2888,6 +2962,409 @@ void MapActivity::openPinsOffscreenList() {
   optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
+}
+
+// ## Nearby: the POI browser over the point layer -----------------------------
+//
+// ../../docs/nearby-menu.md has the three screens and the decisions behind
+// them; ../../../docs/safety-concept.md, "Nearby", is the design this
+// implements.
+
+void MapActivity::servicePendingNearbyPopup() {
+  const NearbyPopup which = pendingNearbyPopup_;
+  const uint8_t arg = pendingNearbyArg_;
+  pendingNearbyPopup_ = NearbyPopup::None;
+  pendingNearbyArg_ = 0;
+  // Exhaustive switch, no default, so a new value cannot land here silently.
+  switch (which) {
+    case NearbyPopup::None:
+      return;
+    case NearbyPopup::Menu:
+      openNearbyMenu();
+      return;
+    case NearbyPopup::Category:
+      openNearbyCategoryList(arg);
+      return;
+    case NearbyPopup::Detail:
+      openNearbyPointDetail(arg);
+      return;
+  }
+}
+
+StrId MapActivity::nearbyCategoryLabel(uint8_t category) {
+  // Indexed by MapSafetyCategory, which is also the menu's fixed row order --
+  // that is why point_spec.py orders the enum for this screen and not for the
+  // classifier (../../../docs/point-file-spec.md).
+  switch (static_cast<MapSafetyCategory>(category)) {
+    case MapSafetyCategory::Water:
+      return StrId::STR_NEARBY_WATER;
+    case MapSafetyCategory::Shelter:
+      return StrId::STR_NEARBY_SHELTER;
+    case MapSafetyCategory::Hut:
+      return StrId::STR_NEARBY_HUT;
+    case MapSafetyCategory::Lodging:
+      return StrId::STR_NEARBY_LODGING;
+    case MapSafetyCategory::Fuel:
+      return StrId::STR_NEARBY_FUEL;
+    case MapSafetyCategory::Hospital:
+      return StrId::STR_NEARBY_HOSPITAL;
+    case MapSafetyCategory::Pharmacy:
+      return StrId::STR_NEARBY_PHARMACY;
+    case MapSafetyCategory::Rescue:
+      return StrId::STR_NEARBY_RESCUE;
+    case MapSafetyCategory::EmergencyPhone:
+      return StrId::STR_NEARBY_EMERGENCY_PHONE;
+    case MapSafetyCategory::Transport:
+      return StrId::STR_NEARBY_TRANSPORT;
+    case MapSafetyCategory::Unknown:
+      break;
+  }
+  return StrId::STR_MAP_NEARBY;
+}
+
+StrId MapActivity::nearbyConditionLabel(uint8_t category, uint8_t flags) {
+  // Water says what the condition means for water. A rider reads "Not verified"
+  // under a spring and has to work out what was not verified; the whole point of
+  // the flag is that nobody checked whether it is drinkable
+  // (../../../docs/safety-concept.md, "Honesty rules").
+  if (category == static_cast<uint8_t>(MapSafetyCategory::Water) && (flags & kPointUnverified) != 0) {
+    return StrId::STR_NEARBY_WATER_UNVERIFIED;
+  }
+  // One line, not four. Order is worst-first: a restriction stops the rider
+  // getting in at all, a season stops them getting in today, a fee is an
+  // inconvenience, and "nobody checked" is the weakest claim of the four.
+  if ((flags & kPointRestricted) != 0) return StrId::STR_NEARBY_COND_RESTRICTED;
+  if ((flags & kPointSeasonal) != 0) return StrId::STR_NEARBY_COND_SEASONAL;
+  if ((flags & kPointFee) != 0) return StrId::STR_NEARBY_COND_FEE;
+  if ((flags & kPointUnverified) != 0) return StrId::STR_NEARBY_COND_UNVERIFIED;
+  if ((flags & kPointUnstaffed) != 0) return StrId::STR_NEARBY_COND_UNSTAFFED;
+  if ((flags & kPointOpenSided) != 0) return StrId::STR_NEARBY_COND_OPEN_SIDED;
+  return StrId::STR_NEARBY_UNNAMED;  // caller checks flags first; never printed
+}
+
+void MapActivity::nearbyRowValue(const MapPointQuery::Hit& hit, char* buf, size_t bufLen) const {
+  char distance[16];
+  PinGeo::formatDistance(hit.metres, distance, sizeof(distance));
+  // The flag column, the list's half of the map's corner triangle: one mark for
+  // "there is a condition attached" and nothing finer, because at this size
+  // nothing finer is readable and the exact condition is on the detail screen.
+  const bool flagged = (hit.flags & kPointFlaggedOnMapMask) != 0;
+  snprintf(buf, bufLen, "%s%s %s", flagged ? "? " : "", distance, MapPointQuery::sectorName(hit.sector));
+}
+
+bool MapActivity::runNearbyQuery() {
+  // The query runs from the fix, never from the viewport: a hospital 14 km away
+  // must be listed while the map shows 3x5 km. With no fix there is nothing to
+  // search from, and a list measured from 0,0 would be worse than no list.
+  if (!hasReceivedAny_) return false;
+
+  if (!nearbyFile_) {
+    nearbyFile_ = makeUniqueNoThrow<HalFileSource>();
+    if (!nearbyFile_) {
+      LOG_ERR(kLogTag, "OOM: HalFileSource for the Nearby query");
+      return false;
+    }
+  }
+  if (!nearbyQuery_) {
+    nearbyQuery_ = makeUniqueNoThrow<MapPointQuery>(*nearbyFile_);
+    if (!nearbyQuery_) {
+      LOG_ERR(kLogTag, "OOM: MapPointQuery (%u bytes)", static_cast<unsigned>(sizeof(MapPointQuery)));
+      return false;
+    }
+  }
+
+  MapPointQuery::Config config;
+  config.rootDir = kTileRoot;
+  config.fixLatE7 = riderLatE7();
+  config.fixLonE7 = riderLonE7();
+  nearbyQuery_->begin(config);
+
+  const bool ok = nearbyQuery_->nearestPerCategory(nearbyDistances_, kSafetyCategoryCount);
+  LOG_INF(kLogTag, "nearby: %lu shard(s) read, %lu missing, %lu corrupt, %lu bytes",
+          static_cast<unsigned long>(nearbyQuery_->shardsOpened()),
+          static_cast<unsigned long>(nearbyQuery_->shardsMissing()),
+          static_cast<unsigned long>(nearbyQuery_->shardsCorrupt()),
+          static_cast<unsigned long>(nearbyQuery_->bytesRead()));
+  return ok;
+}
+
+bool MapActivity::loadNearbyCategory(uint8_t category) {
+  nearbyHitCount_ = 0;
+  nearbyCategory_ = category;
+  if (!nearbyQuery_) return false;
+  nearbyHitCount_ = static_cast<uint8_t>(nearbyQuery_->listCategory(category, nearbyHits_, MapPointQuery::kMaxHits));
+  return true;
+}
+
+void MapActivity::openNearbyMenu() {
+  if (!runNearbyQuery()) {
+    // A notice, not ten rows of "None": with no fix the distances are not
+    // unknown, they are unanswerable. The map has to come back first, because
+    // the menu's pixels are still on the panel (savePin's order).
+    dropMenuBackdrop();
+    redrawDueMs_ = 0;
+    showBusy();
+    renderCurrent();
+    showPinNotice(tr(STR_NEARBY_NO_FIX));
+    return;
+  }
+
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  options.reserve(kSafetyCategoryCount);
+  values.reserve(kSafetyCategoryCount);
+
+  char value[24];
+  char none[24];
+  snprintf(none, sizeof(none), tr(STR_NEARBY_NONE_IN_RANGE), static_cast<int>(MapPointShards::kSearchRadiusM / 1000.0));
+
+  // Every category, in the enum's order, always. A category never disappears:
+  // an absent row reads as zero distance or as a bug, and both are worse than
+  // the truth (../../../docs/safety-concept.md, "Nearby").
+  for (uint8_t category = 1; category < kSafetyCategoryCount; ++category) {
+    options.emplace_back(I18N.get(nearbyCategoryLabel(category)));
+    if (nearbyDistances_[category] == MapPointQuery::kNoDistance) {
+      values.emplace_back(none);
+    } else {
+      char distance[16];
+      PinGeo::formatDistance(nearbyDistances_[category], distance, sizeof(distance));
+      // A checkmark while that category's marks are on the map, the same shape
+      // the off-screen pin list uses for a bit that is set.
+      const bool shown = (nearbyCategoryMask_ & (1u << category)) != 0;
+      snprintf(value, sizeof(value), "%s%s", shown ? "* " : "", distance);
+      values.emplace_back(value);
+    }
+  }
+
+  const int hideAllIdx = nearbyCategoryMask_ != 0 ? static_cast<int>(options.size()) : -1;
+  if (hideAllIdx >= 0) {
+    // One row that clears every layer, so a rider who turned three on does not
+    // have to walk three rows to turn them off. No layer manager beyond this.
+    options.push_back(tr(STR_NEARBY_HIDE_ALL));
+    values.emplace_back();
+  }
+
+  optionPopup_.showWithValues(StrId::STR_MAP_NEARBY, options, values, 0, [this, hideAllIdx](int idx) {
+    if (idx == hideAllIdx) {
+      nearbyCategoryMask_ = 0;
+      // The map underneath lost its marks, so the backdrop is worthless and the
+      // close has to draw a real frame.
+      dropMenuBackdrop();
+      redrawDueMs_ = 0;
+      showBusy();
+      renderCurrent();
+      return;
+    }
+    // Rows run 1..kSafetyCategoryCount-1, so the row index is the category id
+    // minus one -- there is no `unknown` row.
+    pendingNearbyArg_ = static_cast<uint8_t>(idx + 1);
+    nearbyRow_ = 0;
+    pendingNearbyPopup_ = NearbyPopup::Category;
+  });
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::openNearbyCategoryList(uint8_t category) {
+  if (!loadNearbyCategory(category)) return;
+
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  options.reserve(nearbyHitCount_ + 1u);
+  values.reserve(nearbyHitCount_ + 1u);
+
+  // `Show on map` first: it is what this screen is for when the rider is
+  // deciding rather than picking.
+  const bool shown = (nearbyCategoryMask_ & (1u << category)) != 0;
+  options.push_back(tr(STR_NEARBY_SHOW_ON_MAP));
+  values.emplace_back(I18N.get(shown ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
+
+  char value[24];
+  for (uint8_t i = 0; i < nearbyHitCount_; ++i) {
+    const MapPointQuery::Hit& hit = nearbyHits_[i];
+    options.emplace_back(hit.name[0] != '\0' ? hit.name : tr(STR_NEARBY_UNNAMED));
+    nearbyRowValue(hit, value, sizeof(value));
+    values.emplace_back(value);
+  }
+
+  optionPopup_.showWithValues(I18N.get(nearbyCategoryLabel(category)), options, values, nearbyRow_,
+                              [this, category](int idx) {
+                                if (idx == 0) {
+                                  toggleNearbyCategoryOnMap(category);
+                                  return;
+                                }
+                                nearbyRow_ = static_cast<uint8_t>(idx);
+                                pendingNearbyArg_ = static_cast<uint8_t>(idx - 1);
+                                pendingNearbyPopup_ = NearbyPopup::Detail;
+                              });
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::openNearbyPointDetail(uint8_t hitIndex) {
+  if (hitIndex >= nearbyHitCount_) return;
+  const MapPointQuery::Hit& hit = nearbyHits_[hitIndex];
+
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+
+  // Two information rows above the actions, exactly as the design's screen has
+  // them. They are inert: pressing SELECT on one does nothing, which is the
+  // price of drawing this with the list widget the map already has rather than a
+  // second kind of dialog.
+  char distance[24];
+  nearbyRowValue(hit, distance, sizeof(distance));
+  options.emplace_back(distance);
+  values.emplace_back();
+
+  const bool hasCondition = (hit.flags & (kPointFlaggedOnMapMask | kPointUnstaffed | kPointOpenSided)) != 0;
+  if (hasCondition) {
+    options.emplace_back(I18N.get(nearbyConditionLabel(hit.category, hit.flags)));
+    values.emplace_back();
+  }
+
+  const int viewIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_NEARBY_VIEW_ON_MAP));
+  values.emplace_back();
+  const int destIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_NEARBY_SET_DESTINATION));
+  values.emplace_back();
+
+  optionPopup_.showWithValues(hit.name[0] != '\0' ? hit.name : tr(STR_NEARBY_UNNAMED), options, values, viewIdx,
+                              [this, hitIndex, viewIdx, destIdx](int idx) {
+                                if (idx == viewIdx) {
+                                  // Same path a pin's `Show` takes: frame the point and
+                                  // switch to Observe, so the next fix does not yank the
+                                  // map back. The return path already exists (the menu's
+                                  // Follow mode row).
+                                  const MapPointQuery::Hit& target = nearbyHits_[hitIndex];
+                                  dropMenuBackdrop();
+                                  if (screenMode_ == MapScreenMode::Follow) {
+                                    screenMode_ = MapScreenMode::Observe;
+                                    // The return anchor is the rider, captured before the
+                                    // frame moves -- lastLatE7_ is about to be repointed
+                                    // at the POI. Same capture showPinOnMap() does.
+                                    observeReturnLatE7_ = lastLatE7_;
+                                    observeReturnLonE7_ = lastLonE7_;
+                                    observeReturnHeading_ = lastHeading_;
+                                    observeReturnSeq_ = lastDrawnSeq_;
+                                  }
+                                  redrawDueMs_ = 0;
+                                  showBusy();
+                                  // anchorHeading_, the heading the frame on the panel was
+                                  // drawn with: looking at a POI must not also rotate the
+                                  // map.
+                                  renderViewport(target.latE7, target.lonE7, anchorHeading_, lastDrawnSeq_);
+                                  return;
+                                }
+                                if (idx == destIdx) setNearbyDestination(hitIndex);
+                              });
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::toggleNearbyCategoryOnMap(uint8_t category) {
+  nearbyCategoryMask_ ^= static_cast<uint16_t>(1u << category);
+  LOG_INF(kLogTag, "nearby layer mask 0x%04x", static_cast<unsigned>(nearbyCategoryMask_));
+  // The map underneath changed, so the saved pixels are wrong: drop the backdrop
+  // and draw a real frame, exactly as the off-screen pin list does when it flips
+  // a marker on.
+  dropMenuBackdrop();
+  redrawDueMs_ = 0;
+  showBusy();
+  renderCurrent();
+}
+
+void MapActivity::setNearbyDestination(uint8_t hitIndex) {
+  if (hitIndex >= nearbyHitCount_) return;
+  const MapPointQuery::Hit& hit = nearbyHits_[hitIndex];
+
+  // Whether this replaces a destination or creates one, read before the write --
+  // afterwards there is always one there.
+  const bool replaced = hasDestination();
+
+  // An ordinary v1 pin record under the `dest` key. No new catalogue row, no
+  // provenance field: a pin record has nowhere to put "this was a spring", and
+  // adding one means a v2 line that an older build skips whole, losing the pin
+  // (../../../docs/safety-concept.md, "Set destination").
+  const bool wrote = pins_.pinSet("dest", hit.latE7, hit.lonE7, MapPins::utcNowOrZero());
+
+  // The header row now means something different, which is one of the two
+  // exceptions to the 30 s repaint floor: setting and clearing a destination
+  // change what the row *says* rather than its value.
+  if (wrote) {
+    nextDestRepaintMs_ = 0;
+    drawnDestPresent_ = false;
+  }
+
+  // The frame first, the notice on top of it -- the popup's pixels are still on
+  // the panel, so a notice drawn before the map would sit on the popup. Same
+  // order savePin() uses. The frame is not optional either: the square becomes
+  // the destination pin's balloon, which is the mark vocabulary saying what
+  // happened without a word (../../../docs/map-render-spec.md).
+  dropMenuBackdrop();
+  redrawDueMs_ = 0;
+  showBusy();
+  renderCurrent();
+  // tr() is a macro that pastes its argument after `StrId::`, so the choice has
+  // to be made on the id and not inside the macro.
+  const StrId notice = !wrote ? StrId::STR_PIN_WRITE_FAILED
+                              : (replaced ? StrId::STR_NEARBY_DEST_REPLACED : StrId::STR_NEARBY_DEST_SET);
+  showPinNotice(I18N.get(notice));
+}
+
+// --- the destination readout in the header ----------------------------------
+
+bool MapActivity::hasDestination() const {
+  const PinEntry* entry = pins_.store().find("dest");
+  return entry != nullptr && entry->present;
+}
+
+uint8_t MapActivity::destSector() const {
+  const PinEntry* entry = pins_.store().find("dest");
+  if (entry == nullptr || !entry->present) return 0;
+  return MapPointQuery::sector8(riderLatE7(), riderLonE7(), entry->latE7, entry->lonE7);
+}
+
+uint32_t MapActivity::destQuantisedDistance() const {
+  const PinEntry* entry = pins_.store().find("dest");
+  if (entry == nullptr || !entry->present) return 0;
+  const uint32_t metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), entry->latE7, entry->lonE7);
+  // The table from ../../docs/nearby-menu.md: 100 m steps under 1 km, 0.1 km to
+  // 10 km, 1 km above. Returned in the printed unit's own steps, so a value that
+  // has not changed cannot cause a repaint -- which is the whole reason this is
+  // quantised harder than the Pins list's 10 m.
+  if (metres < 10000) return metres / 100;  // 100 m steps, printed as m then as 0.1 km
+  // Rounded, not truncated, and it has to match destHeaderText() exactly: a
+  // quantised value that moves differently from the printed one either repaints
+  // for nothing or holds a row that already reads wrong.
+  return (metres + 500) / 1000;
+}
+
+bool MapActivity::destHeaderText(char* buf, size_t bufLen) const {
+  if (buf == nullptr || bufLen == 0) return false;
+  buf[0] = '\0';
+  if (!hasDestination() || !hasReceivedAny_) return false;
+
+  const PinEntry* entry = pins_.store().find("dest");
+  const uint32_t metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), entry->latE7, entry->lonE7);
+  const char* sector = MapPointQuery::sectorName(destSector());
+
+  // Never degrees, and never a metre. The device says the target is roughly
+  // that way, roughly that far: a number that ticks every second on e-ink is
+  // both a lie about the precision and a waveform pass per tick.
+  if (metres < 1000) {
+    snprintf(buf, bufLen, "%s %lu00 m", sector, static_cast<unsigned long>(metres / 100));
+  } else if (metres < 10000) {
+    snprintf(buf, bufLen, "%s %lu.%lu km", sector, static_cast<unsigned long>(metres / 1000),
+             static_cast<unsigned long>((metres % 1000) / 100));
+  } else {
+    snprintf(buf, bufLen, "%s %lu km", sector, static_cast<unsigned long>((metres + 500) / 1000));
+  }
+  return true;
 }
 
 void MapActivity::openPinsMenu() {
@@ -4329,7 +4806,35 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // onEnter(), and is null when the style draws no labels -- in which case
   // MapRenderer skips the whole pass rather than allocating anything here
   // (MapLabels.h).
-  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing, nearestOut, labels_.get());
+  // The POI marks, and only the categories the rider turned on: `Nearby -> Show
+  // on map` is a temporary view, so it filters this walk and never the style
+  // (MapPointSource::Config::categoryMask). With no layer on, the source is not
+  // even handed over and no shard is opened.
+  IMapPointSource* pointSource = nullptr;
+  if (points_ && nearbyCategoryMask_ != 0) {
+    MapPointSource::Config pointConfig;
+    pointConfig.rootDir = kTileRoot;
+    // The point layer is its own grid, so it gets its own range off the same
+    // projection -- z10 shards, not the base LOD's tiles.
+    const MapViewport::TileRange shards =
+        MapViewport::tileRangeFor(proj_, MapPointShards::kShardZoom, static_cast<int>(renderer.getScreenWidth()),
+                                  static_cast<int>(renderer.getScreenHeight()));
+    pointConfig.range.col0 = shards.col0;
+    pointConfig.range.row0 = shards.row0;
+    pointConfig.range.col1 = shards.col1;
+    pointConfig.range.row1 = shards.row1;
+    pointConfig.categoryMask = nearbyCategoryMask_;
+    pointConfig.screenWidth = static_cast<int16_t>(renderer.getScreenWidth());
+    pointConfig.screenHeight = static_cast<int16_t>(renderer.getScreenHeight());
+    // A mark is drawn centred on its point, so the margin is the mark's own
+    // reach and not the widest stroke in the style.
+    pointConfig.rejectMarginPx = MapPointMarks::reachPx(kDefaultMapStyle);
+    points_->begin(pointConfig);
+    pointSource = points_.get();
+  }
+
+  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing, nearestOut, labels_.get(),
+                      pointSource);
 
   // Hatch after the geometry, because which tiles are missing is only known
   // once the source has tried to open them, and asking up front would cost a

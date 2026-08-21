@@ -1,0 +1,283 @@
+# Nearby, and the point layer under it
+
+What useful things are around the rider: drinking water, shelter, huts,
+lodging, fuel, medical, pharmacy, rescue, SOS phones, transport out. Three
+screens off the map menu, plus the marks those points draw on the map itself.
+
+The design is `../../../docs/safety-concept.md`, "Nearby", and this file is what
+was built against it. The file format is `../../../docs/point-file-spec.md`; the
+mark vocabulary is `../../../docs/map-render-spec.md`, "Point mark vocabulary".
+
+**Status: built 2026-08-21, host-tested only. Nothing here has run on an X4.**
+What a hardware pass has to check is at the bottom.
+
+## Not an emergency mode
+
+A plain menu entry named `Nearby`. An emergency mode has to be entered, and a
+rider who has to decide they are in trouble before pressing anything presses
+nothing.
+
+`Help` was rejected as a name: it reads as documentation, and the word is worth
+more later (emergency info for a finder, the rider's own details, last known
+position, SOS).
+
+## The three screens
+
+```
+NEARBY                       WATER                    SPRING
+
+Water        * 0.7 km        Show on map      On      ? 0.7 km NE
+Shelter        2.4 km        ? Spring    0.7 km NE    Water quality unverified
+Huts           4.1 km        Drinking w. 2.1 km E     View on map
+Medical  None within 25 km   ? Spring    3.4 km SE    Set destination
+Pharmacy      14.3 km
+Rescue         8.6 km
+Hide all
+```
+
+All three are `OptionPopup` inside `MapActivity`, not an activity of their own --
+the same reason Pins is (`MapActivity.h`, "Pins"): this screen owns the BLE
+peripheral for exactly its own lifetime, so leaving it would drop the phone link
+and cost a full redraw to come back.
+
+Each screen is opened through `pendingNearbyPopup_` from `loop()`, never from
+inside a popup callback: `show()` from a callback reassigns the `std::function`
+that is currently executing.
+
+### Screen 1: the category list
+
+- **One row per category, always, in a fixed order.** The order is
+  `MapSafetyCategory`'s own (`MapPointTypes.h`, generated from
+  `point_spec.py`), which is why that enum is ordered for this menu and not for
+  the classifier. Muscle memory beats a list that rearranges itself.
+- **A category never disappears.** `None within 25 km` is a row. An absent row
+  reads as zero distance or as a bug, and both are worse than the truth. The
+  radius is printed because a radius the rider cannot reason about is a radius
+  that lies.
+- **The value column is the nearest point of that category**, so walking the menu
+  is useful on its own: water 700 m, hut 4.1 km, no hospital in range, read
+  without opening anything.
+- **A `*` marks a category whose marks are on the map** right now, and a
+  `Hide all` row appears only while at least one is.
+- **With no fix, the menu refuses.** It puts up `No position yet -- nothing to
+  search from` and opens nothing. The search starts at the rider, so with no
+  rider there is no question to answer -- and a list measured from 0,0 would be
+  worse than no list.
+
+### Screen 2: one category
+
+`Show on map` first, then the nearest points of that category, nearest first,
+with distance and one of eight compass sectors. A `?` in front of the value means
+the point carries a condition; which condition it is belongs on the detail
+screen.
+
+**No clever reordering.** An unverified spring at 700 m stays above a confirmed
+tap at 2.1 km. Ranking one over the other is the device deciding something the
+rider should decide, and it hides the data instead of showing it.
+
+At most eight rows (`MapPointQuery::kMaxHits`) -- the cap is what lets the whole
+result live in a fixed array with no allocation anywhere in the query.
+
+### Screen 3: one point
+
+Title is the point's name (`Unnamed` when OSM has none). Two information rows,
+then two actions:
+
+- **`View on map`** frames the point and switches to Observe mode, so the next
+  fix does not yank the map back. Reuses observation mode wholesale, exactly as
+  a pin's `Show` does, which also means the return path already exists (the map
+  menu's `Follow mode` row).
+- **`Set destination`** writes the existing `dest` pin. See below.
+
+The two information rows are **inert**: pressing SELECT on one does nothing. That
+is the price of drawing this screen with the list widget the map already has
+instead of a second kind of dialog, and it is worth stating rather than
+discovering.
+
+## `Show on map` is a view, not a setting
+
+`nearbyCategoryMask_`, one bit per category, on `MapActivity` and **not** in
+`CrossPointSettings`. It does not survive a reboot, on purpose: it is a temporary
+layer a rider switches on to find something, not a preference.
+
+Zero -- the default -- draws nothing at all, and then the render never opens a
+shard. So the map is unchanged until the rider asks for a layer, which also keeps
+the marks sparse: a render with every category on is a village buried under
+squares (seen in the preview, `mapbuilder/tools/poi_glyph_probe.py`'s sibling
+render).
+
+Toggling a layer **closes the popup and draws the map**, rather than reopening
+the list the way the off-screen pin list does. A rider who just switched water on
+wants to see where the water is; the list is one press away again.
+
+The mask filters the render walk (`MapPointSource::Config::categoryMask`), never
+the style and never the card. Same rule as the mode class mask
+(`../../../docs/map-data-spec.md`, "Mode is a render-time filter").
+
+## `Set destination`, not `Save as pin`
+
+The pin type already exists: `dest` / "Destination", third slot of `kPinCatalog`
+(`PinCatalog.h`). One slot means one destination at a time, and replacing an
+occupied slot is already `PinOp::Replace` (`PinRecord.h`). So the action writes an
+ordinary v1 pin record through `MapPins::pinSet()` -- the same path a pin saved
+from a popup or pushed over BLE takes -- and needs no catalogue row and no format
+change.
+
+**The POI's category is deliberately not stored.** A pin record is
+`v1|seq|utc|uptime|op|key|id|latE7|lonE7|trip|crc32` with no field for
+provenance. Adding one means a v2 line, and a build that does not know the
+version **skips the whole record**, not just the new field -- it loses the pin.
+Once the rider has committed to going somewhere, the bearing and the distance are
+what matter, not that it was a spring.
+
+On screen the change needs no words: the square stops being a square and becomes
+the destination pin's balloon.
+
+## The header readout, and the repaint floor it needs
+
+While a destination is set, its sector and distance replace the place name in the
+header slot that already exists (`drawHeaderPlaceName()`). No taller header, no
+smaller map.
+
+Quantised harder than the Pins list, which prints 10 m steps:
+
+| distance | printed |
+|---|---|
+| under 1 km | 100 m steps, `NE 700 m` |
+| 1 to 10 km | 0.1 km steps, `NE 4.2 km` |
+| over 10 km | 1 km steps, `NE 14 km` |
+
+Bearing is one of eight sectors (N, NE, E, SE, S, SW, W, NW), never degrees.
+
+**Repaint at most once per 30 s** (`kDestRepaintMs`), and only when the printed
+value or the sector actually changed -- `destQuantisedDistance()` returns the
+value in the printed unit's own steps precisely so an unchanged reading cannot
+cause a repaint. Two exceptions with no floor, because they change what the row
+*means* rather than its value: setting a destination and clearing one. Same shape
+as the structural exception already in `map-header-status.md`'s repaint policy.
+
+At 30 km/h a 10 m step would change about once a second, and every change is a
+real waveform pass. This is a product decision as much as a power one: the device
+says *the target is roughly that way, roughly that far*. It is not a bike
+computer.
+
+A destination change takes the whole-row repaint path
+(`drawHeaderStatus()`), not the strip path: `drawHeaderStatusStrip()` does not
+draw the place-name slot, and the whole-row path is the one that gets the
+clear-then-draw order right (the 2026-08-15 finding in
+`map-header-status.md`, "The clock").
+
+## What reads the card
+
+Three classes, each with its own file handle, because they all stream during one
+render and one seek cursor cannot serve two readers:
+
+| class | question | grid |
+|---|---|---|
+| `MapPointReader` | one `.tip` shard, record by record | -- |
+| `MapPointSource` | which marks does this viewport draw | shards the viewport touches |
+| `MapPointQuery` | what is within 25 km of the fix | shards the circle touches |
+
+Measured with `sizeof` on the host, same layout as the target
+(`MapPointReader` 1,104 B, `MapPointSource` 1,368 B, `MapPointQuery` 1,312 B, one
+`Hit` 48 B):
+
+- `MapPointSource` is allocated in `onEnter()` next to the tile source, whether or
+  not a layer is switched on, so flipping one never has to allocate on a button
+  press. With the mask at zero the render never hands it over and it opens no
+  file.
+- `MapPointQuery` is allocated the first time the rider opens `Nearby` and kept
+  for the screen's life.
+- Fixed cost inside the activity: `nearbyHits_` is 8 x 48 B and
+  `nearbyDistances_` is 44 B, so about 430 B on top of the two heap objects.
+
+The build after this work: **RAM 17.8 % (58,332 B of 327,680), flash 60.4 %
+(3,956,217 B of 6,553,600)**. Static RAM is the activity's own members only --
+both point objects are heap and live for the map screen's lifetime, like the tile
+and route sources next to them.
+
+RAM is O(1) in the number of points, the same rule the tile and route readers
+follow: records stream through a fixed 1 kB buffer and nothing accumulates. Names
+are **not** in the record -- `readName()` seeks into the name pool and back, so
+the nearest-per-category pass reads 16 bytes per point and pays for a string only
+on a row it prints.
+
+A shard that fails its checksum is skipped whole and the walk continues with the
+next one. One bad file must not hide the eight good ones around it, and a
+half-read shard would put a hospital somewhere there is none.
+
+## The marks on the map
+
+`MapPointMarks::draw()`: white knock-out, square outline, category glyph, and one
+corner triangle when the point carries a condition. Drawn after the place dots
+and before the names -- a square is a bigger mark than a dot and must not be
+buried under one, and a name must still win over both.
+
+**The glyphs are drawn from `IMapCanvas` primitives, not from icons.** That was
+the one thing `map-render-spec.md` left open for this task, and it was settled on
+a render of ten glyphs at real size rather than on paper
+(`mapbuilder/tools/poi_glyph_probe.py`, sheet in
+`../../../docs/design-shots/poi-glyphs.png`): Lucide's 24 px, 1.5 px-stroke SVGs
+thresholded to 1 bpp at 9 px break into dots -- the droplet, the pump, the cross,
+the pill, the buoy and the handset all came out as noise -- while primitive
+shapes read as shapes at that size. `MapPointMarks.h` has the full reasoning,
+including why the emergency-phone glyph is an exclamation mark and not a handset.
+
+`not_potable` never reaches the device: the writer drops such a point from water
+entirely, so a square with a water glyph always means candidate for drinking
+water (`point-file-spec.md`, "The honesty rules are in the writer").
+
+## Verified, and not
+
+Host tests (`test/map_points/`, 9 tests, all passing): the format round-trips
+against a fixture written by `point_file.py`, six kinds of corruption are
+refused, y grows north, the flag mask is exactly the four conditions, the shard
+grid arithmetic holds, the radius search answers every category including the
+empty ones, a category list comes back nearest-first with names and sectors, and
+the eight sectors are right at 48 degrees north (where a degree of longitude is
+two thirds of a degree of latitude on the ground).
+
+Preview render (`test/map_preview`, real tiles and real shards built for
+Terchova with `build_tiles.py --around 49.2084 19.0424 --radius 6`, which wrote
+177 points into 2 shards and dropped 3 `not_potable`):
+
+- every category on: 139 marks from 2 shards, 7.5 kB read
+- water+huts+shelter only, which is what a rider would actually switch on: 42
+  marks, same 7.5 kB (the filter drops after the read, so a narrow layer costs
+  the same card time and a much quieter map)
+- **0 heap allocations during the render**, both times
+
+The sheet is `../../../docs/design-shots/nearby-marks-preview.png`. It is a
+**laptop preview render** of the device's own renderer, not a device screenshot,
+and must never be presented as one (`../../../docs/device-preview.md`).
+
+**Not verified -- needs an X4 pass:**
+
+- Nothing here has run on the device. No screen has been on the panel.
+- The three popups' layout at the map menu's dialog size: row count, the value
+  column with `?` in it, and a long POI name in the title.
+- Whether the 15 px square and the 9 px glyph read on the glass. The probe was
+  judged on a laptop LCD at 1x and 6x, and a tone or a small glyph can resolve
+  differently on e-ink (`CLAUDE.md`, `CMD:SHOWIMAGE`).
+- The card cost of a real query: how long nine shard opens take on the SD path,
+  and whether a menu press is perceptibly slower than the Pins list.
+- The header readout: that it actually replaces the place name, that the 30 s
+  floor holds while riding, and that setting a destination repaints at once.
+- `Set destination` writing the log: that the record lands and survives a
+  reboot.
+- **How a shard reaches the card.** A push works: `MapTransferReceiver` accepts
+  any relative path under the root (`points/10/565/350.tip` included), so
+  `tools/blepush.py` can send one today -- untested, but nothing in the path
+  validation objects. What does **not** happen is automatic: the tile index and
+  the auto-sync path are built around `base/` (`tools/build_index.py` scans that
+  directory only), so a rider whose area gains a point shard gets it only by a
+  deliberate push or a card copy. That is the same hole as the freshness
+  question below and it wants one decision, not two.
+- **Freshness.** A `.tip` carries a `build_epoch` and nothing else. A device
+  compares `content_id` to notice a stale tile
+  (`../../../docs/tile-index-spec.md`); there is no equivalent here, so a shard
+  that was rebuilt looks identical to one that was not.
+- Marks overlapping in a village. With one category on it is much thinner than
+  the all-categories preview, but nothing declutters them -- two squares 3 px
+  apart read as one blob. Open: whether that needs a merge rule like the pin
+  edge markers have.
