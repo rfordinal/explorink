@@ -16,6 +16,59 @@ without going through a button press.
 > table of runs. This file stays what it is -- findings about how power
 > behaves. The plan says what to do about them.
 
+## The scoreboard: every mode we have a number for, and what each feature costs
+
+**One table, kept current. Everything else in this file is the story behind a
+row of it.** Added 2026-08-21 because the numbers were scattered across three
+documents and a run table, so nobody could answer "what does the radio cost"
+without reading all of them.
+
+**The instrument is the voltage slope, in mV/h. That is the measured column.**
+The mA column is derived, by scaling run 2's static window -- 32.9 mV/h against
+24.0 mA, where the mA came from `dPct/100 * 650 mAh` on the spec-sheet capacity
+(`power-plan.md`, run 2) -- and assuming the relation is proportional.
+**[assumed]** A slope is also a function of state of charge, up to 5x across the
+pack's range (`power-plan.md`, "Voltage slope is not a property of the state"),
+so two rows measured at different voltages are not exactly comparable however
+tight their error bars look.
+
+**`batt_pct` is not a second opinion.** X4 carries no fuel gauge
+(`BoardConfig.h`, `NO_GAUGE`), so `getBatteryPercentage()` falls to the
+voltage-derived path and then smooths it with a 9/10-weighted EMA
+(`lib/hal/HalPowerManager.cpp:150-176`) **[repo]**. It is the same ADC reading,
+transformed and lagged -- agreement between percent-derived and slope-derived mA
+confirms the curve, not the measurement.
+
+### What each mode draws
+
+| Mode | Radio | CPU | mV/h | ~mA | Evidence | Confidence |
+|---|---|---|---|---|---|---|
+| Map, connected, fix/10 s, no modem sleep | connected | 160 | 58.9 | ~43 | run 1, 11.4 h | **[measured]**, mixed workload (see run 1) |
+| Map, connected, fix/10 s | connected | 160 | 32.9 | **24.0** | run 2, 9.5 h static window | **[measured]**, the campaign's reference |
+| Map, connected, fix/10 s | connected | **80** | 25.6 +/- 1.4 | ~18.7 | run 3 leg 2, 61 min | **[measured]**, one leg, biased high by charge state |
+| Map, advertising, no phone | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | run 3 leg 3, 32 min | **[measured]**, one leg |
+| Home, nothing running | down | 10 | -- | -- | run 3 phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
+| Tile sync, transfer running | connected | 160 | -- | -- | never run | **[open]** (campaign state 4) |
+| Light sleep, radio up | advertising | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
+| Deep sleep, latch held | off | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
+
+### What each feature costs
+
+Every row is a difference of two rows above, so it inherits both their caveats.
+
+| Change | delta mV/h | delta mA | From | Confidence |
+|---|---|---|---|---|
+| Turn on BLE modem sleep | **-26.0** | ~-19 | run 1 58.9 -> run 2 32.9 | **[measured]**, and a *lower* bound on the saving: run 2 did ~2x the panel work and ~4x the loop work |
+| Throttle the map 160 -> 80 MHz | **-7.3** | ~-5.3 | run 2 32.9 -> run 3 leg 2 25.6 | suggestive only: two builds, different panel activity, different charge state |
+| The phone link, its 10 s fixes and the marker redraws they cause | **+15.0** | ~+11 | run 3 leg 3 10.6 -> leg 2 25.6 | **upper bound**: the two legs differ in charge state and the A-B-A leg that would have cancelled it was lost |
+| Bringing the radio up at all | -- | -- | wants advertising minus a clean radio-down leg | **[open]** |
+| Parking our own loop | -- | -- | only pays under `CONFIG_PM_ENABLE` | **[open]** (`power-idle-sleep.md`, "S2's missing half") |
+
+**Against the target.** The campaign wants 9.0 mA parked (`power-plan.md`, "The
+target"). Advertising at the 80 MHz floor already reads **~7.7 mA** on one leg.
+If that survives a repeat in the working band, route A has met the parked target
+on shipped hardware, and what is left is the *riding* case at ~18.7 mA.
+
 ## The device measures itself now
 
 **Added 2026-08-11.** Two instruments, one vocabulary:
