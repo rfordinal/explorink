@@ -54,6 +54,7 @@ load.
 | Map, connected, fix/10 s | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **[measured]**, one leg, biased high by charge state |
 | Map, advertising, no phone | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **[measured]**, one leg |
 | Home, nothing running | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
+| **Map in observation mode, radio off** | **down** | **10** | -- | -- | -- | -- | feature in progress on a sibling branch | **[open]** -- potentially the cheapest map state that exists without light sleep |
 | Tile sync, transfer running | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
 | Light sleep, radio up | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
 | Deep sleep, latch held | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
@@ -106,6 +107,7 @@ middle:
 | M7 | Tile sync, transfer running (state 4) | the worst case, and the only state with the panel and the radio both busy | a real transfer driven from the laptop | 20 min + a build to push |
 | M8 | WiFi mode (web server up) | never measured at all, and it decides whether Wi-Fi Fast Sync is cheap or expensive | Home -> WiFi, one leg, no client attached | 20 min |
 | M9 | `PowerLog` itself | whether the instrument is a term in the budget: one SD write a minute | hard without a second instrument -- **do it last**, or by comparing a build with logging off | 40 min |
+| M16 | **Observation mode with the radio off** | the map at a **10 MHz** floor -- see below | one leg in observation mode, untouched, once the feature lands | 30 min |
 
 **Needs a flash** (build from the frozen base, lock, ask, archive the binary):
 
@@ -129,6 +131,43 @@ close a column of the scoreboard, so they go first. M10 is the most valuable
 single run in the whole campaign and the only one on this page that can *fail* in
 an interesting way -- a driver breaking under DFS plus light sleep is the finding
 that ends route B.
+
+### Observation mode is the one map state that can reach 10 MHz
+
+**A sibling branch is adding it (in progress 2026-08-21): entering observation
+mode stops the BLE server, because a rider panning the map deliberately is not
+asking where they are.** That is a bigger power change than it looks, and the
+reason is a single line of the HAL:
+
+`HalPowerManager::lowPowerFloorMhz()` returns `BLE_SAFE_FREQ` (80 MHz) **only
+while the BT controller is enabled**, and `LOW_POWER_FREQ` otherwise -- which on
+X4 is **10 MHz** (`lib/hal/HalPowerManager.cpp:18-27`,
+`lib/hal/HalPowerManager.h:30-32`) **[repo]**. So a map screen with the radio
+genuinely stopped is the only map state whose floor is 10 MHz rather than 80.
+Every other economical map state this campaign has measured is bounded by the
+radio's APB requirement, not by the CPU.
+
+**Panning is not slowed by it.** A button press restores the full clock in
+`main.cpp:836`, before the press's effect is acted on, so the 10 MHz floor
+applies between presses and never during a redraw. That is the same mechanism
+that makes an idle Home screen responsive, verified by hand on 2026-08-21 (a
+`DOWN` press moved the menu with the device sitting at 10 MHz).
+
+**And it is the natural first consumer of the parked-loop policy.** Observation
+mode has no link to keep responsive, so its parked cadence is bounded by exactly
+one thing: **the ADC button ladder is polled, never interrupt-driven, so the
+parked cadence *is* the worst-case delay between a press and it being seen**
+(`power-idle-sleep.md`, "The parked policy"). 50 ms today, and 200-300 ms would
+still feel instant while cutting the wake count by 4-6x; a second would feel
+broken. That bound is why the policy takes the cadence as data
+(`src/ParkedLoopPolicy.h`) instead of picking a number -- observation mode and
+the following map want different ones.
+
+M16 measures it. The prediction, stated to be refuted: **the cheapest map state
+on shipped hardware, below the 7.7 mA advertising figure**, because it drops both
+the radio and 8/10 of the clock. What would refute it: the 10 MHz APB penalty
+showing up somewhere unexpected -- the SD card, the ADC poll -- and eating the
+saving.
 
 ### Who decides whether a fix is worth a redraw -- and why M2 is a design question
 
