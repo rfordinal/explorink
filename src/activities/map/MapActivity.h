@@ -551,6 +551,25 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // GfxRenderer after the map -- same place and same reason as drawPins(): the
   // renderer knows nothing about which POI a menu was pointing at.
   void drawViewedNearbyPoint();
+  // Whether a windowed refresh of this rect can be afforded right now.
+  //
+  // `GfxRenderer::displayBufferWindow()` returns bool, and every call site here
+  // handles false by falling back to a full refresh -- but the driver under it
+  // allocates (w/8)*h bytes through a **throwing** std::vector
+  // (freeink-sdk/.../Ssd1677Driver.cpp), and on a -fno-exceptions build a
+  // throwing allocation is abort(), not false. So the affordability has to be
+  // decided before the call, against the largest block the heap can actually
+  // give (ESP.getMaxAllocHeap(), the same number the MEM log line prints).
+  //
+  // Measured 2026-08-22: a coredump caught exactly this -- abort() in loopTask,
+  // operator new -> __cxa_throw -> terminate, with the driver asking for 48,000
+  // bytes for a full-panel window. docs/power-management.md is the other freeze;
+  // this one is docs/map-follow.md, "An unbounded window aborts the device".
+  bool windowRefreshAffordable(int w, int h) const;
+  // Bytes to leave free after a windowed refresh's own buffer. A window is a
+  // convenience; starving the render that follows it is not a trade worth
+  // making, same reasoning as the menu backdrop's own reserve.
+  static constexpr size_t kWindowHeapMargin = 12 * 1024;
   // Runs the radius search for the menu's rows. False when there is no fix to
   // search from, which is the one case the menu refuses outright -- the query
   // starts at the rider, not at the viewport.
