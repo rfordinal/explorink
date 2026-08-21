@@ -26,7 +26,13 @@ enum class HomeMenuItem {
   MAP,
   TILE_SYNC,
   PREVIEW,
-  SETTINGS_MENU
+  SETTINGS_MENU,
+  // Home rows with no destination yet -- they draw dimmed and refuse selection
+  // (HomeActivity::kRows, ../../docs/home-screen.md). Wallet's activity exists
+  // on the wallet-viewer branch and is not on develop.
+  TRIPS,
+  PINS,
+  WALLET
 };
 
 /**

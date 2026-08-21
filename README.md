@@ -240,6 +240,11 @@ costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, an
 to one peripheral connection gave 9 KB back and put the screen above its 50 KB
 gate.
 
+[`docs/home-screen.md`](./docs/home-screen.md) is the Home screen: the brand
+block's asset pipeline (two generator scripts, one traced SVG), the seven rows
+and why three of them draw dimmed, and how a row is dimmed on a panel with no
+grey. Built 2026-08-21, not yet run on hardware.
+
 ## Credits
 
 **This project exists because of

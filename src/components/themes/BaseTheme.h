@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Icon.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -263,6 +265,19 @@ class BaseTheme {
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
+  // The Home screen's row list: icon, label, chevron. One row is selected and
+  // draws inverted on a filled block; a row with `enabled == false` keeps its
+  // shape and loses half its ink, so a rider sees the feature exists and is not
+  // there yet. Rows are icon assets, not UIIcon: Home's glyphs are Lucide-baked
+  // freeink::Icons (src/components/icons/home_icons.h) and the UIIcon table is a
+  // fixed set of the reader's own bitmaps. See ../../../docs/home-screen.md.
+  struct HomeRow {
+    const char* label;
+    const freeink::Icon* icon;
+    bool enabled;
+  };
+  virtual void drawHomeMenu(const GfxRenderer& renderer, Rect rect, const HomeRow* rows, int rowCount,
+                            int selectedIndex, int rowHeight) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   // What the option popup draws. `values` is parallel to `options` and may be
   // null or shorter -- a row with no value entry draws label-only.

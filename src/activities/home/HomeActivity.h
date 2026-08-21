@@ -1,6 +1,6 @@
 #pragma once
-#include <functional>
-#include <vector>
+#include <I18n.h>
+#include <Icon.h>
 
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
@@ -10,35 +10,27 @@ class HomeActivity final : public Activity {
   int selectorIndex = 0;
   const HomeMenuItem initialMenuItem;
 
-  // Convert HomeMenuItem to menu index (used in onEnter)
-  static int menuItemToIndex(HomeMenuItem item) {
-    int i = 0;
-    if (item == HomeMenuItem::FILE_TRANSFER) return i;
-    ++i;
-    if (item == HomeMenuItem::MAP) return i;
-    ++i;
-    if (item == HomeMenuItem::TILE_SYNC) return i;
-    ++i;
+  // The menu, in the order it is drawn. `enabled == false` draws the row dimmed
+  // and refuses selection -- Trips has no activity at all, Pins lives inside the
+  // map's own popup, and Wallet's activity is on the wallet-viewer branch and not
+  // on develop yet (../../../docs/home-screen.md).
+  struct Row {
+    HomeMenuItem item;
+    StrId label;
+    const freeink::Icon* icon;
+    bool enabled;
+  };
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-    if (item == HomeMenuItem::PREVIEW) return i;
-    ++i;
+  static constexpr int kRowCount = 8;  // + the grayscale bench row
+#else
+  static constexpr int kRowCount = 7;
 #endif
-    if (item == HomeMenuItem::SETTINGS_MENU) return i;
-    return 0;
-  }
+  static const Row* rows();
+  static int indexOf(HomeMenuItem item);
 
-  // Convert menu index to HomeMenuItem (used in loop)
-  static HomeMenuItem indexToMenuItem(int idx) {
-    int i = 0;
-    if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
-    if (idx == i++) return HomeMenuItem::MAP;
-    if (idx == i++) return HomeMenuItem::TILE_SYNC;
-#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-    if (idx == i++) return HomeMenuItem::PREVIEW;
-#endif
-    if (idx == i) return HomeMenuItem::SETTINGS_MENU;
-    return HomeMenuItem::NONE;
-  }
+  // Skip disabled rows: `step` is +1 or -1 and the walk wraps.
+  int nextSelectable(int from, int step) const;
+
   void onSettingsOpen();
   void onFileTransferOpen();
   void onMapOpen();
@@ -46,8 +38,7 @@ class HomeActivity final : public Activity {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   void onPreviewOpen();
 #endif
-
-  int getMenuItemCount() const;
+  void activate(int index);
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
