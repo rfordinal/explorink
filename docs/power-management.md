@@ -345,6 +345,46 @@ An inline USB meter measures the whole system *including* charging, so it
 answers "what does the wall pay", not "what does the map cost". Only a
 battery run answers the second.
 
+### Except once charging has terminated: the no-teardown comparison (2026-08-21)
+
+**The case the paragraph above does not cover.** With the cell **full and the
+charger terminated**, the charging term goes to roughly zero and what the USB
+meter sees is the system. X4 cannot report that state -- no charger IC, no gauge,
+no charge-status pin -- but **the meter can**: the current stops decaying and
+settles.
+
+Why this matters enough to write down: every meter route on X4 otherwise requires
+**opening the device** to reach the cell, since the only alternatives are a shunt
+in series with the battery or replacing the battery with a source-meter. That is a
+teardown of the daily driver, which is a decision about owning a lab unit rather
+than a decision about instruments.
+
+What this route can and cannot do:
+
+- **It cannot give absolute milliamps at the cell.** The reading is current at
+  5 V into a converter, not current out of a 3.8 V pack, and the converter's
+  efficiency has never been measured **[open]**.
+- **It can give differences between states**, because that efficiency is
+  approximately common to both halves and cancels in the difference. Which is
+  exactly the thing the voltage slope cannot do inside the plateau, and it takes
+  minutes per reading instead of hours.
+- **The conversion factor is derivable once**: read one state whose
+  battery-side slope is already known (connected at 80 MHz, 25.6 mV/h) and the
+  ratio follows.
+- **It cannot touch deep sleep or the board floor.** Microamps under a
+  converter's own quiescent draw, with a charger that periodically wakes to
+  top off, are not reachable. Experiment 1 still needs a meter at the cell and
+  therefore still needs the teardown.
+
+Two things the meter will show that are not findings: a **top-off step** when the
+charger restarts as the cell settles, and the device being in a slightly different
+state with VBUS present (USB CDC up, and a USB state change requests a redraw --
+`src/main.cpp`, `gpio.wasUsbStateChanged()`).
+
+**Verified: nothing yet.** This is arithmetic and a mechanism, not a measurement.
+The first thing it needs is a settled reading on a full cell, compared against the
+known battery-side number for the same state.
+
 ## First real-draw numbers: two rides
 
 **Measured on hardware, 2026-08-07, real rides, not a bench measurement.**
