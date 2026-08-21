@@ -280,10 +280,19 @@ and must never be presented as one (`../../../docs/device-preview.md`).
   floor holds while riding, and that setting a destination repaints at once.
 - `Set destination` writing the log: that the record lands and survives a
   reboot.
-- **How a shard reaches the card.** A push works: `MapTransferReceiver` accepts
-  any relative path under the root (`points/10/565/350.tip` included), so
-  `tools/blepush.py` can send one today -- untested, but nothing in the path
-  validation objects. What does **not** happen is automatic: the tile index and
+- **How a shard reaches the card.** A push works, and this is now **measured on
+  hardware (2026-08-21)**: nine shards, 156 kB, pushed with `tools/blepush.py`
+  into `points/10/<col>/<row>.tip` and each one acknowledged by the device with
+  its own crc32. Throughput 3.1 to 4.0 kB/s, 39 s of transfer for the nine.
+  `MapTransferReceiver` needed no change: it accepts any relative path under the
+  root, so the point layer rides the tile transfer as it is.
+
+  **The phone has to be off the link for it.** A connected peripheral stops
+  advertising, so while ExplorInk GPS holds the connection the laptop cannot
+  find the device at all -- `blepush` fails with "no device advertising the map
+  service", which reads like a broken adapter and is not. Turn the phone's BT
+  off, push, turn it back on; the last fix stays in RAM, so `Nearby` still has
+  somewhere to search from in between. What does **not** happen is automatic: the tile index and
   the auto-sync path are built around `base/` (`tools/build_index.py` scans that
   directory only), so a rider whose area gains a point shard gets it only by a
   deliberate push or a card copy. That is the same hole as the freshness
