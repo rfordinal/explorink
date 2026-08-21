@@ -408,13 +408,36 @@ What this route can and cannot do:
   one whole cycle**, and a cycle is long -- and gets longer as the state gets
   cheaper, since it is set by how long the load takes to drain the recharge
   threshold. 65 mAh at 8 mA is eight hours.
-- **What that buys is better than speed.** mAh over a cycle is a **direct measure
-  of charge consumed**, not an inference from a voltage. The plateau problem does
-  not touch it: it does not matter where on the curve the pack sits. So the meter
-  is not the fast instrument, it is the *correct* one -- it produces the number
-  this campaign cannot currently produce at all. What it costs is patience, and
-  what it still cannot reach is anything below the converter's own quiescent
-  draw.
+- **Correction again, and this one narrows it further.** "A direct measure of
+  charge consumed" was still too strong. The objection that produced it: *a USB
+  meter tells you how hard the thing is charging, not what it consumes.* For an
+  instantaneous reading that is exactly right -- during the 140-minute fall it
+  reads near zero while the device is drawing the whole time.
+
+  What rescues it is **conservation over a closed cycle, not measurement of the
+  load**. If a cycle starts and ends at the same state of charge, the charge the
+  charger put in equals the charge the system took out, because the cell is a
+  ledger that has to balance. Consumption is in the number for that reason and no
+  other.
+
+  Three things contaminate it, and the first is the serious one:
+
+  - **The charger's and converter's own quiescent draw.** It is paid out of USB
+    for the whole fall, while nothing is being charged. So the reading is
+    *consumption plus an overhead proportional to elapsed time*. If that
+    quiescent is a few milliamps and the state under test is 8 mA, it is not a
+    correction, it is a comparable term.
+  - **5 V in, ~4 V out.** Compare **Wh**, not mAh: energy is the quantity that
+    converts, and the charge path's efficiency lives inside it.
+  - **A cycle does not return to exactly the same place.** Run 1's peaks were
+    4207, 4224, 4181, 4174, 4222 and 4165 mV -- so a single cycle carries an
+    error from wherever it happened to stop. Several cycles average it out.
+
+  **So the honest claim.** The meter does not answer "what does the map cost". It
+  answers "how much more does the map cost than observation mode", because the
+  time-proportional overhead is common to both and cancels in the difference --
+  the same structure as alternation, and free of the plateau problem. Absolute
+  consumption stays **[open]** until something measures at the cell.
 - **The conversion factor is derivable once**: read one state whose
   battery-side slope is already known (connected at 80 MHz, 25.6 mV/h) and the
   ratio follows.
