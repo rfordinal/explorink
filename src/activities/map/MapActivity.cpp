@@ -2226,7 +2226,30 @@ void MapActivity::loop() {
   // whether a file transfer is moving bytes: the BLE library carries bytes
   // only and does not know MapTransferReceiver exists (BlePositionServer.h,
   // TransferHooks), so the activity answers.
-  freeink::BlePositionServer::getInstance().serviceAdvertising(transfer_.status().active);
+  //
+  // Radio is only needed in Follow, or mid-transfer regardless of mode: a fix
+  // received while observing does not redraw (applyFix() just records
+  // observeReturnLatE7_ -- "Two coordinates, not one",
+  // docs/map-observation-mode.md), and autosync is already Follow-only
+  // (recheckHatchedTiles()). So Observe with nothing moving has no use for
+  // advertising or a live connection -- stop it exactly like onExit() would,
+  // and bring it back the moment either condition changes. Never touches
+  // bleStartFailed_ here except to set it on a fresh begin(): a genuinely
+  // failed init must not be retried every tick, only on the transition that
+  // asks for the radio again.
+  {
+    const bool transferActive = transfer_.status().active;
+    const bool needBle = screenMode_ == MapScreenMode::Follow || transferActive;
+    auto& ble = freeink::BlePositionServer::getInstance();
+    if (needBle) {
+      if (!ble.isRunning() && !bleStartFailed_) {
+        bleStartFailed_ = !ble.begin();
+      }
+    } else if (ble.isRunning()) {
+      ble.end();
+    }
+    ble.serviceAdvertising(transferActive);
+  }
 
   // A transfer status line (`RDY`, `OK`, `ERR`) that found the connection's one
   // indication slot held by a command-channel reply. Same task-ownership reason

@@ -8,19 +8,54 @@ Code: `lib/BlePositionServer/src/BlePositionServer.cpp`.
 
 ## When it advertises
 
-Only while the **map screen** or the **sync map tiles** screen is open.
-`MapActivity::onEnter()` calls `BlePositionServer::begin()`
-(`src/activities/map/MapActivity.cpp:1314`), which builds the GATT table and
-starts advertising (`BlePositionServer.cpp:295-320`). `end()` stops it and
-deinits the stack (`BlePositionServer.cpp:351`), because the NimBLE host plus
-controller is 57 KB of heap — measured 2026-08-10 after the BLE config trim
-(56,972 B; 64,544 B before it), `map-memory.md:203`. The pre-trim 64.5 KB figure
-was still quoted here until 2026-08-18.
+While the **map screen** or the **sync map tiles** screen is open, minus one
+carve-out (next section). `MapActivity::onEnter()` calls
+`BlePositionServer::begin()` (`src/activities/map/MapActivity.cpp:1314`), which
+builds the GATT table and starts advertising (`BlePositionServer.cpp:295-320`).
+`end()` stops it and deinits the stack (`BlePositionServer.cpp:351`), because the
+NimBLE host plus controller is 57 KB of heap — measured 2026-08-10 after the BLE
+config trim (56,972 B; 64,544 B before it), `map-memory.md:203`. The pre-trim
+64.5 KB figure was still quoted here until 2026-08-18.
 
 So advertising is not a background beacon. It is a statement that the rider is
-looking at the map right now, and the phone app treats it as one: the OS watches
-for this device's advertisement and starts the app's bridge service when it
-appears (`../../docs/ble-app-wake.md`).
+looking at the map right now (or the sync screen is moving bytes), and the phone
+app treats it as one: the OS watches for this device's advertisement and starts
+the app's bridge service when it appears (`../../docs/ble-app-wake.md`).
+
+## Observe mode: no radio when there is nothing to send or receive
+
+**Added 2026-08-21, untested on hardware.** `MapActivity::loop()`
+(`src/activities/map/MapActivity.cpp`, the block right before the
+`serviceAdvertising()` call) now stops the whole BLE server -- same call
+`onExit()` makes, `BlePositionServer::end()` -- whenever `screenMode_ ==
+MapScreenMode::Observe` (`MapActivity.h:649`) **and** no file transfer is
+moving bytes (`transfer_.status().active`). It comes back the moment either
+condition flips: returning to Follow, or a transfer starting while still
+observing (autosync itself is Follow-only, `recheckHatchedTiles()`, but a
+transfer already in flight when Observe was entered is not interrupted).
+
+Why Observe specifically: a fix received while observing does not redraw at
+all -- `applyFix()` just records it into `observeReturnLatE7_`/`Lon_` and
+returns ("Two coordinates, not one", `map-observation-mode.md`) -- so there is
+nothing on this screen for the radio to deliver that would change anything
+visible. `MapActivity::preventAutoSleep()` reads
+`BlePositionServer::isRunning()` (`MapActivity.cpp:3759`), so this also means
+Observe with the radio down no longer blocks the idle-sleep timer purely
+because BLE happened to still be up -- a rider who stops pressing buttons while
+looking around goes to sleep on the normal idle timeout, same as anywhere else
+that has no reason of its own to stay awake.
+
+Does not touch `bleStartFailed_`: that flag is set once from `onEnter()`'s
+`begin()` and this code only calls `begin()` again on the transition back into
+"radio needed", so a genuinely failed init is not retried every tick, only on
+that transition.
+
+**Open, needs hardware:** whether the phone app's BLE client handles this
+server-initiated disconnect-and-readvertise cycle cleanly on every flip between
+Follow and Observe, or whether repeated `begin()`/`end()` (each a NimBLE
+init/deinit, ~57 KB of heap churn per the section above) during a session with
+a lot of Observe toggling costs more than it saves. Nothing about this has been
+on the glass yet.
 
 Advertising restarts on disconnect (`BlePositionServer.cpp:193-202`) so a link
 dropped mid-ride can come back without leaving the screen. That restart can
