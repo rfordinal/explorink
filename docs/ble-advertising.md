@@ -24,7 +24,8 @@ the app's bridge service when it appears (`../../docs/ble-app-wake.md`).
 
 ## Observe mode: no radio when there is nothing to send or receive
 
-**Added 2026-08-21, untested on hardware.** `MapActivity::loop()`
+**Added 2026-08-21, verified on hardware (maintainer, same day).**
+`MapActivity::loop()`
 (`src/activities/map/MapActivity.cpp`, the block right before the
 `serviceAdvertising()` call) now stops the whole BLE server -- same call
 `onExit()` makes, `BlePositionServer::end()` -- whenever `screenMode_ ==
@@ -50,12 +51,11 @@ Does not touch `bleStartFailed_`: that flag is set once from `onEnter()`'s
 "radio needed", so a genuinely failed init is not retried every tick, only on
 that transition.
 
-**Open, needs hardware:** whether the phone app's BLE client handles this
-server-initiated disconnect-and-readvertise cycle cleanly on every flip between
-Follow and Observe, or whether repeated `begin()`/`end()` (each a NimBLE
-init/deinit, ~57 KB of heap churn per the section above) during a session with
-a lot of Observe toggling costs more than it saves. Nothing about this has been
-on the glass yet.
+The maintainer's own-device pass confirmed the basic flip works: BLE drops in
+Observe and comes back in Follow, no hang. **Still open:** whether a session
+with a lot of rapid Observe/Follow toggling (each flip a NimBLE init/deinit,
+~57 KB of heap churn per the section above) costs more than it saves over a
+long ride -- that wants a longer soak, not a spot check.
 
 Advertising restarts on disconnect (`BlePositionServer.cpp:193-202`) so a link
 dropped mid-ride can come back without leaving the screen. That restart can

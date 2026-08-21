@@ -811,7 +811,7 @@ which is exactly what entering the map from an idle Home screen does.
 the clock before `BlePositionServer::begin()`, closing the window before the
 controller is enabled and the floor starts applying.
 
-### Observe with BLE off drops the floor to 10 MHz for free (2026-08-21, untested)
+### Observe with BLE off drops the floor to 10 MHz for free (2026-08-21)
 
 `MapActivity::loop()` now calls `BlePositionServer::end()` while
 `screenMode_ == MapScreenMode::Observe` and no transfer is active
@@ -835,9 +835,12 @@ Before this branch, BLE ran for the whole map session (`onEnter()`/`onExit()`
 only), so the controller stayed enabled through Observe too and the map screen
 never saw anything below 80 MHz. This branch is the first thing that lets it.
 
-**Open, needs hardware:** confirm the log actually shows `(10 MHz)` rather than
-`(80 MHz)` during an idle Observe session (same `[PWR] Going to low-power mode`
-line the bench runs above grep for), and that a button press still recovers
+The BLE end()/begin() cycle itself is verified on hardware (maintainer,
+2026-08-21): Observe drops BLE and Follow brings it back, no hang. That pass
+did not check the clock itself. **Still open:** confirm the log actually
+shows `(10 MHz)` rather than `(80 MHz)` during an idle Observe session (same
+`[PWR] Going to low-power mode` line the bench runs above grep for), and that
+a button press still recovers
 cleanly from 10 MHz on the map screen the same way it already does everywhere
 else `LOW_POWER_FREQ` applies.
 
