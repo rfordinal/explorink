@@ -89,10 +89,42 @@ then two actions:
   menu's `Follow mode` row).
 - **`Set destination`** writes the existing `dest` pin. See below.
 
-The two information rows are **inert**: pressing SELECT on one does nothing. That
-is the price of drawing this screen with the list widget the map already has
-instead of a second kind of dialog, and it is worth stating rather than
-discovering.
+**Every row does something.** The first cut carried the distance and the
+condition as rows of their own, and walking a menu cursor through text that
+cannot be pressed reads as a hack -- said plainly by the maintainer on hardware
+2026-08-21. So:
+
+- the distance and sector ride in the **value column of `View on map`**, the row
+  whose target they describe
+- the condition is a **note**: one line under the title, not selectable, drawn
+  only when the point carries one (`OptionPopup::setNote`, and
+  `BaseTheme::OptionPopupSpec::note` under it -- the widget grew the capability
+  it was missing, which pins and the route picker can use too)
+
+## `View on map` has to leave something to look at
+
+The first cut re-anchored the frame on the POI and did nothing else, so the
+rider arrived at a place with **nothing marked on it** ("kde je ten zdroj vody?
+ani prd" -- maintainer, on hardware). The marks are drawn only for categories the
+mask carries, and moving the frame set no bit.
+
+Now it does three things:
+
+1. **Turns that category's layer on** (`nearbyCategoryMask_`), so the point and
+   its siblings are drawn at all. The menu shows it with a `*` afterwards, and
+   `Hide all` turns it off again -- nothing hidden happened.
+2. **Remembers which point was asked for** and rings it: a white halo ring under
+   a black one, drawn by `MapActivity::drawViewedNearbyPoint()` straight onto
+   `GfxRenderer` after the map, the same place and reason as `drawPins()`. In a
+   village a category is a field of squares and being centred on one of them
+   does not say which one it was.
+3. **Enters Observe**, so the next fix does not yank the frame back.
+
+The ring is dropped when the rider goes back to Follow: they are following
+themselves again, and a ring around something they looked at once is decoration.
+It is also not drawn when the point is off the panel -- clamping it to an edge
+would claim the point is at the edge. Same open question as the rider's own
+off-screen fix: only pins have edge arrows today.
 
 ## `Show on map` is a view, not a setting
 

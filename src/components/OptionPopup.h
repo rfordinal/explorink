@@ -28,6 +28,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
   }
 
@@ -46,6 +47,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
   }
 
@@ -61,6 +63,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
   }
 
@@ -82,6 +85,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
   }
 
@@ -93,6 +97,15 @@ class OptionPopup {
                       const std::vector<std::string>& values, int currentIndex, std::function<void(int)> onSelect) {
     showWithValues(StrId::STR_MAP, options, values, currentIndex, std::move(onSelect));
     title = titleStr;
+  }
+
+  // One line of text between the title and the rows, not selectable
+  // (BaseTheme::OptionPopupSpec::note). Set after a show*() call, which clears
+  // it -- so a popup carries a note only when it asks for one. Empty string
+  // means none.
+  void setNote(const char* text) {
+    note = text != nullptr ? text : "";
+    layoutValid = false;
   }
 
   // Per-row actions, opt-in.
@@ -314,6 +327,7 @@ class OptionPopup {
     s.compact = compact;
     s.minDialogWidth = minDialogWidth;
     s.minVisibleRows = minVisibleRows;
+    s.note = note.empty() ? nullptr : note.c_str();
     return s;
   }
 
@@ -409,5 +423,6 @@ class OptionPopup {
   int minDialogWidth = 0;
   int minVisibleRows = 0;
   mutable Layout layout;
+  std::string note;
   mutable bool layoutValid = false;
 };

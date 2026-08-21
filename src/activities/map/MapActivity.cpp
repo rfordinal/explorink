@@ -3211,27 +3211,20 @@ void MapActivity::openNearbyPointDetail(uint8_t hitIndex) {
   if (hitIndex >= nearbyHitCount_) return;
   const MapPointQuery::Hit& hit = nearbyHits_[hitIndex];
 
+  // Two rows, and both do something. The first cut of this screen carried the
+  // distance and the condition as rows of their own, which put a menu cursor on
+  // text that could not be pressed -- "it reads as a sloppy hack" (maintainer,
+  // on hardware 2026-08-21). So the distance rides in the value column of the
+  // row it belongs to (the one that takes you there) and the condition is a
+  // note under the title (OptionPopup::setNote).
   std::vector<std::string> options;
   std::vector<std::string> values;
-
-  // Two information rows above the actions, exactly as the design's screen has
-  // them. They are inert: pressing SELECT on one does nothing, which is the
-  // price of drawing this with the list widget the map already has rather than a
-  // second kind of dialog.
   char distance[24];
   nearbyRowValue(hit, distance, sizeof(distance));
-  options.emplace_back(distance);
-  values.emplace_back();
-
-  const bool hasCondition = (hit.flags & (kPointFlaggedOnMapMask | kPointUnstaffed | kPointOpenSided)) != 0;
-  if (hasCondition) {
-    options.emplace_back(I18N.get(nearbyConditionLabel(hit.category, hit.flags)));
-    values.emplace_back();
-  }
 
   const int viewIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_NEARBY_VIEW_ON_MAP));
-  values.emplace_back();
+  values.emplace_back(distance);
   const int destIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_NEARBY_SET_DESTINATION));
   values.emplace_back();
@@ -3239,35 +3232,58 @@ void MapActivity::openNearbyPointDetail(uint8_t hitIndex) {
   optionPopup_.showWithValues(hit.name[0] != '\0' ? hit.name : tr(STR_NEARBY_UNNAMED), options, values, viewIdx,
                               [this, hitIndex, viewIdx, destIdx](int idx) {
                                 if (idx == viewIdx) {
-                                  // Same path a pin's `Show` takes: frame the point and
-                                  // switch to Observe, so the next fix does not yank the
-                                  // map back. The return path already exists (the menu's
-                                  // Follow mode row).
-                                  const MapPointQuery::Hit& target = nearbyHits_[hitIndex];
-                                  dropMenuBackdrop();
-                                  if (screenMode_ == MapScreenMode::Follow) {
-                                    screenMode_ = MapScreenMode::Observe;
-                                    // The return anchor is the rider, captured before the
-                                    // frame moves -- lastLatE7_ is about to be repointed
-                                    // at the POI. Same capture showPinOnMap() does.
-                                    observeReturnLatE7_ = lastLatE7_;
-                                    observeReturnLonE7_ = lastLonE7_;
-                                    observeReturnHeading_ = lastHeading_;
-                                    observeReturnSeq_ = lastDrawnSeq_;
-                                  }
-                                  redrawDueMs_ = 0;
-                                  showBusy();
-                                  // anchorHeading_, the heading the frame on the panel was
-                                  // drawn with: looking at a POI must not also rotate the
-                                  // map.
-                                  renderViewport(target.latE7, target.lonE7, anchorHeading_, lastDrawnSeq_);
+                                  viewNearbyPointOnMap(hitIndex);
                                   return;
                                 }
                                 if (idx == destIdx) setNearbyDestination(hitIndex);
                               });
+  // Only when the point actually carries one. A note that says nothing would
+  // make every POI look conditional.
+  const bool hasCondition = (hit.flags & (kPointFlaggedOnMapMask | kPointUnstaffed | kPointOpenSided)) != 0;
+  if (hasCondition) optionPopup_.setNote(I18N.get(nearbyConditionLabel(hit.category, hit.flags)));
   optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::viewNearbyPointOnMap(uint8_t hitIndex) {
+  if (hitIndex >= nearbyHitCount_) return;
+  const MapPointQuery::Hit& hit = nearbyHits_[hitIndex];
+
+  dropMenuBackdrop();
+
+  // **Turn the category's layer on.** Without this the rider is taken to a
+  // place with nothing on it: the marks are drawn only for categories the mask
+  // carries, and `View on map` used to move the frame without setting the bit --
+  // "kde je ten zdroj vody? ani prd" (maintainer, on hardware 2026-08-21).
+  if (hit.category < 16) nearbyCategoryMask_ |= static_cast<uint16_t>(1u << hit.category);
+
+  // And remember which one was asked for, so it can be told apart from its
+  // neighbours: in a village a category is a field of squares, and the frame
+  // being centred on one of them is not enough to say which.
+  nearbyViewedLatE7_ = hit.latE7;
+  nearbyViewedLonE7_ = hit.lonE7;
+  nearbyViewedCategory_ = hit.category;
+  nearbyViewedFlags_ = hit.flags;
+  nearbyViewedValid_ = true;
+
+  // Observation mode wholesale, exactly as a pin's `Show` does: it already
+  // stops the next fix yanking the frame back, and the menu's `Follow mode` row
+  // already knows how to return to the rider.
+  if (screenMode_ == MapScreenMode::Follow) {
+    screenMode_ = MapScreenMode::Observe;
+    // The return anchor is the rider, captured before the frame moves --
+    // lastLatE7_ is about to be repointed at the POI.
+    observeReturnLatE7_ = lastLatE7_;
+    observeReturnLonE7_ = lastLonE7_;
+    observeReturnHeading_ = lastHeading_;
+    observeReturnSeq_ = lastDrawnSeq_;
+  }
+  redrawDueMs_ = 0;
+  showBusy();
+  // anchorHeading_, the heading the frame on the panel was drawn with: looking
+  // at a POI must not also rotate the map.
+  renderViewport(hit.latE7, hit.lonE7, anchorHeading_, lastDrawnSeq_);
 }
 
 void MapActivity::toggleNearbyCategoryOnMap(uint8_t category) {
@@ -3315,8 +3331,8 @@ void MapActivity::setNearbyDestination(uint8_t hitIndex) {
   renderCurrent();
   // tr() is a macro that pastes its argument after `StrId::`, so the choice has
   // to be made on the id and not inside the macro.
-  const StrId notice = !wrote ? StrId::STR_PIN_WRITE_FAILED
-                              : (replaced ? StrId::STR_NEARBY_DEST_REPLACED : StrId::STR_NEARBY_DEST_SET);
+  const StrId notice =
+      !wrote ? StrId::STR_PIN_WRITE_FAILED : (replaced ? StrId::STR_NEARBY_DEST_REPLACED : StrId::STR_NEARBY_DEST_SET);
   showPinNotice(I18N.get(notice));
 }
 
@@ -3679,6 +3695,42 @@ Rect MapActivity::pinEdgeArea() const {
 
   if (right <= left || bottom <= top) return Rect{left, top, 0, 0};
   return Rect{left, top, right - left, bottom - top};
+}
+
+void MapActivity::drawViewedNearbyPoint() {
+  if (!nearbyViewedValid_) return;
+  // Only while looking around. Back in Follow the rider is following themselves
+  // again and a ring around something they looked at once is stale decoration.
+  if (screenMode_ != MapScreenMode::Observe) return;
+  if (kDefaultMapStyle.pointSquarePx <= 0) return;
+
+  double mercX = 0.0;
+  double mercY = 0.0;
+  MapProjection::lonLatToMerc(static_cast<double>(nearbyViewedLatE7_) / 1e7,
+                              static_cast<double>(nearbyViewedLonE7_) / 1e7, mercX, mercY);
+  int32_t sx = 0;
+  int32_t sy = 0;
+  proj_.projectMercWide(mercX, mercY, sx, sy);
+
+  // Off the panel: draw nothing rather than clamp a ring to an edge, where it
+  // would claim the point is at the edge. The frame is anchored on this point,
+  // so this only happens after the rider has panned away from it.
+  const int side = kDefaultMapStyle.pointSquarePx;
+  const int ringInset = 3;  // clear of the square's own border
+  const int half = side / 2 + ringInset;
+  if (sx - half < 0 || sy - half < kMapContentTop || sx + half >= renderer.getScreenWidth() ||
+      sy + half >= renderer.getScreenHeight()) {
+    return;
+  }
+
+  // A white ring under a black one, the same halo trick the marker and the
+  // compass use: this lands on live map lines, and a bare black ring on top of a
+  // road casing is not a ring.
+  const int x = static_cast<int>(sx) - half;
+  const int y = static_cast<int>(sy) - half;
+  const int box = half * 2;
+  renderer.drawRoundedRect(x - 1, y - 1, box + 2, box + 2, 2, 4, false);  // white halo
+  renderer.drawRoundedRect(x, y, box, box, 2, 3, true);                   // the ring itself
 }
 
 void MapActivity::drawPins() {
@@ -4081,6 +4133,9 @@ void MapActivity::toggleObserveMode() {
   }
 
   screenMode_ = MapScreenMode::Follow;
+  // Back to following the rider: the ring around whatever POI they went to look
+  // at is stale decoration now (drawViewedNearbyPoint()).
+  nearbyViewedValid_ = false;
   LOG_DBG(kLogTag, "observation mode off, returning to %d,%d", static_cast<int>(observeReturnLatE7_),
           static_cast<int>(observeReturnLonE7_));
   redrawDueMs_ = 0;
@@ -5027,6 +5082,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // The rider's own marks, over the map and under everything below: the marker,
   // the compass, the readout and the hints all still land on top of them.
   drawPins();
+  // And the POI the rider asked to look at, if any -- over the marks the
+  // renderer drew, because the whole point of it is to be findable among them.
+  drawViewedNearbyPoint();
 
   // Outside IMapCanvas: screen furniture, not map data, so it lands on top
   // regardless of what the hatch above covered. Rotated to this frame's

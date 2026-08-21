@@ -543,6 +543,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   void openNearbyMenu();
   void openNearbyCategoryList(uint8_t category);
   void openNearbyPointDetail(uint8_t hitIndex);
+  // `View on map`: turns the category's layer on, remembers which point was
+  // asked for so it can be marked apart from its neighbours, and re-anchors the
+  // frame on it in Observe mode.
+  void viewNearbyPointOnMap(uint8_t hitIndex);
+  // The ring around the point the rider asked to see, drawn straight onto
+  // GfxRenderer after the map -- same place and same reason as drawPins(): the
+  // renderer knows nothing about which POI a menu was pointing at.
+  void drawViewedNearbyPoint();
   // Runs the radius search for the menu's rows. False when there is no fix to
   // search from, which is the one case the menu refuses outright -- the query
   // starts at the rider, not at the viewport.
@@ -580,6 +588,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Which row the category list reopens on, so toggling `Show on map` does not
   // walk the rider back down the list.
   uint8_t nearbyRow_ = 0;
+  // The point `View on map` was pointed at, kept so the frame can mark it. Not
+  // a pin and never persisted: it is a thing the rider is looking at right now,
+  // and it is dropped the moment they go back to following themselves.
+  int32_t nearbyViewedLatE7_ = 0;
+  int32_t nearbyViewedLonE7_ = 0;
+  uint8_t nearbyViewedCategory_ = 0;
+  uint8_t nearbyViewedFlags_ = 0;
+  bool nearbyViewedValid_ = false;
   // The query's own file handle and its scratch, allocated when the rider first
   // opens Nearby and kept for the rest of the screen's life: the map's own
   // sources are streaming during a render and one seek cursor cannot serve two

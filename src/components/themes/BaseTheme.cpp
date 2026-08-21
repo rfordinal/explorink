@@ -1081,6 +1081,10 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
 
   const int optionLineHeight = renderer.getLineHeight(optionFontId);
   const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  // The note rides in the option font, one line, with the row gap under it. It
+  // is not a row: nothing scrolls it and nothing can select it.
+  const int noteLineHeight = spec.note != nullptr ? optionLineHeight : 0;
+  const int noteBlock = spec.note != nullptr ? noteLineHeight + spacing.itemSpacing : 0;
   const int rowHeight = optionLineHeight + spacing.selectionVPadding * 2;
   const int rowStep = rowHeight + spacing.itemSpacing;
   const int optionCount = spec.options ? static_cast<int>(spec.options->size()) : 0;
@@ -1088,6 +1092,10 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   // A row with a value is label + gap + boxed value; a plain row is just the
   // label. The title has to fit too, and it is drawn in the bigger font.
   int maxTextWidth = spec.title ? renderer.getTextWidth(UI_12_FONT_ID, spec.title, EpdFontFamily::BOLD) : 0;
+  if (spec.note != nullptr) {
+    const int noteWidth = renderer.getTextWidth(optionFontId, spec.note, EpdFontFamily::REGULAR);
+    if (noteWidth > maxTextWidth) maxTextWidth = noteWidth;
+  }
   for (int i = 0; i < optionCount; i++) {
     int w = renderer.getTextWidth(optionFontId, (*spec.options)[i].c_str(), optionStyle);
     if (spec.values && i < static_cast<int>(spec.values->size()) && !(*spec.values)[i].empty()) {
@@ -1102,7 +1110,7 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   // pixels under it (MapActivity's menu backdrop) pays for every row in RAM,
   // and a dialog taller than half the panel stops reading as a dialog.
   // Anything past the window scrolls.
-  const int chromeHeight = titleLineHeight + spacing.titleGap + spacing.innerPadding * 2;
+  const int chromeHeight = titleLineHeight + spacing.titleGap + noteBlock + spacing.innerPadding * 2;
   const int heightBudget = pageHeight * kOptionPopupMaxHeightPercent / 100;
   int visibleRows = optionCount;
   if (rowStep > 0 && optionCount > 0) {
@@ -1126,13 +1134,16 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   if (spec.minDialogWidth > dialogW) {
     dialogW = std::min(spec.minDialogWidth, pageWidth - metrics.optionPopupDialogSideMargin * 2);
   }
-  const int dialogH = titleLineHeight + spacing.titleGap + listHeight + spacing.innerPadding * 2;
+  const int dialogH = titleLineHeight + spacing.titleGap + noteBlock + listHeight + spacing.innerPadding * 2;
 
   OptionPopupGeometry geometry;
   geometry.dialog = Rect{(pageWidth - dialogW) / 2, (pageHeight - dialogH) / 2, dialogW, dialogH};
   geometry.rowX = geometry.dialog.x + spacing.innerPadding;
   geometry.rowWidth = dialogW - spacing.innerPadding * 2;
-  geometry.firstRowY = geometry.dialog.y + spacing.innerPadding + titleLineHeight + spacing.titleGap;
+  geometry.noteY =
+      spec.note != nullptr ? geometry.dialog.y + spacing.innerPadding + titleLineHeight + spacing.titleGap : 0;
+  geometry.noteLineHeight = noteLineHeight;
+  geometry.firstRowY = geometry.dialog.y + spacing.innerPadding + titleLineHeight + spacing.titleGap + noteBlock;
   geometry.rowHeight = rowHeight;
   geometry.rowStep = rowStep;
   geometry.visibleRows = visibleRows;
@@ -1183,6 +1194,13 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
     const int sepY = y + spacing.titleGap / 2;
     renderer.drawLine(dialog.x + spacing.innerPadding, sepY, dialog.x + dialog.width - spacing.innerPadding, sepY,
                       true);
+  }
+
+  // The note: one line under the title, centred like it, in the option font so
+  // it reads as a fact about the dialog's subject rather than as a row. Never
+  // selectable -- the hit test only knows about geometry.rows.
+  if (spec.note != nullptr) {
+    renderer.drawCenteredText(optionFontId, geometry.noteY, spec.note, true, EpdFontFamily::REGULAR);
   }
 
   const int selectionRadius = metrics.optionPopupSelectionRadius;
