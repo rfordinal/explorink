@@ -402,6 +402,45 @@ experiment 1):
 Deep sleep is used here **once, as an instrument**, then never again -- it is
 rejected as a feature (`power-idle-sleep.md`, "S3 -- rejected").
 
+## X3 has a current meter on the board, and the firmware already reads it
+
+**Found 2026-08-21 while asking how a meter would physically attach to an X4.**
+The answer for X3 is: it does not have to.
+
+`BoardConfig`'s X3 profile carries a **BQ27220 fuel gauge at 0x55** on SDA20/SCL0
+(`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h`, the X3 profile)
+**[repo]**. X4 has none -- `gaugeAddr` 0, battery read off an ADC divider -- which
+is why the two devices need different instruments and why every measurement has
+to name its device.
+
+**And the register is already being read.**
+`freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:23` defines
+`BQ27220_CURRENT = 0x0C`, described in that comment as *average current, signed
+mA*, and `:211` reads it -- then uses **only its sign**, to decide whether the pack
+is charging, and throws the magnitude away **[repo]**.
+
+So on X3 the device can report its own draw in milliamps, with no meter, no
+soldering and no teardown. Two consequences, both large:
+
+- **It measures current, not voltage, so the plateau problem does not exist for
+  it.** Every difficulty in `power-plan.md`'s "The plateau problem" comes from
+  inferring power from a slowly-moving voltage. A current register is a direct
+  reading at one operating point.
+- **It arrives with a device rather than a purchase.** X3 dev units were asked for
+  in the 2026-08-19 outreach. If one lands, the campaign gets its instrument for
+  free -- for X3.
+
+What is **not** settled, and must be read off the BQ27220 datasheet before
+anything is claimed (this repo's research-numbers rule: a primary page, not
+memory): the register's resolution, its averaging window, and whether it is
+trustworthy at single-digit milliamps, which is exactly the range that matters
+here. A gauge tuned for a phone's discharge may quantise at 1 mA or worse.
+
+The work to expose it is small and specified: `BatteryMonitor` needs a public
+`readCurrentMa()` beside `readMillivolts()`, and `PowerLog` gains a `cur_ma`
+column next to `board`. It is deliberately **not** written yet -- it can only be
+verified on an X3, and this repo does not merge untested firmware.
+
 ## The instrument problem, honestly
 
 `power.csv` resolves milliamps over hours from the `batt_mv` slope. It cannot
@@ -410,6 +449,30 @@ see microamps, and plugging USB in charges the cell and kills the run
 light sleep engages, so mid-run evidence is `power.csv` and BLE, nothing else.
 
 **We do not know what the maintainer owns.** So the plan degrades:
+
+**How it physically attaches to an X4, which nobody has checked.** Every plan
+below says "a meter in series with the battery", and the prerequisite behind that
+sentence has never been examined: **is the X4's cell on a connector, or soldered
+to the board?** Nothing in this repo says, because nobody has opened one. That is
+the first thing to establish, before any purchase, and it decides which of two
+wiring schemes is even possible:
+
+- **Source-meter mode -- the meter replaces the cell.** Disconnect the battery,
+  feed the board from the instrument at a fixed voltage. This is the better
+  measurement *and* the easier one: no shunt in series with a live cell, no burden
+  voltage at a wake spike, and -- the real prize -- **a constant supply voltage, so
+  the discharge curve stops being a confounder at all**. Needs the cell to be
+  disconnectable and needs the battery MOSFET latch (GPIO13,
+  `lib/hal/HalPowerManager.cpp:100-109`) to behave when fed from outside, which is
+  itself **[open]**.
+- **Ampere-meter mode -- in series with the existing cell.** Break one battery
+  lead, insert the meter, the cell still powers the device. No supply needed, but
+  it means cutting or unplugging a lead, and it carries the burden-voltage trap
+  described below.
+
+**Do this on a lab device, not the daily driver.** A device that stays open with
+leads hanging out of it is the right home for this; the 2026-08-19 outreach asked
+for X3 and X4 Pro units partly for that reason.
 
 - **PPK2-class instrument** (Nordic Power Profiler Kit II or equivalent:
   source-meter, nA-to-mA autorange, logs a current waveform). Gives experiment
