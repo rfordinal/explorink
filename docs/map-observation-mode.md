@@ -67,10 +67,26 @@ incoming fix there instead of redrawing -- same idea as `overviewShown_`'s
 early return, just with its own return coordinate. `toggleObserveMode()`
 renders around `observeReturnLatE7_` etc. when leaving Observe.
 
-The position marker is not drawn while observing
+The live position marker is not drawn on the pan anchor while observing
 (`renderViewport()`'s `if (screenMode_ != MapScreenMode::Observe)` guard
 around `drawPositionMarker()`): the anchor is a pan target the rider chose to
 look at, not a GPS fix, and a marker glyph on it would claim otherwise.
+
+**Changed 2026-08-21, untested on hardware:** the rider's real last fix
+(`observeReturnLatE7_`/`Lon_`) is now separately projected into whatever the
+rider panned to and drawn there in the sleep-marker style --
+`MapActivity::drawObserveFixMarker()`, called from the `else` branch of the
+same guard (`MapActivity.cpp`, `renderViewport()`). Before this, Observe drew
+no marker at all, which read as "the fix was lost" rather than "you are
+looking somewhere else". Same shape and same reasoning as
+`drawSleepMarker()`'s ring-and-dot (`MapMarkerMetrics.h`'s `kSleepMarker*`):
+no heading, because a stale heading dressed as current would be exactly the
+kind of claim this mode already avoids for the anchor. Skips silently, same
+as today, when the fix projects off the current viewport -- no off-screen
+arrow, that would be a separate feature. **Open, needs hardware:** whether
+the halo is still findable at every zoom rung now that it can land off the
+screen centre, and whether drawing it costs a visible flicker on a pan step
+that also redraws the whole tile viewport underneath it.
 
 ## Zoom while observing: a hold, plus two menu rows
 
