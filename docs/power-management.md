@@ -345,6 +345,40 @@ An inline USB meter measures the whole system *including* charging, so it
 answers "what does the wall pay", not "what does the map cost". Only a
 battery run answers the second.
 
+### Plugged in, X4 sawtooths: the system runs off the cell and the charger tops it up
+
+**Observed by the maintainer on the device and confirmed in run 1's own data,
+2026-08-21.** Left on USB, X4 charges to 100 %, drifts down to about 90 %,
+recharges, and repeats. Run 1's boot 3 -- 8.5 hours plugged in -- has it in the
+`batt_mv` column (`docs/power-runs/run1-2026-08-15.csv`, parent repo)
+**[measured]**:
+
+| | Voltage | Percent |
+|---|---|---|
+| Troughs | 4034-4067 mV | 89-92 % |
+| Peaks | 4165-4224 mV | 92-99 % |
+
+**Period: the fall takes about 140 minutes, the refill 7-25 minutes.** So the
+charger returns in a quarter of an hour what the system spent 2.3 hours draining,
+which puts the charge current an order of magnitude above the load.
+
+**What it proves, and it contradicts an assumption made a few hours earlier on
+this page: there is no load sharing.** With USB attached the system is fed from
+**the cell**, not from VBUS -- otherwise the pack could not fall at all. The
+charger is an independent top-up loop, which is consistent with the board having
+no charge-enable line and no charge-status pin (previous section).
+
+Three consequences:
+
+- **A voltage rise mid-run is this, not an error.** It is why any analysis has to
+  cut on a sustained rise before fitting (`docs/power-runs/README.md`, and
+  `tools/powercsv.py`'s `RISE_THRESHOLD_MV`).
+- **The percentage swing is not 10 % of the pack.** `batt_pct` on X4 is
+  voltage-derived and then smoothed with a 9/10 EMA, so a 190 mV swing near the
+  top of the curve reads as 99 -> 89 %. The charge actually moved is whatever
+  190 mV is worth up there, which nobody has measured.
+- **It sets what a USB meter can do.** See below.
+
 ### Except once charging has terminated: the no-teardown comparison (2026-08-21)
 
 **The case the paragraph above does not cover.** With the cell **full and the
@@ -366,8 +400,21 @@ What this route can and cannot do:
   efficiency has never been measured **[open]**.
 - **It can give differences between states**, because that efficiency is
   approximately common to both halves and cancels in the difference. Which is
-  exactly the thing the voltage slope cannot do inside the plateau, and it takes
-  minutes per reading instead of hours.
+  exactly the thing the voltage slope cannot do inside the plateau.
+- **Correction, same day: it does not do it in minutes.** That claim was written
+  before the sawtooth above was understood. X4 runs off the cell while plugged in,
+  so during the ~140-minute fall the charger is off and **the USB meter reads
+  almost nothing**. The usable quantity is the meter's own **mAh accumulator over
+  one whole cycle**, and a cycle is long -- and gets longer as the state gets
+  cheaper, since it is set by how long the load takes to drain the recharge
+  threshold. 65 mAh at 8 mA is eight hours.
+- **What that buys is better than speed.** mAh over a cycle is a **direct measure
+  of charge consumed**, not an inference from a voltage. The plateau problem does
+  not touch it: it does not matter where on the curve the pack sits. So the meter
+  is not the fast instrument, it is the *correct* one -- it produces the number
+  this campaign cannot currently produce at all. What it costs is patience, and
+  what it still cannot reach is anything below the converter's own quiescent
+  draw.
 - **The conversion factor is derivable once**: read one state whose
   battery-side slope is already known (connected at 80 MHz, 25.6 mV/h) and the
   ratio follows.
