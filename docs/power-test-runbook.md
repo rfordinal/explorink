@@ -55,39 +55,39 @@ which a power run requires, the lab screen cannot be driven at all. So a flash
 would risk the whole night for a cosmetic column, when `ble` plus a timestamped
 schedule already separates the legs.
 
-### The leg pattern: a reference leg between every measured one
+### The leg pattern: rapid alternation, not long legs
 
-Nine legs of 40 min, 6 h. Advertising is the reference, because it is the state
-that needs no tool running:
+**Rewritten 2026-08-21 after run 4.** The first version of this plan was nine
+40-minute legs with a reference between each pair. Run 4 showed why that fails: a
+40-minute leg in the plateau moves the voltage **1-2 ADC counts**, so no single
+leg resolves anything and no amount of reference legs fixes it
+(`power-plan.md`, "The plateau problem").
 
-| # | Leg | Purpose |
+What does work with the same instrument is **alternation**. The curve term is
+smooth and slow; the state term flips on a schedule we choose. Difference every
+adjacent A/B pair and average over many cycles, and the drift cancels even though
+each individual leg is inside noise. The estimator is the mean of paired
+differences, and its error falls as the square root of the number of pairs -- so
+sixteen 25-minute legs beat four 100-minute ones for a *comparison*, while a long
+run is still what a single state's absolute slope needs.
+
+One night, one comparison, alternating:
+
+| Plan | Legs | Answers |
 |---|---|---|
-| R1 | advertising | reference |
-| L1 | connected, fix every 7 s | `SendPolicy.MIN_INTERVAL_MS`, the riding cadence |
-| R2 | advertising | reference |
-| L2 | connected, fix every 30 s | `WALKING_MIN_INTERVAL_MS`, the walking cadence |
-| R3 | advertising | reference |
-| L3 | connected, fix every 7 s **again** | reproducibility |
-| R4 | advertising | reference |
-| L4 | connected, **no fixes** (`--interval 3600`) | the link's own cost |
-| R5 | advertising | reference |
+| **A: the link's own cost** | `adv` / `conn --interval 3600` x 8 pairs, 25 min each | the scoreboard's `[open]` "bringing the radio up at all" row |
+| **B: send cadence (M2)** | `conn --interval 7` / `conn --interval 30` x 8 pairs, 25 min each | the maintainer's question, with the panel held constant by construction |
 
-What each thing in that table is for:
+**Pick one per night.** Two comparisons in one night halves the pairs for each,
+and the pair count is the whole point. Plan A first: it is the bigger term, and
+plan B's answer only matters if the radio turns out to cost anything.
 
-- **The reference legs are the drift cancellation.** A slope is a function of
-  state of charge as much as of load (`power-plan.md`, "Voltage slope is not a
-  property of the state"), and five references spread across six hours measure
-  that drift directly instead of assuming it away. This is the leg run 3 lost.
-- **L1 against L2 is M2**, the send-cadence question. Isolation is *checked, not
-  assumed*: `ref_window` and `panel_busy_ms` deltas must match across the two
-  legs, or something other than the radio moved.
-- **L4 against a reference is the "bringing the radio up" row** of the
-  scoreboard, which is `[open]` today.
-- **L1 against L3 is the most valuable leg of the night** and the least obvious:
-  two identical legs two hours apart measure the real run-to-run spread. Every
-  error bar this campaign has quoted so far is a fit residual, which assumes the
-  only error is white noise. L1 vs L3 is the first honest number for how much a
-  repeat actually moves.
+**Check the isolation rather than assuming it**: `ref_window` and
+`panel_busy_ms` deltas must match across the two states of a pair. If they do
+not, the difference is not the radio.
+
+**Drop the first leg after any reboot, and every boundary row.** Both cost run 4
+a leg (`power-plan.md`, run 4).
 
 ### Rules for the unattended window
 
@@ -106,6 +106,11 @@ What each thing in that table is for:
   inside roughly 4.05-3.80 V. Six hours at a 13 mA mix costs ~85 mAh, about 13 %
   of a 650 mAh pack, so a night that starts at 85 % ends around 72 % -- inside
   the band at both ends.
+- **A flash in between ends the series.** USB charges the cell, so the pack comes
+  back to the top of the curve and the first hour after unplugging is relaxation
+  again (`power-plan.md`). And the build changes, which is the one column the
+  scoreboard cannot difference across. After any flash: start a new series, do not
+  extend an old one, and let the pack sit 30 minutes off the charger first.
 
 ## Step 0: what needs no flash and no instrument
 
