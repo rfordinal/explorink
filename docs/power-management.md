@@ -23,6 +23,15 @@ row of it.** Added 2026-08-21 because the numbers were scattered across three
 documents and a run table, so nobody could answer "what does the radio cost"
 without reading all of them.
 
+> **Read this before quoting any mA number here (added 2026-08-21).** The
+> afternoon of the day these rows were written, the same firmware in the same
+> state read **25.6 mV/h at 4093 mV and 3.1 mV/h at 4046 mV**, and four legs in
+> the plateau came out ordered impossibly -- connected below advertising. So
+> inside the plateau **the discharge curve sets the slope, not the load**, and the
+> mA column's single calibration pair is not global. `power-plan.md`, "The plateau
+> problem", has the arithmetic and the two ways out. Rows below are marked for
+> what they actually support. Nothing here is safe to put on the public site.
+
 **The instrument is the voltage slope, in mV/h. That is the measured column.**
 The mA column is derived, by scaling run 2's static window -- 32.9 mV/h against
 24.0 mA, where the mA came from `dPct/100 * 650 mAh` on the spec-sheet capacity
@@ -51,8 +60,8 @@ load.
 |---|---|---|---|---|---|---|---|---|
 | Map, connected, fix/10 s, no modem sleep | connected | 160 | 58.9 | ~43 | 2026-08-15 | unrecorded (predates the `build` column) | 4220-3547 mV, 11.4 h | **[measured]**, mixed workload, whole discharge (see run 1) |
 | Map, connected, fix/10 s | connected | 160 | 32.9 | **24.0** | 2026-08-16 | `9686ce21` | ~4178-3866 mV, 9.5 h static window | **[measured]**, the campaign's reference |
-| Map, connected, fix/10 s | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **[measured]**, one leg, biased high by charge state |
-| Map, advertising, no phone | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **[measured]**, one leg |
+| Map, connected, fix/10 s | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **provisional** -- 25 mV of movement is real, but the mA conversion is not (see below) |
+| Map, advertising, no phone | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **not trustworthy** -- 4 mV of movement, four ADC counts; a repeat at 4046 mV read 5.3 |
 | Home, nothing running | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
 | **Map in observation mode, radio off** | **down** | **10** | -- | -- | -- | -- | feature in progress on a sibling branch | **[open]** -- potentially the cheapest map state that exists without light sleep |
 | Tile sync, transfer running | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
@@ -77,9 +86,14 @@ screen exists (`power-idle-sleep.md`, "The power lab screen"): the other two row
 difference two firmwares and call the remainder a feature.
 
 **Against the target.** The campaign wants 9.0 mA parked (`power-plan.md`, "The
-target"). Advertising at the 80 MHz floor already reads **~7.7 mA** on one leg.
-If that survives a repeat in the working band, route A has met the parked target
-on shipped hardware, and what is left is the *riding* case at ~18.7 mA.
+target"). The advertising leg read ~7.7 mA, which would mean route A had met the
+parked target on shipped hardware -- **and that claim did not survive the same
+afternoon.** A repeat of the same state 90 minutes later read half of it, and a
+connected leg read less than either, which cannot be true. What the day actually
+establishes is narrower: the map runs at 80 MHz, `full_clock_ms` says it stays
+there, and the riding case at 4093-4068 mV moved 25 mV in an hour. Whether the
+parked state is 4 mA or 8 mA is **[open]**, and this instrument cannot close it
+inside the plateau.
 
 ### The measurements we do not have, cheapest first
 
