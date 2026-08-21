@@ -230,6 +230,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // No-op unless there is a marker on the panel and a valid patch to erase it
   // with -- the map under a marker exists nowhere else in single-buffer mode.
   void drawSleepMarker();
+  // The sleep-style ring-and-dot, drawn at the *real* last fix
+  // (observeReturnLatE7_/Lon_) projected into whatever the rider panned to,
+  // while Observe is active. Not the anchor -- the anchor is a pan target,
+  // not a fix, and drawPositionMarker()'s Observe guard is unchanged. Skips
+  // silently when the fix projects off the current viewport, same as any
+  // marker that would draw outside the panel.
+  void drawObserveFixMarker();
   // headingStep is always 0-15 (MapHeading's domain) -- callers do any
   // channel-specific conversion before calling this, so the projection and
   // the debug readout only ever see one heading representation.

@@ -3914,6 +3914,44 @@ void MapActivity::drawSleepMarker() {
   markerPatchValid_ = false;
 }
 
+void MapActivity::drawObserveFixMarker() {
+  // observeReturnLatE7_/Lon_ is "where the rider actually is" while Observe
+  // is active (see the field comment, MapActivity.h) -- lastLatE7_/Lon_ is
+  // the pan target here, which is what renderViewport()'s Observe guard on
+  // drawPositionMarker() is protecting against being mistaken for a fix.
+  // Projecting the real fix separately and drawing the sleep glyph on it
+  // makes no such claim: it says "this is where you were", same as the
+  // sleep screen.
+  double mercX, mercY;
+  MapProjection::lonLatToMerc(static_cast<double>(observeReturnLatE7_) / 1e7,
+                              static_cast<double>(observeReturnLonE7_) / 1e7, mercX, mercY);
+  int32_t sx, sy;
+  proj_.projectMercWide(mercX, mercY, sx, sy);
+
+  // No patch, no erase: unlike drawSleepMarker() this is not replacing a
+  // marker already on the panel, it is the first and only thing drawn at
+  // this pixel this frame, and the marker goes on last (see the comment
+  // above renderViewport()'s own drawPositionMarker() call) so there is
+  // nothing under it yet to save.
+  const int haloRadius = kSleepMarkerRing / 2 + kSleepMarkerHalo;
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  if (sx < -haloRadius || sy < -haloRadius || sx > screenW + haloRadius || sy > screenH + haloRadius) {
+    // Panned far enough that the real fix is off this frame. Same as today:
+    // no glyph, no off-screen arrow -- that is a separate feature.
+    return;
+  }
+
+  const int cx = static_cast<int>(sx);
+  const int cy = static_cast<int>(sy);
+  renderer.fillRoundedRect(cx - haloRadius, cy - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius, Color::White);
+  const int radius = kSleepMarkerRing / 2;
+  renderer.drawRoundedRect(cx - radius, cy - radius, kSleepMarkerRing, kSleepMarkerRing, kSleepMarkerRingWidth, radius,
+                           true);
+  renderer.fillRoundedRect(cx - kSleepMarkerDot / 2, cy - kSleepMarkerDot / 2, kSleepMarkerDot, kSleepMarkerDot,
+                           kSleepMarkerDot / 2, Color::Black);
+}
+
 void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
   // A rung change re-anchors (stepZoom -> renderCurrent), so the marker on the
   // panel is always the current rung's size when a fix arrives here. If that
@@ -4589,6 +4627,12 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // arrow points straight up by construction.
   if (screenMode_ != MapScreenMode::Observe) {
     drawPositionMarker(markerDrawnX_, markerDrawnY_, 0, mode_);
+  } else {
+    // The anchor still gets no marker (see above), but the rider's real last
+    // fix does, in the sleep style -- same shape, same "this is where you
+    // were, not where you're looking" meaning. Was previously not drawn at
+    // all here, which made Observe look like the fix had been lost.
+    drawObserveFixMarker();
   }
 
   // The persisted-fix frame carries a banner only a full redraw can clear, so it
