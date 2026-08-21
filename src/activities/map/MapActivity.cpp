@@ -2516,7 +2516,10 @@ bool MapActivity::restoreMenuBackdrop() {
   const int y = rect.y;
   const int w = renderer.getScreenWidth();
   const int h = renderer.getScreenHeight() - y;
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  // A dialog tall enough to reach y == 0 makes this "one window" the whole
+  // panel, which is exactly what the comment below says aborts the device.
+  // Nothing bounded it until 2026-08-22.
+  if (!windowRefreshAffordable(w, h) || !renderer.displayBufferWindow(x, y, w, h)) {
     LOG_ERR(kLogTag, "menu close window rejected: %d,%d %dx%d", x, y, w, h);
     return false;
   }
@@ -2555,12 +2558,12 @@ void MapActivity::openMapMenu() {
   // an empty value is a plain action.
   std::vector<std::string> options;
   std::vector<std::string> values;
-  // 13, not 11: the ladder is Observe/Follow, two zoom rows, Whole route,
-  // Pins, Nearby, Mode, three toggles, Refresh and Debug info. A route loaded
-  // in Observe reaches all of them, and a reserve that is one short reallocates
-  // both vectors on the last push (CLAUDE.md, Resource Protocol 7).
-  options.reserve(13);
-  values.reserve(13);
+  // 12, not 11: Observe/Follow, two zoom rows, Whole route, Pins, Mode, three
+  // toggles, Refresh and Debug info is eleven, and a reserve exactly at the
+  // count reallocates nothing today but does the moment a row is added. One
+  // spare (CLAUDE.md, Resource Protocol 7).
+  options.reserve(12);
+  values.reserve(12);
   // Only once a fix has actually drawn a frame -- same "no row that cannot do
   // anything" rule as Whole route below. A rider with nothing on screen yet
   // has nothing to look around in.
@@ -3217,6 +3220,21 @@ Rect MapActivity::pinEdgeArea() const {
 
   if (right <= left || bottom <= top) return Rect{left, top, 0, 0};
   return Rect{left, top, right - left, bottom - top};
+}
+
+bool MapActivity::windowRefreshAffordable(int w, int h) const {
+  if (w <= 0 || h <= 0) return false;
+  // The driver's own arithmetic: one bit per pixel, rows padded to whole bytes
+  // (Ssd1677Driver::displayWindow). Rounded up rather than down -- the point is
+  // to refuse early, not to be exact.
+  const size_t bytes = (static_cast<size_t>(w) / 8 + 1) * static_cast<size_t>(h);
+  const size_t largest = ESP.getMaxAllocHeap();
+  const bool ok = bytes + kWindowHeapMargin <= largest;
+  if (!ok) {
+    LOG_DBG(kLogTag, "window %dx%d wants %u bytes, largest block %u -- full refresh instead", w, h,
+            static_cast<unsigned>(bytes), static_cast<unsigned>(largest));
+  }
+  return ok;
 }
 
 void MapActivity::drawPins() {
@@ -4050,7 +4068,13 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
   const int oldBottom = oldY + oldH, newBottom = newY + newH;
   const int unionW = (newRight > oldRight ? newRight : oldRight) - unionX;
   const int unionH = (newBottom > oldBottom ? newBottom : oldBottom) - unionY;
-  const bool shown = renderer.displayBufferWindow(unionX, unionY, unionW, unionH);
+  // The union of two far-apart boxes can be the whole panel -- the marker jumps
+  // corner to corner after a re-anchor -- showing a pin does it, and so does
+  // any command or menu row that re-frames the map. Unbounded, that is a
+  // 48,000-byte allocation inside the driver and an abort() on this build (see
+  // windowRefreshAffordable()).
+  const bool shown =
+      windowRefreshAffordable(unionW, unionH) && renderer.displayBufferWindow(unionX, unionY, unionW, unionH);
   if (!shown) {
     // The framebuffer is already correct, so a full refresh shows the right
     // picture; only the cheap path was unavailable.

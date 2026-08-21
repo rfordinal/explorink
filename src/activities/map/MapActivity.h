@@ -523,6 +523,34 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   int menuDialogWidth_ = 0;
   int menuVisibleRows_ = 0;
 
+  // Whether a windowed refresh of this rect can be afforded right now.
+  //
+  // `GfxRenderer::displayBufferWindow()` returns bool, and every call site here
+  // handles false by falling back to a full refresh -- but the driver under it
+  // allocates (w/8)*h bytes through a **throwing** std::vector
+  // (freeink-sdk/.../Ssd1677Driver.cpp), and on a -fno-exceptions build a
+  // throwing allocation is abort(), not false. So the affordability has to be
+  // decided before the call, against the largest block the heap can actually
+  // give (ESP.getMaxAllocHeap(), the same number the MEM log line prints).
+  //
+  // Measured 2026-08-22: a coredump caught exactly this -- abort() in loopTask,
+  // operator new -> __cxa_throw -> terminate, with the driver asking for 48,000
+  // bytes for a full-panel window. docs/map-follow.md, "An unbounded window
+  // aborts the device", has the backtrace and the arithmetic.
+  bool windowRefreshAffordable(int w, int h) const;
+  // Bytes to leave free after a windowed refresh's own buffer.
+  //
+  // 4 kB, measured 2026-08-22. A first cut at 12 kB was wrong in a way only the
+  // panel could show: the menu-close window is 480x553 = 33,733 bytes against a
+  // largest block of 43 to 45 kB, so 12 kB of margin refused a window that fits
+  // and made every menu close pay a full refresh. The job of this number is to
+  // refuse the 48,000-byte full-panel window that aborted the device, and 4 kB
+  // still does that (48,000 + 4,096 > 45,044).
+  //
+  // Nothing allocates between the check and the refresh, so the margin is
+  // insurance against fragmentation rather than a reservation for a known cost.
+  static constexpr size_t kWindowHeapMargin = 4 * 1024;
+
   // ## Pins (../../../docs/pins-plan.md, phase 3)
   //
   // All of it is OptionPopup inside this activity, not a Pins activity: this

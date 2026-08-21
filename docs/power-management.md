@@ -962,10 +962,10 @@ button, tested to 25 seconds on the power button
 (`../../../docs/device-notes.md`). So this class of bug is field-fatal: the
 rider gets the device back when they next reach a computer, and not before.
 
-**How it was reached in practice.** The `Nearby` menu's `View on map` enters
-Observe (`nearby-menu.md`), so a rider browsing points crosses this transition
-many times in a session instead of once or twice. The feature did not cause the
-bug; it made a rare path ordinary.
+**How it was reached in practice.** Anything that makes a rider enter and leave
+Observe repeatedly crosses this transition many times in a session instead of
+once or twice -- panning to look ahead, showing a pin, browsing points. The
+frequency is what turned a latent bug into a device that dies in the hand.
 
 ## Why 10 MHz breaks BLE: APB, and a lock that is compiled out
 
