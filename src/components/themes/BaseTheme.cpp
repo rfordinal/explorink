@@ -15,6 +15,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "components/icons/bookmark.h"
+#include "components/icons/home_icons.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -768,6 +769,64 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
         tileY + (BaseMetrics::values.menuRowHeight - lineHeight) / 2;  // vertically centered assuming y is top of text
     // Invert text when the tile is selected, to contrast with the filled background
     renderer.drawText(UI_10_FONT_ID, textX, textY, label, selectedIndex != i);
+  }
+}
+
+// Home's row list. Geometry is deliberately not in ThemeMetrics: these are the
+// Home screen's own numbers (a 480 px panel, one screenful of seven rows), and a
+// theme that wants a different Home overrides this method instead.
+void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const HomeRow* rows, const int rowCount,
+                             const int selectedIndex, const int rowHeight) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  // The selected block's inset, the gap after the glyph, the block's radius.
+  constexpr int kRowInset = 16;
+  constexpr int kIconGap = 18;
+  constexpr int kBlockRadius = 10;
+  constexpr int kBlockMargin = 2;
+  // A disabled row keeps its glyph and its label and loses every second pixel
+  // row to white. The panel has no grey in BW mode (../../docs/eink-grayscale.md),
+  // and a line screen halves the ink without the speckle a checkerboard leaves at
+  // this text size.
+  constexpr int kDimStep = 2;
+
+  const int left = rect.x + metrics.contentSidePadding;
+  const int width = rect.width - metrics.contentSidePadding * 2;
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+
+  for (int i = 0; i < rowCount; ++i) {
+    const int top = rect.y + i * rowHeight;
+    const bool selected = i == selectedIndex;
+    const bool enabled = rows[i].enabled;
+
+    if (selected) {
+      renderer.fillRoundedRect(left, top + kBlockMargin, width, rowHeight - kBlockMargin * 2, kBlockRadius,
+                               Color::Black);
+    }
+
+    int x = left + kRowInset;
+    if (rows[i].icon != nullptr) {
+      const freeink::Icon& icon = *rows[i].icon;
+      renderer.drawMono1bpp(icon.bits, x, top + (rowHeight - icon.h) / 2, icon.w, icon.h, !selected);
+      x += icon.w + kIconGap;
+    }
+    renderer.drawText(UI_12_FONT_ID, x, top + (rowHeight - lineHeight) / 2, rows[i].label, !selected);
+
+    const freeink::Icon& chevron = icon_chevron;
+    renderer.drawMono1bpp(chevron.bits, left + width - kRowInset - chevron.w, top + (rowHeight - chevron.h) / 2,
+                          chevron.w, chevron.h, !selected);
+
+    if (!enabled) {
+      for (int y = top + kBlockMargin; y < top + rowHeight - kBlockMargin; y += kDimStep) {
+        renderer.fillRect(left, y, width, 1, false);
+      }
+    }
+
+    // Hairline between rows, drawn after the dimming so a dimmed row does not
+    // eat the separator above it. Not above the first row and not against the
+    // selected block, which is its own boundary.
+    if (i > 0 && !selected && selectedIndex != i - 1) {
+      renderer.drawLine(left + 4, top, left + width - 4, top, 1, true);
+    }
   }
 }
 

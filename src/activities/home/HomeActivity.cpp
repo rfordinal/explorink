@@ -3,88 +3,138 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
-#include <vector>
-
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "components/icons/home_icons.h"
 #include "fontIds.h"
+#include "images/HomeHeader.h"
 
+namespace {
+// The brand block: mountain line art with the logo mark and the wordmark over
+// it, one bitmap (src/images/home-header.svg, scripts/gen_home_header.py).
+// Drawn with drawMono1bpp(), not drawImage(): drawImage() rotates the origin and
+// not the bits, and in Portrait a 480-tall pre-rotated buffer at x = 0 lands on
+// `(479 - 0) - 480 == -1`, which the blit reads as a uint16_t and drops. That is
+// measured, not read -- the first hardware pass drew no header at all
+// (../../../docs/home-screen.md).
+constexpr int kHeaderGap = 8;
+// Home's own row height, not metrics.menuRowHeight (64 in Lyra): seven rows at 64
+// end 16 px above the button hints, which reads as the list running into them.
+// At 60 the list ends at 716 with 44 px of air, and a 32 px glyph still has room.
+constexpr int kRowHeight = 60;
+}  // namespace
+
+// The menu, in the order it is drawn. Flash-resident: static constexpr, so the
+// table costs no DRAM.
+const HomeActivity::Row* HomeActivity::rows() {
+  static constexpr Row kRows[] = {
+      {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore, true},
+      {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips, false},
+      {HomeMenuItem::PINS, StrId::STR_HOME_PINS, &icon_pins, false},
+      {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet, false},
+      {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync, true},
+      {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer, true},
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-// File transfer, Map, Sync tiles, Preview, Settings
-int HomeActivity::getMenuItemCount() const { return 5; }
-#else
-// File transfer, Map, Sync tiles, Settings -- the grayscale bench is a
-// build-flag lab instrument and stays out of a rider's menu (platformio.ini).
-int HomeActivity::getMenuItemCount() const { return 4; }
+      // The grayscale bench is a build-flag lab instrument, not a rider's row
+      // (platformio.ini).
+      {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings, true},
 #endif
+      {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings, true},
+  };
+  static_assert(sizeof(kRows) / sizeof(kRows[0]) == kRowCount, "kRowCount must match the table");
+  return kRows;
+}
+
+int HomeActivity::indexOf(const HomeMenuItem item) {
+  const Row* table = rows();
+  for (int i = 0; i < kRowCount; ++i) {
+    if (table[i].item == item) return i;
+  }
+  return 0;
+}
+
+int HomeActivity::nextSelectable(const int from, const int step) const {
+  const Row* table = rows();
+  int index = from;
+  // The walk visits at most kRowCount rows, so a table with every row disabled
+  // returns `from` instead of looping.
+  for (int tries = 0; tries < kRowCount; ++tries) {
+    index = (index + step + kRowCount) % kRowCount;
+    if (table[index].enabled) return index;
+  }
+  return from;
+}
 
 void HomeActivity::onEnter() {
   Activity::onEnter();
 
-  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : menuItemToIndex(initialMenuItem);
+  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : indexOf(initialMenuItem);
+  if (!rows()[selectorIndex].enabled) selectorIndex = nextSelectable(selectorIndex, 1);
 
   // Trigger first update
   requestUpdate();
 }
 
-void HomeActivity::loop() {
-  const int menuCount = getMenuItemCount();
-  const auto& metrics = UITheme::getInstance().getMetrics();
-
-  auto activateSelection = [this] {
-    switch (indexToMenuItem(selectorIndex)) {
-      case HomeMenuItem::FILE_TRANSFER:
-        onFileTransferOpen();
-        break;
-      case HomeMenuItem::MAP:
-        onMapOpen();
-        break;
-
-      case HomeMenuItem::TILE_SYNC:
-        onTileSyncOpen();
-        break;
+void HomeActivity::activate(const int index) {
+  if (index < 0 || index >= kRowCount || !rows()[index].enabled) return;
+  switch (rows()[index].item) {
+    case HomeMenuItem::FILE_TRANSFER:
+      onFileTransferOpen();
+      break;
+    case HomeMenuItem::MAP:
+      onMapOpen();
+      break;
+    case HomeMenuItem::TILE_SYNC:
+      onTileSyncOpen();
+      break;
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-      case HomeMenuItem::PREVIEW:
-        onPreviewOpen();
-        break;
+    case HomeMenuItem::PREVIEW:
+      onPreviewOpen();
+      break;
 #endif
-      case HomeMenuItem::SETTINGS_MENU:
-        onSettingsOpen();
-        break;
-      default:
-        break;
-    }
-  };
+    case HomeMenuItem::SETTINGS_MENU:
+      onSettingsOpen();
+      break;
+    default:
+      break;
+  }
+}
 
-  buttonNavigator.onNext([this, menuCount] {
-    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+void HomeActivity::loop() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int count = kRowCount;
+
+  buttonNavigator.onNext([this] {
+    selectorIndex = nextSelectable(selectorIndex, 1);
     requestUpdate();
   });
 
-  buttonNavigator.onPrevious([this, menuCount] {
-    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+  buttonNavigator.onPrevious([this] {
+    selectorIndex = nextSelectable(selectorIndex, -1);
     requestUpdate();
   });
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
-    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+    selectorIndex = nextSelectable(selectorIndex, 1);
     requestUpdate();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
-    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+    selectorIndex = nextSelectable(selectorIndex, -1);
     requestUpdate();
     return;
   }
 
-  const int menuTop = metrics.homeTopPadding + metrics.homeMenuTopOffset;
+  // Rows are contiguous now (the brand block eats the space the old menu spent
+  // on gaps), so the touch step is the row height itself.
+  const int menuTop = metrics.homeTopPadding + kHeaderGap + HOMEHEADER_HEIGHT + kHeaderGap;
   int menuRow = -1;
-  const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, metrics.menuRowHeight + metrics.menuSpacing, menuCount,
-                                              0, INT32_MAX, metrics.menuRowHeight);
+  const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, kRowHeight, count, 0, INT32_MAX, kRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
+    if (!rows()[menuRow].enabled) return;
     if (menuTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != menuRow) {
         selectorIndex = menuRow;
@@ -92,13 +142,13 @@ void HomeActivity::loop() {
       }
     } else {
       selectorIndex = menuRow;
-      activateSelection();
+      activate(menuRow);
     }
     return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    activateSelection();
+    activate(selectorIndex);
   }
 }
 
@@ -111,29 +161,21 @@ void HomeActivity::render(RenderLock&&) {
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
 
-  // STR_MAP/Bookmark are placeholders -- Map has no dedicated icon asset yet
-  // (see docs/firmware-implementation-plan.md Phase 2), swap for a real one
-  // once the icon pipeline work happens.
-#if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-  const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC), tr(STR_PREVIEW),
-                                              tr(STR_SETTINGS_TITLE)};
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Image, Settings};
-#else
-  const std::vector<const char*> menuItems = {tr(STR_FILE_TRANSFER), tr(STR_MAP), tr(STR_TILE_SYNC),
-                                              tr(STR_SETTINGS_TITLE)};
-  // Bluetooth, not Wifi: tile sync goes over BLE and nothing else, and a WiFi
-  // glyph sends a rider to the wrong settings page.
-  const std::vector<UIIcon> menuIcons = {Transfer, Bookmark, Bluetooth, Settings};
-#endif
+  const int headerTop = metrics.homeTopPadding + kHeaderGap;
+  renderer.drawMono1bpp(HomeHeader, (pageWidth - HOMEHEADER_WIDTH) / 2, headerTop, HOMEHEADER_WIDTH, HOMEHEADER_HEIGHT,
+                        true);
 
-  GUI.drawButtonMenu(
-      renderer,
-      Rect{0, metrics.homeTopPadding + metrics.homeMenuTopOffset, pageWidth,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
-      static_cast<int>(menuItems.size()), selectorIndex,
-      [&menuItems](int index) { return std::string(menuItems[index]); },
-      [&menuIcons](int index) { return menuIcons[index]; });
+  const int menuTop = headerTop + HOMEHEADER_HEIGHT + kHeaderGap;
+
+  // The theme draws rows, not menu items: 7 x 12 bytes of stack, well inside the
+  // 256-byte local budget (../../../CLAUDE.md, The Resource Protocol).
+  const Row* table = rows();
+  BaseTheme::HomeRow drawRows[kRowCount];
+  for (int i = 0; i < kRowCount; ++i) {
+    drawRows[i] = BaseTheme::HomeRow{I18n::getInstance().get(table[i].label), table[i].icon, table[i].enabled};
+  }
+  GUI.drawHomeMenu(renderer, Rect{0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight}, drawRows,
+                   kRowCount, selectorIndex, kRowHeight);
 
   const auto labels = mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
