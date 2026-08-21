@@ -55,6 +55,73 @@ spend asleep**. Today the answer is none of it.
 Marketing wants this number too, so it has to survive being quoted. Nothing goes
 on the public site until a real 72-hour run has happened on hardware.
 
+### The scenario the 72 hours has to hold for (defined 2026-08-21)
+
+The number above had no scenario attached, which made it unfalsifiable: 72 hours
+of a map nobody looks at and nothing updates is not the claim. The maintainer's
+definition, and from here the one the campaign is measured against:
+
+**A multi-day hike. The map stays open at an economical rung. The phone sends
+position while the rider walks and stops sending when they stop. The map redraws
+only when the position actually moved. The rider glances at it now and then.**
+
+So the day splits into two states, and the split is what decides the budget:
+
+| | Hours over 3 days | What runs |
+|---|---|---|
+| **Walking** | ~24 h (8 h/day) | link up, fixes arriving, marker moves, occasional viewport reset |
+| **Stopped** (camp, breaks, sleep) | ~48 h | link up but silent -- `SendPolicy.MOVE_THRESHOLD_M` = 50 m means a stationary phone sends nothing but the hourly keepalive |
+
+Budget, on 650 mAh spec at 85 % usable (**552 mAh**, and both of those numbers
+are assumptions, not measurements): **7.67 mA average**. Then:
+
+| Scenario | Walking | Stopped | Needs for 72 h | Lasts |
+|---|---|---|---|---|
+| Today, measured | 18.7 | 7.7 | 818 mAh | **48.6 h (2.0 d)** |
+| Light sleep at camp only | 18.7 | 3.3 | 607 mAh | 65.5 h (2.7 d) |
+| Light sleep in **both** states | 9.0 | 3.3 | 374 mAh | **106 h (4.4 d)** |
+
+(Walking and stopped figures for row 1 are run 3's two measured legs; rows 2-3
+use S2's predicted 2.3 mA plus a 1 mA board floor **[assumed]** and, for row 3, a
+walking figure light sleep would have to deliver.)
+
+**The conclusion is sharper than the old "factor of 5" framing.** Today's device
+does **two days**, not one fifth of three. And light sleep *only while parked*
+still does not reach three days -- 2.7 -- because 24 walking hours at 18.7 mA is
+449 mAh, more than 80 % of the whole budget on its own. **So the 72 hours is
+decided by whether light sleep works with the link up and fixes arriving**, not
+by whether it works when nothing is happening. That is precisely experiment 3's
+question, which makes it the single most valuable run in the campaign rather than
+merely the first one.
+
+**What the rung choice is worth, quantified.** The maintainer's instinct was that
+a far rung is the economical one. Half right, and the ladder says which half
+(`src/activities/map/MapViewport.h:118-127`, the `minMove` column) **[repo]**:
+
+| Rung | m/px | `minMove` px | Metres per marker redraw |
+|---|---|---|---|
+| 0 | 1 | 12 | 12 m |
+| 2 | 6 | 8 | 48 m |
+| 3 | 12 | 8 | 96 m |
+| 4 | 20 | 6 | 120 m |
+| 6 | 45 | 2 | 90 m |
+
+Marker redraws **saturate around rung 3-4** -- `minMove` shrinks as the rung
+widens, so zooming further out past 12 m/px buys nothing there. And the phone
+does not send under 50 m anyway, so at close rungs the phone's gate decides and
+at far rungs the device's does. Where a far rung really pays is the **viewport
+reset**: the marker only recentres when it reaches `kKeepInMarginPx` = 80 px of
+the edge (`MapFollow.h:34`), which is roughly 3 km of walking at rung 4 and 7 km
+at rung 6, against a few hundred metres at rung 0. A reset is the expensive one
+-- tile reads off SD and `kickFullClock()` to 160 MHz -- so its rate is the term
+a rung choice actually moves. **What one reset costs is [open]**, and it is
+cheap to measure now that the scoreboard has a baseline to difference against.
+
+A marker window, by contrast, is **~0.5 s of panel time** (run 3: 57 s/h across
+113 refreshes/h **[measured]**), so 33 of them an hour is a 0.5 % duty cycle. The
+panel current during a refresh is **[open]**, but for this to matter at all it
+would have to be enormous.
+
 ## Status, 2026-08-16
 
 - **First optimisation measured, and it works.** BLE modem sleep cuts the draw
