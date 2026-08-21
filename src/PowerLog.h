@@ -15,6 +15,11 @@
 // rows is trivial in analysis and cannot lose an event; a delta written by the
 // device would lose whatever happened in the interval a row failed to write.
 //
+// Every row also carries `board` (BoardConfig::ACTIVE.name). One C3 binary drives
+// X4 and X3 and the profile is picked at runtime, so `build` does not say which
+// device wrote the row -- and almost every number that matters differs between
+// them, starting with LOW_POWER_FREQ and the cell.
+//
 // The header line is written once per boot, not once per file. It doubles as
 // the boot marker -- a reader splits runs on it instead of matching timestamps
 // by hand -- and it keeps a file readable across a column change, because each

@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <BlePositionServer.h>
 #include <HalPowerManager.h>
+#include <BoardConfig.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <PowerTelemetry.h>
@@ -22,7 +23,7 @@ constexpr const char* kLogTag = "PWRLOG";
 // by build (docs/power-plan.md, run 1).
 constexpr const char* kHeader =
     "uptime_s,batt_mv,batt_pct,cpu_mhz,full_clock_ms,throttled_ms,loops,loop_busy_ms,loop_max_ms,"
-    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build,state\n";
+    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build,state,board\n";
 
 // 0 = BLE stack down (any screen but the map), 1 = advertising with nobody
 // connected, 2 = a central is connected. Three states rather than a bool
@@ -93,7 +94,14 @@ void PowerLog::tick() {
   // TRAILINK_VERSION goes through %s, never concatenated into the format
   // string: it carries a branch name, and a '%' in one would make printf read
   // an argument that was never passed.
-  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s,%s\n",
+  // `board` is not decoration and it is not implied by `build`: one C3 binary
+  // drives X4 and X3, and the profile is chosen at runtime (BoardConfig's
+  // selectDevice / setDisplayX3). So without this column a row from an X3 and a
+  // row from an X4 are indistinguishable while every number in them differs --
+  // LOW_POWER_FREQ, the panel controller, the battery gauge, the cell. Standing
+  // instruction from the maintainer 2026-08-21: every measurement says which
+  // device it was taken on.
+  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s,%s,%s\n",
               static_cast<unsigned long>(s.uptimeS), static_cast<unsigned>(powerManager.getBatteryMillivolts()),
               static_cast<unsigned>(powerManager.getBatteryPercentage()), static_cast<unsigned>(s.cpuMhz),
               static_cast<unsigned long>(s.fullClockMs), static_cast<unsigned long>(s.throttledMs),
@@ -102,7 +110,8 @@ void PowerLog::tick() {
               static_cast<unsigned long>(s.refreshHalf), static_cast<unsigned long>(s.refreshFast),
               static_cast<unsigned long>(s.refreshWindow), static_cast<unsigned long>(s.panelBusyMs),
               static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
-              static_cast<unsigned>(bleState()), TRAILINK_VERSION, stateLabel);
+              static_cast<unsigned>(bleState()), TRAILINK_VERSION, stateLabel,
+              BoardConfig::ACTIVE.name);
 
   // Explicit: the row must be on the card before the next one is due, and this
   // file is written to across a whole ride that may end with a flat battery

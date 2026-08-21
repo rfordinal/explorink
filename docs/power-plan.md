@@ -851,18 +851,23 @@ draws, and what each feature costs, is one table in
 [`power-management.md`](power-management.md), "The scoreboard"** -- this table is
 runs, that one is numbers.
 
-| Date | Build | State | Duration | Start mV | End mV | Slope mV/h | Notes |
-|---|---|---|---|---|---|---|---|
-| 2026-08-15 | unrecorded | 3 | 11 h 25 min | 4220 | 3547 | **58.9** | Run 1, 99->21 %. See below. |
-| 2026-08-16 | `9686ce21` | 3 | 13 h 12 min | 4178 | 3748 | **32.6** | Run 2, first optimisation measured: BLE modem sleep. See below. |
-| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 60 min | 4159 | 4093 | **70.8** | Run 3 leg 1. **Discard** -- inside the relaxation window. See below. |
-| 2026-08-21 | `55c9ed26` | 3 (80 MHz) | 61 min | 4093 | 4068 | **25.7** | Run 3 leg 2, fix every 10 s, panel 57 s/h. |
-| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 33 min | 4068 | 4064 | **10.6** | Run 3 leg 3. Same state as leg 1, 6.7x lower. |
-| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 18 min | 4060 | 4047 | 32.6 | Run 4 leg 1. **Discard** -- post-reboot recovery. |
-| 2026-08-21 | `55c9ed26` | 3 (80 MHz) | 18 min | 4046 | 4045 | 3.1 | Run 4 leg 2. **1 mV of movement** -- noise, not a measurement. |
-| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 20 min | 4044 | 4042 | 5.3 | Run 4 leg 3. Reads *above* leg 2, which cannot be true. |
-| 2026-08-21 | `55c9ed26` | 1 (Home, 10 MHz) | 43 min | 4045 | 4043 | 3.5 | Run 4 leg 4. 2 mV of movement. |
-| 2026-08-21 | `55c9ed26` | WiFi (web server) | 6 min | 4022 | 4020 | -- | Run 4 leg 5. Too short to fit; `loop_busy` 98.7 %, full clock 100 %. |
+**Every row names its device.** X4 is what is on the desk; X4 Pro and X3 are
+targets, one C3 binary drives X4 and X3, and the numbers differ in every term
+that matters. Firmware writes `board` per row since 2026-08-21; older rows are X4
+because that is the only device this campaign has ever run on.
+
+| Date | Device | Build | State | Duration | Start mV | End mV | Slope mV/h | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 2026-08-15 | X4 | unrecorded | 3 | 11 h 25 min | 4220 | 3547 | **58.9** | Run 1, 99->21 %. See below. |
+| 2026-08-16 | X4 | `9686ce21` | 3 | 13 h 12 min | 4178 | 3748 | **32.6** | Run 2, first optimisation measured: BLE modem sleep. See below. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 60 min | 4159 | 4093 | **70.8** | Run 3 leg 1. **Discard** -- inside the relaxation window. See below. |
+| 2026-08-21 | X4 | `55c9ed26` | 3 (80 MHz) | 61 min | 4093 | 4068 | **25.7** | Run 3 leg 2, fix every 10 s, panel 57 s/h. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 33 min | 4068 | 4064 | **10.6** | Run 3 leg 3. Same state as leg 1, 6.7x lower. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 18 min | 4060 | 4047 | 32.6 | Run 4 leg 1. **Discard** -- post-reboot recovery. |
+| 2026-08-21 | X4 | `55c9ed26` | 3 (80 MHz) | 18 min | 4046 | 4045 | 3.1 | Run 4 leg 2. **1 mV of movement** -- noise, not a measurement. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 20 min | 4044 | 4042 | 5.3 | Run 4 leg 3. Reads *above* leg 2, which cannot be true. |
+| 2026-08-21 | X4 | `55c9ed26` | 1 (Home, 10 MHz) | 43 min | 4045 | 4043 | 3.5 | Run 4 leg 4. 2 mV of movement. |
+| 2026-08-21 | X4 | `55c9ed26` | WiFi (web server) | 6 min | 4022 | 4020 | -- | Run 4 leg 5. Too short to fit; `loop_busy` 98.7 %, full clock 100 %. |
 
 ### Run 4 -- 2026-08-21, the five legs that showed the instrument's limit
 

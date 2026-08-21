@@ -51,26 +51,40 @@ confirms the curve, not the measurement.
 ### What each mode draws
 
 Every row carries the conditions it was taken under, because none of them are
-incidental: the **build** decides what the firmware was doing (the map pinned
-160 MHz before 2026-08-17 and throttles to 80 MHz after it), and the **voltage
-band** decides how much of the slope is the discharge curve rather than the
-load.
+incidental: the **device**, the **build** (the map pinned 160 MHz before
+2026-08-17 and throttles to 80 MHz after it), and the **voltage band** (which
+decides how much of a slope is the discharge curve rather than the load).
 
-| Mode | Radio | CPU | mV/h | ~mA | Date | Build | Band, duration | Confidence |
-|---|---|---|---|---|---|---|---|---|
-| Map, connected, fix/10 s, no modem sleep | connected | 160 | 58.9 | ~43 | 2026-08-15 | unrecorded (predates the `build` column) | 4220-3547 mV, 11.4 h | **[measured]**, mixed workload, whole discharge (see run 1) |
-| Map, connected, fix/10 s | connected | 160 | 32.9 | **24.0** | 2026-08-16 | `9686ce21` | ~4178-3866 mV, 9.5 h static window | **[measured]**, the campaign's reference |
-| Map, connected, fix/10 s | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **provisional** -- 25 mV of movement is real, but the mA conversion is not (see below) |
-| Map, advertising, no phone | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **not trustworthy** -- 4 mV of movement, four ADC counts; a repeat at 4046 mV read 5.3 |
-| Home, nothing running | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
-| **Map in observation mode, radio off** | **down** | **10** | -- | -- | -- | -- | feature in progress on a sibling branch | **[open]** -- potentially the cheapest map state that exists without light sleep |
-| Tile sync, transfer running | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
-| Light sleep, radio up | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
-| Deep sleep, latch held | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
+> **Every measurement names its device. Standing instruction, 2026-08-21.** X4 is
+> the hardware on the desk today; X4 Pro and X3 are targets, and a number from one
+> is not a number from another. It is not a formality on this line: **one C3 binary
+> drives X4 and X3** with the profile chosen at runtime, so the build string does
+> not say which device wrote a row, while `LOW_POWER_FREQ` (10 MHz on X4, 80 where
+> there is PSRAM), the panel controller, whether a fuel gauge exists and the cell
+> itself all differ. Firmware writes it per row as `board` since 2026-08-21
+> (`PowerLog.cpp`, `BoardConfig::ACTIVE.name`); rows older than that read
+> `UNRECORDED` and `tools/powercsv.py` says so out loud. **Every row in the tables
+> below is X4**, and that is stated rather than assumed.
+
+| Mode | Device | Radio | CPU | mV/h | ~mA | Date | Build | Band, duration | Confidence |
+|---|---|---|---|---|---|---|---|---|---|
+| Map, connected, fix/10 s, no modem sleep | X4 | connected | 160 | 58.9 | ~43 | 2026-08-15 | unrecorded (predates the `build` column) | 4220-3547 mV, 11.4 h | **[measured]**, mixed workload, whole discharge (see run 1) |
+| Map, connected, fix/10 s | X4 | connected | 160 | 32.9 | **24.0** | 2026-08-16 | `9686ce21` | ~4178-3866 mV, 9.5 h static window | **[measured]**, the campaign's reference |
+| Map, connected, fix/10 s | X4 | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **provisional** -- 25 mV of movement is real, but the mA conversion is not (see below) |
+| Map, advertising, no phone | X4 | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **not trustworthy** -- 4 mV of movement, four ADC counts; a repeat at 4046 mV read 5.3 |
+| Home, nothing running | X4 | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
+| **Map in observation mode, radio off** | X4 | **down** | **10** | -- | -- | -- | `b8b11535` on `develop`, flashed 2026-08-21 | never run | **[open]** -- M16, and the night run to spend first |
+| Tile sync, transfer running | X4 | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
+| Light sleep, radio up | X4 | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
+| Deep sleep, latch held | X4 | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
 
 ### What each feature costs
 
 Every row is a difference of two rows above, so it inherits both their caveats.
+
+All rows are **X4**. A feature's cost is not portable across the line: X3 has a
+fuel gauge and a different panel controller, and a PSRAM board's low-power floor
+is 80 MHz rather than 10, so the same change buys different amounts.
 
 | Change | delta mV/h | delta mA | From | Same build? | Confidence |
 |---|---|---|---|---|---|

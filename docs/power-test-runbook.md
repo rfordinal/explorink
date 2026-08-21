@@ -19,6 +19,12 @@ Every run here uses the frozen baseline and its four conditions
 Confidence marks: **[measured]** on hardware here, **[repo]** read off this
 code, **[primary]** vendor page or pinned IDF, **[assumed]** nobody checked.
 
+**And every measurement says which device it was taken on.** Standing
+instruction, 2026-08-21. X4 is the only device this campaign has run on so far;
+X4 Pro and X3 are targets. A number without a device name is not a finding, and
+on this line it is not a formality: one C3 binary drives X4 and X3 with the
+profile chosen at runtime, so nothing else in a row identifies the hardware.
+
 ## Order of work across sessions
 
 | # | Step | Precondition | Exit criterion |
@@ -439,6 +445,10 @@ This fuller record is kept with the run's CSV in the parent repo's
 ```
 ## Run N -- YYYY-MM-DD, <experiment / state>
 
+- **Device: <X4 | X4 Pro | X3>** -- first line, never omitted. One C3 binary
+  drives X4 and X3 and the profile is runtime-selected, so the build string does
+  not say which, and LOW_POWER_FREQ, the panel controller, the fuel gauge and the
+  cell all differ. Firmware writes it per row as `board` since 2026-08-21.
 - Base commit (frozen base): <hash>
 - Build (TRAILINK_VERSION): powerlab-<base-hash>-<n>
 - Options differing from the frozen base: <exact custom_sdkconfig lines, or
