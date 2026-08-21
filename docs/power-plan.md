@@ -719,7 +719,10 @@ Phase 4 -- tune what the measurements expose:
 
 ## Runs
 
-Newest last. One row per run, with the file kept alongside.
+Newest last. One row per run, with the file kept alongside. **What each mode
+draws, and what each feature costs, is one table in
+[`power-management.md`](power-management.md), "The scoreboard"** -- this table is
+runs, that one is numbers.
 
 | Date | Build | State | Duration | Start mV | End mV | Slope mV/h | Notes |
 |---|---|---|---|---|---|---|---|
