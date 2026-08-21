@@ -124,6 +124,16 @@ two reasons: that one needs `rsvg-convert` (not installed here -- this one falls
 back to cairosvg, like `scripts/gen_pin_icons.py`), and it is square-only, while
 the Explore glyph is the ExplorInk mark at 32x31.
 
+**This does satisfy the icon rule**, and the note now sits at both use sites --
+the top of `src/components/icons/home_icons.h` (generated, so it comes from the
+script's banner) and the row table in `HomeActivity.cpp`. It is written down
+because a session read the rule as broken here and objected. Two facts settle
+it: every row glyph names a Lucide source SVG, and the one glyph that is not
+Lucide is the ExplorInk brand mark, which the maintainer asked for and which has
+no Lucide equivalent. The deviation is the *rasteriser*, not the icon source:
+same `freeink::Icon` output format, same threshold 110, cairosvg instead of
+rsvg-convert. Install `librsvg2-bin` and the two paths agree.
+
 ## Hardware pass, 2026-08-21
 
 Verified on the X4, panel screenshots via `CMD:SCREENSHOT`:

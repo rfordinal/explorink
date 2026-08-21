@@ -120,6 +120,30 @@ def main():
         f"// Row glyphs {ROW_SIZE}px, chevron {CHEVRON_SIZE}px, drawn with"
         " GfxRenderer::drawMono1bpp().",
         "",
+        "// These ARE the Lucide icons the icon rule asks for (the parent repo's",
+        "// CLAUDE.md, \"Icons: prefer Lucide\"): every glyph below names its Lucide",
+        "// source SVG, taken from freeink-sdk/libs/assets/Icons/lucide/icons/. Nothing",
+        "// here is hand-drawn, and Home no longer uses the older hand-rolled bitmaps",
+        "// (icons/wifi.h, settings2.h, transfer.h, bookmark.h -- still used by other",
+        "// screens through the UIIcon table; the parent repo's",
+        "// docs/icon-migration-plan.md tracks those). The Home screen's own doc is",
+        "// ../../../docs/home-screen.md.",
+        "//",
+        "// Two deliberate deviations, so the next reader does not have to re-litigate",
+        "// them:",
+        "//",
+        "//   * `explore` is the **ExplorInk brand mark** (src/images/logo.svg), not a",
+        "//     Lucide glyph. The maintainer asked for the mark on that row",
+        "//     (2026-08-21). A brand mark has no Lucide equivalent, so the rule does",
+        "//     not reach it.",
+        "//   * the **rasteriser** is scripts/gen_home_icons.py, not the SDK's own",
+        "//     libs/assets/Icons/tools/gen_icons.py. Same output format (freeink::Icon,",
+        "//     1bpp MSB-first, bit 0 = ink, opticalCenterY), same threshold 110. The",
+        "//     SDK script needs rsvg-convert, which is not installed on the build",
+        "//     machine, and it is square-only -- the brand mark is 32x31. Our script",
+        "//     falls back to cairosvg, exactly as scripts/gen_pin_icons.py already",
+        "//     does. Install librsvg2-bin and the two paths agree.",
+        "",
     ]
 
     # Explore: the ExplorInk mark, scaled to the row glyph's height.
@@ -143,6 +167,13 @@ def main():
 
     with open(OUT, "w") as handle:
         handle.write("\n".join(out))
+    # clang-format owns the byte arrays' line breaks. Without this the script
+    # emits one very long line per icon, CI's format check fails it, and the next
+    # regeneration shows up as churn against the formatted file in git.
+    if shutil.which("clang-format"):
+        subprocess.run(["clang-format", "-i", OUT], check=True)
+    else:
+        print("warning: clang-format not found -- run it on the output before committing")
     print(f"wrote {OUT}: {len(LUCIDE_ICONS) + 1} icons")
 
 

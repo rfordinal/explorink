@@ -28,6 +28,21 @@ constexpr int kRowHeight = 60;
 
 // The menu, in the order it is drawn. Flash-resident: static constexpr, so the
 // table costs no DRAM.
+//
+// Every glyph here is Lucide, as the icon rule asks (the parent repo's CLAUDE.md,
+// "Icons: prefer Lucide"): backpack, map-pin, wallet, refresh-cw, wifi, settings,
+// and chevron-right for the row arrow. None is hand-drawn, and none of the older
+// hand-rolled bitmaps (components/icons/wifi.h, settings2.h, transfer.h,
+// bookmark.h) is used on this screen any more.
+//
+// `icon_explore` is the one that is not Lucide, on purpose: it is the ExplorInk
+// brand mark (src/images/logo.svg), asked for by the maintainer 2026-08-21. A
+// brand mark has no Lucide equivalent.
+//
+// They are baked by scripts/gen_home_icons.py rather than the SDK's
+// libs/assets/Icons/tools/gen_icons.py -- same freeink::Icon output, but the SDK
+// script needs rsvg-convert (absent here) and is square-only, and the mark is
+// 32x31. components/icons/home_icons.h carries the full reasoning.
 const HomeActivity::Row* HomeActivity::rows() {
   static constexpr Row kRows[] = {
       {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore, true},
