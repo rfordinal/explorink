@@ -474,6 +474,34 @@ wiring schemes is even possible:
 leads hanging out of it is the right home for this; the 2026-08-19 outreach asked
 for X3 and X4 Pro units partly for that reason.
 
+**A candidate for the no-teardown route, 2026-08-21: Joy-IT JT-UM120.** Read off
+the manufacturer's page (`https://joy-it.net/en/products/JT-UM120`) **[primary]**:
+
+| Spec | Stated |
+|---|---|
+| Current | 0-7 A, resolution **0.00001 A (10 uA)**, accuracy +/- 0.05 % + 2 digits |
+| Voltage | 4-28 V, resolution 0.00001 V |
+| Interface | "Evaluation via PC software", 10 measurement groups, Micro-USB PC port |
+| Connectors | in USB-A / USB-C / Micro-USB, out USB-A / USB-C |
+
+**Resolution is three orders of magnitude better than this campaign needs** -- the
+open questions are separations of single milliamps, and at a 50 mA reading the
+stated accuracy works out near 45 uA. Its limits are the route's limits, not the
+instrument's:
+
+- It sits on the **5 V side**, so it prices differences between states, not
+  absolute current out of the cell ("Except once charging has terminated" in
+  `power-management.md`).
+- The PC software is almost certainly Windows, so on this laptop expect **manual
+  readings off its display**. That suits short settled readings and rules it out
+  for driving an unattended alternation overnight -- which is a pity, because that
+  is the run it would otherwise be best at.
+- The charger will still wake to top off; that shows as a step, not a finding.
+
+Price **[open]** -- the alza.sk listing returns 403 to an automated fetch, so it
+has to be read off the page by hand and written down with its currency and date,
+per the parent `CLAUDE.md` research-numbers rule.
+
 - **PPK2-class instrument** (Nordic Power Profiler Kit II or equivalent:
   source-meter, nA-to-mA autorange, logs a current waveform). Gives experiment
   1 its answer in minutes, catches wake spikes, and prices every lab-screen
