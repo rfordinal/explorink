@@ -966,8 +966,16 @@ PNG. Its `--selftest` round-trips the byte packing through
 `tools/screenshot_gate.py`'s proven decoder and needs no device -- run it after
 touching either end of the layout.
 
-**Untested on hardware** as of 2026-08-07: builds clean, the byte layout is
-proven by the selftest, but nothing has been on the glass yet.
+**Confirmed on hardware 2026-08-21.** A 480x800 render pushed with
+`tools/show_on_device.py` landed on the panel, and `CMD:SCREENSHOT` read the
+framebuffer back **bit-identical** -- 0 of 384,000 pixels differed from the file
+that was sent. So the two commands really are inverses, and the whole path
+(paced 256-byte chunks, RenderLock across read and refresh, FULL_REFRESH) works
+end to end. It replaced the previous "untested as of 2026-08-07" note.
+
+The frame was a `test/map_preview` render of the POI marks, pushed to judge a
+9 px glyph on the glass -- which is the use this command was built for: a laptop
+LCD cannot answer that question.
 
 ### `CMD:SCREENSHOT_GRAY` -- the same channel, with the grey
 
