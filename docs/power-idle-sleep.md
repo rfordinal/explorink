@@ -333,7 +333,13 @@ this file.
    parked or not, queued work, transfer active, recent user input -- so it belongs in
    a function with no hardware in it, and a host test pins the table of expected
    answers. That is the only guard that fires at **CI time**, before a build reaches a
-   device.
+   device. **Built 2026-08-21**: `src/ParkedLoopPolicy.h`, nine cases in
+   `test/parked_loop_policy/ParkedLoopPolicyTest.cpp`. Two things it deliberately does
+   not do. It does not pick the parked cadence -- both values default to today's 10 ms,
+   so taking the header changes no behaviour, and experiment 3's residency number is
+   what replaces the placeholder. And nothing calls it yet: wiring it into `main.cpp`'s
+   `delay(10)` only pays under `CONFIG_PM_ENABLE`, because a `delay()` with PM off is a
+   busy wait at full clock.
 3. **A field tripwire in `power.csv`, from columns that already exist.** `loops` is
    logged per row today, and the parked state is going in as a new column for the lab
    screen. The invariant is then checkable by a script over any run: **while parked,
