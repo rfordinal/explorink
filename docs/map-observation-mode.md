@@ -67,6 +67,11 @@ incoming fix there instead of redrawing -- same idea as `overviewShown_`'s
 early return, just with its own return coordinate. `toggleObserveMode()`
 renders around `observeReturnLatE7_` etc. when leaving Observe.
 
+The same "no fix reaches the screen while observing" fact is also why
+`MapActivity::loop()` stops BLE advertising (and drops any connection) while
+Observe is active and no transfer is moving bytes -- `ble-advertising.md`,
+"Observe mode: no radio when there is nothing to send or receive".
+
 The live position marker is not drawn on the pan anchor while observing
 (`renderViewport()`'s `if (screenMode_ != MapScreenMode::Observe)` guard
 around `drawPositionMarker()`): the anchor is a pan target the rider chose to
