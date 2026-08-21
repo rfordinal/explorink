@@ -749,14 +749,34 @@ own note of entering the map at 10:31:
 
 **The map does not pin 160 MHz any more.** Every map phase above ran at 80 MHz
 with `throttled_ms` at 100 % of the interval and the loop at **20 Hz**, against
-run 2's 160 MHz and ~98 Hz. That is the two-deadline split working as designed
-(`src/activities/Activity.h`, `preventThrottle()`), and it means this run
-incidentally priced the state `power-idle-sleep.md` calls route A's floor and
-describes as built and never measured. **Advertising at the 80 MHz BLE_SAFE_FREQ
-floor: 10.6 +/- 1.1 mV/h.** Scaling run 2's calibration (32.6 mV/h at a nominal
-24.0 mA, assumed proportional **[assumed]**) that is roughly **7.8 mA** -- below
-the campaign's 9 mA target, for the parked case, on hardware that shipped. It
-wants a repeat before it is believed.
+run 2's 160 MHz and ~98 Hz. That is the two-deadline split working as
+designed, built and bench-verified 2026-08-17 (`power-management.md`, "The map
+throttles to 80 MHz"). What that bench proved was **functional** -- the link
+survives the throttle, the fixes arrive. Nobody had put a number on what it
+saves, which is T-201. **This run is T-201's answer**, for two states at once:
+
+- **Advertising at the 80 MHz `BLE_SAFE_FREQ` floor: 10.6 +/- 1.1 mV/h.**
+- **Connected, fix every 10 s, at 80 MHz: 25.7 +/- 3.5 mV/h**, against run 2's
+  32.6 mV/h for the same state at 160 MHz -- though across different builds and
+  different panel activity, so that pair is suggestive and not a measurement of
+  the split.
+
+Scaling run 2's calibration (32.6 mV/h at a nominal 24.0 mA, assumed
+proportional **[assumed]**), the advertising figure is roughly **7.8 mA** --
+below the campaign's 9 mA target, for the parked case, on hardware that already
+shipped. It wants a repeat before it is believed, and the repeat has to sit in
+the working band rather than an hour after a full charge.
+
+**How far it never goes up.** `full_clock_ms` deltas over the same phases say
+the map does not drift back to 160 MHz at all: **0.26 %** of the advertising
+hour, **0.00 %** of the connected hour, with 47-50 windowed marker refreshes in
+it. Only a heavy frame lifts the clock -- `kickFullClock()` sits at the top of
+`renderViewport()`, `renderCurrent()`, `renderWaiting()`,
+`renderLoadingTiles()`, `renderRouteOverview()` and `showBusy()`
+(`src/activities/map/MapActivity.cpp:692,3771,3794,3831,4095,4342`) -- and a
+marker move is a windowed update, which calls none of them. Radio traffic on its
+own never lifts it: the wake check reads buttons, touch and tilt only
+(`src/main.cpp:833-838`) **[measured]**.
 
 **The same state measured 70.8 and 10.6 mV/h.** Identical counters (loop busy
 2.0 %, panel 0 ms/h, 20 Hz, `throttled_ms` 100 %), identical build, 6.7x apart.
