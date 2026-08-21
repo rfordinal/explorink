@@ -2295,6 +2295,21 @@ void MapActivity::loop() {
     auto& ble = freeink::BlePositionServer::getInstance();
     if (needBle) {
       if (!ble.isRunning() && !bleStartFailed_) {
+        // The same window onEnter() closes, and here it is not a rare case but
+        // the normal one: Observe called ble.end() just above, which removes
+        // HalPowerManager's BLE_SAFE_FREQ floor (HalPowerManager.cpp,
+        // lowPowerFloorMhz()), so the 3 s idle throttle takes the CPU to 10 MHz
+        // while the radio is off. Leaving Observe then asks for the radio back
+        // at that clock, and NimBLEDevice::init() hangs there -- the panel
+        // freezes, the log stops, and no button on the device can reset it
+        // (../../../docs/device-notes.md).
+        //
+        // Measured 2026-08-22 from a serial capture: throttle to 10 MHz at
+        // t+301821 ms, `begin: calling NimBLEDevice::init` at t+301893 ms, and
+        // nothing ever again. The hang itself was already known and documented
+        // 2026-08-04 (docs/power-management.md); this call site was added later
+        // and did not carry the guard onEnter() has.
+        powerManager.setPowerSaving(false);
         bleStartFailed_ = !ble.begin();
       }
     } else if (ble.isRunning()) {
@@ -2592,8 +2607,12 @@ void MapActivity::openMapMenu() {
   // an empty value is a plain action.
   std::vector<std::string> options;
   std::vector<std::string> values;
-  options.reserve(11);
-  values.reserve(11);
+  // 13, not 11: the ladder is Observe/Follow, two zoom rows, Whole route,
+  // Pins, Nearby, Mode, three toggles, Refresh and Debug info. A route loaded
+  // in Observe reaches all of them, and a reserve that is one short reallocates
+  // both vectors on the last push (CLAUDE.md, Resource Protocol 7).
+  options.reserve(13);
+  values.reserve(13);
   // Only once a fix has actually drawn a frame -- same "no row that cannot do
   // anything" rule as Whole route below. A rider with nothing on screen yet
   // has nothing to look around in.
