@@ -528,11 +528,31 @@ At run 2's 1.0 mV and 60 s rows:
 | 2 mV/h | 0.6 h |
 | 1 mV/h | 0.9 h |
 
-Run 2 measured 32.6 mV/h at a nominal 24 mA, so 5 mV/h is roughly 3.7 mA.
-**A 30-minute leg prices a 4 mA change.** That kills the assumption that this
-campaign needs multi-hour runs for anything at mA scale -- long runs are for
-sub-milliamp states (experiment 6) and for endurance claims, not for comparing
-two states.
+Run 2 measured 32.6 mV/h at a nominal 24 mA, so 5 mV/h is roughly 3.7 mA, and
+the table above suggests a 30-minute leg prices a 4 mA change.
+
+> **Refuted the same day, 2026-08-21, by trying it.** The formula above is right
+> about the *residual* and wrong about the *instrument*, because it assumes the
+> only error is Gaussian noise. It is not: the ADC step is **1 mV**, one row a
+> minute, so what a short leg actually resolves is set by how many whole counts
+> the voltage moves. Four afternoon legs in the 4046-4042 mV plateau moved
+> **1-2 mV in 18-43 minutes**, and came out ordered impossibly -- connected with
+> a fix every 10 s read *lower* than advertising. The differences were counting
+> noise.
+>
+> The honest table, at 1 mV per count and asking for five counts of movement:
+>
+> | Difference to see | Leg length |
+> |---|---|
+> | 8 mA | 27 min |
+> | 4 mA | 55 min |
+> | 2 mA | 109 min |
+> | 1 mA | 219 min |
+>
+> **And the required length grows as the draw falls**, because a cheap state
+> moves the voltage slowly -- exactly backwards from what the campaign needs, since
+> every remaining question is about states drawing under 10 mA. See "The plateau
+> problem" below.
 
 ### Voltage slope is not a property of the state -- it is a property of the charge
 
@@ -560,7 +580,47 @@ Two consequences for the run shape:
   charger the apparent slope is **128-160 mV/h even at throttled idle with the
   panel doing nothing** (run 1 segment at 4217 mV, run 2 segment at 4210 mV),
   which is surface-charge relaxation and not draw. The methodology's "rest
-  ~10 minutes" is too short; discard 30 minutes.
+  ~10 minutes" is too short; discard 30 minutes. **Every mode change that reboots
+  the device does the same thing on a smaller scale**: removing the load lets the
+  pack recover, and 2026-08-21's post-reboot leg read 32.6 mV/h against 5.3 for
+  the same state twenty minutes later.
+- **Drop the boundary row.** A row written across a mode change carries the new
+  mode's load, not the leg's. One such row turned a 2 mV drift into an apparent
+  23 mV collapse on 2026-08-21's Home leg, which is a 10x error from a single
+  sample.
+
+### The plateau problem, and why the meter stopped being optional
+
+**Established 2026-08-21.** Two facts, together, bound what this instrument can
+ever do:
+
+1. **The curve, not the load, sets the slope.** The same firmware in the same
+   state read **25.6 mV/h at 4093-4068 mV** and **3.1 mV/h at 4046-4044 mV**, 90
+   minutes apart. Both are correct readings of `batt_mv`; neither is a reading of
+   power. Inside the plateau the pack barely moves whatever the device does.
+2. **A slope only converts to mA through the local dV/dQ**, and nobody has
+   measured that curve. Every mA in this campaign is scaled from run 2's single
+   pair (32.9 mV/h against 24.0 mA) as if the relation were global. Fact 1 says
+   it is not.
+
+So the mV slope works for **long runs across a wide band** -- run 1 and run 2
+traverse enough of the curve to average it, which is why their numbers held up --
+and it does **not** work for comparing two states inside the plateau, which is
+every question the campaign has left.
+
+Two ways out, and only one is cheap:
+
+- **Rapid alternation.** Switch A/B/A/B every 25-30 minutes for many cycles
+  rather than running two long legs. The curve term is smooth and slow; the state
+  term flips with a known schedule, so differencing across many alternations
+  cancels the drift even though no single leg resolves anything. This is what the
+  night run should do, and it is a scheduling change, not a purchase.
+- **A meter.** `power-test-runbook.md`, "The instrument problem", treats a
+  PPK2-class source-meter as the thing that makes experiment 1 possible. It is
+  now more than that: it is the only way to price **any** sub-10-mA state
+  directly, and every such state is what is left. The purchase moved from
+  nice-to-have to the campaign's blocker, and the price still has to be read off
+  a distributor page before anyone buys.
 
 ## TODO
 
