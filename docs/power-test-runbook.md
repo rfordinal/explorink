@@ -34,6 +34,79 @@ code, **[primary]** vendor page or pinned IDF, **[assumed]** nobody checked.
 Steps 0 and 1 can happen in any session with no device and no lock. Step 5 can
 run before step 4 if the meter arrives first -- they are independent.
 
+## The unattended night run: what to do with 6-8 h and nobody there
+
+**Written 2026-08-21 for that night's run; the shape is reusable.** The whole
+point of an unattended window is that it can only run what needs **no hands**, so
+the division of labour is the plan:
+
+- **Needs a person** (a button press, WiFi on, reading an IP): the idle floor on
+  Home, WiFi mode, observation mode, and anything on the power lab screen. Do
+  these while the maintainer is at the desk. They are 20-30 minutes each.
+- **Needs nobody**: everything reachable over BLE from the laptop, which is every
+  connected/advertising comparison. The device sits in the map, unplugged, and
+  `tools/blefakephone.py` drives it.
+
+**Do not flash for an unattended night.** It is tempting -- the power lab screen
+would label every leg in the `state` column -- but `CMD:GOTO_POWERLAB` and
+`CMD:POWERLAB_STATE` are wired to `main.cpp`'s **serial** `CMD:` dispatch, not to
+the BLE command characteristic (which lands in `MapCommandParser`). With USB out,
+which a power run requires, the lab screen cannot be driven at all. So a flash
+would risk the whole night for a cosmetic column, when `ble` plus a timestamped
+schedule already separates the legs.
+
+### The leg pattern: a reference leg between every measured one
+
+Nine legs of 40 min, 6 h. Advertising is the reference, because it is the state
+that needs no tool running:
+
+| # | Leg | Purpose |
+|---|---|---|
+| R1 | advertising | reference |
+| L1 | connected, fix every 7 s | `SendPolicy.MIN_INTERVAL_MS`, the riding cadence |
+| R2 | advertising | reference |
+| L2 | connected, fix every 30 s | `WALKING_MIN_INTERVAL_MS`, the walking cadence |
+| R3 | advertising | reference |
+| L3 | connected, fix every 7 s **again** | reproducibility |
+| R4 | advertising | reference |
+| L4 | connected, **no fixes** (`--interval 3600`) | the link's own cost |
+| R5 | advertising | reference |
+
+What each thing in that table is for:
+
+- **The reference legs are the drift cancellation.** A slope is a function of
+  state of charge as much as of load (`power-plan.md`, "Voltage slope is not a
+  property of the state"), and five references spread across six hours measure
+  that drift directly instead of assuming it away. This is the leg run 3 lost.
+- **L1 against L2 is M2**, the send-cadence question. Isolation is *checked, not
+  assumed*: `ref_window` and `panel_busy_ms` deltas must match across the two
+  legs, or something other than the radio moved.
+- **L4 against a reference is the "bringing the radio up" row** of the
+  scoreboard, which is `[open]` today.
+- **L1 against L3 is the most valuable leg of the night** and the least obvious:
+  two identical legs two hours apart measure the real run-to-run spread. Every
+  error bar this campaign has quoted so far is a fit residual, which assumes the
+  only error is white noise. L1 vs L3 is the first honest number for how much a
+  repeat actually moves.
+
+### Rules for the unattended window
+
+- **`--duration`, never `timeout`.** Verified on hardware 2026-08-21: SIGTERM
+  kills python before asyncio unwinds `BleakClient` and the LE link stays up in
+  the kernel, so the next leg silently runs connected. `--duration` disconnects
+  cleanly (`tools/blefakephone.py`).
+- **`python3 -u`**, or a killed process takes its log with it.
+- **Retry each leg.** A link that drops at 03:00 with nobody watching costs the
+  rest of the night otherwise.
+- **USB stays out.** VBUS charges the cell and the run stops meaning anything
+  (`power-plan.md`, constraint 1).
+- **Log the schedule with wall-clock timestamps.** That log plus `uptime_s` is
+  what maps a CSV row to a leg, and run 3 proved it lines up to the minute.
+- **Check the band, not just the battery percent.** Legs are only comparable
+  inside roughly 4.05-3.80 V. Six hours at a 13 mA mix costs ~85 mAh, about 13 %
+  of a 650 mAh pack, so a night that starts at 85 % ends around 72 % -- inside
+  the band at both ends.
+
 ## Step 0: what needs no flash and no instrument
 
 All of this is laptop work. Do it whenever a session has no device access.
