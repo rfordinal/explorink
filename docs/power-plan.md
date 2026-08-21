@@ -858,6 +858,40 @@ runs, that one is numbers.
 | 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 60 min | 4159 | 4093 | **70.8** | Run 3 leg 1. **Discard** -- inside the relaxation window. See below. |
 | 2026-08-21 | `55c9ed26` | 3 (80 MHz) | 61 min | 4093 | 4068 | **25.7** | Run 3 leg 2, fix every 10 s, panel 57 s/h. |
 | 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 33 min | 4068 | 4064 | **10.6** | Run 3 leg 3. Same state as leg 1, 6.7x lower. |
+| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 18 min | 4060 | 4047 | 32.6 | Run 4 leg 1. **Discard** -- post-reboot recovery. |
+| 2026-08-21 | `55c9ed26` | 3 (80 MHz) | 18 min | 4046 | 4045 | 3.1 | Run 4 leg 2. **1 mV of movement** -- noise, not a measurement. |
+| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 20 min | 4044 | 4042 | 5.3 | Run 4 leg 3. Reads *above* leg 2, which cannot be true. |
+| 2026-08-21 | `55c9ed26` | 1 (Home, 10 MHz) | 43 min | 4045 | 4043 | 3.5 | Run 4 leg 4. 2 mV of movement. |
+| 2026-08-21 | `55c9ed26` | WiFi (web server) | 6 min | 4022 | 4020 | -- | Run 4 leg 5. Too short to fit; `loop_busy` 98.7 %, full clock 100 %. |
+
+### Run 4 -- 2026-08-21, the five legs that showed the instrument's limit
+
+Evidence: `docs/power-runs/run4-2026-08-21.csv` (parent repo). Same build as run
+3, same afternoon, one boot: advertising / connected at 10 s / advertising / Home
+at 10 MHz / WiFi. **Read this run before run 3**, because it is the one that says
+what the numbers are worth.
+
+Three things it establishes, none of them a power number:
+
+1. **Four legs in the plateau are indistinguishable.** 1-2 mV of movement each,
+   and the ordering came out impossible -- connected below advertising. See "The
+   plateau problem" above.
+2. **A mode change reboots the device**, at least between the map and WiFi
+   (`project_wifi_or_map_exclusive`: X4 runs one or the other). The first leg
+   after a reboot reads high -- 32.6 mV/h against 5.3 for the same state twenty
+   minutes later -- because removing the load lets the pack recover.
+3. **One boundary row is worth a 10x error.** The Home leg's own rows drift 2 mV
+   across 43 minutes; including the single row written as WiFi came up turned that
+   into an apparent 23 mV collapse.
+
+What it did produce, and it is not a slope: **WiFi mode runs the loop flat out.**
+`skipLoopDelay()` is true while the web server is up
+(`src/activities/network/CrossPointWebServerActivity.h:70`) **[repo]**, so the
+leg shows `loop_busy` at **98.7 %** and full clock at **100 %** against 2-5 % busy
+and ~0 % full clock on every map leg. The state is a `yield()` spin at 160 MHz.
+Its draw is still **[open]** -- six minutes is too short -- but the duty cycle
+alone says M8 should be re-run, and that Wi-Fi Fast Sync is not a cheap idle
+state to leave running.
 
 ### Run 3 -- 2026-08-21, three legs on one boot, and what the first one cost us
 
