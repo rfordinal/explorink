@@ -436,6 +436,65 @@ Per interval, from two rows of `power.csv`:
   the same time. If it does not, one of the two instruments is wrong and that
   is the first bug to fix.
 
+### How long a run has to be, derived from the noise instead of guessed
+
+**Re-analysis of run 1 and run 2, 2026-08-21, laptop only.** The tool is
+`tools/powercsv.py` in the parent repo: it splits a downloaded `power.csv` on
+boot, build, radio state, lost-row gap and voltage rise, fits each segment and
+reports the fit's own uncertainty.
+
+The row-to-row noise is **small**. Median residual after a linear fit is
+**1.0 mV** across run 2's segments, against a 1 mV ADC step; run 1's median is
+4.2 mV, and run 1 is the contaminated one (a car drive, panel activity swinging
+by 4x between segments). So the instrument is not what limits a short run.
+
+For rows at a fixed interval, the OLS slope uncertainty is
+`sigma * sqrt(12 * interval / T) / T`, so the run length needed to resolve a
+slope difference `d` at two sigma is `T = (2 * sigma * sqrt(12 * interval) / d)^(2/3)`.
+At run 2's 1.0 mV and 60 s rows:
+
+| Difference to resolve | Run length |
+|---|---|
+| 20 mV/h | 0.1 h |
+| 10 mV/h | 0.2 h |
+| 5 mV/h | 0.3 h |
+| 2 mV/h | 0.6 h |
+| 1 mV/h | 0.9 h |
+
+Run 2 measured 32.6 mV/h at a nominal 24 mA, so 5 mV/h is roughly 3.7 mA.
+**A 30-minute leg prices a 4 mA change.** That kills the assumption that this
+campaign needs multi-hour runs for anything at mA scale -- long runs are for
+sub-milliamp states (experiment 6) and for endurance claims, not for comparing
+two states.
+
+### Voltage slope is not a property of the state -- it is a property of the charge
+
+**The reason every comparison so far was shaky.** Same build, same state, one
+run: the slope moves 5x as the pack empties.
+
+| Start voltage | Slope |
+|---|---|
+| 3.90 V | 25.6 mV/h |
+| 3.69 V | 109.1 mV/h |
+| 3.43 V | 138.1 mV/h |
+
+(run 1, `docs/power-runs/run1-2026-08-15.csv`, segments read by
+`tools/powercsv.py` **[measured]**.) The discharge curve is flat in the middle
+and steep at the ends, so mV/h says as much about where the pack is as about
+what the firmware did. Constraint 4 asked for comparable start voltages; this
+is the quantity that makes it non-negotiable.
+
+Two consequences for the run shape:
+
+- **Compare states as A-B-A, not A then B.** Three short legs, the second
+  state bracketed by the first, cancels the drift along the curve. Two legs
+  at different voltages do not, whatever their length.
+- **The first half hour after unplugging is not a measurement.** Right off the
+  charger the apparent slope is **128-160 mV/h even at throttled idle with the
+  panel doing nothing** (run 1 segment at 4217 mV, run 2 segment at 4210 mV),
+  which is surface-charge relaxation and not draw. The methodology's "rest
+  ~10 minutes" is too short; discard 30 minutes.
+
 ## TODO
 
 **Bench rig, added 2026-08-16.** Any change that touches power or the radio is
