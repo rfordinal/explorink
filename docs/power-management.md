@@ -98,8 +98,8 @@ middle:
 | # | Measurement | Answers | Method | Cost |
 |---|---|---|---|---|
 | M1 | Home, radio down, 10 MHz | the idle floor, and the only state where 10 MHz is legal | Home screen, untouched, one leg | 20 min |
-| M2 | Send cadence 7 s vs 30 s, **fixed** position | what the walking gate saves on the wire alone: `SendPolicy.MIN_INTERVAL_MS` is 7 s riding, `WALKING_MIN_INTERVAL_MS` 30 s (android `SendPolicy.kt:27,34`) | `blefakephone --pos ... --interval 7` / `30`, A-B-A | 60 min |
-| M3 | Send cadence 7 s vs 30 s, **moving** | the same knob as a rider feels it, redraws included | `--track ... --track-kmh 50`, A-B-A | 60 min |
+| M2 | Send cadence 7 s vs 30 s, pinned position | **the radio alone**, nothing else -- see "Who decides whether a fix is worth a redraw" below | `blefakephone --pos ... --interval 7` / `30`, A-B-A. Verify rather than assume the isolation: `ref_window` and `panel_busy_ms` deltas must match across legs | 60 min |
+| M3 | Send cadence 7 s vs 30 s, moving | the same knob as a rider feels it, redraws included -- only worth running **after** M2, and only if M2 says the radio is not the cost | `--track ... --track-kmh 50`, A-B-A | 60 min |
 | M4 | Fast vs slow advertising | whether `maybeEnterSlowAdvertising()` (`BlePositionServer.h:501`) is worth anything | advertising leg long enough for the slow interval to engage, against one where a central keeps re-appearing | 60 min |
 | M5 | Freshness check and autosync on vs off | two rider-facing toggles nobody has priced, and both spend radio | `CMD:SETTING` flips them without walking the menu (`src/main.cpp`, the `SETTING` allow-list) | 60 min |
 | M6 | The marker redraw itself | separates panel from radio: same fix cadence, position moving vs pinned | `--pos` against `--track` at one cadence | 40 min |
@@ -129,6 +129,44 @@ close a column of the scoreboard, so they go first. M10 is the most valuable
 single run in the whole campaign and the only one on this page that can *fail* in
 an interesting way -- a driver breaking under DFS plus light sleep is the finding
 that ends route B.
+
+### Who decides whether a fix is worth a redraw -- and why M2 is a design question
+
+The question behind M2 is not a number, it is **which side thinks**: can the
+phone be generous on the wire and leave the panel to decide whether a fix
+deserves ink, or does the Android app have to reason about what it sends?
+
+**The device already decides, and run 3 proves it.** In the connected leg
+positions arrived every 10 s -- six a minute for an hour -- and the marker was
+never redrawn once. Two thresholds do that, both device-side:
+
+- `MapFollow::kMinMovePx` = 8 px: a fix that moves the marker less than that
+  changes nothing (`src/activities/map/MapFollow.h:92`) **[repo]**.
+- `kKeepInMarginPx` = 80 px: the viewport is only reset when the marker leaves
+  its margin (`MapFollow.h:34`) **[repo]**.
+
+**And the panel work that did happen was not caused by fixes at all.** Run 3's
+connected leg shows ~2 windowed refreshes a minute, which is
+`kHeaderBarsRepaintMs` = 30 s -- and that constant is a *floor between two
+repaints caused by nothing but a moving bar count*, i.e. RSSI sitting on a
+threshold and flipping (`MapActivity.cpp:157,1282`) **[repo]**. It is why the
+advertising legs show zero refreshes: no link, no RSSI, no bar churn
+**[measured]**.
+
+So the panel half of the question is answered: **generosity on the wire does not
+buy redraws.** What is unmeasured is the wire itself, and that is exactly M2.
+
+Two outcomes, and they point at different work:
+
+- **The radio is cheap.** Then the phone can stop thinking: `SendPolicy`'s
+  cadence gating (`MIN_INTERVAL_MS`, `WALKING_MIN_INTERVAL_MS`,
+  `MOVE_THRESHOLD_M`) is spending complexity to save nothing, and dropping it
+  would also remove logic a second client has to reproduce -- the phone-side
+  portability rule in the parent `CLAUDE.md` counts that as a real saving.
+- **The radio is not cheap.** Then the gating earns its keep, and the next
+  question is whether the *thresholds* are right rather than whether they should
+  exist. `docs/send-interval-analysis.md` (parent repo) is where that reasoning
+  already lives.
 
 ## The device measures itself now
 
