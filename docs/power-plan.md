@@ -725,6 +725,57 @@ Newest last. One row per run, with the file kept alongside.
 |---|---|---|---|---|---|---|---|
 | 2026-08-15 | unrecorded | 3 | 11 h 25 min | 4220 | 3547 | **58.9** | Run 1, 99->21 %. See below. |
 | 2026-08-16 | `9686ce21` | 3 | 13 h 12 min | 4178 | 3748 | **32.6** | Run 2, first optimisation measured: BLE modem sleep. See below. |
+| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 60 min | 4159 | 4093 | **70.8** | Run 3 leg 1. **Discard** -- inside the relaxation window. See below. |
+| 2026-08-21 | `55c9ed26` | 3 (80 MHz) | 61 min | 4093 | 4068 | **25.7** | Run 3 leg 2, fix every 10 s, panel 57 s/h. |
+| 2026-08-21 | `55c9ed26` | 2 (adv, 80 MHz) | 33 min | 4068 | 4064 | **10.6** | Run 3 leg 3. Same state as leg 1, 6.7x lower. |
+
+### Run 3 -- 2026-08-21, three legs on one boot, and what the first one cost us
+
+Evidence: `docs/power-runs/run3-2026-08-21.csv` (parent repo), read with
+`tools/powercsv.py`. Build `0.1.0-dev-wallet-viewer-55c9ed26` -- whatever was on
+the device, **not** a frozen-baseline build; this run was made with the firmware
+already flashed rather than by flashing one, which is why it has no `powerlab-`
+version string and why the state column is absent from its rows.
+
+One boot, four phases, timeline confirmed to the minute against the operator's
+own note of entering the map at 10:31:
+
+| Uptime | Wall clock | State | CPU | mV | Slope |
+|---|---|---|---|---|---|
+| 2-722 s | 10:19-10:31 | Home, radio down | 10 MHz | 4177-4159 | ~90 |
+| 722-4324 s | 10:31-11:31 | advertising | 80 MHz | 4159-4093 | **70.8 +/- 2.5** |
+| 4324-7986 s | 11:31-12:32 | connected, fix/10 s | 80 MHz | 4093-4068 | **25.7 +/- 3.5** |
+| 7986-9968 s | 12:32-13:05 | advertising | 80 MHz | 4068-4064 | **10.6 +/- 1.1** |
+
+**The map does not pin 160 MHz any more.** Every map phase above ran at 80 MHz
+with `throttled_ms` at 100 % of the interval and the loop at **20 Hz**, against
+run 2's 160 MHz and ~98 Hz. That is the two-deadline split working as designed
+(`src/activities/Activity.h`, `preventThrottle()`), and it means this run
+incidentally priced the state `power-idle-sleep.md` calls route A's floor and
+describes as built and never measured. **Advertising at the 80 MHz BLE_SAFE_FREQ
+floor: 10.6 +/- 1.1 mV/h.** Scaling run 2's calibration (32.6 mV/h at a nominal
+24.0 mA, assumed proportional **[assumed]**) that is roughly **7.8 mA** -- below
+the campaign's 9 mA target, for the parked case, on hardware that shipped. It
+wants a repeat before it is believed.
+
+**The same state measured 70.8 and 10.6 mV/h.** Identical counters (loop busy
+2.0 %, panel 0 ms/h, 20 Hz, `throttled_ms` 100 %), identical build, 6.7x apart.
+Nothing differs but time-since-unplug and state of charge. So the 30-minute
+discard this file recommended a few hours earlier is far too short: **the first
+hour off a full charge is not a measurement**, and part of the effect is the
+genuine steepness of the curve above 4.10 V rather than relaxation alone. The
+working band is roughly **4.05 V down to 3.80 V**.
+
+**What the run does not answer.** The link's cost reads as 25.7 minus 10.6, so
+up to ~15 mV/h -- but that is an upper bound, not a measurement: the connected
+leg sat at a higher voltage and earlier in the relaxation than the advertising
+leg it is being differenced against. Cancelling exactly that is what the closing
+leg of an A-B-A is for, and this run lost it: the fake phone was stopped with
+`timeout`, SIGTERM killed python before asyncio unwound the BleakClient, and
+**the LE link stayed up in the kernel** -- so the intended third leg ran
+connected-and-idle instead of advertising. Fixed in the tool
+(`tools/blefakephone.py --duration`), not in the run. Also note "connected" here
+is not only radio: the panel did 57 s/h of windowed refreshes for the marker.
 
 ### Run 2 -- 2026-08-16, BLE modem sleep, the first measured saving
 
