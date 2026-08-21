@@ -19,16 +19,23 @@
 
 namespace parked_loop {
 
-// The two cadences, in milliseconds. Kept as data rather than baked into the
-// policy because **the parked number is not measured yet**: experiment 3
-// reports the light-sleep residency of today's 100 Hz loop, and that number
-// decides whether the cadence has to grow at all
-// (docs/power-idle-sleep.md, "The open question this design turns on").
-// Until then this default is 10 ms -- today's behaviour, i.e. no change --
-// and the parked value below is a placeholder the measurement replaces.
+// The two cadences, in milliseconds. These are **today's actual numbers**, not
+// placeholders: src/main.cpp:958-963 already picks 50 ms once the throttle
+// deadline has passed and 10 ms before it, so a map screen that has been idle
+// three seconds runs at 20 Hz. Run 3 measured exactly that -- `loops` reads
+// 20 Hz across every map phase (docs/power-plan.md, run 3) **[measured]**.
+//
+// So this file does not introduce a parked cadence. It moves an existing
+// decision somewhere a host test can see it, and replaces its single input (has
+// the throttle deadline passed) with the four the design asks for.
+//
+// Whether 50 ms is the right parked number is still open: experiment 3 reports
+// the light-sleep residency it achieves, and that decides whether the cadence
+// has to grow further (docs/power-idle-sleep.md, "The open question this design
+// turns on").
 struct Cadence {
-  uint32_t activeMs = 10;  // src/main.cpp's delay(10) today
-  uint32_t parkedMs = 10;  // placeholder: same as active until measured
+  uint32_t activeMs = 10;  // src/main.cpp's delay(10)
+  uint32_t parkedMs = 50;  // src/main.cpp's delay(50) once throttled
 };
 
 // Everything the decision is allowed to look at. Four facts, all of them

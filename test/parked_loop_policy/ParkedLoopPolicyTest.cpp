@@ -33,13 +33,15 @@ Inputs parkedAndIdle() {
 
 }  // namespace
 
-TEST(ParkedLoopPolicy, DefaultCadenceChangesNothing) {
-  // The shipped default is today's behaviour on both branches. A build that
-  // takes this file without setting a parked value must measure the same loop
-  // rate it did before, or the policy has become a silent behaviour change.
+TEST(ParkedLoopPolicy, DefaultsAreTodaysNumbers) {
+  // 10 ms active, 50 ms parked -- what src/main.cpp:958-963 already does, and
+  // what run 3 measured as 20 Hz on every map phase. If someone changes either
+  // default, this test is where the behaviour change becomes visible.
+  EXPECT_EQ(Cadence{}.activeMs, 10u);
+  EXPECT_EQ(Cadence{}.parkedMs, 50u);
   Inputs in = parkedAndIdle();
-  EXPECT_EQ(tickMs(in), Cadence{}.activeMs);
-  EXPECT_FALSE(isParked(in));
+  EXPECT_EQ(tickMs(in), 50u);
+  EXPECT_TRUE(isParked(in));
 }
 
 TEST(ParkedLoopPolicy, ParkedAndIdleTakesTheParkedCadence) {

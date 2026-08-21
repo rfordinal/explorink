@@ -239,7 +239,16 @@ now:
 ## S2's missing half: parking our own loop
 
 The 2.3 mA figure is the floor of a firmware whose **CPU is idle**. Ours is not: the
-main loop runs at roughly 100 Hz and every tick does a little work. Turning on light
+main loop runs at roughly 100 Hz and every tick does a little work.
+
+> **Corrected 2026-08-21.** 100 Hz is the *full-clock* rate. `src/main.cpp:958-963`
+> already takes `delay(50)` once the throttle deadline has passed, so an idle map
+> screen ticks at **20 Hz**, and run 3 measured exactly that on every map phase
+> (`power-plan.md`, run 3) **[measured]**. Half of this section's premise is
+> therefore already shipped: the cadence does grow when the device parks. What is
+> *not* shipped is the rest -- the per-tick work still happens on every one of
+> those 20 ticks, and nothing gates the ADC ladder, the two console polls or
+> `updateHeaderStatus()`. Read the sizing below against 20 Hz, not 100. Turning on light
 sleep without addressing that buys a fraction of what the number promises. This
 section is that design work. **Nothing here is built or measured.**
 
