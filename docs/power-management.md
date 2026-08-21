@@ -41,28 +41,39 @@ confirms the curve, not the measurement.
 
 ### What each mode draws
 
-| Mode | Radio | CPU | mV/h | ~mA | Evidence | Confidence |
-|---|---|---|---|---|---|---|
-| Map, connected, fix/10 s, no modem sleep | connected | 160 | 58.9 | ~43 | run 1, 11.4 h | **[measured]**, mixed workload (see run 1) |
-| Map, connected, fix/10 s | connected | 160 | 32.9 | **24.0** | run 2, 9.5 h static window | **[measured]**, the campaign's reference |
-| Map, connected, fix/10 s | connected | **80** | 25.6 +/- 1.4 | ~18.7 | run 3 leg 2, 61 min | **[measured]**, one leg, biased high by charge state |
-| Map, advertising, no phone | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | run 3 leg 3, 32 min | **[measured]**, one leg |
-| Home, nothing running | down | 10 | -- | -- | run 3 phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
-| Tile sync, transfer running | connected | 160 | -- | -- | never run | **[open]** (campaign state 4) |
-| Light sleep, radio up | advertising | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
-| Deep sleep, latch held | off | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
+Every row carries the conditions it was taken under, because none of them are
+incidental: the **build** decides what the firmware was doing (the map pinned
+160 MHz before 2026-08-17 and throttles to 80 MHz after it), and the **voltage
+band** decides how much of the slope is the discharge curve rather than the
+load.
+
+| Mode | Radio | CPU | mV/h | ~mA | Date | Build | Band, duration | Confidence |
+|---|---|---|---|---|---|---|---|---|
+| Map, connected, fix/10 s, no modem sleep | connected | 160 | 58.9 | ~43 | 2026-08-15 | unrecorded (predates the `build` column) | 4220-3547 mV, 11.4 h | **[measured]**, mixed workload, whole discharge (see run 1) |
+| Map, connected, fix/10 s | connected | 160 | 32.9 | **24.0** | 2026-08-16 | `9686ce21` | ~4178-3866 mV, 9.5 h static window | **[measured]**, the campaign's reference |
+| Map, connected, fix/10 s | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **[measured]**, one leg, biased high by charge state |
+| Map, advertising, no phone | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **[measured]**, one leg |
+| Home, nothing running | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
+| Tile sync, transfer running | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
+| Light sleep, radio up | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
+| Deep sleep, latch held | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
 
 ### What each feature costs
 
 Every row is a difference of two rows above, so it inherits both their caveats.
 
-| Change | delta mV/h | delta mA | From | Confidence |
-|---|---|---|---|---|
-| Turn on BLE modem sleep | **-26.0** | ~-19 | run 1 58.9 -> run 2 32.9 | **[measured]**, and a *lower* bound on the saving: run 2 did ~2x the panel work and ~4x the loop work |
-| Throttle the map 160 -> 80 MHz | **-7.3** | ~-5.3 | run 2 32.9 -> run 3 leg 2 25.6 | suggestive only: two builds, different panel activity, different charge state |
-| The phone link, its 10 s fixes and the marker redraws they cause | **+15.0** | ~+11 | run 3 leg 3 10.6 -> leg 2 25.6 | **upper bound**: the two legs differ in charge state and the A-B-A leg that would have cancelled it was lost |
-| Bringing the radio up at all | -- | -- | wants advertising minus a clean radio-down leg | **[open]** |
-| Parking our own loop | -- | -- | only pays under `CONFIG_PM_ENABLE` | **[open]** (`power-idle-sleep.md`, "S2's missing half") |
+| Change | delta mV/h | delta mA | From | Same build? | Confidence |
+|---|---|---|---|---|---|
+| Turn on BLE modem sleep | **-26.0** | ~-19 | 2026-08-15 `unrecorded` 58.9 -> 2026-08-16 `9686ce21` 32.9 | no | **[measured]**, and a *lower* bound on the saving: run 2 did ~2x the panel work and ~4x the loop work |
+| Throttle the map 160 -> 80 MHz | **-7.3** | ~-5.3 | 2026-08-16 `9686ce21` 32.9 -> 2026-08-21 `55c9ed26` 25.6 | no | suggestive only: two builds five days apart, different panel activity, different charge state |
+| The phone link, its 10 s fixes and the marker redraws they cause | **+15.0** | ~+11 | 2026-08-21 `55c9ed26`, leg 3 10.6 -> leg 2 25.6 | **yes, one boot** | **upper bound**: the legs differ in charge state and the A-B-A leg that would have cancelled it was lost |
+| Bringing the radio up at all | -- | -- | wants advertising minus a clean radio-down leg | -- | **[open]** |
+| Parking our own loop | -- | -- | only pays under `CONFIG_PM_ENABLE` | -- | **[open]** (`power-idle-sleep.md`, "S2's missing half") |
+
+The "same build?" column is the one to read first. Only the third row compares
+two states of **one binary on one boot**, which is the whole reason the power lab
+screen exists (`power-idle-sleep.md`, "The power lab screen"): the other two rows
+difference two firmwares and call the remainder a feature.
 
 **Against the target.** The campaign wants 9.0 mA parked (`power-plan.md`, "The
 target"). Advertising at the 80 MHz floor already reads **~7.7 mA** on one leg.
