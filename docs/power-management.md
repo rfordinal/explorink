@@ -80,6 +80,56 @@ target"). Advertising at the 80 MHz floor already reads **~7.7 mA** on one leg.
 If that survives a repeat in the working band, route A has met the parked target
 on shipped hardware, and what is left is the *riding* case at ~18.7 mA.
 
+### The measurements we do not have, cheapest first
+
+**The other half of the scoreboard.** Every `[open]` row above, plus every
+feature whose cost nobody has differenced, with the method attached so any
+session can pick one up. Ordered by information per hour of device time.
+
+Two things decide the cost of a row: whether it needs a **flash** (build, lock,
+ask, and a rebased-branch check) and whether it needs a **meter** (nobody has
+one yet). Everything in the first group needs neither -- one boot, the map or
+Home screen, and `tools/blefakephone.py`.
+
+**No flash, no meter.** All of these run on whatever firmware is on the device,
+in the 4.05-3.80 V band, 20-minute legs, A-B-A with the interesting state in the
+middle:
+
+| # | Measurement | Answers | Method | Cost |
+|---|---|---|---|---|
+| M1 | Home, radio down, 10 MHz | the idle floor, and the only state where 10 MHz is legal | Home screen, untouched, one leg | 20 min |
+| M2 | Send cadence 7 s vs 30 s, **fixed** position | what the walking gate saves on the wire alone: `SendPolicy.MIN_INTERVAL_MS` is 7 s riding, `WALKING_MIN_INTERVAL_MS` 30 s (android `SendPolicy.kt:27,34`) | `blefakephone --pos ... --interval 7` / `30`, A-B-A | 60 min |
+| M3 | Send cadence 7 s vs 30 s, **moving** | the same knob as a rider feels it, redraws included | `--track ... --track-kmh 50`, A-B-A | 60 min |
+| M4 | Fast vs slow advertising | whether `maybeEnterSlowAdvertising()` (`BlePositionServer.h:501`) is worth anything | advertising leg long enough for the slow interval to engage, against one where a central keeps re-appearing | 60 min |
+| M5 | Freshness check and autosync on vs off | two rider-facing toggles nobody has priced, and both spend radio | `CMD:SETTING` flips them without walking the menu (`src/main.cpp`, the `SETTING` allow-list) | 60 min |
+| M6 | The marker redraw itself | separates panel from radio: same fix cadence, position moving vs pinned | `--pos` against `--track` at one cadence | 40 min |
+| M7 | Tile sync, transfer running (state 4) | the worst case, and the only state with the panel and the radio both busy | a real transfer driven from the laptop | 20 min + a build to push |
+| M8 | WiFi mode (web server up) | never measured at all, and it decides whether Wi-Fi Fast Sync is cheap or expensive | Home -> WiFi, one leg, no client attached | 20 min |
+| M9 | `PowerLog` itself | whether the instrument is a term in the budget: one SD write a minute | hard without a second instrument -- **do it last**, or by comparing a build with logging off | 40 min |
+
+**Needs a flash** (build from the frozen base, lock, ask, archive the binary):
+
+| # | Measurement | Answers | Precondition |
+|---|---|---|---|
+| M10 | Experiment 3, `CONFIG_PM_ENABLE` light sleep | go/no-go for S2, plus the residency number that decides how much of the parked-loop work gets built | `env:powerlab` build with the four PM options (`power-test-runbook.md`) |
+| M11 | Connection interval 15 ms vs 50 ms | what the throughput fix costs when nothing is transferring (the device now asks for 12 units, `docs/PROGRESS.md` 2026-08-20) | one option per build |
+| M12 | Experiment 6, `CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW` | the only remaining path to a sub-milliamp parked floor | needs M10's rig; slope near ADC noise, so overnight or a meter |
+| M13 | 10 MHz vs 80 MHz idle floor, radio down | how much the BLE-safe floor costs when the radio is not even up | two builds, or a lab-screen state that forces each |
+
+**Needs a meter** (none owned; `power-test-runbook.md`, "The instrument
+problem"):
+
+| # | Measurement | Answers |
+|---|---|---|
+| M14 | Experiment 1, the board's own floor | bounds every sleep state and most of what a crystal board would buy |
+| M15 | Per-state absolute draw | replaces every derived mA in this file with a measured one, in minutes instead of hours |
+
+**What would change the ordering.** M1 and M2 are the two cheapest rows that
+close a column of the scoreboard, so they go first. M10 is the most valuable
+single run in the whole campaign and the only one on this page that can *fail* in
+an interesting way -- a driver breaking under DFS plus light sleep is the finding
+that ends route B.
+
 ## The device measures itself now
 
 **Added 2026-08-11.** Two instruments, one vocabulary:
