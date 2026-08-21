@@ -382,8 +382,40 @@ state with VBUS present (USB CDC up, and a USB state change requests a redraw --
 `src/main.cpp`, `gpio.wasUsbStateChanged()`).
 
 **Verified: nothing yet.** This is arithmetic and a mechanism, not a measurement.
-The first thing it needs is a settled reading on a full cell, compared against the
-known battery-side number for the same state.
+And it is **not certain to work** -- it rests on four assumptions, each of which
+fails in its own way:
+
+1. **That charging actually terminates.** A charger that cycles instead -- top up,
+   stop, top up again -- gives a sawtooth rather than a settled value. Not fatal:
+   the average over **whole cycles** is still the system's draw. Fatal if someone
+   reads a single point off the sawtooth and calls it a number.
+2. **That the system runs off VBUS while plugged in.** Without load sharing the
+   system draws from the cell and the charger refills it in parallel, and the two
+   are not separable in one reading except by that whole-cycle average. X4's power
+   path is not documented here, and the firmware cannot help: `batteryChargeStatus`
+   is `PIN_UNASSIGNED` and the charger is autonomous (previous section), so nothing
+   on the device can report which phase it is in.
+3. **That converter efficiency is common to both states.** The weakest one.
+   Efficiency varies with load and the converter's own quiescent draw is a constant
+   added term, so a difference measured at 5 V is **not** a difference at the cell
+   times a constant. At single-digit milliamps -- exactly the range in question --
+   that error can be large in relative terms.
+4. **That the device behaves the same with VBUS present.** It does not: USB CDC is
+   enumerated and drawing, and a USB state change requests a redraw. What is
+   measured is "state plus CDC", not the state.
+
+**The test that settles it, and its pass criterion.** Measure a state whose
+battery-side number is already known -- connected at 80 MHz, 25.6 mV/h -- then a
+second known state, and compute the 5 V-to-cell factor from each.
+
+- **Pass:** both states give the same factor within a few percent. The method
+  works, and that factor converts every future USB reading.
+- **Fail:** the factors differ. Assumption 3 has broken, and the meter gives the
+  *ordering* of states and rough magnitudes, not numbers. Still useful -- ordering
+  is what half the open questions need -- but it must not be written down as mA at
+  the cell.
+
+Until that test has been run, a USB-side number in this file is labelled as such.
 
 ## First real-draw numbers: two rides
 
