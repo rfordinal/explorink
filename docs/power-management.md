@@ -811,6 +811,36 @@ which is exactly what entering the map from an idle Home screen does.
 the clock before `BlePositionServer::begin()`, closing the window before the
 controller is enabled and the floor starts applying.
 
+### Observe with BLE off drops the floor to 10 MHz for free (2026-08-21, untested)
+
+`MapActivity::loop()` now calls `BlePositionServer::end()` while
+`screenMode_ == MapScreenMode::Observe` and no transfer is active
+(`ble-advertising.md`, "Observe mode: no radio when there is nothing to send
+or receive"). `end()` runs `NimBLEDevice::deinit(true)` ->
+`nimble_port_deinit()`, which calls `esp_bt_controller_disable()` then
+`esp_bt_controller_deinit()`
+(`~/.platformio/packages/framework-espidf/.../nimble_port.c:301-319`, `:353-359`
+-- read off the pinned ESP-IDF per this repo's own rule, not searched).
+
+That is the exact signal `lowPowerFloorMhz()` reads (previous section): once
+the controller reports anything other than
+`ESP_BT_CONTROLLER_STATUS_ENABLED`, the floor is `LOW_POWER_FREQ` (10 MHz), no
+80 MHz step in between. So an idle Observe session -- panning stopped, nothing
+queued in `preventThrottle()` -- already falls all the way to 10 MHz once
+`IDLE_POWER_SAVING_MS` elapses, with no change needed here: the floor was
+built to read live controller state precisely so a caller does not have to
+carry this logic itself.
+
+Before this branch, BLE ran for the whole map session (`onEnter()`/`onExit()`
+only), so the controller stayed enabled through Observe too and the map screen
+never saw anything below 80 MHz. This branch is the first thing that lets it.
+
+**Open, needs hardware:** confirm the log actually shows `(10 MHz)` rather than
+`(80 MHz)` during an idle Observe session (same `[PWR] Going to low-power mode`
+line the bench runs above grep for), and that a button press still recovers
+cleanly from 10 MHz on the map screen the same way it already does everywhere
+else `LOW_POWER_FREQ` applies.
+
 ### Drawing still runs at 160 MHz
 
 `MapActivity::renderViewport()` calls `kickFullClock()` first. **That seam
