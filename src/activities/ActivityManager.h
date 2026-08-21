@@ -29,11 +29,15 @@ enum class HomeMenuItem {
   PREVIEW,
   SETTINGS_MENU,
   // Home rows with no destination yet -- they draw dimmed and refuse selection
-  // (HomeActivity::kRows, ../../docs/home-screen.md). Wallet's activity exists
-  // on the wallet-viewer branch and is not on develop.
+  // (HomeActivity::kRows, ../../docs/home-screen.md).
+  //
+  // WALLET is **not** in this group on this branch: its activity is here, it is
+  // listed above with the other destinations, and HomeActivity enables its row.
+  // A rebase onto develop brings develop's copy of it back into this block and
+  // the enum then has two WALLET members, which is a redeclaration error rather
+  // than a silent one -- delete the duplicate here, not the one above.
   TRIPS,
-  PINS,
-  WALLET
+  PINS
 };
 
 /**
