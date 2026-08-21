@@ -917,6 +917,56 @@ Nothing here says whether a rider could hit it -- a ride has far fewer
 disconnects than a test session -- but it should not be filed as a rig
 problem, because the rig was demonstrably working.
 
+## Observe mode reopened the 10 MHz BLE window (2026-08-22)
+
+The hang below is old news and was fixed where it was found. It came back
+through a door nobody had guarded, and it took a rider's device down solid.
+
+**The chain**, every link already correct on its own:
+
+1. Observe mode stops the radio: `MapActivity::loop()` calls `ble.end()` when
+   the screen is not in Follow and no transfer is moving bytes
+   (`MapActivity.cpp`, the `needBle` block; `map-observation-mode.md`).
+2. With the controller disabled, `HalPowerManager::lowPowerFloorMhz()` stops
+   returning the BLE_SAFE_FREQ floor -- correctly, there is no radio to protect.
+3. So the 3 s idle throttle takes the CPU to **10 MHz** while the rider is
+   looking around.
+4. Leaving Observe asks for the radio back, and that call site called
+   `ble.begin()` **with no clock guard**. `onEnter()` has one, with a comment
+   that says exactly why ("NimBLEDevice::init() hangs at a low clock", verified
+   2026-08-04). The `loop()` restart path was added later and did not carry it.
+
+**Measured 2026-08-22**, from a serial capture running when it happened:
+
+```
+[301252] MAP   render 1817 ms ... heap: 104560 before tile load, 104564 after
+[301821] PWR   Going to low-power mode (10 MHz)
+[301881] MEM   Free: 104564 bytes, Total: 245892, Min Free: 14684
+[301890] BLEPOS begin: start, begun_=0, isInitialized=0
+[301893] BLEPOS begin: calling NimBLEDevice::init
+```
+
+Nothing after that line, ever. 104 kB of heap free, so this was never an
+allocation problem -- the first three hypotheses on the day (heap exhaustion,
+the menu backdrop, the new point layer) were all wrong, and the log settled it
+in one line.
+
+Fixed by mirroring `onEnter()`'s guard: `powerManager.setPowerSaving(false)`
+immediately before that `begin()`. The alternative -- teaching
+`preventThrottle()` about "a BLE restart is pending" -- closes the window
+instead of surviving it, and is the better shape if this ever grows a third call
+site.
+
+**Why it matters more than a debug note:** a hung X4 cannot be reset by any
+button, tested to 25 seconds on the power button
+(`../../../docs/device-notes.md`). So this class of bug is field-fatal: the
+rider gets the device back when they next reach a computer, and not before.
+
+**How it was reached in practice.** The `Nearby` menu's `View on map` enters
+Observe (`nearby-menu.md`), so a rider browsing points crosses this transition
+many times in a session instead of once or twice. The feature did not cause the
+bug; it made a rare path ordinary.
+
 ## Why 10 MHz breaks BLE: APB, and a lock that is compiled out
 
 **Read off the code 2026-08-16 (ESP-IDF and Arduino core sources), explains
