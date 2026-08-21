@@ -256,9 +256,14 @@ and must never be presented as one (`../../../docs/device-preview.md`).
 - Nothing here has run on the device. No screen has been on the panel.
 - The three popups' layout at the map menu's dialog size: row count, the value
   column with `?` in it, and a long POI name in the title.
-- Whether the 15 px square and the 9 px glyph read on the glass. The probe was
-  judged on a laptop LCD at 1x and 6x, and a tone or a small glyph can resolve
-  differently on e-ink (`CLAUDE.md`, `CMD:SHOWIMAGE`).
+- ~~Whether the 15 px square and the 9 px glyph read on the glass.~~
+  **Judged on the panel 2026-08-21 and accepted by the maintainer.** No flash was
+  involved: a `test/map_preview` frame (Vratna, 25 marks -- bus stops, beds, a
+  flagged water drop, a tent) went to the panel with
+  `tools/show_on_device.py` over `CMD:SHOWIMAGE`, and `CMD:SCREENSHOT` read it
+  back bit-identical (0 of 384,000 pixels differed). This is the one item on
+  this list the serial path can settle, because everything else here needs
+  `MapActivity` running.
 - The card cost of a real query: how long nine shard opens take on the SD path,
   and whether a menu press is perceptibly slower than the Pins list.
 - The header readout: that it actually replaces the place name, that the 30 s
