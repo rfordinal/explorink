@@ -32,6 +32,7 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/power/PowerLabActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -799,6 +800,35 @@ void loop() {
         }
         LOG_DBG("MAIN", "goToMap() returned");
         logSerial.printf("GOTO_MAP_OK\n");
+      } else if (cmd == "GOTO_POWERLAB" || cmd.startsWith("POWERLAB_STATE ")) {
+        // The power campaign's instrument screen, and the one way onto it: it
+        // has no Home row on purpose (a lab screen on a handlebar is something
+        // to open by mistake), and only exists in env:powerlab at all.
+        //
+        // Power saving is already off for every CMD: above, which is
+        // load-bearing here for the same reason as GOTO_MAP: the radio states
+        // call BlePositionServer::begin(), and NimBLEDevice::init() hangs solid
+        // at a throttled clock (docs/power-management.md).
+        //
+        // POWERLAB_STATE picks the state without a button. That is not
+        // convenience: a press restores the full clock and resets the
+        // inactivity timer a few lines below, so pressing one is itself a
+        // change to the thing being measured. The bench sends the state in the
+        // boot window, then USB comes out and the run starts.
+#if defined(ENABLE_POWER_LAB) && ENABLE_POWER_LAB
+        if (cmd.startsWith("POWERLAB_STATE ")) {
+          String wanted = cmd.substring(15);
+          wanted.trim();
+          if (!PowerLabActivity::selectByName(wanted.c_str())) {
+            logSerial.printf("POWERLAB_ERR:unknown state %s\n", wanted.c_str());
+            return;
+          }
+        }
+        activityManager.goToPowerLab();
+        logSerial.printf("POWERLAB_OK\n");
+#else
+        logSerial.printf("POWERLAB_ERR:not built (env:powerlab)\n");
+#endif
       } else if (cmd == "GOTO_TILESYNC") {
         // The sync screen was the one screen a host could not reach. Its grid --
         // outlined squares for missing tiles, dots for the freshness check queue

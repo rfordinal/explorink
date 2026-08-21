@@ -78,10 +78,19 @@ def get_base_version(project_dir):
     return config.get('trailink', 'version')
 
 
+# Environments whose version is derived from the branch here rather than set in
+# platformio.ini. `powerlab` is in the list because the power campaign needs the
+# branch name in the string: every power.csv row carries TRAILINK_VERSION, and
+# that is what makes two runs months apart tellable apart or matchable
+# (docs/power-plan.md, "The frozen baseline", condition 1). A measurement branch
+# called powerlab-<base-sha>-<n> therefore labels its own rows with no extra step.
+BRANCH_DERIVED_ENVS = ('default', 'powerlab')
+
+
 def inject_version(env):
-    # Only applies to the dev (default) environment; release envs set the
-    # version via build_flags in platformio.ini and are unaffected.
-    if env['PIOENV'] != 'default':
+    # Release envs set the version via build_flags in platformio.ini and are
+    # unaffected.
+    if env['PIOENV'] not in BRANCH_DERIVED_ENVS:
         return
 
     project_dir = env['PROJECT_DIR']

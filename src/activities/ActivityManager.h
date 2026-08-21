@@ -111,6 +111,10 @@ class ActivityManager {
   // stops mid-trail for, and it starts its own BLE (TileSyncActivity.h).
   void goToTileSync();
   void goToPreview();
+  // The power campaign's instrument screen. Only built in env:powerlab; a
+  // build without ENABLE_POWER_LAB sends this home instead, so a stale return
+  // target cannot reach a screen that is not there.
+  void goToPowerLab();
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);

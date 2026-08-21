@@ -37,6 +37,15 @@ class PowerLog {
   // card is mounted.
   static void tick();
 
+  // Name the run this row belongs to. Written into every row's `state` column
+  // so an analysis groups by it instead of by a wall-clock note kept somewhere
+  // else. Truncated to 15 characters; a comma or a newline becomes '_', because
+  // either would shift every later column of that row.
+  //
+  // Nobody has to call it: the column reads "-" until somebody does, and every
+  // run before this column existed is grouped by `ble` and `build` alone.
+  static void setState(const char* label);
+
   // Where the rows go. Under the same on-device root as the tiles; the path
   // still says trailink because the card's directory has not been renamed
   // (parent CLAUDE.md).

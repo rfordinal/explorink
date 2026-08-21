@@ -416,6 +416,35 @@ notes), and the field revision that does not self-latch
 One cost: a lab screen that brings up BLE pays the same 57 KB of heap the map
 does, so check the heap after adding it.
 
+**Built 2026-08-21** as `src/activities/power/PowerLabActivity.{h,cpp}`, in its
+own `env:powerlab` (not in `default`, not in the gitignored
+`platformio.local.ini` -- the frozen baseline has to be rebuildable from git,
+`power-plan.md` condition 2). Four states, each one an open question of this
+campaign:
+
+| Label | Radio | Clock | What it prices |
+|---|---|---|---|
+| `idle-160` | down | 160 | the full-clock floor with nothing running |
+| `idle-10` | down | 10 | the 10 MHz floor, legal only with BLE down |
+| `radio-160` | up | 160 | what the map screen does today |
+| `radio-80` | up | 80 | **route A's floor, built and never measured** |
+
+`radio-80` is free and new: `HalPowerManager::lowPowerFloorMhz()` asks the BT
+controller and returns `BLE_SAFE_FREQ` = 80 MHz whenever it is enabled
+(`lib/hal/HalPowerManager.cpp:18-27`, `lib/hal/HalPowerManager.h:49`), so the
+state is safe by construction rather than by anyone remembering the rule.
+
+Reachable only over the console -- no Home row, on purpose -- as
+`CMD:GOTO_POWERLAB` or `CMD:POWERLAB_STATE <label>`. The second one exists
+because **a button press is itself a change to the measurement**: it restores
+the full clock and resets the inactivity timer (`src/main.cpp:836`). The bench
+sends the state in the ~3 s full-clock window after reset, then USB comes out.
+
+Not built: the deep-sleep-with-the-latch-held state. That is experiment 1, it
+needs a meter to be worth entering, and its safety rules carry a real brownout
+risk on the non-self-latching field revision -- a separate piece of work rather
+than a fifth row on a screen that otherwise cannot hurt anything.
+
 **One binary, many states.** Selecting the state at runtime is the whole point: the
 binary stays bit-identical across a comparison, so what the meter sees is the state
 and not a second difference nobody noticed. The compile-time options -- the crystal,

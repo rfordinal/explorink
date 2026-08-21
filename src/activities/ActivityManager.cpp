@@ -20,6 +20,7 @@
 #include "map/TileSyncActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "preview/PreviewActivity.h"
+#include "power/PowerLabActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
@@ -224,6 +225,14 @@ void ActivityManager::goToPreview() {
 #else
   // No bench in this build; the menu has no row for it either, so this is only
   // reachable through a stale HomeMenuItem::PREVIEW (e.g. a saved return target).
+  goHome();
+#endif
+}
+
+void ActivityManager::goToPowerLab() {
+#if defined(ENABLE_POWER_LAB) && ENABLE_POWER_LAB
+  replaceActivity(std::make_unique<PowerLabActivity>(renderer, mappedInput));
+#else
   goHome();
 #endif
 }

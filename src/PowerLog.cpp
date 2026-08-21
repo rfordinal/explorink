@@ -22,7 +22,7 @@ constexpr const char* kLogTag = "PWRLOG";
 // by build (docs/power-plan.md, run 1).
 constexpr const char* kHeader =
     "uptime_s,batt_mv,batt_pct,cpu_mhz,full_clock_ms,throttled_ms,loops,loop_busy_ms,loop_max_ms,"
-    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build\n";
+    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build,state\n";
 
 // 0 = BLE stack down (any screen but the map), 1 = advertising with nobody
 // connected, 2 = a central is connected. Three states rather than a bool
@@ -33,6 +33,18 @@ uint8_t bleState() {
   if (!ble.isRunning()) return 0;
   return ble.connIntervalMs() > 0 ? 2 : 1;
 }
+
+// The run label. `ble` already says what the radio is doing; this says what the
+// *run* is, which is the thing a reader groups by -- two legs of an A-B-A
+// comparison can share a radio state and still be different legs, and before
+// this column existed they were told apart by a wall-clock note in a chat log.
+//
+// Short and fixed-size on purpose: it is written into every row, so it costs
+// bytes sixty times an hour, and a heap allocation per row for a label is not
+// worth it. Set it from a screen that deliberately enters a state (the power
+// lab screen) or from a bench tool over the console.
+constexpr size_t kStateMax = 16;
+char stateLabel[kStateMax] = "-";  // "-" = nobody said, which is the normal case
 
 }  // namespace
 
@@ -81,7 +93,7 @@ void PowerLog::tick() {
   // TRAILINK_VERSION goes through %s, never concatenated into the format
   // string: it carries a branch name, and a '%' in one would make printf read
   // an argument that was never passed.
-  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s\n",
+  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s,%s\n",
               static_cast<unsigned long>(s.uptimeS), static_cast<unsigned>(powerManager.getBatteryMillivolts()),
               static_cast<unsigned>(powerManager.getBatteryPercentage()), static_cast<unsigned>(s.cpuMhz),
               static_cast<unsigned long>(s.fullClockMs), static_cast<unsigned long>(s.throttledMs),
@@ -90,10 +102,28 @@ void PowerLog::tick() {
               static_cast<unsigned long>(s.refreshHalf), static_cast<unsigned long>(s.refreshFast),
               static_cast<unsigned long>(s.refreshWindow), static_cast<unsigned long>(s.panelBusyMs),
               static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
-              static_cast<unsigned>(bleState()), TRAILINK_VERSION);
+              static_cast<unsigned>(bleState()), TRAILINK_VERSION, stateLabel);
 
   // Explicit: the row must be on the card before the next one is due, and this
   // file is written to across a whole ride that may end with a flat battery
   // rather than a clean shutdown.
   file.flush();
+}
+
+void PowerLog::setState(const char* label) {
+  if (label == nullptr) label = "-";
+  size_t i = 0;
+  for (; i + 1 < kStateMax && label[i] != '\0'; ++i) {
+    const char c = label[i];
+    // A comma or a newline in this field would move every later column of that
+    // row, silently, for the rest of the file. Anything printable else is the
+    // caller's business.
+    stateLabel[i] = (c == ',' || c == '\n' || c == '\r') ? '_' : c;
+  }
+  stateLabel[i] = '\0';
+  if (i == 0) {
+    stateLabel[0] = '-';
+    stateLabel[1] = '\0';
+  }
+  LOG_DBG(kLogTag, "state label now %s", stateLabel);
 }
