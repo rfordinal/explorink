@@ -210,11 +210,9 @@ disabled row is skipped by the selection walk (the same walk
 that somehow lands on it.
 
 **The ink comes from `BaseTheme::dimDisabledRow()`, which Home's menu already
-used.** Every second pixel row to white, drawn last so it dims the label and the
-value together. A line screen and not a checkerboard: the panel has no grey in
-BW mode (`eink-grayscale.md`) and at this text size a checkerboard speckles the
-glyphs instead of greying them. Home had this inline; it moved into a shared
-helper so the two lists cannot drift into two different ideas of "disabled".
+used.** Every second pixel row to white. Why a line screen and not a grey or a
+checkerboard is in [`eink-grayscale.md`](eink-grayscale.md), "A disabled row is a
+line screen, not a checkerboard".
 
 **Not verified on the panel.** The dim is Home's, so it is already known to read
 there, but it has never been seen on an `OptionPopup` row -- a popup row is
