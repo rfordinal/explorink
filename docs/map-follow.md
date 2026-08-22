@@ -32,6 +32,52 @@ are in "What the ride measured" below; anything still unmeasured says so.
 > table below describes **free-ride** behaviour; read `route-navigation.md` before
 > touching this ladder.
 
+## An unbounded window aborts the device (2026-08-22)
+
+A marker move refreshes **one window over both boxes**, the old marker's and the
+new one's, because a windowed refresh costs the same panel time as a full one
+whatever its area (measured 2026-08-05, below). Nothing bounded that union.
+
+Two far-apart boxes make it the whole panel. And a full-panel window is not
+merely slow: `GfxRenderer::displayBufferWindow()` returns `bool` and every call
+site here falls back to a full refresh on `false`, but the driver under it
+allocates `(w/8)*h` bytes through a **throwing** `std::vector`
+(`freeink-sdk/.../driver/Ssd1677Driver.cpp`). On a `-fno-exceptions` build a
+throwing allocation is `abort()`, never `false`. So the fallback never gets a
+chance.
+
+**Measured 2026-08-22, from a coredump off the device:** `abort()` in
+`loopTask`, `operator new` -> `__cxa_throw` -> `std::terminate` ->
+`panic_abort`, with the driver asking for **48,000 bytes** for a window of the
+whole panel. The panel froze, the log stopped, and no button on the device could
+bring it back (`../../../docs/device-notes.md`).
+
+The same failure was already measured 2026-08-17 on the menu-close path and is
+described in a comment in `restoreMenuBackdrop()`. That comment says not to
+refresh the whole panel there -- and the code three lines above it computes
+`h = screenHeight - rect.y`, which *is* the whole panel whenever a dialog
+reaches `y == 0`. Documented, and unguarded.
+
+**When the marker jumps far enough to matter:** right after a viewport
+re-anchor -- a pin's `Show`, a console `goto`, a route overview, anything that
+frames somewhere the rider is not. The next fix then moves the marker across the
+panel, and the union of the old and new boxes is most of the screen.
+
+**Fixed** by deciding affordability before the call, against the largest block
+the heap can actually give: `MapActivity::windowRefreshAffordable()` compares
+the driver's own `(w/8)*h` arithmetic plus a 12 kB margin against
+`ESP.getMaxAllocHeap()` -- the same number the `MEM` log line prints. Both
+panel-capable call sites go through it: the marker union and the menu-close
+window. Everything else that windows here is fixed furniture (the busy badge at
+34 px, the header strip at 36 px, the pin notice, the side hints).
+
+**Still open, and the real fix:** the driver should not be able to abort at all.
+`Ssd1677Driver::displayWindow` wants a no-throw allocation and a `false` return;
+every caller in this repo already handles `false`. That is in the `freeink-sdk`
+submodule, so it is its own change in its own repo, and until it lands every new
+windowed refresh has to remember this on its own.
+
+
 ## Why
 
 A viewport reset is the most expensive thing the map screen does: tile reads off
