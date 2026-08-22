@@ -142,8 +142,10 @@ cleans on its entry frame and then runs DU forever
 (`MapActivity.cpp:4511`/`:4553`), and `Ssd1677Driver` has no
 `ghostClearInterval` counter, unlike the IT8951 and Murphy drivers
 (`It8951Driver.cpp:66`). A long ride is thousands of DU refreshes with zero
-cleans. A field report of a pale, half-driven panel after a hot ride, the heat
-story on top of it, and what would settle each: `eink-refresh-degradation.md`.
+cleans. Two field reports of a pale, half-driven panel, the light mechanism that
+explains the shape of the failure (a refresh under a thumb came out white except
+under the thumb), the heat story on top of it, and what would settle each:
+`eink-refresh-degradation.md`.
 
 ## Status
 
