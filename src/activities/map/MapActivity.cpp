@@ -2735,29 +2735,6 @@ void MapActivity::openMapMenu() {
     snprintf(count, sizeof(count), "%u", static_cast<unsigned>(pins_.pinCount()));
     values.emplace_back(count);
   }
-  // Nearby, straight after Pins: both answer a question about the ground around
-  // the rider, and both are reached for while moving. The value column carries
-  // how many categories are drawn on the map right now, because that is the only
-  // part of this feature that is still switched on after the popup closes.
-  const int nearbyIdx = static_cast<int>(options.size());
-  options.push_back(tr(STR_MAP_NEARBY));
-  if (!pointsEnabled()) {
-    // The row stays, dimmed, and says what it is: switched off in Settings. It
-    // is not removed, because a row that vanished reads as a firmware that lost
-    // a feature (../../docs/point-layer-lifecycle.md, decision 2). Dimming and
-    // the skip come from setDisabledRows() below.
-    values.push_back(I18N.get(StrId::STR_STATE_OFF));
-  } else if (nearbyCategoryMask_ != 0) {
-    int shown = 0;
-    for (uint8_t c = 0; c < kSafetyCategoryCount; ++c) {
-      if ((nearbyCategoryMask_ & (1u << c)) != 0) ++shown;
-    }
-    char layers[8];
-    snprintf(layers, sizeof(layers), "%d", shown);
-    values.emplace_back(layers);
-  } else {
-    values.emplace_back();
-  }
   const int modeIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_MODE));
   values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
@@ -2780,6 +2757,31 @@ void MapActivity::openMapMenu() {
   options.push_back(tr(STR_MAP_ZOOM_MODE));
   values.push_back(
       I18N.get(SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_AUTO ? StrId::STR_AUTO : StrId::STR_MANUAL));
+  // `Useful places` sits low, just above Refresh: it is a screen a rider opens
+  // when they need water or a hut, which is rarely, and the rows above it are
+  // the ones touched every ride. Muscle memory belongs to the frequent rows.
+  // The value column carries how many categories are drawn on the map right
+  // now, because that is the only part of this feature still switched on after
+  // the popup closes.
+  const int nearbyIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_NEARBY));
+  if (!pointsEnabled()) {
+    // The row stays, dimmed, and says what it is: switched off in Settings. It
+    // is not removed, because a row that vanished reads as a firmware that lost
+    // a feature (../../docs/point-layer-lifecycle.md, decision 2). Dimming and
+    // the skip come from setDisabledRows() below.
+    values.push_back(I18N.get(StrId::STR_STATE_OFF));
+  } else if (nearbyCategoryMask_ != 0) {
+    int shown = 0;
+    for (uint8_t c = 0; c < kSafetyCategoryCount; ++c) {
+      if ((nearbyCategoryMask_ & (1u << c)) != 0) ++shown;
+    }
+    char layers[8];
+    snprintf(layers, sizeof(layers), "%d", shown);
+    values.emplace_back(layers);
+  } else {
+    values.emplace_back();
+  }
   const int reloadIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_REFRESH));
   values.emplace_back();
