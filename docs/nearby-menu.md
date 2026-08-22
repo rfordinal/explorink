@@ -1,25 +1,42 @@
-# Nearby, and the point layer under it
+# Useful places, and the point layer under it
 
 What useful things are around the rider: drinking water, shelter, huts,
 lodging, fuel, medical, pharmacy, rescue, SOS phones, transport out. Three
 screens off the map menu, plus the marks those points draw on the map itself.
 
-The design is `../../../docs/safety-concept.md`, "Nearby", and this file is what
+The design is `../../../docs/safety-concept.md`, "Useful places", and this file is what
 was built against it. The file format is `../../../docs/point-file-spec.md`; the
 mark vocabulary is `../../../docs/map-render-spec.md`, "Point mark vocabulary".
 
 **Status: built 2026-08-21, host-tested only. Nothing here has run on an X4.**
 What a hardware pass has to check is at the bottom.
 
-## Not an emergency mode
+## Not an emergency mode, and the name says so
 
-A plain menu entry named `Nearby`. An emergency mode has to be entered, and a
-rider who has to decide they are in trouble before pressing anything presses
-nothing.
+A plain menu entry named `Useful places`. An emergency mode has to be entered,
+and a rider who has to decide they are in trouble before pressing anything
+presses nothing.
 
-`Help` was rejected as a name: it reads as documentation, and the word is worth
-more later (emergency info for a finder, the rider's own details, last known
-position, SOS).
+Two names were rejected on the way:
+
+- **`Help`**, which was the first intent -- this is mostly what a rider needs in
+  trouble. It reads as documentation in most software, and the word is worth more
+  later: emergency info for a finder, the rider's own details, last known
+  position, SOS. Keep it free.
+- **`Nearby`**, which shipped first and lasted a day. It collides with
+  `Look around`, the observe-mode row in the same popup: two spatial-sounding
+  labels a few rows apart, one meaning "pan the map" and the other "what is
+  around me".
+
+`Useful places` promises nothing, is not a manual, and still covers the layer
+after landmarks land -- a castle is not a service and not help, but it is a
+useful place.
+
+**The code and this filename still say `nearby`.** `nearbyCategoryMask_`,
+`openNearbyMenu()`, `NearbyPopup`, `STR_NEARBY_*` and `nearby-menu.md` are
+unchanged, so the docs match the code. Renaming the symbols is its own pass, not
+folded into a label change (`../../../CLAUDE.md`, the same rule the CrossPoint
+mentions follow).
 
 ## The three screens
 
@@ -137,6 +154,78 @@ It is also not drawn when the point is off the panel -- clamping it to an edge
 would claim the point is at the edge. Same open question as the rider's own
 off-screen fix: only pins have edge arrows today.
 
+## One setting for the whole layer, and a dimmed row when it is off
+
+`SETTINGS.mapPointsEnabled`, category Map, **default on**
+(`../src/CrossPointSettings.h`, next to `mapTileFreshnessMode`). It answers one
+question: does this device deal in the point layer at all. It is not about data
+-- *when* a shard is fetched is `mapTileFreshnessMode`'s question, and that one
+defaults to `Off` (`../../../docs/point-layer-lifecycle.md`, decision 2).
+
+On by default because reading a shard the card already holds spends card time
+and no mobile data. So the default costs nothing and the feature is there for a
+rider who never opens Settings.
+
+`MapActivity::pointsEnabled()` is the single read, and three paths go through
+it:
+
+- `onEnter()` does not allocate `MapPointSource` or its file handle at all, so
+  1.3 kB goes back to the heap the map screen is always short of.
+- `renderViewport()` hands the render no point source, so no shard is opened.
+- the map menu's `Useful places` row is **dimmed and unselectable**, with `OFF` in the
+  value column.
+
+Read live rather than cached in `onEnter()`: the Settings screen can flip it
+while this activity is alive, and a cached copy would keep drawing marks the
+rider just switched off.
+
+### The row sits low in the menu
+
+Just above `Refresh`, below the four mode toggles. It used to sit straight after
+`Pins` on the argument that both answer a question about the ground around the
+rider. That was wrong about how often it is pressed: a rider opens this screen
+when they need water or a hut, which is rare, while the rows above it are
+touched every ride. Muscle memory belongs to the frequent rows.
+
+### Landmarks get no rows here
+
+T-305's landmarks (castles, viewpoints, peaks, passes) are **not** categories in
+this menu. They draw on the map when they exist, and that is all
+(`../../../docs/point-layer-lifecycle.md`, decision 4). So this screen stays a
+list of things a rider goes looking for, and the landmark category ids that
+`point-file-spec.md` leaves open are a render and glyph question only, not a row
+order.
+
+### The row is dimmed, not removed
+
+A row that vanished reads as a firmware that lost a feature. A dimmed row reads
+as a switch somebody turned off, which is the truth, and it stays where muscle
+memory expects it.
+
+`OptionPopup::setDisabledRows()` carries the mask, parallel to the options, and
+is called **after** `showWithValues()` -- which clears it, the same rule
+`setNote()` follows, so a stale mask cannot survive into the next popup. A
+disabled row is skipped by the selection walk (the same walk
+`HomeActivity::nextSelectable()` does), swallows a tap, and refuses a `Confirm`
+that somehow lands on it.
+
+**The ink comes from `BaseTheme::dimDisabledRow()`, which Home's menu already
+used.** Every second pixel row to white. Why a line screen and not a grey or a
+checkerboard is in [`eink-grayscale.md`](eink-grayscale.md), "A disabled row is a
+line screen, not a checkerboard".
+
+**Verified on an X4, 2026-08-22.** Flashed
+`feat/points-setting@5e87a1df` and the maintainer walked it: the row sits where
+it should, the screens still work, switching `Useful places` off in Settings
+leaves the row present and visibly dimmed with `OFF`, unreachable by the button
+walk and by a tap, and switching it back on restores both the row and the marks.
+So the line screen reads on an `OptionPopup` row too, which was the open
+question -- a popup row is shorter than a Home row and carries a value box.
+Binary archived as
+`docs/firmware-builds/feat-points-setting-5e87a1df-useful-places-dimmed-row-good.bin`
+in the parent repo. What a hardware pass has to
+check is at the bottom.
+
 ## `Show on map` is a view, not a setting
 
 `nearbyCategoryMask_`, one bit per category, on `MapActivity` and **not** in
@@ -229,7 +318,7 @@ Measured with `sizeof` on the host, same layout as the target
   not a layer is switched on, so flipping one never has to allocate on a button
   press. With the mask at zero the render never hands it over and it opens no
   file.
-- `MapPointQuery` is allocated the first time the rider opens `Nearby` and kept
+- `MapPointQuery` is allocated the first time the rider opens `Useful places` and kept
   for the screen's life.
 - Fixed cost inside the activity: `nearbyHits_` is 8 x 48 B and
   `nearbyDistances_` is 44 B, so about 430 B on top of the two heap objects.
@@ -248,7 +337,7 @@ on a row it prints.
 **The crc is checked before a record reaches the screen, not before it becomes a
 distance.** Verifying costs a second full read of the shard: `verifyBody()`
 streams the whole body, then `beginRecords()` re-reads the record array.
-Measured on the device 2026-08-22, six shards for one press of `Nearby`:
+Measured on the device 2026-08-22, six shards for one press of `Useful places`:
 
 ```
 nearby: 6 shard(s) read, 0 missing, 0 corrupt, 201994 bytes
@@ -265,7 +354,7 @@ checks the crc and a failing shard contributes no rows at all.
 
 **The read cost is a city problem, not a mountain one.** Measured on a real
 build (`region1`, 2026-08-21): a rural shard is 22 to 500 points, and the
-Bratislava shard is 2,602 -- 41.6 kB of records for one `Nearby` press, off one
+Bratislava shard is 2,602 -- 41.6 kB of records for one `Useful places` press, off one
 file, through a 1 kB buffer. Zahorie is a few kB. That number is unmeasured *on
 the device*, which is what makes it the first thing a hardware pass should time.
 
@@ -332,9 +421,9 @@ The sheet is `../../../docs/design-shots/nearby-marks-preview.png`. It is a
 and must never be presented as one (`../../../docs/device-preview.md`).
 
 **Found on hardware, 2026-08-21, and fixed:** `View on map` left the device
-believing the rider was standing on the POI. Not a Nearby bug -- the ladder/fix
+believing the rider was standing on the POI. Not a `Useful places` bug -- the ladder/fix
 save persisted `lastLatE7_`, which `renderViewport()` repoints at whatever it
-draws, so panning in Observe and a pin's `Show` did it too. Nearby made it easy
+draws, so panning in Observe and a pin's `Show` did it too. `Useful places` made it easy
 to reach because `View on map` re-anchors kilometres away.
 `map-observation-mode.md`, "The pan target is not the rider", has the chain.
 
@@ -345,7 +434,7 @@ nearby: 6 shard(s) read, 0 missing, 0 corrupt, 78880 bytes
 nearby layer mask 0x000a
 ```
 
-- One press of `Nearby` reads **78.9 kB** off the card for six shards, down from
+- One press of `Useful places` reads **78.9 kB** off the card for six shards, down from
   201,994 bytes before the split. The remainder is the record arrays and the
   headers; no name pool and no crc pass.
 - No `full refresh instead` line in the whole session, so the 4 kB window margin
@@ -366,7 +455,11 @@ edge marker to the same 0.1 km step.
 
 **Not verified -- needs an X4 pass:**
 
-- Nothing here has run on the device. No screen has been on the panel.
+- ~~Nothing here has run on the device.~~ Stale: it has, twice on 2026-08-22 --
+  the shard-read figures above, and the setting plus the dimmed row below.
+- ~~The dimmed `Useful places` row.~~ **Done 2026-08-22**, see "One setting for
+  the whole layer" above: present, dimmed, reading `OFF`, unreachable by the
+  button walk and by a tap.
 - The three popups' layout at the map menu's dialog size: row count, the value
   column with `?` in it, and a long POI name in the title.
 - ~~Whether the 15 px square and the 9 px glyph read on the glass.~~
@@ -398,7 +491,7 @@ edge marker to the same 0.1 km step.
   advertising, so while ExplorInk GPS holds the connection the laptop cannot
   find the device at all -- `blepush` fails with "no device advertising the map
   service", which reads like a broken adapter and is not. Turn the phone's BT
-  off, push, turn it back on; the last fix stays in RAM, so `Nearby` still has
+  off, push, turn it back on; the last fix stays in RAM, so `Useful places` still has
   somewhere to search from in between. What does **not** happen is automatic: the tile index and
   the auto-sync path are built around `base/` (`tools/build_index.py` scans that
   directory only), so a rider whose area gains a point shard gets it only by a

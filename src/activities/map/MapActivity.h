@@ -606,6 +606,9 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   void setNearbyDestination(uint8_t hitIndex);
   // "0.7 km NE" for a list row, and the label a category row carries.
   void nearbyRowValue(const MapPointQuery::Hit& hit, char* buf, size_t bufLen) const;
+  // SETTINGS.mapPointsEnabled: whether this device deals in the point layer at
+  // all. Gates the shard source, the render walk and the `Nearby` row.
+  bool pointsEnabled() const;
   static StrId nearbyCategoryLabel(uint8_t category);
   // The condition line on the detail screen: the first reliability flag the
   // point carries, worded for that category ("Water quality unverified" rather

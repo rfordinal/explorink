@@ -526,6 +526,33 @@ enough apart, and whether a repeated nudge drifted.
   `_inGrayscaleMode`. Nothing calls it with `factoryMode=true` today. For
   standalone full-screen images, not overlays.
 
+## A disabled row is a line screen, not a checkerboard
+
+`BaseTheme::dimDisabledRow()` (`../src/components/themes/BaseTheme.cpp`) drops
+every second pixel row to white, over whatever was already drawn there. Home's
+menu has always done this; `OptionPopup`'s disabled rows now go through the same
+helper, so the two lists cannot drift into two different ideas of "disabled".
+
+Three reasons it is this and not something else:
+
+- **Not a grey.** BW mode collapses black and both greys to black (see "A grey
+  pixel is a black pixel that got nudged lighter" above, `bmpVal < 3`), and a
+  menu draws in BW mode. A grey label would come out solid black.
+- **Not a checkerboard.** At `UI_12` text size a checkerboard speckles the
+  glyphs instead of dimming them: the pattern's period is close to the stroke
+  width, so it eats strokes rather than lightening them.
+- **Drawn last**, after the label, the icon and the value, so it dims all of
+  them at once rather than being overdrawn by the value box.
+
+A disabled row is also never the selected one -- both lists skip it in their
+selection walk -- so the white lines always land on a white row and never break
+up a selection block.
+
+**Verified on the panel for both, 2026-08-22.** Home's rows had it all along; the
+`OptionPopup` row was the open case, because it is shorter than a Home row and
+carries a value box beside the label. Read on an X4 with `Useful places` switched
+off in Settings (`nearby-menu.md`, "One setting for the whole layer").
+
 ## There is dithered grey too, and it is a different product
 
 `GfxRenderer.h:27` has `enum Color { Clear, White, LightGray, DarkGray, Black }`.

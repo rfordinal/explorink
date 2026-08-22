@@ -241,6 +241,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // rider turns it on deliberately or not at all.
         SettingInfo::Toggle(StrId::STR_MAP_AUTOSYNC_TILES, &CrossPointSettings::mapAutoSyncTiles, "mapAutoSyncTiles",
                             StrId::STR_CAT_MAP),
+        // On by default, unlike the two data-spending toggles around it: this
+        // one is "does this device deal in POIs at all", and *when* a shard is
+        // fetched is mapTileFreshnessMode's question
+        // (../docs/point-layer-lifecycle.md, decision 2). Off dims the map
+        // menu's `Nearby` row and stops the marks being drawn.
+        SettingInfo::Toggle(StrId::STR_MAP_NEARBY_POINTS, &CrossPointSettings::mapPointsEnabled, "mapPointsEnabled",
+                            StrId::STR_CAT_MAP),
         // Off by default, and it stays off until the panel cost of edge markers
         // has been measured (CrossPointSettings::mapPinsOffscreen). Pins inside
         // the viewport are drawn either way.

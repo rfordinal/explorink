@@ -21,3 +21,17 @@ Two targets here are host tools, not gtest suites, so ctest does not run them:
   map_replay   replays a recorded ride through the device's own
                MapFollow::decide() and counts redraws, with a threshold sweep
                -- docs/map-follow.md, "Sweeping the thresholds off the device"
+
+A new file under src/ that a *shared* unit calls -- MapRenderer,
+MapPreviewPipeline, anything several suites link -- must be added to **every**
+test target that links that unit, not only to the new suite's own
+CMakeLists.txt. The symptom is a link error that reads like a missing
+implementation:
+
+  undefined reference to `MapPointSource::MapPointSource(IFileSource&, ...)'
+
+MapTileReaderGoldenTest stopped linking when the point layer landed, because
+test/map_tile_reader/CMakeLists.txt never gained MapPointReader.cpp,
+MapPointSource.cpp and MapPointMarks.cpp while MapRenderer.cpp started calling
+into them. Fixed 2026-08-22. Grep the new file's class name across
+test/*/CMakeLists.txt after adding one.

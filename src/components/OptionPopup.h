@@ -108,6 +108,35 @@ class OptionPopup {
     layoutValid = false;
   }
 
+  // Rows the rider cannot select: drawn dimmed (BaseTheme::dimDisabledRow(),
+  // the same line screen Home's menu uses) and skipped by the selection walk.
+  // `disabled` is parallel to the options; non-zero disables that row, and a
+  // short or empty vector leaves every row live.
+  //
+  // Set after a show*() call, which clears it -- same rule as setNote(), so a
+  // stale mask can never survive into the next popup. A row is dimmed rather
+  // than dropped on purpose: a row that vanished reads as a firmware that lost
+  // a feature, a dimmed one reads as a switch somebody turned off.
+  //
+  // If the selection is sitting on a disabled row when this is called, it
+  // walks forward to the first live one. All rows disabled leaves the selection
+  // where it was and nothing selectable; the caller should not build that list.
+  void setDisabledRows(std::vector<uint8_t> disabled) {
+    ownedDisabled = std::move(disabled);
+    ownedDisabled.resize(ownedStrings.size());
+    if (isRowDisabled(selectedIndex) && anyRowEnabled()) {
+      const int count = static_cast<int>(ownedStrings.size());
+      for (int step = 1; step <= count; ++step) {
+        const int candidate = (selectedIndex + step) % count;
+        if (!isRowDisabled(candidate)) {
+          selectedIndex = candidate;
+          break;
+        }
+      }
+    }
+    layoutValid = false;
+  }
+
   // Per-row actions, opt-in.
   //
   // The front Left and Right buttons are **not free** in a popup: they are
@@ -190,7 +219,7 @@ class OptionPopup {
       for (int row = 0; row < static_cast<int>(hitLayout.rows.size()); row++) {
         if (contains(hitLayout.rows[row], tx, ty)) {
           const int i = scrollTop + row;
-          if (i < count && selectedIndex != i) {
+          if (i < count && !isRowDisabled(i) && selectedIndex != i) {
             selectedIndex = i;
             requestUpdate();
           }
@@ -205,6 +234,10 @@ class OptionPopup {
         if (!contains(hitLayout.rows[row], tx, ty)) continue;
         const int i = scrollTop + row;
         if (i >= count) break;
+        // A tap on a disabled row is swallowed: the popup stays open and the
+        // selection does not move, so the row cannot fire the callback by a
+        // route the button walk refuses.
+        if (isRowDisabled(i)) return true;
         selectedIndex = i;
         active = false;
         if (onSelectCallback) onSelectCallback(selectedIndex);
@@ -251,6 +284,9 @@ class OptionPopup {
       requestUpdate();
       return true;
     } else if (input.wasPressed(MappedInputManager::Button::Confirm)) {
+      // Belt and braces: the walk never leaves the selection on a disabled row,
+      // but a caller can disable the row the popup opened on.
+      if (isRowDisabled(selectedIndex)) return true;
       active = false;
       if (onSelectCallback) onSelectCallback(selectedIndex);
       requestUpdate();
@@ -321,6 +357,7 @@ class OptionPopup {
     s.title = title.c_str();
     s.options = &ownedStrings;
     s.values = ownedValues.empty() ? nullptr : &ownedValues;
+    s.disabled = ownedDisabled.empty() ? nullptr : &ownedDisabled;
     s.selectedIndex = selectedIndex;
     s.scrollTop = scrollTop;
     s.leftAlign = leftAligned;
@@ -367,7 +404,18 @@ class OptionPopup {
   void moveSelection(const int delta, const GfxRenderer& renderer) {
     const int count = static_cast<int>(ownedStrings.size());
     if (count == 0) return;
-    selectedIndex = (selectedIndex + delta + count) % count;
+    // Disabled rows are stepped over, not stopped on -- same walk Home's menu
+    // does (HomeActivity::nextSelectable()). The walk visits at most `count`
+    // rows, so a list with every row disabled leaves the selection alone
+    // instead of spinning.
+    if (!anyRowEnabled()) return;
+    const int step = delta >= 0 ? 1 : -1;
+    int moved = selectedIndex;
+    for (int i = 0; i < count; ++i) {
+      moved = (moved + step + count) % count;
+      if (!isRowDisabled(moved)) break;
+    }
+    selectedIndex = moved;
     const int visible = getLayout(renderer).visibleRows;
     if (visible <= 0 || visible >= count) return;
     int top = scrollTop;
@@ -395,6 +443,19 @@ class OptionPopup {
     sideHintFontId = SMALL_FONT_ID;
     minDialogWidth = 0;
     minVisibleRows = 0;
+    ownedDisabled.clear();
+  }
+
+  bool isRowDisabled(const int index) const {
+    return index >= 0 && index < static_cast<int>(ownedDisabled.size()) && ownedDisabled[index] != 0;
+  }
+
+  bool anyRowEnabled() const {
+    const int count = static_cast<int>(ownedStrings.size());
+    for (int i = 0; i < count; ++i) {
+      if (!isRowDisabled(i)) return true;
+    }
+    return false;
   }
 
   static bool contains(const Rect& rect, const int x, const int y) {
@@ -404,6 +465,8 @@ class OptionPopup {
   bool active = false;
   std::string title;
   std::vector<std::string> ownedStrings;
+  // Empty unless setDisabledRows() was called; sized to ownedStrings there.
+  std::vector<uint8_t> ownedDisabled;
   // Empty unless showWithValues() was used; sized to ownedStrings there.
   std::vector<std::string> ownedValues;
   bool leftAligned = false;

@@ -1971,7 +1971,12 @@ void MapActivity::onEnter() {
   // map` must not have to allocate on a button press. With no layer on, the
   // render skips it entirely (nearbyCategoryMask_ == 0), so it costs no card
   // read either.
-  if (kDefaultMapStyle.pointSquarePx > 0) {
+  //
+  // Not allocated at all when the rider switched the whole layer off
+  // (SETTINGS.mapPointsEnabled): then nothing can open a shard, the `Nearby`
+  // row is dimmed, and the 1.3 KB goes back to the heap the map screen is
+  // always short of.
+  if (kDefaultMapStyle.pointSquarePx > 0 && pointsEnabled()) {
     pointFile_ = makeUniqueNoThrow<HalFileSource>();
     if (!pointFile_) {
       LOG_ERR(kLogTag, "OOM: HalFileSource for the point layer");
@@ -2730,23 +2735,6 @@ void MapActivity::openMapMenu() {
     snprintf(count, sizeof(count), "%u", static_cast<unsigned>(pins_.pinCount()));
     values.emplace_back(count);
   }
-  // Nearby, straight after Pins: both answer a question about the ground around
-  // the rider, and both are reached for while moving. The value column carries
-  // how many categories are drawn on the map right now, because that is the only
-  // part of this feature that is still switched on after the popup closes.
-  const int nearbyIdx = static_cast<int>(options.size());
-  options.push_back(tr(STR_MAP_NEARBY));
-  if (nearbyCategoryMask_ != 0) {
-    int shown = 0;
-    for (uint8_t c = 0; c < kSafetyCategoryCount; ++c) {
-      if ((nearbyCategoryMask_ & (1u << c)) != 0) ++shown;
-    }
-    char layers[8];
-    snprintf(layers, sizeof(layers), "%d", shown);
-    values.emplace_back(layers);
-  } else {
-    values.emplace_back();
-  }
   const int modeIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_MODE));
   values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
@@ -2769,6 +2757,31 @@ void MapActivity::openMapMenu() {
   options.push_back(tr(STR_MAP_ZOOM_MODE));
   values.push_back(
       I18N.get(SETTINGS.mapZoomMode == CrossPointSettings::MAP_ZOOM_AUTO ? StrId::STR_AUTO : StrId::STR_MANUAL));
+  // `Useful places` sits low, just above Refresh: it is a screen a rider opens
+  // when they need water or a hut, which is rarely, and the rows above it are
+  // the ones touched every ride. Muscle memory belongs to the frequent rows.
+  // The value column carries how many categories are drawn on the map right
+  // now, because that is the only part of this feature still switched on after
+  // the popup closes.
+  const int nearbyIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_NEARBY));
+  if (!pointsEnabled()) {
+    // The row stays, dimmed, and says what it is: switched off in Settings. It
+    // is not removed, because a row that vanished reads as a firmware that lost
+    // a feature (../../docs/point-layer-lifecycle.md, decision 2). Dimming and
+    // the skip come from setDisabledRows() below.
+    values.push_back(I18N.get(StrId::STR_STATE_OFF));
+  } else if (nearbyCategoryMask_ != 0) {
+    int shown = 0;
+    for (uint8_t c = 0; c < kSafetyCategoryCount; ++c) {
+      if ((nearbyCategoryMask_ & (1u << c)) != 0) ++shown;
+    }
+    char layers[8];
+    snprintf(layers, sizeof(layers), "%d", shown);
+    values.emplace_back(layers);
+  } else {
+    values.emplace_back();
+  }
   const int reloadIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_REFRESH));
   values.emplace_back();
@@ -2870,6 +2883,14 @@ void MapActivity::openMapMenu() {
           renderCurrent();
         }
       });
+  // The `Nearby` row when the whole point layer is switched off: dimmed and
+  // unselectable, so it cannot open a screen that has nothing to search. Set
+  // after show(), which clears the mask (OptionPopup::setDisabledRows()).
+  if (!pointsEnabled()) {
+    std::vector<uint8_t> disabled(options.size(), 0);
+    disabled[static_cast<size_t>(nearbyIdx)] = 1;
+    optionPopup_.setDisabledRows(std::move(disabled));
+  }
   // After show() (the layout the rect comes from needs the rows) and before
   // the first draw (the framebuffer still holds the map).
   //
@@ -2895,6 +2916,16 @@ size_t MapActivity::pinSlotForRow(size_t row) const {
     ++seen;
   }
   return PinStore::kSlotCount;
+}
+
+bool MapActivity::pointsEnabled() const {
+  // One read of one setting, and every point path goes through it: the shard
+  // source's allocation, the render's mark walk, and the map menu's `Nearby`
+  // row (../../docs/point-layer-lifecycle.md, decision 2). Read live rather
+  // than cached in onEnter(): the Settings screen can flip it while this
+  // activity is alive, and a cached copy would keep drawing marks the rider
+  // just switched off.
+  return SETTINGS.mapPointsEnabled != 0;
 }
 
 int32_t MapActivity::riderLatE7() const {
@@ -3106,7 +3137,7 @@ StrId MapActivity::nearbyCategoryLabel(uint8_t category) {
     case MapSafetyCategory::Unknown:
       break;
   }
-  return StrId::STR_MAP_NEARBY;
+  return StrId::STR_MAP_PLACES;
 }
 
 StrId MapActivity::nearbyConditionLabel(uint8_t category, uint8_t flags) {
@@ -3184,6 +3215,10 @@ bool MapActivity::loadNearbyCategory(uint8_t category) {
 }
 
 void MapActivity::openNearbyMenu() {
+  // Unreachable through the menu when the layer is off -- that row is dimmed
+  // and unselectable. Guarded anyway: a screen that searched with the layer off
+  // would allocate the query and read nine shards for a list nobody asked for.
+  if (!pointsEnabled()) return;
   if (!runNearbyQuery()) {
     // A notice, not ten rows of "None": with no fix the distances are not
     // unknown, they are unanswerable. The map has to come back first, because
@@ -3231,7 +3266,10 @@ void MapActivity::openNearbyMenu() {
     values.emplace_back();
   }
 
-  optionPopup_.showWithValues(StrId::STR_MAP_NEARBY, options, values, 0, [this, hideAllIdx](int idx) {
+  // `Places`, not the menu row's own `Useful places`: a popup title is centred
+  // in a dialog narrower than the row it was opened from, and the rider just
+  // pressed the row, so the long form has nothing left to disambiguate.
+  optionPopup_.showWithValues(StrId::STR_MAP_PLACES, options, values, 0, [this, hideAllIdx](int idx) {
     if (idx == hideAllIdx) {
       nearbyCategoryMask_ = 0;
       // The map underneath lost its marks, so the backdrop is worthless and the
@@ -5008,7 +5046,7 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // (MapPointSource::Config::categoryMask). With no layer on, the source is not
   // even handed over and no shard is opened.
   IMapPointSource* pointSource = nullptr;
-  if (points_ && nearbyCategoryMask_ != 0) {
+  if (points_ && nearbyCategoryMask_ != 0 && pointsEnabled()) {
     MapPointSource::Config pointConfig;
     pointConfig.rootDir = kTileRoot;
     // The point layer is its own grid, so it gets its own range off the same
