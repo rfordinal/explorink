@@ -923,6 +923,16 @@ Run 5 gives the shape: **60 windowed refreshes an hour, 502 ms each, 0.94 % of
 wall**, with `full_clock_ms` at 0.11 % -- so a windowed refresh is panel energy
 and carries no CPU term worth naming.
 
+> **Keep the windows small, or the run aborts the device instead of measuring
+> it.** `180ffba3` on `develop` (2026-08-22) came off a coredump: `displayWindow`
+> asking for 48,000 bytes for a window spanning the whole panel, through a
+> throwing `std::vector` -- and on `-fno-exceptions` a throwing allocation is
+> `abort()`, so the `bool` fallback every call site has could never run. One of the
+> two call sites it names is `moveMarker()`'s union of the old and new marker
+> boxes, which is exactly what the design below drives. So the jitter must stay a
+> few pixels past `kMinMovePx`, **not** a jump across the panel: a large step is a
+> panel-sized window, and that is the abort rather than a measurement.
+
 **The obvious experiment is too weak.** Compare a run at 60 refreshes/h against
 one at 6 (the coarse clock, `map-header-status.md`). If a windowed refresh draws
 30 mA for 502 ms, that is 0.0042 mAh each, so 54 fewer an hour is about
@@ -935,8 +945,9 @@ one fixed cadence in both runs, and vary only whether each fix moves the marker:
 - **Run A:** positions jitter by **less than `MapFollow::kMinMovePx`** (8 px, and
   the rung sets the metres -- `MapViewport.h`'s `minMove` column). Every packet
   arrives, is parsed, re-anchors the clock, and **draws nothing**.
-- **Run B:** positions step by **more than** it. Same packet count, same parsing,
-  same link -- every fix repaints.
+- **Run B:** positions step by **more than** it, and **only just** more -- see the
+  warning above. Same packet count, same parsing, same link -- every fix repaints,
+  each with a small window.
 
 Radio, CPU wake pattern and packet count are identical by construction, so the
 difference is the panel and nothing else. And the contrast is dialable: at a fix
