@@ -19,136 +19,163 @@ int32_t toE7(double degrees, int decimals) {
 
 }  // namespace
 
-Result replay(const std::vector<RideLog::Packet>& packets, const Config& config) {
-  Result result;
-  result.packets = static_cast<int>(packets.size());
-  if (config.recordEvents) result.events.reserve(packets.size());
+Stepper::Stepper(const Config& config)
+    : config_(config),
+      markerY_(MapViewport::markerYForStep(config.markerStep)),
+      anchorX_(MapViewport::kAnchorScreenX) {}
 
-  // MapActivity's follow state (MapActivity.h's proj_, anchorHeading_,
-  // markerDrawnX_/Y_, partialMoves_).
-  MapProjection proj;
-  bool viewportDrawn = false;
-  uint8_t anchorHeading = 0;
-  int16_t markerDrawnX = 0;
-  int16_t markerDrawnY = 0;
-  uint16_t partialMoves = 0;
+void Stepper::reserveEvents(std::size_t packets) { result_.events.reserve(packets); }
 
-  // Both come off the ladders, not off a literal -- MapActivity.cpp:1830 and
-  // MapViewport.h:kAnchorScreenX, which reads the compiled style.
-  const int16_t markerY = MapViewport::markerYForStep(config.markerStep);
-  const int16_t anchorX = MapViewport::kAnchorScreenX;
+// renderViewport()'s three state effects (MapActivity.cpp:1850, 2001-2004).
+// No route is loaded on any of these rides, so frameHeadingFor() is the
+// identity (MapActivity.cpp:1799-1801) and the fix's own heading is "up".
+void Stepper::renderViewport(double lat, double lon, uint8_t headingStep) {
+  proj_.reset(lat, lon, anchorX_, markerY_, headingStep, MapViewport::mppMercFor(config_.zoomStep, lat));
+  anchorHeading_ = headingStep;
+  markerDrawnX_ = anchorX_;
+  markerDrawnY_ = markerY_;
+  partialMoves_ = 0;
+  viewportDrawn_ = true;
+}
 
-  // renderViewport()'s three state effects (MapActivity.cpp:1850, 2001-2004).
-  // No route is loaded on any of these rides, so frameHeadingFor() is the
-  // identity (MapActivity.cpp:1799-1801) and the fix's own heading is "up".
-  const auto renderViewport = [&](double lat, double lon, uint8_t headingStep) {
-    proj.reset(lat, lon, anchorX, markerY, headingStep, MapViewport::mppMercFor(config.zoomStep, lat));
-    anchorHeading = headingStep;
-    markerDrawnX = anchorX;
-    markerDrawnY = markerY;
-    partialMoves = 0;
-    viewportDrawn = true;
-  };
+Stepper::Step Stepper::step(const RideLog::Packet& packet) {
+  const int packetIndex = packetIndex_++;
+  ++result_.packets;
 
-  for (size_t i = 0; i < packets.size(); ++i) {
-    const RideLog::Packet& packet = packets[i];
-    const double lat = static_cast<double>(toE7(packet.lat, config.coordDecimals)) / 1e7;
-    const double lon = static_cast<double>(toE7(packet.lon, config.coordDecimals)) / 1e7;
+  const double lat = static_cast<double>(toE7(packet.lat, config_.coordDecimals)) / 1e7;
+  const double lon = static_cast<double>(toE7(packet.lon, config_.coordDecimals)) / 1e7;
 
-    if (!viewportDrawn) {
-      // MapActivity.cpp:1550-1553: no followable frame yet, so this fix builds
-      // one and decide() is never asked. Not counted as a re-anchor -- the
-      // device logs nothing for it either, so the hardware baseline does not
-      // count it (tools/replay_ride.py:176), and runFrames() above filters
-      // this "init" action out for the same reason. It still needs an event
-      // of its own, action != "reanchor" so no summary counter moves, purely
-      // so a per-packet consumer (--track) has a real anchor to render its
-      // very first background from instead of guessing.
-      renderViewport(lat, lon, packet.headingStep);
-      if (config.recordEvents) {
-        result.events.push_back(
-            {static_cast<int>(i), "init", "", anchorX, markerY, 0, packet.headingStep});
-      }
-      continue;
+  Step out;
+
+  if (!viewportDrawn_) {
+    // MapActivity.cpp:1550-1553: no followable frame yet, so this fix builds
+    // one and decide() is never asked. Not counted as a re-anchor -- the
+    // device logs nothing for it either, so the hardware baseline does not
+    // count it (tools/replay_ride.py:176), and runFrames() filters this "init"
+    // action out for the same reason. It still needs an event of its own,
+    // action != "reanchor" so no summary counter moves, purely so a per-packet
+    // consumer (--track) has a real anchor to render its very first background
+    // from instead of guessing.
+    renderViewport(lat, lon, packet.headingStep);
+    if (config_.recordEvents) {
+      result_.events.push_back({packetIndex, "init", "", anchorX_, markerY_, 0, packet.headingStep});
     }
+    out.action = "init";
+    out.x = anchorX_;
+    out.y = markerY_;
+    out.anchorHeadingStep = packet.headingStep;
+    out.frameChanged = true;
+    out.frameLat = lat;
+    out.frameLon = lon;
+    out.frameHeadingStep = packet.headingStep;
+    return out;
+  }
 
-    double mercX = 0.0, mercY = 0.0;
-    MapProjection::lonLatToMerc(lat, lon, mercX, mercY);
-    int16_t fixX = 0, fixY = 0;
-    proj.projectMerc(mercX, mercY, fixX, fixY);
+  double mercX = 0.0, mercY = 0.0;
+  MapProjection::lonLatToMerc(lat, lon, mercX, mercY);
+  int16_t fixX = 0, fixY = 0;
+  proj_.projectMerc(mercX, mercY, fixX, fixY);
 
-    MapFollow::Request request;
-    request.fixX = fixX;
-    request.fixY = fixY;
-    request.drawnX = markerDrawnX;
-    request.drawnY = markerDrawnY;
-    request.screenWidth = config.screenWidth;
-    request.screenHeight = config.screenHeight;
-    request.anchorHeadingStep = anchorHeading;
-    request.fixHeadingStep = packet.headingStep;
-    request.partialMoves = partialMoves;
-    request.partialMoveBudget = config.partialMoveBudget;
-    request.routeHoldsFrame = false;  // ride mode, no route on any of these logs
-    request.headingDriftLimitSteps = config.headingDriftLimitSteps;
-    request.minPartialMovesForHeadingReAnchor = config.minPartialMovesForHeadingReAnchor;
+  MapFollow::Request request;
+  request.fixX = fixX;
+  request.fixY = fixY;
+  request.drawnX = markerDrawnX_;
+  request.drawnY = markerDrawnY_;
+  request.screenWidth = config_.screenWidth;
+  request.screenHeight = config_.screenHeight;
+  request.anchorHeadingStep = anchorHeading_;
+  request.fixHeadingStep = packet.headingStep;
+  request.partialMoves = partialMoves_;
+  request.partialMoveBudget = config_.partialMoveBudget;
+  request.routeHoldsFrame = false;  // ride mode, no route on any of these logs
+  request.headingDriftLimitSteps = config_.headingDriftLimitSteps;
+  request.minPartialMovesForHeadingReAnchor = config_.minPartialMovesForHeadingReAnchor;
 
-    const int packetIndex = static_cast<int>(i);
-    const int movesInBefore = static_cast<int>(partialMoves);
-    const uint8_t anchorHeadingAtDecision = anchorHeading;
+  const int movesInBefore = static_cast<int>(partialMoves_);
+  const uint8_t anchorHeadingAtDecision = anchorHeading_;
 
-    switch (MapFollow::decide(request)) {
-      case MapFollow::Action::Skip:
-        ++result.skips;
-        if (config.recordEvents) {
-          result.events.push_back({packetIndex, "skip", "", fixX, fixY, movesInBefore, anchorHeadingAtDecision});
-        }
-        break;
-      case MapFollow::Action::MoveMarker:
-        ++result.moves;
-        markerDrawnX = fixX;
-        markerDrawnY = fixY;
-        ++partialMoves;
-        if (config.recordEvents) {
-          result.events.push_back({packetIndex, "move", "", fixX, fixY, movesInBefore, anchorHeadingAtDecision});
-        }
-        break;
-      case MapFollow::Action::ReAnchor: {
-        ++result.reAnchors;
-        // Classified from the state decide() was asked with, before the reset.
-        const bool inside = MapFollow::insideKeepIn(fixX, fixY, config.screenWidth, config.screenHeight);
-        const char* reason;
-        if (!inside) {
-          ++result.keepInAnchors;
-          reason = "keep-in";
-        } else if (partialMoves >= config.partialMoveBudget) {
-          ++result.budgetAnchors;
-          reason = "budget";
-        } else {
-          ++result.headingAnchors;
-          result.headingMovesIn.push_back(static_cast<int>(partialMoves));
-          if (partialMoves <= 1) ++result.thrashAnchors;
-          reason = "heading";
-        }
-        if (config.recordEvents) {
-          // Post-reset position, not fixX/fixY: those are the fix projected
-          // through the *old* frame -- exactly the drift that triggered this
-          // reset, not where anything lands in the new one. After
-          // renderViewport() the marker is always back at (anchorX, markerY)
-          // with the fix's own heading as "up" (relative drift 0 by
-          // construction) -- record that, or a --track consumer draws the
-          // dot at a position that has nothing to do with the frame it just
-          // rendered (found by eye, 2026-08-08: the dot landed nowhere near
-          // the marker on every reanchor with more than a couple of moves in).
-          result.events.push_back(
-              {packetIndex, "reanchor", reason, anchorX, markerY, movesInBefore, packet.headingStep});
-        }
-        renderViewport(lat, lon, packet.headingStep);
-        break;
+  out.movesIn = movesInBefore;
+  out.anchorHeadingStep = anchorHeadingAtDecision;
+  // A fix drawn at (x, y) pointing (fixHeadingStep - anchorHeadingStep) steps
+  // off "up" is where the rider actually was and faced -- the frame is
+  // track-up, so the glyph carries only the difference.
+  out.markerHeadingStep = static_cast<uint8_t>((packet.headingStep - anchorHeadingAtDecision) & 0x0F);
+
+  switch (MapFollow::decide(request)) {
+    case MapFollow::Action::Skip:
+      ++result_.skips;
+      if (config_.recordEvents) {
+        result_.events.push_back({packetIndex, "skip", "", fixX, fixY, movesInBefore, anchorHeadingAtDecision});
       }
+      out.action = "skip";
+      out.x = markerDrawnX_;
+      out.y = markerDrawnY_;
+      break;
+    case MapFollow::Action::MoveMarker:
+      ++result_.moves;
+      markerDrawnX_ = fixX;
+      markerDrawnY_ = fixY;
+      ++partialMoves_;
+      if (config_.recordEvents) {
+        result_.events.push_back({packetIndex, "move", "", fixX, fixY, movesInBefore, anchorHeadingAtDecision});
+      }
+      out.action = "move";
+      out.x = fixX;
+      out.y = fixY;
+      break;
+    case MapFollow::Action::ReAnchor: {
+      ++result_.reAnchors;
+      // Classified from the state decide() was asked with, before the reset.
+      const bool inside = MapFollow::insideKeepIn(fixX, fixY, config_.screenWidth, config_.screenHeight);
+      const char* reason;
+      if (!inside) {
+        ++result_.keepInAnchors;
+        reason = "keep-in";
+      } else if (partialMoves_ >= config_.partialMoveBudget) {
+        ++result_.budgetAnchors;
+        reason = "budget";
+      } else {
+        ++result_.headingAnchors;
+        result_.headingMovesIn.push_back(static_cast<int>(partialMoves_));
+        if (partialMoves_ <= 1) ++result_.thrashAnchors;
+        reason = "heading";
+      }
+      if (config_.recordEvents) {
+        // Post-reset position, not fixX/fixY: those are the fix projected
+        // through the *old* frame -- exactly the drift that triggered this
+        // reset, not where anything lands in the new one. After
+        // renderViewport() the marker is always back at (anchorX, markerY)
+        // with the fix's own heading as "up" (relative drift 0 by
+        // construction) -- record that, or a --track consumer draws the
+        // dot at a position that has nothing to do with the frame it just
+        // rendered (found by eye, 2026-08-08: the dot landed nowhere near
+        // the marker on every reanchor with more than a couple of moves in).
+        result_.events.push_back(
+            {packetIndex, "reanchor", reason, anchorX_, markerY_, movesInBefore, packet.headingStep});
+      }
+      renderViewport(lat, lon, packet.headingStep);
+      out.action = "reanchor";
+      out.reason = reason;
+      out.x = anchorX_;
+      out.y = markerY_;
+      out.anchorHeadingStep = packet.headingStep;
+      out.markerHeadingStep = 0;  // track-up: after a reset the rider faces screen-up
+      out.frameChanged = true;
+      out.frameLat = lat;
+      out.frameLon = lon;
+      out.frameHeadingStep = packet.headingStep;
+      break;
     }
   }
 
-  return result;
+  return out;
+}
+
+Result replay(const std::vector<RideLog::Packet>& packets, const Config& config) {
+  Stepper stepper(config);
+  if (config.recordEvents) stepper.reserveEvents(packets.size());
+  for (const RideLog::Packet& packet : packets) stepper.step(packet);
+  return stepper.result();
 }
 
 }  // namespace ReplayEngine

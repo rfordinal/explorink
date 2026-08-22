@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 #include "MapFollow.h"
+#include "MapProjection.h"
 #include "RideLog.h"
 
 // MapActivity's follow state machine, on the host, around the real
@@ -97,6 +99,76 @@ struct Result {
   int thrashAnchors = 0;
   // Every packet's outcome, in order. Empty unless Config::recordEvents.
   std::vector<Event> events;
+};
+
+// The same state machine, one packet at a time, for a consumer that has to do
+// something between packets -- draw the frame (test/map_window), or wait for
+// the wall clock to catch up with the ride.
+//
+// `replay()` below is nothing but this class in a loop. That is deliberate:
+// there is one copy of MapActivity's follow state, so the hardware baseline in
+// hardware-baseline.txt gates the window exactly as it gates the summary. A
+// second implementation for the window would look right and drift.
+class Stepper {
+ public:
+  explicit Stepper(const Config& config);
+
+  // What this packet did, plus what a consumer needs to draw it.
+  struct Step {
+    // "init" | "skip" | "move" | "reanchor" -- same strings as Event::action.
+    const char* action = "";
+    // "" for init/skip/move; "heading" | "budget" | "keep-in" for reanchor.
+    const char* reason = "";
+    // Where the marker is now. For a reanchor this is the post-reset anchor,
+    // not the fix projected through the frame that was just thrown away --
+    // same choice, and same reason, as Event's x/y.
+    int16_t x = 0;
+    int16_t y = 0;
+    // partialMoves at decision time, before any reset.
+    int movesIn = 0;
+    // The heading "up" meant on screen when this was decided.
+    uint8_t anchorHeadingStep = 0;
+    // Which way the marker glyph points now: the fix's heading relative to the
+    // frame's, which is 0 on a reanchor by construction.
+    uint8_t markerHeadingStep = 0;
+    // Set on init and reanchor: the whole picture changed, and these three are
+    // the view to render. Clear on skip and move -- the frame still stands.
+    bool frameChanged = false;
+    double frameLat = 0.0;
+    double frameLon = 0.0;
+    uint8_t frameHeadingStep = 0;
+  };
+
+  Step step(const RideLog::Packet& packet);
+
+  // Counts so far. Complete only once every packet has been stepped.
+  const Result& result() const { return result_; }
+
+  // Only worth calling when Config::recordEvents is set and the packet count is
+  // known up front -- replay() does, a live window does not.
+  void reserveEvents(std::size_t packets);
+
+ private:
+  void renderViewport(double lat, double lon, uint8_t headingStep);
+
+  Config config_;
+  Result result_;
+
+  // MapActivity's follow state (MapActivity.h's proj_, anchorHeading_,
+  // markerDrawnX_/Y_, partialMoves_).
+  MapProjection proj_;
+  bool viewportDrawn_ = false;
+  uint8_t anchorHeading_ = 0;
+  int16_t markerDrawnX_ = 0;
+  int16_t markerDrawnY_ = 0;
+  uint16_t partialMoves_ = 0;
+
+  // Off the ladders, not off a literal -- MapActivity.cpp:1830 and
+  // MapViewport.h:kAnchorScreenX, which reads the compiled style.
+  int16_t markerY_ = 0;
+  int16_t anchorX_ = 0;
+
+  int packetIndex_ = 0;
 };
 
 Result replay(const std::vector<RideLog::Packet>& packets, const Config& config);
