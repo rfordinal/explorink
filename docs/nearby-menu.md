@@ -314,6 +314,25 @@ draws, so panning in Observe and a pin's `Show` did it too. Nearby made it easy
 to reach because `View on map` re-anchors kilometres away.
 `map-observation-mode.md`, "The pan target is not the rider", has the chain.
 
+**Measured on hardware 2026-08-22, after the crc split and the window bound:**
+
+```
+nearby: 6 shard(s) read, 0 missing, 0 corrupt, 78880 bytes
+nearby layer mask 0x000a
+```
+
+- One press of `Nearby` reads **78.9 kB** off the card for six shards, down from
+  201,994 bytes before the split. The remainder is the record arrays and the
+  headers; no name pool and no crc pass.
+- No `full refresh instead` line in the whole session, so the 4 kB window margin
+  leaves the cheap menu close cheap while still refusing the 48 kB full-panel
+  window that aborted the device.
+- Free heap on the map screen 47.6 kB, largest block 45.0 kB, and `Min Free`
+  14,684 bytes -- which is the menu-close window's own 33,733-byte buffer and is
+  now a deliberate, checked transient rather than a coin flip.
+- The layer mask reached 0x000a (water and huts), so `Show on map` and
+  `View on map` do set their bits.
+
 **Verified on hardware 2026-08-21:** the header readout. With a destination set
 it read `SE 5.2 km` in the place-name slot, matching the destination pin's own
 edge marker to the same 0.1 km step.
