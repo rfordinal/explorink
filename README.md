@@ -255,6 +255,13 @@ block's asset pipeline (two generator scripts, one traced SVG), the seven rows
 and why three of them draw dimmed, and how a row is dimmed on a panel with no
 grey. Verified on the X4 2026-08-21; input handling still untested.
 
+[`docs/eink-refresh-degradation.md`](./docs/eink-refresh-degradation.md) is why
+the panel came back pale on a long hot ride (X4, 2026-08-22): the map cleans the
+panel on its entry frame and never again, `Ssd1677Driver` has no ghost-clear
+counter, and the one clean it does have is deliberately under-driven. Ranked
+suspects, proposed fixes, and what would settle each -- all unmeasured, the
+device was lost on that ride.
+
 ## Credits
 
 **This project exists because of

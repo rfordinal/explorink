@@ -134,6 +134,17 @@ a fixed cost and area does not enter into it** (measured over two ride replays,
 `map-follow.md`). So the thing to minimise is the number of refreshes, never
 their size.
 
+## The map never asks for a clean after entry
+
+Everything above is about picking the right mode per frame. There is a separate
+hole: **nothing promotes a `FAST` back to a `HALF` over time.** `MapActivity`
+cleans on its entry frame and then runs DU forever
+(`MapActivity.cpp:4511`/`:4553`), and `Ssd1677Driver` has no
+`ghostClearInterval` counter, unlike the IT8951 and Murphy drivers
+(`It8951Driver.cpp:66`). A long ride is thousands of DU refreshes with zero
+cleans. A field report of a pale, half-driven panel after a hot ride, the heat
+story on top of it, and what would settle each: `eink-refresh-degradation.md`.
+
 ## Status
 
 Sequence numbers, promotion rules and which caller uses what: **read off the
