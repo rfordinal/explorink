@@ -73,7 +73,7 @@ decides how much of a slope is the discharge curve rather than the load).
 | Map, connected, fix/10 s | X4 | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **provisional** -- 25 mV of movement is real, but the mA conversion is not (see below) |
 | Map, advertising, no phone | X4 | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **not trustworthy** -- 4 mV of movement, four ADC counts; a repeat at 4046 mV read 5.3 |
 | Home, nothing running | X4 | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
-| **Map in observation mode, radio off** | X4 | **down** | **10** | -- | -- | -- | `b8b11535` on `develop`, flashed 2026-08-21 | never run | **[open]** -- M16, and the night run to spend first |
+| **Map in observation mode, radio off** | X4 | **down** | **10** | **12.27 +/- 0.18** | see note | 2026-08-22 | `0b99e70e` | 4151-4047 mV, **6 h 15 min** | **[measured]**, and the only row here taken across a wide enough band to trust: 104 mV of movement, 1.5 % error. **1.76 %/h, 56.8 h on a charge.** |
 | Tile sync, transfer running | X4 | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
 | Light sleep, radio up | X4 | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
 | Deep sleep, latch held | X4 | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
@@ -98,6 +98,12 @@ The "same build?" column is the one to read first. Only the third row compares
 two states of **one binary on one boot**, which is the whole reason the power lab
 screen exists (`power-idle-sleep.md`, "The power lab screen"): the other two rows
 difference two firmwares and call the remainder a feature.
+
+> **The mA column is the weak one, and run 5 shows why.** Its 12.27 mV/h converts
+> to 9.0 mA through run 2's calibration pair and to 11.4 mA through the pack
+> percentage -- two routes off the same ADC reading, 25 % apart. Percent per hour
+> needs no capacity assumption and no conversion at all, so **prefer %/h for
+> anything quoted** (`power-plan.md`, "Endurance without the 650 mAh assumption").
 
 **Against the target.** The campaign wants 9.0 mA parked (`power-plan.md`, "The
 target"). The advertising leg read ~7.7 mA, which would mean route A had met the
