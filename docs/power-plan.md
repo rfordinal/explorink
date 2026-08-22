@@ -868,6 +868,75 @@ because that is the only device this campaign has ever run on.
 | 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 20 min | 4044 | 4042 | 5.3 | Run 4 leg 3. Reads *above* leg 2, which cannot be true. |
 | 2026-08-21 | X4 | `55c9ed26` | 1 (Home, 10 MHz) | 43 min | 4045 | 4043 | 3.5 | Run 4 leg 4. 2 mV of movement. |
 | 2026-08-21 | X4 | `55c9ed26` | WiFi (web server) | 6 min | 4022 | 4020 | -- | Run 4 leg 5. Too short to fit; `loop_busy` 98.7 %, full clock 100 %. |
+| 2026-08-22 | X4 | `0b99e70e` | Observe, radio off, 10 MHz | 6 h 15 min | 4151 | 4047 | **12.27 +/- 0.18** | Run 5. 104 mV of movement -- the first well-resolved state. 1.76 %/h, 56.8 h on a charge. |
+
+### Run 5 -- 2026-08-22, Observe with the radio off: the first well-resolved state
+
+Evidence: `docs/power-runs/run5-2026-08-22.csv` (parent repo). **Device: X4.**
+Build `0.1.0-dev-nearby-points-0b99e70e` -- not the build this run was planned
+against; another session flashed the device before it started (its lock said
+"Nearby hardware test"), which the `build` column caught. The state under test is
+present in that build regardless, and the run is one boot with no reboot in it.
+
+**6.25 h in one state, `ble=0` and `cpu_mhz=10` from 62 s to 22630 s**, 4151 ->
+4047 mV. That is Observe mode with `BlePositionServer::end()` called, so the
+controller is disabled and `lowPowerFloorMhz()` returns `LOW_POWER_FREQ`
+**[measured]** -- and it is also the first hardware evidence that the
+Observe-BLE-off feature (`b8b11535`, committed "untested on hardware") survives
+six hours.
+
+**Slope: 12.27 +/- 0.18 mV/h**, across 104 mV of movement. The error is 1.5 %,
+which is what this instrument looks like when it is used inside its limits.
+
+**And the run settles the methodology question by accident.** The load was
+constant all night, so any change in the hourly slope is the curve and not the
+device:
+
+| Hour | Band | mV/h |
+|---|---|---|
+| 0 | 4151-4110 | 38.12 |
+| 1 | 4108-4089 | 22.97 |
+| 2 | 4090-4083 | **6.25** |
+| 3 | 4080-4069 | 14.84 |
+| 4 | 4070-4063 | 6.61 |
+| 5 | 4062-4050 | 11.10 |
+| 6 | 4053-4047 | 9.88 |
+
+Hours 0-1 are relaxation off the charger, as expected. **Hours 2-6 still swing
++/- 40 % around ten**, at one hour each, with nothing changing but where the pack
+sits. So the rule is not "avoid the plateau" or "use 30-minute legs", it is:
+
+> **A slope is worth quoting when the run spans about 100 mV. Anything shorter is
+> reading the curve.** At ~12 mV/h that is six hours. This is the empirical form of
+> "The plateau problem" above, and it supersedes every leg-length table on this
+> page.
+
+### Endurance without the 650 mAh assumption
+
+Percent per hour needs no capacity number, and the three long runs are directly
+comparable because each spans a wide band:
+
+| Run | State | %/h | One charge |
+|---|---|---|---|
+| 1 | connected, 160 MHz, no modem sleep | 6.83 | 14.6 h |
+| 2 | connected, 160 MHz, modem sleep | 3.94 | 25.4 h |
+| **5** | **Observe, radio off, 10 MHz** | **1.76** | **56.8 h (2.4 d)** |
+
+**Observe mode is 2.2x cheaper than the riding case and 3.9x cheaper than where
+this campaign started.** It is the cheapest state ever measured on this hardware,
+and the prediction made for it holds. What it is not is three days: 56.8 h with
+the map up and nothing happening.
+
+Against the hike scenario (24 h walking, 48 h stopped):
+
+- walking at run 2's rate: 24 h x 3.94 = **94.5 %**
+- stopped in Observe: 48 h x 1.76 = **84.5 %**
+- **total 179 % of one charge, so one charge covers 40 h -- 1.7 days.**
+
+A **2x** improvement across the board reaches 3.4 days; **3x** reaches 5. So the
+target is not a rounding error away, and it is not out of reach either -- and
+because the stopped half is already the cheaper one, the walking half is where the
+next factor has to come from. Light sleep with the link up, i.e. experiment 3.
 
 ### Run 4 -- 2026-08-21, the five legs that showed the instrument's limit
 
