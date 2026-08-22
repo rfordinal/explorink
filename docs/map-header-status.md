@@ -221,18 +221,27 @@ same rule one step further: show the tens, withhold the units.
 
 Three candidates, all from the maintainer:
 
-| Form | Reads as |
-|---|---|
-| `12:5_` | this digit is withheld |
-| `12:5?` | this digit is unknown |
-| `12:5*` | see a footnote that is not there |
+| Form | Reads as | Verdict |
+|---|---|---|
+| `12:5_` | this digit is withheld | **rejected on the panel** -- see below |
+| `12:5?` | this digit is unknown | rejected on paper: reads as an error |
+| `12:5*` | a mark holding the digit's place | **shipped** |
 
-**Shipped with `_`.** It reads as a placeholder rather than as an error, and `?`
-and `*` both carry a "something is wrong" tone that a deliberately coarse clock
-should not. **The risk against it is unresolved:** at `SMALL_FONT_ID` on e-ink an
-underscore can read as a missing glyph or as part of a frame line, and that can
-only be judged on the panel. If it does, the change to make is the glyph, not the
-cadence.
+**`_` was tried first and failed on the device, 2026-08-22.** At
+`SMALL_FONT_ID` an underscore sits on the baseline and simply does not read: the
+panel showed `8:0_` and it looked like **`8:0`**, which the maintainer described
+as a football score rather than a clock. That was the risk written down before the
+flash, and it turned out to be the real one.
+
+**`*` shipped instead.** It occupies the digit's slot and is roughly round, so the
+`hh:mm` shape survives being one glyph short. Note what to watch when judging it:
+an asterisk sits high in the em box in most fonts, closer to a superscript, so it
+can read as a stray dot above the baseline rather than as a character in the slot.
+
+**If `*` reads badly too, the next thing to try is not another mark** but
+`~8:00` -- a normal-looking time with an explicit "approximately". It costs the
+principle a little (it does name a minute) while staying honest about the
+precision, and it cannot be mistaken for a missing glyph.
 
 **What a hardware pass has to check:** that `12:5_` is legible and does not read
 as a broken glyph, that the string fits its right-aligned slot (it is narrower

@@ -1587,9 +1587,16 @@ void MapActivity::drawHeaderStatusStrip() {
     const uint32_t secondsOfDay = localNow % 86400u;
     char clockText[6];
     if (clockIsCoarse()) {
-      // "12:5_": the tens of minutes, then a withheld digit. Not "12:50",
-      // which would claim a minute it does not have.
-      snprintf(clockText, sizeof(clockText), "%u:%u_", static_cast<unsigned>(secondsOfDay / 3600u),
+      // "12:5*": the tens of minutes, then a mark standing in for the withheld
+      // digit. Not "12:50", which would claim a minute it does not have.
+      //
+      // The mark was '_' first. **Judged on the panel 2026-08-22 and rejected**:
+      // an underscore at SMALL_FONT_ID is invisible against the baseline, so
+      // "8:0_" read as "8:0" -- which the maintainer described as looking like a
+      // football score rather than a clock. '*' fills the digit's slot and is
+      // roughly round, so the hh:mm shape survives. '?' was ruled out on paper
+      // for reading as an error rather than as a withheld digit.
+      snprintf(clockText, sizeof(clockText), "%u:%u*", static_cast<unsigned>(secondsOfDay / 3600u),
                static_cast<unsigned>((secondsOfDay % 3600u) / 60u / kClockCoarseMinutes));
     } else {
       snprintf(clockText, sizeof(clockText), "%u:%02u", static_cast<unsigned>(secondsOfDay / 3600u),
