@@ -141,6 +141,28 @@ class Stepper {
 
   Step step(const RideLog::Packet& packet);
 
+  // A viewport reset the rider asked for rather than one decide() called for:
+  // a ladder step, a mode switch, a Refresh (MapActivity.h, "A viewport reset").
+  // Re-anchors on the last fix and zeroes the partial-move budget, exactly what
+  // renderViewport() does when a menu action triggers it.
+  //
+  // Deliberately NOT counted in Result: that structure mirrors what the device
+  // logs and what hardware-baseline.txt gates, and those are decisions. A
+  // consumer that cares about panel cost counts this itself -- it is a full
+  // refresh like any other.
+  //
+  // False before the first packet: there is no fix to re-anchor on yet.
+  bool reAnchorOnLastFix(Step& out);
+
+  // A ladder step. Changes what the next frame is projected at; the caller is
+  // expected to follow it with reAnchorOnLastFix(), same as the device, where a
+  // step is a full-screen refresh (MapRideMode.h).
+  void setZoomStep(int zoomStep);
+
+  // The marker ladder's rung, i.e. the anchor row. A mode switch moves this on
+  // the device too (kDefaultMarkerStepForMode), and each mode remembers its own.
+  void setMarkerStep(int markerStep);
+
   // Counts so far. Complete only once every packet has been stepped.
   const Result& result() const { return result_; }
 
@@ -167,6 +189,13 @@ class Stepper {
   // MapViewport.h:kAnchorScreenX, which reads the compiled style.
   int16_t markerY_ = 0;
   int16_t anchorX_ = 0;
+
+  // The last fix stepped, rounded exactly as step() rounds it. What a
+  // rider-requested reset re-anchors on -- the device has no other position to
+  // use either.
+  double lastLat_ = 0.0;
+  double lastLon_ = 0.0;
+  uint8_t lastHeadingStep_ = 0;
 
   int packetIndex_ = 0;
 };

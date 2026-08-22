@@ -44,6 +44,9 @@ Stepper::Step Stepper::step(const RideLog::Packet& packet) {
 
   const double lat = static_cast<double>(toE7(packet.lat, config_.coordDecimals)) / 1e7;
   const double lon = static_cast<double>(toE7(packet.lon, config_.coordDecimals)) / 1e7;
+  lastLat_ = lat;
+  lastLon_ = lon;
+  lastHeadingStep_ = packet.headingStep;
 
   Step out;
 
@@ -169,6 +172,30 @@ Stepper::Step Stepper::step(const RideLog::Packet& packet) {
   }
 
   return out;
+}
+
+bool Stepper::reAnchorOnLastFix(Step& out) {
+  if (!viewportDrawn_) return false;
+  renderViewport(lastLat_, lastLon_, lastHeadingStep_);
+  out = Step{};
+  out.action = "reanchor";
+  out.reason = "menu";
+  out.x = anchorX_;
+  out.y = markerY_;
+  out.anchorHeadingStep = lastHeadingStep_;
+  out.markerHeadingStep = 0;  // track-up: after a reset the rider faces screen-up
+  out.frameChanged = true;
+  out.frameLat = lastLat_;
+  out.frameLon = lastLon_;
+  out.frameHeadingStep = lastHeadingStep_;
+  return true;
+}
+
+void Stepper::setZoomStep(int zoomStep) { config_.zoomStep = zoomStep; }
+
+void Stepper::setMarkerStep(int markerStep) {
+  config_.markerStep = markerStep;
+  markerY_ = MapViewport::markerYForStep(markerStep);
 }
 
 Result replay(const std::vector<RideLog::Packet>& packets, const Config& config) {
