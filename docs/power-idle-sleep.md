@@ -239,7 +239,16 @@ now:
 ## S2's missing half: parking our own loop
 
 The 2.3 mA figure is the floor of a firmware whose **CPU is idle**. Ours is not: the
-main loop runs at roughly 100 Hz and every tick does a little work. Turning on light
+main loop runs at roughly 100 Hz and every tick does a little work.
+
+> **Corrected 2026-08-21.** 100 Hz is the *full-clock* rate. `src/main.cpp:958-963`
+> already takes `delay(50)` once the throttle deadline has passed, so an idle map
+> screen ticks at **20 Hz**, and run 3 measured exactly that on every map phase
+> (`power-plan.md`, run 3) **[measured]**. Half of this section's premise is
+> therefore already shipped: the cadence does grow when the device parks. What is
+> *not* shipped is the rest -- the per-tick work still happens on every one of
+> those 20 ticks, and nothing gates the ADC ladder, the two console polls or
+> `updateHeaderStatus()`. Read the sizing below against 20 Hz, not 100. Turning on light
 sleep without addressing that buys a fraction of what the number promises. This
 section is that design work. **Nothing here is built or measured.**
 
@@ -333,7 +342,14 @@ this file.
    parked or not, queued work, transfer active, recent user input -- so it belongs in
    a function with no hardware in it, and a host test pins the table of expected
    answers. That is the only guard that fires at **CI time**, before a build reaches a
-   device.
+   device. **Written 2026-08-21 on branch `power-lab`, not merged** (the code waits
+   for a hardware pass): `src/ParkedLoopPolicy.h`, nine cases in
+   `test/parked_loop_policy/ParkedLoopPolicyTest.cpp`. Two things it deliberately does
+   not do. It does not pick the parked cadence -- both values default to today's 10 ms,
+   so taking the header changes no behaviour, and experiment 3's residency number is
+   what replaces the placeholder. And nothing calls it yet: wiring it into `main.cpp`'s
+   `delay(10)` only pays under `CONFIG_PM_ENABLE`, because a `delay()` with PM off is a
+   busy wait at full clock.
 3. **A field tripwire in `power.csv`, from columns that already exist.** `loops` is
    logged per row today, and the parked state is going in as a new column for the lab
    screen. The invariant is then checkable by a script over any run: **while parked,
@@ -348,6 +364,77 @@ this file.
 
 Items 1 and 2 are the ones that actually guard. Items 3 and 4 catch what slips
 through. Item 5 catches what a careful author would have caught anyway.
+
+## Can Observe go lower? Four levers, and the one unknown that could void them all
+
+**Written 2026-08-22 from run 5's counters** (`power-plan.md`, run 5): 6.25 h of
+Observe with the radio off on **X4**, at 1.76 %/h. The CPU is not idle in that
+state, and the counters say exactly how much it is not:
+
+| Counter | Over the run | Reading |
+|---|---|---|
+| `loops` | 18.5 Hz, 53.9 ms period | `delay(50)` plus ~4 ms of work |
+| `loop_busy_ms` | **6.61 %** of wall | **3.567 ms of work per iteration** |
+| `panel_busy_ms` | 0.94 % | **376 windowed refreshes, exactly 60/h** |
+| `throttled_ms` | 99.89 % | the 10 MHz floor held all night |
+| `full_clock_ms` | 0.11 % | 24 s of full clock in six hours |
+
+**The once-a-minute redraw is the header clock**, and it is deliberate:
+`minuteMoved` in `updateHeaderStatus()` has no rate cap of its own because "a
+minute *is* the cap", and its comment names this exact case -- *"the one condition
+that fires while nothing else on the device is happening"*
+(`src/activities/map/MapActivity.cpp:1268-1279`) **[repo]**. The battery indicator
+rides the same tick. Yesterday's explanation for a per-minute repaint was RSSI bar
+churn; that one cannot apply here, because the radio is off.
+
+### The four levers, cheapest first
+
+1. **Light sleep, and Observe is the safest place in the campaign to try it.**
+   93 % of the wall clock is `delay(50)`, which with `CONFIG_PM_ENABLE` unset is a
+   `vTaskDelay` onto an idle task that spins at 10 MHz. Turning PM on is
+   experiment 3 -- but every landmine in that experiment is a radio landmine: the
+   APB drop, the `CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP` flag, the
+   controller's compiled-out PM locks ("Why 10 MHz breaks BLE" in
+   `power-management.md`). **In Observe the controller is disabled**, so none of
+   them apply. The residual risks are the SPI panel and the SD card under DFS, and
+   in this state both are exercised once a minute rather than continuously. This is
+   the mildest possible first test of route B.
+2. **Gate the ADC button ladder.** 3.567 ms per iteration at 10 MHz, most of it
+   two `analogRead()` calls (`InputManager::getState()`). At 160 MHz the same work
+   is around 0.2 ms, so the 10 MHz floor makes per-tick work 16x more expensive in
+   wall time -- the one place where the cheap clock costs something back.
+3. **Grow the parked cadence, 50 -> 250 ms.** Five times fewer wake-ups, so five
+   times less of lever 2. Observe is the natural first consumer
+   (`src/ParkedLoopPolicy.h`): it holds no link, so the only ceiling is button
+   latency, and the ladder is polled rather than interrupt-driven, which makes the
+   cadence *equal* to the worst-case latency.
+4. **Slow the clock repaint in Observe.** 60 refreshes an hour at ~562 ms of panel
+   time each is 9.4 s/h. A rider panning the map is looking at it; a device left in
+   Observe for six hours is not. **Proposal on the table (2026-08-22): a
+   ten-minute cadence with the units digit masked -- `12:5_` -- plus an exact
+   repaint on any button press.** Design, the glyph candidates and the open
+   questions: `map-header-status.md`, "Proposed: a coarse clock in Observe". Note
+   this lever is panel energy only: these repaints never lift the clock, so there
+   is no CPU term in it, and what the panel spends per windowed refresh is
+   **[open]**.
+
+### The unknown that could void all four
+
+**How much of 1.76 %/h is the board's own floor?** The regulator's quiescent
+draw, the SD card sitting powered, the panel controller idle -- none of it is
+measured, and `power-management.md`, "The board's own floor is unpriced", says it
+bounds every sleep state. If the floor is most of that 1.76, all four levers
+together buy a few percent and the work is misdirected.
+
+So run 5 is not only the cheapest state measured, it is **the tightest upper bound
+on the board floor that exists**: whatever the floor is, it is below 1.76 %/h. Two
+ways to squeeze that bound, and one needs no purchase:
+
+- **Experiment 1**, a meter at the cell, which prices the floor directly -- and on
+  X4 means opening the device.
+- **Lever 1 on its own.** Whatever Observe reaches with light sleep on becomes the
+  new upper bound, for the cost of one build and one night. If it barely moves, the
+  floor is the answer and experiment 1 becomes the only remaining question.
 
 ## The power lab screen
 
@@ -409,6 +496,35 @@ notes), and the field revision that does not self-latch
 
 One cost: a lab screen that brings up BLE pays the same 57 KB of heap the map
 does, so check the heap after adding it.
+
+**Written 2026-08-21 as `src/activities/power/PowerLabActivity.{h,cpp}` on branch
+`power-lab`, not merged and never entered on a device**, in its own `env:powerlab` (not in `default`, not in the gitignored
+`platformio.local.ini` -- the frozen baseline has to be rebuildable from git,
+`power-plan.md` condition 2). Four states, each one an open question of this
+campaign:
+
+| Label | Radio | Clock | What it prices |
+|---|---|---|---|
+| `idle-160` | down | 160 | the full-clock floor with nothing running |
+| `idle-10` | down | 10 | the 10 MHz floor, legal only with BLE down |
+| `radio-160` | up | 160 | what the map screen does today |
+| `radio-80` | up | 80 | **route A's floor, built and never measured** |
+
+`radio-80` is free and new: `HalPowerManager::lowPowerFloorMhz()` asks the BT
+controller and returns `BLE_SAFE_FREQ` = 80 MHz whenever it is enabled
+(`lib/hal/HalPowerManager.cpp:18-27`, `lib/hal/HalPowerManager.h:49`), so the
+state is safe by construction rather than by anyone remembering the rule.
+
+Reachable only over the console -- no Home row, on purpose -- as
+`CMD:GOTO_POWERLAB` or `CMD:POWERLAB_STATE <label>`. The second one exists
+because **a button press is itself a change to the measurement**: it restores
+the full clock and resets the inactivity timer (`src/main.cpp:836`). The bench
+sends the state in the ~3 s full-clock window after reset, then USB comes out.
+
+Not built: the deep-sleep-with-the-latch-held state. That is experiment 1, it
+needs a meter to be worth entering, and its safety rules carry a real brownout
+risk on the non-self-latching field revision -- a separate piece of work rather
+than a fifth row on a screen that otherwise cannot hurt anything.
 
 **One binary, many states.** Selecting the state at runtime is the whole point: the
 binary stays bit-identical across a comparison, so what the meter sees is the state

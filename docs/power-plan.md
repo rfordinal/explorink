@@ -55,6 +55,73 @@ spend asleep**. Today the answer is none of it.
 Marketing wants this number too, so it has to survive being quoted. Nothing goes
 on the public site until a real 72-hour run has happened on hardware.
 
+### The scenario the 72 hours has to hold for (defined 2026-08-21)
+
+The number above had no scenario attached, which made it unfalsifiable: 72 hours
+of a map nobody looks at and nothing updates is not the claim. The maintainer's
+definition, and from here the one the campaign is measured against:
+
+**A multi-day hike. The map stays open at an economical rung. The phone sends
+position while the rider walks and stops sending when they stop. The map redraws
+only when the position actually moved. The rider glances at it now and then.**
+
+So the day splits into two states, and the split is what decides the budget:
+
+| | Hours over 3 days | What runs |
+|---|---|---|
+| **Walking** | ~24 h (8 h/day) | link up, fixes arriving, marker moves, occasional viewport reset |
+| **Stopped** (camp, breaks, sleep) | ~48 h | link up but silent -- `SendPolicy.MOVE_THRESHOLD_M` = 50 m means a stationary phone sends nothing but the hourly keepalive |
+
+Budget, on 650 mAh spec at 85 % usable (**552 mAh**, and both of those numbers
+are assumptions, not measurements): **7.67 mA average**. Then:
+
+| Scenario | Walking | Stopped | Needs for 72 h | Lasts |
+|---|---|---|---|---|
+| Today, measured | 18.7 | 7.7 | 818 mAh | **48.6 h (2.0 d)** |
+| Light sleep at camp only | 18.7 | 3.3 | 607 mAh | 65.5 h (2.7 d) |
+| Light sleep in **both** states | 9.0 | 3.3 | 374 mAh | **106 h (4.4 d)** |
+
+(Walking and stopped figures for row 1 are run 3's two measured legs; rows 2-3
+use S2's predicted 2.3 mA plus a 1 mA board floor **[assumed]** and, for row 3, a
+walking figure light sleep would have to deliver.)
+
+**The conclusion is sharper than the old "factor of 5" framing.** Today's device
+does **two days**, not one fifth of three. And light sleep *only while parked*
+still does not reach three days -- 2.7 -- because 24 walking hours at 18.7 mA is
+449 mAh, more than 80 % of the whole budget on its own. **So the 72 hours is
+decided by whether light sleep works with the link up and fixes arriving**, not
+by whether it works when nothing is happening. That is precisely experiment 3's
+question, which makes it the single most valuable run in the campaign rather than
+merely the first one.
+
+**What the rung choice is worth, quantified.** The maintainer's instinct was that
+a far rung is the economical one. Half right, and the ladder says which half
+(`src/activities/map/MapViewport.h:118-127`, the `minMove` column) **[repo]**:
+
+| Rung | m/px | `minMove` px | Metres per marker redraw |
+|---|---|---|---|
+| 0 | 1 | 12 | 12 m |
+| 2 | 6 | 8 | 48 m |
+| 3 | 12 | 8 | 96 m |
+| 4 | 20 | 6 | 120 m |
+| 6 | 45 | 2 | 90 m |
+
+Marker redraws **saturate around rung 3-4** -- `minMove` shrinks as the rung
+widens, so zooming further out past 12 m/px buys nothing there. And the phone
+does not send under 50 m anyway, so at close rungs the phone's gate decides and
+at far rungs the device's does. Where a far rung really pays is the **viewport
+reset**: the marker only recentres when it reaches `kKeepInMarginPx` = 80 px of
+the edge (`MapFollow.h:34`), which is roughly 3 km of walking at rung 4 and 7 km
+at rung 6, against a few hundred metres at rung 0. A reset is the expensive one
+-- tile reads off SD and `kickFullClock()` to 160 MHz -- so its rate is the term
+a rung choice actually moves. **What one reset costs is [open]**, and it is
+cheap to measure now that the scoreboard has a baseline to difference against.
+
+A marker window, by contrast, is **~0.5 s of panel time** (run 3: 57 s/h across
+113 refreshes/h **[measured]**), so 33 of them an hour is a 0.5 % duty cycle. The
+panel current during a refresh is **[open]**, but for this to matter at all it
+would have to be enormous.
+
 ## Status, 2026-08-16
 
 - **First optimisation measured, and it works.** BLE modem sleep cuts the draw
@@ -436,6 +503,125 @@ Per interval, from two rows of `power.csv`:
   the same time. If it does not, one of the two instruments is wrong and that
   is the first bug to fix.
 
+### How long a run has to be, derived from the noise instead of guessed
+
+**Re-analysis of run 1 and run 2, 2026-08-21, laptop only.** The tool is
+`tools/powercsv.py` in the parent repo: it splits a downloaded `power.csv` on
+boot, build, radio state, lost-row gap and voltage rise, fits each segment and
+reports the fit's own uncertainty.
+
+The row-to-row noise is **small**. Median residual after a linear fit is
+**1.0 mV** across run 2's segments, against a 1 mV ADC step; run 1's median is
+4.2 mV, and run 1 is the contaminated one (a car drive, panel activity swinging
+by 4x between segments). So the instrument is not what limits a short run.
+
+For rows at a fixed interval, the OLS slope uncertainty is
+`sigma * sqrt(12 * interval / T) / T`, so the run length needed to resolve a
+slope difference `d` at two sigma is `T = (2 * sigma * sqrt(12 * interval) / d)^(2/3)`.
+At run 2's 1.0 mV and 60 s rows:
+
+| Difference to resolve | Run length |
+|---|---|
+| 20 mV/h | 0.1 h |
+| 10 mV/h | 0.2 h |
+| 5 mV/h | 0.3 h |
+| 2 mV/h | 0.6 h |
+| 1 mV/h | 0.9 h |
+
+Run 2 measured 32.6 mV/h at a nominal 24 mA, so 5 mV/h is roughly 3.7 mA, and
+the table above suggests a 30-minute leg prices a 4 mA change.
+
+> **Refuted the same day, 2026-08-21, by trying it.** The formula above is right
+> about the *residual* and wrong about the *instrument*, because it assumes the
+> only error is Gaussian noise. It is not: the ADC step is **1 mV**, one row a
+> minute, so what a short leg actually resolves is set by how many whole counts
+> the voltage moves. Four afternoon legs in the 4046-4042 mV plateau moved
+> **1-2 mV in 18-43 minutes**, and came out ordered impossibly -- connected with
+> a fix every 10 s read *lower* than advertising. The differences were counting
+> noise.
+>
+> The honest table, at 1 mV per count and asking for five counts of movement:
+>
+> | Difference to see | Leg length |
+> |---|---|
+> | 8 mA | 27 min |
+> | 4 mA | 55 min |
+> | 2 mA | 109 min |
+> | 1 mA | 219 min |
+>
+> **And the required length grows as the draw falls**, because a cheap state
+> moves the voltage slowly -- exactly backwards from what the campaign needs, since
+> every remaining question is about states drawing under 10 mA. See "The plateau
+> problem" below.
+
+### Voltage slope is not a property of the state -- it is a property of the charge
+
+**The reason every comparison so far was shaky.** Same build, same state, one
+run: the slope moves 5x as the pack empties.
+
+| Start voltage | Slope |
+|---|---|
+| 3.90 V | 25.6 mV/h |
+| 3.69 V | 109.1 mV/h |
+| 3.43 V | 138.1 mV/h |
+
+(run 1, `docs/power-runs/run1-2026-08-15.csv`, segments read by
+`tools/powercsv.py` **[measured]**.) The discharge curve is flat in the middle
+and steep at the ends, so mV/h says as much about where the pack is as about
+what the firmware did. Constraint 4 asked for comparable start voltages; this
+is the quantity that makes it non-negotiable.
+
+Two consequences for the run shape:
+
+- **Compare states as A-B-A, not A then B.** Three short legs, the second
+  state bracketed by the first, cancels the drift along the curve. Two legs
+  at different voltages do not, whatever their length.
+- **The first half hour after unplugging is not a measurement.** Right off the
+  charger the apparent slope is **128-160 mV/h even at throttled idle with the
+  panel doing nothing** (run 1 segment at 4217 mV, run 2 segment at 4210 mV),
+  which is surface-charge relaxation and not draw. The methodology's "rest
+  ~10 minutes" is too short; discard 30 minutes. **Every mode change that reboots
+  the device does the same thing on a smaller scale**: removing the load lets the
+  pack recover, and 2026-08-21's post-reboot leg read 32.6 mV/h against 5.3 for
+  the same state twenty minutes later.
+- **Drop the boundary row.** A row written across a mode change carries the new
+  mode's load, not the leg's. One such row turned a 2 mV drift into an apparent
+  23 mV collapse on 2026-08-21's Home leg, which is a 10x error from a single
+  sample.
+
+### The plateau problem, and why the meter stopped being optional
+
+**Established 2026-08-21.** Two facts, together, bound what this instrument can
+ever do:
+
+1. **The curve, not the load, sets the slope.** The same firmware in the same
+   state read **25.6 mV/h at 4093-4068 mV** and **3.1 mV/h at 4046-4044 mV**, 90
+   minutes apart. Both are correct readings of `batt_mv`; neither is a reading of
+   power. Inside the plateau the pack barely moves whatever the device does.
+2. **A slope only converts to mA through the local dV/dQ**, and nobody has
+   measured that curve. Every mA in this campaign is scaled from run 2's single
+   pair (32.9 mV/h against 24.0 mA) as if the relation were global. Fact 1 says
+   it is not.
+
+So the mV slope works for **long runs across a wide band** -- run 1 and run 2
+traverse enough of the curve to average it, which is why their numbers held up --
+and it does **not** work for comparing two states inside the plateau, which is
+every question the campaign has left.
+
+Two ways out, and only one is cheap:
+
+- **Rapid alternation.** Switch A/B/A/B every 25-30 minutes for many cycles
+  rather than running two long legs. The curve term is smooth and slow; the state
+  term flips with a known schedule, so differencing across many alternations
+  cancels the drift even though no single leg resolves anything. This is what the
+  night run should do, and it is a scheduling change, not a purchase.
+- **A meter.** `power-test-runbook.md`, "The instrument problem", treats a
+  PPK2-class source-meter as the thing that makes experiment 1 possible. It is
+  now more than that: it is the only way to price **any** sub-10-mA state
+  directly, and every such state is what is left. The purchase moved from
+  nice-to-have to the campaign's blocker, and the price still has to be read off
+  a distributor page before anyone buys.
+
 ## TODO
 
 **Bench rig, added 2026-08-16.** Any change that touches power or the radio is
@@ -660,12 +846,245 @@ Phase 4 -- tune what the measurements expose:
 
 ## Runs
 
-Newest last. One row per run, with the file kept alongside.
+Newest last. One row per run, with the file kept alongside. **What each mode
+draws, and what each feature costs, is one table in
+[`power-management.md`](power-management.md), "The scoreboard"** -- this table is
+runs, that one is numbers.
 
-| Date | Build | State | Duration | Start mV | End mV | Slope mV/h | Notes |
-|---|---|---|---|---|---|---|---|
-| 2026-08-15 | unrecorded | 3 | 11 h 25 min | 4220 | 3547 | **58.9** | Run 1, 99->21 %. See below. |
-| 2026-08-16 | `9686ce21` | 3 | 13 h 12 min | 4178 | 3748 | **32.6** | Run 2, first optimisation measured: BLE modem sleep. See below. |
+**Every row names its device.** X4 is what is on the desk; X4 Pro and X3 are
+targets, one C3 binary drives X4 and X3, and the numbers differ in every term
+that matters. A `board` column waits on branch `power-lab` (unmerged); every row
+so far is X4
+because that is the only device this campaign has ever run on.
+
+| Date | Device | Build | State | Duration | Start mV | End mV | Slope mV/h | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 2026-08-15 | X4 | unrecorded | 3 | 11 h 25 min | 4220 | 3547 | **58.9** | Run 1, 99->21 %. See below. |
+| 2026-08-16 | X4 | `9686ce21` | 3 | 13 h 12 min | 4178 | 3748 | **32.6** | Run 2, first optimisation measured: BLE modem sleep. See below. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 60 min | 4159 | 4093 | **70.8** | Run 3 leg 1. **Discard** -- inside the relaxation window. See below. |
+| 2026-08-21 | X4 | `55c9ed26` | 3 (80 MHz) | 61 min | 4093 | 4068 | **25.7** | Run 3 leg 2, fix every 10 s, panel 57 s/h. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 33 min | 4068 | 4064 | **10.6** | Run 3 leg 3. Same state as leg 1, 6.7x lower. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 18 min | 4060 | 4047 | 32.6 | Run 4 leg 1. **Discard** -- post-reboot recovery. |
+| 2026-08-21 | X4 | `55c9ed26` | 3 (80 MHz) | 18 min | 4046 | 4045 | 3.1 | Run 4 leg 2. **1 mV of movement** -- noise, not a measurement. |
+| 2026-08-21 | X4 | `55c9ed26` | 2 (adv, 80 MHz) | 20 min | 4044 | 4042 | 5.3 | Run 4 leg 3. Reads *above* leg 2, which cannot be true. |
+| 2026-08-21 | X4 | `55c9ed26` | 1 (Home, 10 MHz) | 43 min | 4045 | 4043 | 3.5 | Run 4 leg 4. 2 mV of movement. |
+| 2026-08-21 | X4 | `55c9ed26` | WiFi (web server) | 6 min | 4022 | 4020 | -- | Run 4 leg 5. Too short to fit; `loop_busy` 98.7 %, full clock 100 %. |
+| 2026-08-22 | X4 | `0b99e70e` | Observe, radio off, 10 MHz | 6 h 15 min | 4151 | 4047 | **12.27 +/- 0.18** | Run 5. 104 mV of movement -- the first well-resolved state. 1.76 %/h, 56.8 h on a charge. |
+
+### Run 5 -- 2026-08-22, Observe with the radio off: the first well-resolved state
+
+Evidence: `docs/power-runs/run5-2026-08-22.csv` (parent repo). **Device: X4.**
+Build `0.1.0-dev-nearby-points-0b99e70e` -- not the build this run was planned
+against; another session flashed the device before it started (its lock said
+"Nearby hardware test"), which the `build` column caught. The state under test is
+present in that build regardless, and the run is one boot with no reboot in it.
+
+**6.25 h in one state, `ble=0` and `cpu_mhz=10` from 62 s to 22630 s**, 4151 ->
+4047 mV. That is Observe mode with `BlePositionServer::end()` called, so the
+controller is disabled and `lowPowerFloorMhz()` returns `LOW_POWER_FREQ`
+**[measured]** -- and it is also the first hardware evidence that the
+Observe-BLE-off feature (`b8b11535`, committed "untested on hardware") survives
+six hours.
+
+**Slope: 12.27 +/- 0.18 mV/h**, across 104 mV of movement. The error is 1.5 %,
+which is what this instrument looks like when it is used inside its limits.
+
+**And the run settles the methodology question by accident.** The load was
+constant all night, so any change in the hourly slope is the curve and not the
+device:
+
+| Hour | Band | mV/h |
+|---|---|---|
+| 0 | 4151-4110 | 38.12 |
+| 1 | 4108-4089 | 22.97 |
+| 2 | 4090-4083 | **6.25** |
+| 3 | 4080-4069 | 14.84 |
+| 4 | 4070-4063 | 6.61 |
+| 5 | 4062-4050 | 11.10 |
+| 6 | 4053-4047 | 9.88 |
+
+Hours 0-1 are relaxation off the charger, as expected. **Hours 2-6 still swing
++/- 40 % around ten**, at one hour each, with nothing changing but where the pack
+sits. So the rule is not "avoid the plateau" or "use 30-minute legs", it is:
+
+> **A slope is worth quoting when the run spans about 100 mV. Anything shorter is
+> reading the curve.** At ~12 mV/h that is six hours. This is the empirical form of
+> "The plateau problem" above, and it supersedes every leg-length table on this
+> page.
+
+### Pricing one panel refresh, and why the obvious design is too weak
+
+**Method, not a result. Written 2026-08-22 at the maintainer's request that runs
+report panel refreshes.** The counters are already in every row -- `ref_full`,
+`ref_half`, `ref_fast`, `ref_window`, `panel_busy_ms` -- and `tools/powercsv.py`
+now prints them as **rates** and as **ms per refresh** rather than as totals,
+because a total says nothing until it is divided by the run's length.
+
+Run 5 gives the shape: **60 windowed refreshes an hour, 502 ms each, 0.94 % of
+wall**, with `full_clock_ms` at 0.11 % -- so a windowed refresh is panel energy
+and carries no CPU term worth naming.
+
+> **Keep the windows small, or the run aborts the device instead of measuring
+> it.** `180ffba3` on `develop` (2026-08-22) came off a coredump: `displayWindow`
+> asking for 48,000 bytes for a window spanning the whole panel, through a
+> throwing `std::vector` -- and on `-fno-exceptions` a throwing allocation is
+> `abort()`, so the `bool` fallback every call site has could never run. One of the
+> two call sites it names is `moveMarker()`'s union of the old and new marker
+> boxes, which is exactly what the design below drives. So the jitter must stay a
+> few pixels past `kMinMovePx`, **not** a jump across the panel: a large step is a
+> panel-sized window, and that is the abort rather than a measurement.
+
+**The obvious experiment is too weak.** Compare a run at 60 refreshes/h against
+one at 6 (the coarse clock, `map-header-status.md`). If a windowed refresh draws
+30 mA for 502 ms, that is 0.0042 mAh each, so 54 fewer an hour is about
+0.035 %/h against a 1.76 %/h state -- **2 %, against a whole-run precision of
+1.5 %.** On the edge, and it would produce an argument rather than a number.
+
+**A stronger design: same radio traffic, different refresh count.** Send fixes at
+one fixed cadence in both runs, and vary only whether each fix moves the marker:
+
+- **Run A:** positions jitter by **less than `MapFollow::kMinMovePx`** (8 px, and
+  the rung sets the metres -- `MapViewport.h`'s `minMove` column). Every packet
+  arrives, is parsed, re-anchors the clock, and **draws nothing**.
+- **Run B:** positions step by **more than** it, and **only just** more -- see the
+  warning above. Same packet count, same parsing, same link -- every fix repaints,
+  each with a small window.
+
+Radio, CPU wake pattern and packet count are identical by construction, so the
+difference is the panel and nothing else. And the contrast is dialable: at a fix
+every 5 s, run B is **720 refreshes/h** against run A's ~60 (the clock), which is
+a ten-fold bigger effect than the coarse-clock comparison and lands well clear of
+the noise.
+
+Both runs are unattended and BLE-driven (`tools/blefakephone.py --pos`, two
+positions a few metres apart), which makes this a night-run pair rather than desk
+work. **What it prices:** one windowed refresh, in %/h per refresh-per-hour, on
+X4. Which then converts every `panel_busy_ms` figure in this file into a real term
+of the budget instead of a duty cycle nobody can weigh.
+
+### Endurance without the 650 mAh assumption
+
+Percent per hour needs no capacity number, and the three long runs are directly
+comparable because each spans a wide band:
+
+| Run | State | %/h | One charge |
+|---|---|---|---|
+| 1 | connected, 160 MHz, no modem sleep | 6.83 | 14.6 h |
+| 2 | connected, 160 MHz, modem sleep | 3.94 | 25.4 h |
+| **5** | **Observe, radio off, 10 MHz** | **1.76** | **56.8 h (2.4 d)** |
+
+**Observe mode is 2.2x cheaper than the riding case and 3.9x cheaper than where
+this campaign started.** It is the cheapest state ever measured on this hardware,
+and the prediction made for it holds. What it is not is three days: 56.8 h with
+the map up and nothing happening.
+
+Against the hike scenario (24 h walking, 48 h stopped):
+
+- walking at run 2's rate: 24 h x 3.94 = **94.5 %**
+- stopped in Observe: 48 h x 1.76 = **84.5 %**
+- **total 179 % of one charge, so one charge covers 40 h -- 1.7 days.**
+
+A **2x** improvement across the board reaches 3.4 days; **3x** reaches 5. So the
+target is not a rounding error away, and it is not out of reach either -- and
+because the stopped half is already the cheaper one, the walking half is where the
+next factor has to come from. Light sleep with the link up, i.e. experiment 3.
+
+### Run 4 -- 2026-08-21, the five legs that showed the instrument's limit
+
+Evidence: `docs/power-runs/run4-2026-08-21.csv` (parent repo). Same build as run
+3, same afternoon, one boot: advertising / connected at 10 s / advertising / Home
+at 10 MHz / WiFi. **Read this run before run 3**, because it is the one that says
+what the numbers are worth.
+
+Three things it establishes, none of them a power number:
+
+1. **Four legs in the plateau are indistinguishable.** 1-2 mV of movement each,
+   and the ordering came out impossible -- connected below advertising. See "The
+   plateau problem" above.
+2. **A mode change reboots the device**, at least between the map and WiFi
+   (`project_wifi_or_map_exclusive`: X4 runs one or the other). The first leg
+   after a reboot reads high -- 32.6 mV/h against 5.3 for the same state twenty
+   minutes later -- because removing the load lets the pack recover.
+3. **One boundary row is worth a 10x error.** The Home leg's own rows drift 2 mV
+   across 43 minutes; including the single row written as WiFi came up turned that
+   into an apparent 23 mV collapse.
+
+What it did produce, and it is not a slope: **WiFi mode runs the loop flat out.**
+`skipLoopDelay()` is true while the web server is up
+(`src/activities/network/CrossPointWebServerActivity.h:70`) **[repo]**, so the
+leg shows `loop_busy` at **98.7 %** and full clock at **100 %** against 2-5 % busy
+and ~0 % full clock on every map leg. The state is a `yield()` spin at 160 MHz.
+Its draw is still **[open]** -- six minutes is too short -- but the duty cycle
+alone says M8 should be re-run, and that Wi-Fi Fast Sync is not a cheap idle
+state to leave running.
+
+### Run 3 -- 2026-08-21, three legs on one boot, and what the first one cost us
+
+Evidence: `docs/power-runs/run3-2026-08-21.csv` (parent repo), read with
+`tools/powercsv.py`. Build `0.1.0-dev-wallet-viewer-55c9ed26` -- whatever was on
+the device, **not** a frozen-baseline build; this run was made with the firmware
+already flashed rather than by flashing one, which is why it has no `powerlab-`
+version string and why the state column is absent from its rows.
+
+One boot, four phases, timeline confirmed to the minute against the operator's
+own note of entering the map at 10:31:
+
+| Uptime | Wall clock | State | CPU | mV | Slope |
+|---|---|---|---|---|---|
+| 2-722 s | 10:19-10:31 | Home, radio down | 10 MHz | 4177-4159 | ~90 |
+| 722-4324 s | 10:31-11:31 | advertising | 80 MHz | 4159-4093 | **70.8 +/- 2.5** |
+| 4324-7986 s | 11:31-12:32 | connected, fix/10 s | 80 MHz | 4093-4068 | **25.7 +/- 3.5** |
+| 7986-9968 s | 12:32-13:05 | advertising | 80 MHz | 4068-4064 | **10.6 +/- 1.1** |
+
+**The map does not pin 160 MHz any more.** Every map phase above ran at 80 MHz
+with `throttled_ms` at 100 % of the interval and the loop at **20 Hz**, against
+run 2's 160 MHz and ~98 Hz. That is the two-deadline split working as
+designed, built and bench-verified 2026-08-17 (`power-management.md`, "The map
+throttles to 80 MHz"). What that bench proved was **functional** -- the link
+survives the throttle, the fixes arrive. Nobody had put a number on what it
+saves, which is T-201. **This run is T-201's answer**, for two states at once:
+
+- **Advertising at the 80 MHz `BLE_SAFE_FREQ` floor: 10.6 +/- 1.1 mV/h.**
+- **Connected, fix every 10 s, at 80 MHz: 25.7 +/- 3.5 mV/h**, against run 2's
+  32.6 mV/h for the same state at 160 MHz -- though across different builds and
+  different panel activity, so that pair is suggestive and not a measurement of
+  the split.
+
+Scaling run 2's calibration (32.6 mV/h at a nominal 24.0 mA, assumed
+proportional **[assumed]**), the advertising figure is roughly **7.8 mA** --
+below the campaign's 9 mA target, for the parked case, on hardware that already
+shipped. It wants a repeat before it is believed, and the repeat has to sit in
+the working band rather than an hour after a full charge.
+
+**How far it never goes up.** `full_clock_ms` deltas over the same phases say
+the map does not drift back to 160 MHz at all: **0.26 %** of the advertising
+hour, **0.00 %** of the connected hour, with 47-50 windowed marker refreshes in
+it. Only a heavy frame lifts the clock -- `kickFullClock()` sits at the top of
+`renderViewport()`, `renderCurrent()`, `renderWaiting()`,
+`renderLoadingTiles()`, `renderRouteOverview()` and `showBusy()`
+(`src/activities/map/MapActivity.cpp:692,3771,3794,3831,4095,4342`) -- and a
+marker move is a windowed update, which calls none of them. Radio traffic on its
+own never lifts it: the wake check reads buttons, touch and tilt only
+(`src/main.cpp:833-838`) **[measured]**.
+
+**The same state measured 70.8 and 10.6 mV/h.** Identical counters (loop busy
+2.0 %, panel 0 ms/h, 20 Hz, `throttled_ms` 100 %), identical build, 6.7x apart.
+Nothing differs but time-since-unplug and state of charge. So the 30-minute
+discard this file recommended a few hours earlier is far too short: **the first
+hour off a full charge is not a measurement**, and part of the effect is the
+genuine steepness of the curve above 4.10 V rather than relaxation alone. The
+working band is roughly **4.05 V down to 3.80 V**.
+
+**What the run does not answer.** The link's cost reads as 25.7 minus 10.6, so
+up to ~15 mV/h -- but that is an upper bound, not a measurement: the connected
+leg sat at a higher voltage and earlier in the relaxation than the advertising
+leg it is being differenced against. Cancelling exactly that is what the closing
+leg of an A-B-A is for, and this run lost it: the fake phone was stopped with
+`timeout`, SIGTERM killed python before asyncio unwound the BleakClient, and
+**the LE link stayed up in the kernel** -- so the intended third leg ran
+connected-and-idle instead of advertising. Fixed in the tool
+(`tools/blefakephone.py --duration`), not in the run. Also note "connected" here
+is not only radio: the panel did 57 s/h of windowed refreshes for the marker.
 
 ### Run 2 -- 2026-08-16, BLE modem sleep, the first measured saving
 
