@@ -761,6 +761,62 @@ for the next field added here: `MapFollow::decide()`'s `(x, y)` is pre-reset
 by definition, and anything drawn after a reset needs the reset's own
 answer, not the question that caused it.
 
+### `map_window`: the ride in a window, live
+
+Both tools above render a file and then you look at the file. `map_window`
+(`test/map_window/`) is the same two halves in an SDL2 window at 480x800, played
+at the ride's own pace while you watch:
+
+```
+map_window --ride docs/rides/<ride>.jsonl --tiles mapbuilder/cdn
+```
+
+Space pauses, `.` steps one packet, `+`/`-` scale the ride clock (0.125x to 64x),
+`r` restarts, `d` toggles the dirty rectangle, `q` quits. `--exit-at-end` quits
+on the last packet, for a scripted run.
+
+Nothing is reimplemented. The decisions come from `ReplayEngine::Stepper`, which
+is the same state machine `replay()` loops and `--check` gates against the three
+2026-08-08 X4 rides; the picture comes from `renderMapPreview()` and
+`MapRenderer::drawMarker()`, the same calls `map_preview` and `marker_stamp`
+make.
+
+**What it shows that `--frames` and `--track` cannot.** A `MoveMarker` is a real
+partial refresh here: the held background is kept, the marker is stamped onto a
+copy of it, and the sidebar outlines the actual patch box -- `markerMetricsFor(
+kZoomLadder[step].markerScale8).box` (`MapMarkerMetrics.h`), 64 px at full
+scale, smaller at the coarse rungs. So "this stretch costs 6 partials and one
+redraw" is something you watch happen rather than count afterwards.
+
+Sidebar totals: `FULL`, `PARTIAL`, `SKIP`, the last action and its reason, tiles
+in and missing, ways drawn, and two timings kept deliberately apart:
+
+- **`panel`** -- refreshes x 500 ms. Measured, area-independent, "The refresh"
+  above.
+- **`host`** -- this laptop's own render time, labelled as the laptop's. The
+  device's render half is 400-1,750 ms by rung and ~8,300 ms in Bratislava
+  ("That 8.9 s is a city number"), so no single constant is modelled here. A
+  number claiming to be the device's render cost would be wrong nearly
+  everywhere.
+
+Verified 2026-08-22: `map_window --exit-at-end` and `map_replay` on
+`trailink-gps-20260807-142303` at the current thresholds agree exactly -- 339
+packets, 211 skips, 113 moves, 14 re-anchors (8 heading, 6 budget, 0 keep-in).
+That is **not** the `hardware-baseline.txt` row for the same ride (24 redraws,
+20 heading, 4 budget): the baseline replays with `movement floor 0`, the
+pre-gate firmware it was measured against. Both numbers are right for their own
+build, and comparing across them looks like a regression and is not.
+
+SDL2 is a system package (`apt install libsdl2-dev`). Without it CMake skips
+this one target and the rest of the suite still configures.
+
+**It is x86.** It says nothing about heap, waveform timing or ghosting, and it is
+not a device -- see [`virtual-device.md`](virtual-device.md) for what only an
+emulated C3 or the real panel can answer.
+
+**Privacy: a ride log is a real GPS trace.** A window shot from one shows where
+the maintainer actually rode. Keep them local, same rule as a device screenshot.
+
 ## The heading decides the frame, once
 
 The map is drawn track-up by default: `renderViewport()` passes

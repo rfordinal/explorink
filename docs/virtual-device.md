@@ -8,12 +8,100 @@ below is what turns the decision into a fact.
 
 ## Decision
 
-Run the **real firmware binary** on a **virtual ESP32-C3** under **Wokwi**, with
-our own peripheral models for panel, buttons and SD. The virtual device is a
-tenth `BoardProfile`, `FREEINK_DEVICE_VX4`.
+Two layers, each answering what the other structurally cannot.
 
-Rejected: a desktop simulator (needs a second rendering path), and QEMU (see
-below).
+**Layer 1, built 2026-08-22: `map_window`.** The real map code in an SDL2 window
+on the laptop, playing a recorded ride at its own pace. Not a new emulator -- it
+joins two host tools that already existed. Details in
+[`map-follow.md`](map-follow.md), "`map_window`: the ride in a window, live".
+
+**Layer 2, decided, not built: VX4.** The **real firmware binary** on a
+**virtual ESP32-C3** under **Wokwi**, with our own peripheral models for panel,
+buttons and SD, as a tenth `BoardProfile`, `FREEINK_DEVICE_VX4`.
+
+The split, and why neither one is enough:
+
+| | `map_window` (layer 1) | VX4 (layer 2) |
+|---|---|---|
+| loop speed | native, and 64x the ride clock | emulated, slower |
+| cost | zero | Community covers spike 1-5 |
+| UI pixels | faithful (the real renderer) | faithful (the real panel driver) |
+| refresh counts, dirty rects | **yes** -- they are firmware decisions | yes |
+| heap ceiling, stack limits | **no** -- x86 | yes |
+| SSD1677 command stream | **no** | yes |
+| waveform timing, ghosting | **no** | modelled only |
+| activities outside the map | **no** -- links map code, not the UI stack | yes |
+
+Rejected outright: QEMU as the emulator (see below), and a full desktop
+simulator of the whole firmware. The second one is a real option -- see
+"Prior art" -- but layer 1 already covers the ride-watching case at a fraction
+of the work, so a full stub layer waits until something needs it.
+
+## Layer 1 exists, and it was cheaper than any estimate here
+
+`map_window` cost one refactor and one new tool because both halves were already
+in the tree and nobody had joined them live:
+
+- `test/map_replay/` had the ride, the packets and the real
+  `MapFollow::decide()`, gated against three real X4 rides
+  (`hardware-baseline.txt`).
+- `test/map_preview/` had the real `MapRenderer`, `MapProjection`,
+  `MapTileReader` and the firmware's own font tables, drawing into a 480x800
+  canvas.
+
+`tools/render_ride_video.py` (parent repo) had already joined them for **video**,
+but with a scope cut: "only ReAnchor frames are rendered", so partial refreshes
+-- the thing worth tuning -- were invisible.
+
+What layer 1 measures, and at what confidence:
+
+| quantity | confidence |
+|---|---|
+| refresh counts (full / partial / skip) | **measured** -- real `MapFollow::decide()`, agrees with `map_replay` exactly |
+| dirty rectangle | **measured** -- the real patch box, `MapMarkerMetrics.h` |
+| panel time | **measured constant** -- 500 ms per refresh, X4 2026-08-05 |
+| device render time | **not modelled.** Shows the laptop's own, labelled |
+
+That last row is the honest limit of layer 1 and the reason layer 2 still
+matters.
+
+## Prior art: someone already built a CrossPoint desktop emulator
+
+`github.com/jonmooreai/Crosspoint-Emulator` runs upstream CrossPoint's
+application code natively: SDL2 window at 480x800, the SD card as a plain
+`./sdcard/` directory, keyboard mapped to the device buttons. Worth knowing about
+for three reasons and unusable for us for three more.
+
+Worth knowing:
+
+- **It stubs at the seam our fork also has.** Its `sim/include/` is `HalDisplay.h`,
+  `HalGPIO.h`, `HalStorage.h`, `EInkDisplay.h`, `SDCardManager.h`, `SdFat.h`,
+  `ArduinoStub.h`, `FreeRTOSStub.h`, `WString.h`, `WiFi.h`. We have
+  `lib/hal/HalDisplay.h`, `HalGPIO.h`, `HalStorage.h` and
+  `freeink-sdk/.../EInkDisplay.h`, `SDCardManager.h` -- same names, same
+  boundary.
+- **The stub surface is small.** Five `.cpp` files and about fifteen headers,
+  roughly 50 kB of code excluding a vendored `stb_image.h`. Any estimate here
+  that a desktop simulator is weeks of stub work was too high.
+- **It models two device constraints on purpose**: one core (no background
+  thread, prewarm one EPUB per frame, yields every 8 rows in image conversion)
+  and one shared SPI bus ("no display transfer and no file read/write run at the
+  same time"). The second is our constraint too -- panel on cs 21, card on
+  cs 12.
+
+Unusable as-is:
+
+- **No licence.** The GitHub API reports `license: null` and there is no LICENSE
+  file in the tree, so it is all rights reserved. Read it as a reference; do not
+  lift code without asking the author.
+- **It targets upstream, and modified upstream too** (its README has a "New
+  Features in Crosspoint Core" section). Our map stack -- `MapActivity`,
+  `MapRenderer`, pins, BLE -- is not in upstream at all.
+- **Snapshot, not a project.** Created 2026-02-10, last push 2026-02-11. One
+  author, one day, then silent.
+
+One factual warning: its README states the device has "RAM: 128 MB". The
+ESP32-C3 has ~400 kB of SRAM. Do not use that document as a hardware reference.
 
 ## The invariant
 
