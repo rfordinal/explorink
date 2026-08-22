@@ -67,6 +67,97 @@ That is exactly a white panel with a correct thumb-shaped patch.
 - **Sunlight versus visible light versus UV** is unseparated. Report 2 was a city
   walk, so ambient daylight was enough; nothing says direct sun is required.
 
+### What the sources say (researched 2026-08-22)
+
+The mechanism above was reasoned out from the thumb before any of this was read.
+It holds up, and it is a **known, named problem** in this industry rather than
+anything peculiar to the X4.
+
+**Other people have reported the exact same stencil.** A MobileRead thread on
+e-readers in direct sunlight
+(https://www.mobileread.com/forums/showthread.php?t=27424): "if I leave the
+shadow of my hand over the reader whilst I change page I get a nice hand-print in
+the display", "the text on the part that was exposed to sunlight is noticeably
+lighter", "it only takes about 10 minutes before the text is almost too faded to
+read", and it is reversible -- "the screen rapidly returns to normal when moved
+out of the sun". Sony PRS-505 and others, so consumer readers with Carta-class
+film, not just bare modules. **This is the closest thing to a replication of
+report 2 that exists without a device.**
+
+**A module vendor states the mechanism in one sentence.** Pervasive Displays, an
+E Ink licensee, on sunlight readability
+(https://pervasivedisplays.freshdesk.com/support/solutions/articles/72000632262):
+"Placing an EPD under direct sunlight can lead to degraded image quality **while
+refreshing** the E-ink screen as the strong light could cause **current
+leakage**." Same page: the displays are "designed for indoor or semi-outdoor
+environments".
+
+**A patent describes it in an EPD, and shows the fix is in the panel.**
+US11171241B2, "TFT substrate", Japan Display Inc, priority 2018-01-19
+(https://patents.google.com/patent/US11171241B2/en): light on the display surface
+"may reach the pixel transistors", and "the intense light entering the pixel
+transistors generates a photo leakage current due to a photoconductivity effect,
+and may cause a malfunction of the pixel transistors". The remedy claimed is
+**light-blocking films over the gate/drain regions** of each pixel transistor.
+
+Two consequences of that last one, and they matter to this project:
+
+- **Panels differ.** A backplane with light shields is far more sun-tolerant than
+  one without. Whether GDEQ0426T82 has them is unknown, and so is whether an X4
+  Pro or X3 panel does. **This becomes a device-selection criterion** -- T-514.
+- **Nothing on our side of the glass can fix a panel that lacks them.**
+
+**Photo leakage is driven by visible light, not only UV.** The classic
+measurements are of a-Si:H TFTs under **backlight** illumination -- CCFL and white
+LED, no UV involved (Molecular Crystals and Liquid Crystals 499(1),
+https://www.tandfonline.com/doi/full/10.1080/15421400802619917). Dark off-state
+leakage is around 1e-13 A; illuminated it runs about 1e-10 A, three orders up, and
+scales with light intensity. **So a UV filter is the wrong tool for this failure**
+-- and that is exactly what a hobbyist found: a UV-stabilized acrylic sheet over
+an outdoor e-paper watch left the black text faded and unreadable, and he never
+found a fix (https://jeonlab.wordpress.com/2022/03/12/e-paper-display-problem-under-the-sunlight/,
+plus two commenters with the same problem). What did work for another builder was
+an **IR window film**, which cuts broadband flux -- and made the display "a little
+darker" (https://forum.arduino.cc/t/e-paper-display-has-problems-under-sunshine/1010179).
+Attenuating everything works; filtering UV alone does not.
+
+**There is a second, irreversible failure that is not what we saw, and we should
+not collect it.** Both module vendors warn that prolonged strong light **dries the
+pigment out permanently**: "charged particles may dry out under prolonged intense
+light exposure, losing activity and becoming unable to refresh. This situation is
+irreversible" (Waveshare, https://docs.waveshare.com/5inch_e-Paper/FAQ, which also
+says outdoor use voids warranty), and Good Display's own precautions page says to
+keep e-paper "out of direct sunlight" and to "take ultraviolet protection
+measures" (https://www.e-paper-display.com/news_detail/newsId=53.html). Our panel
+recovered, so this is not what happened -- but a device that lives on a bike in
+the sun is being aimed at it. This is the same risk T-505 tracks.
+
+**Outdoor e-paper products exist, and this is what they spend to get there.**
+Papercast and Visionect bus-stop signage: laminated or tempered front glass with
+integrated UV protection filtering "over 98%" of UV, optically bonded to the
+panel, in a ruggedized enclosure -- because an unprotected EPD "will fail very
+quickly outdoors" (https://www.visionect.com/blog/e-paper-extreme-weather/,
+https://www.papercast.com/product/unpacking-digital-signage-the-ruggedized-enclosure/).
+Note what that buys and what it does not: their UV stack addresses the
+irreversible damage. Their sunlight *refresh* quality comes from the panel and the
+enclosure, not from a film we can stick on an X4.
+
+**And the vendor of our exact panel gives a number we are ignoring.** Good
+Display's GDEQ0426T82 page (https://www.good-display.com/product/957.html):
+operating temperature **0-50 C**, storage -25-60 C, and "when using Fast Refresh
+and Partial Refresh, it is recommended to perform a Full-Screen Refresh **after
+every five consecutive operations**". We do zero full-screen refreshes for the
+whole map session (BUG-021 in the parent repo). Five is the vendor's number for
+ghosting, not for this light problem; a ride-tolerable N will be larger and the
+reason has to be written down. Their general "refresh interval at least 180 s"
+guidance explicitly excludes partial-refresh products, so it does not bind us.
+
+**Confidence after the reading:** the mechanism is **sourced** -- a vendor
+sentence, an EPD patent, the TFT literature, and independent user reports of the
+same hand-shaped stencil. What is still **open** for our device specifically:
+whether GDEQ0426T82 has light shields, at what illuminance ours starts failing,
+and how much of report 1's paleness was this versus the missing clean.
+
 ### What follows from it, and it is uncomfortable
 
 **No firmware change fixes a photoconductive backplane.** Waveform tuning, a
@@ -76,7 +167,13 @@ cannot hold charge while lit. The fixes that remain are physical or procedural:
 - **Shade the panel while it refreshes.** On a mount that means a hood or visor
   over the screen -- an additive part, which is allowed (parent `CLAUDE.md`,
   "Never open a device"). This becomes a mounting requirement next to the tether
-  that report 1's loss already made one.
+  that report 1's loss already made one. A hand over the glass is the free
+  version and it demonstrably works: it is what produced the stencil.
+- **If a film, then a broadband one, not a UV one.** UV filtering does not touch
+  photo leakage (it is driven by visible light) and a UV-stabilized sheet failed
+  for one builder outright; an IR window film worked for another at the cost of a
+  darker screen. Any film trades away the reflectivity the product is sold on, so
+  a hood beats a film wherever geometry allows.
 - **Refresh twice.** A second pass re-drives what the first left undriven, which
   is what marker movement was doing by accident in report 1. Cheap, partial, and
   worth having whatever else is true.
