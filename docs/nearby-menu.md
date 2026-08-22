@@ -214,9 +214,16 @@ used.** Every second pixel row to white. Why a line screen and not a grey or a
 checkerboard is in [`eink-grayscale.md`](eink-grayscale.md), "A disabled row is a
 line screen, not a checkerboard".
 
-**Not verified on the panel.** The dim is Home's, so it is already known to read
-there, but it has never been seen on an `OptionPopup` row -- a popup row is
-shorter than a Home row and carries a value box. What a hardware pass has to
+**Verified on an X4, 2026-08-22.** Flashed
+`feat/points-setting@5e87a1df` and the maintainer walked it: the row sits where
+it should, the screens still work, switching `Useful places` off in Settings
+leaves the row present and visibly dimmed with `OFF`, unreachable by the button
+walk and by a tap, and switching it back on restores both the row and the marks.
+So the line screen reads on an `OptionPopup` row too, which was the open
+question -- a popup row is shorter than a Home row and carries a value box.
+Binary archived as
+`docs/firmware-builds/feat-points-setting-5e87a1df-useful-places-dimmed-row-good.bin`
+in the parent repo. What a hardware pass has to
 check is at the bottom.
 
 ## `Show on map` is a view, not a setting
@@ -448,11 +455,11 @@ edge marker to the same 0.1 km step.
 
 **Not verified -- needs an X4 pass:**
 
-- Nothing here has run on the device. No screen has been on the panel.
-- **The dimmed `Useful places` row.** Switch `Useful places` off in Settings, open the
-  map menu: the row must be there, visibly dimmed, reading `OFF`, and neither
-  the button walk nor a tap may land on it. The dim is Home's own line screen,
-  but on a shorter row with a value box beside it.
+- ~~Nothing here has run on the device.~~ Stale: it has, twice on 2026-08-22 --
+  the shard-read figures above, and the setting plus the dimmed row below.
+- ~~The dimmed `Useful places` row.~~ **Done 2026-08-22**, see "One setting for
+  the whole layer" above: present, dimmed, reading `OFF`, unreachable by the
+  button walk and by a tap.
 - The three popups' layout at the map menu's dialog size: row count, the value
   column with `?` in it, and a long POI name in the title.
 - ~~Whether the 15 px square and the 9 px glyph read on the glass.~~

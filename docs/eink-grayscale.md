@@ -548,10 +548,10 @@ A disabled row is also never the selected one -- both lists skip it in their
 selection walk -- so the white lines always land on a white row and never break
 up a selection block.
 
-**Verified on the panel for Home's rows. Unverified on an `OptionPopup` row**,
-which is shorter than a Home row and carries a value box beside the label. What
-would settle it: switch `Useful places` off in Settings and look at the map menu
-(`nearby-menu.md`, "Not verified on the panel").
+**Verified on the panel for both, 2026-08-22.** Home's rows had it all along; the
+`OptionPopup` row was the open case, because it is shorter than a Home row and
+carries a value box beside the label. Read on an X4 with `Useful places` switched
+off in Settings (`nearby-menu.md`, "One setting for the whole layer").
 
 ## There is dithered grey too, and it is a different product
 
