@@ -770,8 +770,12 @@ at the ride's own pace while you watch:
 ```
 map_window --tiles mapbuilder/cdn (--ride docs/rides/<ride>.jsonl | --lat L --lon L)
             [--heading 0-15] [--mode ride|hike|cycle] [--zoom 0-6] [--marker 0-4]
-            [--route <route.tir>] [--speed X] [--exit-at-end]
+            [--route <route.tir>] [--speed X] [--no-console] [--exit-at-end]
 ```
+
+Three columns: the panel at 480x800, the menu, and the map module's own log.
+`--no-console` drops the third one. Prefixes and what they promise are in "The
+console in `map_window`" below.
 
 **Two sources, switched in the menu.** `ride` lets packets drive the frame
 through `decide()`. `static` holds one position and heading, which is what
@@ -881,6 +885,65 @@ emulated C3 or the real panel can answer.
 
 **Privacy: a ride log is a real GPS trace.** A window shot from one shows where
 the maintainer actually rode. Keep them local, same rule as a device screenshot.
+
+### `decide()` says why now, and the old answer could be wrong
+
+Until 2026-08-22 nothing recorded **which check** produced a `ReAnchor`. The
+device's log line printed the fix, the two headings and the move count
+(`MapActivity.cpp`'s `applyFix`) and stopped there, so every reason column in
+this doc was reconstructed afterwards by re-testing the same `Request`:
+`tools/replay_ride.py:181-187` for the hardware runs, and `ReplayEngine` for the
+host ones.
+
+**That reconstruction uses a different priority order from `decide()`.**
+`decide()` tests heading drift, then keep-in, then the budget. The classifier
+tests keep-in, then the budget, then heading. A fix that satisfies two at once
+gets a different name from the two orders, and nothing could contradict it.
+
+Fixed by having the ladder report its own branch: `MapFollow::Reason`, filled by
+`decide(request, outReason)`. The one-argument `decide()` still exists and
+delegates, so every existing caller and all 373 host tests are unchanged.
+
+**It is latent, not active.** Replayed across all twelve ride logs in
+`../../../docs/rides/`, at both the default rungs and the baseline's, the
+classifier and the branch agreed every time -- zero mismatches. `map_replay`
+prints a line when they differ, so a future ride that hits it will say so, and
+`Result::reasonMismatches` counts it. The reason columns in this doc stand.
+
+### One copy of the log line
+
+`MapFollow::formatDecisionLog()` formats the map module's line for a decision,
+and both sides call it: `MapActivity` hands the result to `LOG_DBG`, and
+`test/map_window`'s console pushes the same bytes. So a console line can be
+compared with a device log verbatim rather than by eye.
+
+Two things came out of moving it:
+
+- **The skip line printed the wrong number.** It quoted
+  `MapFollow::kMinMovePx`, the fallback constant, while the floor actually
+  applied is `Request::minMovePx` off the rung -- 12 px at 1 m/px, 2 px at
+  45 m/px. So at every rung except the ones where they coincide, the log said
+  8 px and the code used something else. The formatter prints the request's
+  value.
+- **The move line still exists twice.** `MapActivity::moveMarker()` logs from the
+  state *after* the move and never sees a `Request`, so it keeps its own
+  `LOG_DBG`; the formatter's move branch adds one to `partialMoves` to match it.
+  Those two texts have to be kept identical by hand. The skip and re-anchor
+  lines have no twin.
+
+### The console in `map_window`
+
+The window's third column is that log. Every line carries a prefix, and the
+difference is the whole point:
+
+- **`MAP`** -- the same wording the firmware's own `LOG_DBG` emits for this
+  event. The decision lines come from `formatDecisionLog()`; the mode, marker
+  step and pan lines mirror `MapActivity.cpp`'s own.
+- **`WIN`** -- this tool only. A host number (its own render time), or something
+  the device does not log at all.
+
+Nothing reads a device. These are the same lines built from the same state the
+device's logger would have had.
 
 ## The heading decides the frame, once
 

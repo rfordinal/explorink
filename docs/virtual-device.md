@@ -59,8 +59,16 @@ What layer 1 measures, and at what confidence:
 |---|---|
 | refresh counts (full / partial / skip) | **measured** -- real `MapFollow::decide()`, agrees with `map_replay` exactly |
 | dirty rectangle | **measured** -- the real patch box, `MapMarkerMetrics.h` |
+| the decision log line | **the firmware's own bytes** -- `MapFollow::formatDecisionLog()`, the same call `MapActivity` hands to `LOG_DBG` |
 | panel time | **measured constant** -- 500 ms per refresh, X4 2026-08-05 |
 | device render time | **not modelled.** Shows the laptop's own, labelled |
+
+The log line row is the one that pushed a change back into the firmware rather
+than only reading it. Getting the map module's real messages into the window
+meant `decide()` reporting which check fired instead of the reason being guessed
+afterwards, and the line text living in one place instead of two. Both are in
+`map-follow.md`, "`decide()` says why now" and "One copy of the log line" -- and
+the second one found a log line that had been printing the wrong number.
 
 That last row is the honest limit of layer 1 and the reason layer 2 still
 matters.
