@@ -104,7 +104,13 @@ Stepper::Step Stepper::step(const RideLog::Packet& packet) {
   // track-up, so the glyph carries only the difference.
   out.markerHeadingStep = static_cast<uint8_t>((packet.headingStep - anchorHeadingAtDecision) & 0x0F);
 
-  switch (MapFollow::decide(request)) {
+  MapFollow::Reason trueReason = MapFollow::Reason::None;
+  const MapFollow::Action action = MapFollow::decide(request, trueReason);
+  out.trueReason = trueReason;
+  MapFollow::formatDecisionLog(request, action, trueReason, static_cast<unsigned>(packetIndex), out.log,
+                               sizeof(out.log));
+
+  switch (action) {
     case MapFollow::Action::Skip:
       ++result_.skips;
       if (config_.recordEvents) {
@@ -143,6 +149,16 @@ Stepper::Step Stepper::step(const RideLog::Packet& packet) {
         if (partialMoves_ <= 1) ++result_.thrashAnchors;
         reason = "heading";
       }
+      // The classifier above and the branch decide() took can disagree -- it
+      // tests keep-in first, decide() tests heading first. Counted rather than
+      // silently preferred, because every table built from the old rule
+      // (hardware-baseline.txt included) uses the classifier.
+      const MapFollow::Reason classified =
+          !inside ? MapFollow::Reason::KeepIn
+                  : (partialMoves_ >= config_.partialMoveBudget ? MapFollow::Reason::Budget
+                                                                : MapFollow::Reason::HeadingDrift);
+      if (classified != trueReason) ++result_.reasonMismatches;
+
       if (config_.recordEvents) {
         // Post-reset position, not fixX/fixY: those are the fix projected
         // through the *old* frame -- exactly the drift that triggered this

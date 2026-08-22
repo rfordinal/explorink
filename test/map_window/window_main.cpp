@@ -47,6 +47,7 @@
 #include <SDL2/SDL.h>
 
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -71,8 +72,8 @@ namespace {
 
 constexpr int kPanelW = 480;
 constexpr int kPanelH = 800;
-constexpr int kSidebarW = 420;
-constexpr int kWindowW = kPanelW + kSidebarW;
+constexpr int kSidebarW = 400;
+constexpr int kConsoleW = 440;
 constexpr int kWindowH = kPanelH;
 
 // Window chrome, drawn over the blitted pixels rather than into either canvas:
@@ -117,8 +118,7 @@ struct Compass {
   const char* name;
   uint8_t step;
 };
-constexpr Compass kCompass[8] = {{"N", 0},  {"NE", 2},  {"E", 4},  {"SE", 6},
-                                 {"S", 8},  {"SW", 10}, {"W", 12}, {"NW", 14}};
+constexpr Compass kCompass[8] = {{"N", 0}, {"NE", 2}, {"E", 4}, {"SE", 6}, {"S", 8}, {"SW", 10}, {"W", 12}, {"NW", 14}};
 
 enum class Source { Ride, Static };
 
@@ -162,6 +162,7 @@ struct Options {
   MapRideMode mode = MapRideMode::Ride;
   double speed = 1.0;
   bool showRect = true;
+  bool console = true;
   // A held position instead of (or before) a ride.
   bool haveLat = false, haveLon = false;
   double lat = 0.0, lon = 0.0;
@@ -229,6 +230,8 @@ bool parseArgs(int argc, char** argv, Options& out) {
       out.speed = std::atof(v);
     } else if (arg == "--no-rect") {
       out.showRect = false;
+    } else if (arg == "--no-console") {
+      out.console = false;
     } else if (arg == "--exit-at-end") {
       out.exitAtEnd = true;
     } else {
@@ -281,8 +284,7 @@ class Sidebar {
 
     canvas_.fillRoundedRect(x_, y_, w, h, 3, MapInk::Black);
     if (!selected) canvas_.fillRoundedRect(x_ + 1, y_ + 1, w - 2, h - 2, 3, MapInk::White);
-    canvas_.drawText(x_ + kChipPadX, y_ + kChipPadY, label, sizePx, false,
-                     selected ? MapInk::White : MapInk::Black);
+    canvas_.drawText(x_ + kChipPadX, y_ + kChipPadY, label, sizePx, false, selected ? MapInk::White : MapInk::Black);
 
     hits_.push_back({SDL_Rect{x_ + kPanelW, y_, w, h}, act, arg});
     if (mouseX_ >= x_ && mouseX_ < x_ + w && mouseY_ >= y_ && mouseY_ < y_ + h) {
@@ -357,6 +359,42 @@ void strokeRect(uint32_t* out, int outStride, int x, int y, int w, int h, uint32
   }
 }
 
+// The console's backlog. Two prefixes, and the difference matters:
+//
+//   MAP  -- the same wording the firmware's own LOG_DBG emits for this event,
+//           so a line here can be compared with a device log verbatim.
+//   WIN  -- this tool only. Either something the device does not log at all
+//           (the re-anchor *reason*, which MapActivity infers nowhere and
+//           tools/replay_ride.py reconstructs), or a host number.
+//
+// Nothing here reads the device. These are reconstructions of its lines from
+// the same state its own logger would have printed.
+void pushLog(std::vector<std::string>& log, const char* fmt, ...) {
+  char buf[240];
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  log.emplace_back(buf);
+  // Trim in blocks rather than one line at a time: erase(begin()) on a vector
+  // is a memmove of the whole backlog, and this runs per packet.
+  if (log.size() > 600) log.erase(log.begin(), log.begin() + 200);
+}
+
+// Why a re-anchor happened, in words. The firmware does not log this: its line
+// (MapActivity.cpp:4860) prints the fix, the two headings and the move count,
+// and leaves the reason to be worked out from them -- which is what
+// tools/replay_ride.py:181-187 does and what ReplayEngine classifies. So this
+// string is inferred, and says so in the console.
+const char* reasonWords(const char* reason) {
+  if (!reason) return "";
+  if (std::strcmp(reason, "heading") == 0) return "heading drift past the limit, with moves in";
+  if (std::strcmp(reason, "budget") == 0) return "ghosting budget spent";
+  if (std::strcmp(reason, "keep-in") == 0) return "marker reached the keep-in margin";
+  if (std::strcmp(reason, "menu") == 0) return "a menu action, not a fix";
+  return reason;
+}
+
 std::string formatCoord(double v) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%.5f", v);
@@ -372,7 +410,7 @@ int main(int argc, char** argv) {
                  "usage: map_window --tiles <dir> (--ride <ride.jsonl> | --lat L --lon L)\n"
                  "                  [--heading 0-15] [--route <route.tir>]\n"
                  "                  [--mode ride|hike|cycle] [--zoom 0-%d] [--marker 0-%d]\n"
-                 "                  [--speed X] [--no-rect] [--exit-at-end]\n",
+                 "                  [--speed X] [--no-rect] [--no-console] [--exit-at-end]\n",
                  MapViewport::kZoomStepCount - 1, kMapMarkerStepCount - 1);
     return 2;
   }
@@ -397,14 +435,15 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
     return 1;
   }
+  const int windowW = kPanelW + kSidebarW + (options.console ? kConsoleW : 0);
   SDL_Window* window = SDL_CreateWindow("ExplorInk device window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                        kWindowW, kWindowH, SDL_WINDOW_SHOWN);
+                                        windowW, kWindowH, SDL_WINDOW_SHOWN);
   // Software fallback matters for a headless run (SDL_VIDEODRIVER=dummy), which
   // is how this gets checked against map_replay's numbers without a display.
   SDL_Renderer* renderer = window ? SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED) : nullptr;
   if (window && !renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
   SDL_Texture* texture =
-      renderer ? SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, kWindowW, kWindowH)
+      renderer ? SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, windowW, kWindowH)
                : nullptr;
   if (!window || !renderer || !texture) {
     std::fprintf(stderr, "SDL setup failed: %s\n", SDL_GetError());
@@ -424,8 +463,10 @@ int main(int argc, char** argv) {
   }
   MapRideMode mode = options.mode;
   const int startMode = static_cast<int>(mode);
-  if (options.zoomStep >= 0 && options.zoomStep < MapViewport::kZoomStepCount) zoomStepFor[startMode] = options.zoomStep;
-  if (options.markerStep >= 0 && options.markerStep < kMapMarkerStepCount) markerStepFor[startMode] = options.markerStep;
+  if (options.zoomStep >= 0 && options.zoomStep < MapViewport::kZoomStepCount)
+    zoomStepFor[startMode] = options.zoomStep;
+  if (options.markerStep >= 0 && options.markerStep < kMapMarkerStepCount)
+    markerStepFor[startMode] = options.markerStep;
 
   const MapModeMasks modeMasks;
 
@@ -445,8 +486,10 @@ int main(int argc, char** argv) {
   PpmCanvas background(kPanelW, kPanelH);  // the held frame, no marker on it
   PpmCanvas frame(kPanelW, kPanelH);       // background + the marker where it is now
   PpmCanvas sidebarCanvas(kSidebarW, kPanelH);
-  std::vector<uint32_t> pixels(static_cast<size_t>(kWindowW) * kWindowH, kWhite);
+  PpmCanvas consoleCanvas(kConsoleW, kPanelH);
+  std::vector<uint32_t> pixels(static_cast<size_t>(windowW) * kWindowH, kWhite);
   std::vector<Hit> hits;
+  std::vector<std::string> logLines;
 
   bool running = true;
   bool paused = false;
@@ -516,6 +559,9 @@ int main(int argc, char** argv) {
     shownProj.reset(lat, lon, MapViewport::kAnchorScreenX, anchorRow, headingStep,
                     MapViewport::mppMercFor(zoomStep, lat));
 
+    pushLog(logLines, "WIN framebuffer ready in %.0f ms -- this laptop, not the device", lastRenderMs);
+    pushLog(logLines, "WIN tiles %d in, %d missing, %u ways, %u points, %u bytes read", lastPreview.tilesLoaded,
+            lastPreview.tilesMissing, lastPreview.waysDrawn, lastPreview.pointsDrawn, lastPreview.bytesRead);
     ++fullRefreshes;
     rectX = 0;
     rectY = 0;
@@ -540,6 +586,8 @@ int main(int argc, char** argv) {
     stampMarker();
     lastAction = "static";
     lastReason = why;
+    pushLog(logLines, "WIN static frame: %.5f,%.5f heading %u, %g m/px", staticLat, staticLon, (unsigned)staticHeading,
+            MapViewport::kZoomLadder[zoomStepFor[static_cast<int>(mode)]].mpp);
   };
 
   // A setting changed. The device answers a menu action with a viewport reset
@@ -574,6 +622,12 @@ int main(int argc, char** argv) {
     staticLat = lat;
     staticLon = lon;
     source = Source::Static;
+    // MapActivity.cpp:4346's line for a pan; a click has no device equivalent.
+    if (std::strcmp(why, "pan") == 0) {
+      pushLog(logLines, "MAP pan: %d%% step, new anchor %.5f,%.5f", MapViewport::kPanStepPercent, lat, lon);
+    } else {
+      pushLog(logLines, "WIN %s: new anchor %.5f,%.5f", why, lat, lon);
+    }
     renderStatic(why);
   };
 
@@ -606,16 +660,32 @@ int main(int argc, char** argv) {
 
   const auto onClick = [&](const Hit& hit) {
     switch (hit.act) {
-      case Act::PlayPause: paused = !paused; break;
-      case Act::Restart: restart(); break;
-      case Act::SpeedDown: speed = speed <= 0.125 ? 0.125 : speed / 2.0; break;
-      case Act::SpeedUp: speed = speed >= 64.0 ? 64.0 : speed * 2.0; break;
+      case Act::PlayPause:
+        paused = !paused;
+        break;
+      case Act::Restart:
+        restart();
+        break;
+      case Act::SpeedDown:
+        speed = speed <= 0.125 ? 0.125 : speed / 2.0;
+        break;
+      case Act::SpeedUp:
+        speed = speed >= 64.0 ? 64.0 : speed * 2.0;
+        break;
       case Act::Zoom:
         zoomStepFor[static_cast<int>(mode)] = hit.arg;
+        // MapActivity.cpp:4399's line, same wording.
+        pushLog(logLines, "MAP marker step %u (y=%d)", (unsigned)markerStepFor[static_cast<int>(mode)],
+                (int)MapViewport::markerYForStep(markerStepFor[static_cast<int>(mode)]));
+        pushLog(logLines, "WIN zoom step %d -- %g m/px", hit.arg, MapViewport::kZoomLadder[hit.arg].mpp);
         applySettingChange("zoom");
         break;
       case Act::Mode:
         mode = static_cast<MapRideMode>(hit.arg);
+        // MapActivity.cpp:4424's line, same wording.
+        pushLog(logLines, "MAP mode %s: zoom step %u, marker step %u, class mask 0x%08lx", mapRideModeName(mode),
+                (unsigned)zoomStepFor[static_cast<int>(mode)], (unsigned)markerStepFor[static_cast<int>(mode)],
+                (unsigned long)modeMasks.forMode(mode));
         applySettingChange("mode");
         break;
       case Act::Poi:
@@ -645,7 +715,9 @@ int main(int argc, char** argv) {
         drawRoute = !drawRoute;
         applySettingChange("route");
         break;
-      case Act::Rect: showRect = !showRect; break;
+      case Act::Rect:
+        showRect = !showRect;
+        break;
       case Act::UseRide:
         if (haveRide) {
           source = Source::Ride;
@@ -667,12 +739,16 @@ int main(int argc, char** argv) {
         renderStatic("heading");
         break;
       case Act::Pan: {
-        // Half a screen along the screen's own axes, so panning follows what is
-        // drawn rather than true north.
+        // The device's own step, off MapViewport::kPanStepPercent -- 30 % of the
+        // screen, not half, and for a reason measured on hardware. Along the
+        // screen's own axes, so panning follows what is drawn rather than true
+        // north (MapActivity::panBy).
+        const int stepX = kPanelW * MapViewport::kPanStepPercent / 100;
+        const int stepY = kPanelH * MapViewport::kPanStepPercent / 100;
         const int16_t ax = MapViewport::kAnchorScreenX;
         const int16_t ay = markerY;
-        const int dx = hit.arg == 2 ? -kPanelW / 2 : (hit.arg == 3 ? kPanelW / 2 : 0);
-        const int dy = hit.arg == 0 ? -kPanelH / 2 : (hit.arg == 1 ? kPanelH / 2 : 0);
+        const int dx = hit.arg == 2 ? -stepX : (hit.arg == 3 ? stepX : 0);
+        const int dy = hit.arg == 0 ? -stepY : (hit.arg == 1 ? stepY : 0);
         goToPixel(ax + dx, ay + dy, "pan");
         break;
       }
@@ -686,7 +762,8 @@ int main(int argc, char** argv) {
         editBuffer = formatCoord(staticLon);
         SDL_StartTextInput();
         break;
-      case Act::None: break;
+      case Act::None:
+        break;
     }
   };
 
@@ -739,10 +816,17 @@ int main(int argc, char** argv) {
       // aiming, and stepping one packet at a time.
       switch (event.key.keysym.sym) {
         case SDLK_q:
-        case SDLK_ESCAPE: running = false; break;
-        case SDLK_SPACE: paused = !paused; break;
-        case SDLK_PERIOD: stepOnce = true; break;
-        default: break;
+        case SDLK_ESCAPE:
+          running = false;
+          break;
+        case SDLK_SPACE:
+          paused = !paused;
+          break;
+        case SDLK_PERIOD:
+          stepOnce = true;
+          break;
+        default:
+          break;
       }
     }
 
@@ -755,6 +839,14 @@ int main(int argc, char** argv) {
       rideNowMs = packet.tUtcMs ? packet.tUtcMs - rideStartMs : rideNowMs + kFallbackPacketGapMs;
 
       const ReplayEngine::Stepper::Step step = stepper.step(packet);
+      if (step.log[0] != '\0') {
+        // The map module's own line, formatted by MapFollow::formatDecisionLog()
+        // -- the same bytes the device's LOG_DBG prints for this decision.
+        pushLog(logLines, "MAP %s", step.log);
+      } else {
+        pushLog(logLines, "WIN first fix: frame built at %.5f,%.5f heading %u", step.frameLat, step.frameLon,
+                (unsigned)step.frameHeadingStep);
+      }
       markerX = step.x;
       markerY = step.y;
       markerHeading = step.markerHeadingStep;
@@ -768,7 +860,8 @@ int main(int argc, char** argv) {
         staticHeading = step.frameHeadingStep;
       } else if (std::strcmp(step.action, "move") == 0) {
         ++partialRefreshes;
-        const int box = markerMetricsFor(MapViewport::kZoomLadder[zoomStepFor[static_cast<int>(mode)]].markerScale8).box;
+        const int box =
+            markerMetricsFor(MapViewport::kZoomLadder[zoomStepFor[static_cast<int>(mode)]].markerScale8).box;
         rectX = step.x - box / 2;
         rectY = step.y - box / 2;
         rectW = box;
@@ -907,17 +1000,36 @@ int main(int argc, char** argv) {
     bar.text(line, kSmallPx);
     bar.text("space pause   . step   q quit", kSmallPx);
 
-    // ── present ──────────────────────────────────────────────────────────────
-    blitCanvas(frame, kPanelW, kPanelH, pixels.data(), kWindowW, 0);
-    blitCanvas(sidebarCanvas, kSidebarW, kPanelH, pixels.data(), kWindowW, kPanelW);
-    for (int row = 0; row < kPanelH; ++row) pixels[static_cast<size_t>(row) * kWindowW + kPanelW] = kSeparator;
-    if (showRect && haveRect) strokeRect(pixels.data(), kWindowW, rectX, rectY, rectW, rectH, kRectInk, kPanelW);
-    SDL_Rect hoverBox;
-    if (bar.hover(hoverBox)) {
-      strokeRect(pixels.data(), kWindowW, hoverBox.x, hoverBox.y, hoverBox.w, hoverBox.h, kHoverInk, kWindowW);
+    // ── console ──────────────────────────────────────────────────────────────
+    if (options.console) {
+      consoleCanvas.fillRoundedRect(0, 0, kConsoleW, kPanelH, 0, MapInk::White);
+      int w = 0, lineH = 0;
+      consoleCanvas.measureText("Mg", kSmallPx, false, w, lineH);
+      const int rowStep = lineH + 3;
+      const int rows = (kPanelH - 2 * kPad) / (rowStep > 0 ? rowStep : 1);
+      const size_t first = logLines.size() > static_cast<size_t>(rows) ? logLines.size() - rows : 0;
+      int cy = kPad;
+      for (size_t i = first; i < logLines.size(); ++i) {
+        consoleCanvas.drawText(kPad, cy, logLines[i].c_str(), kSmallPx, false, MapInk::Black);
+        cy += rowStep;
+      }
     }
 
-    SDL_UpdateTexture(texture, nullptr, pixels.data(), kWindowW * static_cast<int>(sizeof(uint32_t)));
+    // ── present ──────────────────────────────────────────────────────────────
+    blitCanvas(frame, kPanelW, kPanelH, pixels.data(), windowW, 0);
+    blitCanvas(sidebarCanvas, kSidebarW, kPanelH, pixels.data(), windowW, kPanelW);
+    if (options.console) blitCanvas(consoleCanvas, kConsoleW, kPanelH, pixels.data(), windowW, kPanelW + kSidebarW);
+    for (int row = 0; row < kPanelH; ++row) {
+      pixels[static_cast<size_t>(row) * windowW + kPanelW] = kSeparator;
+      if (options.console) pixels[static_cast<size_t>(row) * windowW + kPanelW + kSidebarW] = kSeparator;
+    }
+    if (showRect && haveRect) strokeRect(pixels.data(), windowW, rectX, rectY, rectW, rectH, kRectInk, kPanelW);
+    SDL_Rect hoverBox;
+    if (bar.hover(hoverBox)) {
+      strokeRect(pixels.data(), windowW, hoverBox.x, hoverBox.y, hoverBox.w, hoverBox.h, kHoverInk, windowW);
+    }
+
+    SDL_UpdateTexture(texture, nullptr, pixels.data(), windowW * static_cast<int>(sizeof(uint32_t)));
     SDL_RenderClear(renderer);
     SDL_RenderCopy(renderer, texture, nullptr, nullptr);
     SDL_RenderPresent(renderer);
@@ -928,6 +1040,12 @@ int main(int argc, char** argv) {
       running = false;
   }
 
+  // The console backlog, so a headless run can be read and compared with a
+  // device log. Tail only: the window keeps hundreds of lines.
+  {
+    const size_t tail = std::getenv("MAP_WINDOW_FULL_LOG") ? 0 : (logLines.size() > 12 ? logLines.size() - 12 : 0);
+    for (size_t i = tail; i < logLines.size(); ++i) std::printf("%s\n", logLines[i].c_str());
+  }
   if (source == Source::Static) {
     std::printf("static %.5f,%.5f heading %u zoom %g m/px: %d tiles in, %d missing, %u ways, %u points\n", staticLat,
                 staticLon, staticHeading, MapViewport::kZoomLadder[zoomStepFor[static_cast<int>(mode)]].mpp,

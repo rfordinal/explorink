@@ -97,6 +97,11 @@ struct Result {
   // Of those, how many had 0 or 1 moves in -- the thrash signal
   // (docs/map-follow.md, "Heading thrash, round two").
   int thrashAnchors = 0;
+  // Re-anchors where the after-the-fact classification disagreed with the
+  // branch decide() actually took. Non-zero means the reason column in every
+  // table built from the old classifier is wrong for that many rows -- see
+  // MapFollow::Reason.
+  int reasonMismatches = 0;
   // Every packet's outcome, in order. Empty unless Config::recordEvents.
   std::vector<Event> events;
 };
@@ -118,7 +123,20 @@ class Stepper {
     // "init" | "skip" | "move" | "reanchor" -- same strings as Event::action.
     const char* action = "";
     // "" for init/skip/move; "heading" | "budget" | "keep-in" for reanchor.
+    //
+    // Classified after the fact, the way tools/replay_ride.py does, so the
+    // summary columns stay comparable with hardware-baseline.txt. Where the
+    // true branch matters, read `trueReason` instead.
     const char* reason = "";
+    // The branch decide() actually took (MapFollow::Reason). Can disagree with
+    // `reason` above: decide() tests heading before keep-in, the classifier
+    // tests keep-in first, so a fix that satisfies both is labelled differently
+    // by the two. Result::reasonMismatches counts those.
+    MapFollow::Reason trueReason = MapFollow::Reason::None;
+    // The map module's own log line for this decision, formatted by
+    // MapFollow::formatDecisionLog() -- the same bytes the device's LOG_DBG
+    // prints. Empty for "init", which decide() never sees.
+    char log[160] = {0};
     // Where the marker is now. For a reanchor this is the post-reset anchor,
     // not the fix projected through the frame that was just thrown away --
     // same choice, and same reason, as Event's x/y.

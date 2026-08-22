@@ -202,6 +202,7 @@ void runBaseline(const std::vector<RideLog::Ride>& rides, const ReplayEngine::Co
     totals.budgetAnchors += result.budgetAnchors;
     totals.keepInAnchors += result.keepInAnchors;
     totals.thrashAnchors += result.thrashAnchors;
+    totals.reasonMismatches += result.reasonMismatches;
     totals.headingMovesIn.insert(totals.headingMovesIn.end(), result.headingMovesIn.begin(),
                                  result.headingMovesIn.end());
   }
@@ -209,6 +210,13 @@ void runBaseline(const std::vector<RideLog::Ride>& rides, const ReplayEngine::Co
   std::printf("%-32s %8d %7d %7d %8d %8d %7d %8d %7d\n", "TOTAL", totals.packets, totals.skips, totals.moves,
               totals.reAnchors, totals.headingAnchors, totals.budgetAnchors, totals.keepInAnchors,
               totals.thrashAnchors);
+  if (totals.reasonMismatches > 0) {
+    // The reason columns above are classified after the fact, the way
+    // tools/replay_ride.py classifies the device's log line. decide() knows
+    // which branch it actually took, and these rows are where the two disagree
+    // -- see MapFollow::Reason.
+    std::printf("\n%d re-anchor(s) classified differently from the branch decide() took.\n", totals.reasonMismatches);
+  }
 
   if (totals.headingAnchors > 0) {
     std::printf("\nmoves since the last frame, per heading redraw:\n");
@@ -310,9 +318,9 @@ void runTrack(const std::vector<RideLog::Ride>& rides, ReplayEngine::Config conf
     out << "packet,t_utc_ms,action,reason,x,y,fix_heading,anchor_heading,moves_in,lat,lon\n";
     for (const ReplayEngine::Event& event : result.events) {
       const RideLog::Packet& packet = ride.packets[event.packetIndex];
-      out << event.packetIndex << ',' << packet.tUtcMs << ',' << event.action << ',' << event.reason << ','
-          << event.x << ',' << event.y << ',' << (int)packet.headingStep << ',' << (int)event.anchorHeadingStep
-          << ',' << event.movesIn << ',' << packet.lat << ',' << packet.lon << '\n';
+      out << event.packetIndex << ',' << packet.tUtcMs << ',' << event.action << ',' << event.reason << ',' << event.x
+          << ',' << event.y << ',' << (int)packet.headingStep << ',' << (int)event.anchorHeadingStep << ','
+          << event.movesIn << ',' << packet.lat << ',' << packet.lon << '\n';
     }
     std::printf("%s: %d row(s) -> %s\n", ride.name.c_str(), (int)result.events.size(), path.c_str());
   }
