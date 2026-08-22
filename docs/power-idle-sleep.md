@@ -364,6 +364,72 @@ this file.
 Items 1 and 2 are the ones that actually guard. Items 3 and 4 catch what slips
 through. Item 5 catches what a careful author would have caught anyway.
 
+## Can Observe go lower? Four levers, and the one unknown that could void them all
+
+**Written 2026-08-22 from run 5's counters** (`power-plan.md`, run 5): 6.25 h of
+Observe with the radio off on **X4**, at 1.76 %/h. The CPU is not idle in that
+state, and the counters say exactly how much it is not:
+
+| Counter | Over the run | Reading |
+|---|---|---|
+| `loops` | 18.5 Hz, 53.9 ms period | `delay(50)` plus ~4 ms of work |
+| `loop_busy_ms` | **6.61 %** of wall | **3.567 ms of work per iteration** |
+| `panel_busy_ms` | 0.94 % | **376 windowed refreshes, exactly 60/h** |
+| `throttled_ms` | 99.89 % | the 10 MHz floor held all night |
+| `full_clock_ms` | 0.11 % | 24 s of full clock in six hours |
+
+**The once-a-minute redraw is the header clock**, and it is deliberate:
+`minuteMoved` in `updateHeaderStatus()` has no rate cap of its own because "a
+minute *is* the cap", and its comment names this exact case -- *"the one condition
+that fires while nothing else on the device is happening"*
+(`src/activities/map/MapActivity.cpp:1268-1279`) **[repo]**. The battery indicator
+rides the same tick. Yesterday's explanation for a per-minute repaint was RSSI bar
+churn; that one cannot apply here, because the radio is off.
+
+### The four levers, cheapest first
+
+1. **Light sleep, and Observe is the safest place in the campaign to try it.**
+   93 % of the wall clock is `delay(50)`, which with `CONFIG_PM_ENABLE` unset is a
+   `vTaskDelay` onto an idle task that spins at 10 MHz. Turning PM on is
+   experiment 3 -- but every landmine in that experiment is a radio landmine: the
+   APB drop, the `CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP` flag, the
+   controller's compiled-out PM locks ("Why 10 MHz breaks BLE" in
+   `power-management.md`). **In Observe the controller is disabled**, so none of
+   them apply. The residual risks are the SPI panel and the SD card under DFS, and
+   in this state both are exercised once a minute rather than continuously. This is
+   the mildest possible first test of route B.
+2. **Gate the ADC button ladder.** 3.567 ms per iteration at 10 MHz, most of it
+   two `analogRead()` calls (`InputManager::getState()`). At 160 MHz the same work
+   is around 0.2 ms, so the 10 MHz floor makes per-tick work 16x more expensive in
+   wall time -- the one place where the cheap clock costs something back.
+3. **Grow the parked cadence, 50 -> 250 ms.** Five times fewer wake-ups, so five
+   times less of lever 2. Observe is the natural first consumer
+   (`src/ParkedLoopPolicy.h`): it holds no link, so the only ceiling is button
+   latency, and the ladder is polled rather than interrupt-driven, which makes the
+   cadence *equal* to the worst-case latency.
+4. **Slow the clock repaint in Observe.** 60 refreshes an hour at ~562 ms of panel
+   time each is 9.4 s/h. A rider panning the map is looking at it; a device left in
+   Observe for six hours is not. Every five minutes, or only on input, would keep
+   what the clock is for.
+
+### The unknown that could void all four
+
+**How much of 1.76 %/h is the board's own floor?** The regulator's quiescent
+draw, the SD card sitting powered, the panel controller idle -- none of it is
+measured, and `power-management.md`, "The board's own floor is unpriced", says it
+bounds every sleep state. If the floor is most of that 1.76, all four levers
+together buy a few percent and the work is misdirected.
+
+So run 5 is not only the cheapest state measured, it is **the tightest upper bound
+on the board floor that exists**: whatever the floor is, it is below 1.76 %/h. Two
+ways to squeeze that bound, and one needs no purchase:
+
+- **Experiment 1**, a meter at the cell, which prices the floor directly -- and on
+  X4 means opening the device.
+- **Lever 1 on its own.** Whatever Observe reaches with light sleep on becomes the
+  new upper bound, for the cost of one build and one night. If it barely moves, the
+  floor is the answer and experiment 1 becomes the only remaining question.
+
 ## The power lab screen
 
 A separate activity, off the map, whose only job is to enter one power state
