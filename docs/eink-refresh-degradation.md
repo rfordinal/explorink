@@ -151,6 +151,10 @@ whole map session (BUG-021 in the parent repo). Five is the vendor's number for
 ghosting, not for this light problem; a ride-tolerable N will be larger and the
 reason has to be written down. Their general "refresh interval at least 180 s"
 guidance explicitly excludes partial-refresh products, so it does not bind us.
+Their other timing rule -- refresh at least once every 24 hours, weekly at worst
+(https://www.e-paper-display.com/news_detail/newsId=53.html) -- is aimed at
+tri-color panels; a device that sleeps with a fresh sleep screen and wakes to a
+clean satisfies it either way.
 
 **Confidence after the reading:** the mechanism is **sourced** -- a vendor
 sentence, an EPD patent, the TFT literature, and independent user reports of the
