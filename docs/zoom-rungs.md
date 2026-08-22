@@ -99,6 +99,17 @@ opens for edge chevrons (`docs/map-data-spec.md`, "two tile ranges"), or the two
 device bytes for device claims and preview bytes for preview claims -- do not
 mix them in one table.
 
+### The rung also decides how often the map is redrawn at all
+
+Everything above is the cost of **one** reset. The rung also changes how many
+resets a ride needs, and that turns out to matter more: replayed at step 2
+(6 m/px, ride mode's own default) the same ride takes 30 re-anchors and 264
+marker moves, against 14 and 113 at step 4 (20 m/px) -- 2.3x the panel time.
+Measured off the device with `test/map_window`; the table, the confidence and
+what would settle it are in
+[`map-follow.md`](map-follow.md), "The default ride rung costs more than twice
+what was measured".
+
 ## Raising the tile cap broke a bitmap, silently
 
 `MapTileSource` memoises which `(tile, layer)` pairs have passed their crc32

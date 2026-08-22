@@ -65,6 +65,12 @@ What layer 1 measures, and at what confidence:
 That last row is the honest limit of layer 1 and the reason layer 2 still
 matters.
 
+**It paid for itself on the first run.** Replaying one ride at ride mode's own
+default rung instead of the rung the hardware runs used showed 30 re-anchors and
+264 marker moves against 14 and 113 -- 2.3x the panel cost, on the setting the
+device actually ships with. `map-follow.md`, "The default ride rung costs more
+than twice what was measured".
+
 ## Prior art: someone already built a CrossPoint desktop emulator
 
 `github.com/jonmooreai/Crosspoint-Emulator` runs upstream CrossPoint's

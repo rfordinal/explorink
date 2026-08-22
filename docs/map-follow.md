@@ -769,11 +769,30 @@ at the ride's own pace while you watch:
 
 ```
 map_window --ride docs/rides/<ride>.jsonl --tiles mapbuilder/cdn
+            [--mode ride|hike|cycle] [--zoom 0-6] [--marker 0-4]
+            [--route <route.tir>] [--speed X] [--exit-at-end]
 ```
 
-Space pauses, `.` steps one packet, `+`/`-` scale the ride clock (0.125x to 64x),
-`r` restarts, `d` toggles the dirty rectangle, `q` quits. `--exit-at-end` quits
-on the last packet, for a scripted run.
+The sidebar is a mouse menu, not a key chart: the seven zoom rungs, the three
+ride modes, the POI layer and its ten categories, the buildings override (follow
+the rung / force on / force off), the missing-tile hatch, a route when one is
+given, the dirty-rect overlay, and Pause / Restart / speed. Space and `.` stay on
+the keyboard, which is what a mouse is bad at. `--exit-at-end` quits on the last
+packet, for a scripted run.
+
+**Every setting change re-anchors and counts a full refresh.** That is what the
+device does -- "A viewport reset -- a ladder step, a mode switch, a Refresh"
+(`MapActivity.h`) -- so what a layer or a rung costs lands in the counter right
+next to the control that changed it. `Stepper::reAnchorOnLastFix()` is that
+reset, and it is deliberately kept out of `Result`: that structure mirrors the
+decisions the device logs and `hardware-baseline.txt` gates, and a menu action is
+not one.
+
+Each mode remembers its own rung on both ladders, as on the device
+(`MapRideMode.h`). So the window starts at the mode's own default rung, **not**
+at the baseline's: ride is step 2, 6 m/px, while the 2026-08-08 hardware runs
+were driven at step 4, 20 m/px, because that is what `tools/replay_ride.py`
+sends. Pass `--zoom 4 --marker 2` to compare against those numbers.
 
 Nothing is reimplemented. The decisions come from `ReplayEngine::Stepper`, which
 is the same state machine `replay()` loops and `--check` gates against the three
@@ -799,9 +818,37 @@ in and missing, ways drawn, and two timings kept deliberately apart:
   number claiming to be the device's render cost would be wrong nearly
   everywhere.
 
-Verified 2026-08-22: `map_window --exit-at-end` and `map_replay` on
-`trailink-gps-20260807-142303` at the current thresholds agree exactly -- 339
-packets, 211 skips, 113 moves, 14 re-anchors (8 heading, 6 budget, 0 keep-in).
+### The default ride rung costs more than twice what was measured
+
+Found by the window on its first run, 2026-08-22, on
+`trailink-gps-20260807-142303`:
+
+| rung | skips | moves | re-anchors | refreshes x 500 ms |
+|---|---|---|---|---|
+| step 4, 20 m/px -- what the hardware runs used | 211 | 113 | 14 | 63.5 s |
+| step 2, 6 m/px -- `kDefaultZoomStepForMode[Ride]` | 44 | 264 | 30 | 147 s |
+
+Same ride, same thresholds, same code. The rung the device actually starts ride
+mode on is **2.3x the panel cost** of the rung every number in this doc was
+measured at. It follows from the geometry -- at 6 m/px the same movement crosses
+more pixels, so fewer fixes are skipped, the marker moves more often and the
+ghosting budget trips sooner -- but nobody had put the two side by side.
+
+Confidence: the decision counts are the real `MapFollow::decide()`, gated against
+hardware at step 4. The seconds are those counts times the measured 500 ms, so
+they are **derived, not measured** -- and they leave out the render half, which at
+step 2 reads z12 tiles rather than z11 and is its own cost ("That 8.9 s is a city
+number").
+
+What would settle it: one hardware run of this ride at step 2, compared against
+the row above.
+
+### Verified against the older tools
+
+Verified 2026-08-22: `map_window --zoom 4 --marker 2 --exit-at-end` and
+`map_replay` on `trailink-gps-20260807-142303` at the current thresholds agree
+exactly -- 339 packets, 211 skips, 113 moves, 14 re-anchors (8 heading, 6 budget,
+0 keep-in).
 That is **not** the `hardware-baseline.txt` row for the same ride (24 redraws,
 20 heading, 4 budget): the baseline replays with `movement floor 0`, the
 pre-gate firmware it was measured against. Both numbers are right for their own
