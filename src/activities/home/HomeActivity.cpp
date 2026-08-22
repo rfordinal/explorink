@@ -46,7 +46,7 @@ constexpr int kRowHeight = 60;
 const HomeActivity::Row* HomeActivity::rows() {
   static constexpr Row kRows[] = {
       {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore, true},
-      {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips, false},
+      {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips, true},
       {HomeMenuItem::PINS, StrId::STR_HOME_PINS, &icon_pins, false},
       {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet, false},
       {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync, true},
@@ -100,6 +100,9 @@ void HomeActivity::activate(const int index) {
       break;
     case HomeMenuItem::MAP:
       onMapOpen();
+      break;
+    case HomeMenuItem::TRIPS:
+      onTripsOpen();
       break;
     case HomeMenuItem::TILE_SYNC:
       onTileSyncOpen();
@@ -202,9 +205,13 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
-// The picker first, then the map. It falls through to the map on its own when
-// the card has no routes (ActivityManager::goToRouteSelect).
-void HomeActivity::onMapOpen() { activityManager.goToRouteSelect(); }
+// Straight to the map, no picker -- that is now Trips' job (onTripsOpen()).
+void HomeActivity::onMapOpen() { activityManager.goToMap(); }
+
+// The trip picker lives here, not on a separate row: Trips is where a rider
+// already looks for "which trip", so it opens RouteSelectActivity rather than
+// its own screen.
+void HomeActivity::onTripsOpen() { activityManager.goToRouteSelect(); }
 
 void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
 

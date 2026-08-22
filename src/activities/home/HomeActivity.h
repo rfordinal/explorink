@@ -11,9 +11,10 @@ class HomeActivity final : public Activity {
   const HomeMenuItem initialMenuItem;
 
   // The menu, in the order it is drawn. `enabled == false` draws the row dimmed
-  // and refuses selection -- Trips has no activity at all, Pins lives inside the
-  // map's own popup, and Wallet's activity is on the wallet-viewer branch and not
-  // on develop yet (../../../docs/home-screen.md).
+  // and refuses selection -- Pins lives inside the map's own popup, and Wallet's
+  // activity is on the wallet-viewer branch and not on develop yet
+  // (../../../docs/home-screen.md). Trips is enabled: it opens the trip picker
+  // (onTripsOpen() -> ActivityManager::goToRouteSelect()).
   struct Row {
     HomeMenuItem item;
     StrId label;
@@ -34,6 +35,7 @@ class HomeActivity final : public Activity {
   void onSettingsOpen();
   void onFileTransferOpen();
   void onMapOpen();
+  void onTripsOpen();
   void onTileSyncOpen();
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   void onPreviewOpen();

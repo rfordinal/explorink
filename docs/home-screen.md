@@ -35,20 +35,25 @@ height as the step for the same reason
 
 | Row | Destination | Icon |
 |---|---|---|
-| Explore | `goToRouteSelect()` (falls through to the map with no routes) | the ExplorInk mark |
-| Trips | none yet -- **dimmed** | lucide `backpack` |
+| Explore | `goToMap()` -- straight to the map, no picker | the ExplorInk mark |
+| Trips | `goToRouteSelect()` (falls through to the map with no trips) | lucide `backpack` |
 | Pins | none yet -- **dimmed** | lucide `map-pin` |
 | Wallet | none yet -- **dimmed** | lucide `wallet` |
 | Sync | `goToTileSync()` | lucide `refresh-cw` |
 | File Transfer | `goToFileTransfer()` | lucide `wifi` |
 | Settings | `goToSettings()` | lucide `settings` |
 
+Changed 2026-08-22: Explore used to open the trip picker first (falling
+through to the map only when the card had no trips). Explore now jumps
+straight to the map every time -- the fast path a rider wants when walking out
+the door. The trip picker moved to Trips, which is where "pick which trip"
+already belonged conceptually (`src/activities/home/HomeActivity.cpp:210-213`).
+
 `ENABLE_PREVIEW_BENCH` adds the grayscale bench as an eighth row before
 Settings, same as before (`platformio.ini`).
 
-Why three rows are dimmed rather than absent:
+Why two rows are dimmed rather than absent:
 
-* **Trips** has no activity at all.
 * **Pins** exists only as a popup inside the map (`docs/pins.md`,
   `src/activities/map/MapActivity.h:526`). A Home row would need an entry path
   into that popup, which is not built.
@@ -61,7 +66,8 @@ dispatch. `initialMenuItem` pointing at a dimmed row lands on the next enabled
 one instead (`HomeActivity::onEnter()`).
 
 `HomeMenuItem` carries `TRIPS`, `PINS` and `WALLET` so the table can name them
-(`src/activities/ActivityManager.h:29-35`). No `goTo*` exists for any of them.
+(`src/activities/ActivityManager.h:20-36`). `TRIPS` dispatches to the existing
+`goToRouteSelect()`; no `goTo*` exists yet for `PINS` or `WALLET`.
 
 ## Dimming, with no grey to dim with
 
