@@ -236,10 +236,12 @@ plus a shallow DU waveform plus no clean is exactly a pale, mottled panel. Above
 the top of the OTP table the waveform cannot get any shorter and the drive is
 simply insufficient.
 
-**Open:** the GDEQ0426T82 operating range. It is not in this tree, and a vendor
-sheet is needed -- do not quote a number from memory. E-ink panels of this class
-are typically specced to a ceiling well below what a black case in direct sun
-reaches, but that sentence is a guess until the sheet says so.
+**Settled 2026-08-22, from the vendor's own product page**
+(https://www.good-display.com/product/957.html): GDEQ0426T82 operating
+temperature is **0-50 C**, storage **-25-60 C**, and the quoted refresh times are
+measured at 25 C. So the panel has a stated ceiling of 50 C, and a dark device in
+a mount in direct sun is a plausible way past it. What the OTP waveform table does
+above 50 C is still open -- the datasheet, not the product page, would say.
 
 **2. `HALF` lies to the panel about the temperature.** The `HALF` path writes a
 fixed value to the temperature register before every clean:
