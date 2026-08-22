@@ -137,6 +137,56 @@ It is also not drawn when the point is off the panel -- clamping it to an edge
 would claim the point is at the edge. Same open question as the rider's own
 off-screen fix: only pins have edge arrows today.
 
+## One setting for the whole layer, and a dimmed row when it is off
+
+`SETTINGS.mapPointsEnabled`, category Map, **default on**
+(`../src/CrossPointSettings.h`, next to `mapTileFreshnessMode`). It answers one
+question: does this device deal in the point layer at all. It is not about data
+-- *when* a shard is fetched is `mapTileFreshnessMode`'s question, and that one
+defaults to `Off` (`../../../docs/point-layer-lifecycle.md`, decision 2).
+
+On by default because reading a shard the card already holds spends card time
+and no mobile data. So the default costs nothing and the feature is there for a
+rider who never opens Settings.
+
+`MapActivity::pointsEnabled()` is the single read, and three paths go through
+it:
+
+- `onEnter()` does not allocate `MapPointSource` or its file handle at all, so
+  1.3 kB goes back to the heap the map screen is always short of.
+- `renderViewport()` hands the render no point source, so no shard is opened.
+- the map menu's `Nearby` row is **dimmed and unselectable**, with `OFF` in the
+  value column.
+
+Read live rather than cached in `onEnter()`: the Settings screen can flip it
+while this activity is alive, and a cached copy would keep drawing marks the
+rider just switched off.
+
+### The row is dimmed, not removed
+
+A row that vanished reads as a firmware that lost a feature. A dimmed row reads
+as a switch somebody turned off, which is the truth, and it stays where muscle
+memory expects it.
+
+`OptionPopup::setDisabledRows()` carries the mask, parallel to the options, and
+is called **after** `showWithValues()` -- which clears it, the same rule
+`setNote()` follows, so a stale mask cannot survive into the next popup. A
+disabled row is skipped by the selection walk (the same walk
+`HomeActivity::nextSelectable()` does), swallows a tap, and refuses a `Confirm`
+that somehow lands on it.
+
+**The ink comes from `BaseTheme::dimDisabledRow()`, which Home's menu already
+used.** Every second pixel row to white, drawn last so it dims the label and the
+value together. A line screen and not a checkerboard: the panel has no grey in
+BW mode (`eink-grayscale.md`) and at this text size a checkerboard speckles the
+glyphs instead of greying them. Home had this inline; it moved into a shared
+helper so the two lists cannot drift into two different ideas of "disabled".
+
+**Not verified on the panel.** The dim is Home's, so it is already known to read
+there, but it has never been seen on an `OptionPopup` row -- a popup row is
+shorter than a Home row and carries a value box. What a hardware pass has to
+check is at the bottom.
+
 ## `Show on map` is a view, not a setting
 
 `nearbyCategoryMask_`, one bit per category, on `MapActivity` and **not** in
@@ -367,6 +417,10 @@ edge marker to the same 0.1 km step.
 **Not verified -- needs an X4 pass:**
 
 - Nothing here has run on the device. No screen has been on the panel.
+- **The dimmed `Nearby` row.** Switch `Nearby points` off in Settings, open the
+  map menu: the row must be there, visibly dimmed, reading `OFF`, and neither
+  the button walk nor a tap may land on it. The dim is Home's own line screen,
+  but on a shorter row with a value box beside it.
 - The three popups' layout at the map menu's dialog size: row count, the value
   column with `?` in it, and a long POI name in the title.
 - ~~Whether the 15 px square and the 9 px glyph read on the glass.~~

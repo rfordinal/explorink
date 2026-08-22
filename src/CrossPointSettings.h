@@ -322,6 +322,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t mapRotationMode = MAP_ROTATION_HEADING_UP;
   uint8_t mapHeadingMode = MAP_HEADING_AUTO;
   uint8_t mapTileFreshnessMode = MAP_TILE_FRESHNESS_OFF;
+  // Whether the device uses the point layer at all: the .tip shards on the card,
+  // the marks they draw, and the `Nearby` menu over them
+  // (../../docs/point-layer-lifecycle.md, decision 2). One switch for the whole
+  // layer, not one per category -- which categories are drawn is a view the map
+  // menu owns and it does not survive a reboot (docs/nearby-menu.md).
+  //
+  // **On by default, and that does not spend data.** When a shard is fetched is
+  // mapTileFreshnessMode's question, and that one defaults to Off; reading a
+  // shard the card already holds costs card time and no data at all. So this
+  // toggle answers "does this device deal in points", nothing else.
+  //
+  // Off dims the `Nearby` row rather than removing it (MapActivity::openMenu()):
+  // a row that vanished reads as a firmware that lost a feature, a dimmed one
+  // reads as a switch somebody turned off, which is the truth.
+  uint8_t mapPointsEnabled = 1;
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships

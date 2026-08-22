@@ -772,6 +772,19 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
   }
 }
 
+// Every second pixel row to white, over whatever was already drawn there. A
+// line screen and not a checkerboard: the panel has no grey in BW mode
+// (../../../docs/eink-grayscale.md), and at this text size a checkerboard
+// speckles the glyphs instead of greying them. Called after the label, the icon
+// and the value are down, so it dims all three at once.
+void BaseTheme::dimDisabledRow(const GfxRenderer& renderer, const int x, const int y, const int width,
+                               const int height) {
+  constexpr int kDimStep = 2;
+  for (int line = y; line < y + height; line += kDimStep) {
+    renderer.fillRect(x, line, width, 1, false);
+  }
+}
+
 // Home's row list. Geometry is deliberately not in ThemeMetrics: these are the
 // Home screen's own numbers (a 480 px panel, one screenful of seven rows), and a
 // theme that wants a different Home overrides this method instead.
@@ -783,11 +796,9 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
   constexpr int kIconGap = 18;
   constexpr int kBlockRadius = 10;
   constexpr int kBlockMargin = 2;
-  // A disabled row keeps its glyph and its label and loses every second pixel
-  // row to white. The panel has no grey in BW mode (../../docs/eink-grayscale.md),
-  // and a line screen halves the ink without the speckle a checkerboard leaves at
-  // this text size.
-  constexpr int kDimStep = 2;
+  // Disabled rows are dimmed by BaseTheme::dimDisabledRow(), which is where the
+  // line-screen reasoning lives -- OptionPopup draws its own disabled rows
+  // through the same helper.
 
   const int left = rect.x + metrics.contentSidePadding;
   const int width = rect.width - metrics.contentSidePadding * 2;
@@ -816,9 +827,7 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
                           chevron.w, chevron.h, !selected);
 
     if (!enabled) {
-      for (int y = top + kBlockMargin; y < top + rowHeight - kBlockMargin; y += kDimStep) {
-        renderer.fillRect(left, y, width, 1, false);
-      }
+      dimDisabledRow(renderer, left, top + kBlockMargin, width, rowHeight - kBlockMargin * 2);
     }
 
     // Hairline between rows, drawn after the dimming so a dimmed row does not
@@ -1210,6 +1219,8 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
     if (i < 0 || i >= optionCount) continue;
     const int itemY = geometry.firstRowY + row * geometry.rowStep;
     const bool selected = (i == spec.selectedIndex);
+    const bool rowDisabled =
+        spec.disabled != nullptr && i < static_cast<int>(spec.disabled->size()) && (*spec.disabled)[i] != 0;
     const char* labelText = (*spec.options)[i].c_str();
 
     if (metrics.optionPopupDrawAllRows || selected) {
@@ -1239,19 +1250,29 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
 
     // The value, right-aligned, boxed on the selected row -- the same "this is
     // the changeable part" cue the Settings list gives (LyraTheme::drawList()).
-    if (!spec.values || i >= static_cast<int>(spec.values->size()) || (*spec.values)[i].empty()) continue;
-    const char* valueText = (*spec.values)[i].c_str();
-    const int valueW = renderer.getTextWidth(optionFontId, valueText, optionStyle);
-    const int boxW = valueW + spacing.valuePadding * 2;
-    const int boxX = geometry.rowX + geometry.rowWidth - boxW;
-    if (selected) {
-      if (selectionRadius > 0) {
-        renderer.fillRoundedRect(boxX, itemY, boxW, geometry.rowHeight, selectionRadius, Color::Black);
-      } else {
-        renderer.fillRect(boxX, itemY, boxW, geometry.rowHeight, true);
+    const bool hasValue =
+        spec.values != nullptr && i < static_cast<int>(spec.values->size()) && !(*spec.values)[i].empty();
+    if (hasValue) {
+      const char* valueText = (*spec.values)[i].c_str();
+      const int valueW = renderer.getTextWidth(optionFontId, valueText, optionStyle);
+      const int boxW = valueW + spacing.valuePadding * 2;
+      const int boxX = geometry.rowX + geometry.rowWidth - boxW;
+      if (selected) {
+        if (selectionRadius > 0) {
+          renderer.fillRoundedRect(boxX, itemY, boxW, geometry.rowHeight, selectionRadius, Color::Black);
+        } else {
+          renderer.fillRect(boxX, itemY, boxW, geometry.rowHeight, true);
+        }
       }
+      // Boxed value is white-on-black; everything else is dark on its own row.
+      renderer.drawText(optionFontId, boxX + spacing.valuePadding, textY, valueText, !selected, optionStyle);
     }
-    // Boxed value is white-on-black; everything else is dark on its own row.
-    renderer.drawText(optionFontId, boxX + spacing.valuePadding, textY, valueText, !selected, optionStyle);
+
+    // Last, so it dims the label and the value together. A disabled row is
+    // never the selected one (OptionPopup's walk skips it), so the lines always
+    // land on a white row and never on the selection block.
+    if (rowDisabled) {
+      dimDisabledRow(renderer, geometry.rowX, itemY, geometry.rowWidth, geometry.rowHeight);
+    }
   }
 }

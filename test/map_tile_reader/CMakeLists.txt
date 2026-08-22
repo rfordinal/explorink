@@ -19,6 +19,12 @@ add_executable(MapTileReaderGoldenTest
   ${REPO_ROOT}/src/activities/map/MapViewport.cpp
   ${REPO_ROOT}/src/activities/map/MapHatch.cpp
   ${REPO_ROOT}/src/activities/map/MapModeMask.cpp
+  # The point layer: MapRenderer and MapPreviewPipeline both call into it since
+  # the Nearby work landed, so this target does not link without them. Same
+  # three files map_preview/CMakeLists.txt lists.
+  ${REPO_ROOT}/src/activities/map/MapPointReader.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointSource.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointMarks.cpp
 )
 
 target_include_directories(MapTileReaderGoldenTest PRIVATE

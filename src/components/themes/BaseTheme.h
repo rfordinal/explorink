@@ -306,6 +306,10 @@ class BaseTheme {
     // (MapActivity::captureMenuBackdrop()).
     int minDialogWidth = 0;
     int minVisibleRows = 0;
+    // Rows the rider cannot select, parallel to `options`: non-zero means the
+    // row is disabled. Drawn dimmed by dimDisabledRow() and skipped by
+    // OptionPopup's selection walk. nullptr or short means every row is live.
+    const std::vector<uint8_t>* disabled = nullptr;
     // One line of text between the title and the rows, not selectable and not
     // counted as a row. For a fact about the thing the popup is *about* rather
     // than an action on it -- a POI's reliability condition, say. nullptr means
@@ -335,6 +339,13 @@ class BaseTheme {
   };
   virtual OptionPopupGeometry optionPopupGeometry(const GfxRenderer& renderer, const OptionPopupSpec& spec) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSpec& spec) const;
+
+  // A row the rider cannot select: keep the glyph and the label, lose every
+  // second pixel row to white. Shared by Home's list and by OptionPopup so the
+  // two cannot drift into two different ideas of "disabled" -- the panel has no
+  // grey in BW mode (../../../docs/eink-grayscale.md), and a line screen halves
+  // the ink without the speckle a checkerboard leaves at this text size.
+  static void dimDisabledRow(const GfxRenderer& renderer, int x, int y, int width, int height);
 
   // Hard ceiling on the dialog: rows past it scroll rather than making it
   // taller. Both bounds exist because the dialog's size is a RAM cost for
