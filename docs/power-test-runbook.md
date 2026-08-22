@@ -19,6 +19,12 @@ Every run here uses the frozen baseline and its four conditions
 Confidence marks: **[measured]** on hardware here, **[repo]** read off this
 code, **[primary]** vendor page or pinned IDF, **[assumed]** nobody checked.
 
+**And every measurement says which device it was taken on.** Standing
+instruction, 2026-08-21. X4 is the only device this campaign has run on so far;
+X4 Pro and X3 are targets. A number without a device name is not a finding, and
+on this line it is not a formality: one C3 binary drives X4 and X3 with the
+profile chosen at runtime, so nothing else in a row identifies the hardware.
+
 ## Order of work across sessions
 
 | # | Step | Precondition | Exit criterion |
@@ -33,6 +39,84 @@ code, **[primary]** vendor page or pinned IDF, **[assumed]** nobody checked.
 
 Steps 0 and 1 can happen in any session with no device and no lock. Step 5 can
 run before step 4 if the meter arrives first -- they are independent.
+
+## The unattended night run: what to do with 6-8 h and nobody there
+
+**Written 2026-08-21 for that night's run; the shape is reusable.** The whole
+point of an unattended window is that it can only run what needs **no hands**, so
+the division of labour is the plan:
+
+- **Needs a person** (a button press, WiFi on, reading an IP): the idle floor on
+  Home, WiFi mode, observation mode, and anything on the power lab screen. Do
+  these while the maintainer is at the desk. They are 20-30 minutes each.
+- **Needs nobody**: everything reachable over BLE from the laptop, which is every
+  connected/advertising comparison. The device sits in the map, unplugged, and
+  `tools/blefakephone.py` drives it.
+
+**Do not flash for an unattended night.** It is tempting -- the power lab screen
+would label every leg in the `state` column -- but `CMD:GOTO_POWERLAB` and
+`CMD:POWERLAB_STATE` are wired to `main.cpp`'s **serial** `CMD:` dispatch, not to
+the BLE command characteristic (which lands in `MapCommandParser`). With USB out,
+which a power run requires, the lab screen cannot be driven at all. So a flash
+would risk the whole night for a cosmetic column, when `ble` plus a timestamped
+schedule already separates the legs.
+
+### The leg pattern: rapid alternation, not long legs
+
+**Rewritten 2026-08-21 after run 4.** The first version of this plan was nine
+40-minute legs with a reference between each pair. Run 4 showed why that fails: a
+40-minute leg in the plateau moves the voltage **1-2 ADC counts**, so no single
+leg resolves anything and no amount of reference legs fixes it
+(`power-plan.md`, "The plateau problem").
+
+What does work with the same instrument is **alternation**. The curve term is
+smooth and slow; the state term flips on a schedule we choose. Difference every
+adjacent A/B pair and average over many cycles, and the drift cancels even though
+each individual leg is inside noise. The estimator is the mean of paired
+differences, and its error falls as the square root of the number of pairs -- so
+sixteen 25-minute legs beat four 100-minute ones for a *comparison*, while a long
+run is still what a single state's absolute slope needs.
+
+One night, one comparison, alternating:
+
+| Plan | Legs | Answers |
+|---|---|---|
+| **A: the link's own cost** | `adv` / `conn --interval 3600` x 8 pairs, 25 min each | the scoreboard's `[open]` "bringing the radio up at all" row |
+| **B: send cadence (M2)** | `conn --interval 7` / `conn --interval 30` x 8 pairs, 25 min each | the maintainer's question, with the panel held constant by construction |
+
+**Pick one per night.** Two comparisons in one night halves the pairs for each,
+and the pair count is the whole point. Plan A first: it is the bigger term, and
+plan B's answer only matters if the radio turns out to cost anything.
+
+**Check the isolation rather than assuming it**: `ref_window` and
+`panel_busy_ms` deltas must match across the two states of a pair. If they do
+not, the difference is not the radio.
+
+**Drop the first leg after any reboot, and every boundary row.** Both cost run 4
+a leg (`power-plan.md`, run 4).
+
+### Rules for the unattended window
+
+- **`--duration`, never `timeout`.** Verified on hardware 2026-08-21: SIGTERM
+  kills python before asyncio unwinds `BleakClient` and the LE link stays up in
+  the kernel, so the next leg silently runs connected. `--duration` disconnects
+  cleanly (`tools/blefakephone.py`).
+- **`python3 -u`**, or a killed process takes its log with it.
+- **Retry each leg.** A link that drops at 03:00 with nobody watching costs the
+  rest of the night otherwise.
+- **USB stays out.** VBUS charges the cell and the run stops meaning anything
+  (`power-plan.md`, constraint 1).
+- **Log the schedule with wall-clock timestamps.** That log plus `uptime_s` is
+  what maps a CSV row to a leg, and run 3 proved it lines up to the minute.
+- **Check the band, not just the battery percent.** Legs are only comparable
+  inside roughly 4.05-3.80 V. Six hours at a 13 mA mix costs ~85 mAh, about 13 %
+  of a 650 mAh pack, so a night that starts at 85 % ends around 72 % -- inside
+  the band at both ends.
+- **A flash in between ends the series.** USB charges the cell, so the pack comes
+  back to the top of the curve and the first hour after unplugging is relaxation
+  again (`power-plan.md`). And the build changes, which is the one column the
+  scoreboard cannot difference across. After any flash: start a new series, do not
+  extend an old one, and let the pack sit 30 minutes off the charger first.
 
 ## Step 0: what needs no flash and no instrument
 
@@ -318,6 +402,45 @@ experiment 1):
 Deep sleep is used here **once, as an instrument**, then never again -- it is
 rejected as a feature (`power-idle-sleep.md`, "S3 -- rejected").
 
+## X3 has a current meter on the board, and the firmware already reads it
+
+**Found 2026-08-21 while asking how a meter would physically attach to an X4.**
+The answer for X3 is: it does not have to.
+
+`BoardConfig`'s X3 profile carries a **BQ27220 fuel gauge at 0x55** on SDA20/SCL0
+(`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h`, the X3 profile)
+**[repo]**. X4 has none -- `gaugeAddr` 0, battery read off an ADC divider -- which
+is why the two devices need different instruments and why every measurement has
+to name its device.
+
+**And the register is already being read.**
+`freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:23` defines
+`BQ27220_CURRENT = 0x0C`, described in that comment as *average current, signed
+mA*, and `:211` reads it -- then uses **only its sign**, to decide whether the pack
+is charging, and throws the magnitude away **[repo]**.
+
+So on X3 the device can report its own draw in milliamps, with no meter, no
+soldering and no teardown. Two consequences, both large:
+
+- **It measures current, not voltage, so the plateau problem does not exist for
+  it.** Every difficulty in `power-plan.md`'s "The plateau problem" comes from
+  inferring power from a slowly-moving voltage. A current register is a direct
+  reading at one operating point.
+- **It arrives with a device rather than a purchase.** X3 dev units were asked for
+  in the 2026-08-19 outreach. If one lands, the campaign gets its instrument for
+  free -- for X3.
+
+What is **not** settled, and must be read off the BQ27220 datasheet before
+anything is claimed (this repo's research-numbers rule: a primary page, not
+memory): the register's resolution, its averaging window, and whether it is
+trustworthy at single-digit milliamps, which is exactly the range that matters
+here. A gauge tuned for a phone's discharge may quantise at 1 mA or worse.
+
+The work to expose it is small and specified: `BatteryMonitor` needs a public
+`readCurrentMa()` beside `readMillivolts()`, and `PowerLog` gains a `cur_ma`
+column next to `board`. It is deliberately **not** written yet -- it can only be
+verified on an X3, and this repo does not merge untested firmware.
+
 ## The instrument problem, honestly
 
 `power.csv` resolves milliamps over hours from the `batt_mv` slope. It cannot
@@ -326,6 +449,64 @@ see microamps, and plugging USB in charges the cell and kills the run
 light sleep engages, so mid-run evidence is `power.csv` and BLE, nothing else.
 
 **We do not know what the maintainer owns.** So the plan degrades:
+
+**No meter ever reaches the cell, and that is settled rather than open.** The
+parent `CLAUDE.md` rule of 2026-08-22 -- "Never open a device. Ever. Add to it
+instead." -- makes every plan in this file that begins "a meter in series with the
+battery" unbuildable. No back cover, no unplugged cell, no probe on an internal
+pad, on any device, permanently. What is allowed is additive: something strapped or
+printed onto the outside, and anything through a connector the device already
+exposes.
+
+Two things that were written here as the better measurement are therefore struck
+out rather than left to be tried:
+
+- ~~**Source-meter mode -- the meter replaces the cell.**~~ It would have removed
+  the discharge curve as a confounder entirely, by holding the supply at a fixed
+  voltage. It needs the cell disconnected. Dead.
+- ~~**Ampere-meter mode -- in series with the existing cell.**~~ Needs a battery
+  lead broken. Dead. Which also retires the burden-voltage trap described below --
+  worth reading anyway, because it explains why a uA range is dangerous in general,
+  but it is no longer a decision anyone here has to make.
+
+**So experiment 1 cannot be done**, and the board's own floor is permanently
+`[open]`, knowable only as an upper bound from the cheapest state a run reaches --
+1.76 %/h as of run 5. `power-management.md`, "The board's own floor is unpriced",
+carries the same note.
+
+**What is left, in full:** what the firmware measures about itself (`power.csv`),
+what a meter on the **outside** of the USB port can see, and what a device with a
+fuel gauge reports over I2C -- X3 carries a BQ27220 whose average-current register
+the firmware already reads, X4 has none. That is the whole instrument set, and no
+purchase enlarges it.
+
+**A candidate for the no-teardown route, 2026-08-21: Joy-IT JT-UM120.** Read off
+the manufacturer's page (`https://joy-it.net/en/products/JT-UM120`) **[primary]**:
+
+| Spec | Stated |
+|---|---|
+| Current | 0-7 A, resolution **0.00001 A (10 uA)**, accuracy +/- 0.05 % + 2 digits |
+| Voltage | 4-28 V, resolution 0.00001 V |
+| Interface | "Evaluation via PC software", 10 measurement groups, Micro-USB PC port |
+| Connectors | in USB-A / USB-C / Micro-USB, out USB-A / USB-C |
+
+**Resolution is three orders of magnitude better than this campaign needs** -- the
+open questions are separations of single milliamps, and at a 50 mA reading the
+stated accuracy works out near 45 uA. Its limits are the route's limits, not the
+instrument's:
+
+- It sits on the **5 V side**, so it prices differences between states, not
+  absolute current out of the cell ("Except once charging has terminated" in
+  `power-management.md`).
+- The PC software is almost certainly Windows, so on this laptop expect **manual
+  readings off its display**. That suits short settled readings and rules it out
+  for driving an unattended alternation overnight -- which is a pity, because that
+  is the run it would otherwise be best at.
+- The charger will still wake to top off; that shows as a step, not a finding.
+
+Price **[open]** -- the alza.sk listing returns 403 to an automated fetch, so it
+has to be read off the page by hand and written down with its currency and date,
+per the parent `CLAUDE.md` research-numbers rule.
 
 - **PPK2-class instrument** (Nordic Power Profiler Kit II or equivalent:
   source-meter, nA-to-mA autorange, logs a current waveform). Gives experiment
@@ -361,6 +542,11 @@ This fuller record is kept with the run's CSV in the parent repo's
 ```
 ## Run N -- YYYY-MM-DD, <experiment / state>
 
+- **Device: <X4 | X4 Pro | X3>** -- first line, never omitted. One C3 binary
+  drives X4 and X3 and the profile is runtime-selected, so the build string does
+  not say which, and LOW_POWER_FREQ, the panel controller, the fuel gauge and the
+  cell all differ. A `board` column waits on branch `power-lab`, unmerged, so for
+  now the device is recorded here and nowhere else.
 - Base commit (frozen base): <hash>
 - Build (TRAILINK_VERSION): powerlab-<base-hash>-<n>
 - Options differing from the frozen base: <exact custom_sdkconfig lines, or

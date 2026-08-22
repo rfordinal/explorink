@@ -16,6 +16,239 @@ without going through a button press.
 > table of runs. This file stays what it is -- findings about how power
 > behaves. The plan says what to do about them.
 
+## The scoreboard: every mode we have a number for, and what each feature costs
+
+**One table, kept current. Everything else in this file is the story behind a
+row of it.** Added 2026-08-21 because the numbers were scattered across three
+documents and a run table, so nobody could answer "what does the radio cost"
+without reading all of them.
+
+> **Read this before quoting any mA number here (added 2026-08-21).** The
+> afternoon of the day these rows were written, the same firmware in the same
+> state read **25.6 mV/h at 4093 mV and 3.1 mV/h at 4046 mV**, and four legs in
+> the plateau came out ordered impossibly -- connected below advertising. So
+> inside the plateau **the discharge curve sets the slope, not the load**, and the
+> mA column's single calibration pair is not global. `power-plan.md`, "The plateau
+> problem", has the arithmetic and the two ways out. Rows below are marked for
+> what they actually support. Nothing here is safe to put on the public site.
+
+**The instrument is the voltage slope, in mV/h. That is the measured column.**
+The mA column is derived, by scaling run 2's static window -- 32.9 mV/h against
+24.0 mA, where the mA came from `dPct/100 * 650 mAh` on the spec-sheet capacity
+(`power-plan.md`, run 2) -- and assuming the relation is proportional.
+**[assumed]** A slope is also a function of state of charge, up to 5x across the
+pack's range (`power-plan.md`, "Voltage slope is not a property of the state"),
+so two rows measured at different voltages are not exactly comparable however
+tight their error bars look.
+
+**`batt_pct` is not a second opinion.** X4 carries no fuel gauge
+(`BoardConfig.h`, `NO_GAUGE`), so `getBatteryPercentage()` falls to the
+voltage-derived path and then smooths it with a 9/10-weighted EMA
+(`lib/hal/HalPowerManager.cpp:150-176`) **[repo]**. It is the same ADC reading,
+transformed and lagged -- agreement between percent-derived and slope-derived mA
+confirms the curve, not the measurement.
+
+### What each mode draws
+
+Every row carries the conditions it was taken under, because none of them are
+incidental: the **device**, the **build** (the map pinned 160 MHz before
+2026-08-17 and throttles to 80 MHz after it), and the **voltage band** (which
+decides how much of a slope is the discharge curve rather than the load).
+
+> **Every measurement names its device. Standing instruction, 2026-08-21.** X4 is
+> the hardware on the desk today; X4 Pro and X3 are targets, and a number from one
+> is not a number from another. It is not a formality on this line: **one C3 binary
+> drives X4 and X3** with the profile chosen at runtime, so the build string does
+> not say which device wrote a row, while `LOW_POWER_FREQ` (10 MHz on X4, 80 where
+> there is PSRAM), the panel controller, whether a fuel gauge exists and the cell
+> itself all differ. A `board` column exists on branch `power-lab` (unmerged), so
+> until that lands **no row carries a device** and the tables here say it instead
+> (`PowerLog.cpp`, `BoardConfig::ACTIVE.name`); rows older than that read
+> `UNRECORDED` and `tools/powercsv.py` says so out loud. **Every row in the tables
+> below is X4**, and that is stated rather than assumed.
+
+| Mode | Device | Radio | CPU | mV/h | ~mA | Date | Build | Band, duration | Confidence |
+|---|---|---|---|---|---|---|---|---|---|
+| Map, connected, fix/10 s, no modem sleep | X4 | connected | 160 | 58.9 | ~43 | 2026-08-15 | unrecorded (predates the `build` column) | 4220-3547 mV, 11.4 h | **[measured]**, mixed workload, whole discharge (see run 1) |
+| Map, connected, fix/10 s | X4 | connected | 160 | 32.9 | **24.0** | 2026-08-16 | `9686ce21` | ~4178-3866 mV, 9.5 h static window | **[measured]**, the campaign's reference |
+| Map, connected, fix/10 s | X4 | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **provisional** -- 25 mV of movement is real, but the mA conversion is not (see below) |
+| Map, advertising, no phone | X4 | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **not trustworthy** -- 4 mV of movement, four ADC counts; a repeat at 4046 mV read 5.3 |
+| Home, nothing running | X4 | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
+| **Map in observation mode, radio off** | X4 | **down** | **10** | **12.27 +/- 0.18** | see note | 2026-08-22 | `0b99e70e` | 4151-4047 mV, **6 h 15 min** | **[measured]**, and the only row here taken across a wide enough band to trust: 104 mV of movement, 1.5 % error. **1.76 %/h, 56.8 h on a charge.** |
+| Tile sync, transfer running | X4 | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
+| Light sleep, radio up | X4 | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
+| Deep sleep, latch held | X4 | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
+
+### What each feature costs
+
+Every row is a difference of two rows above, so it inherits both their caveats.
+
+All rows are **X4**. A feature's cost is not portable across the line: X3 has a
+fuel gauge and a different panel controller, and a PSRAM board's low-power floor
+is 80 MHz rather than 10, so the same change buys different amounts.
+
+| Change | delta mV/h | delta mA | From | Same build? | Confidence |
+|---|---|---|---|---|---|
+| Turn on BLE modem sleep | **-26.0** | ~-19 | 2026-08-15 `unrecorded` 58.9 -> 2026-08-16 `9686ce21` 32.9 | no | **[measured]**, and a *lower* bound on the saving: run 2 did ~2x the panel work and ~4x the loop work |
+| Throttle the map 160 -> 80 MHz | **-7.3** | ~-5.3 | 2026-08-16 `9686ce21` 32.9 -> 2026-08-21 `55c9ed26` 25.6 | no | suggestive only: two builds five days apart, different panel activity, different charge state |
+| The phone link, its 10 s fixes and the marker redraws they cause | **+15.0** | ~+11 | 2026-08-21 `55c9ed26`, leg 3 10.6 -> leg 2 25.6 | **yes, one boot** | **upper bound**: the legs differ in charge state and the A-B-A leg that would have cancelled it was lost |
+| Bringing the radio up at all | -- | -- | wants advertising minus a clean radio-down leg | -- | **[open]** |
+| Parking our own loop | -- | -- | only pays under `CONFIG_PM_ENABLE` | -- | **[open]** (`power-idle-sleep.md`, "S2's missing half") |
+
+The "same build?" column is the one to read first. Only the third row compares
+two states of **one binary on one boot**, which is the whole reason the power lab
+screen exists (`power-idle-sleep.md`, "The power lab screen"): the other two rows
+difference two firmwares and call the remainder a feature.
+
+> **The mA column is the weak one, and run 5 shows why.** Its 12.27 mV/h converts
+> to 9.0 mA through run 2's calibration pair and to 11.4 mA through the pack
+> percentage -- two routes off the same ADC reading, 25 % apart. Percent per hour
+> needs no capacity assumption and no conversion at all, so **prefer %/h for
+> anything quoted** (`power-plan.md`, "Endurance without the 650 mAh assumption").
+
+**Against the target.** The campaign wants 9.0 mA parked (`power-plan.md`, "The
+target"). The advertising leg read ~7.7 mA, which would mean route A had met the
+parked target on shipped hardware -- **and that claim did not survive the same
+afternoon.** A repeat of the same state 90 minutes later read half of it, and a
+connected leg read less than either, which cannot be true. What the day actually
+establishes is narrower: the map runs at 80 MHz, `full_clock_ms` says it stays
+there, and the riding case at 4093-4068 mV moved 25 mV in an hour. Whether the
+parked state is 4 mA or 8 mA is **[open]**, and this instrument cannot close it
+inside the plateau.
+
+### The measurements we do not have, cheapest first
+
+**The other half of the scoreboard.** Every `[open]` row above, plus every
+feature whose cost nobody has differenced, with the method attached so any
+session can pick one up. Ordered by information per hour of device time.
+
+Two things decide the cost of a row: whether it needs a **flash** (build, lock,
+ask, and a rebased-branch check) and whether it needs a **meter** (nobody has
+one yet). Everything in the first group needs neither -- one boot, the map or
+Home screen, and `tools/blefakephone.py`.
+
+**No flash, no meter.** All of these run on whatever firmware is on the device,
+in the 4.05-3.80 V band, 20-minute legs, A-B-A with the interesting state in the
+middle:
+
+| # | Measurement | Answers | Method | Cost |
+|---|---|---|---|---|
+| M1 | Home, radio down, 10 MHz | the idle floor, and the only state where 10 MHz is legal | Home screen, untouched, one leg | 20 min |
+| M2 | Send cadence 7 s vs 30 s, pinned position | **the radio alone**, nothing else -- see "Who decides whether a fix is worth a redraw" below | `blefakephone --pos ... --interval 7` / `30`, A-B-A. Verify rather than assume the isolation: `ref_window` and `panel_busy_ms` deltas must match across legs | 60 min |
+| M3 | Send cadence 7 s vs 30 s, moving | the same knob as a rider feels it, redraws included -- only worth running **after** M2, and only if M2 says the radio is not the cost | `--track ... --track-kmh 50`, A-B-A | 60 min |
+| M4 | Fast vs slow advertising | whether `maybeEnterSlowAdvertising()` (`BlePositionServer.h:501`) is worth anything | advertising leg long enough for the slow interval to engage, against one where a central keeps re-appearing | 60 min |
+| M5 | Freshness check and autosync on vs off | two rider-facing toggles nobody has priced, and both spend radio | `CMD:SETTING` flips them without walking the menu (`src/main.cpp`, the `SETTING` allow-list) | 60 min |
+| M6 | The marker redraw itself | separates panel from radio: same fix cadence, position moving vs pinned | `--pos` against `--track` at one cadence | 40 min |
+| M7 | Tile sync, transfer running (state 4) | the worst case, and the only state with the panel and the radio both busy | a real transfer driven from the laptop | 20 min + a build to push |
+| M8 | WiFi mode (web server up) | never measured at all, and it decides whether Wi-Fi Fast Sync is cheap or expensive | Home -> WiFi, one leg, no client attached | 20 min |
+| M9 | `PowerLog` itself | whether the instrument is a term in the budget: one SD write a minute | hard without a second instrument -- **do it last**, or by comparing a build with logging off | 40 min |
+| M16 | **Observation mode with the radio off** | the map at a **10 MHz** floor -- see below | one leg in observation mode, untouched, once the feature lands | 30 min |
+
+**Needs a flash** (build from the frozen base, lock, ask, archive the binary):
+
+| # | Measurement | Answers | Precondition |
+|---|---|---|---|
+| M10 | Experiment 3, `CONFIG_PM_ENABLE` light sleep | go/no-go for S2, plus the residency number that decides how much of the parked-loop work gets built | `env:powerlab` build with the four PM options (`power-test-runbook.md`) |
+| M11 | Connection interval 15 ms vs 50 ms | what the throughput fix costs when nothing is transferring (the device now asks for 12 units, `docs/PROGRESS.md` 2026-08-20) | one option per build |
+| M12 | Experiment 6, `CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW` | the only remaining path to a sub-milliamp parked floor | needs M10's rig; slope near ADC noise, so overnight or a meter |
+| M13 | 10 MHz vs 80 MHz idle floor, radio down | how much the BLE-safe floor costs when the radio is not even up | two builds, or a lab-screen state that forces each |
+
+**Needs a meter** (none owned; `power-test-runbook.md`, "The instrument
+problem"):
+
+| # | Measurement | Answers |
+|---|---|---|
+| M14 | Experiment 1, the board's own floor | bounds every sleep state and most of what a crystal board would buy |
+| M15 | Per-state absolute draw | replaces every derived mA in this file with a measured one, in minutes instead of hours |
+
+**What would change the ordering.** M1 and M2 are the two cheapest rows that
+close a column of the scoreboard, so they go first. M10 is the most valuable
+single run in the whole campaign and the only one on this page that can *fail* in
+an interesting way -- a driver breaking under DFS plus light sleep is the finding
+that ends route B.
+
+### Observation mode: why M16 is the run to spend a night on
+
+**The mechanism is the previous section** ("Observe with BLE off drops the floor
+to 10 MHz for free", written by the session that built it, with the
+`nimble_port_deinit()` chain read off the pinned IDF). Merged to `develop` as
+`b8b11535` on `ble-follow-only`, and flashed to the device 2026-08-21 in a
+combined build with the Observe marker fix. **Its own commit says untested on
+hardware**, so the first long run in this state is also that feature's hardware
+test.
+
+What this section adds is why it is worth a whole night rather than a slot in a
+list.
+
+**It is the 48 hours of the hike budget.** The scenario the 72-hour target is
+measured against splits into ~24 walking hours and ~48 stopped ones
+(`power-plan.md`, "The scenario the 72 hours has to hold for"), and the stopped
+half is exactly this: map up, nothing arriving, nobody panning. If Observe-idle
+lands near 2-3 mA, the stopped half costs ~130 mAh of a 552 mAh budget and three
+days stops being blocked on light sleep working with the link up. If it lands
+near 8 mA, it does not.
+
+**And it is the one state a single long run can actually price**, which matters
+after run 4. Short comparative legs fail inside the voltage plateau, but a single
+state held for 8 hours moves the pack far enough to be read: at 3 mA that is
+~24 mAh, tens of ADC counts, well clear of the counting noise that made run 4's
+legs unreadable (`power-plan.md`, "The plateau problem"). So the instrument this
+campaign already owns can answer this one -- no alternation, no meter.
+
+**It is also the parked-loop policy's natural first consumer.** Observe has no
+link to keep responsive, so its parked cadence is bounded by one thing: the ADC
+button ladder is polled, never interrupt-driven, so **the parked cadence is the
+worst-case delay between a press and it being seen** (`power-idle-sleep.md`, "The
+parked policy"). 50 ms today; 200-300 ms would still feel instant and cut the
+wake count 4-6x; a second would feel broken. That bound is why
+`src/ParkedLoopPolicy.h` takes the cadence as data rather than picking a number.
+
+**Prediction, stated to be refuted:** the cheapest map state on shipped hardware,
+below every figure in the table above, because it drops the radio and 8/10 of the
+clock at once. **What would refute it:** the 10 MHz APB penalty landing somewhere
+unexpected -- the SD write each minute, the ADC poll -- and eating the saving. And
+one functional risk worth watching in the same run: `end()`/`begin()` across the
+Follow/Observe boundary is a NimBLE deinit and re-init, which is the operation
+that hung the device at a low clock back in 2026-08-04.
+
+### Who decides whether a fix is worth a redraw -- and why M2 is a design question
+
+The question behind M2 is not a number, it is **which side thinks**: can the
+phone be generous on the wire and leave the panel to decide whether a fix
+deserves ink, or does the Android app have to reason about what it sends?
+
+**The device already decides, and run 3 proves it.** In the connected leg
+positions arrived every 10 s -- six a minute for an hour -- and the marker was
+never redrawn once. Two thresholds do that, both device-side:
+
+- `MapFollow::kMinMovePx` = 8 px: a fix that moves the marker less than that
+  changes nothing (`src/activities/map/MapFollow.h:92`) **[repo]**.
+- `kKeepInMarginPx` = 80 px: the viewport is only reset when the marker leaves
+  its margin (`MapFollow.h:34`) **[repo]**.
+
+**And the panel work that did happen was not caused by fixes at all.** Run 3's
+connected leg shows ~2 windowed refreshes a minute, which is
+`kHeaderBarsRepaintMs` = 30 s -- and that constant is a *floor between two
+repaints caused by nothing but a moving bar count*, i.e. RSSI sitting on a
+threshold and flipping (`MapActivity.cpp:157,1282`) **[repo]**. It is why the
+advertising legs show zero refreshes: no link, no RSSI, no bar churn
+**[measured]**.
+
+So the panel half of the question is answered: **generosity on the wire does not
+buy redraws.** What is unmeasured is the wire itself, and that is exactly M2.
+
+Two outcomes, and they point at different work:
+
+- **The radio is cheap.** Then the phone can stop thinking: `SendPolicy`'s
+  cadence gating (`MIN_INTERVAL_MS`, `WALKING_MIN_INTERVAL_MS`,
+  `MOVE_THRESHOLD_M`) is spending complexity to save nothing, and dropping it
+  would also remove logic a second client has to reproduce -- the phone-side
+  portability rule in the parent `CLAUDE.md` counts that as a real saving.
+- **The radio is not cheap.** Then the gating earns its keep, and the next
+  question is whether the *thresholds* are right rather than whether they should
+  exist. `docs/send-interval-analysis.md` (parent repo) is where that reasoning
+  already lives.
+
 ## The device measures itself now
 
 **Added 2026-08-11.** Two instruments, one vocabulary:
@@ -118,6 +351,148 @@ Two consequences for every measurement:
 An inline USB meter measures the whole system *including* charging, so it
 answers "what does the wall pay", not "what does the map cost". Only a
 battery run answers the second.
+
+### Plugged in, X4 sawtooths: the system runs off the cell and the charger tops it up
+
+**Observed by the maintainer on the device and confirmed in run 1's own data,
+2026-08-21.** Left on USB, X4 charges to 100 %, drifts down to about 90 %,
+recharges, and repeats. Run 1's boot 3 -- 8.5 hours plugged in -- has it in the
+`batt_mv` column (`docs/power-runs/run1-2026-08-15.csv`, parent repo)
+**[measured]**:
+
+| | Voltage | Percent |
+|---|---|---|
+| Troughs | 4034-4067 mV | 89-92 % |
+| Peaks | 4165-4224 mV | 92-99 % |
+
+**Period: the fall takes about 140 minutes, the refill 7-25 minutes.** So the
+charger returns in a quarter of an hour what the system spent 2.3 hours draining,
+which puts the charge current an order of magnitude above the load.
+
+**What it proves, and it contradicts an assumption made a few hours earlier on
+this page: there is no load sharing.** With USB attached the system is fed from
+**the cell**, not from VBUS -- otherwise the pack could not fall at all. The
+charger is an independent top-up loop, which is consistent with the board having
+no charge-enable line and no charge-status pin (previous section).
+
+Three consequences:
+
+- **A voltage rise mid-run is this, not an error.** It is why any analysis has to
+  cut on a sustained rise before fitting (`docs/power-runs/README.md`, and
+  `tools/powercsv.py`'s `RISE_THRESHOLD_MV`).
+- **The percentage swing is not 10 % of the pack.** `batt_pct` on X4 is
+  voltage-derived and then smoothed with a 9/10 EMA, so a 190 mV swing near the
+  top of the curve reads as 99 -> 89 %. The charge actually moved is whatever
+  190 mV is worth up there, which nobody has measured.
+- **It sets what a USB meter can do.** See below.
+
+### Except once charging has terminated: the no-teardown comparison (2026-08-21)
+
+**The case the paragraph above does not cover.** With the cell **full and the
+charger terminated**, the charging term goes to roughly zero and what the USB
+meter sees is the system. X4 cannot report that state -- no charger IC, no gauge,
+no charge-status pin -- but **the meter can**: the current stops decaying and
+settles.
+
+Why this matters enough to write down: every meter route on X4 otherwise requires
+**opening the device** to reach the cell, since the only alternatives are a shunt
+in series with the battery or replacing the battery with a source-meter. That is a
+teardown of the daily driver, which is a decision about owning a lab unit rather
+than a decision about instruments.
+
+What this route can and cannot do:
+
+- **It cannot give absolute milliamps at the cell.** The reading is current at
+  5 V into a converter, not current out of a 3.8 V pack, and the converter's
+  efficiency has never been measured **[open]**.
+- **It can give differences between states**, because that efficiency is
+  approximately common to both halves and cancels in the difference. Which is
+  exactly the thing the voltage slope cannot do inside the plateau.
+- **Correction, same day: it does not do it in minutes.** That claim was written
+  before the sawtooth above was understood. X4 runs off the cell while plugged in,
+  so during the ~140-minute fall the charger is off and **the USB meter reads
+  almost nothing**. The usable quantity is the meter's own **mAh accumulator over
+  one whole cycle**, and a cycle is long -- and gets longer as the state gets
+  cheaper, since it is set by how long the load takes to drain the recharge
+  threshold. 65 mAh at 8 mA is eight hours.
+- **Correction again, and this one narrows it further.** "A direct measure of
+  charge consumed" was still too strong. The objection that produced it: *a USB
+  meter tells you how hard the thing is charging, not what it consumes.* For an
+  instantaneous reading that is exactly right -- during the 140-minute fall it
+  reads near zero while the device is drawing the whole time.
+
+  What rescues it is **conservation over a closed cycle, not measurement of the
+  load**. If a cycle starts and ends at the same state of charge, the charge the
+  charger put in equals the charge the system took out, because the cell is a
+  ledger that has to balance. Consumption is in the number for that reason and no
+  other.
+
+  Three things contaminate it, and the first is the serious one:
+
+  - **The charger's and converter's own quiescent draw.** It is paid out of USB
+    for the whole fall, while nothing is being charged. So the reading is
+    *consumption plus an overhead proportional to elapsed time*. If that
+    quiescent is a few milliamps and the state under test is 8 mA, it is not a
+    correction, it is a comparable term.
+  - **5 V in, ~4 V out.** Compare **Wh**, not mAh: energy is the quantity that
+    converts, and the charge path's efficiency lives inside it.
+  - **A cycle does not return to exactly the same place.** Run 1's peaks were
+    4207, 4224, 4181, 4174, 4222 and 4165 mV -- so a single cycle carries an
+    error from wherever it happened to stop. Several cycles average it out.
+
+  **So the honest claim.** The meter does not answer "what does the map cost". It
+  answers "how much more does the map cost than observation mode", because the
+  time-proportional overhead is common to both and cancels in the difference --
+  the same structure as alternation, and free of the plateau problem. Absolute
+  consumption stays **[open]** until something measures at the cell.
+- **The conversion factor is derivable once**: read one state whose
+  battery-side slope is already known (connected at 80 MHz, 25.6 mV/h) and the
+  ratio follows.
+- **It cannot touch deep sleep or the board floor.** Microamps under a
+  converter's own quiescent draw, with a charger that periodically wakes to
+  top off, are not reachable. Experiment 1 still needs a meter at the cell and
+  therefore still needs the teardown.
+
+Two things the meter will show that are not findings: a **top-off step** when the
+charger restarts as the cell settles, and the device being in a slightly different
+state with VBUS present (USB CDC up, and a USB state change requests a redraw --
+`src/main.cpp`, `gpio.wasUsbStateChanged()`).
+
+**Verified: nothing yet.** This is arithmetic and a mechanism, not a measurement.
+And it is **not certain to work** -- it rests on four assumptions, each of which
+fails in its own way:
+
+1. **That charging actually terminates.** A charger that cycles instead -- top up,
+   stop, top up again -- gives a sawtooth rather than a settled value. Not fatal:
+   the average over **whole cycles** is still the system's draw. Fatal if someone
+   reads a single point off the sawtooth and calls it a number.
+2. **That the system runs off VBUS while plugged in.** Without load sharing the
+   system draws from the cell and the charger refills it in parallel, and the two
+   are not separable in one reading except by that whole-cycle average. X4's power
+   path is not documented here, and the firmware cannot help: `batteryChargeStatus`
+   is `PIN_UNASSIGNED` and the charger is autonomous (previous section), so nothing
+   on the device can report which phase it is in.
+3. **That converter efficiency is common to both states.** The weakest one.
+   Efficiency varies with load and the converter's own quiescent draw is a constant
+   added term, so a difference measured at 5 V is **not** a difference at the cell
+   times a constant. At single-digit milliamps -- exactly the range in question --
+   that error can be large in relative terms.
+4. **That the device behaves the same with VBUS present.** It does not: USB CDC is
+   enumerated and drawing, and a USB state change requests a redraw. What is
+   measured is "state plus CDC", not the state.
+
+**The test that settles it, and its pass criterion.** Measure a state whose
+battery-side number is already known -- connected at 80 MHz, 25.6 mV/h -- then a
+second known state, and compute the 5 V-to-cell factor from each.
+
+- **Pass:** both states give the same factor within a few percent. The method
+  works, and that factor converts every future USB reading.
+- **Fail:** the factors differ. Assumption 3 has broken, and the meter gives the
+  *ordering* of states and rough magnitudes, not numbers. Still useful -- ordering
+  is what half the open questions need -- but it must not be written down as mA at
+  the cell.
+
+Until that test has been run, a USB-side number in this file is labelled as such.
 
 ## First real-draw numbers: two rides
 
@@ -459,10 +834,16 @@ Today's "off" measures near zero only because cutting the latch
 **Consequence for every number in this file.** If that floor is 1 mA or more, the
 SoC's 5 uA deep sleep is irrelevant, and on X4 it is the only term left to argue
 about at all now that the crystal is ruled out.
-It has never been measured, it needs a uA meter in series with the battery -- the
-`power.csv` instrument cannot see microamps and a USB meter charges the cell --
-and it is the first experiment in
-[`power-idle-sleep.md`](power-idle-sleep.md).
+It has never been measured and **now it never will be**: measuring it needs a uA
+meter in series with the battery, and no device is ever opened (parent
+`CLAUDE.md`, "Never open a device. Ever. Add to it instead.", 2026-08-22). The
+`power.csv` instrument cannot see microamps and a USB meter charges the cell.
+
+So the floor is not an open question with a plan behind it, it is a **permanent
+upper bound**: whatever it is, it is below the cheapest state a run has reached,
+which is run 5's **1.76 %/h** in Observe with the radio off. Every sleep-state
+number in this file inherits that bound rather than a value, and experiment 1 in
+[`power-idle-sleep.md`](power-idle-sleep.md) is retired rather than pending.
 
 ## Wake sources on this chip: deep sleep is the button, light sleep is anything
 
