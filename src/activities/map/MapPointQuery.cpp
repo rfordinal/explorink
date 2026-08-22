@@ -67,7 +67,7 @@ const char* MapPointQuery::sectorName(uint8_t sector) {
 }
 
 template <typename Visit>
-bool MapPointQuery::walk(const Visit& visit) {
+bool MapPointQuery::walk(const Visit& visit, bool verify) {
   shardsOpened_ = 0;
   shardsMissing_ = 0;
   shardsCorrupt_ = 0;
@@ -94,8 +94,12 @@ bool MapPointQuery::walk(const Visit& visit) {
         continue;
       }
       ++shardsOpened_;
-      if ((reader_.kindsPresent() & config_.kindMask) == 0 || !reader_.verifyBody() || !reader_.beginRecords()) {
-        if ((reader_.kindsPresent() & config_.kindMask) != 0) ++shardsCorrupt_;
+      const bool wantedKind = (reader_.kindsPresent() & config_.kindMask) != 0;
+      // verifyBody() is the second read of the file; see the header for why the
+      // distance pass does without it.
+      const bool trustworthy = wantedKind && (!verify || reader_.verifyBody());
+      if (!trustworthy || !reader_.beginRecords()) {
+        if (wantedKind && verify) ++shardsCorrupt_;
         bytesRead_ += reader_.bytesRead();
         reader_.close();
         continue;
@@ -129,10 +133,12 @@ bool MapPointQuery::nearestPerCategory(uint32_t* out, size_t outCount) {
 
   // No name is read in this pass. Ten numbers off 100 records is 1.6 kB of card
   // reads; fetching a name per record would multiply that by a seek each.
-  return walk([&](const MapPointReader::Record& record, int32_t, int32_t, uint32_t metres) {
-    if (record.category >= outCount) return;
-    if (metres < out[record.category]) out[record.category] = metres;
-  });
+  return walk(
+      [&](const MapPointReader::Record& record, int32_t, int32_t, uint32_t metres) {
+        if (record.category >= outCount) return;
+        if (metres < out[record.category]) out[record.category] = metres;
+      },
+      /*verify=*/false);
 }
 
 size_t MapPointQuery::listCategory(uint8_t category, Hit* out, size_t maxHits) {
@@ -143,27 +149,29 @@ size_t MapPointQuery::listCategory(uint8_t category, Hit* out, size_t maxHits) {
   // Insertion sort into the caller's array, capped: the array is the result and
   // there is no second buffer. A shard holds tens of points and the cap is
   // eight, so this is a handful of moves per hit and no allocation.
-  walk([&](const MapPointReader::Record& record, int32_t latE7, int32_t lonE7, uint32_t metres) {
-    if (record.category != category) return;
-    if (count == cap && metres >= out[count - 1].metres) return;
+  walk(
+      [&](const MapPointReader::Record& record, int32_t latE7, int32_t lonE7, uint32_t metres) {
+        if (record.category != category) return;
+        if (count == cap && metres >= out[count - 1].metres) return;
 
-    size_t at = count < cap ? count : cap - 1;
-    while (at > 0 && out[at - 1].metres > metres) {
-      out[at] = out[at - 1];
-      --at;
-    }
-    Hit& hit = out[at];
-    hit = Hit{};
-    hit.latE7 = latE7;
-    hit.lonE7 = lonE7;
-    hit.metres = metres;
-    hit.category = record.category;
-    hit.flags = record.flags;
-    hit.sector = sector8(config_.fixLatE7, config_.fixLonE7, latE7, lonE7);
-    // The one place a name is read, and only for a row that is being kept.
-    reader_.readName(record, hit.name, sizeof(hit.name));
-    if (count < cap) ++count;
-  });
+        size_t at = count < cap ? count : cap - 1;
+        while (at > 0 && out[at - 1].metres > metres) {
+          out[at] = out[at - 1];
+          --at;
+        }
+        Hit& hit = out[at];
+        hit = Hit{};
+        hit.latE7 = latE7;
+        hit.lonE7 = lonE7;
+        hit.metres = metres;
+        hit.category = record.category;
+        hit.flags = record.flags;
+        hit.sector = sector8(config_.fixLatE7, config_.fixLonE7, latE7, lonE7);
+        // The one place a name is read, and only for a row that is being kept.
+        reader_.readName(record, hit.name, sizeof(hit.name));
+        if (count < cap) ++count;
+      },
+      /*verify=*/true);
 
   return count;
 }

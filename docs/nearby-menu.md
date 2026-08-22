@@ -234,6 +234,24 @@ are **not** in the record -- `readName()` seeks into the name pool and back, so
 the nearest-per-category pass reads 16 bytes per point and pays for a string only
 on a row it prints.
 
+**The crc is checked before a record reaches the screen, not before it becomes a
+distance.** Verifying costs a second full read of the shard: `verifyBody()`
+streams the whole body, then `beginRecords()` re-reads the record array.
+Measured on the device 2026-08-22, six shards for one press of `Nearby`:
+
+```
+nearby: 6 shard(s) read, 0 missing, 0 corrupt, 201994 bytes
+```
+
+against roughly 142 kB of actual file. So the distance pass
+(`nearestPerCategory`) runs without the check and the display pass
+(`listCategory`) runs with it. A corrupt record in the distance pass can only
+make one row's number wrong, and `nextRecord()` already refuses anything grossly
+broken (outside the declared bbox, non-zero reserved half-word, a name running
+past the pool). A corrupt record that reaches the screen becomes a name a rider
+reads and a coordinate `Set destination` writes into the pin log, so that pass
+checks the crc and a failing shard contributes no rows at all.
+
 **The read cost is a city problem, not a mountain one.** Measured on a real
 build (`region1`, 2026-08-21): a rural shard is 22 to 500 points, and the
 Bratislava shard is 2,602 -- 41.6 kB of records for one `Nearby` press, off one

@@ -566,10 +566,21 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // bytes for a full-panel window. docs/power-management.md is the other freeze;
   // this one is docs/map-follow.md, "An unbounded window aborts the device".
   bool windowRefreshAffordable(int w, int h) const;
-  // Bytes to leave free after a windowed refresh's own buffer. A window is a
-  // convenience; starving the render that follows it is not a trade worth
-  // making, same reasoning as the menu backdrop's own reserve.
-  static constexpr size_t kWindowHeapMargin = 12 * 1024;
+  // Bytes to leave free after a windowed refresh's own buffer.
+  //
+  // 4 kB, measured 2026-08-22. The first cut was 12 kB and it was wrong in a way
+  // only the panel could show: the menu-close window is 480x553 = 33,733 bytes
+  // against a largest block of 43 to 45 kB, so 12 kB of margin refused a window
+  // that fits and made every menu close pay a full refresh. The job of this
+  // number is to refuse the 48,000-byte full-panel window that aborted the
+  // device, and 4 kB still does that (48,000 + 4,096 > 45,044) while leaving the
+  // cheap close cheap.
+  //
+  // Nothing allocates between this check and the refresh -- the backdrop is
+  // already freed and the map render itself is measured at zero allocations
+  // (docs/device-preview.md) -- so the margin is insurance against
+  // fragmentation, not a reservation for a known cost.
+  static constexpr size_t kWindowHeapMargin = 4 * 1024;
   // Runs the radius search for the menu's rows. False when there is no fix to
   // search from, which is the one case the menu refuses outright -- the query
   // starts at the rider, not at the viewport.

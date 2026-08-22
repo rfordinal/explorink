@@ -117,8 +117,31 @@ class MapPointQuery {
  private:
   // Walks every shard in range once. `visit` is called per record that passes
   // the kind mask and the radius, with its metres and lat/lon already computed.
+  //
+  // `verify` decides whether each shard's body_crc32 is checked before its
+  // records are trusted, and that is a measured trade rather than a preference.
+  // Checking it costs a second full read of the file: verifyBody() streams the
+  // whole body and beginRecords() then re-reads the record array. Measured on
+  // the device 2026-08-22, six shards for one menu press:
+  // `nearby: 6 shard(s) read, ... 201994 bytes` -- against about 142 kB of
+  // actual file.
+  //
+  // So the distance pass runs without it and the display pass runs with it:
+  //
+  // - `nearestPerCategory()` produces numbers for the menu's rows. A corrupt
+  //   record there can only make one distance wrong, and the per-record checks
+  //   nextRecord() already applies (inside the declared bbox, reserved half-word
+  //   zero, the name inside the pool) refuse anything grossly broken.
+  // - `listCategory()` produces what reaches the screen: names, and the
+  //   coordinate `Set destination` writes into the pin log. That is where a
+  //   silently wrong record would become a claim the rider acts on, so the crc
+  //   is checked there and a failing shard contributes no rows at all.
+  //
+  // The honesty rule in ../../../docs/point-file-spec.md is unchanged for
+  // anything a rider sees; what changed is that a distance in a menu is not
+  // worth doubling every read for.
   template <typename Visit>
-  bool walk(const Visit& visit);
+  bool walk(const Visit& visit, bool verify);
 
   IFileSource& file_;
   Config config_;
