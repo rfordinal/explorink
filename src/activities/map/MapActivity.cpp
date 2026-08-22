@@ -3137,7 +3137,7 @@ StrId MapActivity::nearbyCategoryLabel(uint8_t category) {
     case MapSafetyCategory::Unknown:
       break;
   }
-  return StrId::STR_MAP_NEARBY;
+  return StrId::STR_MAP_PLACES;
 }
 
 StrId MapActivity::nearbyConditionLabel(uint8_t category, uint8_t flags) {
@@ -3266,7 +3266,10 @@ void MapActivity::openNearbyMenu() {
     values.emplace_back();
   }
 
-  optionPopup_.showWithValues(StrId::STR_MAP_NEARBY, options, values, 0, [this, hideAllIdx](int idx) {
+  // `Places`, not the menu row's own `Useful places`: a popup title is centred
+  // in a dialog narrower than the row it was opened from, and the rider just
+  // pressed the row, so the long form has nothing left to disambiguate.
+  optionPopup_.showWithValues(StrId::STR_MAP_PLACES, options, values, 0, [this, hideAllIdx](int idx) {
     if (idx == hideAllIdx) {
       nearbyCategoryMask_ = 0;
       // The map underneath lost its marks, so the backdrop is worthless and the
