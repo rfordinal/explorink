@@ -197,6 +197,71 @@ Nothing repaints before `viewportDrawn_`: the waiting banner draws no header row
 at all, and painting one onto it would leave a floating status row over a screen
 with no map.
 
+## The coarse clock in Observe, and the masked digit that says so (2026-08-22)
+
+**Built 2026-08-22, untested on hardware.** `MapActivity::clockIsCoarse()` and
+`clockTick()`, with `kClockCoarseMinutes` = 10 and `kClockFineAfterInputMs` = 30 s.
+Follows this file's own principle.
+
+The minute tick is the only thing that repaints the header while nothing else is
+happening -- `minuteMoved` has no rate cap because "a minute *is* the cap"
+(`MapActivity.cpp:1268-1279`). Run 5 measured what that costs in Observe with the
+radio off: **376 windowed refreshes in 6.25 h, exactly 60 an hour, 9.4 s/h of
+panel time** (`power-plan.md`, run 5) **[measured]**. Dropping to a 10-minute
+cadence makes that 6 an hour and 0.94 s/h. **What those 54 fewer refreshes an hour
+are worth in current is [open]** -- the panel's draw during a windowed refresh has
+never been measured, and it is not a CPU cost: `full_clock_ms` moved 0.11 % across
+the whole run, so these repaints never lift the clock.
+
+**The display, and why it is not just a saving.** At a 10-minute cadence the units
+digit is wrong for nine minutes out of ten, so printing it claims a precision the
+device does not have. This file already refuses that trade once -- *"a clock that
+is confidently wrong, which is worse than no clock"* -- and a masked digit is the
+same rule one step further: show the tens, withhold the units.
+
+Three candidates, all from the maintainer:
+
+| Form | Reads as | Verdict |
+|---|---|---|
+| `12:5_` | this digit is withheld | **rejected on the panel** -- see below |
+| `12:5?` | this digit is unknown | rejected on paper: reads as an error |
+| `12:5*` | a mark holding the digit's place | **shipped** |
+
+**`_` was tried first and failed on the device, 2026-08-22.** At
+`SMALL_FONT_ID` an underscore sits on the baseline and simply does not read: the
+panel showed `8:0_` and it looked like **`8:0`**, which the maintainer described
+as a football score rather than a clock. That was the risk written down before the
+flash, and it turned out to be the real one.
+
+**`*` shipped instead.** It occupies the digit's slot and is roughly round, so the
+`hh:mm` shape survives being one glyph short. Note what to watch when judging it:
+an asterisk sits high in the em box in most fonts, closer to a superscript, so it
+can read as a stray dot above the baseline rather than as a character in the slot.
+
+**If `*` reads badly too, the next thing to try is not another mark** but
+`~8:00` -- a normal-looking time with an explicit "approximately". It costs the
+principle a little (it does name a minute) while staying honest about the
+precision, and it cannot be mistaken for a missing glyph.
+
+**What a hardware pass has to check:** that `12:5_` is legible and does not read
+as a broken glyph, that the string fits its right-aligned slot (it is narrower
+than the `00:00` the slot is sized for, so it should hang off the right edge like
+any short time), that a button press turns it into the exact minute and that it
+returns to coarse 30 s later, and that Follow mode is untouched.
+
+**Exact on input, and it is in.** A rider pressing a button is
+looking at the screen, so any input repaints the header with the full time. The
+coarse form is for the hours nobody is watching, which is when the saving exists
+anyway -- and it makes the mask self-explaining, because the first press turns
+`12:5_` into `12:57`.
+
+**Two open questions before this ships.** Whether the drift of the extrapolated
+clock matters over the hours a radio-off Observe session runs without a single
+re-anchor (`millis()` is crystal-derived, so likely seconds a day, but nobody has
+measured it), and whether the battery indicator -- which rides the same tick -- is
+content with a ten-minute cadence. This file already says charge moves slowly
+enough that it never earned a repaint of its own, so probably yes.
+
 ## The clock (2026-08-15)
 
 The device has no clock of its own. The X4 has no RTC -- `lib/hal/HalClock.h`

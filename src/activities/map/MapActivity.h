@@ -417,6 +417,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // disconnects leaves its signal bars on the panel until something unrelated
   // forces a redraw. Seen in a real session, 2026-08-07.
   void updateHeaderStatus();
+  // Is Observe's clock currently showing a withheld units digit? See
+  // docs/map-header-status.md, "Proposed: a coarse clock in Observe".
+  bool clockIsCoarse() const;
+  // The clock value to compare and to print, quantised per clockIsCoarse().
+  // -1 when the phone has never sent a time. Writes the raw local time out so a
+  // caller that needs the hour does not have to ask twice.
+  int16_t clockTick(uint32_t& localNowOut) const;
   // Maps a live rssi() reading to a bar count, holding the last real one
   // across a failed (0) read. See MapActivity.cpp for why.
   int resolveBleBars(int8_t rssi);
@@ -975,7 +982,15 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // is known (no packet has carried a non-zero utc yet) and the slot is blank
   // -- so the transition into or out of "no clock" moves this value and
   // repaints, same as a minute rolling over does.
+  // The clock value last painted, **quantised the same way the repaint decision
+  // quantises it** (MapActivity.cpp, clockTick()). In Follow that is the minute;
+  // in Observe it is the ten-minute step, so the header repaints six times an
+  // hour there instead of sixty.
   int16_t drawnClockMinute_ = -1;
+  // Until when Observe's clock shows the exact minute. Set by any button press:
+  // a rider who pressed something is looking at the screen, and the saving only
+  // exists during the hours nobody is. 0 = never set, i.e. coarse.
+  uint32_t clockFineUntilMs_ = 0;
   // Last bar count a real rssi() reading produced this connection. rssi()
   // answers 0 on failure, not a real signal strength, and resolveBleBars()
   // holds this instead of remapping 0 -- see its definition. 0 also means
