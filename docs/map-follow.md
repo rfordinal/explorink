@@ -768,17 +768,35 @@ Both tools above render a file and then you look at the file. `map_window`
 at the ride's own pace while you watch:
 
 ```
-map_window --ride docs/rides/<ride>.jsonl --tiles mapbuilder/cdn
-            [--mode ride|hike|cycle] [--zoom 0-6] [--marker 0-4]
+map_window --tiles mapbuilder/cdn (--ride docs/rides/<ride>.jsonl | --lat L --lon L)
+            [--heading 0-15] [--mode ride|hike|cycle] [--zoom 0-6] [--marker 0-4]
             [--route <route.tir>] [--speed X] [--exit-at-end]
 ```
+
+**Two sources, switched in the menu.** `ride` lets packets drive the frame
+through `decide()`. `static` holds one position and heading, which is what
+`map_preview` answers per invocation, live and with the menu attached. Three ways
+to say where: type into the lat/lon rows, click the panel, or use the pan chips.
+
+A click on the panel goes back through the firmware's own inverse --
+`MapProjection::screenToMerc()` then `mercToLonLat()` -- against the projection
+the frame on screen was actually drawn with, so it lands on what is visible even
+mid-playback. The pan chips are the same operation on a pixel half a screen away,
+along the screen's own axes rather than true north. Heading is the eight compass
+points plus a `-`/`+` pair for the odd ladder steps.
+
+In static mode the marker sits on its ladder anchor pointing up, because the
+frame is track-up. Playback keeps the held position following the ride, so
+switching to `static` lands where the rider is rather than back at the start.
 
 The sidebar is a mouse menu, not a key chart: the seven zoom rungs, the three
 ride modes, the POI layer and its ten categories, the buildings override (follow
 the rung / force on / force off), the missing-tile hatch, a route when one is
 given, the dirty-rect overlay, and Pause / Restart / speed. Space and `.` stay on
 the keyboard, which is what a mouse is bad at. `--exit-at-end` quits on the last
-packet, for a scripted run.
+packet, or in static mode renders once and quits -- which is how the held view
+gets checked headless (Malacky at 3 m/px: 4 tiles in, 801 ways, 51 points; a
+mid-ocean coordinate: 0 in, 2 missing).
 
 **Every setting change re-anchors and counts a full refresh.** That is what the
 device does -- "A viewport reset -- a ladder step, a mode switch, a Refresh"
