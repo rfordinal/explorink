@@ -965,7 +965,10 @@ rider gets the device back when they next reach a computer, and not before.
 **How it was reached in practice.** Anything that makes a rider enter and leave
 Observe repeatedly crosses this transition many times in a session instead of
 once or twice -- panning to look ahead, showing a pin, browsing points. The
-frequency is what turned a latent bug into a device that dies in the hand.
+`Nearby` menu's `View on map` is the one that made it ordinary
+(`nearby-menu.md`): it enters Observe by design, so a rider browsing points
+crosses this many times a session. The frequency is what turned a latent bug
+into a device that dies in the hand.
 
 ## Why 10 MHz breaks BLE: APB, and a lock that is compiled out
 

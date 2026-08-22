@@ -6,6 +6,7 @@
 #include "MapAreaClass.h"
 #include "MapAreaFill.h"
 #include "MapLabels.h"
+#include "MapPointMarks.h"
 
 namespace {
 
@@ -195,7 +196,7 @@ void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style
 
 void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
                          IMapRouteSource* route, MapRenderTiming* timing, MapNearestPlaces* nearestOut,
-                         MapLabelScratch* labels) {
+                         MapLabelScratch* labels, IMapPointSource* points) {
   if (labels != nullptr) labels->reset();
   // Instrumentation only. `mark` holds the last stamp; each layer's field gets
   // the delta since it. With no timing, or no clock in it, both of these are a
@@ -381,6 +382,22 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     }
   }
   if (timing) lap(timing->placesMs, mark);
+
+  // The POI marks: over the place dots, under the names. A square says "this
+  // exists in the data" and a dot says "this is a settlement"
+  // (docs/map-render-spec.md, "Point mark vocabulary"), so the bigger mark goes
+  // on top -- a square half hidden by a place dot reads as neither.
+  //
+  // The source decides which categories are in the walk
+  // (MapPointSource::Config::categoryMask): `Nearby -> Show on map` is a
+  // temporary view, so it filters the walk and never the style.
+  if (points != nullptr && style.pointSquarePx > 0 && points->beginMapPoints()) {
+    MapPointRef point;
+    while (points->nextMapPoint(point)) {
+      MapPointMarks::draw(canvas, point, style);
+    }
+  }
+  if (timing) lap(timing->pointsMs, mark);
 
   // Names last, over everything the map drew and under the marker the caller
   // draws next. A label is the only thing here that is placed rather than

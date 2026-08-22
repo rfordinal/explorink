@@ -306,6 +306,15 @@ class BaseTheme {
     // (MapActivity::captureMenuBackdrop()).
     int minDialogWidth = 0;
     int minVisibleRows = 0;
+    // One line of text between the title and the rows, not selectable and not
+    // counted as a row. For a fact about the thing the popup is *about* rather
+    // than an action on it -- a POI's reliability condition, say. nullptr means
+    // no note and no space reserved for one.
+    //
+    // Added 2026-08-21 because the alternative was worse: Nearby's POI detail
+    // screen first carried its two facts as inert rows, and walking a cursor
+    // through text that does nothing reads as a hack (maintainer, on hardware).
+    const char* note = nullptr;
   };
   // Where the dialog and its visible rows land. One function, two readers: the
   // drawing pass and OptionPopup's hit test, which must agree or a tap misses
@@ -319,6 +328,10 @@ class BaseTheme {
     int rowStep = 0;  // rowHeight plus the gap between rows
     int visibleRows = 0;
     int titleLineHeight = 0;
+    // Where the note goes, and how tall it is. Both 0 when the spec carries no
+    // note, and then nothing above reserved space for one.
+    int noteY = 0;
+    int noteLineHeight = 0;
   };
   virtual OptionPopupGeometry optionPopupGeometry(const GfxRenderer& renderer, const OptionPopupSpec& spec) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSpec& spec) const;

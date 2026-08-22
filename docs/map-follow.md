@@ -63,6 +63,11 @@ re-anchor -- a pin's `Show`, a console `goto`, a route overview, anything that
 frames somewhere the rider is not. The next fix then moves the marker across the
 panel, and the union of the old and new boxes is most of the screen.
 
+`Nearby -> View on map` is the one that made this ordinary rather than rare: it
+re-anchors on a POI that can be kilometres away, and a rider browsing points
+crosses that transition many times in a session. The feature did not create the
+bug, it made it reachable.
+
 **Fixed** by deciding affordability before the call, against the largest block
 the heap can actually give: `MapActivity::windowRefreshAffordable()` compares
 the driver's own `(w/8)*h` arithmetic plus a 12 kB margin against

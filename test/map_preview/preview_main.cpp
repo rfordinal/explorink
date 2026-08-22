@@ -6,6 +6,7 @@
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
 //               [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle]
 //               [--tile <col>/<row>] [--hatch] [--route <file.tir>]
+//               [--no-points] [--point-categories water,hut,...]
 //               [--fit-route] [--no-marker] [--out <file>]
 //   map_preview --tiles <dir> --route <file.tir> --fit-route
 //   map_preview --zoom-ladder
@@ -47,6 +48,7 @@
 #include <string>
 
 #include "MapModeMask.h"
+#include "MapPointTypes.h"
 #include "MapPreviewPipeline.h"
 #include "MapViewport.h"
 #include "PpmCanvas.h"
@@ -111,6 +113,41 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
         return false;
       }
       request.classMask = MapModeMasks{}.forMode(mode);
+    } else if (arg == "--no-points") {
+      request.drawPoints = false;
+    } else if (arg == "--point-categories") {
+      // A comma-separated list of safety category names or ids, which is what
+      // `Nearby -> Show on map` does with one of them. Anything unknown is a
+      // usage error rather than a silently empty layer.
+      const std::string v = next();
+      if (v.empty()) return false;
+      uint16_t mask = 0;
+      size_t start = 0;
+      while (start <= v.size()) {
+        const size_t comma = v.find(',', start);
+        const std::string token = v.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (!token.empty()) {
+          int id = -1;
+          for (uint8_t c = 0; c < kSafetyCategoryCount; ++c) {
+            if (kSafetyCategoryNames[c] != nullptr && token == kSafetyCategoryNames[c]) id = c;
+          }
+          if (id < 0) {
+            char* end = nullptr;
+            const long parsed = std::strtol(token.c_str(), &end, 10);
+            if (end != nullptr && *end == '\0' && parsed >= 0 && parsed < kSafetyCategoryCount) {
+              id = static_cast<int>(parsed);
+            }
+          }
+          if (id < 0) {
+            std::fprintf(stderr, "unknown safety category: %s\n", token.c_str());
+            return false;
+          }
+          mask |= static_cast<uint16_t>(1u << id);
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+      request.pointCategoryMask = mask;
     } else if (arg == "--route") {
       const char* v = next();
       if (!v) return false;
@@ -189,6 +226,11 @@ int main(int argc, char** argv) {
   std::printf("place labels: %u drawn, %u dropped (no room)\n", preview.labelsPlaced, preview.labelsDropped);
   std::printf("tile size on disk: %ld..%ld bytes, %u bytes actually read\n", preview.smallestTileBytes,
               preview.largestTileBytes, preview.bytesRead);
+  if (request.drawPoints) {
+    std::printf("points: %u drawn, %u shard(s) opened, %u missing, %u corrupt, %u bytes read\n", preview.pointsDrawn,
+                preview.pointShardsOpened, preview.pointShardsMissing, preview.pointShardsCorrupt,
+                preview.pointBytesRead);
+  }
   if (!request.routePath.empty()) {
     if (preview.routeLoaded) {
       std::printf("route \"%s\": %u points, %u bytes read\n", preview.routeName.c_str(), preview.routePoints,

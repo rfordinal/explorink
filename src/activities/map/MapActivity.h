@@ -13,6 +13,8 @@
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPins.h"
+#include "MapPointQuery.h"
+#include "MapPointSource.h"
 #include "MapProjection.h"
 #include "MapRenderer.h"
 #include "MapRouteSource.h"
@@ -530,6 +532,32 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   int menuDialogWidth_ = 0;
   int menuVisibleRows_ = 0;
 
+  // ## Nearby (../../docs/nearby-menu.md)
+  //
+  // The POI browser over the point layer: what useful things are around the
+  // rider, answered from the GPS fix over a 25 km radius
+  // (../../../docs/safety-concept.md, "Nearby"). OptionPopup inside this
+  // activity for the same reason Pins is: leaving the map screen would drop the
+  // phone link this activity owns.
+  //
+  // Three screens, and the popups are opened through pendingNearbyPopup_ from
+  // loop(), never from inside a popup callback -- show()ing from a callback
+  // reassigns the std::function currently running (PinPopup says the same).
+  enum class NearbyPopup : uint8_t { None, Menu, Category, Detail };
+  NearbyPopup pendingNearbyPopup_ = NearbyPopup::None;
+  uint8_t pendingNearbyArg_ = 0;
+  void servicePendingNearbyPopup();
+  void openNearbyMenu();
+  void openNearbyCategoryList(uint8_t category);
+  void openNearbyPointDetail(uint8_t hitIndex);
+  // `View on map`: turns the category's layer on, remembers which point was
+  // asked for so it can be marked apart from its neighbours, and re-anchors the
+  // frame on it in Observe mode.
+  void viewNearbyPointOnMap(uint8_t hitIndex);
+  // The ring around the point the rider asked to see, drawn straight onto
+  // GfxRenderer after the map -- same place and same reason as drawPins(): the
+  // renderer knows nothing about which POI a menu was pointing at.
+  void drawViewedNearbyPoint();
   // Whether a windowed refresh of this rect can be afforded right now.
   //
   // `GfxRenderer::displayBufferWindow()` returns bool, and every call site here
@@ -542,21 +570,101 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   //
   // Measured 2026-08-22: a coredump caught exactly this -- abort() in loopTask,
   // operator new -> __cxa_throw -> terminate, with the driver asking for 48,000
-  // bytes for a full-panel window. docs/map-follow.md, "An unbounded window
-  // aborts the device", has the backtrace and the arithmetic.
+  // bytes for a full-panel window. docs/power-management.md is the other freeze;
+  // this one is docs/map-follow.md, "An unbounded window aborts the device".
   bool windowRefreshAffordable(int w, int h) const;
   // Bytes to leave free after a windowed refresh's own buffer.
   //
-  // 4 kB, measured 2026-08-22. A first cut at 12 kB was wrong in a way only the
-  // panel could show: the menu-close window is 480x553 = 33,733 bytes against a
-  // largest block of 43 to 45 kB, so 12 kB of margin refused a window that fits
-  // and made every menu close pay a full refresh. The job of this number is to
-  // refuse the 48,000-byte full-panel window that aborted the device, and 4 kB
-  // still does that (48,000 + 4,096 > 45,044).
+  // 4 kB, measured 2026-08-22. The first cut was 12 kB and it was wrong in a way
+  // only the panel could show: the menu-close window is 480x553 = 33,733 bytes
+  // against a largest block of 43 to 45 kB, so 12 kB of margin refused a window
+  // that fits and made every menu close pay a full refresh. The job of this
+  // number is to refuse the 48,000-byte full-panel window that aborted the
+  // device, and 4 kB still does that (48,000 + 4,096 > 45,044) while leaving the
+  // cheap close cheap.
   //
-  // Nothing allocates between the check and the refresh, so the margin is
-  // insurance against fragmentation rather than a reservation for a known cost.
+  // Nothing allocates between this check and the refresh -- the backdrop is
+  // already freed and the map render itself is measured at zero allocations
+  // (docs/device-preview.md) -- so the margin is insurance against
+  // fragmentation, not a reservation for a known cost.
   static constexpr size_t kWindowHeapMargin = 4 * 1024;
+  // Runs the radius search for the menu's rows. False when there is no fix to
+  // search from, which is the one case the menu refuses outright -- the query
+  // starts at the rider, not at the viewport.
+  bool runNearbyQuery();
+  // Fills the category screen's rows for `category` and records which one it
+  // was, so the detail screen can be reopened without a second search.
+  bool loadNearbyCategory(uint8_t category);
+  // `Show on map` for one category: flips its bit in nearbyCategoryMask_ and
+  // redraws. Not a setting and not persisted -- a temporary layer, gone at the
+  // next boot (safety-concept.md: "Not a persisted setting, no layer manager").
+  void toggleNearbyCategoryOnMap(uint8_t category);
+  // `Set destination`: writes the existing `dest` pin, replacing whatever was
+  // there. No new catalogue row and no v2 log record -- the pin type already
+  // exists (PinCatalog.h) and a `sourceType` field would cost a format version
+  // that older builds skip whole (safety-concept.md, "Set destination").
+  void setNearbyDestination(uint8_t hitIndex);
+  // "0.7 km NE" for a list row, and the label a category row carries.
+  void nearbyRowValue(const MapPointQuery::Hit& hit, char* buf, size_t bufLen) const;
+  static StrId nearbyCategoryLabel(uint8_t category);
+  // The condition line on the detail screen: the first reliability flag the
+  // point carries, worded for that category ("Water quality unverified" rather
+  // than "Not verified" under Water). Empty when the point carries none.
+  static StrId nearbyConditionLabel(uint8_t category, uint8_t flags);
+
+  // Which categories draw their marks on the map right now. Zero -- the default
+  // -- draws none, so the map is unchanged until the rider asks for a layer.
+  // Deliberately not in CrossPointSettings: it is a view, not a preference.
+  uint16_t nearbyCategoryMask_ = 0;
+  // Nearest metres per category from the last search, MapPointQuery::kNoDistance
+  // where the radius held none.
+  uint32_t nearbyDistances_[kSafetyCategoryCount] = {};
+  MapPointQuery::Hit nearbyHits_[MapPointQuery::kMaxHits];
+  uint8_t nearbyHitCount_ = 0;
+  uint8_t nearbyCategory_ = 0;
+  // Which row the category list reopens on, so toggling `Show on map` does not
+  // walk the rider back down the list.
+  uint8_t nearbyRow_ = 0;
+  // The point `View on map` was pointed at, kept so the frame can mark it. Not
+  // a pin and never persisted: it is a thing the rider is looking at right now,
+  // and it is dropped the moment they go back to following themselves.
+  int32_t nearbyViewedLatE7_ = 0;
+  int32_t nearbyViewedLonE7_ = 0;
+  uint8_t nearbyViewedCategory_ = 0;
+  uint8_t nearbyViewedFlags_ = 0;
+  bool nearbyViewedValid_ = false;
+  // The query's own file handle and its scratch, allocated when the rider first
+  // opens Nearby and kept for the rest of the screen's life: the map's own
+  // sources are streaming during a render and one seek cursor cannot serve two
+  // readers.
+  std::unique_ptr<HalFileSource> nearbyFile_;
+  std::unique_ptr<MapPointQuery> nearbyQuery_;
+  // The render-side source for the marks. Allocated in onEnter() next to the
+  // tile source, with its own file handle for the same reason.
+  std::unique_ptr<HalFileSource> pointFile_;
+  std::unique_ptr<MapPointSource> points_;
+
+  // ## The destination readout in the header (../../docs/nearby-menu.md)
+  //
+  // While a destination is set, its sector and distance replace the place name
+  // in the header slot that already exists. Quantised hard and floored at 30 s,
+  // because a value that changes is a waveform pass: pin distance prints in 10 m
+  // steps, which at 30 km/h would repaint about once a second
+  // (docs/map-header-status.md, "The repaint policy").
+  static constexpr uint32_t kDestRepaintMs = 30 * 1000;
+  // Fills `buf` with "NE 4.2 km" for the current destination, quantised. False
+  // when no destination is set or there is no fix to measure from -- and then
+  // the place name keeps the slot.
+  bool destHeaderText(char* buf, size_t bufLen) const;
+  // The quantised value, so a repaint can be skipped when nothing a rider would
+  // read has changed. Distance in the printed unit's own steps, never metres.
+  uint32_t destQuantisedDistance() const;
+  uint8_t destSector() const;
+  bool hasDestination() const;
+  uint32_t drawnDestDistance_ = 0;
+  uint8_t drawnDestSector_ = 0xFF;
+  bool drawnDestPresent_ = false;
+  uint32_t nextDestRepaintMs_ = 0;
 
   // ## Pins (../../../docs/pins-plan.md, phase 3)
   //
@@ -663,6 +771,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Observe mode is panned away from them (observeReturnLatE7_).
   int32_t riderLatE7() const;
   int32_t riderLonE7() const;
+  // The heading that belongs with those two. Same split for the same reason:
+  // lastHeading_ is the heading the *frame* was drawn with, which after a pan or
+  // a `View on map` is the frame's, not the rider's.
+  uint8_t riderHeading() const;
   // Short confirmation above the button hints -- "Camp saved", or the reason
   // nothing was saved. Saves the pixels underneath and refreshes only its own
   // rectangle, so it costs one small window refresh and leaves the map up; the
@@ -982,10 +1094,6 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // is known (no packet has carried a non-zero utc yet) and the slot is blank
   // -- so the transition into or out of "no clock" moves this value and
   // repaints, same as a minute rolling over does.
-  // The clock value last painted, **quantised the same way the repaint decision
-  // quantises it** (MapActivity.cpp, clockTick()). In Follow that is the minute;
-  // in Observe it is the ten-minute step, so the header repaints six times an
-  // hour there instead of sixty.
   int16_t drawnClockMinute_ = -1;
   // Until when Observe's clock shows the exact minute. Set by any button press:
   // a rider who pressed something is looking at the screen, and the saving only

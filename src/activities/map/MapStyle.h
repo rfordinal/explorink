@@ -175,6 +175,36 @@ struct MapStyle {
   uint8_t placeLabelRouteOverlapPct;
   uint16_t placeLabelMaxWidthPx;
 
+  // layers.points -- the POI marks from the .tip point layer
+  // (../../../docs/point-file-spec.md). A square outline with a category glyph
+  // inside it and one corner flag when the point carries a condition
+  // (docs/map-render-spec.md, "Point mark vocabulary"; MapPointMarks.h for why
+  // the glyphs are primitives and not icons).
+  //
+  // Device pixels and they do not scale with mpp: like the route arrow, a mark
+  // is a screen decoration and has to stay legible at every zoom rung. A square
+  // that shrank with the zoom would be a dot at the coarse rungs, which is
+  // already what a place is.
+  //
+  // `pointSquarePx == 0` hides the layer, and hidden means the shards are never
+  // opened -- the same performance decision as `buildingsEnabled`, and it
+  // matters more here because a shard is a separate file per 39 km.
+  //
+  // The two `*Enabled` flags are per kind rather than per category, which is
+  // exactly what the `kind` byte was for: "safety without landmarks" is a byte
+  // test and not a category allowlist (docs/map-data-spec.md, "Two kinds of
+  // point, one file"). Category filtering is a render-time mask the UI sets
+  // (MapPointSource::Config::categoryMask), not a style field -- `Nearby ->
+  // Show on map` is a temporary view, not a style edit.
+  bool pointsSafetyEnabled;
+  bool pointsLandmarkEnabled;
+  uint8_t pointSquarePx;
+  uint8_t pointBorderPx;
+  uint8_t pointGlyphPx;
+  // Leg of the corner triangle. 0 draws no flag at all, which makes a flagged
+  // point look confirmed -- so it is a debug setting, never a style choice.
+  uint8_t pointFlagPx;
+
   // layers.route. The route is distinguished from the roads by width alone --
   // there is no colour on 1-bit e-ink -- so this is deliberately wider than any
   // road class. 0 means the route is not drawn even when one is loaded.

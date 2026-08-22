@@ -67,6 +67,15 @@
       "max_route_overlap_pct": 8,
       "min_label_gap_px": 4
     },
+    "points": {
+      "_comment": "POI marks from the .tip point layer (safety points now, landmarks later). square/glyph/flag are DEVICE PIXELS: a mark is a screen decoration and must stay legible at every zoom rung, so it does not scale with mpp. square_px 0 hides the layer and the shards are then never opened. Sized 15/1/9/4 from a real-size render (MapPointMarks.h); grown 20 percent to 18/2/11/5 on the maintainer's call after seeing it on the panel 2026-08-22 -- the glyph shapes were judged at 9 px, so 11 px is a scale nobody has judged yet.",
+      "safety_enabled": true,
+      "landmark_enabled": false,
+      "square_px": 18,
+      "border_px": 2,
+      "glyph_px": 11,
+      "flag_px": 5
+    },
     "position": {
       "_comment": "The 'you are here' puck at the viewport origin: white disc, black ring, black heading arrow. Sizes in device pixels.",
       "arrow_px": 28,

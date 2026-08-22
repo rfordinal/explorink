@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "IMapCanvas.h"
+#include "IMapPointSource.h"
 #include "IMapRouteSource.h"
 #include "IMapSource.h"
 #include "MapHeading.h"
@@ -64,6 +65,10 @@ struct MapRenderTiming {
   uint32_t roadsMs = 0;
   uint32_t routeMs = 0;
   uint32_t placesMs = 0;
+  // The POI marks from the point layer. Its own field because it is its own
+  // files: a shard is a separate open per 39 km of ground, so a slow points
+  // pass is a card-access question and never a geometry one.
+  uint32_t pointsMs = 0;
   // Place-name layout and drawing, which is neither free nor part of the places
   // walk: the halo is the same string re-drawn eight times per ring radius
   // (MapLabels.cpp), so this is the field that says whether the halo is
@@ -137,9 +142,15 @@ class MapRenderer {
   // the map gets place dots and no names -- the behaviour before labels
   // existed. Passing it forces the places layer open the same way `nearestOut`
   // does, since the names come off that walk.
+  // `points` is the POI layer (safety points, later landmarks), or nullptr when
+  // the rider has it off or no shard covers the viewport. Drawn after the place
+  // dots and before the names: a square is a bigger mark than a dot and must
+  // not be buried under one, and a name must still win over both, since a label
+  // is the only thing here that is placed rather than simply drawn.
   static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
                      IMapRouteSource* route = nullptr, MapRenderTiming* timing = nullptr,
-                     MapNearestPlaces* nearestOut = nullptr, MapLabelScratch* labels = nullptr);
+                     MapNearestPlaces* nearestOut = nullptr, MapLabelScratch* labels = nullptr,
+                     IMapPointSource* points = nullptr);
 
   // The style's position puck: white disc, black ring, heading arrow. Drawn
   // by callers with no travel mode of their own -- test/map_preview, which has
