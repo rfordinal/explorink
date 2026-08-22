@@ -197,6 +197,56 @@ Nothing repaints before `viewportDrawn_`: the waiting banner draws no header row
 at all, and painting one onto it would leave a floating status row over a screen
 with no map.
 
+## Proposed: a coarse clock in Observe, and a masked digit to say so (2026-08-22)
+
+**Not built. Maintainer's proposal, and it follows this file's own principle.**
+
+The minute tick is the only thing that repaints the header while nothing else is
+happening -- `minuteMoved` has no rate cap because "a minute *is* the cap"
+(`MapActivity.cpp:1268-1279`). Run 5 measured what that costs in Observe with the
+radio off: **376 windowed refreshes in 6.25 h, exactly 60 an hour, 9.4 s/h of
+panel time** (`power-plan.md`, run 5) **[measured]**. Dropping to a 10-minute
+cadence makes that 6 an hour and 0.94 s/h. **What those 54 fewer refreshes an hour
+are worth in current is [open]** -- the panel's draw during a windowed refresh has
+never been measured, and it is not a CPU cost: `full_clock_ms` moved 0.11 % across
+the whole run, so these repaints never lift the clock.
+
+**The display, and why it is not just a saving.** At a 10-minute cadence the units
+digit is wrong for nine minutes out of ten, so printing it claims a precision the
+device does not have. This file already refuses that trade once -- *"a clock that
+is confidently wrong, which is worse than no clock"* -- and a masked digit is the
+same rule one step further: show the tens, withhold the units.
+
+Three candidates, all from the maintainer:
+
+| Form | Reads as |
+|---|---|
+| `12:5_` | this digit is withheld |
+| `12:5?` | this digit is unknown |
+| `12:5*` | see a footnote that is not there |
+
+**Recommendation: `_`.** It reads as a placeholder rather than as an error, and
+`?` and `*` both carry a "something is wrong" tone that a deliberately coarse
+clock should not. The risk against it is that at UI_10/UI_12 size on e-ink an
+underscore can read as a missing glyph or as part of a frame line.
+
+**That choice has to be judged on the panel, not here.** It is exactly the class
+of call this repo does not make from a laptop render, so all three want rendering
+to the device before one is picked.
+
+**And one addition worth having: exact on input.** A rider pressing a button is
+looking at the screen, so any input repaints the header with the full time. The
+coarse form is for the hours nobody is watching, which is when the saving exists
+anyway -- and it makes the mask self-explaining, because the first press turns
+`12:5_` into `12:57`.
+
+**Two open questions before this ships.** Whether the drift of the extrapolated
+clock matters over the hours a radio-off Observe session runs without a single
+re-anchor (`millis()` is crystal-derived, so likely seconds a day, but nobody has
+measured it), and whether the battery indicator -- which rides the same tick -- is
+content with a ten-minute cadence. This file already says charge moves slowly
+enough that it never earned a repaint of its own, so probably yes.
+
 ## The clock (2026-08-15)
 
 The device has no clock of its own. The X4 has no RTC -- `lib/hal/HalClock.h`

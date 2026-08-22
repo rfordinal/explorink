@@ -409,8 +409,13 @@ churn; that one cannot apply here, because the radio is off.
    cadence *equal* to the worst-case latency.
 4. **Slow the clock repaint in Observe.** 60 refreshes an hour at ~562 ms of panel
    time each is 9.4 s/h. A rider panning the map is looking at it; a device left in
-   Observe for six hours is not. Every five minutes, or only on input, would keep
-   what the clock is for.
+   Observe for six hours is not. **Proposal on the table (2026-08-22): a
+   ten-minute cadence with the units digit masked -- `12:5_` -- plus an exact
+   repaint on any button press.** Design, the glyph candidates and the open
+   questions: `map-header-status.md`, "Proposed: a coarse clock in Observe". Note
+   this lever is panel energy only: these repaints never lift the clock, so there
+   is no CPU term in it, and what the panel spends per windowed refresh is
+   **[open]**.
 
 ### The unknown that could void all four
 
