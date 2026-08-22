@@ -3735,11 +3735,25 @@ bool MapActivity::windowRefreshAffordable(int w, int h) const {
 }
 
 void MapActivity::drawViewedNearbyPoint() {
-  if (!nearbyViewedValid_) return;
+  // A line per refusal, deliberately. This ring did not appear on hardware
+  // 2026-08-22, three readings of this function could not say which guard took
+  // it, and the laptop preview cannot show it at all -- the preview runs
+  // MapRenderer through IMapCanvas and this draws straight onto GfxRenderer. So
+  // the device has to say it.
+  if (!nearbyViewedValid_) {
+    LOG_DBG(kLogTag, "ring skipped: no viewed point set");
+    return;
+  }
   // Only while looking around. Back in Follow the rider is following themselves
   // again and a ring around something they looked at once is stale decoration.
-  if (screenMode_ != MapScreenMode::Observe) return;
-  if (kDefaultMapStyle.pointSquarePx <= 0) return;
+  if (screenMode_ != MapScreenMode::Observe) {
+    LOG_DBG(kLogTag, "ring skipped: not in observe mode");
+    return;
+  }
+  if (kDefaultMapStyle.pointSquarePx <= 0) {
+    LOG_DBG(kLogTag, "ring skipped: the style draws no square");
+    return;
+  }
 
   double mercX = 0.0;
   double mercY = 0.0;
@@ -3749,25 +3763,35 @@ void MapActivity::drawViewedNearbyPoint() {
   int32_t sy = 0;
   proj_.projectMercWide(mercX, mercY, sx, sy);
 
-  // Off the panel: draw nothing rather than clamp a ring to an edge, where it
-  // would claim the point is at the edge. The frame is anchored on this point,
-  // so this only happens after the rider has panned away from it.
+  // A circle, not a bigger square, and with real white between it and the mark.
+  //
+  // The first cut was a rounded rect 3 px outside a 15 px square: on the panel
+  // that reads as a square with a fatter border, not as a highlight. Measured
+  // the hard way 2026-08-22 -- the log said `ring drawn at 230,600` while both
+  // the maintainer and this session looked at the panel and saw no ring. A
+  // different *shape* is what carries at this size, so the highlight is a circle
+  // around the square with a 5 px gap, and the gap is knocked out in white so
+  // the map underneath cannot fill it in.
   const int side = kDefaultMapStyle.pointSquarePx;
-  const int ringInset = 3;  // clear of the square's own border
-  const int half = side / 2 + ringInset;
-  if (sx - half < 0 || sy - half < kMapContentTop || sx + half >= renderer.getScreenWidth() ||
-      sy + half >= renderer.getScreenHeight()) {
+  const int gap = 5;                  // white between the square and the circle
+  const int radius = side / 2 + gap;  // circle radius around the mark's centre
+  const int box = radius * 2;
+  if (sx - radius - 2 < 0 || sy - radius - 2 < kMapContentTop || sx + radius + 2 >= renderer.getScreenWidth() ||
+      sy + radius + 2 >= renderer.getScreenHeight()) {
+    LOG_DBG(kLogTag, "ring skipped: point at %d,%d off the panel (%dx%d, content top %d)", (int)sx, (int)sy,
+            renderer.getScreenWidth(), renderer.getScreenHeight(), kMapContentTop);
     return;
   }
 
-  // A white ring under a black one, the same halo trick the marker and the
-  // compass use: this lands on live map lines, and a bare black ring on top of a
-  // road casing is not a ring.
-  const int x = static_cast<int>(sx) - half;
-  const int y = static_cast<int>(sy) - half;
-  const int box = half * 2;
-  renderer.drawRoundedRect(x - 1, y - 1, box + 2, box + 2, 2, 4, false);  // white halo
-  renderer.drawRoundedRect(x, y, box, box, 2, 3, true);                   // the ring itself
+  const int x = static_cast<int>(sx) - radius;
+  const int y = static_cast<int>(sy) - radius;
+  // White ring outside the black one, the same halo trick the marker and the
+  // compass use: this lands on live map lines, and a bare black circle over a
+  // road casing is not a circle. Radius = half the box, which is what makes
+  // drawRoundedRect draw a circle (MapRenderer does the same for a place dot).
+  renderer.drawRoundedRect(x - 2, y - 2, box + 4, box + 4, 2, (box + 4) / 2, false);
+  renderer.drawRoundedRect(x, y, box, box, 2, box / 2, true);
+  LOG_DBG(kLogTag, "ring drawn at %d,%d, box %d", (int)sx, (int)sy, box);
 }
 
 void MapActivity::drawPins() {

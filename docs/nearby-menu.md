@@ -113,11 +113,22 @@ Now it does three things:
 1. **Turns that category's layer on** (`nearbyCategoryMask_`), so the point and
    its siblings are drawn at all. The menu shows it with a `*` afterwards, and
    `Hide all` turns it off again -- nothing hidden happened.
-2. **Remembers which point was asked for** and rings it: a white halo ring under
-   a black one, drawn by `MapActivity::drawViewedNearbyPoint()` straight onto
-   `GfxRenderer` after the map, the same place and reason as `drawPins()`. In a
-   village a category is a field of squares and being centred on one of them
-   does not say which one it was.
+2. **Remembers which point was asked for** and rings it: a **circle** around the
+   square with a 5 px white gap, drawn by
+   `MapActivity::drawViewedNearbyPoint()` straight onto `GfxRenderer` after the
+   map, the same place and reason as `drawPins()`. In a village a category is a
+   field of squares and being centred on one of them does not say which one it
+   was.
+
+   **A circle, and not the rounded rect this started as.** The first cut drew a
+   rect 3 px outside the square, and on the panel that reads as a square with a
+   fatter border: the maintainer reported no ring at all, and this session looked
+   at the same screenshot and agreed -- while the device's own log said
+   `ring drawn at 230,600`. A different *shape* is what carries at this size.
+   The episode is also why that function logs a line per refusal: it draws
+   straight onto `GfxRenderer`, so **the laptop preview cannot show it** (the
+   preview runs `MapRenderer` through `IMapCanvas` only), and without the log
+   there was nothing to distinguish "not drawn" from "drawn and unreadable".
 3. **Enters Observe**, so the next fix does not yank the frame back.
 
 The ring is dropped when the rider goes back to Follow: they are following
@@ -268,6 +279,19 @@ half-read shard would put a hospital somewhere there is none.
 corner triangle when the point carries a condition. Drawn after the place dots
 and before the names -- a square is a bigger mark than a dot and must not be
 buried under one, and a name must still win over both.
+
+**Sizes, and who chose them.** 15 px square / 1 px border / 9 px glyph / 4 px
+flag came off a real-size render before any of it was on hardware. Grown 20 % to
+**18 / 2 / 11 / 5** on the maintainer's call after seeing it on the panel
+2026-08-22 -- the 2 px border is what makes a mark read as a mark over a hatched
+forest.
+
+Growing it moved two glyphs out of tune, which is worth knowing because it will
+happen again: the shapes were drawn against a 9 px box, and at 11 px the water
+drop's disc swallowed its triangle (a blob) and the bed's mattress became a black
+slab. Both retuned to proportions of the box rather than fixed offsets -- the
+disc is two thirds of the glyph, the mattress a third. The drop is still the
+weakest of the ten and is the one to look at first on the glass.
 
 **The glyphs are drawn from `IMapCanvas` primitives, not from icons.** That was
 the one thing `map-render-spec.md` left open for this task, and it was settled on

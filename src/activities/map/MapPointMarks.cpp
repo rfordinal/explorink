@@ -40,9 +40,16 @@ void triangle(IMapCanvas& canvas, int x0, int y0, int x1, int y1, int x2, int y2
 
 void glyphWater(IMapCanvas& canvas, int x, int y, int g) {
   // A drop: a triangle over a disc, both filled. Filled rather than outlined
-  // because at 9 px an outlined drop is a ring with two pixels of white in it.
+  // because at this size an outlined drop is a ring with two pixels of white in
+  // it.
+  //
+  // The disc is two thirds of the box and sits low, retuned 2026-08-22 when the
+  // mark grew from 9 px to 11: at the old proportions (disc = g - 2, centred a
+  // third up) the disc swallowed the triangle and the whole glyph read as a
+  // blob on the panel.
+  const int discDiameter = (g * 2) / 3;
   triangle(canvas, x + g / 2, y, x + g - 2, y + g / 2, x + 1, y + g / 2, MapInk::Black);
-  disc(canvas, x + g / 2, y + g - g / 3, g - 2, MapInk::Black);
+  disc(canvas, x + g / 2, y + g - discDiameter / 2 - 1, discDiameter, MapInk::Black);
 }
 
 void glyphShelter(IMapCanvas& canvas, int x, int y, int g) {
@@ -61,10 +68,15 @@ void glyphHut(IMapCanvas& canvas, int x, int y, int g) {
 }
 
 void glyphLodging(IMapCanvas& canvas, int x, int y, int g) {
-  // A bed: headboard, a filled mattress, one leg.
+  // A bed: headboard, a mattress bar, two legs. The mattress is a third of the
+  // box and never more -- retuned 2026-08-22 with the mark's growth to 11 px,
+  // where the old `g / 2 - 1` fill read as a black slab rather than a bed.
+  const int mattress = g / 3 > 2 ? g / 3 : 2;
+  const int top = y + g - mattress - 2;
   canvas.drawLine(x, y + 1, x, y + g - 1, 1, MapInk::Black);
-  fillRect(canvas, x + 1, y + g / 2, g - 1, g / 2 - 1, MapInk::Black);
-  canvas.drawLine(x + g - 1, y + g - 2, x + g - 1, y + g - 1, 1, MapInk::Black);
+  fillRect(canvas, x + 1, top, g - 2, mattress, MapInk::Black);
+  canvas.drawLine(x + 1, y + g - 1, x + 1, y + g - 2, 1, MapInk::Black);
+  canvas.drawLine(x + g - 2, y + g - 1, x + g - 2, y + g - 2, 1, MapInk::Black);
 }
 
 void glyphFuel(IMapCanvas& canvas, int x, int y, int g) {
