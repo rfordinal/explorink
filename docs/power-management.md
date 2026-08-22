@@ -1333,7 +1333,13 @@ the menu backdrop, the new point layer) were all wrong, and the log settled it
 in one line.
 
 Fixed by mirroring `onEnter()`'s guard: `powerManager.setPowerSaving(false)`
-immediately before that `begin()`. The alternative -- teaching
+immediately before that `begin()`.
+
+**The fix's own verification is one reproduction, not a soak.** The rider crossed
+Observe -> Follow with a pause longer than the throttle and the device lived;
+nobody ran that transition dozens of times or left the device running for an
+hour. What would close it: a script that drives the transition 50 times over
+`CMD:` and watches whether the log keeps ticking. The alternative -- teaching
 `preventThrottle()` about "a BLE restart is pending" -- closes the window
 instead of surviving it, and is the better shape if this ever grows a third call
 site.

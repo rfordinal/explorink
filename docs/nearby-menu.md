@@ -353,7 +353,10 @@ nearby layer mask 0x000a
   window that aborted the device.
 - Free heap on the map screen 47.6 kB, largest block 45.0 kB, and `Min Free`
   14,684 bytes -- which is the menu-close window's own 33,733-byte buffer and is
-  now a deliberate, checked transient rather than a coin flip.
+  now a deliberate, checked transient rather than a coin flip. That last
+  attribution is **arithmetic, not a logged fact**: 47.6 kB free minus the
+  33,733-byte window leaves 13.9 kB against a measured floor of 14,684 B, and no
+  log line ties the two together.
 - The layer mask reached 0x000a (water and huts), so `Show on map` and
   `View on map` do set their bits.
 

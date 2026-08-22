@@ -52,6 +52,16 @@ chance.
 whole panel. The panel froze, the log stopped, and no button on the device could
 bring it back (`../../../docs/device-notes.md`).
 
+**One thing about that coredump.** It was decoded against an ELF that is not the
+build which crashed (`coredump SHA256 != app SHA256`; no matching ELF was on the
+machine). The frames are verified by exact call-site match and by a measured
+region shift of +0x4006 confirmed three independent ways -- but **frame 12, the
+`MapActivity` call site itself, never resolved.** So "the marker union" below is
+the inferred candidate, not a frame that was read; the other candidate was the
+menu-close window. Both are bounded now, so the fix holds either way, but the
+attribution is inference. What would settle it: a coredump decoded against the
+exact ELF that was running.
+
 The same failure was already measured 2026-08-17 on the menu-close path and is
 described in a comment in `restoreMenuBackdrop()`. That comment says not to
 refresh the whole panel there -- and the code three lines above it computes
