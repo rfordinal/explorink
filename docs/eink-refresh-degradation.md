@@ -181,6 +181,22 @@ cannot hold charge while lit. The fixes that remain are physical or procedural:
 - **Refresh twice.** A second pass re-drives what the first left undriven, which
   is what marker movement was doing by accident in report 1. Cheap, partial, and
   worth having whatever else is true.
+- **Refresh while the device is covered, on foot.** A closed flip case is dark,
+  and the failed condition is light *during* the drive -- the finished image is
+  bistable and light cannot spoil it afterwards. So a hiker's device can update
+  inside the case and be opened onto a finished frame. This is the only mitigation
+  that removes the cause rather than fighting it, and it is why hiking may be the
+  better product for this hardware. Design, the per-device problem of detecting a
+  closed cover (the plain X4 has no sensors at all), and its one assumption:
+  `docs/cover-refresh-window.md` in the parent repo, T-516.
+- **Refresh while the device is covered, on foot.** A closed flip case is dark,
+  and the failed condition is light *during* the drive -- the finished image is
+  bistable and light cannot spoil it afterwards. So a hiker's device can update
+  inside the case and be opened onto a finished frame. This is the only mitigation
+  that removes the cause rather than fighting it, and it is why hiking may be the
+  better product for this hardware. Design, the per-device problem of detecting a
+  closed cover (the plain X4 has no sensors at all), and its one assumption:
+  `docs/cover-refresh-window.md` in the parent repo, T-516.
 - **Do not promise what the panel cannot do.** The public site's comparison table
   says the screen is readable in direct sun (`web/src/compare.html:23`), and that
   is still true -- reflective ink reads better the brighter it gets. **Reading is
@@ -346,6 +362,10 @@ Every item needs a device. Blocked.
   secondary. Then repeat in shade at the same temperature: the cutout must
   vanish. Then repeat under glass or a UV filter, to separate visible light from
   UV.
+- **Does a static image fade with no refresh?** Same stencil, sun, and **no
+  refresh at all**. If the covered half ends up darker, an idle frame degrades on
+  its own -- which decides whether the covered-refresh concept (T-516) holds. Free
+  to run alongside the stencil.
 - **Light versus heat, separated.** Warm the panel in the dark with a heat source
   to the temperature the sun produced, and refresh. A failure there is thermal; a
   clean refresh there plus a failure in cool daylight is optical.
