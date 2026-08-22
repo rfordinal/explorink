@@ -821,11 +821,6 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // real fix or the previous pan step. See the .cpp for why this is not on
   // the ladder steps' settle timer.
   void panBy(PanDirection direction);
-  // How far one pan press moves the frame, as a percentage of the screen. 30 %
-  // rather than 50 %: half a screen jumps far enough that the rider loses the
-  // place they were looking at, and the cost per press (a tile read and a
-  // refresh) is the same at any step size.
-  static constexpr int kPanStepPercent = 30;
   // Up/Down side-button hints while Observe is active: same box as
   // drawZoomSideHints(), different glyphs, because the side buttons pan
   // instead of zooming.

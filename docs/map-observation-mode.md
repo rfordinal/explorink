@@ -34,7 +34,7 @@ Whole-route row already uses.
 `panBy()` does not track a separate "where am I looking" coordinate. It reads
 the projection the frame *on screen* was drawn with (`proj_`, whether that
 frame came from a real fix or the previous pan step), inverse-projects the
-screen point `MapActivity::kPanStepPercent` of a screen away from the anchor
+screen point `MapViewport::kPanStepPercent` of a screen away from the anchor
 (`MapProjection::screenToMerc()`), converts back to lat/lon
 (`MapProjection::mercToLonLat()`), and calls `renderViewport()` with that as
 the new anchor -- the exact same function a ladder step or a real fix uses. A

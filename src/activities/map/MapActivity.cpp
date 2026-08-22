@@ -4316,8 +4316,8 @@ void MapActivity::panBy(PanDirection direction) {
   // far enough that the rider has to re-find where they were looking, and every
   // press costs a full tile read and a refresh either way (asked for on hardware
   // 2026-08-17). Enough overlap to follow a road across two presses.
-  const int16_t stepX = static_cast<int16_t>(renderer.getScreenWidth() * kPanStepPercent / 100);
-  const int16_t stepY = static_cast<int16_t>(renderer.getScreenHeight() * kPanStepPercent / 100);
+  const int16_t stepX = static_cast<int16_t>(renderer.getScreenWidth() * MapViewport::kPanStepPercent / 100);
+  const int16_t stepY = static_cast<int16_t>(renderer.getScreenHeight() * MapViewport::kPanStepPercent / 100);
   int16_t targetX = MapViewport::kAnchorScreenX;
   int16_t targetY = markerY;
   switch (direction) {
@@ -4343,7 +4343,7 @@ void MapActivity::panBy(PanDirection direction) {
   double lat = 0.0, lon = 0.0;
   MapProjection::mercToLonLat(mercX, mercY, lat, lon);
 
-  LOG_DBG(kLogTag, "pan: %d%% step, new anchor %.5f,%.5f", kPanStepPercent, lat, lon);
+  LOG_DBG(kLogTag, "pan: %d%% step, new anchor %.5f,%.5f", MapViewport::kPanStepPercent, lat, lon);
   showBusy();
   // Not coalesced on the settle timer stepZoom/stepMarker use: a pan step's
   // target is computed from the frame the *previous* step drew (proj_), which
@@ -4840,25 +4840,33 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
   request.minMovePx = static_cast<int16_t>(MapViewport::zoomStepAt(zoomStep()).minMovePx);
   request.keepInMarginPx = static_cast<int16_t>(markerMetrics().ring + MapFollow::kKeepInSlackPx);
 
-  switch (MapFollow::decide(request)) {
+  // The reason comes out of decide() rather than being worked out here: with two
+  // checks able to fire on one fix, only the ladder itself knows which one did
+  // (MapFollow::Reason). The line text is formatted there too, so this log and
+  // the host console in test/map_window print the same bytes.
+  MapFollow::Reason reason = MapFollow::Reason::None;
+  const MapFollow::Action action = MapFollow::decide(request, reason);
+  char decisionLog[160];
+  MapFollow::formatDecisionLog(request, action, reason, seq, decisionLog, sizeof(decisionLog));
+
+  switch (action) {
     case MapFollow::Action::Skip:
       // The panel is not touched. The fix is still the newest one, so a later
       // ladder step re-anchors around it and not around the stale one.
       lastLatE7_ = latE7;
       lastLonE7_ = lonE7;
       lastHeading_ = headingStep;
-      LOG_DBG(kLogTag, "fix #%u skipped: %d,%d is under %d px from the marker", (unsigned)seq, (int)fixX, (int)fixY,
-              (int)MapFollow::kMinMovePx);
+      LOG_DBG(kLogTag, "%s", decisionLog);
       return;
     case MapFollow::Action::MoveMarker:
       lastLatE7_ = latE7;
       lastLonE7_ = lonE7;
       lastHeading_ = headingStep;
+      // moveMarker() logs the same line itself, from the state after the move.
       moveMarker(fixX, fixY, headingStep);
       return;
     case MapFollow::Action::ReAnchor:
-      LOG_DBG(kLogTag, "fix #%u re-anchors: at %d,%d, heading %u vs frame's %u, %u moves in", (unsigned)seq, (int)fixX,
-              (int)fixY, (unsigned)headingStep, (unsigned)anchorHeading_, (unsigned)partialMoves_);
+      LOG_DBG(kLogTag, "%s", decisionLog);
       renderViewport(latE7, lonE7, headingStep, seq);
       return;
   }

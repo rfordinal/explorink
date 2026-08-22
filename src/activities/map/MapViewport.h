@@ -162,6 +162,17 @@ inline constexpr uint32_t kMaxTiles = 16;
 // preview renders at. On the device the vertical anchor comes off the
 // marker-height ladder below instead, which the buttons drive.
 inline constexpr int16_t kAnchorScreenX = kDefaultMapStyle.markerXPx;
+
+// How far one pan press moves the frame, as a percentage of the screen. 30 %
+// rather than 50 %: half a screen jumps far enough that the rider loses the
+// place they were looking at, and the cost per press (a tile read and a
+// refresh) is the same at any step size (asked for on hardware 2026-08-17).
+//
+// Lives here rather than in MapActivity, where it started, because it is a
+// viewport quantity like the anchor above and the ladders below -- and because
+// MapActivity does not compile on the host, so a host tool that pans (the
+// device window, test/map_window) could only have copied the number.
+inline constexpr int kPanStepPercent = 30;
 inline constexpr int16_t kAnchorScreenY = kDefaultMapStyle.markerYPx;
 
 inline constexpr int kMarkerStepCount = kMapMarkerStepCount;
