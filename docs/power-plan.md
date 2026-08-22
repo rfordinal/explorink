@@ -911,6 +911,45 @@ sits. So the rule is not "avoid the plateau" or "use 30-minute legs", it is:
 > "The plateau problem" above, and it supersedes every leg-length table on this
 > page.
 
+### Pricing one panel refresh, and why the obvious design is too weak
+
+**Method, not a result. Written 2026-08-22 at the maintainer's request that runs
+report panel refreshes.** The counters are already in every row -- `ref_full`,
+`ref_half`, `ref_fast`, `ref_window`, `panel_busy_ms` -- and `tools/powercsv.py`
+now prints them as **rates** and as **ms per refresh** rather than as totals,
+because a total says nothing until it is divided by the run's length.
+
+Run 5 gives the shape: **60 windowed refreshes an hour, 502 ms each, 0.94 % of
+wall**, with `full_clock_ms` at 0.11 % -- so a windowed refresh is panel energy
+and carries no CPU term worth naming.
+
+**The obvious experiment is too weak.** Compare a run at 60 refreshes/h against
+one at 6 (the coarse clock, `map-header-status.md`). If a windowed refresh draws
+30 mA for 502 ms, that is 0.0042 mAh each, so 54 fewer an hour is about
+0.035 %/h against a 1.76 %/h state -- **2 %, against a whole-run precision of
+1.5 %.** On the edge, and it would produce an argument rather than a number.
+
+**A stronger design: same radio traffic, different refresh count.** Send fixes at
+one fixed cadence in both runs, and vary only whether each fix moves the marker:
+
+- **Run A:** positions jitter by **less than `MapFollow::kMinMovePx`** (8 px, and
+  the rung sets the metres -- `MapViewport.h`'s `minMove` column). Every packet
+  arrives, is parsed, re-anchors the clock, and **draws nothing**.
+- **Run B:** positions step by **more than** it. Same packet count, same parsing,
+  same link -- every fix repaints.
+
+Radio, CPU wake pattern and packet count are identical by construction, so the
+difference is the panel and nothing else. And the contrast is dialable: at a fix
+every 5 s, run B is **720 refreshes/h** against run A's ~60 (the clock), which is
+a ten-fold bigger effect than the coarse-clock comparison and lands well clear of
+the noise.
+
+Both runs are unattended and BLE-driven (`tools/blefakephone.py --pos`, two
+positions a few metres apart), which makes this a night-run pair rather than desk
+work. **What it prices:** one windowed refresh, in %/h per refresh-per-hour, on
+X4. Which then converts every `panel_busy_ms` figure in this file into a real term
+of the budget instead of a duty cycle nobody can weigh.
+
 ### Endurance without the 650 mAh assumption
 
 Percent per hour needs no capacity number, and the three long runs are directly
