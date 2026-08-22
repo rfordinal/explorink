@@ -68,6 +68,14 @@ No filesystem image is written. The map style is compiled in (`data/mapstyle.jso
 is a build-time input) and the `spiffs` partition gets no image, confirmed by
 what lands in the build directory.
 
+**Which of the three images has ever been on a device.** `partitions.bin` is
+byte-identical to a table dumped off a real X4. `firmware.bin` in a release is an
+archived build that was confirmed working. `bootloader.bin` is only ever a build:
+it differs from the dumped device's bootloader region (18,377 of 18,672 bytes on
+2026-08-22), because the dump predates it. All three go on together with
+`pio run -t upload`, so the combination is exercised on every flash -- but a
+write onto a **stock** device has never been done by us.
+
 **Back up the device's flash before the first write.** The reader ships with the
 vendor's own firmware and there is no download that puts it back:
 `esptool -p /dev/ttyACM0 read-flash 0 0x1000000 stock-backup.bin`. See
