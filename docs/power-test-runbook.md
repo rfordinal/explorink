@@ -450,29 +450,35 @@ light sleep engages, so mid-run evidence is `power.csv` and BLE, nothing else.
 
 **We do not know what the maintainer owns.** So the plan degrades:
 
-**How it physically attaches to an X4, which nobody has checked.** Every plan
-below says "a meter in series with the battery", and the prerequisite behind that
-sentence has never been examined: **is the X4's cell on a connector, or soldered
-to the board?** Nothing in this repo says, because nobody has opened one. That is
-the first thing to establish, before any purchase, and it decides which of two
-wiring schemes is even possible:
+**No meter ever reaches the cell, and that is settled rather than open.** The
+parent `CLAUDE.md` rule of 2026-08-22 -- "Never open a device. Ever. Add to it
+instead." -- makes every plan in this file that begins "a meter in series with the
+battery" unbuildable. No back cover, no unplugged cell, no probe on an internal
+pad, on any device, permanently. What is allowed is additive: something strapped or
+printed onto the outside, and anything through a connector the device already
+exposes.
 
-- **Source-meter mode -- the meter replaces the cell.** Disconnect the battery,
-  feed the board from the instrument at a fixed voltage. This is the better
-  measurement *and* the easier one: no shunt in series with a live cell, no burden
-  voltage at a wake spike, and -- the real prize -- **a constant supply voltage, so
-  the discharge curve stops being a confounder at all**. Needs the cell to be
-  disconnectable and needs the battery MOSFET latch (GPIO13,
-  `lib/hal/HalPowerManager.cpp:100-109`) to behave when fed from outside, which is
-  itself **[open]**.
-- **Ampere-meter mode -- in series with the existing cell.** Break one battery
-  lead, insert the meter, the cell still powers the device. No supply needed, but
-  it means cutting or unplugging a lead, and it carries the burden-voltage trap
-  described below.
+Two things that were written here as the better measurement are therefore struck
+out rather than left to be tried:
 
-**Do this on a lab device, not the daily driver.** A device that stays open with
-leads hanging out of it is the right home for this; the 2026-08-19 outreach asked
-for X3 and X4 Pro units partly for that reason.
+- ~~**Source-meter mode -- the meter replaces the cell.**~~ It would have removed
+  the discharge curve as a confounder entirely, by holding the supply at a fixed
+  voltage. It needs the cell disconnected. Dead.
+- ~~**Ampere-meter mode -- in series with the existing cell.**~~ Needs a battery
+  lead broken. Dead. Which also retires the burden-voltage trap described below --
+  worth reading anyway, because it explains why a uA range is dangerous in general,
+  but it is no longer a decision anyone here has to make.
+
+**So experiment 1 cannot be done**, and the board's own floor is permanently
+`[open]`, knowable only as an upper bound from the cheapest state a run reaches --
+1.76 %/h as of run 5. `power-management.md`, "The board's own floor is unpriced",
+carries the same note.
+
+**What is left, in full:** what the firmware measures about itself (`power.csv`),
+what a meter on the **outside** of the USB port can see, and what a device with a
+fuel gauge reports over I2C -- X3 carries a BQ27220 whose average-current register
+the firmware already reads, X4 has none. That is the whole instrument set, and no
+purchase enlarges it.
 
 **A candidate for the no-teardown route, 2026-08-21: Joy-IT JT-UM120.** Read off
 the manufacturer's page (`https://joy-it.net/en/products/JT-UM120`) **[primary]**:

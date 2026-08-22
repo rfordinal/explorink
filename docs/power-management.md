@@ -834,10 +834,16 @@ Today's "off" measures near zero only because cutting the latch
 **Consequence for every number in this file.** If that floor is 1 mA or more, the
 SoC's 5 uA deep sleep is irrelevant, and on X4 it is the only term left to argue
 about at all now that the crystal is ruled out.
-It has never been measured, it needs a uA meter in series with the battery -- the
-`power.csv` instrument cannot see microamps and a USB meter charges the cell --
-and it is the first experiment in
-[`power-idle-sleep.md`](power-idle-sleep.md).
+It has never been measured and **now it never will be**: measuring it needs a uA
+meter in series with the battery, and no device is ever opened (parent
+`CLAUDE.md`, "Never open a device. Ever. Add to it instead.", 2026-08-22). The
+`power.csv` instrument cannot see microamps and a USB meter charges the cell.
+
+So the floor is not an open question with a plan behind it, it is a **permanent
+upper bound**: whatever it is, it is below the cheapest state a run has reached,
+which is run 5's **1.76 %/h** in Observe with the radio off. Every sleep-state
+number in this file inherits that bound rather than a value, and experiment 1 in
+[`power-idle-sleep.md`](power-idle-sleep.md) is retired rather than pending.
 
 ## Wake sources on this chip: deep sleep is the button, light sleep is anything
 
