@@ -156,6 +156,24 @@ constexpr uint32_t kHeaderPollMs = 2000;
 // that one is not cosmetic.
 constexpr uint32_t kHeaderBarsRepaintMs = 30 * 1000;
 
+// Observe mode's clock granularity, in minutes. The minute tick is the only
+// thing that repaints the header while nothing else on the device is happening,
+// and run 5 priced it: 60 windowed refreshes an hour, 9.4 s/h of panel time, in
+// a state whose whole point is that it is cheap (docs/power-plan.md, run 5).
+// Ten minutes makes that six an hour.
+//
+// The units digit is then wrong nine minutes in ten, so it is not printed --
+// `12:5_` rather than `12:57`. docs/map-header-status.md already refuses the
+// other trade ("a clock that is confidently wrong ... is worse than no clock");
+// withholding the digit is the same rule one step further.
+constexpr uint16_t kClockCoarseMinutes = 10;
+
+// How long after a button press the clock shows the exact minute. A rider who
+// pressed something is looking at the screen, and the saving only exists during
+// the hours nobody is. It also makes the mask self-explaining: the first press
+// turns 12:5_ into 12:57.
+constexpr uint32_t kClockFineAfterInputMs = 30 * 1000;
+
 // Stateless view onto MISSING_TILES for the `missing` command, shared with the
 // tile sync screen (MissingTilesConsoleSource.h).
 MissingTilesConsoleSource g_missingTilesConsoleSource;
@@ -1222,6 +1240,25 @@ int MapActivity::resolveBleBars(int8_t rssi) {
   return lastKnownBleBars_;
 }
 
+bool MapActivity::clockIsCoarse() const {
+  // Observe only. In Follow the panel is already repainting for the marker, so a
+  // per-minute clock costs nothing extra there -- and a rider following a route
+  // has more use for the exact minute.
+  if (screenMode_ != MapScreenMode::Observe) return false;
+  if (clockFineUntilMs_ == 0) return true;
+  return static_cast<int32_t>(millis() - clockFineUntilMs_) >= 0;
+}
+
+int16_t MapActivity::clockTick(uint32_t& localNowOut) const {
+  // One function for both callers, because the repaint decision and the string
+  // have to quantise identically. If they disagree, the header either repaints
+  // every minute while showing a coarse string, or shows a stale one.
+  if (!freeink::BlePositionServer::getInstance().localTimeNow(localNowOut)) return -1;
+  const uint16_t minuteOfDay = static_cast<uint16_t>((localNowOut % 86400u) / 60u);
+  if (!clockIsCoarse()) return static_cast<int16_t>(minuteOfDay);
+  return static_cast<int16_t>(minuteOfDay / kClockCoarseMinutes * kClockCoarseMinutes);
+}
+
 void MapActivity::updateHeaderStatus() {
   // Nothing to update before there is a frame to update: the waiting banner
   // draws no header row at all, and painting one onto it would leave a floating
@@ -1273,8 +1310,11 @@ void MapActivity::updateHeaderStatus() {
   // moves, so without this the row would freeze at the time of the last
   // movement and quietly lie (docs/map-header-status.md, "The clock").
   uint32_t localNow = 0;
-  const bool haveClock = freeink::BlePositionServer::getInstance().localTimeNow(localNow);
-  const int16_t nowMinute = haveClock ? static_cast<int16_t>((localNow % 86400u) / 60u) : -1;
+  // Quantised in Observe (see clockTick()), so in that mode this fires six times
+  // an hour rather than sixty. Leaving or entering the coarse window also changes
+  // the value, which is how a button press repaints the exact minute and how it
+  // goes back to coarse afterwards -- one repaint each, both caused by the rider.
+  const int16_t nowMinute = clockTick(localNow);
   const bool minuteMoved = nowMinute != drawnClockMinute_;
 
   if (!structural && !barsMoved && !minuteMoved) return;
@@ -1542,18 +1582,27 @@ void MapActivity::drawHeaderStatusStrip() {
   // string ("00:00"), and a narrower one hangs off its right edge, against
   // the globe, rather than shifting the whole field.
   uint32_t localNow = 0;
-  if (freeink::BlePositionServer::getInstance().localTimeNow(localNow)) {
+  const int16_t clockTickNow = clockTick(localNow);
+  if (clockTickNow >= 0) {
     const uint32_t secondsOfDay = localNow % 86400u;
     char clockText[6];
-    snprintf(clockText, sizeof(clockText), "%u:%02u", static_cast<unsigned>(secondsOfDay / 3600u),
-             static_cast<unsigned>((secondsOfDay % 3600u) / 60u));
+    if (clockIsCoarse()) {
+      // "12:5_": the tens of minutes, then a withheld digit. Not "12:50",
+      // which would claim a minute it does not have.
+      snprintf(clockText, sizeof(clockText), "%u:%u_", static_cast<unsigned>(secondsOfDay / 3600u),
+               static_cast<unsigned>((secondsOfDay % 3600u) / 60u / kClockCoarseMinutes));
+    } else {
+      snprintf(clockText, sizeof(clockText), "%u:%02u", static_cast<unsigned>(secondsOfDay / 3600u),
+               static_cast<unsigned>((secondsOfDay % 3600u) / 60u));
+    }
     const int slotRight = globeLeft - kHeaderClockToGlobeGap;
     const int textX = slotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
     // kHeaderTextTopY, not iconTop: this is text standing next to the battery
     // percentage, and the two rows are 4px apart. headerStatusRect() starts at
     // whichever is higher, so this stays inside the refreshed window.
     renderer.drawText(SMALL_FONT_ID, textX, kHeaderTextTopY, clockText, true);
-    drawnClockMinute_ = static_cast<int16_t>(secondsOfDay / 60u);
+    // The same quantised value the repaint decision compares against.
+    drawnClockMinute_ = clockTickNow;
   } else {
     drawnClockMinute_ = -1;
   }
@@ -2060,6 +2109,11 @@ void MapActivity::loop() {
   // A row callback cannot open the next popup itself (see PinPopup), so this is
   // where the one it asked for actually opens -- before the popup below gets this
   // frame's input, so the new popup is the one that sees the next press.
+  // A press means the rider is looking at the screen, so Observe's clock shows the
+  // exact minute for a while (clockIsCoarse()). Read, not consumed -- the checks
+  // below and the input handling further down all still see this frame's press.
+  if (mappedInput.wasAnyPressed()) clockFineUntilMs_ = millis() + kClockFineAfterInputMs;
+
   if (pendingPinPopup_ != PinPopup::None) servicePendingPinPopup();
 
   if (pinNoticeUntilMs_ != 0 &&
