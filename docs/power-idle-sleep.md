@@ -47,6 +47,18 @@ Four facts kill the obvious designs before they start.
   battery. So there is no RTC-timer wake on battery today, and the wake is the
   button bridging the rail. **[repo]**
 
+## The panel's own rails, still on
+
+Found 2026-08-22, and not covered anywhere else in this plan: on the X4 a
+`FAST_REFRESH` sends `0x22 = 0xFC`, whose low bits do **not** include the
+analog/clock power-down pair, so the panel controller stays powered after every
+fast refresh. A parked map screen therefore holds the panel's charge pump up
+indefinitely -- the entry frame is the last `HALF` (which does power down) and
+everything after it is `FAST`. Mechanism, the reason `deepSleep()` is the wrong
+tool for it, and the vendor guidance behind it: `refresh-modes.md`, "What each
+mode leaves the panel's rails doing". Cost unmeasured; a parked-screen plan that
+does not drop those rails may be leaving current on the table.
+
 ## The numbers that decide the design
 
 The figures live in [`power-management.md`](power-management.md), "What a C3

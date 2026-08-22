@@ -255,6 +255,16 @@ block's asset pipeline (two generator scripts, one traced SVG), the seven rows
 and why three of them draw dimmed, and how a row is dimmed on a panel with no
 grey. Verified on the X4 2026-08-21; input handling still untested.
 
+[`docs/eink-refresh-degradation.md`](./docs/eink-refresh-degradation.md) is why
+the panel refreshes badly in daylight. A refresh under a thumb came out white
+everywhere except under the thumb, and a waveform is global -- so the cause acts
+on the glass, not in the code: light raising the backplane's leakage while the
+pixels are being driven. No firmware change fixes that; a hood and a second
+refresh pass do. Two separate code defects sit underneath it -- the map cleans
+the panel on its entry frame and never again (`Ssd1677Driver` has no ghost-clear
+counter), and the one clean it has is deliberately under-driven. All of it
+unmeasured: the X4 was lost on the ride that produced the second report.
+
 ## Credits
 
 **This project exists because of

@@ -134,6 +134,73 @@ a fixed cost and area does not enter into it** (measured over two ride replays,
 `map-follow.md`). So the thing to minimise is the number of refreshes, never
 their size.
 
+## The map never asks for a clean after entry
+
+Everything above is about picking the right mode per frame. There is a separate
+hole: **nothing promotes a `FAST` back to a `HALF` over time.** `MapActivity`
+cleans on its entry frame and then runs DU forever
+(`MapActivity.cpp:4511`/`:4553`), and `Ssd1677Driver` has no
+`ghostClearInterval` counter, unlike the IT8951 and Murphy drivers
+(`It8951Driver.cpp:66`). A long ride is thousands of DU refreshes with zero
+cleans. Two field reports of a pale, half-driven panel, the light mechanism that
+explains the shape of the failure (a refresh under a thumb came out white except
+under the thumb), the heat story on top of it, and what would settle each:
+`eink-refresh-degradation.md`.
+
+## What each mode leaves the panel's rails doing
+
+Separate from ghosting, and found 2026-08-22 while reading vendor guidance. The
+`0x22` sequence byte carries the power-down bits in its low two (`0x03` =
+ANALOG_OFF_PHASE | CLOCK_OFF), and the X4's three sequences differ:
+
+| mode | X4 sequence | low bits | panel after the refresh |
+|---|---|---|---|
+| `FAST_REFRESH` | `0xFC` | `0x00` | **clock and analog left enabled** |
+| `HALF_REFRESH` | `0xD7` | `0x03` | powered down by the sequence itself |
+| `FULL_REFRESH` | `0xF7` | `0x03` | powered down by the sequence itself |
+
+The driver tracks that in one line -- `_isScreenOn = (seqOverride & 0x03) ? false
+: !turnOff;` (`Ssd1677Driver.cpp:288`). Note the comment above it says "the
+sequence powered the panel down at the end", which is true for `0xD7`/`0xF7` and
+**not** for `0xFC`.
+
+`turnOffScreen` does not help here. It defaults to `false` on every public entry
+point (`FreeInkDisplay.h:113`, `:164`, `:181`, `:217`, `:220`) and, on a board
+with `fastSeqOverride` set, passing `true` only flips the flag -- the sequence
+byte is sent as-is, so no power-down bits reach the panel. The only code that
+actually drops the rails is `Ssd1677Driver::deepSleep()`
+(`Ssd1677Driver.cpp:585-600`), reached from `display.deepSleep()` in the device's
+own sleep path (`main.cpp:271`).
+
+**Consequence: on the map screen the rails stay up for the whole session**, since
+the entry frame is the last `HALF` and everything after it is `FAST`.
+
+Two reasons that might matter, both **open**:
+
+- **Vendor guidance says do not.** "If some e-Paper screens are powered on for a
+  long time, irreversible screen damage may occur", and after each refresh the
+  screen should be set to sleep or powered off
+  (https://docs.waveshare.com/5inch_e-Paper/FAQ). GxEPD2's author gives the same
+  advice for exactly this reason. Against that: stock X4 firmware also uses
+  `0xFC` for its partial refresh, so the sequence itself is vendor-sanctioned for
+  this panel -- what stock does *between* page turns is not known.
+- **Current draw.** An enabled charge pump costs something, and the power
+  campaign has never accounted for it (nothing in `power-management.md` or
+  `power-idle-sleep.md` mentions the panel's analog rails).
+
+**The fix, if a measurement wants one, is a rails-off call and not
+`deepSleep()`.** Deep sleep discards controller RAM and re-arms
+`_needsInitialFull`, so the next paint becomes a `HALF` -- 1,684 ms and a clean
+nobody asked for. A plain power-down (`0x22 = 0x03` + `0x20`, the tail of what
+`deepSleep()` already does) keeps RAM and the differential baseline, and `0xFC`
+re-enables clock and analog at the start of the next refresh anyway. There is a
+`powerOn()` (`Ssd1677Driver.cpp:326`) and no matching `powerOff()`; that is the
+gap.
+
+Tracked as BUG-023 and T-515 in the parent repo. **Nothing here is measured** --
+the bits are read off the source, the risk is a vendor sentence, and the cost is
+unknown until someone runs a slope with the rails dropped.
+
 ## Status
 
 Sequence numbers, promotion rules and which caller uses what: **read off the
