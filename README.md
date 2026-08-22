@@ -181,6 +181,11 @@ pio run --target upload
 pio device monitor
 ```
 
+That builds `[env:default]`, which is the only environment with the phone link in
+it. **`gh_release` has no BLE**, so a binary built there has no GPS and no tile
+transfer: [`docs/build-environments.md`](./docs/build-environments.md) has the
+table, the flash offsets and what a published build must be.
+
 ### Pre-PR checks
 
 ```bash
@@ -218,6 +223,10 @@ formats, i18n and the contributing guide all came from CrossPoint.
 review of the map, BLE and tile paths (2026-08-06), one plan per area, with a
 measurement gate for each. Start at its
 [`README.md`](./docs/optimization/README.md).
+
+[`docs/build-environments.md`](./docs/build-environments.md) is which of the five
+build environments can be published and which two are missing Bluetooth, plus the
+three flash offsets verified against a real device's own dump.
 
 [`docs/ble-advertising.md`](./docs/ble-advertising.md) is what the device puts on
 the air before a phone connects, and when: only while the map or sync-map-tiles
