@@ -223,8 +223,15 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   mapLastLatE7 = doc["mapLastLatE7"] | 0;
   mapLastLonE7 = doc["mapLastLonE7"] | 0;
   // Masked, not clamped: a MapHeading is 0-15 and any bit pattern already
-  // fits once the top nibble is dropped, same mask BlePositionServer applies
-  // to the wire value.
+  // fits once the top nibble is dropped.
+  //
+  // This is the *only* mask on the path. onWriteIngest stores data[14] raw
+  // (BlePositionServer.cpp:454) and MapActivity writes riderHeading() into
+  // mapLastHeading unmasked, so a heading of 200 off the wire is persisted as
+  // 200 and only cleaned up here on the way back in. Verified 2026-08-23 in
+  // the desktop simulator; docs/map-follow.md, "Nothing validates a position
+  // packet". This comment used to claim BlePositionServer applies the same
+  // mask. It does not.
   mapLastHeading = (doc["mapLastHeading"] | (uint8_t)0) & 0x0F;
 
   // Reader font size — an actual point size since 1.5. Files written by 1.4 and
