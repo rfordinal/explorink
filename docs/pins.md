@@ -486,6 +486,23 @@ parking `P`) come from a **regular**-weight system font since 2026-08-23 --
 `DIGIT_FONTS`. They were baked bold before that, reported too heavy at the same
 time as the pivot bug.
 
+**The head's centre, for every frame, is a tracked point, not a re-detected
+one.** The first version of this fix still called `head_circle()` -- the same
+"widest interior run in the upper half" scan used to find the glyph's clear
+area on the upright shape -- on each *rotated* frame to find `frame.headX/Y`.
+Confirmed on the S8 the same day: at rotated (non-cardinal) steps the tail's
+own stroke sweeps into that scan and drags the detected centre sideways, well
+off the ring the panel actually draws -- the flag glyph sat visibly left of
+centre inside the head. A circle is rotation-invariant -- only its position
+moves -- so `gen_pin_icons.py` now measures the head's centre once, on the
+upright raster, marks it with a filled dot in a side-channel image, and carries
+that dot through the exact same rotate/resize/crop/pad pipeline the shape
+artwork itself goes through; the dot's centroid in the finished frame is
+`headX/Y`. That tracks the real transform instead of re-guessing it from a
+silhouette the tail can contaminate. The per-frame clear-radius scan stays --
+only step 0's result is ever used (for the glyph's pixel size), and that
+number is unchanged.
+
 **The bearing origin is the rider only while the rider is on the frame.** Panned
 away in Observe mode they are not, and a ray between two points that are both off
 the panel usually crosses none of it -- so every distant pin silently lost its
