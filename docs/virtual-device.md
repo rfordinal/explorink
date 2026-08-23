@@ -1,43 +1,50 @@
-# VX4 — the virtual device
+# Host-side device simulation
 
-The X4 was lost 2026-08-22. UI work needs a device. This doc says what we build
-instead, what it is allowed to be, and where it stops being the X4.
+The X4 was lost 2026-08-22. Map and UI work needs a device. This doc says what we
+run instead, and what no host build can answer.
 
-**Status: decided, not built.** Nothing here is verified on Wokwi yet. The spike
-below is what turns the decision into a fact.
+**Wokwi is dropped, 2026-08-23.** The plan below it was to run the real firmware
+binary on an emulated ESP32-C3 as a tenth `BoardProfile` (`FREEINK_DEVICE_VX4`).
+The reason it was worth paying for was that it looked like the only way to get
+the whole firmware UI on a screen without a device. It is not: upstream's own
+simulator does that natively, MIT and maintained (see "Prior art"). What is left
+of Wokwi's exclusive ground is narrow, and against it stand a closed core, a beta
+chips API, a paid plan and an SSD1677 model we would write ourselves.
 
-## Decision
+The Wokwi and QEMU research below is **kept deliberately, not as a plan.** Every
+finding in it cost a fetch or a measurement and would otherwise be re-derived by
+whoever asks this question next.
 
-Two layers, each answering what the other structurally cannot.
+## What we run
 
-**Layer 1, built 2026-08-22: `map_window`.** The real map code in an SDL2 window
-on the laptop, playing a recorded ride at its own pace. Not a new emulator -- it
-joins two host tools that already existed. Details in
-[`map-follow.md`](map-follow.md), "`map_window`: the ride in a window, live".
+**`map_window`, built 2026-08-22.** The real map code in an SDL2 window on the
+laptop: a replayed ride or a held position, the real `MapFollow` decisions and
+the real `MapRenderer`, a menu for the rungs, modes and layers, and the map
+module's own log. It joins two host tools that already existed. Details in
+[`map-follow.md`](map-follow.md), "`map_window`".
 
-**Layer 2, decided, not built: VX4.** The **real firmware binary** on a
-**virtual ESP32-C3** under **Wokwi**, with our own peripheral models for panel,
-buttons and SD, as a tenth `BoardProfile`, `FREEINK_DEVICE_VX4`.
+**Upstream's simulator, not attempted yet.** Runs the *whole* firmware UI --
+menus, every activity, settings, the web server. MIT, a PlatformIO library. See
+"Prior art" and T-530 in the parent repo's `docs/TODO.md`.
 
-The split, and why neither one is enough:
+| | `map_window` | upstream simulator | needs a device |
+|---|---|---|---|
+| loop speed | native, 64x the ride clock | native | real time |
+| UI pixels | faithful, map screen only | faithful, whole UI | the panel itself |
+| refresh counts, dirty rects | **yes** -- firmware decisions | presumably | yes |
+| activities outside the map | no -- links map code, not the UI stack | **yes** | yes |
+| heap ceiling, stack limits | no -- x86 | no -- x86 | **yes** |
+| real RISC-V execution | no | no | **yes** |
+| SSD1677 command stream | no | no | **yes** |
+| waveform timing, ghosting | no | no | **yes** |
 
-| | `map_window` (layer 1) | VX4 (layer 2) |
-|---|---|---|
-| loop speed | native, and 64x the ride clock | emulated, slower |
-| cost | zero | Community covers spike 1-5 |
-| UI pixels | faithful (the real renderer) | faithful (the real panel driver) |
-| refresh counts, dirty rects | **yes** -- they are firmware decisions | yes |
-| heap ceiling, stack limits | **no** -- x86 | yes |
-| SSD1677 command stream | **no** | yes |
-| waveform timing, ghosting | **no** | modelled only |
-| activities outside the map | **no** -- links map code, not the UI stack | yes |
+**Read the last column as the cost of the lost device, not as a gap some tool
+fills.** Dropping Wokwi means those four rows have no substitute at all until
+replacement hardware arrives. That is the honest trade: Wokwi could have reached
+three of them (waveform timing only as a model we wrote), for money and for
+weeks of work on a platform we cannot fix.
 
-Rejected outright: QEMU as the emulator (see below), and a full desktop
-simulator of the whole firmware. The second one is a real option -- see
-"Prior art" -- but layer 1 already covers the ride-watching case at a fraction
-of the work, so a full stub layer waits until something needs it.
-
-## Layer 1 exists, and it was cheaper than any estimate here
+## `map_window` was cheaper than any estimate in this doc
 
 `map_window` cost one refactor and one new tool because both halves were already
 in the tree and nobody had joined them live:
@@ -70,8 +77,8 @@ afterwards, and the line text living in one place instead of two. Both are in
 `map-follow.md`, "`decide()` says why now" and "One copy of the log line" -- and
 the second one found a log line that had been printing the wrong number.
 
-That last row is the honest limit of layer 1 and the reason layer 2 still
-matters.
+That last row is the honest limit of a host build, and it is why the device
+still matters.
 
 **It paid for itself on the first run.** Replaying one ride at ride mode's own
 default rung instead of the rung the hardware runs used showed 30 re-anchors and
@@ -79,43 +86,75 @@ default rung instead of the rung the hardware runs used showed 30 re-anchors and
 device actually ships with. `map-follow.md`, "The default ride rung costs more
 than twice what was measured".
 
-## Prior art: someone already built a CrossPoint desktop emulator
+## Prior art: upstream ships a simulator, and it is better than this doc assumed
 
-`github.com/jonmooreai/Crosspoint-Emulator` runs upstream CrossPoint's
-application code natively: SDL2 window at 480x800, the SD card as a plain
-`./sdcard/` directory, keyboard mapped to the device buttons. Worth knowing about
-for three reasons and unusable for us for three more.
+**Found 2026-08-23, after `map_window` was already built and merged.**
+`crosspoint-reader/crosspoint-simulator` is upstream CrossPoint's own desktop
+simulator. **MIT licensed, actively maintained** (created 2026-03-17, pushed
+2026-08-20), 51 stars, 31 forks.
 
-Worth knowing:
+It is not a separate program. It is a PlatformIO library: the firmware adds it as
+a `lib_dep`, declares an `[env:simulator]`, and `lib_ignore = hal` drops the
+firmware's whole `lib/hal/` so the simulator supplies `HalDisplay`,
+`HalStorage`, `HalGPIO` and the rest in its place. Then the **entire firmware**
+compiles natively and renders into an SDL2 window -- menus, every activity,
+settings, the web server and the WebDAV routes, not just one screen.
 
-- **It stubs at the seam our fork also has.** Its `sim/include/` is `HalDisplay.h`,
-  `HalGPIO.h`, `HalStorage.h`, `EInkDisplay.h`, `SDCardManager.h`, `SdFat.h`,
-  `ArduinoStub.h`, `FreeRTOSStub.h`, `WString.h`, `WiFi.h`. We have
-  `lib/hal/HalDisplay.h`, `HalGPIO.h`, `HalStorage.h` and
-  `freeink-sdk/.../EInkDisplay.h`, `SDCardManager.h` -- same names, same
-  boundary.
-- **The stub surface is small.** Five `.cpp` files and about fifteen headers,
-  roughly 50 kB of code excluding a vendored `stb_image.h`. Any estimate here
-  that a desktop simulator is weeks of stub work was too high.
-- **It models two device constraints on purpose**: one core (no background
-  thread, prewarm one EPUB per frame, yields every 8 rows in image conversion)
-  and one shared SPI bus ("no display transfer and no file read/write run at the
-  same time"). The second is our constraint too -- panel on cs 21, card on
-  cs 12.
+It already carries device profiles for X4, X3, X4 Pro, Seeed Sticky and M5Stack
+PaperMono, and controller variants for SSD1677, UC8179 and UC8279. Needs SDL2
+plus `libssl-dev`; macOS and Linux/WSL only, no native Windows.
 
-Unusable as-is:
+`FORKING.md` answers our exact case: a fork whose HAL has diverged forks the
+simulator too and repoints `lib_deps` at it. That is called "the supported path,
+not a workaround", with a split of what belongs upstream (platform emulation
+gaps, rendering behaviour) against what stays in a fork (HAL signatures, device
+profiles for hardware upstream does not target).
 
-- **No licence.** The GitHub API reports `license: null` and there is no LICENSE
-  file in the tree, so it is all rights reserved. Read it as a reference; do not
-  lift code without asking the author.
-- **It targets upstream, and modified upstream too** (its README has a "New
-  Features in Crosspoint Core" section). Our map stack -- `MapActivity`,
-  `MapRenderer`, pins, BLE -- is not in upstream at all.
-- **Snapshot, not a project.** Created 2026-02-10, last push 2026-02-11. One
-  author, one day, then silent.
+**What this corrects in this doc.** The layer table above says layer 1 cannot
+reach activities outside the map, and that only layer 2 can. That was true of
+`map_window`, which links the map sources rather than the UI stack -- it is not
+true of the approach. A host build *can* run the whole firmware UI, and upstream
+has been doing it since March. Layer 2's remaining exclusive ground is narrower
+than this doc claimed: the heap ceiling, real RISC-V execution, the SSD1677
+command stream and waveform timing.
 
-One factual warning: its README states the device has "RAM: 128 MB". The
-ESP32-C3 has ~400 kB of SRAM. Do not use that document as a hardware reference.
+**Not attempted here.** Our fork's HAL has diverged (`lib/hal/` adds
+`HalTiltSensor`, `HalClock`, `HalSystem`, `HalPowerManager`) and our display
+stack comes through `freeink-sdk`, which upstream's simulator knows nothing
+about. So integration means a fork of the simulator with `freeink-sdk`-aware
+stubs, and how much work that is has not been measured. Every claim in this
+section is **read** -- off the repo's README, `FORKING.md` and the GitHub API.
+Nothing here has been run.
+
+`jonmooreai/Crosspoint-Emulator`, which an earlier version of this section
+presented as the prior art, is one of the 31 forks. Its "no licence, one author,
+untouched since 2026-02-11" is true of that fork and was wrong to read as the
+state of the art. `uxjulia/CrossInk` is another fork.
+
+# The dropped Wokwi plan, kept for its findings
+
+Everything below this line is the VX4 plan as it stood on 2026-08-22, before
+upstream's simulator was found. **It is not a plan any more.** Read it as a
+record, and read the section titles as past tense.
+
+Four findings in it are the reason it is not deleted, because each cost a fetch
+or a measurement:
+
+- **QEMU's ESP32-C3 cannot drive this device.** No GP SPI, no GPIO matrix/IOMUX,
+  no SD/MMC -- which is the panel, the card and the buttons. "Why Wokwi and not
+  QEMU".
+- **Nobody outside Espressif can emulate BLE**, and the reason is a closed blob
+  against undocumented radio registers. "No BLE, and that is fine".
+- **Wokwi references every virtual ADC to 5 V regardless of MCU**, so a button
+  model has to target the raw count rather than reproduce the ladder. "Buttons
+  target the raw ADC count".
+- **Wokwi's SPI API has no CS**, so any model on a shared bus must watch the pin
+  itself or eat the other device's traffic. "The panel model must watch its own
+  CS".
+
+The pricing, the spike order and the platform gate are historical. If this
+question is ever reopened, the licensing numbers were read on 2026-08-22 and
+should be re-read.
 
 ## The invariant
 
@@ -368,6 +407,19 @@ project", so the 16 MB table travels with the project.
 
 So the loop is: PlatformIO builds locally, we upload the `.bin`.
 
+**Sourcing, weaker than the rest of this section.** The upload flow came out of
+web searches summarising the Wokwi docs, not a fetch of the page documenting it
+-- `docs.wokwi.com/guides/esp32` was fetched twice and surfaced it neither time.
+Two searches also gave two different menu labels ("Upload Firmware and Start
+Simulation…" and "Load HEX File and Start Simulation…"), so the capability is
+confirmed twice and the exact wording is not. It is the claim the whole "VS Code
+is irrelevant" conclusion rests on. One minute in a browser project settles it.
+
+Unrelated, and worth separating because it gets conflated: Meshtastic's
+browser-based firmware tool is a **Web Flasher** -- Web Serial to a real device
+over USB -- not a Wokwi simulation. Browser flashing and browser simulating are
+different mechanisms.
+
 `wokwi-cli` is the CI path, not the dev loop. It reads a local `wokwi.toml`
 (`version`, `firmware`, `elf`) plus `diagram.json`, but **runs against Wokwi's
 servers** and needs `WOKWI_CLI_TOKEN` from the CI dashboard. Metered.
@@ -451,14 +503,16 @@ Pay only if it passes, then do step 6.
 - Whether a 480x800 RGBA framebuffer (1.5 MB, no documented size cap) performs
   acceptably. `[open]`
 
-## What VX4 will never test
+## What no simulation tests
 
 Ghosting on real pigment, power draw, deep sleep, ADC tolerances, SD timing, BLE
-against a real phone, and whether a mount holds at speed.
+against a real phone, and whether a mount holds at speed. Wokwi would not have
+reached these either; the table at the top of this doc is the shorter list of
+what it *would* have added over a host build.
 
-**The merge rule is unchanged.** Nothing reaches `develop` or `master` on VX4
-evidence alone. VX4 moves where bugs are found earlier; it does not move where
-they are confirmed.
+**The merge rule is unchanged.** Nothing reaches `develop` or `master` on
+simulated evidence alone. A simulator moves where bugs are found earlier; it does
+not move where they are confirmed.
 
 ## Automation, later
 

@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
+#include <string>
+
 #include "MapFollow.h"
 
 namespace {
@@ -356,6 +359,122 @@ TEST(MapFollowPerRung, DefaultsAreStillTheConstants) {
   EXPECT_EQ(request.keepInMarginPx, MapFollow::kKeepInMarginPx);
   EXPECT_EQ(MapFollow::kKeepInMarginPx, 54 + MapFollow::kKeepInSlackPx)
       << "the fallback margin is the full-size marker ring plus the slack, and must stay derived from it";
+}
+
+// ── Reason, and the log line built from it ───────────────────────────────────
+//
+// decide() reports which check fired so nothing downstream has to guess, and
+// formatDecisionLog() is the one copy of the map module's log text. Both were
+// used by test/map_replay and asserted by nothing when they landed, so the whole
+// suite passing said nothing about either -- see docs/map-follow.md, "decide()
+// says why now".
+
+TEST(MapFollowReason, HeadingDriftIsReportedAndBeatsKeepIn) {
+  MapFollow::Request request = baseRequest();
+  request.partialMoves = 4;    // past the movement floor
+  request.fixHeadingStep = 8;  // 180 degrees off the frame
+  request.anchorHeadingStep = 0;
+  request.fixX = 10;  // ALSO outside the keep-in margin
+  request.fixY = 400;
+  MapFollow::Reason reason = MapFollow::Reason::None;
+  EXPECT_EQ(MapFollow::decide(request, reason), MapFollow::Action::ReAnchor);
+  // Both checks would fire. decide() tests heading first, so heading is the
+  // answer -- this is exactly the case the after-the-fact classifier in
+  // tools/replay_ride.py labels keep-in instead.
+  EXPECT_EQ(reason, MapFollow::Reason::HeadingDrift);
+  EXPECT_STREQ(MapFollow::reasonName(reason), "heading");
+}
+
+TEST(MapFollowReason, KeepInIsReportedWhenTheHeadingIsSteady) {
+  MapFollow::Request request = baseRequest();
+  request.fixX = 10;
+  request.fixY = 400;
+  MapFollow::Reason reason = MapFollow::Reason::None;
+  EXPECT_EQ(MapFollow::decide(request, reason), MapFollow::Action::ReAnchor);
+  EXPECT_EQ(reason, MapFollow::Reason::KeepIn);
+  EXPECT_STREQ(MapFollow::reasonName(reason), "keep-in");
+}
+
+TEST(MapFollowReason, BudgetIsReportedWhenNothingElseFired) {
+  MapFollow::Request request = baseRequest();
+  request.partialMoves = request.partialMoveBudget;
+  MapFollow::Reason reason = MapFollow::Reason::None;
+  EXPECT_EQ(MapFollow::decide(request, reason), MapFollow::Action::ReAnchor);
+  EXPECT_EQ(reason, MapFollow::Reason::Budget);
+  EXPECT_STREQ(MapFollow::reasonName(reason), "budget");
+}
+
+TEST(MapFollowReason, SkipAndMoveAreReportedToo) {
+  MapFollow::Request request = baseRequest();
+  request.fixX = request.drawnX + 1;  // under the move floor on both axes
+  request.fixY = request.drawnY + 1;
+  MapFollow::Reason reason = MapFollow::Reason::None;
+  EXPECT_EQ(MapFollow::decide(request, reason), MapFollow::Action::Skip);
+  EXPECT_EQ(reason, MapFollow::Reason::BelowMoveFloor);
+
+  request.fixX = request.drawnX + 40;
+  EXPECT_EQ(MapFollow::decide(request, reason), MapFollow::Action::MoveMarker);
+  EXPECT_EQ(reason, MapFollow::Reason::Moved);
+}
+
+TEST(MapFollowReason, TheOneArgumentFormStillAgrees) {
+  // Every caller written before Reason existed goes through the delegating
+  // overload; it must not have picked up a different ladder.
+  MapFollow::Request request = baseRequest();
+  request.partialMoves = request.partialMoveBudget;
+  MapFollow::Reason reason = MapFollow::Reason::None;
+  EXPECT_EQ(MapFollow::decide(request), MapFollow::decide(request, reason));
+}
+
+TEST(MapFollowLog, SkipLineQuotesTheRequestFloorNotTheConstant) {
+  MapFollow::Request request = baseRequest();
+  request.fixX = 118;
+  request.fixY = 641;
+  request.minMovePx = 12;  // rung 0's floor, deliberately not kMinMovePx
+  char line[160];
+  MapFollow::formatDecisionLog(request, MapFollow::Action::Skip, MapFollow::Reason::BelowMoveFloor, 7, line,
+                               sizeof(line));
+  EXPECT_STREQ(line, "fix #7 skipped: 118,641 is under 12 px from the marker");
+  // The bug this test exists for: the line used to print MapFollow::kMinMovePx
+  // while the code applied the rung's floor, so it said 8 at every rung.
+  EXPECT_EQ(std::string(line).find(" 8 px "), std::string::npos);
+}
+
+TEST(MapFollowLog, MoveLineMatchesTheTwinInMoveMarker) {
+  // MapActivity::moveMarker() emits its own LOG_DBG from the state *after* the
+  // move and never sees a Request, so its text is a second copy that has to
+  // stay identical to this one. This assertion is the only gate on that.
+  MapFollow::Request request = baseRequest();
+  request.fixX = 240;
+  request.fixY = 539;
+  request.fixHeadingStep = 1;
+  request.anchorHeadingStep = 0;
+  request.partialMoves = 7;  // the device logs 8, having incremented first
+  request.partialMoveBudget = 12;
+  char line[160];
+  MapFollow::formatDecisionLog(request, MapFollow::Action::MoveMarker, MapFollow::Reason::Moved, 3, line, sizeof(line));
+  EXPECT_STREQ(line, "marker move to 240,539 (h1 rel 1), 8/12 before a clean frame");
+}
+
+TEST(MapFollowLog, ReAnchorLineCarriesTheReason) {
+  MapFollow::Request request = baseRequest();
+  request.fixX = 243;
+  request.fixY = 470;
+  request.fixHeadingStep = 15;
+  request.anchorHeadingStep = 15;
+  request.partialMoves = 12;
+  char line[160];
+  MapFollow::formatDecisionLog(request, MapFollow::Action::ReAnchor, MapFollow::Reason::Budget, 118, line,
+                               sizeof(line));
+  EXPECT_STREQ(line, "fix #118 re-anchors: at 243,470, heading 15 vs frame's 15, 12 moves in -- budget");
+}
+
+TEST(MapFollowLog, ATinyBufferTerminatesInsteadOfOverrunning) {
+  MapFollow::Request request = baseRequest();
+  char line[8];
+  MapFollow::formatDecisionLog(request, MapFollow::Action::Skip, MapFollow::Reason::BelowMoveFloor, 1, line,
+                               sizeof(line));
+  EXPECT_EQ(std::strlen(line), sizeof(line) - 1);
 }
 
 }  // namespace

@@ -865,6 +865,18 @@ number").
 What would settle it: one hardware run of this ride at step 2, compared against
 the row above.
 
+### A measurement run must not touch the menu
+
+Every pan, mode switch or layer toggle calls `Stepper::reAnchorOnLastFix()`,
+which zeroes `partialMoves` and moves the anchor, so every decision after it
+differs. Measured 2026-08-23 on one ride at 6 m/px: untouched gave 264 moves and
+30 re-anchors; the same ride with three pans partway through gave 289 moves, 37
+re-anchors and 13 keep-in against 1.
+
+Both are correct -- the second is what the device would do for a rider who used
+the menu -- but only the first is comparable with anything. For a number, use
+`--exit-at-end` and leave it alone.
+
 ### Verified against the older tools
 
 Verified 2026-08-22: `map_window --zoom 4 --marker 2 --exit-at-end` and
@@ -880,8 +892,8 @@ SDL2 is a system package (`apt install libsdl2-dev`). Without it CMake skips
 this one target and the rest of the suite still configures.
 
 **It is x86.** It says nothing about heap, waveform timing or ghosting, and it is
-not a device -- see [`virtual-device.md`](virtual-device.md) for what only an
-emulated C3 or the real panel can answer.
+not a device -- see [`virtual-device.md`](virtual-device.md) for what only real
+hardware can answer.
 
 **Privacy: a ride log is a real GPS trace.** A window shot from one shows where
 the maintainer actually rode. Keep them local, same rule as a device screenshot.
@@ -909,6 +921,16 @@ delegates, so every existing caller and all 373 host tests are unchanged.
 classifier and the branch agreed every time -- zero mismatches. `map_replay`
 prints a line when they differ, so a future ride that hits it will say so, and
 `Result::reasonMismatches` counts it. The reason columns in this doc stand.
+
+**Neither the enum nor the formatter had a test when they landed.** The
+373-test suite passing said nothing about them: they are used by `ReplayEngine`
+and were asserted by nothing, so a branch wired to the wrong `Reason`, a typo in
+`reasonName()` or wrong text out of the formatter would all have passed every
+check that existed. `Result::reasonMismatches` covers part of it -- a straight
+heading/keep-in swap shows up on the three gated rides -- and covers none of the
+rest. `MapFollowTest.cpp` now asserts every branch's reason and the exact text of
+all three lines, which is also the only gate on the move line's hand-maintained
+twin below.
 
 ### One copy of the log line
 
