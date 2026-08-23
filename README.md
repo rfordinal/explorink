@@ -229,6 +229,11 @@ firmware built native, the panel drawn in an SDL2 window, no device and no
 flash. What it can answer (layout, geometry, map render, logic) and what it
 cannot (refresh timing, dither, heap pressure, BLE).
 
+[`docs/simulator-android.md`](./docs/simulator-android.md) is that same
+simulator aimed at a phone: an Android build of the firmware, so the UI runs
+with no reader in reach. The compile probe passed (206 of 208 files clean for
+aarch64); the app shell is not built yet.
+
 [`docs/build-environments.md`](./docs/build-environments.md) is which of the five
 build environments can be published and which two are missing Bluetooth, plus the
 three flash offsets verified against a real device's own dump.

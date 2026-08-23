@@ -130,3 +130,8 @@ place labels, scale bar and compass. Screenshots in the branch's
 right edge of the 480 px-wide frame. Unclear whether that is the simulator's
 orientation transform or a real style-anchoring bug the device also has — a
 device screenshot of the same screen would settle it.
+
+## On a phone
+
+[`simulator-android.md`](./simulator-android.md) tracks building this as an
+Android app. The compile probe passed; nothing past the compiler is built.
