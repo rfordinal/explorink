@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -65,12 +66,16 @@ def main():
         # unique name here instead, since two libraries can share a basename.
         stem = os.path.splitext(os.path.basename(entry["file"]))[0]
         obj = os.path.abspath(os.path.join(args.objdir, f"{index:04d}-{stem}.o"))
-        cmd = re.sub(r"^/usr/bin/g\+\+", cxx, entry["command"])
-        cmd = re.sub(r"^/usr/bin/gcc", cc, cmd)
-        cmd = re.sub(r"-o \S+\.o", f"-o {obj}", cmd)
+        # The command from the database is a shell string and stays one, so its
+        # own quoting (-DFOO=\"bar\") survives untouched. Everything
+        # substituted into it is quoted here, since a path with a space would
+        # otherwise become two arguments.
+        cmd = re.sub(r"^/usr/bin/g\+\+", shlex.quote(cxx), entry["command"])
+        cmd = re.sub(r"^/usr/bin/gcc", shlex.quote(cc), cmd)
+        cmd = re.sub(r"-o \S+\.o", f"-o {shlex.quote(obj)}", cmd)
         # The host's SDL2 headers are Debian's, split across a multiarch path
         # and compiled for x86. Point at the Android SDL2 source instead.
-        cmd = cmd.replace("-I/usr/include/SDL2", f"-I{sdl_include}")
+        cmd = cmd.replace("-I/usr/include/SDL2", f"-I{shlex.quote(sdl_include)}")
         # Everything ends up in one shared library.
         cmd = cmd.replace(" -c ", " -c -fPIC ")
         p = subprocess.run(cmd, shell=True, cwd=entry["directory"],
