@@ -29,7 +29,8 @@ source = symlink://../../firmware/explorink-simulator
 ```
 
 That relative path resolves the same from the main firmware checkout and from a
-worktree under `trailink-worktrees/`.
+worktree under `trailink-worktrees/`. Only the symlink form has been exercised
+so far -- the committed git-URL default is unverified.
 
 ## The simulated SD card
 
