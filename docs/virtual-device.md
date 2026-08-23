@@ -1,45 +1,50 @@
-# VX4 — the virtual device
+# Host-side device simulation
 
-The X4 was lost 2026-08-22. UI work needs a device. This doc says what we build
-instead, what it is allowed to be, and where it stops being the X4.
+The X4 was lost 2026-08-22. Map and UI work needs a device. This doc says what we
+run instead, and what no host build can answer.
 
-**Status: decided, not built.** Nothing here is verified on Wokwi yet. The spike
-below is what turns the decision into a fact.
+**Wokwi is dropped, 2026-08-23.** The plan below it was to run the real firmware
+binary on an emulated ESP32-C3 as a tenth `BoardProfile` (`FREEINK_DEVICE_VX4`).
+The reason it was worth paying for was that it looked like the only way to get
+the whole firmware UI on a screen without a device. It is not: upstream's own
+simulator does that natively, MIT and maintained (see "Prior art"). What is left
+of Wokwi's exclusive ground is narrow, and against it stand a closed core, a beta
+chips API, a paid plan and an SSD1677 model we would write ourselves.
 
-## Decision
+The Wokwi and QEMU research below is **kept deliberately, not as a plan.** Every
+finding in it cost a fetch or a measurement and would otherwise be re-derived by
+whoever asks this question next.
 
-Two layers, each answering what the other structurally cannot.
+## What we run
 
-**Layer 1, built 2026-08-22: `map_window`.** The real map code in an SDL2 window
-on the laptop, playing a recorded ride at its own pace. Not a new emulator -- it
-joins two host tools that already existed. Details in
-[`map-follow.md`](map-follow.md), "`map_window`: the ride in a window, live".
+**`map_window`, built 2026-08-22.** The real map code in an SDL2 window on the
+laptop: a replayed ride or a held position, the real `MapFollow` decisions and
+the real `MapRenderer`, a menu for the rungs, modes and layers, and the map
+module's own log. It joins two host tools that already existed. Details in
+[`map-follow.md`](map-follow.md), "`map_window`".
 
-**Layer 2, decided, not built: VX4.** The **real firmware binary** on a
-**virtual ESP32-C3** under **Wokwi**, with our own peripheral models for panel,
-buttons and SD, as a tenth `BoardProfile`, `FREEINK_DEVICE_VX4`.
+**Upstream's simulator, not attempted yet.** Runs the *whole* firmware UI --
+menus, every activity, settings, the web server. MIT, a PlatformIO library. See
+"Prior art" and T-530 in the parent repo's `docs/TODO.md`.
 
-The split, and why neither one is enough:
+| | `map_window` | upstream simulator | needs a device |
+|---|---|---|---|
+| loop speed | native, 64x the ride clock | native | real time |
+| UI pixels | faithful, map screen only | faithful, whole UI | the panel itself |
+| refresh counts, dirty rects | **yes** -- firmware decisions | presumably | yes |
+| activities outside the map | no -- links map code, not the UI stack | **yes** | yes |
+| heap ceiling, stack limits | no -- x86 | no -- x86 | **yes** |
+| real RISC-V execution | no | no | **yes** |
+| SSD1677 command stream | no | no | **yes** |
+| waveform timing, ghosting | no | no | **yes** |
 
-| | `map_window` (layer 1) | VX4 (layer 2) |
-|---|---|---|
-| loop speed | native, and 64x the ride clock | emulated, slower |
-| cost | zero | Community covers spike 1-5 |
-| UI pixels | faithful (the real renderer) | faithful (the real panel driver) |
-| refresh counts, dirty rects | **yes** -- they are firmware decisions | yes |
-| heap ceiling, stack limits | **no** -- x86 | yes |
-| SSD1677 command stream | **no** | yes |
-| waveform timing, ghosting | **no** | modelled only |
-| activities outside the map | **no** for `map_window` -- it links map code, not the UI stack. A host build *can* do it: see "Prior art" | yes |
+**Read the last column as the cost of the lost device, not as a gap some tool
+fills.** Dropping Wokwi means those four rows have no substitute at all until
+replacement hardware arrives. That is the honest trade: Wokwi could have reached
+three of them (waveform timing only as a model we wrote), for money and for
+weeks of work on a platform we cannot fix.
 
-Rejected outright: QEMU as the emulator (see below).
-
-**Not rejected, just not attempted: a host build of the whole firmware UI.**
-Upstream already ships one, MIT licensed and maintained -- see "Prior art".
-`map_window` covers the ride-watching case without it, but "we would have to
-write a stub layer" is not a reason to skip it, because the stub layer exists.
-
-## Layer 1 exists, and it was cheaper than any estimate here
+## `map_window` was cheaper than any estimate in this doc
 
 `map_window` cost one refactor and one new tool because both halves were already
 in the tree and nobody had joined them live:
@@ -72,8 +77,8 @@ afterwards, and the line text living in one place instead of two. Both are in
 `map-follow.md`, "`decide()` says why now" and "One copy of the log line" -- and
 the second one found a log line that had been printing the wrong number.
 
-That last row is the honest limit of layer 1 and the reason layer 2 still
-matters.
+That last row is the honest limit of a host build, and it is why the device
+still matters.
 
 **It paid for itself on the first run.** Replaying one ride at ride mode's own
 default rung instead of the rung the hardware runs used showed 30 re-anchors and
@@ -125,6 +130,31 @@ Nothing here has been run.
 presented as the prior art, is one of the 31 forks. Its "no licence, one author,
 untouched since 2026-02-11" is true of that fork and was wrong to read as the
 state of the art. `uxjulia/CrossInk` is another fork.
+
+# The dropped Wokwi plan, kept for its findings
+
+Everything below this line is the VX4 plan as it stood on 2026-08-22, before
+upstream's simulator was found. **It is not a plan any more.** Read it as a
+record, and read the section titles as past tense.
+
+Four findings in it are the reason it is not deleted, because each cost a fetch
+or a measurement:
+
+- **QEMU's ESP32-C3 cannot drive this device.** No GP SPI, no GPIO matrix/IOMUX,
+  no SD/MMC -- which is the panel, the card and the buttons. "Why Wokwi and not
+  QEMU".
+- **Nobody outside Espressif can emulate BLE**, and the reason is a closed blob
+  against undocumented radio registers. "No BLE, and that is fine".
+- **Wokwi references every virtual ADC to 5 V regardless of MCU**, so a button
+  model has to target the raw count rather than reproduce the ladder. "Buttons
+  target the raw ADC count".
+- **Wokwi's SPI API has no CS**, so any model on a shared bus must watch the pin
+  itself or eat the other device's traffic. "The panel model must watch its own
+  CS".
+
+The pricing, the spike order and the platform gate are historical. If this
+question is ever reopened, the licensing numbers were read on 2026-08-22 and
+should be re-read.
 
 ## The invariant
 
@@ -473,14 +503,16 @@ Pay only if it passes, then do step 6.
 - Whether a 480x800 RGBA framebuffer (1.5 MB, no documented size cap) performs
   acceptably. `[open]`
 
-## What VX4 will never test
+## What no simulation tests
 
 Ghosting on real pigment, power draw, deep sleep, ADC tolerances, SD timing, BLE
-against a real phone, and whether a mount holds at speed.
+against a real phone, and whether a mount holds at speed. Wokwi would not have
+reached these either; the table at the top of this doc is the shorter list of
+what it *would* have added over a host build.
 
-**The merge rule is unchanged.** Nothing reaches `develop` or `master` on VX4
-evidence alone. VX4 moves where bugs are found earlier; it does not move where
-they are confirmed.
+**The merge rule is unchanged.** Nothing reaches `develop` or `master` on
+simulated evidence alone. A simulator moves where bugs are found earlier; it does
+not move where they are confirmed.
 
 ## Automation, later
 

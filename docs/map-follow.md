@@ -892,8 +892,8 @@ SDL2 is a system package (`apt install libsdl2-dev`). Without it CMake skips
 this one target and the rest of the suite still configures.
 
 **It is x86.** It says nothing about heap, waveform timing or ghosting, and it is
-not a device -- see [`virtual-device.md`](virtual-device.md) for what only an
-emulated C3 or the real panel can answer.
+not a device -- see [`virtual-device.md`](virtual-device.md) for what only real
+hardware can answer.
 
 **Privacy: a ride log is a real GPS trace.** A window shot from one shows where
 the maintainer actually rode. Keep them local, same rule as a device screenshot.
