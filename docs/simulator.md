@@ -220,6 +220,32 @@ is listening on 8765 and a connect is refused; with it set,
 `ss -ltnp` shows `LISTEN 127.0.0.1:8765` owned by `program`. Loopback only,
 never a LAN nic.
 
+**A second simulator on the same port fails silently.** `SimBleLink::start`
+returns false when the bind fails, and the shim treats a false start as
+feature-off -- so `NimBLEDevice::init done` still prints, nothing says the
+listener is missing, and a client gets connection-refused. The fault then reads
+as a broken shim. Kill the previous run before starting another, and wait for
+the listener rather than sleeping a guess:
+
+```bash
+for i in $(seq 1 40); do ss -ltn | grep -q ':8765' && break; sleep 0.25; done
+```
+
+`[verified]` -- hit twice on 2026-08-23, once with six simulators alive at once
+and one of them still carrying an earlier test's `auto_confirm(false)`.
+
+**`CROSSPOINT_SIM_SD` sets the SD root, and it is how parallel runs stay apart**
+(`src/HalStorage.cpp:20` in the simulator repo). Point it at a directory outside
+the repo and two runs cannot touch each other's evidence, with no `.gitignore`
+entry needed. Prefer it to relying on the working directory: `./fs_` resolves
+from the cwd, so a run started from the wrong place silently reads the wrong
+card. `[verified]` -- four parallel QA runs used it on 2026-08-23, each with its
+own port and its own card.
+
+A card assembled by symlinking the CDN mirror is **read-only in practice**: a
+push through that symlink writes into `mapbuilder/cdn/`. A run that transfers
+files needs a real directory, not a link.
+
 ### What a client sees
 
 Verified by running, 2026-08-23. A python client that connects, sends
