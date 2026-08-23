@@ -447,6 +447,21 @@ Rotation happens at generation time, oversampled and downscaled, because rotatin
 a 1bpp bitmap at 1:1 turns a 3 px outline into dashes. Cost: ~6 KB of flash for
 sixteen frames, no runtime cost, no float per frame beyond one `atan2`.
 
+**The rotation pivot inside `gen_pin_icons.py` is the point (tail tip), not the
+head.** `MapActivity::drawPinEdgeMark()` used to anchor the drawn frame on the
+point, per the "point aims at where the pin is" goal above -- but the head (where
+the glyph sits) then landed at a different screen offset for every one of the 16
+frames, since it swings around the point rather than staying still. Reported from
+the panel 2026-08-23: the glyph looked like it was jumping as the marker turned.
+Fixed the same day by anchoring the *head* instead: `drawPinEdgeMark()` clamps and
+targets `frame.headX/headY` against `pinEdgeArea()`, then back-solves the point
+target from the frame's own point-to-head offset before calling
+`drawPinBalloon()`. The head, and the glyph on it, now sit at the same screen spot
+across all 16 rotations; the point is what swings, and it no longer sits exactly on
+the area boundary -- it now pokes past it by a frame-dependent amount. Accepted
+trade: a moving point reads as an arrow doing its job, a moving glyph read as a
+bug.
+
 **Where a marker may land** is `MapActivity::pinEdgeArea()`: the panel minus
 everything this screen already draws over the map -- the bottom hint bar, the
 side-hint boxes and the compass. The geometry comes from whoever owns each piece
@@ -456,6 +471,20 @@ compass constants), because both of the first two were found the hard way: an
 bottom one sat behind the button bar. On X3 the side hints are one band across the
 full width, which this does not special-case -- read off the code, untested, no X3
 here.
+
+**The distance label is `SMALL_FONT_ID` (8pt) with a white halo, not `UI_10_FONT_ID`
+in an opaque box** (changed 2026-08-23, reported alongside the pivot as too big and
+too bold for what is detail-view chrome, not a primary label). The halo is the same
+technique place labels use (`MapLabels.cpp:315-325`, `kHaloRing`): the string is
+redrawn white at 8 ring offsets for two pixels of radius, then black on top, so the
+map still shows between the letters instead of disappearing under a filled
+rectangle.
+
+**The numeral/letter glyphs baked into a pin's head** (`pin_c1`..`pin_c5`, the
+parking `P`) come from a **regular**-weight system font since 2026-08-23 --
+`DejaVuSans.ttf` / `LiberationSans-Regular.ttf` in `gen_pin_icons.py`'s
+`DIGIT_FONTS`. They were baked bold before that, reported too heavy at the same
+time as the pivot bug.
 
 **The bearing origin is the rider only while the rider is on the frame.** Panned
 away in Observe mode they are not, and a ray between two points that are both off

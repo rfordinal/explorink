@@ -48,8 +48,8 @@ THRESHOLD = 110
 # it is mostly used for). Baked here, so the device needs no font for a pin's
 # number -- and no icon says "3" as clearly as a 3, or "parking" as clearly as a P.
 DIGIT_FONTS = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 )
 
 
@@ -57,7 +57,7 @@ def text_grid(text, size):
     """Short text, rendered as large as fits a size x size box, as an ink grid."""
     path = next((p for p in DIGIT_FONTS if os.path.exists(p)), None)
     if path is None:
-        sys.exit("ERROR: no bold sans font for text glyphs; install dejavu or liberation")
+        sys.exit("ERROR: no sans font for text glyphs; install dejavu or liberation")
     # Grow the point size until the drawn ink no longer fits, then step back.
     best = None
     for points in range(size, size * 3):
