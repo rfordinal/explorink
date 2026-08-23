@@ -28,9 +28,25 @@ itself:
 source = symlink://../../firmware/explorink-simulator
 ```
 
-That relative path resolves the same from the main firmware checkout and from a
-worktree under `trailink-worktrees/`. Only the symlink form has been exercised
-so far -- the committed git-URL default is unverified.
+**The number of `..` depends on where you are, and getting it wrong looks like a
+missing dependency rather than a bad path.** `../../` is right from the main
+firmware checkout and from a worktree under the legacy `trailink-worktrees/`
+root, because both sit two levels below the parent repo. The current convention
+is `.worktrees/firmware/<topic>` (parent `CLAUDE.md`), which is three levels
+down and needs `../../../`:
+
+| working from | source |
+|---|---|
+| `firmware/explorink` (main checkout) | `symlink://../../firmware/explorink-simulator` |
+| `trailink-worktrees/<topic>` (legacy) | `symlink://../../firmware/explorink-simulator` |
+| `.worktrees/firmware/<topic>` | `symlink://../../../firmware/explorink-simulator` |
+
+Verified 2026-08-23 by resolving all three. An absolute path in
+`platformio.local.ini` avoids the question entirely -- that file is gitignored
+and personal, so there is no reason for it to be relative.
+
+Only the symlink form has been exercised so far -- the committed git-URL default
+is unverified.
 
 ## The simulated SD card
 

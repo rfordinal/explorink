@@ -23,16 +23,19 @@ the real `MapRenderer`, a menu for the rungs, modes and layers, and the map
 module's own log. It joins two host tools that already existed. Details in
 [`map-follow.md`](map-follow.md), "`map_window`".
 
-**Upstream's simulator, not attempted yet.** Runs the *whole* firmware UI --
-menus, every activity, settings, the web server. MIT, a PlatformIO library. See
-"Prior art" and T-530 in the parent repo's `docs/TODO.md`.
+**Upstream's simulator, working since 2026-08-23.** Runs the *whole* firmware UI
+-- menus, every activity, settings, the web server. We run a fork,
+`rfordinal/explorink-simulator`, because the simulator replaces `lib/hal/` rather
+than extending it and ours has diverged. `pio run -e simulator -t run_simulator`.
+**[`simulator.md`](simulator.md) is the doc**; "Prior art" below is only how it
+was found.
 
 | | `map_window` | upstream simulator | needs a device |
 |---|---|---|---|
 | loop speed | native, 64x the ride clock | native | real time |
 | UI pixels | faithful, map screen only | faithful, whole UI | the panel itself |
 | refresh counts, dirty rects | **yes** -- firmware decisions | presumably | yes |
-| activities outside the map | no -- links map code, not the UI stack | **yes** | yes |
+| activities outside the map | no -- links map code, not the UI stack | **yes**, running | yes |
 | heap ceiling, stack limits | no -- x86 | no -- x86 | **yes** |
 | real RISC-V execution | no | no | **yes** |
 | SSD1677 command stream | no | no | **yes** |
@@ -118,13 +121,13 @@ has been doing it since March. Layer 2's remaining exclusive ground is narrower
 than this doc claimed: the heap ceiling, real RISC-V execution, the SSD1677
 command stream and waveform timing.
 
-**Not attempted here.** Our fork's HAL has diverged (`lib/hal/` adds
-`HalTiltSensor`, `HalClock`, `HalSystem`, `HalPowerManager`) and our display
-stack comes through `freeink-sdk`, which upstream's simulator knows nothing
-about. So integration means a fork of the simulator with `freeink-sdk`-aware
-stubs, and how much work that is has not been measured. Every claim in this
-section is **read** -- off the repo's README, `FORKING.md` and the GitHub API.
-Nothing here has been run.
+**Done, the same day this was written.** The HAL divergence was real -- the fork
+`rfordinal/explorink-simulator` exists for exactly that, and its `EXPLORINK.md`
+lists every difference and which half belongs upstream. The firmware builds and
+runs under it: [`simulator.md`](simulator.md). This section is kept as the record
+of how a maintained MIT simulator went unnoticed while a narrower tool was built
+against it; the claims in it were **read** off the repo and are now superseded by
+having run the thing.
 
 `jonmooreai/Crosspoint-Emulator`, which an earlier version of this section
 presented as the prior art, is one of the 31 forks. Its "no licence, one author,
