@@ -761,6 +761,190 @@ for the next field added here: `MapFollow::decide()`'s `(x, y)` is pre-reset
 by definition, and anything drawn after a reset needs the reset's own
 answer, not the question that caused it.
 
+### `map_window`: the ride in a window, live
+
+Both tools above render a file and then you look at the file. `map_window`
+(`test/map_window/`) is the same two halves in an SDL2 window at 480x800, played
+at the ride's own pace while you watch:
+
+```
+map_window --tiles mapbuilder/cdn (--ride docs/rides/<ride>.jsonl | --lat L --lon L)
+            [--heading 0-15] [--mode ride|hike|cycle] [--zoom 0-6] [--marker 0-4]
+            [--route <route.tir>] [--speed X] [--no-console] [--exit-at-end]
+```
+
+Three columns: the panel at 480x800, the menu, and the map module's own log.
+`--no-console` drops the third one. Prefixes and what they promise are in "The
+console in `map_window`" below.
+
+**Two sources, switched in the menu.** `ride` lets packets drive the frame
+through `decide()`. `static` holds one position and heading, which is what
+`map_preview` answers per invocation, live and with the menu attached. Three ways
+to say where: type into the lat/lon rows, click the panel, or use the pan chips.
+
+A click on the panel goes back through the firmware's own inverse --
+`MapProjection::screenToMerc()` then `mercToLonLat()` -- against the projection
+the frame on screen was actually drawn with, so it lands on what is visible even
+mid-playback. The pan chips are the same operation on a pixel half a screen away,
+along the screen's own axes rather than true north. Heading is the eight compass
+points plus a `-`/`+` pair for the odd ladder steps.
+
+In static mode the marker sits on its ladder anchor pointing up, because the
+frame is track-up. Playback keeps the held position following the ride, so
+switching to `static` lands where the rider is rather than back at the start.
+
+The sidebar is a mouse menu, not a key chart: the seven zoom rungs, the three
+ride modes, the POI layer and its ten categories, the buildings override (follow
+the rung / force on / force off), the missing-tile hatch, a route when one is
+given, the dirty-rect overlay, and Pause / Restart / speed. Space and `.` stay on
+the keyboard, which is what a mouse is bad at. `--exit-at-end` quits on the last
+packet, or in static mode renders once and quits -- which is how the held view
+gets checked headless (Malacky at 3 m/px: 4 tiles in, 801 ways, 51 points; a
+mid-ocean coordinate: 0 in, 2 missing).
+
+**Every setting change re-anchors and counts a full refresh.** That is what the
+device does -- "A viewport reset -- a ladder step, a mode switch, a Refresh"
+(`MapActivity.h`) -- so what a layer or a rung costs lands in the counter right
+next to the control that changed it. `Stepper::reAnchorOnLastFix()` is that
+reset, and it is deliberately kept out of `Result`: that structure mirrors the
+decisions the device logs and `hardware-baseline.txt` gates, and a menu action is
+not one.
+
+Each mode remembers its own rung on both ladders, as on the device
+(`MapRideMode.h`). So the window starts at the mode's own default rung, **not**
+at the baseline's: ride is step 2, 6 m/px, while the 2026-08-08 hardware runs
+were driven at step 4, 20 m/px, because that is what `tools/replay_ride.py`
+sends. Pass `--zoom 4 --marker 2` to compare against those numbers.
+
+Nothing is reimplemented. The decisions come from `ReplayEngine::Stepper`, which
+is the same state machine `replay()` loops and `--check` gates against the three
+2026-08-08 X4 rides; the picture comes from `renderMapPreview()` and
+`MapRenderer::drawMarker()`, the same calls `map_preview` and `marker_stamp`
+make.
+
+**What it shows that `--frames` and `--track` cannot.** A `MoveMarker` is a real
+partial refresh here: the held background is kept, the marker is stamped onto a
+copy of it, and the sidebar outlines the actual patch box -- `markerMetricsFor(
+kZoomLadder[step].markerScale8).box` (`MapMarkerMetrics.h`), 64 px at full
+scale, smaller at the coarse rungs. So "this stretch costs 6 partials and one
+redraw" is something you watch happen rather than count afterwards.
+
+Sidebar totals: `FULL`, `PARTIAL`, `SKIP`, the last action and its reason, tiles
+in and missing, ways drawn, and two timings kept deliberately apart:
+
+- **`panel`** -- refreshes x 500 ms. Measured, area-independent, "The refresh"
+  above.
+- **`host`** -- this laptop's own render time, labelled as the laptop's. The
+  device's render half is 400-1,750 ms by rung and ~8,300 ms in Bratislava
+  ("That 8.9 s is a city number"), so no single constant is modelled here. A
+  number claiming to be the device's render cost would be wrong nearly
+  everywhere.
+
+### The default ride rung costs more than twice what was measured
+
+Found by the window on its first run, 2026-08-22, on
+`trailink-gps-20260807-142303`:
+
+| rung | skips | moves | re-anchors | refreshes x 500 ms |
+|---|---|---|---|---|
+| step 4, 20 m/px -- what the hardware runs used | 211 | 113 | 14 | 63.5 s |
+| step 2, 6 m/px -- `kDefaultZoomStepForMode[Ride]` | 44 | 264 | 30 | 147 s |
+
+Same ride, same thresholds, same code. The rung the device actually starts ride
+mode on is **2.3x the panel cost** of the rung every number in this doc was
+measured at. It follows from the geometry -- at 6 m/px the same movement crosses
+more pixels, so fewer fixes are skipped, the marker moves more often and the
+ghosting budget trips sooner -- but nobody had put the two side by side.
+
+Confidence: the decision counts are the real `MapFollow::decide()`, gated against
+hardware at step 4. The seconds are those counts times the measured 500 ms, so
+they are **derived, not measured** -- and they leave out the render half, which at
+step 2 reads z12 tiles rather than z11 and is its own cost ("That 8.9 s is a city
+number").
+
+What would settle it: one hardware run of this ride at step 2, compared against
+the row above.
+
+### Verified against the older tools
+
+Verified 2026-08-22: `map_window --zoom 4 --marker 2 --exit-at-end` and
+`map_replay` on `trailink-gps-20260807-142303` at the current thresholds agree
+exactly -- 339 packets, 211 skips, 113 moves, 14 re-anchors (8 heading, 6 budget,
+0 keep-in).
+That is **not** the `hardware-baseline.txt` row for the same ride (24 redraws,
+20 heading, 4 budget): the baseline replays with `movement floor 0`, the
+pre-gate firmware it was measured against. Both numbers are right for their own
+build, and comparing across them looks like a regression and is not.
+
+SDL2 is a system package (`apt install libsdl2-dev`). Without it CMake skips
+this one target and the rest of the suite still configures.
+
+**It is x86.** It says nothing about heap, waveform timing or ghosting, and it is
+not a device -- see [`virtual-device.md`](virtual-device.md) for what only an
+emulated C3 or the real panel can answer.
+
+**Privacy: a ride log is a real GPS trace.** A window shot from one shows where
+the maintainer actually rode. Keep them local, same rule as a device screenshot.
+
+### `decide()` says why now, and the old answer could be wrong
+
+Until 2026-08-22 nothing recorded **which check** produced a `ReAnchor`. The
+device's log line printed the fix, the two headings and the move count
+(`MapActivity.cpp`'s `applyFix`) and stopped there, so every reason column in
+this doc was reconstructed afterwards by re-testing the same `Request`:
+`tools/replay_ride.py:181-187` for the hardware runs, and `ReplayEngine` for the
+host ones.
+
+**That reconstruction uses a different priority order from `decide()`.**
+`decide()` tests heading drift, then keep-in, then the budget. The classifier
+tests keep-in, then the budget, then heading. A fix that satisfies two at once
+gets a different name from the two orders, and nothing could contradict it.
+
+Fixed by having the ladder report its own branch: `MapFollow::Reason`, filled by
+`decide(request, outReason)`. The one-argument `decide()` still exists and
+delegates, so every existing caller and all 373 host tests are unchanged.
+
+**It is latent, not active.** Replayed across all twelve ride logs in
+`../../../docs/rides/`, at both the default rungs and the baseline's, the
+classifier and the branch agreed every time -- zero mismatches. `map_replay`
+prints a line when they differ, so a future ride that hits it will say so, and
+`Result::reasonMismatches` counts it. The reason columns in this doc stand.
+
+### One copy of the log line
+
+`MapFollow::formatDecisionLog()` formats the map module's line for a decision,
+and both sides call it: `MapActivity` hands the result to `LOG_DBG`, and
+`test/map_window`'s console pushes the same bytes. So a console line can be
+compared with a device log verbatim rather than by eye.
+
+Two things came out of moving it:
+
+- **The skip line printed the wrong number.** It quoted
+  `MapFollow::kMinMovePx`, the fallback constant, while the floor actually
+  applied is `Request::minMovePx` off the rung -- 12 px at 1 m/px, 2 px at
+  45 m/px. So at every rung except the ones where they coincide, the log said
+  8 px and the code used something else. The formatter prints the request's
+  value.
+- **The move line still exists twice.** `MapActivity::moveMarker()` logs from the
+  state *after* the move and never sees a `Request`, so it keeps its own
+  `LOG_DBG`; the formatter's move branch adds one to `partialMoves` to match it.
+  Those two texts have to be kept identical by hand. The skip and re-anchor
+  lines have no twin.
+
+### The console in `map_window`
+
+The window's third column is that log. Every line carries a prefix, and the
+difference is the whole point:
+
+- **`MAP`** -- the same wording the firmware's own `LOG_DBG` emits for this
+  event. The decision lines come from `formatDecisionLog()`; the mode, marker
+  step and pan lines mirror `MapActivity.cpp`'s own.
+- **`WIN`** -- this tool only. A host number (its own render time), or something
+  the device does not log at all.
+
+Nothing reads a device. These are the same lines built from the same state the
+device's logger would have had.
+
 ## The heading decides the frame, once
 
 The map is drawn track-up by default: `renderViewport()` passes

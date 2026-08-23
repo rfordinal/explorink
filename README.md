@@ -250,6 +250,17 @@ costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, an
 to one peripheral connection gave 9 KB back and put the screen above its 50 KB
 gate.
 
+[`docs/virtual-device.md`](./docs/virtual-device.md) is how map and UI work gets
+done with no device on the desk, in two layers. `test/map_window` **exists since
+2026-08-22**: the real `MapFollow` decisions and the real `MapRenderer` in an
+SDL2 window at 480x800, replaying a recorded ride at its own pace, with the
+refresh counts and the real dirty rectangle alongside -- see
+[`docs/map-follow.md`](./docs/map-follow.md), "`map_window`". VX4, running this
+firmware unchanged on an emulated ESP32-C3, is **decided and not built**; the doc
+carries the platform choice (Wokwi, not QEMU), the rule that VX4 must clone the
+X4 exactly, the gate that no production code may change to suit the simulator,
+and what neither layer will ever test.
+
 [`docs/home-screen.md`](./docs/home-screen.md) is the Home screen: the brand
 block's asset pipeline (two generator scripts, one traced SVG), the seven rows
 and why three of them draw dimmed, and how a row is dimmed on a panel with no

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // The follow-the-marker policy: when a fresh fix may move the marker inside the
@@ -211,6 +212,53 @@ uint8_t relativeHeadingStep(uint8_t fixHeadingStep, uint8_t anchorHeadingStep);
 // rung in hand (the host tests); decide() passes Request::keepInMarginPx.
 bool insideKeepIn(int16_t x, int16_t y, int16_t screenWidth, int16_t screenHeight, int16_t marginPx = kKeepInMarginPx);
 
+// Which check in decide() produced the action -- the branch that actually
+// fired, not a guess made afterwards from the same Request.
+//
+// This exists because guessing was the only option and the guess can be wrong.
+// decide() tests heading drift, then keep-in, then the budget; the
+// after-the-fact classifier in tools/replay_ride.py:181-187 (and, until this
+// enum, in test/map_replay's ReplayEngine) tests keep-in, then the budget, then
+// heading. A fix that satisfies two of them at once gets a different answer from
+// the two orders, and nothing on the device could contradict it: MapActivity's
+// re-anchor log line prints the fix, the two headings and the move count, and
+// never the reason.
+enum class Reason : uint8_t {
+  None,
+  // decide() check 1: the rider turned further than the drift limit, with at
+  // least minPartialMovesForHeadingReAnchor moves already spent in this frame.
+  HeadingDrift,
+  // Check 2: the marker reached the keep-in margin, so this frame has no room
+  // left in the direction of travel.
+  KeepIn,
+  // Check 3: partialMoves has spent the whole ghosting budget.
+  Budget,
+  // The fix moved less than minMovePx on both axes -- Skip.
+  BelowMoveFloor,
+  // None of the above: the marker moves inside the frame that is up.
+  Moved,
+};
+
+// The wire name, for a log line and for a table column. Stable strings: the
+// console in test/map_window and the device's own log print the same word.
+const char* reasonName(Reason reason);
+
 Action decide(const Request& request);
+
+// Same decision, and the branch that made it. The one-argument form above
+// delegates here, so there is one copy of the ladder.
+Action decide(const Request& request, Reason& outReason);
+
+// The map module's own log line for one decision, formatted once so the
+// device's LOG_DBG and a host console print the same bytes.
+//
+// `seq` is the packet sequence MapActivity carries; pass the packet index off
+// the host. Writes at most outSize bytes including the terminator and always
+// terminates.
+//
+// The three shapes match what MapActivity emitted before this function existed
+// (MapActivity.cpp's applyFix() and moveMarker()), with the reason appended to
+// the re-anchor line -- the one thing that log could never say.
+void formatDecisionLog(const Request& request, Action action, Reason reason, unsigned seq, char* out, size_t outSize);
 
 }  // namespace MapFollow
