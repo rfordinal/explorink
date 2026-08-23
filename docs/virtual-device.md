@@ -30,12 +30,14 @@ The split, and why neither one is enough:
 | heap ceiling, stack limits | **no** -- x86 | yes |
 | SSD1677 command stream | **no** | yes |
 | waveform timing, ghosting | **no** | modelled only |
-| activities outside the map | **no** -- links map code, not the UI stack | yes |
+| activities outside the map | **no** for `map_window` -- it links map code, not the UI stack. A host build *can* do it: see "Prior art" | yes |
 
-Rejected outright: QEMU as the emulator (see below), and a full desktop
-simulator of the whole firmware. The second one is a real option -- see
-"Prior art" -- but layer 1 already covers the ride-watching case at a fraction
-of the work, so a full stub layer waits until something needs it.
+Rejected outright: QEMU as the emulator (see below).
+
+**Not rejected, just not attempted: a host build of the whole firmware UI.**
+Upstream already ships one, MIT licensed and maintained -- see "Prior art".
+`map_window` covers the ride-watching case without it, but "we would have to
+write a stub layer" is not a reason to skip it, because the stub layer exists.
 
 ## Layer 1 exists, and it was cheaper than any estimate here
 
@@ -79,43 +81,50 @@ default rung instead of the rung the hardware runs used showed 30 re-anchors and
 device actually ships with. `map-follow.md`, "The default ride rung costs more
 than twice what was measured".
 
-## Prior art: someone already built a CrossPoint desktop emulator
+## Prior art: upstream ships a simulator, and it is better than this doc assumed
 
-`github.com/jonmooreai/Crosspoint-Emulator` runs upstream CrossPoint's
-application code natively: SDL2 window at 480x800, the SD card as a plain
-`./sdcard/` directory, keyboard mapped to the device buttons. Worth knowing about
-for three reasons and unusable for us for three more.
+**Found 2026-08-23, after `map_window` was already built and merged.**
+`crosspoint-reader/crosspoint-simulator` is upstream CrossPoint's own desktop
+simulator. **MIT licensed, actively maintained** (created 2026-03-17, pushed
+2026-08-20), 51 stars, 31 forks.
 
-Worth knowing:
+It is not a separate program. It is a PlatformIO library: the firmware adds it as
+a `lib_dep`, declares an `[env:simulator]`, and `lib_ignore = hal` drops the
+firmware's whole `lib/hal/` so the simulator supplies `HalDisplay`,
+`HalStorage`, `HalGPIO` and the rest in its place. Then the **entire firmware**
+compiles natively and renders into an SDL2 window -- menus, every activity,
+settings, the web server and the WebDAV routes, not just one screen.
 
-- **It stubs at the seam our fork also has.** Its `sim/include/` is `HalDisplay.h`,
-  `HalGPIO.h`, `HalStorage.h`, `EInkDisplay.h`, `SDCardManager.h`, `SdFat.h`,
-  `ArduinoStub.h`, `FreeRTOSStub.h`, `WString.h`, `WiFi.h`. We have
-  `lib/hal/HalDisplay.h`, `HalGPIO.h`, `HalStorage.h` and
-  `freeink-sdk/.../EInkDisplay.h`, `SDCardManager.h` -- same names, same
-  boundary.
-- **The stub surface is small.** Five `.cpp` files and about fifteen headers,
-  roughly 50 kB of code excluding a vendored `stb_image.h`. Any estimate here
-  that a desktop simulator is weeks of stub work was too high.
-- **It models two device constraints on purpose**: one core (no background
-  thread, prewarm one EPUB per frame, yields every 8 rows in image conversion)
-  and one shared SPI bus ("no display transfer and no file read/write run at the
-  same time"). The second is our constraint too -- panel on cs 21, card on
-  cs 12.
+It already carries device profiles for X4, X3, X4 Pro, Seeed Sticky and M5Stack
+PaperMono, and controller variants for SSD1677, UC8179 and UC8279. Needs SDL2
+plus `libssl-dev`; macOS and Linux/WSL only, no native Windows.
 
-Unusable as-is:
+`FORKING.md` answers our exact case: a fork whose HAL has diverged forks the
+simulator too and repoints `lib_deps` at it. That is called "the supported path,
+not a workaround", with a split of what belongs upstream (platform emulation
+gaps, rendering behaviour) against what stays in a fork (HAL signatures, device
+profiles for hardware upstream does not target).
 
-- **No licence.** The GitHub API reports `license: null` and there is no LICENSE
-  file in the tree, so it is all rights reserved. Read it as a reference; do not
-  lift code without asking the author.
-- **It targets upstream, and modified upstream too** (its README has a "New
-  Features in Crosspoint Core" section). Our map stack -- `MapActivity`,
-  `MapRenderer`, pins, BLE -- is not in upstream at all.
-- **Snapshot, not a project.** Created 2026-02-10, last push 2026-02-11. One
-  author, one day, then silent.
+**What this corrects in this doc.** The layer table above says layer 1 cannot
+reach activities outside the map, and that only layer 2 can. That was true of
+`map_window`, which links the map sources rather than the UI stack -- it is not
+true of the approach. A host build *can* run the whole firmware UI, and upstream
+has been doing it since March. Layer 2's remaining exclusive ground is narrower
+than this doc claimed: the heap ceiling, real RISC-V execution, the SSD1677
+command stream and waveform timing.
 
-One factual warning: its README states the device has "RAM: 128 MB". The
-ESP32-C3 has ~400 kB of SRAM. Do not use that document as a hardware reference.
+**Not attempted here.** Our fork's HAL has diverged (`lib/hal/` adds
+`HalTiltSensor`, `HalClock`, `HalSystem`, `HalPowerManager`) and our display
+stack comes through `freeink-sdk`, which upstream's simulator knows nothing
+about. So integration means a fork of the simulator with `freeink-sdk`-aware
+stubs, and how much work that is has not been measured. Every claim in this
+section is **read** -- off the repo's README, `FORKING.md` and the GitHub API.
+Nothing here has been run.
+
+`jonmooreai/Crosspoint-Emulator`, which an earlier version of this section
+presented as the prior art, is one of the 31 forks. Its "no licence, one author,
+untouched since 2026-02-11" is true of that fork and was wrong to read as the
+state of the art. `uxjulia/CrossInk` is another fork.
 
 ## The invariant
 
@@ -367,6 +376,19 @@ specify a custom partition table by adding a `partitions.csv` file to your
 project", so the 16 MB table travels with the project.
 
 So the loop is: PlatformIO builds locally, we upload the `.bin`.
+
+**Sourcing, weaker than the rest of this section.** The upload flow came out of
+web searches summarising the Wokwi docs, not a fetch of the page documenting it
+-- `docs.wokwi.com/guides/esp32` was fetched twice and surfaced it neither time.
+Two searches also gave two different menu labels ("Upload Firmware and Start
+Simulation…" and "Load HEX File and Start Simulation…"), so the capability is
+confirmed twice and the exact wording is not. It is the claim the whole "VS Code
+is irrelevant" conclusion rests on. One minute in a browser project settles it.
+
+Unrelated, and worth separating because it gets conflated: Meshtastic's
+browser-based firmware tool is a **Web Flasher** -- Web Serial to a real device
+over USB -- not a Wokwi simulation. Browser flashing and browser simulating are
+different mechanisms.
 
 `wokwi-cli` is the CI path, not the dev loop. It reads a local `wokwi.toml`
 (`version`, `firmware`, `elf`) plus `diagram.json`, but **runs against Wokwi's
