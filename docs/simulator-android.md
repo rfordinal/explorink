@@ -9,7 +9,8 @@ lives in the `explorink-simulator` fork). An ESP32-C3 `.bin` never enters it. So
 an Android build is a third compile target of the same sources, and a new
 firmware means a new APK.
 
-Status: **the compile probe passed.** Nothing else is built yet.
+Status: **the compile probe passes, all 208 files.** Two real portability gaps
+found and fixed. Nothing past the compiler is built yet.
 
 ## Milestone 0: does the code compile for Android at all? Yes
 
@@ -18,8 +19,9 @@ Verified 2026-08-23, NDK r27.3.13750724, clang 18, target `aarch64-linux-android
 | | |
 |---|---|
 | translation units | 208 |
-| compiled clean for aarch64 | 206 |
-| real failures | 2 |
+| compiled clean for aarch64, first run | 206 |
+| real failures, first run | 2 |
+| compiled clean after the fixes | 208 |
 
 Compile-only, no link. It answers one question: does Android's C library
 (bionic) plus the NDK's libc++ accept this codebase. It says nothing about
@@ -54,11 +56,39 @@ integral overloads (NDK r27's
 `sysroot/usr/include/c++/v1/__charconv/from_chars_integral.h:223`). Both the
 ESP32 and the Linux simulator build use libstdc++, so this has never shown up.
 
-Fix: parse the float without `<charconv>` -- `strtof` on a NUL-terminated copy,
-checking `errno` and the end pointer to keep the current "reject a non-numeric
-suffix" behaviour. Untested.
+**Fixed.** `tryParseNumber` now splits on `if constexpr
+(std::is_floating_point_v<T>)`. The integral path is the old `from_chars` call,
+untouched. The floating-point path copies into a 64-byte stack buffer and calls
+`strtof`, rejecting on `ERANGE` or an unconsumed tail.
+
+`strtof` accepts input `from_chars` refuses -- hex floats, `inf`, `nan`, leading
+whitespace -- so a character whitelist (`0-9`, `.`, `-`, `+`, `e`, `E`) runs
+first. On everything that gets past it, the two agree.
+
+Two details worth keeping:
+
+- **Locale.** `strtof` reads the decimal separator from the current locale;
+  `from_chars` is always `.`. Nothing in `src/` or `lib/` calls `setlocale` or
+  touches `std::locale`, so the C locale is in force and the separator is `.`,
+  as CSS requires. Verified by grep, not by test.
+- **Length.** Input of 64 characters or more is now rejected rather than
+  parsed. A CSS length that long is not a real document.
+
+Parity checked against the old implementation over 39 inputs (integers,
+decimals, signs, leading `.`, trailing `.`, `1e3`, malformed `1.2.3` / `--1` /
+`+-1`, empty, subnormal, overflow, 70 digits). 37 identical. The two that differ
+are `inf` and `nan`: the old code accepted them as a CSS length, the new one
+rejects them. Neither can reach the parser anyway -- `parseCssLength` cuts the
+number at the first character outside `[0-9.+-]` (`CssParser.cpp:280-284`), so
+`inf` arrives as an empty string and was already rejected one level up.
 
 CSS parsing is the EPUB reader's, not the map's.
+
+**Open:** that parity check was a throwaway host program comparing the two
+implementations side by side, not a test in the tree. `CssParser` is not built
+by any suite under `test/` -- it needs `Arduino.h`, `Logging.h` and `HalFile`
+stubs that do not exist there yet. Until someone writes them, this parser has no
+regression coverage at all, Android or not.
 
 ### Real failure 2: `std::min` with no `<algorithm>`
 
@@ -74,8 +104,27 @@ libstdc++ leaks `std::min` in through its header graph; libc++ does not.
 This is a latent defect independent of Android: the device build compiles only
 by accident of which headers libstdc++ happens to pull in.
 
-Fix: `#include <algorithm>`. Verified -- re-running the probe with
-`-include algorithm` compiles the file clean.
+**Fixed:** `#include <algorithm>` (`MapRenderer.cpp:3`).
+
+### Both builds still compile, and the device build got smaller
+
+Verified 2026-08-23, both zero warnings:
+
+| build | result |
+|---|---|
+| `pio run -e simulator` (g++/libstdc++) | SUCCESS |
+| `pio run -e default` (ESP32-C3) | SUCCESS |
+
+The device binary **shrank by 19.2 kB** of flash: 3,959,101 B before the fixes,
+3,939,459 B after. Static RAM did not move (58,332 B both ways). Measured in one
+worktree by reverting only the two source files and rebuilding incrementally, so
+nothing else differs between the two numbers.
+
+The saving is libstdc++'s floating-point `std::from_chars`, which carries a
+full correctly-rounded decimal conversion. `strtof` is already linked in --
+newlib's `printf` family needs it -- so dropping `from_chars` removes the
+duplicate. Worth remembering as a general lever: `<charconv>` on floats is not
+a cheap header on this target.
 
 ### Five failures that were the probe's fault, not the code's
 
