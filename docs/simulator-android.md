@@ -158,6 +158,34 @@ precedent -- same class over CommonCrypto.
 Per the fork's `FORKING.md` this is the first kind of diff (platform emulation
 gap), so it belongs upstream rather than staying in the fork.
 
+## The Android build compiles the e-reader too, and that is why CSS was in the way
+
+ExplorInk is a map device. The Android simulator exists for the map screens.
+But the firmware is one binary with the inherited CrossPoint e-reader in it, and
+nothing strips the reader out: `[env:slim]` only drops the serial log
+(`platformio.ini`, `[env:slim]`), and no build flag gates `lib/Epub`. So an
+Android build has to compile the reader's CSS parser whether or not anyone
+intends to open an EPUB on a phone. That is the only reason the `from_chars` gap
+above had to be fixed at all.
+
+It follows that the CSS change does not gate this work, and an EPUB is the wrong
+thing to check on hardware for it. The Android milestone is verified by the map
+screens; the CSS parser is verified by opening an EPUB, whenever someone cares
+to.
+
+**A map-only build would be worth having on its own** -- smaller device flash,
+and an Android build with no inherited reader surface in it. It is not a
+`build_src_filter` line:
+
+- `src/activities/ActivityManager.cpp:23` includes `reader/ReaderActivity.h`
+  directly and constructs it at `:246`.
+- `src/main.cpp:240` and `:568` branch on `activityManager.isReaderActivity()`
+  for sleep bookkeeping and tilt page-turn.
+
+So it needs compile-time gates through `ActivityManager` and `main.cpp`. How
+much flash it would return is **unmeasured** -- object-file sizes carry debug
+info and are not a proxy for it.
+
 ## What is still open
 
 Everything past the compiler.
