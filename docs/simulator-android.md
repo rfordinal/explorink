@@ -219,6 +219,22 @@ Everything past the compiler.
 - **`_exit(0)` on quit** (`simulator_main.cpp`, last line) kills the process, so
   Android restarts the activity rather than resuming it. Cosmetic.
 - **ABI:** `arm64-v8a` only.
+- **The recorded "main thread" will be the wrong one.** The fork captures it in
+  a global initialiser: `const std::thread::id simulatorMainThread =
+  std::this_thread::get_id();` (`src/HalDisplay.cpp:66`), and
+  `HalDisplay::displayBuffer` presents the frame immediately only when the
+  caller matches it (`src/HalDisplay.cpp:389`). On Android those are two
+  different threads: static initialisers run when `System.loadLibrary` maps
+  `libmain.so`, which is the activity's UI thread, while SDL runs `SDL_main` on
+  a thread of its own. So the comparison is always false and `displayBuffer`
+  never presents.
+  Probably not fatal -- `simulator_main.cpp`'s loop calls `presentIfNeeded()`
+  once per frame anyway, so frames would appear one iteration late. It does
+  become fatal if the firmware ever blocks inside `loop()` waiting on a
+  refresh.
+  Fix: capture the id at the top of `main()` instead of at static-init time.
+  That is a latent bug on any platform where those two differ, so it belongs
+  upstream, not in the fork. **Read off the code, not yet observed running.**
 
 Nothing builds on the phone. The APK is cross-compiled on the laptop; gradle
 only packages the `.so`.
