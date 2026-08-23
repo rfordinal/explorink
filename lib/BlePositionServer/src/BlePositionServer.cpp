@@ -17,7 +17,15 @@ BlePositionServer& BlePositionServer::getInstance() {
 
 #include <Logging.h>
 #include <NimBLEDevice.h>
-#include <esp_system.h>    // esp_get_free_heap_size() -- the begin()/end() heap bracket below
+#include <esp_system.h>  // esp_get_free_heap_size() -- the begin()/end() heap bracket below
+// portMUX_TYPE / portENTER_CRITICAL, vTaskDelay / pdMS_TO_TICKS, and the
+// semaphore API are all used below. On the device NimBLE-Arduino drags these
+// in through Arduino.h, so the file built without naming them; nothing else in
+// the firmware relies on that, and every other FreeRTOS user here includes
+// them directly (src/activities/ActivityManager.h:3, lib/Xtc/Xtc.cpp:13).
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <host/ble_gap.h>  // ble_gap_conn_rssi() -- no NimBLEServer/NimBLEConnInfo wrapper exists for it
 
 #include <cstdio>
