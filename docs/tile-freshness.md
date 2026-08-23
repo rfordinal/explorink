@@ -810,7 +810,8 @@ what the CDN's index publishes for it. First time the check has replaced
 anything.
 
 **Open: the push is slow.** 48864 bytes took 119 s, i.e. ~410 B/s, against the
-2.6 kB/s `docs/optimization/03-ble-link.md` measured for a fetch. Both tiles
+2.6 kB/s measured for a `blepush.py` fetch (`map-memory.md`; the figure in
+`optimization/03-ble-link.md` is an estimate marked open, not a measurement). Both tiles
 still land, and the app's own reply timeout (`TileFetcher.REPLY_TIMEOUT_MS`,
 15 s) is per frame rather than per file, so this costs minutes rather than
 correctness. Not chased in this pass -- needs a per-chunk timestamp on one

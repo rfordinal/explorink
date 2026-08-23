@@ -280,7 +280,9 @@ are repeated here:
   There is no ATT write response and no connection interval. Measured: a 52 KB
   tile push clocked 3377 KB/s and 4196 KB/s through the socket, against
   **2.6 KB/s** the same tool measures over a real radio at MTU 256
-  (`docs/optimization/03-ble-link.md`). Never quote a `--sim` transfer time.
+  (`map-memory.md`, "Measured: a real transfer costs no heap" -- and note that
+  `optimization/03-ble-link.md`'s ~6.2 kB/s for that MTU is an estimate marked
+  open, not a measurement). Never quote a `--sim` transfer time.
 - **Nothing negotiates the MTU, and nothing rejects an over-MTU write.** The
   client declares the MTU. A 485-byte frame was accepted on a link the firmware
   believed had a 15 byte payload budget. `MapTransferReceiver` never compares an
