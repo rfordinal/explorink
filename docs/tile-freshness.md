@@ -924,8 +924,12 @@ still flush unconditionally, because refusing a flush there would leave
 (253 bytes) instead of failing safely. This section then said no command on
 this console produces a reply anywhere near 2 blocks today (`have` for a whole
 viewport was 83 bytes, see above), "believed unreachable in practice, not proven
-so". `info` at MTU 23 needs **23** blocks, and that is not an unusual link: 23
-is the MTU every connection starts at.
+so". `info` at MTU 23 needs **23** blocks. 23 is where every ATT connection
+starts and where it stays until the central asks for more, so reaching this
+needs a peer that never negotiates up -- which is exactly the peer this cap was
+written for. At the 256 the app negotiates, `info` is 2 blocks and the cap does
+hold; the pathological case and the healthy case are on opposite sides of the
+MTU.
 
 `flushTransferStatus()` is untouched and needs no change: it already runs
 after `ble_.poll()` in the same tick on both screens
