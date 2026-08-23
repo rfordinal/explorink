@@ -224,6 +224,11 @@ review of the map, BLE and tile paths (2026-08-06), one plan per area, with a
 measurement gate for each. Start at its
 [`README.md`](./docs/optimization/README.md).
 
+[`docs/simulator.md`](./docs/simulator.md) is the desktop simulator: the whole
+firmware built native, the panel drawn in an SDL2 window, no device and no
+flash. What it can answer (layout, geometry, map render, logic) and what it
+cannot (refresh timing, dither, heap pressure, BLE).
+
 [`docs/build-environments.md`](./docs/build-environments.md) is which of the five
 build environments can be published and which two are missing Bluetooth, plus the
 three flash offsets verified against a real device's own dump.
