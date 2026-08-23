@@ -9,8 +9,10 @@ lives in the `explorink-simulator` fork). An ESP32-C3 `.bin` never enters it. So
 an Android build is a third compile target of the same sources, and a new
 firmware means a new APK.
 
-Status: **the compile probe passes, all 208 files.** Two real portability gaps
-found and fixed. Nothing past the compiler is built yet.
+Status: **it runs.** The firmware compiles, links, boots and draws the map on
+three phones (Android 9, 12 and 16). The shell, the build scripts and the
+findings live in the simulator fork's `ANDROID.md`; this file covers the
+firmware side.
 
 ## Milestone 0: does the code compile for Android at all? Yes
 
@@ -32,11 +34,12 @@ with the NDK compiler and throw the object away.
 
 ```bash
 pio run -e simulator -t compiledb        # writes compile_commands.json
+python3 scripts/android_build.py --compile-only
 ```
 
-Then, per entry in `compile_commands.json`: swap `/usr/bin/g++` for
-`$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++`,
-rewrite `-o <file>.o` to `-o /dev/null`, run it in the entry's `directory`.
+`scripts/android_build.py` replays each entry with the NDK compiler. Without
+`--compile-only` it keeps the objects and links them into `libmain.so`, writing
+it straight into the simulator fork's `android/app/src/main/jniLibs/`.
 
 `compiledb` covers project `src/`, `lib/`, and the `lib_deps` (the simulator's
 own HAL sources included) -- 208 units, verified by listing the database.
@@ -186,11 +189,35 @@ So it needs compile-time gates through `ActivityManager` and `main.cpp`. How
 much flash it would return is **unmeasured** -- object-file sizes carry debug
 info and are not a proxy for it.
 
+## Milestone 1: does it link? Yes, with nothing missing
+
+Verified 2026-08-23. 208 objects into an 18 MB `libmain.so`.
+
+The prediction was wrong in a useful way. The expectation was a pile of
+undefined symbols -- everything the SDL HAL assumes a host provides. There were
+none.
+
+**A shared library link is not a test unless you ask it to be.** `-shared`
+resolves nothing by default and leaves undefined symbols for `dlopen` to fail
+on, on the phone, later. The link therefore runs with `-Wl,--no-undefined`, and
+it still passes. Checked afterwards as well: all 229 undefined dynamic symbols
+are versioned against `LIBC` and friends, `NEEDED` is only
+libSDL2/liblog/libm/libdl/libc, and `SDL_main` is exported.
+
+Two flags matter for the link and neither is optional:
+
+- `-Wl,-z,max-page-size=16384` -- Android 15+ refuses 4 kB-aligned segments.
+- `-static-libstdc++` -- otherwise `libc++_shared.so` has to ship alongside.
+
+The one host dependency that did have to go was OpenSSL, and it was one MD5:
+the fork now carries `MD5Builder_android.h` (see its `ANDROID.md`).
+
 ## What is still open
 
-Everything past the compiler.
-
-- **Toolchain in the build.** Plan: a new `[env:simulator_android]` extending
+- **Toolchain in the build.** `scripts/android_build.py` works and is what
+  built every binary above, but it needs a `compiledb` run first and it is not
+  a PlatformIO environment. Original plan, still unbuilt: a new
+  `[env:simulator_android]` extending
   `[env:simulator]`, plus a `post:` extra_script that does
   `env.Replace(CC=..., CXX=..., LINK=...)`. The native platform's builder is 80
   lines and picks its compiler off `PATH` (`~/.platformio/platforms/native/builder/main.py:24-35`,
@@ -203,19 +230,18 @@ Everything past the compiler.
   and turn it into a `CMakeLists.txt` for gradle's `externalNativeBuild`. The
   file list still comes from `build_src_filter` and `lib_deps`, not a hand-kept
   copy.
-- **SDL2 for Android.** `ndk-build` in the SDL source tree. Unverified.
-- **App shell.** An `SDLActivity` subclass whose `getLibraries()` returns
-  `{"SDL2", "main"}`. `AndroidManifest.xml` needs `INTERNET` for the firmware's
-  web server.
-- **Entry point.** `src/simulator_main.cpp:1` includes `<SDL.h>` before
-  defining `main`, and SDL renames `main` to `SDL_main` by macro on platforms
-  that need it. **Open:** if that holds on Android, the entry point needs no
-  source change.
-- **Buttons.** Keep them in Java, injecting key events into SDL. Drawing them in
-  the HAL would grow the fork's diff for no gain.
-- **SD card path.** Already an environment variable: `CROSSPOINT_SIM_SD`, else
-  `CROSSPOINT_EMU_SD`, else `./fs_` (fork's `src/HalStorage.cpp:20-25`). The
-  Java shell sets it to the app's files directory. No C++ change.
+Done, and recorded in the fork's `ANDROID.md`: SDL2 for Android, the app shell,
+the entry point (no source change needed), and the SD card path (resolved
+natively from `SDL_AndroidGetInternalStoragePath`, because Java cannot set an
+environment variable early enough).
+
+- **Buttons.** Still none on screen. Not blocking: `adb shell input keyevent`
+  reaches SDL through `SDLActivity`, which is enough for scripted runs. On-screen
+  buttons belong in Java so `HalGPIO` stays untouched.
+- **Panel geometry.** The map is clipped on the right and at the bottom,
+  identically on three phones with three different window sizes -- so it is
+  inside the 480x800 panel space, not the scaling. The fork's `ANDROID.md` has
+  the reasoning and what would settle it.
 - **`_exit(0)` on quit** (`simulator_main.cpp`, last line) kills the process, so
   Android restarts the activity rather than resuming it. Cosmetic.
 - **ABI:** `arm64-v8a` only.
