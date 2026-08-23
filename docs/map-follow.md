@@ -32,6 +32,238 @@ are in "What the ride measured" below; anything still unmeasured says so.
 > table below describes **free-ride** behaviour; read `route-navigation.md` before
 > touching this ladder.
 
+## Nothing validates a position packet (2026-08-23)
+
+**Measured in the desktop simulator, against the real `BlePositionServer` and
+the real `MapActivity` on a fake radio. Nothing here ran on hardware -- there is
+no device.** This path had never been driven by a hostile packet before, because
+until the simulator grew a BLE shim (`simulator.md`, "BLE") there was no way to
+put an arbitrary 21 bytes on the characteristic without a phone.
+
+`BlePositionServer::onWriteIngest` checks the packet's **length** and nothing
+else. `if (!data || len != kPositionPacketBytes) return;`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:444`), then every field is
+copied straight in (`:450-460`) with no domain check on any of them. The length
+guard is solid -- 20, 22, 19, 12 and 1 byte writes all produced no fix at all,
+and the channel survived every one of them. Everything past the length is
+trusted.
+
+Four consequences, in descending order of how much they matter.
+
+### `lat = +/-90` sends the renderer into a 16.7-million-tile scan and the map screen never comes back
+
+The worst of the four, and it is reachable by anyone in radio range.
+
+Three things line up:
+
+1. `MapViewport::mppMercFor` is
+   `kZoomLadder[step].mpp / std::cos(anchorLat * kDegToRad)`
+   (`src/activities/map/MapViewport.cpp:14-17`, the cosine at `:16`).
+   `anchorLat` is clamped nowhere, and `cos(90 deg)` is 6e-17, so
+   metres-per-pixel becomes astronomical and the projected screen rectangle
+   covers the planet.
+2. `MapViewport::tileRangeFor` (`src/activities/map/MapViewport.cpp:19-54`)
+   converts that rectangle faithfully into `col 0..4095 x row 0..4095`.
+3. `MapActivity` **detects** the impossible range and renders it anyway.
+   `if (range.count() > MapViewport::kMaxTiles)` with `kMaxTiles = 16`
+   (`src/activities/map/MapViewport.h:153`) logs
+   `tile range 0..4095 x 0..4095 = 16777216 tiles, over the 3x3 worst case`
+   and then falls through to `drawMapLayers(range, ...)` with that same range
+   (`src/activities/map/MapActivity.cpp:5202-5206`). The comment above it reads
+   "A count above 3x3 is a bug in the range arithmetic, not a state", so the
+   author expected it to be unreachable. It is reachable from the wire. The
+   route-overview path has the same log-and-continue shape at
+   `src/activities/map/MapActivity.cpp:4929-4932`.
+
+Measured, one 21-byte write with `lat = 90.0`:
+
+```
+[2997] [DBG] [MAP] ble fix: seq 70, heading 0, speed 10 km/h, ...
+[2997] [DBG] [MAP] renderViewport start: lat=900000000 lon=192950000 heading=0 seq=70
+[2997] [ERR] [MAP] tile range 0..4095 x 0..4095 = 16777216 tiles, over the 3x3 worst case
+```
+
+and then nothing. 1,726,090 failed tile opens in the following 6.2 s, no
+`reset z12 ...` line, no `render N ms`, **no screenshot at either of the two
+scheduled times**, and the scripted `QUIT` at t=10000 never ran. The process had
+to be killed. The absence of the two later screenshots is the evidence: the
+activity loop never came out of `drawMapLayers`.
+
+One line did still appear during the freeze -- `transfer status unsubscribed`,
+a BLE callback on the shim's own thread -- so **the link stays up and the device
+still looks connected to the phone while the map is dead.**
+
+A full pass over 16,777,216 tiles took roughly 60 s on this machine's NVMe with
+a warm directory cache. **The device figure is unmeasured and will be far
+worse:** that is an SD card, and each miss costs six opens, not one (see below).
+Either way the map screen is gone for the duration and the rider's only recourse
+is a reset.
+
+The latitude sweep either side of the pole, one short run per value:
+
+| `lat` sent | tile range the firmware computed | tiles | outcome |
+|---|---|---|---|
+| 49.16 | `col 2267..2267 row 1403..1404` | 2 | normal, 12 ms |
+| 89.0 | `col 2257..2278 row 0..0` | 22 | over `kMaxTiles`: logged, rendered anyway, survivable |
+| 89.99 | `col 1234..3370 row 0..0` | 2137 | logged, rendered anyway, 76 ms and 2137 card lookups |
+| **90.0** | **`col 0..4095 row 0..4095`** | **16,777,216** | **never finished; the run had to be killed** |
+| 91.0 | `col 2260..2273 row 0..0` | 14 | **under** `kMaxTiles`, so nothing is logged at all -- empty frame, silent |
+| -91.0 | `col 2260..2273 row 0..0` | 14 | same |
+
+**Security, in the terms the standing rule uses.** This channel has no pairing
+and no bonding (`ble-advertising.md`, "Connection mode"), so the writer does not
+have to be the rider's phone -- anyone in radio range can write this
+characteristic. What it leaks: nothing. What it lets someone do to the rider:
+kill the map screen, and with it the whole main loop, from outside the device,
+with one 21-byte write and no trace but a single log line. Treat it as a
+remotely reachable denial of service on the navigation screen, not as a
+robustness nicety.
+
+**Two independent fixes, and both are worth having.** Clamping `lat` at ingest
+to about +/-85 closes this and the NaN case below together, at the cost of one
+line. Making the `kMaxTiles` guard **return** instead of only logging is the
+second line of defence, and it is the one that also covers a future arithmetic
+bug that does not come from the wire -- which is what the guard was written for.
+
+**Open -- needs hardware:** the SD-card cost of one such scan, and whether the
+watchdog fires before a rider gives up and resets. What would settle it: the
+same packet written to a device with a serial log attached.
+
+### `|lat| > 90` is a NaN, and a NaN is a small wrong answer
+
+Cheaper to reach and much quieter. `MapProjection::lonLatToMerc`
+(`src/activities/map/MapProjection.cpp:10-13`) computes
+`log(tan(pi/4 + lat*deg2rad/2))` at `:12` with no domain guard. For `|lat| > 90`
+the tangent is negative, the logarithm of a negative double is **NaN**, and
+`MapProjection::projectMerc` (`:32-39`) then does
+`static_cast<int16_t>(anchorScreenX_ + std::lround(sxOff))` at `:37-38` on it.
+
+Measured: a packet carrying `lat 95, lon 200` -- a position on the other side of
+the planet -- was treated as a **37-pixel nudge of the marker** inside the
+existing frame. Nothing warned, nothing logged, the frame stayed where it was.
+`lat 91` and `lat -91` produced a 14-tile range that does not even trip the
+`kMaxTiles` guard, so they render an empty frame in silence.
+
+For contrast, a coordinate that is *valid* but has no data is handled cleanly:
+`lat 0, lon 0` produced a sane 2x2 range, four honest misses, an empty frame in
+2 ms, and the header's place name correctly went empty rather than staying
+stale. So the code copes with "no map here" perfectly well; it is "not a place"
+that it cannot represent.
+
+### A stale `seq` is drawn, so a recorded packet can be replayed
+
+The redraw gate is `update.seq != lastDrawnSeq_`
+(`src/activities/map/MapActivity.cpp:2245`) -- "did it change", not "is it
+newer". The header documents that as the rule
+(`lib/BlePositionServer/include/BlePositionServer.h:28`, "rolling counter; the
+device redraws when it changes"), so the code matches its own spec and the spec
+is what is wrong.
+
+Proved with two writes differing in **exactly one byte**, byte 15, at the same
+new coordinate:
+
+- `seq` **equal** to the last drawn one: no log line, no redraw, and the panel
+  came out **byte-identical** to the previous screenshot. Ignored.
+- `seq` **older** than the last drawn one (5 against 12): accepted, full
+  re-anchor, 22,192 pixels changed, the panel moved to a different village and
+  the north arrow turned to the older packet's heading.
+
+**Security.** Same unauthenticated channel as above. Record one position packet
+off the air and write it back later, and the device shows that old position as
+the rider's current fix. That is the standing rule's "inject a fake position",
+with no ownership check and no replay window.
+
+**A plain `>` is not the fix.** The `!=` is load-bearing twice over. First, the
+counter wraps: 255 -> 0 -> 1 was measured and every one of those three fixes was
+drawn, which a `>` test would break at each wrap. Second, the condition next to
+it exists because a parked rider's counter does not move at all -- the comment
+at `src/activities/map/MapActivity.cpp:2238-2244` explains that `onEnter` seeds
+`lastDrawnSeq_ = 0` for the card's last fix, so a phone whose counter happens to
+sit at 0 would have its first real packet read as already-drawn and nothing
+would ever move it. What replaces `!=` has to keep both. A signed 8-bit distance
+test -- accept when `(int8_t)(update.seq - lastDrawnSeq_) > 0` -- keeps the wrap
+and rejects the rewind. The packet's own `utc` is a second, independent
+freshness source that nothing currently reads for this purpose.
+
+**Not a delivery counter, either.** Three writes fired back to back on one link
+produced one fix: the first two were overwritten in the single-slot `latest_`
+before the activity loop looked (`BlePositionServer.cpp:467`,
+`MapActivity.cpp:2237`). That is right for a position feed -- the newest fix is
+the only one that matters -- but it means a phone cannot conclude anything was
+received because its counter advanced, and anything that needs every packet must
+not ride this characteristic.
+
+### `heading` is not masked at ingest, and one render site trusts it raw
+
+`update.heading = data[14]` (`BlePositionServer.cpp:454`) stores the byte
+unmasked while the header documents the field as 0-15 (`BlePositionServer.h:27`).
+Measured: `heading = 200` was accepted, logged as `heading 200`, and drew
+correctly.
+
+It draws correctly because every render site masks individually --
+`MapActivity.cpp:4944` and `:5222` both do `& 0x0F`, `MapProjection.cpp:27` takes
+`% 16` -- but `MapRenderer.cpp:446` indexes a **16-entry** table with the raw
+value, `kHeadingDir[static_cast<uint8_t>(heading)]`. Its safety today rests
+entirely on every caller remembering to mask. That is one missing mask away from
+an out-of-bounds read.
+
+It also escapes to the card. `riderHeading()` returns `lastHeading_` unmasked
+(`MapActivity.cpp:2942-2944`) and that value is written straight into
+`SETTINGS.mapLastHeading` (`MapActivity.cpp:4479`). Only the **load** masks
+(`src/CrossPointSettings.cpp:235`) -- and that line's own comment claimed it was
+"the same mask BlePositionServer applies to the wire value", which was simply
+untrue; corrected in the same pass as this doc.
+
+Cheap fix, one `& 0x0F` at ingest, and it makes the settings comment true.
+
+### `flags` bit0 has no consumer
+
+`BlePositionServer.h:29` states "bit0 = off-route warning" as fact. A grep for
+`flags & 0x01`, `offRoute` and `off-route` across `src/activities/map/` and
+`lib/BlePositionServer/` returns that comment line and nothing else.
+`update.flags` is read in exactly one place, for bit1
+(`BlePositionServer.cpp:460`). The header is explicit that `speed` and
+`altitude` are wired-but-unused; it does not say the same about bit0, so it
+over-promises. Either say so or wire it.
+
+Bit1, by contrast, is honoured and was proved decisively: two packets identical
+except for the flag byte and the seq produced `alt 620` and `alt unset`
+respectively, and a negative altitude survived intact (`alt -500`). A sentinel
+value would have printed `0`.
+
+### What was confirmed working on this path
+
+Recorded because a finding list reads as if nothing works:
+
+- lat/lon/heading reach the frame, and the frame rotates to the heading.
+- `utc` and `tz_offset` reach the header clock: `utc=1755950000 tz=120` put
+  **13:53** on the panel, which is 11:53:20 UTC plus 120 minutes.
+- `speed` and `accuracy` land in the struct and are logged (`speed 42 km/h,
+  accuracy 7 m`) and nothing draws them, which is what the header says is
+  intended for now.
+- One good fix after the nonsense above brings the real map straight back. The
+  bad state is not sticky.
+- Six card opens per missing tile, not one -- one per layer. Noted because it
+  multiplies whatever any tile-range bug costs:
+
+```
+$ grep -o 'base/12/[0-9]*/[0-9]*\.tib' run.log | sort | uniq -c
+      6 base/12/2047/2047.tib
+      6 base/12/2047/2048.tib
+      6 base/12/2048/2047.tib
+      6 base/12/2048/2048.tib
+```
+
+### Unexplained, once, not reproduced
+
+In one early probe run the map activity exited to Sleep at t=2440 ms with no
+input scripted until t=6000, preceded by a 1144 ms `clearScreen to
+displayBuffer`. Two deliberate attempts to reproduce it -- a bare TCP connect
+that never sends a `connect` op, and a proper `connect` op -- both left the map
+up for the full 8 s, and it never recurred across nine further runs. Recorded
+because a spurious sleep on the map screen would matter. No cause claimed.
+
+
 ## An unbounded window aborts the device (2026-08-22)
 
 A marker move refreshes **one window over both boxes**, the old marker's and the

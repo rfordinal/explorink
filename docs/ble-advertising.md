@@ -263,6 +263,81 @@ number is `setMinInterval(0x140)`/`setMaxInterval(0x1E0)` explicitly.
 Connection mode is undirected connectable, general discoverable, no pairing and
 no bonding (`BlePositionServer.cpp:248`).
 
+## What the open channel now demonstrably allows
+
+"No pairing and no bonding" above is a one-line fact with consequences that used
+to be theoretical. **They are not any more.** On 2026-08-23 the whole BLE surface
+was driven for the first time, in the desktop simulator (`simulator.md`, "BLE"),
+by a client that could put arbitrary bytes on every characteristic. **Nothing ran
+on hardware; there is no device.** Everything below is therefore
+measured-in-the-simulator or read-off-the-code, and the transport is a TCP socket
+rather than a radio -- but the reachability argument does not depend on the
+transport. It depends on this section: an undirected connectable, generally
+discoverable peripheral with no pairing and no bonding accepts a write from
+whoever connects first.
+
+The threat model is the standing one: the device is carried on a bike or in a
+bag, it gets lost or stolen, and while it is in someone else's hands -- or merely
+in radio range -- they can write anything a phone could.
+
+What it **leaks** to an unauthenticated peer, with no ownership check:
+
+- The rider's current position, heading, speed and clock, and the tile
+  coordinates around them, straight out of `info`. A tile coordinate is a
+  location.
+- The list of tiles the device is missing and the content id of every tile it
+  holds (`missing`, `have`), which is a coarse history of where the device has
+  been asked to draw.
+
+What it **lets someone do to the device or the rider**:
+
+- **Kill the map screen from outside.** One 21-byte position packet with
+  `lat = 90` sends the renderer into a 16.7-million-tile scan that the activity
+  loop never returns from: no frame, no redraw, no button, and the BLE link
+  stays up so the device still looks connected. Measured in the simulator;
+  mechanism and citations in
+  [`map-follow.md`](map-follow.md), "Nothing validates a position packet".
+  Treat it as a remotely reachable denial of service on the navigation screen.
+- **Inject a fake position, including a replayed real one.** The redraw gate
+  tests "changed", not "newer", so a packet recorded off the air and written back
+  later moves the rider's displayed position to wherever it was recorded. Same
+  doc.
+- **Make the command channel stop answering, with no trace.** A single write
+  longer than the 256-byte command ring
+  (`lib/BlePositionServer/include/BlePositionServer.h:397`) is discarded whole
+  with **no `ERR`, no reply and no log line**
+  (`lib/BlePositionServer/src/BlePositionServer.cpp:507-523`). Measured with a
+  300-byte write at MTU 517, which is a perfectly legal single ATT write --
+  nothing about it is malformed at the link layer. The peer then waits forever.
+  Compare the line-length overflow, which does answer (`ERR line_too_long`), and
+  the position characteristic, which drops a wrong-length write silently but at
+  least cannot be mistaken for a request. Dropping the write whole rather than
+  truncated is right, and is explained in the code; the silence is the gap.
+- **Freeze the whole main loop for over a minute.** A peer that subscribes to
+  the command channel, issues one `info` at the default MTU and then never
+  acknowledges anything holds the activity task for a measured **69.1 s**, with
+  no `loop()` iteration for 63 s of it -- so no buttons either. Details in
+  [`tile-freshness.md`](tile-freshness.md), "The cap does not bound the freeze".
+- **Write any file under the SD root**, `pins/pins.log` included. The path check
+  holds against every escape tried, so this is the documented design rather than
+  a hole -- but the design is that the channel carries any file, and the channel
+  has no ownership check.
+- **Occupy the transfer slot**, making the rider's own phone see `ERR busy` for
+  30 s, and **create directories without bound** by sending `begin` frames that
+  never write a byte. Both in
+  [`missing-tiles.md`](missing-tiles.md), "The transfer path, driven end to end".
+
+**None of this is new in kind** -- `MapCommandParser.h` already documents the
+serial and BLE channels as one shared, unauthenticated grammar, and T-222 tracks
+the audit. What changed is that the list is now specific, cited, and reproducible
+without a device, which is what a fix has to be measured against.
+
+**What a hardware pass would still have to settle:** whether the ATT bearer
+refuses any of these earlier than the firmware does (it cannot refuse the
+position packet, which is a legal 21-byte write, and it cannot refuse a 300-byte
+write at MTU 517), and whether the watchdog fires during the map wedge before a
+rider gives up and resets.
+
 ## The name is wire-visible
 
 `kBleDeviceName` (`lib/BlePositionServer/include/BlePositionServer.h`) is matched

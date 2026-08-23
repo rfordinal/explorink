@@ -392,6 +392,108 @@ Unlike a reorder, a removal **does** mark the store dirty. A list that still
 asks for tiles already on the card would have the phone send them all again
 after a restart.
 
+### A corrupt arrival is never refused, so it is re-fetched forever (2026-08-23)
+
+**Measured in the desktop simulator** (`simulator.md`, "BLE"): the real firmware
+over a fake radio, with a local fake CDN serving two damaged tiles. **Nothing
+here ran on hardware; there is no device.** This is a data-cost bug on the
+rider's phone, not a rendering bug.
+
+The rendering half is correct and worth saying first. A damaged `.tib` is
+detected -- absent, truncated or header-crc32-mismatched all take the same
+branch (`src/activities/map/MapTileSource.cpp:116-125`) -- it is hatched, and
+**no garbage geometry ever reaches the screen.** One tile with its format
+version field flipped from 3 to 99 and one with a byte flipped 26 KB into its
+body produced `14 ways` instead of `623` and both squares hatched.
+
+The demand bookkeeping is where it goes wrong. `drainTransferredTiles()` calls
+`MISSING_TILES.forget(z, col, row)` on **any** landed tile
+(`src/activities/map/MapActivity.cpp:881`): the store learns "this tile
+arrived", never "this tile is usable". The next render re-opens it, fails,
+hatches it, and re-`record()`s it at count 1 with no refusal
+(`src/activities/map/MapActivity.cpp:5105-5106`). It is `fetchable` again, and
+the only brake left is the 60 s rate cap (`kAutoSyncIntervalMs`,
+`src/activities/map/MapActivity.cpp:94`).
+
+Measured over 145 s: **three full rounds, both tiles pushed each time.**
+
+```
+[  4773] autosync: asked for 2 tiles on screen
+[  4882] [MAPXFER] done /trailink/base/12/2267/1403.tib, 34809 bytes, crc 3d6e1662
+[  4900] [MAPXFER] done /trailink/base/12/2267/1404.tib, 52190 bytes, crc ed5d34fd
+[  4886] z12 2267/1403 arrived, dropped from the list
+[  4909] z12 2267/1404 arrived, dropped from the list
+[  9930] reset z12 ...: 1 tiles ok, 1 missing (mask 0x3), 14 ways, 0 filtered, 1 places, 29630 bytes
+[ 64795] autosync: asked for 2 tiles on screen        <-- 60 s later, both pushed again
+[124809] autosync: asked for 2 tiles on screen        <-- and again
+```
+
+87 KB of the rider's mobile data per round, so about **5.2 MB/hour on a tile
+that will never render**, against roughly **87 KB/hour** the same tile costs if
+the phone answers `skip` and the refusal schedule reaches its 60-minute cap. A
+factor of about 60, forever, for as long as the rider stays in that viewport.
+
+The transfer layer has nothing to complain about, which is the point: the CRC in
+the `begin` frame was computed over the damaged bytes, so the file arrived
+exactly as declared. A corrupt tile is a *tile* integrity failure, and only the
+tile reader sees it.
+
+**What would fix it:** the arrival path already knows whether the tile opens --
+it is the next render that finds out. Feeding that result back, so a tile that
+fails to open after arriving is marked refused rather than merely forgotten, is
+the same shape as the ping-pong guard `StaleTilesList` already has for a tile
+reported stale twice (`MapActivity.cpp:866-879`). Not attempted here.
+
+**Open -- needs hardware:** nothing about the mechanism, which is arithmetic and
+read off the code. What hardware would add is whether a real CDN ever serves a
+tile that passes the transfer CRC and fails the tile CRC. Today's only known
+route to that is a build bug on our side, which makes this a small-probability,
+high-cost failure rather than a common one.
+
+### The tile-count log line mixes a per-pass counter with a per-frame mask
+
+`1 tiles ok, 1 missing (mask 0x3)` reads like a bug and is not, and it took a
+reading of the header comment to be sure. Worth one paragraph here because that
+log line is the first thing anyone reads.
+
+`tilesOpened_` and `tilesUnavailable_` are reset per render **pass**
+(`src/activities/map/MapTileSource.cpp:101-102`, in `startPass()`), while
+`unavailableMask_` accumulates across every pass of the frame and is cleared
+only by `begin()` -- stated at `src/activities/map/MapTileSource.h:106-113`. The
+log line prints all three together
+(`src/activities/map/MapActivity.cpp:5312-5317`). So a tile that opens on one
+pass and fails on another sets its mask bit while the last pass counts it as
+opened, and **the two counts need not sum to `popcount(mask)`**. The counters
+describe a pass; the mask describes the frame. A corrupt tile makes them
+visibly disagree.
+
+### The `tileSeq` collapse race is reproducible, and costs slightly more than the comment says
+
+The comment at `src/activities/map/MapTransferReceiver.h:148-151` prices this as
+theoretical: "Two tiles landing between two `loop()` iterations would collapse
+into one removal here. A whole file takes seconds and `loop()` runs
+continuously, so this is a theoretical race, and its cost is one stale entry
+that the next fetch asks for again -- not corruption."
+
+**It fired on the first attempt in the simulator**, because two files landed
+13 ms apart (`done` at 64863 and 64876) where a real radio would put them
+seconds apart. So it is reachable, and the mechanism is confirmed. **It is not
+evidence the race matters on device today** -- the simulator's speed is the only
+reason it was reachable.
+
+What the run adds is the price. Besides the stale entry, the **ask never
+settles**, so `autoSyncPending_` holds the next ask off for the full
+`kAutoSyncQuietMs`:
+
+```
+[112888] autosync: 1 tiles unanswered for 45s, giving up
+```
+
+That is a 45 s stall on top of one re-ask. Still not corruption, and still not
+worth a lock -- but it becomes reachable the moment a faster transport lands.
+Wi-Fi Fast Sync sits exactly in this window.
+
+
 ## Autosync: the map screen asking for what it just hatched
 
 **Off by default.** Settings > Map > *Auto-sync tiles*
@@ -694,6 +796,89 @@ subscription a central can make.
 **Anything that gates behaviour on somebody listening should use
 `isCommandSubscribed()`, never the reply path's return value.** `indicate()`
 succeeds into an empty room.
+
+### The transfer path, driven end to end (2026-08-23)
+
+**Measured in the desktop simulator** (`simulator.md`, "BLE"). **No hardware;
+there is no device.** Twenty-odd cases, each with a positive control -- the same
+frame with one field changed, accepted -- so a refusal cannot be passing for the
+wrong reason.
+
+**Every refusal the protocol specifies fired, with the reason it specifies, and
+every boundary tested was exact.** `bad path` (a `..` component, a leading `/`, a
+trailing `/`, an empty component, a backslash, a control byte, non-ASCII),
+`bad path length` (80 bytes accepted, 81 refused), `bad length` (8388608
+accepted, 8388609 refused, 0 refused, 1 accepted), `status not subscribed`,
+`busy`, `no transfer`, `bad opcode`, `short chunk`, `offset`, `overrun`,
+`crc mismatch`, `aborted`, `screen closed`, `open failed`, and the 30 s stale
+reclaim (5 s idle refused, 31 s idle reclaimed). The `..` check is component-wise
+rather than a substring search: `base/a..b.tib` is accepted, which is the
+documented behaviour. The backslash case was pinned with three paths of identical
+length differing in one byte.
+
+**The whole-file CRC is read back off the card, not accumulated over the
+chunks.** Proved rather than cited: the simulated SD is a host directory, so one
+byte of the `.part` was flipped from outside **while the transfer was still
+streaming**, every byte on the wire staying correct. The device answered
+`ERR crc mismatch` (`crc mismatch: got 040154f1, declared 8fa4fc2c`). An
+accumulate-over-chunks CRC would have passed. So `OK` really does mean the card
+holds those bytes.
+
+**A pushed tile is decoded and re-read by `MapTileReader`**, four ways in one
+run: the `OK` line's CRC, a forced viewport reset that read `2 tiles ok, 0
+missing, 623 ways, 1152 filtered, 6 places, 145961 bytes` -- byte-identical
+counts to a pristine card -- the device reporting the tile's `content_id` as the
+value an independent parser derives from the source file's six layer CRCs, and
+`cmp` on the landed file.
+
+Five residues, none of them a broken refusal, all of them invisible from the
+status channel:
+
+- **A refused, aborted or dropped transfer leaves its parent directories
+  behind.** `begin` creates them before anything is written
+  (`src/activities/map/MapTransferReceiver.cpp:300-308`) and nothing removes
+  them. Thirteen empty directories after one run of the cases above. Harmless
+  for a phone pushing tiles; for an unauthenticated peer it is an unbounded
+  directory-creation primitive on the rider's card, one directory entry per
+  frame.
+- **A peer can hold a transfer open and make the rider's own phone see
+  `ERR busy` for 30 s.** `src/activities/map/MapTransferReceiver.cpp:278-287`,
+  `kStaleTransferMs = 30000` (`MapTransferReceiver.h:167`). Bounded and
+  self-healing, and there is no ownership check to appeal to.
+- **A refusal that cannot be indicated is parked and delivered on the next
+  subscribe**, inside the same connection. A sender that subscribes *after* its
+  first `begin` therefore reads a verdict belonging to a frame it has already
+  given up on. Parked lines are cleared on disconnect
+  (`lib/BlePositionServer/src/BlePositionServer.cpp:727-731`) and on `begin()`
+  (`:347-350`), so the hazard is confined to one connection, and ordering saves a
+  correct sender: the stale `ERR` arrives *before* the live `RDY`. Worth one line
+  in the protocol doc.
+- **`MapTransferReceiver` never bounds an arriving frame against
+  `BlePositionServer::transferPayloadBytes()`.** On device the ATT bearer is the
+  only thing that does. Not testable in the simulator, which accepts an over-MTU
+  write on purpose (a real central turns one into a long write, so a client
+  cannot honestly reject it locally). Informational: fine on hardware, and
+  something to remember before trusting any frame-size test done here.
+- **`base/./x.tib` is accepted.** A `.` component is not an escape, so this is
+  cosmetic -- listed only so it is not rediscovered as a hole.
+
+Two documented refusal reasons could not be reached, and both are simulator
+limits rather than firmware questions. `mkdir failed` is unreachable because the
+simulator's `mkdir` returns true on `EEXIST`, so a file blocking a directory name
+fails the *open* instead. `write failed` needs a full card, and the simulated
+card is a directory on a multi-gigabyte host filesystem; a size-limited loop
+filesystem would settle it.
+
+**Why the path check is a security boundary and not hygiene.** Paths are joined
+as `<root>/<rel>` with `snprintf` and no normalisation
+(`src/activities/map/MapTransferReceiver.cpp:289-290`), root `/trailink`. One
+accepted `..` reaches the card root, where `.crosspoint/settings.json` lives. The
+check holds today, on live code, against every escape tried. What it does **not**
+bound is the legitimate surface: any safe relative path under the root is
+writable, `pins/pins.log` included, by anyone in radio range. That is the
+documented design ("the channel carries any file"), and this run makes it
+concrete -- see `ble-advertising.md`, "What the open channel now demonstrably
+allows", and T-222.
 
 ### Verified vs assumed (autosync)
 

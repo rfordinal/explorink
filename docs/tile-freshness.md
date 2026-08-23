@@ -880,7 +880,7 @@ push a tile while it is unconfirmed, and expect
 a tick or two by `parked transfer status sent: RDY ...`, with the phone
 proceeding to chunks. Nothing has been on the glass yet.
 
-## Console flush could freeze the activity task for seconds -- fixed 2026-08-13
+## Console flush could freeze the activity task for seconds -- capped 2026-08-13, and the cap does not hold
 
 **Read off the code, not measured.** Found in the BLE review
 (`../../docs/ble-review-2026-08.md`, "Stability -- firmware" item 4).
@@ -906,19 +906,25 @@ of `poll()` is skipped the same way once the cap is spent; whatever is still
 batched (`batch_`/`batchLen_`, both members) rides into the next call rather
 than becoming a 3rd send.
 
-**Worst case is now 2 x 3 s = 6 s per `poll()` call, not unbounded.** 1 block
-would halve that to 3 s but doubles how many ticks a healthy-link multi-line
-listing needs to clear -- doubling perceived latency for the common case to
-shave the pathological one. 2 is the trade-off taken.
+The claim made here was **"worst case is now 2 x 3 s = 6 s per `poll()` call,
+not unbounded"**. That claim is **false, and was measured false 2026-08-23** --
+see the section below. What the cap actually bounds is commands per `poll()`,
+not blocks per `poll()`. 1 block would halve the nominal ceiling but doubles how
+many ticks a healthy-link multi-line listing needs to clear -- doubling
+perceived latency for the common case to shave the pathological one. 2 is the
+trade-off taken, and it is the wrong knob.
 
-**Not covered: a single command whose own reply needs more than 2 blocks.**
+The escape hatch was already written down here, and it is the whole bug:
+**a single command whose own reply needs more than 2 blocks is not covered.**
 The cap is checked between bytes, i.e. between commands, not inside one
 command's own burst of `appendReply()` calls (`MapBleConsole.cpp`) -- those
 still flush unconditionally, because refusing a flush there would leave
 `appendReply()` writing past a full, fixed-size `batch_[kBatchBytes]`
-(253 bytes) instead of failing safely. No command on this console produces a
-reply anywhere near 2 blocks today (`have` for a whole viewport was 83 bytes,
-see above), so this is believed unreachable in practice, not proven so.
+(253 bytes) instead of failing safely. This section then said no command on
+this console produces a reply anywhere near 2 blocks today (`have` for a whole
+viewport was 83 bytes, see above), "believed unreachable in practice, not proven
+so". `info` at MTU 23 needs **23** blocks, and that is not an unusual link: 23
+is the MTU every connection starts at.
 
 `flushTransferStatus()` is untouched and needs no change: it already runs
 after `ble_.poll()` in the same tick on both screens
@@ -940,7 +946,173 @@ for a line nobody receives.
 **Untested on hardware** as of 2026-08-13: builds clean, host tests for
 `MapCommandParser` pass unchanged (they do not exercise `MapBleConsole` or
 `BlePositionServer`), but nothing on real BLE hardware has exercised the
-capped `poll()` or the `FETCH_CANCEL` skip yet.
+capped `poll()` or the `FETCH_CANCEL` skip yet. Still true of hardware. Both
+have since been exercised in the desktop simulator -- see the next two
+sections.
+
+## The cap does not bound the freeze -- measured 69.1 s, 2026-08-23
+
+**Measured in the desktop simulator** (`simulator.md`, "BLE"): the firmware's
+real `BlePositionServer` and `MapBleConsole` over a fake radio, against a peer
+that stops confirming. **Not measured on hardware; there is no device.** The
+arithmetic is the device's own, so the number is a property of the code rather
+than of the transport -- but see the caveat at the end.
+
+One `info` at MTU 23, `auto_confirm` off at the fake radio so nothing is ever
+acknowledged:
+
+```
+window 75 s, one `info` (23 reply lines at MTU 23)
+indications delivered: 23  clobbers: 22
+  t=    761.6 ms   11B  b'INFO pos=0\n'
+  t=   3762.4 ms   19B  b'INFO lat=0.0000000\n'   gap  3000.7 ms
+  t=   6762.8 ms   19B  b'INFO lon=0.0000000\n'   gap  3000.4 ms
+  ... 20 more, every gap 3000.x ms ...
+  t=  66835.8 ms    3B  b'OK\n'                   gap  3063.4 ms
+
+gaps: min 2981.9 ms, typical 3000.x ms, max 3063.4 ms, mean 3003.4 ms
+a 23-line reply at this rate needs 69.1 s to drain
+```
+
+The firmware's own log agrees on its own clock -- 23 timeouts, `grep -c "reply
+unconfirmed"` returns 23:
+
+```
+[5567]  [ERR] [BLEPOS] reply unconfirmed after 3000 ms, 11 bytes dropped
+[8567]  [ERR] [BLEPOS] reply unconfirmed after 3000 ms, 19 bytes dropped
+...
+[71641] [ERR] [BLEPOS] reply unconfirmed after 3000 ms, 3 bytes dropped
+```
+
+**Why the cap does not fire.** It is checked in the loop over **input** bytes:
+
+```cpp
+for (size_t i = 0; i < kBytesPerPoll; ++i) {
+  if (blocksSentThisPoll_ >= kMaxBlocksPerPoll) break;   // MapBleConsole.cpp:106
+  if (ble.readCommandBytes(&c, 1) == 0) break;
+  if (console_.feed(c, out)) redraw = true;              // MapBleConsole.cpp:108
+}
+```
+
+One input byte -- the `\n` that terminates `info` -- makes `feed()` run the
+whole command, which calls `appendReply` 23 times. Neither `appendReply`
+(`src/activities/map/MapBleConsole.cpp:56-79`) nor `flushReplies`
+(`:81-89`) consults `blocksSentThisPoll_`; `flushReplies` only increments it,
+and its own header comment says it is unconditional because "the cap is
+enforced by `poll()` instead". `poll()` cannot enforce it, because there is no
+next input byte to stop at. The trailing guard at `:116` covers the final
+partial batch only. So the cap limits **commands per poll**, and the freeze it
+was written to bound is per **command**.
+
+**The whole main loop stopped, not just the console.** `[MEM]` is printed from
+the top of `loop()` every 10 s, right after `gpio.update()` (`src/main.cpp:561`,
+`gpio.update()` at `:567`, the print at `:572-576`). In that run there is **no
+`[MEM]` line at all between 5567 ms and 68641 ms** -- 63 seconds in which
+`loop()` did not iterate once, so buttons were not read either.
+
+**A failed block does not stop the next one.** `appendReply` ignores the return
+value of `sendCommandReply`/`flushReplies`, so a dead-quiet peer costs 3 s **per
+reply line**, not 3 s once. That is what turns 23 lines into 69 s.
+
+**This is the third time a "bounded" claim in this tree has been committed and
+then disproved** (`CLAUDE.md`: "Never write 'deterministic', 'bounded' or
+'cannot spin' in a comment until you have checked it"). The comment carrying it
+in the code (`src/activities/map/MapBleConsole.h:61-71`) was corrected in the same
+pass as this doc.
+
+**What would fix it:** check the cap where the blocks are actually emitted, i.e.
+inside `appendReply`/`flushReplies`, and let a capped reply ride into the next
+`poll()` the way the queued input bytes already do. Not attempted here.
+
+**Open -- needs hardware:** whether button starvation is observable to a rider
+as claimed. The evidence above is the missing `[MEM]` heartbeat, which is where
+`gpio.update()` also lives, not a button pressed during the stall and timed.
+What would settle it: hold a button through the freeze on a device and watch
+when it lands.
+
+## The truncation that caused "0 stale of 1" is still reachable -- reproduced 2026-08-23
+
+**Measured in the desktop simulator.** The 2026-08-13 fix above removed the
+common case by batching a whole listing into one indication. The mechanism
+underneath it is still live whenever one logical line needs more than one chunk,
+which at MTU 23 is any line over 19 bytes.
+
+Withhold the confirm for the **first chunk of a two-chunk line** and the failure
+appears whole, for the first time deliberately rather than in the field:
+
+```
+[  757.8 ms] INDICATE #0  18B b'INFO have_total=2\n'   -> confirming
+[  758.8 ms] INDICATE #1  20B b'INFO have_12_2267_14'  <-- CONFIRM WITHHELD
+[ 3765.8 ms] CLOBBER      20B b'INFO have_12_2267_14'
+[ 3783.9 ms] INDICATE #2  20B b'INFO have_12_2267_14'  -> confirming
+[ 3784.8 ms] INDICATE #3  12B b'04=60e20d54\n'         -> confirming
+[ 3845.9 ms] INDICATE #4   3B b'OK\n'                  -> confirming
+```
+
+```
+[2551] [DBG] [MAPBLE] rx: have
+[5553] [ERR] [BLEPOS] reply unconfirmed after 3000 ms, 20 bytes dropped
+[5553] [ERR] [BLEPOS] command block send aborted: 0 of 32 bytes delivered
+```
+
+What the peer is left holding:
+
+1. The first row's first 20 bytes arrive with no `\n`. They are a **prefix, not
+   a line**, so nothing terminates them.
+2. `sendCommandBlock` returns on the failed chunk
+   (`lib/BlePositionServer/src/BlePositionServer.cpp:574-588`), so the
+   remaining 12 bytes are **never sent by anybody**. That half is permanently
+   lost -- unlike a clobber, this is not a transport artefact.
+3. The next block is appended to the same byte stream, so a `\n` splitter joins
+   the orphan to the next row and yields one line,
+   `INFO have_12_2267_14INFO have_12_2267_1404=60e20d54`, which parses as
+   neither row.
+4. **The count is the only signal.** `have_total=2`, one usable row. A reader
+   that trusts the rows and ignores the total answers a freshness question about
+   half the screen -- "0 stale of 1" for a viewport holding two stale tiles,
+   which is exactly the field symptom.
+5. `OK` still arrives, so the exchange looks successful and `mapcmd.py` exits 0.
+
+The phone's own count check (`HaveReader`, `FreshnessChecker`, added in the same
+2026-08-13 pass) is what catches this, and this run is the first evidence it has
+something real to catch. Nothing on the **device** side notices, and nothing in
+`mapcmd.py` reports "I am holding an unterminated fragment".
+
+**One log line reads wrong here, and it hides the truncation.**
+`command block send aborted: 0 of 32 bytes delivered` says 0 while 20 bytes were
+on the wire and the peer had them: `sent` only advances after a *confirmed*
+chunk (`BlePositionServer.cpp:578-587`). The number is "bytes known delivered",
+not "bytes emitted". Read literally it says nothing left the device, which is
+the opposite of the problem.
+
+Withholding the confirm for a whole line's **only** chunk does *not* reproduce a
+hole, and that is a property of the simulator rather than of the firmware: the
+fake radio emits the payload and only later reports it clobbered, so the peer
+receives every byte plus a `clobber` event, 3 s late. On hardware the clobbered
+indication was genuinely lost. So `--sim` can reproduce the
+truncate-and-merge case above, where the firmware itself stops sending, and
+cannot reproduce a loss caused by the radio.
+
+## `FETCH_CANCEL` on exit: the skip is exercised, 2026-08-23
+
+**Measured in the desktop simulator**, three runs with one variable, which is
+what makes it decisive. `lastConfirmTimedOut_` is set at
+`lib/BlePositionServer/src/BlePositionServer.cpp:647` and cleared at `:658`; the
+getter is `BlePositionServer.h:210`; the consumers are
+`src/activities/map/MapActivity.cpp:2100` and
+`src/activities/map/TileSyncActivity.cpp:525`.
+
+| run | confirms | on the wire at exit | firmware log |
+|---|---|---|---|
+| control | on | `FETCH_CANCEL` | no skip line |
+| withheld | off, one confirm times out first | nothing | `autosync: FETCH_CANCEL skipped: last confirm already timed out` |
+| cleared | off, then on, then one good reply | `FETCH_CANCEL` | one `reply unconfirmed`, no skip line |
+
+So the flag goes true on a timeout, suppresses the cancel, and is cleared by the
+next successful confirm, exactly as written. `TileSyncActivity.cpp:525-528` is
+line-for-line identical to `MapActivity.cpp:2100-2103` and was **not**
+exercised -- reaching the Tile Sync screen needs menu navigation the run did not
+script.
 
 ## Test scenarios for the freshness check
 
