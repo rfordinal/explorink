@@ -100,11 +100,22 @@ def main():
 
     out = args.out
     if out is None:
-        guess = os.path.join(
-            os.path.dirname(os.path.abspath(args.db)),
-            "..", "..", "simulator", "android-shell",
-            "android/app/src/main/jniLibs/arm64-v8a")
-        out = os.path.join(os.path.normpath(guess), "libmain.so")
+        # Ask PlatformIO which simulator checkout this build actually used,
+        # rather than guessing a path that goes stale the moment a worktree is
+        # renamed or removed. A `symlink://` lib_dep is recorded as a .pio-link
+        # file holding the spec, not as a filesystem symlink.
+        link = os.path.join(os.path.dirname(os.path.abspath(args.db)),
+                            ".pio", "libdeps", "simulator", "simulator.pio-link")
+        if not os.path.exists(link):
+            sys.exit(f"cannot find {link} -- run `pio run -e simulator "
+                     "-t compiledb` first, or pass --out")
+        uri = json.load(open(link)).get("spec", {}).get("uri", "")
+        if not uri.startswith("symlink://"):
+            sys.exit(f"[simdep] is {uri or 'unset'}, not a local checkout. "
+                     "Point platformio.local.ini at one, or pass --out")
+        sim_root = uri[len("symlink://"):]
+        out = os.path.join(sim_root,
+                           "android/app/src/main/jniLibs/arm64-v8a/libmain.so")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     libdir = os.path.dirname(out)
     if not os.path.exists(os.path.join(libdir, "libSDL2.so")):
