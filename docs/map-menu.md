@@ -210,6 +210,34 @@ is one word or a short static phrase, well under the budget, so this changes
 nothing for them: `titleLineCount` stays 1 and the loop draws once, same as
 the old single `drawCenteredText()` call.
 
+### A hinted dialog needs the exact inverse formula, not an approximation
+
+The fixed budget above is right for a dialog with no size hint. A dialog
+opened with `setSizeHint()` (`OptionPopupSpec::minDialogWidth` -- "match the
+list this replaces") needs the title to wrap to *that* width instead, or the
+title decides `maxTextWidth` on its own and the hint never gets a chance to
+bind. The first cut of this clamp was `minDialogWidth - innerPadding * 2`,
+which is not the inverse of `dialogW`'s actual formula:
+
+```
+dialogW = (maxTextWidth + innerPadding*2 + selectionHPadding*2) * widthPercent / 100
+```
+
+Missing `selectionHPadding*2` and the `widthPercent` scaling meant a title
+that "fit" the approximate clamp still pushed `dialogW` past the hint once
+that formula added the same padding back on top a second time. Measured on
+the S8 2026-08-24: the Add/Replace list at 280px, a one-line confirm title at
+363px even with the clamp in place, both hinted at 280. The exact inverse --
+
+```
+hintedTitleMax = minDialogWidth * 100 / widthPercent - innerPadding*2 - selectionHPadding*2
+```
+
+-- forces a second wrapped line when the hint genuinely has no room for one,
+and the two now land on the same width exactly. Same fix, same reasoning, in
+both `optionPopupGeometry()` and `drawOptionPopup()` again -- they still have
+to agree, and now they agree on the right number.
+
 ## The hint says "Options", not "Select"
 
 CONFIRM on the map screen opens a menu; it does not pick anything. The hint

@@ -1159,8 +1159,29 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
     snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
     counterReserve = renderer.getTextWidth(UI_10_FONT_ID, counter) + spacing.itemSpacing;
   }
-  const int titleMaxWidth =
-      pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2 - counterReserve;
+  int titleMaxWidth = pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2 - counterReserve;
+  // A caller with a size hint (setSizeHint(), e.g. a confirmation replacing a
+  // list) wants THIS dialog no wider than that hint, not merely no narrower --
+  // minDialogWidth is a floor everywhere else in this function (a caller with
+  // more content than the hint still gets the room it needs), but the title is
+  // the one thing that otherwise has no natural width of its own to fall back
+  // on: with nothing to wrap to, a long dynamic title (a replace confirmation
+  // with an age suffix) wrapped to the full screen budget and won the dialog
+  // width outright, so the confirmation came out far wider than the list it
+  // was replacing instead of matching it. Reported on the S8 2026-08-24.
+  if (spec.minDialogWidth > 0) {
+    // Exact inverse of the dialogW formula below (maxTextWidth + padding*2 +
+    // selectionHPadding*2) * widthPercent/100 -- has to be, or a title that
+    // "fits" this budget still pushes dialogW past minDialogWidth once that
+    // formula adds the same padding and selection padding back on top a
+    // second time. First cut of this fix forgot both terms and still left the
+    // confirm box wider than the list, even with a short single-line title
+    // (measured on the S8: AddR list 280px, confirm dialog 363px, both hinted
+    // at 280).
+    const int hinted = spec.minDialogWidth * 100 / spacing.widthPercent - spacing.innerPadding * 2 -
+                        spacing.selectionHPadding * 2 - counterReserve;
+    if (hinted > 0 && hinted < titleMaxWidth) titleMaxWidth = hinted;
+  }
   const std::vector<std::string> titleLines =
       spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
   const int titleLineCount = static_cast<int>(std::max<size_t>(1, titleLines.size()));
@@ -1266,8 +1287,31 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
   int y = dialog.y + spacing.innerPadding;
   // Same budget optionPopupGeometry() wrapped the title to -- both have to
   // agree, or the dialog's reserved height and what actually gets drawn into
-  // it drift apart.
-  const int titleMaxWidth = renderer.getScreenWidth() - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2;
+  // it drift apart. That includes the counter reserve and the minDialogWidth
+  // clamp: without the clamp here too, a hinted dialog (setSizeHint()) sized
+  // to match the list it replaces still wrapped its title to the full-screen
+  // budget and drew it wider than the dialog actually is.
+  int counterReserve = 0;
+  if (optionCount > kOptionPopupMaxVisibleRows) {
+    char counter[12];
+    snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
+    counterReserve = renderer.getTextWidth(UI_10_FONT_ID, counter) + spacing.itemSpacing;
+  }
+  int titleMaxWidth =
+      renderer.getScreenWidth() - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2 - counterReserve;
+  if (spec.minDialogWidth > 0) {
+    // Exact inverse of the dialogW formula below (maxTextWidth + padding*2 +
+    // selectionHPadding*2) * widthPercent/100 -- has to be, or a title that
+    // "fits" this budget still pushes dialogW past minDialogWidth once that
+    // formula adds the same padding and selection padding back on top a
+    // second time. First cut of this fix forgot both terms and still left the
+    // confirm box wider than the list, even with a short single-line title
+    // (measured on the S8: AddR list 280px, confirm dialog 363px, both hinted
+    // at 280).
+    const int hinted = spec.minDialogWidth * 100 / spacing.widthPercent - spacing.innerPadding * 2 -
+                        spacing.selectionHPadding * 2 - counterReserve;
+    if (hinted > 0 && hinted < titleMaxWidth) titleMaxWidth = hinted;
+  }
   const std::vector<std::string> titleLines =
       spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
   for (const std::string& line : titleLines) {

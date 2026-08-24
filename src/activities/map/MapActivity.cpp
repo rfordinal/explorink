@@ -3656,15 +3656,7 @@ void MapActivity::confirmPinReplaceSlot(size_t slot) {
   const char* label = foreign ? entry.key : pinTypeLabel(slot);
 
   char title[96];
-  char age[48];
   snprintf(title, sizeof(title), tr(STR_PIN_REPLACE_CONFIRM), label);
-  if (pinFixAgeWarning(age, sizeof(age))) {
-    // The age goes in the question, not in a notice afterwards: a Replace on a
-    // dead link saves where the rider was, and by the time a notice could say so
-    // the old position is already gone from the active set.
-    const size_t len = strlen(title);
-    snprintf(title + len, sizeof(title) - len, " (%s)", age);
-  }
 
   // Cancel first, so the destructive option is never the one already under the
   // cursor. Same two-option shape as the reader's bookmark delete
