@@ -264,3 +264,33 @@ environment variable early enough).
 
 Nothing builds on the phone. The APK is cross-compiled on the laptop; gradle
 only packages the `.so`.
+
+## BLE console over real radio, 2026-08-24
+
+The Android build's NimBLE is real by default -- the TCP shim only exists
+when `CROSSPOINT_SIM_BLE_PORT` is set, and a plain `am start` leaves it
+unset. So `tools/mapcmd.py --ble <cmd>` (bleak, no `--sim`) reaches the map
+console straight over the phone's own advertised GATT service: `zoom N`,
+`mode ride`, `pos <lat> <lon> heading <N>`, `info` all round-tripped against
+a Samsung S10 with no bridge and no `adb forward`. Confirms the Android
+build is a real test target for anything the console can reach, not just a
+visual check.
+
+Also reproduced from a different firmware branch than the 2026-08-23
+baseline (`scripts/android_build.py --out .../jniLibs/arm64-v8a/libmain.so`
+against a feature branch's `compile_commands.json`), so the pipeline is
+branch-general, not tied to one checkout.
+
+Two things cost time:
+
+- **`mapcmd.py`'s global flags must come before the command.** Everything
+  after the recognised options is joined and sent verbatim as the command
+  line, so `mapcmd.py --ble info -v` sends the literal command `info -v`
+  (2 tokens) and the parser answers `ERR bad_arity`. Flags go first:
+  `mapcmd.py --ble -v info`.
+- **Two phones running `org.explorink.simulator` at once both advertise the
+  same service UUID.** The scanner connects to whichever answers first, so
+  a stale instance left running from an earlier session can silently eat
+  every command. `adb -s <serial> shell am force-stop
+  org.explorink.simulator` on every phone but the one under test before
+  scanning.
