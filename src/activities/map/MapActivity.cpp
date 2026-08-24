@@ -518,22 +518,22 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
   // (kNoRouteDisplayHeading) -- direction of travel matters at riding speed
   // even though the map underneath stays north-up.
   const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.cycleTipLen;
-  const int baseHalfW = mode == MapRideMode::Ride ? m.rideBaseHalfW : m.cycleBaseHalfW;
   const HeadingVec& dir = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
   const HeadingVec perp{-dir.dy, dir.dx};
 
-  const int tipX = cx + dir.dx * tipLen / 8;
-  const int tipY = cy + dir.dy * tipLen / 8;
-  const int baseCx = cx - dir.dx * (tipLen / 2) / 8;
-  const int baseCy = cy - dir.dy * (tipLen / 2) / 8;
-  const int baseLeftX = baseCx + perp.dx * baseHalfW / 8;
-  const int baseLeftY = baseCy + perp.dy * baseHalfW / 8;
-  const int baseRightX = baseCx - perp.dx * baseHalfW / 8;
-  const int baseRightY = baseCy - perp.dy * baseHalfW / 8;
-
-  const int xs[3] = {tipX, baseLeftX, baseRightX};
-  const int ys[3] = {tipY, baseLeftY, baseRightY};
-  renderer.fillPolygon(xs, ys, 3, true);
+  // Vertices come from marker-ride.svg (MapMarkerShape.generated.h, baked by
+  // scripts/gen_marker_shape.py), scaled by tipLen and rotated into the
+  // current heading here -- see that generated file's own comment for why
+  // this shape is computed at runtime rather than a baked icon.
+  int xs[kMarkerArrowVertexCount];
+  int ys[kMarkerArrowVertexCount];
+  for (int i = 0; i < kMarkerArrowVertexCount; ++i) {
+    const int forward = tipLen * kMarkerArrowForwardPermille[i] / 1000;
+    const int right = tipLen * kMarkerArrowRightPermille[i] / 1000;
+    xs[i] = cx + dir.dx * forward / 8 + perp.dx * right / 8;
+    ys[i] = cy + dir.dy * forward / 8 + perp.dy * right / 8;
+  }
+  renderer.fillPolygon(xs, ys, kMarkerArrowVertexCount, true);
 }
 
 namespace {

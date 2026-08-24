@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MapMarkerShape.generated.h"
 #include "MapViewport.h"
 
 // The position marker's dimensions, per zoom rung.
@@ -20,10 +21,12 @@ constexpr int kMarkerHikeDotDiameter = 18;
 // behind on the map -- see the note where it is drawn.
 constexpr int kMarkerHikeHandReach = kMarkerRingDiameter / 2 - kMarkerRingWidth;
 constexpr int kMarkerHikeHandHalfW = 2;
-constexpr int kMarkerCycleTipLen = 16;    // center to tip, pixels
-constexpr int kMarkerCycleBaseHalfW = 9;  // center to each base corner, pixels
+// Cycle/Ride draw a heading arrow whose whole shape (base width, waist notch,
+// shoulders -- see MapMarkerShape.generated.h) is a fixed ratio of this one
+// center-to-tip length, generated from src/components/icons/marker-ride.svg
+// by scripts/gen_marker_shape.py. Only the tip length is a free knob per mode.
+constexpr int kMarkerCycleTipLen = 16;
 constexpr int kMarkerRideTipLen = 25;
-constexpr int kMarkerRideBaseHalfW = 18;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
 
 // The sleep marker: what replaces the live marker on the way into a quick-resume
@@ -76,9 +79,7 @@ struct MarkerMetrics {
   int hikeHandReach;
   int hikeHandHalfW;
   int cycleTipLen;
-  int cycleBaseHalfW;
   int rideTipLen;
-  int rideBaseHalfW;
   int haloMargin;
   // The marker's halo box: the unit of every partial operation. Everything the
   // marker can draw is inside it (the halo is the outermost thing
@@ -105,9 +106,7 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8) {
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
   m.cycleTipLen = markerScaled(kMarkerCycleTipLen, scale8);
-  m.cycleBaseHalfW = markerScaled(kMarkerCycleBaseHalfW, scale8);
   m.rideTipLen = markerScaled(kMarkerRideTipLen, scale8);
-  m.rideBaseHalfW = markerScaled(kMarkerRideBaseHalfW, scale8);
   m.haloMargin = markerScaled(kMarkerHaloMargin, scale8);
   m.box = m.ring + 2 * m.haloMargin;
   return m;
@@ -133,3 +132,17 @@ constexpr bool markerHandFitsAtEveryRung() {
 }
 static_assert(markerHandFitsAtEveryRung(),
               "hike heading hand must stay inside the marker patch box at every rung, or a move smears it");
+
+// Same bound, for Cycle/Ride's heading arrow: its farthest vertex
+// (kMarkerArrowMaxReachPermille, from marker-ride.svg) scaled by tipLen must
+// stay inside the patch box too, or a move leaves it behind on the map.
+constexpr bool markerArrowFitsAtEveryRung() {
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    const MarkerMetrics m = markerMetricsFor(MapViewport::kZoomLadder[step].markerScale8);
+    if (m.cycleTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
+    if (m.rideTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
+  }
+  return true;
+}
+static_assert(markerArrowFitsAtEveryRung(),
+              "cycle/ride heading arrow must stay inside the marker patch box at every rung, or a move smears it");

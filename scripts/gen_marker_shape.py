@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Generate the ride/cycle marker arrowhead's shape ratios from the SVG source.
+
+    python3 scripts/gen_marker_shape.py
+
+MapActivity::drawPositionMarker() draws the Cycle/Ride heading arrow as a
+polygon computed at runtime (no per-frame trig, no baked bitmap -- CLAUDE.md's
+icon rule keeps a heading-rotated glyph like this one hand-drawn, not a static
+Lucide bake, because a static bitmap cannot represent a live heading without
+extra logic on top). This script is what keeps that hand-drawn polygon
+matching src/components/icons/marker-ride.svg: it reads the SVG's circle (the
+ring) and arrowhead path, expresses every path vertex as a (right, forward)
+offset from the circle's own centre in units of the tip vertex's own reach,
+and writes them as permille integers that MapActivity scales by its runtime
+tipLen and rotates with kMarkerHeadingDir.
+
+Only the M/L/C/Z path commands Inkscape emitted for this asset are supported --
+not a general SVG path parser. A cubic curve's two control points are dropped;
+only its endpoint becomes a polygon vertex, since the device draws straight
+polygon edges regardless (GfxRenderer::fillPolygon has no curve primitive).
+"""
+import math
+import os
+import re
+import sys
+
+
+def parse_circle(svg_text, svg_path):
+    m = re.search(r"<circle\b[^>]*/?>", svg_text)
+    if not m:
+        sys.exit(f"ERROR: no <circle> found in {svg_path}")
+    tag = m.group(0)
+
+    def attr(name):
+        am = re.search(rf'{name}="([^"]+)"', tag)
+        if not am:
+            sys.exit(f"ERROR: <circle> missing {name}= in {svg_path}")
+        return float(am.group(1))
+
+    return attr("cx"), attr("cy"), attr("r")
+
+
+def parse_path_vertices(d, svg_path):
+    """Absolute (x, y) for every M/L/C endpoint, in order.
+
+    Z is dropped -- GfxRenderer::fillPolygon() closes the last vertex back to
+    the first on its own, so an explicit closing vertex would draw twice.
+    """
+    tokens = re.findall(r"[MmLlCcZz]|-?\d+\.?\d*(?:[eE]-?\d+)?", d)
+    verts = []
+    cmd = None
+    cur = (0.0, 0.0)
+    i = 0
+
+    def nums(count):
+        nonlocal i
+        vals = [float(tokens[i + k]) for k in range(count)]
+        i += count
+        return vals
+
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in "MmLlCcZz":
+            cmd = tok
+            i += 1
+            continue
+        if cmd in "Mm":
+            x, y = nums(2)
+            if cmd == "m":
+                x, y = cur[0] + x, cur[1] + y
+            cur = (x, y)
+            verts.append(cur)
+            # SVG: coordinate pairs after the first one in a moveto are
+            # implicit linetos of the same relative/absolute mode.
+            cmd = "l" if cmd == "m" else "L"
+        elif cmd in "Ll":
+            x, y = nums(2)
+            if cmd == "l":
+                x, y = cur[0] + x, cur[1] + y
+            cur = (x, y)
+            verts.append(cur)
+        elif cmd in "Cc":
+            x1, y1, x2, y2, x, y = nums(6)
+            if cmd == "c":
+                x, y = cur[0] + x, cur[1] + y
+            cur = (x, y)
+            verts.append(cur)
+        elif cmd in "Zz":
+            break
+        else:
+            sys.exit(f"ERROR: unsupported path command '{cmd}' in {svg_path}")
+    return verts
+
+
+def main(repo_root):
+    svg_path = os.path.join(repo_root, "src/components/icons/marker-ride.svg")
+    out_path = os.path.join(repo_root, "src/activities/map/MapMarkerShape.generated.h")
+
+    svg_text = open(svg_path).read()
+    cx, cy, r = parse_circle(svg_text, svg_path)
+
+    pm = re.search(r'<path\b[^>]*\bd="([^"]+)"', svg_text)
+    if not pm:
+        sys.exit(f"ERROR: no <path d=...> found in {svg_path}")
+    verts = parse_path_vertices(pm.group(1), svg_path)
+    if len(verts) < 3:
+        sys.exit(f"ERROR: arrow path has only {len(verts)} vertices, need >= 3")
+
+    # Local frame: forward is up (SVG y grows down), right is +x. Both
+    # measured from the ring's own centre, so the arrow and the ring rotate
+    # about one shared pivot -- same rule the compass needle uses
+    # (MapActivity.cpp's kCompassArcCx/Cy comment: "the rotation pivot, not a
+    # point being scaled").
+    local = [(x - cx, -(y - cy)) for x, y in verts]
+
+    tip_forward = max(forward for _, forward in local)
+    if tip_forward <= 0:
+        sys.exit("ERROR: arrow has no vertex with forward > 0 (does not point up)")
+
+    def permille(v):
+        return round(v * 1000 / tip_forward)
+
+    rights = [permille(right) for right, _ in local]
+    forwards = [permille(forward) for _, forward in local]
+    # Ceil, not round: a vertex whose reach rounds down to fit the marker's
+    # patch box would smear on a move (MapMarkerMetrics.h's
+    # markerArrowFitsAtEveryRung).
+    max_reach = math.ceil(max(math.hypot(r, f) for r, f in zip(rights, forwards)))
+
+    lines = [
+        "#pragma once",
+        "",
+        "#include <cstdint>",
+        "",
+        "// Generated by scripts/gen_marker_shape.py from",
+        "// src/components/icons/marker-ride.svg. Do not edit.",
+        "//",
+        "// The Cycle/Ride heading arrow's vertices, as (right, forward) offsets from",
+        "// the ring's own centre, in permille of the tip vertex's own forward reach.",
+        "// MapActivity::drawPositionMarker() scales these by its runtime tipLen and",
+        "// rotates them with the same kMarkerHeadingDir table the ring already uses --",
+        "// see that function for why the shape stays hand-drawn rather than a baked",
+        "// bitmap (firmware/explorink/CLAUDE.md's icon rule: a glyph that rotates from",
+        "// a live heading is not a static Lucide bake).",
+        "",
+        f"inline constexpr int kMarkerArrowVertexCount = {len(local)};",
+        "inline constexpr int16_t kMarkerArrowRightPermille[kMarkerArrowVertexCount] = {"
+        + ", ".join(str(v) for v in rights)
+        + "};",
+        "inline constexpr int16_t kMarkerArrowForwardPermille[kMarkerArrowVertexCount] = {"
+        + ", ".join(str(v) for v in forwards)
+        + "};",
+        "",
+        "// Farthest vertex from the ring's centre, permille of tipLen, rounded up.",
+        "// MapMarkerMetrics.h's markerArrowFitsAtEveryRung() checks this against the",
+        "// marker's patch box so a future shape edit here cannot silently smear the",
+        "// arrow across the map on a move.",
+        f"inline constexpr int kMarkerArrowMaxReachPermille = {max_reach};",
+        "",
+        f"// Ring radius vs. arrow tip reach in the source SVG: {r:.3f} vs {tip_forward:.3f}"
+        f" ({tip_forward / r:.3f}x) -- informational, not consumed by the firmware; the",
+        "// ring's own size is still MarkerMetrics::ring, tuned on the panel per",
+        "// docs/zoom-rungs.md.",
+        "",
+    ]
+    open(out_path, "w").write("\n".join(lines) + "\n")
+    print(f"gen_marker_shape.py: wrote {out_path}: {len(local)} vertices, tip/ring ratio {tip_forward / r:.3f}")
+
+
+# PlatformIO/SCons entry point -- Import and env are SCons builtins injected at
+# runtime. `__file__` is not defined in that exec environment (the same trap
+# gen_mapstyle.py, git_branch.py and gen_mode_masks.py avoid the same way), so
+# the repo root has to come from env rather than from this file's own path.
+if __name__ == "__main__":
+    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    main(_repo_root)
+else:
+    try:
+        Import("env")  # noqa: F821
+        main(env["PROJECT_DIR"])  # noqa: F821
+    except NameError:
+        pass

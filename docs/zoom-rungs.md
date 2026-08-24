@@ -168,6 +168,59 @@ scaling does not close it -- judging the marker size needs the panel.
 still unmistakably the marker at 45 m/px, and the full-size one at rung 4 shows
 what it would have covered.
 
+### 1b. Arrow shape -- generated from `marker-ride.svg`
+
+Cycle and Ride's heading arrow (`MapActivity::drawPositionMarker`,
+`MapActivity.cpp:516-533`) used to be a plain 3-point triangle: tip, and two
+base corners at a separate `baseHalfW` constant per mode. Since 2026-08-24 it
+is a 6-point polygon (tip, two shoulders, a concave tail notch, two base
+corners) matching `src/components/icons/marker-ride.svg`.
+
+`scripts/gen_marker_shape.py` reads that SVG's circle (the ring) and arrow
+path, expresses every path vertex as a (right, forward) offset from the
+circle's own centre in permille of the tip vertex's own reach, and writes
+`MapMarkerMetrics.h`'s `MapMarkerShape.generated.h` (gitignored, a `pre:` step
+in `platformio.ini` for both the firmware and simulator envs, same pattern as
+`gen_mapstyle.py`). `MapActivity::drawPositionMarker` scales those permille
+ratios by its runtime `tipLen` and rotates them with `kMarkerHeadingDir` --
+same transform the old 3-point triangle used, just looped over more vertices.
+Only `tipLen` is still a free per-mode knob (`kMarkerCycleTipLen`,
+`kMarkerRideTipLen`); `baseHalfW` is gone, since the whole shape's proportions
+now come from the SVG.
+
+This keeps the arrow hand-drawn rather than a baked icon, per
+`firmware/explorink/CLAUDE.md`'s icon rule: a glyph that rotates from a live
+heading (nav direction arrow, compass needle) stays vector, because a static
+bitmap cannot represent that without extra logic on top. `docs/icon-migration-plan.md`
+does not cover this marker for the same reason.
+
+`MapMarkerMetrics.h`'s `markerArrowFitsAtEveryRung()` static-asserts the
+shape's farthest vertex (`kMarkerArrowMaxReachPermille`, also generated) stays
+inside the marker's patch box at every rung -- same correctness bound
+`markerHandFitsAtEveryRung()` already held for Hike's heading hand. A future
+SVG edit that makes the arrow reach further than the ring's own halo now fails
+the build instead of silently smearing the marker across the map on a move.
+
+**Verified on the simulator, 2026-08-24** (no X4/X4 Pro/X3 on hand --
+`project_hardware_gap_2026_08_22`): `pio run -e simulator`, seeded a fix, and
+sent `tools/mapcmd.py --sim <host:port> pos <lat> <lon> heading <N>` (bare
+`heading N` does *not* work -- `MapCommandParser`'s "position unchanged"
+branch that updates `lastHeading_` only runs for a command that also carries
+a position, `MapActivity.cpp:2296-2305`). The rendered shape is a pixel-exact
+match to `marker-ride.svg`'s concave-notch chevron.
+
+**Not verified: rotation on screen.** With no route loaded the map is
+track-up, so `drawPositionMarker` is called with
+`MapFollow::relativeHeadingStep(headingStep, anchorHeading_)`
+(`MapActivity.cpp:4717`) and `anchorHeading_` re-anchors to match the incoming
+heading every frame -- the relative step comes out ~0 regardless of the
+heading sent, and the marker always draws pointing up *by design* in this
+mode. Seeing the raw rotation on screen needs a loaded route (route-hold,
+north-up mode), which has no console command to trigger in the simulator
+today. The rotation *transform itself* is untouched from the old triangle
+code (same `dir`/`perp` construction, more vertices), so this is a gap in
+today's test coverage, not a known-open question about the math.
+
 ### 2. Move floor -- `ZoomStep::minMovePx`
 
 `MapFollow::kMinMovePx` was 8 px at every rung: 8 m of ground at rung 0 and 360 m
