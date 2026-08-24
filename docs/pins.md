@@ -256,7 +256,7 @@ Camp                   -      Meet
 - The distance column is the popup's existing value column
   (`showWithValues()`), and it is `-` when there is no fix to measure from.
   Never `0 m`: zero is a real distance and reads as "you are standing on it".
-- Add / Replace lists all ten catalogue slots and scrolls inside the popup's
+- Add / Replace lists all eleven catalogue slots and scrolls inside the popup's
   six-row window. List length costs one refresh per selection step and no RAM
   (`BaseTheme::optionPopupGeometry()`).
 - A pin whose key this build does not know shows the raw key, and can still be
@@ -275,6 +275,21 @@ Camp                   -      Meet
   where the rider *was*, and by the time a notice could say so the position is
   already written.
 - **No fix at all refuses**, with a reason, and never writes 0,0.
+
+**Saving to a never-touched catalogue slot was broken until 2026-08-24** --
+every save of an empty slot (including the plain, no-warning case above)
+failed with "Card refused the write", logged as `PINS "no slot for ''"`.
+`confirmPinReplaceSlot()` decided "foreign key, read it off the entry" from
+`entry.catalogIndex >= kPinSlotCount` -- but an empty entry defaults
+`catalogIndex` to `kPinIndexUnknown` (`PinStore.h`), which equals
+`kPinSlotCount`, so every never-saved catalogue slot looked foreign and the
+function read `entry.key` (empty, nothing had ever written it) instead of
+`kPinCatalog[slot].key`. Fixed by checking `slot` itself, which is what
+actually determines foreign-ness in `PinStore` (`MapActivity.cpp`,
+`confirmPinReplaceSlot()`). Found on the S8 after firmware log output was
+routed to `adb logcat` (`explorink-simulator`'s `ANDROID.md`, "`HWCDC`'s
+stderr never reaches `adb logcat`") -- without that, the refusal had no
+visible cause beyond the notice text.
 - "Old" is `MapActivity::kPinStaleFixMs`, 2 minutes, or any frame still showing
   the fix restored from the card. **Not measured, and not the answer to "how old
   is too old"** -- that stays open in `pins-plan.md`. Two minutes is simply longer

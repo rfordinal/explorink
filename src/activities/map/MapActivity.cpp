@@ -3593,8 +3593,8 @@ void MapActivity::openPinsMenu() {
 
 void MapActivity::openPinsAddList() {
   // Every catalogue slot, so an empty one can be filled and an occupied one
-  // replaced from the same place. Ten rows scroll inside the popup's six-row
-  // window, which costs one refresh per selection step and no RAM
+  // replaced from the same place. Eleven rows scroll inside the popup's
+  // six-row window, which costs one refresh per selection step and no RAM
   // (BaseTheme::optionPopupGeometry()).
   std::vector<std::string> options;
   std::vector<std::string> values;
