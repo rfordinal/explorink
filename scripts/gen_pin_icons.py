@@ -298,9 +298,28 @@ def main():
     # silhouette that the tail can contaminate.
     head_mask_big = silhouette(ink_big)
     head_big = head_circle(ink_big, head_mask_big)
+    # `--glyph-dy` (the head's measured centre reads high) has to be applied
+    # *before* rotation, in the same local frame as head_big: baking it into
+    # where the marker ellipse is drawn means it rides through the identical
+    # rotate/resize/crop pipeline as everything else and rotates with the pin.
+    # Adding it after the fact, to the frame's own already-rotated final y,
+    # was a flat screen-space nudge that only matched the pin's own "toward
+    # the tip" direction at step 0 -- at every other step it pointed the wrong
+    # way by an angle-dependent amount, up to the full offset at 180 degrees
+    # (reported 2026-08-24: pin_meet's ring+dot glyph, the one glyph
+    # symmetric enough to reveal it, visibly off-centre inside the pin head at
+    # every non-cardinal rotation step).
+    scale_to_big = hb / args.height
+    head_marker_center = (head_big[0], head_big[1] + args.glyph_dy * scale_to_big)
     head_marker_img = Image.new("L", (wb, hb), 255)
     ImageDraw.Draw(head_marker_img).ellipse(
-        [head_big[0] - 24, head_big[1] - 24, head_big[0] + 24, head_big[1] + 24], fill=0
+        [
+            head_marker_center[0] - 24,
+            head_marker_center[1] - 24,
+            head_marker_center[0] + 24,
+            head_marker_center[1] + 24,
+        ],
+        fill=0,
     )
 
     def bake(angle_deg):
@@ -410,7 +429,7 @@ def main():
     for step, (mask, ink, tip, head) in enumerate(frames):
         lines.append(
             f"    {{kPinShapeMask{step}Bits, kPinShapeInk{step}Bits, {len(ink[0])}, {len(ink)}, "
-            f"{round(tip[0])}, {round(tip[1])}, {round(head[0])}, {round(head[1]) + args.glyph_dy}}},"
+            f"{round(tip[0])}, {round(tip[1])}, {round(head[0])}, {round(head[1])}}},"
         )
     lines.append("};")
     lines.append("")
