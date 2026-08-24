@@ -3641,7 +3641,17 @@ void MapActivity::confirmPinReplaceSlot(size_t slot) {
   // A foreign key has no catalogue row, so the label is the raw key and the key
   // itself has to come off the entry -- which is also what keeps a pin written by
   // a later firmware replaceable rather than only deletable.
-  const bool foreign = entry.catalogIndex >= kPinSlotCount;
+  //
+  // Whether a slot is foreign is a property of `slot` itself (PinStore reserves
+  // slots kPinSlotCount.. for foreign keys and never puts one in a catalogue
+  // slot), not of `entry.catalogIndex` -- an empty catalogue slot defaults
+  // `catalogIndex` to `kPinIndexUnknown` (PinStore.h), which equals
+  // kPinSlotCount, so checking the entry made every never-saved catalogue slot
+  // look foreign and read `entry.key` (never written, empty) instead of
+  // `kPinCatalog[slot].key`. Reported 2026-08-24: saving to an empty slot
+  // ("Base") failed with "no slot for ''" -- PinStore::makeSetRecord() refusing
+  // the empty key that reached it this way.
+  const bool foreign = slot >= kPinSlotCount;
   const char* key = foreign ? entry.key : kPinCatalog[slot].key;
   const char* label = foreign ? entry.key : pinTypeLabel(slot);
 
