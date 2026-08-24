@@ -1144,16 +1144,35 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   // confirmation, "Replace <label> with current location? (fix <age> old)"),
   // which used to run off both edges of the dialog with no wrap at all
   // (reported on the S8 2026-08-24).
-  const int titleMaxWidth = pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2;
+  // The title's first line has to leave room for the "n/m" scroll counter in
+  // the same top-right corner, or the two collide -- optionCount alone decides
+  // this, not the row-fit math below, because that math needs titleBlockHeight
+  // and titleBlockHeight needs the title wrapped first. optionCount >
+  // kOptionPopupMaxVisibleRows is the same "will it scroll" condition as
+  // `optionCount > visibleRows` in the common case (the row cap, not the
+  // height budget, is what forces most lists to scroll); reserving space on a
+  // false positive just centres the title a little less perfectly, not
+  // wrongly.
+  int counterReserve = 0;
+  if (optionCount > kOptionPopupMaxVisibleRows) {
+    char counter[12];
+    snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
+    counterReserve = renderer.getTextWidth(UI_10_FONT_ID, counter) + spacing.itemSpacing;
+  }
+  const int titleMaxWidth =
+      pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2 - counterReserve;
   const std::vector<std::string> titleLines =
       spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
   const int titleLineCount = static_cast<int>(std::max<size_t>(1, titleLines.size()));
 
   // A row with a value is label + gap + boxed value; a plain row is just the
-  // label. The title has to fit too, and it is drawn in the bigger font.
+  // label. The title has to fit too, and it is drawn in the bigger font --
+  // the first line also carries the counter reserve, since that is the line
+  // it shares a row with.
   int maxTextWidth = 0;
-  for (const std::string& line : titleLines) {
-    const int w = renderer.getTextWidth(UI_12_FONT_ID, line.c_str(), EpdFontFamily::BOLD);
+  for (size_t i = 0; i < titleLines.size(); ++i) {
+    int w = renderer.getTextWidth(UI_12_FONT_ID, titleLines[i].c_str(), EpdFontFamily::BOLD);
+    if (i == 0) w += counterReserve;
     if (w > maxTextWidth) maxTextWidth = w;
   }
   if (spec.note != nullptr) {
