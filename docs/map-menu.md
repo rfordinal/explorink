@@ -181,6 +181,35 @@ Both caps apply to every popup in the firmware, not just the map's. Nothing
 else builds a list long enough to hit them today, except the font-family
 picker, which now scrolls instead of drawing a dialog the height of the panel.
 
+## The title wraps now -- it used to run off both edges
+
+The dialog box has always been capped to the panel width (`optionPopupGeometry()`'s
+`dialogW`, clamped by `metrics.optionPopupDialogSideMargin`). The **title text**
+was not: `drawOptionPopup()` drew it with `renderer.drawCenteredText()`, centred
+on the full panel width, with no wrap and no truncation. Every title in the
+firmware used to be short enough for that to never show -- until a dynamic one
+was not. Reported on the S8 2026-08-24: `MapActivity::confirmPinReplaceSlot()`'s
+title (`Replace <label> here?`, plus an age suffix on a stale fix) ran off both
+sides of the dialog, and of the screen, instead of wrapping inside it.
+
+Fixed generally, not for pins specifically: `wrapOptionPopupTitle()`
+(`BaseTheme.cpp`, anonymous namespace) is a plain greedy space-split, sized for
+a one-sentence dynamic title rather than the paragraph wrapping
+`DictionaryDefinitionActivity::wrapText()` does for the reader. It wraps to
+`pageWidth - optionPopupDialogSideMargin * 2 - innerPadding * 2` -- the widest a
+dialog is ever allowed to be, not whatever this particular dialog's content
+happens to need, so the wrap width cannot depend on `dialogW` (which itself
+depends on the title once wrapped) and the two never have to be computed in a
+particular order relative to each other.
+
+Both `optionPopupGeometry()` and `drawOptionPopup()` call it with that same
+fixed budget and get the same lines back -- `geometry.titleLineCount` records
+how many for sizing (`chromeHeight`, `dialogH`), and `drawOptionPopup()`
+re-wraps to get the actual strings to draw. Every other title in the firmware
+is one word or a short static phrase, well under the budget, so this changes
+nothing for them: `titleLineCount` stays 1 and the loop draws once, same as
+the old single `drawCenteredText()` call.
+
 ## The hint says "Options", not "Select"
 
 CONFIRM on the map screen opens a menu; it does not pick anything. The hint

@@ -28,6 +28,44 @@ constexpr int bookmarkStatusIconHeight = 14;
 constexpr int bookmarkStatusIconGap = 4;
 constexpr int bookmarkStatusIconTopCrop = 2;
 
+// Greedy word-wrap for an OptionPopup title: short, one-off dynamic sentences
+// like "Replace Camp with current location? (fix 7 min old)", never the
+// paragraph-length text DictionaryDefinitionActivity::wrapText() handles, so
+// a plain space-split with no hyphenation or hard character breaks is enough.
+// Reported on the S8 2026-08-24: a long confirm title was drawn centered on
+// the full screen width with no wrap at all, so it ran off both edges of the
+// dialog (and the screen) instead of fitting inside it.
+std::vector<std::string> wrapOptionPopupTitle(const GfxRenderer& renderer, const char* title, int maxWidth) {
+  std::vector<std::string> lines;
+  if (title == nullptr || *title == '\0') {
+    lines.emplace_back();
+    return lines;
+  }
+  if (maxWidth <= 0) {
+    lines.emplace_back(title);
+    return lines;
+  }
+  const std::string text(title);
+  std::string current;
+  size_t pos = 0;
+  while (pos <= text.size()) {
+    const size_t next = text.find(' ', pos);
+    const std::string word = text.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+    const std::string candidate = current.empty() ? word : current + " " + word;
+    if (!current.empty() &&
+        renderer.getTextWidth(UI_12_FONT_ID, candidate.c_str(), EpdFontFamily::BOLD) > maxWidth) {
+      lines.push_back(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+    if (next == std::string::npos) break;
+    pos = next + 1;
+  }
+  lines.push_back(current);
+  return lines;
+}
+
 void drawBookmarkStatusIcon(const GfxRenderer& renderer, const int x, const int y) {
   constexpr int bytesPerRow = bookmarkStatusIconWidth / 8;
   for (int row = 0; row < bookmarkStatusIconHeight; ++row) {
@@ -1098,9 +1136,26 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   const int rowStep = rowHeight + spacing.itemSpacing;
   const int optionCount = spec.options ? static_cast<int>(spec.options->size()) : 0;
 
+  // The title wraps to the widest a dialog can ever be, not to whatever this
+  // dialog's content happens to need -- that budget cannot depend on dialogW
+  // below, which itself depends on the title's wrapped width, or the two
+  // would need to agree on which comes first. A title this wide only reaches
+  // a caller with a very long dynamic string (MapActivity::savePin()'s replace
+  // confirmation, "Replace <label> with current location? (fix <age> old)"),
+  // which used to run off both edges of the dialog with no wrap at all
+  // (reported on the S8 2026-08-24).
+  const int titleMaxWidth = pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2;
+  const std::vector<std::string> titleLines =
+      spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
+  const int titleLineCount = static_cast<int>(std::max<size_t>(1, titleLines.size()));
+
   // A row with a value is label + gap + boxed value; a plain row is just the
   // label. The title has to fit too, and it is drawn in the bigger font.
-  int maxTextWidth = spec.title ? renderer.getTextWidth(UI_12_FONT_ID, spec.title, EpdFontFamily::BOLD) : 0;
+  int maxTextWidth = 0;
+  for (const std::string& line : titleLines) {
+    const int w = renderer.getTextWidth(UI_12_FONT_ID, line.c_str(), EpdFontFamily::BOLD);
+    if (w > maxTextWidth) maxTextWidth = w;
+  }
   if (spec.note != nullptr) {
     const int noteWidth = renderer.getTextWidth(optionFontId, spec.note, EpdFontFamily::REGULAR);
     if (noteWidth > maxTextWidth) maxTextWidth = noteWidth;
@@ -1119,7 +1174,8 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   // pixels under it (MapActivity's menu backdrop) pays for every row in RAM,
   // and a dialog taller than half the panel stops reading as a dialog.
   // Anything past the window scrolls.
-  const int chromeHeight = titleLineHeight + spacing.titleGap + noteBlock + spacing.innerPadding * 2;
+  const int titleBlockHeight = titleLineHeight * titleLineCount;
+  const int chromeHeight = titleBlockHeight + spacing.titleGap + noteBlock + spacing.innerPadding * 2;
   const int heightBudget = pageHeight * kOptionPopupMaxHeightPercent / 100;
   int visibleRows = optionCount;
   if (rowStep > 0 && optionCount > 0) {
@@ -1143,20 +1199,21 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   if (spec.minDialogWidth > dialogW) {
     dialogW = std::min(spec.minDialogWidth, pageWidth - metrics.optionPopupDialogSideMargin * 2);
   }
-  const int dialogH = titleLineHeight + spacing.titleGap + noteBlock + listHeight + spacing.innerPadding * 2;
+  const int dialogH = titleBlockHeight + spacing.titleGap + noteBlock + listHeight + spacing.innerPadding * 2;
 
   OptionPopupGeometry geometry;
   geometry.dialog = Rect{(pageWidth - dialogW) / 2, (pageHeight - dialogH) / 2, dialogW, dialogH};
   geometry.rowX = geometry.dialog.x + spacing.innerPadding;
   geometry.rowWidth = dialogW - spacing.innerPadding * 2;
   geometry.noteY =
-      spec.note != nullptr ? geometry.dialog.y + spacing.innerPadding + titleLineHeight + spacing.titleGap : 0;
+      spec.note != nullptr ? geometry.dialog.y + spacing.innerPadding + titleBlockHeight + spacing.titleGap : 0;
   geometry.noteLineHeight = noteLineHeight;
-  geometry.firstRowY = geometry.dialog.y + spacing.innerPadding + titleLineHeight + spacing.titleGap + noteBlock;
+  geometry.firstRowY = geometry.dialog.y + spacing.innerPadding + titleBlockHeight + spacing.titleGap + noteBlock;
   geometry.rowHeight = rowHeight;
   geometry.rowStep = rowStep;
   geometry.visibleRows = visibleRows;
   geometry.titleLineHeight = titleLineHeight;
+  geometry.titleLineCount = titleLineCount;
   return geometry;
 }
 
@@ -1188,16 +1245,28 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
   }
 
   int y = dialog.y + spacing.innerPadding;
-  renderer.drawCenteredText(UI_12_FONT_ID, y, spec.title, true, EpdFontFamily::BOLD);
+  // Same budget optionPopupGeometry() wrapped the title to -- both have to
+  // agree, or the dialog's reserved height and what actually gets drawn into
+  // it drift apart.
+  const int titleMaxWidth = renderer.getScreenWidth() - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2;
+  const std::vector<std::string> titleLines =
+      spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
+  for (const std::string& line : titleLines) {
+    renderer.drawCenteredText(UI_12_FONT_ID, y, line.c_str(), true, EpdFontFamily::BOLD);
+    y += geometry.titleLineHeight;
+  }
   // Only when the list does not fit: which slice of it is on screen. Without
-  // it a scrolled list reads as a short list that lost rows.
+  // it a scrolled list reads as a short list that lost rows. Pinned to the
+  // title's first line -- a wrapped title and a scrolled list do not happen
+  // together in practice, and the counter is a corner mark, not part of the
+  // sentence.
   if (optionCount > geometry.visibleRows) {
     char counter[12];
     snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
     const int counterW = renderer.getTextWidth(UI_10_FONT_ID, counter);
-    renderer.drawText(UI_10_FONT_ID, dialog.x + dialog.width - spacing.innerPadding - counterW, y, counter, true);
+    renderer.drawText(UI_10_FONT_ID, dialog.x + dialog.width - spacing.innerPadding - counterW,
+                      dialog.y + spacing.innerPadding, counter, true);
   }
-  y += geometry.titleLineHeight;
 
   if (metrics.optionPopupTitleSeparator) {
     const int sepY = y + spacing.titleGap / 2;

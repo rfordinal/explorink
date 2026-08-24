@@ -264,17 +264,33 @@ Camp                   -      Meet
 
 ### What is confirmed, and what a save refuses
 
-- **Replace is always confirmed** -- `Replace Parking with current location?`,
-  `Cancel` first so the destructive row is never under the cursor.
+- **Replace is always confirmed** -- `Replace Parking here?`, `Cancel` first so
+  the destructive row is never under the cursor. Shortened from `Replace
+  Parking with current location?` 2026-08-24, alongside the wrap fix below --
+  worth trimming on its own, not just because it now has to fit.
 - **Delete is always confirmed.** Nothing on the card is erased; a `del` record
   is appended.
 - **An empty slot saves with no confirmation** -- unless the fix is old, and then
-  it asks anyway, with the age in the question: `Replace Camp with current
-  location? (fix 7 min old)`. This is a deliberate addition to the plan, which
+  it asks anyway, with the age in the question: `Replace Camp here? (fix 7 min
+  old)`. This is a deliberate addition to the plan, which
   said an empty slot never confirms. An unconfirmed save on a stale fix records
   where the rider *was*, and by the time a notice could say so the position is
   already written.
 - **No fix at all refuses**, with a reason, and never writes 0,0.
+
+**The confirm dialog's title used to run off both edges of the screen.**
+`BaseTheme::drawOptionPopup()` drew the title with `drawCenteredText()`,
+centered on the full panel width with no wrap and no truncation -- fine for
+the popup's usual short static titles, but a dynamic one long enough
+(`Replace Camp with current location? (fix is from the last session)`, the
+wording before the trim above) simply overflowed on both sides instead of
+wrapping, since the dialog box itself is correctly capped to the panel width
+but nothing capped the text drawn on top of it. Reported on the S8
+2026-08-24. Fixed by wrapping the title (`wrapOptionPopupTitle()`,
+`BaseTheme.cpp`) to the same width the dialog box is ever allowed to reach,
+in both `optionPopupGeometry()` (so the dialog reserves the right height) and
+`drawOptionPopup()` (so it actually draws that many lines) -- general to
+every `OptionPopup` title, not pin-specific.
 
 **Saving to a never-touched catalogue slot was broken until 2026-08-24** --
 every save of an empty slot (including the plain, no-warning case above)
