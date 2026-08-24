@@ -48,8 +48,8 @@ THRESHOLD = 110
 # it is mostly used for). Baked here, so the device needs no font for a pin's
 # number -- and no icon says "3" as clearly as a 3, or "parking" as clearly as a P.
 DIGIT_FONTS = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 )
 
 
@@ -57,7 +57,7 @@ def text_grid(text, size):
     """Short text, rendered as large as fits a size x size box, as an ink grid."""
     path = next((p for p in DIGIT_FONTS if os.path.exists(p)), None)
     if path is None:
-        sys.exit("ERROR: no bold sans font for text glyphs; install dejavu or liberation")
+        sys.exit("ERROR: no sans font for text glyphs; install dejavu or liberation")
     # Grow the point size until the drawn ink no longer fits, then step back.
     best = None
     for points in range(size, size * 3):
@@ -284,21 +284,50 @@ def main():
     # The point is the bottom of the shape, on its centre line.
     tip_big = (wb // 2, hb - 1)
 
+    # The head's centre, measured once on the upright shape. Re-measuring it per
+    # rotated frame (the previous approach: head_circle() on the rotated raster)
+    # broke at odd angles -- the tail's own stroke sweeps into the "widest interior
+    # run in the upper half" scan and drags the detected centre sideways, off the
+    # glyph the head circle actually shows on the panel (reported 2026-08-23,
+    # visible on the S8: the flag sat well left of the ring's true centre at a
+    # rotated step). A circle stays a circle under rotation -- only its position
+    # moves -- so instead of re-detecting it, a marker dot is carried through the
+    # exact same rotate/resize/crop/pad pipeline as the shape image and its
+    # resulting centroid is the frame's head point. That tracks the real
+    # transform bake() applies to the artwork instead of re-guessing it from a
+    # silhouette that the tail can contaminate.
+    head_mask_big = silhouette(ink_big)
+    head_big = head_circle(ink_big, head_mask_big)
+    head_marker_img = Image.new("L", (wb, hb), 255)
+    ImageDraw.Draw(head_marker_img).ellipse(
+        [head_big[0] - 24, head_big[1] - 24, head_big[0] + 24, head_big[1] + 24], fill=0
+    )
+
     def bake(angle_deg):
         """One rotation: (mask grid, ink grid, tip xy, head xy)."""
         if angle_deg == 0:
-            img, pivot = shape_img, tip_big
+            img, marker, pivot = shape_img, head_marker_img, tip_big
         else:
             img, pivot = rotate_about(shape_img, angle_deg, tip_big)
+            marker, _ = rotate_about(head_marker_img, angle_deg, tip_big)
         scale = args.height / hb
-        small = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+        size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+        small = img.resize(size, Image.LANCZOS)
+        marker_small = marker.resize(size, Image.LANCZOS)
         pivot_small = (pivot[0] * scale, pivot[1] * scale)
         grid = ink_grid(small)
-        # Crop to the ink and keep the pivot in the cropped frame's coordinates.
+        marker_grid = ink_grid(marker_small)
+        # Crop to the ink and keep the pivot and the head marker in the cropped
+        # frame's coordinates -- the same window for both, since they share the
+        # same canvas throughout.
         ys = [y for y in range(len(grid)) if any(grid[y])]
         xs = [x for x in range(len(grid[0])) if any(row[x] for row in grid)]
         grid = [row[xs[0] : xs[-1] + 1] for row in grid[ys[0] : ys[-1] + 1]]
+        marker_grid = [row[xs[0] : xs[-1] + 1] for row in marker_grid[ys[0] : ys[-1] + 1]]
         tip = (pivot_small[0] - xs[0], pivot_small[1] - ys[0])
+        marker_xs = [x for row in marker_grid for x, v in enumerate(row) if v]
+        marker_ys = [y for y, row in enumerate(marker_grid) for v in row if v]
+        head = (sum(marker_xs) / len(marker_xs), sum(marker_ys) / len(marker_ys))
         # Room for the halo on every side, so the dilated mask is not clipped.
         pad = max(0, args.halo)
         if pad:
@@ -309,12 +338,16 @@ def main():
                 + [blank[:] for _ in range(pad)]
             )
             tip = (tip[0] + pad, tip[1] + pad)
+            head = (head[0] + pad, head[1] + pad)
         # The halo is what separates the pin from the map: the shape's own outline is
         # black and lands straight on top of road lines otherwise. Same job the
         # position marker's white halo does (MapActivity::drawPositionMarker()).
         mask = dilate(silhouette(grid), pad)
-        hx, hy, clear = head_circle(grid, mask)
-        return mask, grid, tip, (hx, hy), clear
+        # Clear radius only, from the old per-frame scan -- only step 0's is ever
+        # used (for the glyph size), and changing that number is not part of this
+        # fix.
+        _, _, clear = head_circle(grid, mask)
+        return mask, grid, tip, head, clear
 
     frames = []
     clear0 = 0
@@ -326,7 +359,7 @@ def main():
         frames.append((mask, ink, tip, head))
         print(
             f"step {step:2d} ({angle:5.1f} deg): {len(ink[0])}x{len(ink)}, "
-            f"tip ({tip[0]:.1f},{tip[1]:.1f}), head {head}"
+            f"tip ({tip[0]:.1f},{tip[1]:.1f}), head ({head[0]:.1f},{head[1]:.1f})"
         )
 
     glyph = args.glyph or (int((clear0 * 2) / (2 ** 0.5)) & ~1)
@@ -377,7 +410,7 @@ def main():
     for step, (mask, ink, tip, head) in enumerate(frames):
         lines.append(
             f"    {{kPinShapeMask{step}Bits, kPinShapeInk{step}Bits, {len(ink[0])}, {len(ink)}, "
-            f"{round(tip[0])}, {round(tip[1])}, {head[0]}, {head[1] + args.glyph_dy}}},"
+            f"{round(tip[0])}, {round(tip[1])}, {round(head[0])}, {round(head[1]) + args.glyph_dy}}},"
         )
     lines.append("};")
     lines.append("")

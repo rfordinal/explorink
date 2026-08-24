@@ -332,6 +332,9 @@ class BaseTheme {
     int rowStep = 0;  // rowHeight plus the gap between rows
     int visibleRows = 0;
     int titleLineHeight = 0;
+    // How many lines the title wrapped to. 1 for every title that fits on one
+    // line, which is most of them -- see wrapOptionPopupTitle() in the .cpp.
+    int titleLineCount = 1;
     // Where the note goes, and how tall it is. Both 0 when the spec carries no
     // note, and then nothing above reserved space for one.
     int noteY = 0;

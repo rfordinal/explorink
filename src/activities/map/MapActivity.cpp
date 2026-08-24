@@ -3593,8 +3593,8 @@ void MapActivity::openPinsMenu() {
 
 void MapActivity::openPinsAddList() {
   // Every catalogue slot, so an empty one can be filled and an occupied one
-  // replaced from the same place. Ten rows scroll inside the popup's six-row
-  // window, which costs one refresh per selection step and no RAM
+  // replaced from the same place. Eleven rows scroll inside the popup's
+  // six-row window, which costs one refresh per selection step and no RAM
   // (BaseTheme::optionPopupGeometry()).
   std::vector<std::string> options;
   std::vector<std::string> values;
@@ -3641,20 +3641,22 @@ void MapActivity::confirmPinReplaceSlot(size_t slot) {
   // A foreign key has no catalogue row, so the label is the raw key and the key
   // itself has to come off the entry -- which is also what keeps a pin written by
   // a later firmware replaceable rather than only deletable.
-  const bool foreign = entry.catalogIndex >= kPinSlotCount;
+  //
+  // Whether a slot is foreign is a property of `slot` itself (PinStore reserves
+  // slots kPinSlotCount.. for foreign keys and never puts one in a catalogue
+  // slot), not of `entry.catalogIndex` -- an empty catalogue slot defaults
+  // `catalogIndex` to `kPinIndexUnknown` (PinStore.h), which equals
+  // kPinSlotCount, so checking the entry made every never-saved catalogue slot
+  // look foreign and read `entry.key` (never written, empty) instead of
+  // `kPinCatalog[slot].key`. Reported 2026-08-24: saving to an empty slot
+  // ("Base") failed with "no slot for ''" -- PinStore::makeSetRecord() refusing
+  // the empty key that reached it this way.
+  const bool foreign = slot >= kPinSlotCount;
   const char* key = foreign ? entry.key : kPinCatalog[slot].key;
   const char* label = foreign ? entry.key : pinTypeLabel(slot);
 
   char title[96];
-  char age[48];
   snprintf(title, sizeof(title), tr(STR_PIN_REPLACE_CONFIRM), label);
-  if (pinFixAgeWarning(age, sizeof(age))) {
-    // The age goes in the question, not in a notice afterwards: a Replace on a
-    // dead link saves where the rider was, and by the time a notice could say so
-    // the old position is already gone from the active set.
-    const size_t len = strlen(title);
-    snprintf(title + len, sizeof(title) - len, " (%s)", age);
-  }
 
   // Cancel first, so the destructive option is never the one already under the
   // cursor. Same two-option shape as the reader's bookmark delete
@@ -3675,6 +3677,12 @@ void MapActivity::confirmPinReplaceSlot(size_t slot) {
     }
     savePin(keyCopy, labelCopy.c_str());
   });
+  // Same size as the list this confirmation replaces -- after show(), which
+  // resets it to 0 (OptionPopup::resetRowChrome()). Missing here (every other
+  // popup opener sets it) is why the confirm box used to compute its own
+  // narrower size from just "Cancel"/"Replace" instead of matching the
+  // Add/Replace or Pins list behind it. Reported on the S8 2026-08-24.
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
 }
@@ -3699,6 +3707,9 @@ void MapActivity::confirmPinDelete(size_t slot) {
     }
     deletePin(static_cast<size_t>(slotCopy));
   });
+  // Same missing size hint as confirmPinReplaceSlot() above, after show() for
+  // the same reason -- same fix.
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
 }
@@ -4096,14 +4107,25 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
   const int topLimit = area.y;
   const int bottomLimit = area.y + area.height;
 
-  // The point sits on the boundary the marker was clipped to; clamp the frame's box
-  // so the body, which extends inward, stays inside the same area.
-  int tipX = mark.x;
-  int tipY = mark.y;
-  if (tipX - frame.tipX < leftLimit) tipX = leftLimit + frame.tipX;
-  if (tipX - frame.tipX + frame.w > rightLimit) tipX = rightLimit - frame.w + frame.tipX;
-  if (tipY - frame.tipY < topLimit) tipY = topLimit + frame.tipY;
-  if (tipY - frame.tipY + frame.h > bottomLimit) tipY = bottomLimit - frame.h + frame.tipY;
+  // Anchor on the head, not the point: the head is the shape's visual weight (it
+  // carries the glyph), and drawPinBalloon() rotates the body around the tip, not
+  // the head -- so a tip-anchored draw makes the head swing to a different screen
+  // position every frame, which reads as the glyph "jumping" as the marker turns
+  // (reported 2026-08-23). Anchoring the head instead keeps the glyph pinned to one
+  // screen spot for all 16 rotations; the point is what swings, landing wherever
+  // the turned body puts it. That does give up the point sitting exactly on the
+  // boundary -- it now pokes past it by a frame-dependent amount -- which is an
+  // accepted trade for the glyph no longer moving.
+  int headX = mark.x;
+  int headY = mark.y;
+  if (headX - frame.headX < leftLimit) headX = leftLimit + frame.headX;
+  if (headX - frame.headX + frame.w > rightLimit) headX = rightLimit - frame.w + frame.headX;
+  if (headY - frame.headY < topLimit) headY = topLimit + frame.headY;
+  if (headY - frame.headY + frame.h > bottomLimit) headY = bottomLimit - frame.h + frame.headY;
+  // drawPinBalloon() still takes a tip target -- back-solve it from the head
+  // target and this frame's own tip-to-head offset.
+  const int tipX = headX + frame.tipX - frame.headX;
+  const int tipY = headY + frame.tipY - frame.headY;
   drawPinBalloon(tipX, tipY, mark.catalogIndex, step);
 
   char distance[16];
@@ -4118,13 +4140,16 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     snprintf(text, sizeof(text), "%s", distance);
   }
 
-  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text);
-  const int textHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  // SMALL_FONT_ID (8pt), not UI_10: a distance readout is detail-view chrome, not
+  // a primary label, and the same weight as scale-bar/header text overstated it
+  // (reported 2026-08-23 alongside the pivot -- too big, too bold for what it is).
+  const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text);
+  const int textHeight = renderer.getLineHeight(SMALL_FONT_ID);
   // Under the head, not under the point: the point is against the edge of the area
   // and aiming outward, so there is no room that side.
-  int textX = tipX - frame.tipX + frame.headX - textWidth / 2;
-  int textY = tipY - frame.tipY + frame.h + 2;
-  if (textY + textHeight > bottomLimit) textY = tipY - frame.tipY - textHeight - 2;
+  int textX = headX - textWidth / 2;
+  int textY = headY - frame.headY + frame.h + 2;
+  if (textY + textHeight > bottomLimit) textY = headY - frame.headY - textHeight - 2;
   // And not under the rider's own marker, which is drawn after this and would eat
   // it: a pin near the bottom edge puts its label exactly where the marker sits
   // (panel, 2026-08-17 -- measured, the label was at 149,685 90x24 against a marker
@@ -4153,9 +4178,17 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     }
   }
 
-  // Opaque backing, same reason the pin has a halo: this lands on road lines.
-  renderer.fillRect(textX - 2, textY - 2, textWidth + 4, textHeight + 4, false);
-  renderer.drawText(UI_10_FONT_ID, textX, textY, text, true);
+  // White halo, not an opaque box: same technique place labels use
+  // (MapLabels.cpp:315-325, kHaloRing) -- the map keeps showing between the
+  // letters instead of disappearing under a filled rectangle, matching how a
+  // place name reads at a detailed zoom (reported 2026-08-23).
+  static constexpr int kHaloOffsets[8][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+  for (int radius = 1; radius <= 2; ++radius) {
+    for (const auto& offset : kHaloOffsets) {
+      renderer.drawText(SMALL_FONT_ID, textX + offset[0] * radius, textY + offset[1] * radius, text, false);
+    }
+  }
+  renderer.drawText(SMALL_FONT_ID, textX, textY, text, true);
 }
 
 void MapActivity::showPinOnMap(size_t slot) {

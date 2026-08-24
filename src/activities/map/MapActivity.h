@@ -683,7 +683,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // loop(), never from a callback.
   void servicePendingPinPopup();
   void openPinsMenu();
-  // Add / Replace: all ten catalogue slots, so an empty one can be filled. An
+  // Add / Replace: all eleven catalogue slots, so an empty one can be filled. An
   // empty slot saves straight away; an occupied one is confirmed.
   void openPinsAddList();
   // One row per saved pin plus `All`: which pins may put a marker on the edge when
