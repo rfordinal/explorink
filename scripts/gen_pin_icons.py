@@ -53,14 +53,17 @@ DIGIT_FONTS = (
 )
 
 
-def text_grid(text, size):
-    """Short text, rendered as large as fits a size x size box, as an ink grid."""
+def text_grid(text, size, fit=None):
+    """Short text, rendered as large as fits a `fit` x `fit` box (default: `size`),
+    centred in a size x size ink grid -- `fit` < `size` leaves a margin so the
+    numeral reads lighter next to the Lucide glyphs it shares a box with."""
+    fit = fit or size
     path = next((p for p in DIGIT_FONTS if os.path.exists(p)), None)
     if path is None:
         sys.exit("ERROR: no sans font for text glyphs; install dejavu or liberation")
     # Grow the point size until the drawn ink no longer fits, then step back.
     best = None
-    for points in range(size, size * 3):
+    for points in range(fit, fit * 3):
         font = ImageFont.truetype(path, points)
         img = Image.new("L", (size * 3, size * 3), 255)
         ImageDraw.Draw(img).text((size, size), text, font=font, fill=0)
@@ -70,11 +73,11 @@ def text_grid(text, size):
         if not ys:
             continue
         w, h = xs[-1] - xs[0] + 1, ys[-1] - ys[0] + 1
-        if w > size or h > size:
+        if w > fit or h > fit:
             break
         best = [row[xs[0]:xs[-1] + 1] for row in grid[ys[0]:ys[-1] + 1]]
     if best is None:
-        sys.exit(f"ERROR: could not fit '{text}' into {size}px")
+        sys.exit(f"ERROR: could not fit '{text}' into {fit}px")
     # Centre it in a size x size box, so it sits where a Lucide glyph would.
     out = [[False] * size for _ in range(size)]
     oy, ox = (size - len(best)) // 2, (size - len(best[0])) // 2
@@ -298,9 +301,28 @@ def main():
     # silhouette that the tail can contaminate.
     head_mask_big = silhouette(ink_big)
     head_big = head_circle(ink_big, head_mask_big)
+    # `--glyph-dy` (the head's measured centre reads high) has to be applied
+    # *before* rotation, in the same local frame as head_big: baking it into
+    # where the marker ellipse is drawn means it rides through the identical
+    # rotate/resize/crop pipeline as everything else and rotates with the pin.
+    # Adding it after the fact, to the frame's own already-rotated final y,
+    # was a flat screen-space nudge that only matched the pin's own "toward
+    # the tip" direction at step 0 -- at every other step it pointed the wrong
+    # way by an angle-dependent amount, up to the full offset at 180 degrees
+    # (reported 2026-08-24: pin_meet's ring+dot glyph, the one glyph
+    # symmetric enough to reveal it, visibly off-centre inside the pin head at
+    # every non-cardinal rotation step).
+    scale_to_big = hb / args.height
+    head_marker_center = (head_big[0], head_big[1] + args.glyph_dy * scale_to_big)
     head_marker_img = Image.new("L", (wb, hb), 255)
     ImageDraw.Draw(head_marker_img).ellipse(
-        [head_big[0] - 24, head_big[1] - 24, head_big[0] + 24, head_big[1] + 24], fill=0
+        [
+            head_marker_center[0] - 24,
+            head_marker_center[1] - 24,
+            head_marker_center[0] + 24,
+            head_marker_center[1] + 24,
+        ],
+        fill=0,
     )
 
     def bake(angle_deg):
@@ -410,14 +432,17 @@ def main():
     for step, (mask, ink, tip, head) in enumerate(frames):
         lines.append(
             f"    {{kPinShapeMask{step}Bits, kPinShapeInk{step}Bits, {len(ink[0])}, {len(ink)}, "
-            f"{round(tip[0])}, {round(tip[1])}, {round(head[0])}, {round(head[1]) + args.glyph_dy}}},"
+            f"{round(tip[0])}, {round(tip[1])}, {round(head[0])}, {round(head[1])}}},"
         )
     lines.append("};")
     lines.append("")
 
     for alias, source in parse_manifest(MANIFEST):
         if source.startswith("digit:") or source.startswith("text:"):
-            gi = text_grid(source.split(":", 1)[1], glyph)
+            # 2px smaller than the Lucide glyphs share: at full size next to a
+            # thin-stroke icon a numeral reads noticeably heavier/bolder even
+            # in a regular weight (reported 2026-08-24).
+            gi = text_grid(source.split(":", 1)[1], glyph, fit=glyph - 2)
         else:
             svg = os.path.join(LUCIDE_DIR, source + ".svg")
             if not os.path.exists(svg):
