@@ -232,17 +232,34 @@ branch that updates `lastHeading_` only runs for a command that also carries
 a position, `MapActivity.cpp:2296-2305`). The rendered shape is a pixel-exact
 match to `marker-ride.svg`'s concave-notch chevron.
 
-**Not verified: rotation on screen.** With no route loaded the map is
-track-up, so `drawPositionMarker` is called with
-`MapFollow::relativeHeadingStep(headingStep, anchorHeading_)`
-(`MapActivity.cpp:4717`) and `anchorHeading_` re-anchors to match the incoming
-heading every frame -- the relative step comes out ~0 regardless of the
-heading sent, and the marker always draws pointing up *by design* in this
-mode. Seeing the raw rotation on screen needs a loaded route (route-hold,
-north-up mode), which has no console command to trigger in the simulator
-today. The rotation *transform itself* is untouched from the old triangle
-code (same `dir`/`perp` construction, more vertices), so this is a gap in
-today's test coverage, not a known-open question about the math.
+**Rotation verified on the phone, 2026-08-24.** `drawPositionMarker` is called
+with `MapFollow::relativeHeadingStep(headingStep, anchorHeading_)`
+(`MapActivity.cpp:4750`), and `anchorHeading_` re-anchors to match the
+incoming heading on every full reset -- so a single console `pos ... heading
+N` command always redraws pointing up *by design*: `renderCurrent()`
+(`MapActivity.cpp:2306`) is a full reset every time, never the incremental
+path. That is why the earlier console-only test above could not show
+rotation, whatever heading it sent.
+
+The real fix path (`applyFix()`, the actual BLE position characteristic, not
+the console) is different: a fix close enough to the last one skips the reset
+and calls `moveMarker()` with the *held* `anchorHeading_`, so the arrow's
+screen angle changes while the map does not. Confirmed by loading a real
+route (`RouteSelectActivity`, `Trips` on Home -- picked up any `.tir` under
+`/trailink/trips/`, `build/trips/do-prace.tir` for this run) and sending a
+sequence of close-together fixes over real BLE, `tools/blepos.py <lat> <lon>
+--heading <N>` (not `mapcmd.py`, which only reaches the console): the arrow
+sat pointing up through headings 0, 2, 4 and 6, then rotated to point roughly
+west at heading 8 and stayed there through heading 10.
+
+That plateau is `MapFollow::kMinMovePx` (`map-follow.md`), not a marker bug:
+each fix in the sequence used the same ~11 m step from a fixed baseline, and
+at the zoom rung in play (`mpp` a few metres/px) that is under the 8 px move
+floor, so several fixes in a row were silently skipped and only the one that
+finally cleared the accumulated threshold triggered a redraw. The marker
+shape and rotation math are unaffected either way -- once a fix is accepted,
+the arrow really does point away from north, holding the map's own frame
+still.
 
 ### 2. Move floor -- `ZoomStep::minMovePx`
 
