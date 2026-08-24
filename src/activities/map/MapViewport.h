@@ -114,13 +114,19 @@ inline constexpr int kZoomStepCount = kMapZoomStepCount;
 // format cannot address yet (int16 tile-local offsets, 39 km tile) -- these two
 // rungs deliberately ship before that work, because the renders held up and the
 // only number still missing is how long the reset takes on the panel.
+// Marker scale steps down 8,8,8,7,7,6,5 -- judged on a real phone running the
+// firmware (org.explorink.simulator on a Samsung S10, 2026-08-24): rungs 0-2
+// at full size read fine, 3-4 at full size read too big, 5-6's existing 6/8
+// and 5/8 already read fine. One step of 1/8 at rungs 3-4 closes that gap
+// without touching the two rungs already confirmed, and keeps the ladder a
+// gradual taper instead of a flat run into a sudden drop.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
     //  mpp   z  buildings  builtUp  marker/8  minMove  maxLabels
     {1.0, 13, true, false, 8, 12, 3},   // step 0, detail -- buildings, no wash under them
     {3.0, 13, false, true, 8, 10, 4},   // step 1, detail -- the wash instead of buildings
     {6.0, 12, false, true, 8, 8, 6},    // step 2, regional
-    {12.0, 11, false, true, 8, 8, 8},   // step 3, overview
-    {20.0, 11, false, true, 8, 6, 10},  // step 4, overview
+    {12.0, 11, false, true, 7, 8, 8},   // step 3, overview
+    {20.0, 11, false, true, 7, 6, 10},  // step 4, overview
     {32.0, 11, false, true, 6, 3, 12},  // step 5, overview -- z11 past its natural range
     {45.0, 11, false, true, 5, 2, 14},  // step 6, overview -- 24 x 40 km on the panel
 };
