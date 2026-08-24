@@ -3685,6 +3685,12 @@ void MapActivity::confirmPinReplaceSlot(size_t slot) {
     }
     savePin(keyCopy, labelCopy.c_str());
   });
+  // Same size as the list this confirmation replaces -- after show(), which
+  // resets it to 0 (OptionPopup::resetRowChrome()). Missing here (every other
+  // popup opener sets it) is why the confirm box used to compute its own
+  // narrower size from just "Cancel"/"Replace" instead of matching the
+  // Add/Replace or Pins list behind it. Reported on the S8 2026-08-24.
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
 }
@@ -3709,6 +3715,9 @@ void MapActivity::confirmPinDelete(size_t slot) {
     }
     deletePin(static_cast<size_t>(slotCopy));
   });
+  // Same missing size hint as confirmPinReplaceSlot() above, after show() for
+  // the same reason -- same fix.
+  optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
 }
