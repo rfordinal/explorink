@@ -376,7 +376,7 @@ def place_dot_diameter(style):
 
 
 def points_style(style):
-    """layers.points -> the six C values for the POI marks.
+    """layers.points -> the eight C values for the POI marks.
 
     Absent block means the layer is off, so a style file written before the
     point layer existed keeps generating and simply draws no marks.
@@ -384,7 +384,7 @@ def points_style(style):
     points = style.get("layers", {}).get("points")
     if points is None:
         print("gen_mapstyle.py: layers.points missing -- POI marks off")
-        return False, False, 0, 0, 0, 0
+        return False, False, 0, 0, 0, 0, 0, 0
 
     safety = bool(points.get("safety_enabled", True))
     landmark = bool(points.get("landmark_enabled", False))
@@ -392,6 +392,14 @@ def points_style(style):
     border = _round_px(points.get("border_px", 1), "layers.points.border_px")
     glyph = _round_px(points.get("glyph_px", 0), "layers.points.glyph_px")
     flag = _round_px(points.get("flag_px", 0), "layers.points.flag_px")
+    # 0 disables clustering: every point draws its own mark, even two that
+    # overlap. See docs/map-render-spec.md, "POI clustering" -- clustering
+    # merges points that are close in SCREEN pixels, not on the ground, so
+    # zooming in naturally pulls a merged mark apart with no per-zoom
+    # tuning: the same two points are farther apart in screen px at a finer
+    # mpp.
+    cluster_radius = _round_px(points.get("cluster_radius_px", 0), "layers.points.cluster_radius_px")
+    cluster_cell = _round_px(points.get("cluster_cell_px", 0), "layers.points.cluster_cell_px")
 
     if square and not (safety or landmark):
         sys.exit("gen_mapstyle.py: layers.points draws a square but both kinds are disabled. "
@@ -402,11 +410,18 @@ def points_style(style):
     if square and flag > square // 2:
         sys.exit(f"gen_mapstyle.py: layers.points.flag_px {flag} is over half the {square}px square; "
                  "the corner flag would cover the glyph it is meant to qualify")
+    if cluster_radius and not cluster_cell:
+        sys.exit("gen_mapstyle.py: layers.points.cluster_radius_px is set but cluster_cell_px is not -- "
+                 "a tile of more than one category needs a cell size to lay glyphs out in.")
+    if cluster_cell and flag > cluster_cell // 2:
+        sys.exit(f"gen_mapstyle.py: layers.points.flag_px {flag} is over half the "
+                 f"cluster_cell_px {cluster_cell}; the corner flag would cover a tiled glyph")
     for name, value in (("square_px", square), ("border_px", border), ("glyph_px", glyph),
-                        ("flag_px", flag)):
+                        ("flag_px", flag), ("cluster_radius_px", cluster_radius),
+                        ("cluster_cell_px", cluster_cell)):
         if value > 255:
             sys.exit(f"gen_mapstyle.py: layers.points.{name} {value}px does not fit a uint8_t")
-    return safety, landmark, square, border, glyph, flag
+    return safety, landmark, square, border, glyph, flag, cluster_radius, cluster_cell
 
 
 def place_labels(style):
@@ -615,6 +630,8 @@ def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, lan
         f"    .pointBorderPx = {points_px[3]},",
         f"    .pointGlyphPx = {points_px[4]},",
         f"    .pointFlagPx = {points_px[5]},",
+        f"    .pointClusterRadiusPx = {points_px[6]},",
+        f"    .pointClusterCellPx = {points_px[7]},",
         f"    .routeWidthPx = {route_px[0]},",
         f"    .routeArrowLenPx = {route_px[1]},",
         f"    .routeArrowWidthPx = {route_px[2]},",
@@ -659,7 +676,7 @@ def main(repo_root, style_path=None, output_path=None):
           f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
     print(f"gen_mapstyle.py: POI marks {'safety' if points_px[0] else '-'}"
           f"{'+landmark' if points_px[1] else ''} square {points_px[2]}px, glyph {points_px[4]}px, "
-          f"flag {points_px[5]}px")
+          f"flag {points_px[5]}px, cluster radius {points_px[6]}px cell {points_px[7]}px")
     print(f"gen_mapstyle.py: buildings {'on' if buildings_px[0] else 'off'} "
           f"(outline {buildings_px[1]}px, tone {buildings_px[2]}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "

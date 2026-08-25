@@ -32,6 +32,7 @@ target_include_directories(MapTileReaderGoldenTest PRIVATE
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/src/activities/map
   ${REPO_ROOT}/test/map_preview
+  ${REPO_ROOT}/freeink-sdk/libs/assets/Icons/include
 )
 
 target_compile_definitions(MapTileReaderGoldenTest PRIVATE
