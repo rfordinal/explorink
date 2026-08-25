@@ -6,7 +6,7 @@
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
 //               [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle]
 //               [--tile <col>/<row>] [--hatch] [--route <file.tir>]
-//               [--no-points] [--point-categories water,hut,...]
+//               [--no-points] [--no-labels] [--point-categories water,hut,...]
 //               [--fit-route] [--no-marker] [--out <file>]
 //   map_preview --tiles <dir> --route <file.tir> --fit-route
 //   map_preview --zoom-ladder
@@ -122,6 +122,8 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
       modeGiven = true;
     } else if (arg == "--no-points") {
       request.drawPoints = false;
+    } else if (arg == "--no-labels") {
+      request.drawLabels = false;
     } else if (arg == "--point-categories") {
       // A comma-separated list of safety category names or ids, which is what
       // `Nearby -> Show on map` does with one of them. Anything unknown is a

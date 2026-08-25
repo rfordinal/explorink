@@ -65,6 +65,15 @@ struct MapPreviewRequest {
   // renderer at all.
   std::optional<bool> drawBuildings;
 
+  // Draw place names. True is the device's behaviour and the default here.
+  //
+  // False draws the place dots but no text, which is what tuning the road
+  // styling wants: a name is a big opaque object and at the coarse rungs there
+  // are a dozen of them, so they hide exactly the road network being judged.
+  // The dots stay because they are one pixel each and they are what tells you
+  // which settlement you are looking at (maintainer, 2026-08-25).
+  bool drawLabels = true;
+
   // Skip the marker puck entirely, on top of whatever routeFitRan already
   // suppresses it for. On by default (draw it) -- matches every previous
   // caller's expectation and every committed golden PPM. False is for a

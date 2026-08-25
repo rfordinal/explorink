@@ -140,3 +140,29 @@ TEST(MapStyleTable, ThePlaceNameCapRisesWithTheGroundOnThePanel) {
   EXPECT_GT(mapStyleFor(MapRideMode::Ride, kRungs - 1).placeMaxLabels,
             mapStyleFor(MapRideMode::Ride, 0).placeMaxLabels);
 }
+
+TEST(MapStyleTable, AToneOnARoadAlwaysHasAnInteriorToPutItIn) {
+  // `fill: tone` shades the middle of a cased road (MapStyle::roadFillTone).
+  // Two things have to hold or it draws nothing while the style file says it
+  // draws something: there must be a casing at all, because with none the road
+  // is solid black and has no middle; and the middle must be at least 2 px,
+  // because the lightest tone has a period of 2 and a 1 px interior cannot
+  // carry it.
+  //
+  // gen_mapstyle.py refuses both outright. This is the same check on what
+  // actually shipped, at every mode and rung -- a generator can be edited.
+  for (int modeIndex = 0; modeIndex < kMapRideModeCount; ++modeIndex) {
+    const MapRideMode mode = static_cast<MapRideMode>(modeIndex);
+    for (int step = 0; step < kRungs; ++step) {
+      const MapStyle& style = mapStyleFor(mode, step);
+      for (uint8_t classId = 0; classId < kClassEnumSlots; ++classId) {
+        if (style.roadFillTone[classId] == MapAreaTone::None) continue;
+        const int casing = style.roadCasingPx[classId];
+        EXPECT_GT(casing, 0) << mapRideModeName(mode) << " rung " << step << " class " << (int)classId;
+        EXPECT_GE(style.roadWidthPx[classId] - 2 * casing, 2)
+            << mapRideModeName(mode) << " rung " << step << " class " << (int)classId
+            << " has a tone but no room for it";
+      }
+    }
+  }
+}

@@ -213,7 +213,12 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   MapLabelScratch labels;
 
   HeapProbe::reset();
-  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr, &labels, points.get());
+  // nullptr for the scratch is how the renderer is told to skip the whole
+  // label pass -- the same thing the device does when the style draws no names
+  // (MapLabels.h). Not a style edit: the style still says what a name looks
+  // like, this frame just does not draw one.
+  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr,
+                      request.drawLabels ? &labels : nullptr, points.get());
   // render() does not draw the marker (MapActivity draws its own mode-specific
   // one). This preview has no travel mode, so it draws the style's puck
   // explicitly -- except in a route overview, which is framed on the route and

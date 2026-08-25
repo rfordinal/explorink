@@ -379,6 +379,80 @@ correct file. See the parent repo's `CLAUDE.md`, "Every render is pixel perfect"
 
 Still true: nothing here has been on a panel at all.
 
+## A wide road is an outline with a shaded middle, not a black band
+
+Maintainer, 2026-08-25, looking at other maps: a motorway there is a thin
+outline around a **grey** interior, and we already have dither. It turned out to
+need almost no new machinery.
+
+`IMapCanvas::fillSpan(x1, x2, y, tone)` and `MapAreaFill::toneRing()` already
+paint a screen-anchored dither, and until now only areas used them. A road is a
+stroke and cannot go through `toneRing` whole -- but **each segment's interior
+is a quad, and a quad is a ring with four corners**. So the road fill is a
+5-point ring per segment and nothing else.
+
+`layers.roads.rules[]` takes `fill: "tone"` plus `tone:`, the same two keys an
+area rule takes, compiled into `MapStyle::roadFillTone`. `tone: "light"` is the
+period-2 dither -- pixel, gap, pixel -- the direct sibling of the period-3
+`stipple` the built-up areas use. Same enum, so a road and the wash under it
+cannot disagree about what grey means.
+
+Three things worth knowing about it:
+
+- **The tone goes on after the white, never instead of it.** The white inner
+  stroke is what clears the first pass's black; the tone is a texture laid into
+  the cleared middle. It is drawn in the same walk as its own white for the same
+  reason the railway sleepers are (MapRenderer.cpp).
+- **The perpendicular is the true one here**, unlike `MapStroke`'s stacking.
+  What makes MapStroke avoid it is striping when 1 px *lines* land 1.41 px apart
+  on a diagonal; a filled quad has no gaps to stripe.
+- **Joints are overlapping quads, not mitred.** The overlap is free because a
+  tone is a position test and painting a pixel twice is the same pixel. The
+  outside of a bend keeps a small unfilled wedge, which on a texture of at most
+  every other pixel is far less visible than it would be in a solid fill.
+
+`fill: tone` needs a casing and an interior of at least 2 px. `gen_mapstyle.py`
+refuses both outright rather than emitting a style that says it draws something
+and draws nothing, and `test/map_style_table` asserts it on what shipped.
+
+**Applied to motorway and trunk.** The weight comes from the fill now, so the
+casing drops from 2 px back to 1 px and the widths go up:
+
+| class | r0 | r1 | r2 | r3 | r4 | r5 | r6 |
+|---|---|---|---|---|---|---|---|
+| motorway | 11/3 | 11/3 | 11/1 | 9/1 | 9/1 | 8/1 | 7/1 |
+| trunk | 10/3 | 10/3 | 9/1 | 7/1 | 7/1 | 6/1 | 5/1 |
+
+Measured over Prague east, marks off:
+
+| | r4 | r5 | r6 |
+|---|---|---|---|
+| 2 px outline, white middle | 18.4 % | 19.9 % | 19.6 % |
+| 1 px outline, light middle | **18.1 %** | **19.2 %** | **18.9 %** |
+| 1 px outline, dark middle | 18.6 % | 19.8 % | 19.3 % |
+
+**It costs less ink than the white version it replaced** and reads as a ribbon
+rather than a band, which is the whole point. `dark` (the checkerboard) is one
+word away in the style file if `light` turns out too faint on the panel.
+Comparison: `../../docs/device-preview-shots/road-fill-tone-2026-08-25.png`.
+
+## Place names are off in a reference render now
+
+Maintainer, 2026-08-25, mid-tuning: the labels need work of their own, so turn
+them off entirely while the roads are being judged. Same shape as the POI
+switch and for the same reason -- a name is a big opaque object, there are a
+dozen at the coarse rungs, and they cover the network being judged.
+
+`map_preview --no-labels`, `device_render.render(draw_labels=False)`, and a
+`labels` field on a reference view that **defaults to false**. The place dots
+are still drawn: one pixel each, and they are what says which settlement you are
+looking at. The existing malacky view carries an explicit `labels: true` so the
+new default cannot change a reference that already existed.
+
+Not a style edit. The style still says what a name looks like; the frame just
+does not draw one. `MapRenderer` already skips the whole pass on a null label
+scratch, which is what the device does when the style draws no names.
+
 ## What a hardware pass has to check
 
 Nothing here has been on a panel. In order of what would hurt most:

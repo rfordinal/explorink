@@ -116,9 +116,10 @@ def road_widths(style):
     patterns = ["Solid"] * _CLASS_SLOTS
     dashes = [0] * _CLASS_SLOTS
     gaps = [0] * _CLASS_SLOTS
+    tones = ["None"] * _CLASS_SLOTS
     if not roads.get("enabled", True):
         print("gen_mapstyle.py: layers.roads.enabled is false -- no roads will be drawn")
-        return widths, casings, patterns, dashes, gaps
+        return widths, casings, patterns, dashes, gaps, tones
 
     default_width = _round_px(roads.get("default", {}).get("width", 1), "layers.roads.default.width")
     for class_id in _CLASS_ID.values():
@@ -135,6 +136,7 @@ def road_widths(style):
                 patterns[_CLASS_ID[name]] = "Solid"
                 dashes[_CLASS_ID[name]] = 0
                 gaps[_CLASS_ID[name]] = 0
+                tones[_CLASS_ID[name]] = "None"
                 continue
             width = _round_px(rule.get("width", default_width), f"layers.roads.rules[{index}].width")
             # A visible class must stay visible. Rounding 0.4px to 0 would
@@ -156,10 +158,27 @@ def road_widths(style):
             (patterns[_CLASS_ID[name]], dashes[_CLASS_ID[name]],
              gaps[_CLASS_ID[name]]) = _dash(rule, f"layers.roads.rules[{index}]")
 
+            # `fill: tone` shades the inside of a cased road instead of leaving
+            # it white -- a paper map's motorway, a thin outline around a
+            # shaded ribbon. Refused where it cannot show: with no casing there
+            # is no interior at all, and an interior under 2 px cannot carry a
+            # period-2 pattern. Refused rather than ignored, because a style
+            # that silently draws nothing is the bug this file keeps hitting.
+            tone = _tone(rule, f"layers.roads.rules[{index}]")
+            if tone != "None":
+                if casing == 0:
+                    sys.exit(f"gen_mapstyle.py: class '{name}': `fill: tone` needs a casing -- with "
+                             f"none, the road is solid black and has no interior to shade")
+                if width - 2 * casing < 2:
+                    sys.exit(f"gen_mapstyle.py: class '{name}': `fill: tone` needs an interior of at "
+                             f"least 2px, but {width}px with a {casing}px casing leaves "
+                             f"{width - 2 * casing}px")
+            tones[_CLASS_ID[name]] = tone
+
     if not any(widths):
         sys.exit("gen_mapstyle.py: every road class resolves to width 0 -- a style that draws no "
                  "roads at all is never what a style file means")
-    return widths, casings, patterns, dashes, gaps
+    return widths, casings, patterns, dashes, gaps, tones
 
 
 def puck(style):
@@ -567,7 +586,7 @@ def _style_literal(bundle):
     no `when` blocks at all costs one struct and a 21-byte index rather than
     21 structs.
     """
-    (widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter,
+    (widths, casings, patterns, dashes, gaps, tones, buildings_px, water_px, landuse_px, dot_diameter,
      labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
@@ -615,6 +634,15 @@ def _style_literal(bundle):
     for class_id in range(_CLASS_SLOTS):
         name = id_to_name.get(class_id, "(reserved)")
         lines.append(f"        {gaps[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
+        "    // Dither tone for the inside of a cased road. None leaves it white.",
+        "    .roadFillTone =",
+        "    {",
+    ]
+    for class_id in range(_CLASS_SLOTS):
+        name = id_to_name.get(class_id, "(reserved)")
+        lines.append(f"        MapAreaTone::{tones[class_id]},  // {class_id} {name}")
     radius, ring, arrow = puck_px
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
     w_enabled, w_widths, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing, w_white = water_px
@@ -693,15 +721,15 @@ def compile_style(style):
     hard way, or patches a width past 255, fails the build at that rung and
     names it.
     """
-    widths, casings, patterns, dashes, gaps = road_widths(style)
-    return (widths, casings, patterns, dashes, gaps,
+    widths, casings, patterns, dashes, gaps, tones = road_widths(style)
+    return (widths, casings, patterns, dashes, gaps, tones,
             buildings(style), water(style), landuse(style), place_dot_diameter(style),
             place_labels(style), points_style(style), route(style),
             *marker_anchor(style), puck(style))
 
 
 def _print_summary(bundle, what):
-    (widths, casings, _patterns, _dashes, _gaps, buildings_px, water_px, landuse_px, dot_diameter,
+    (widths, casings, _patterns, _dashes, _gaps, _tones, buildings_px, water_px, landuse_px, dot_diameter,
      labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
     drawn = sum(1 for w in widths if w)
     cased = sum(1 for c in casings if c)
