@@ -393,10 +393,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // (MapPointSource::Config::categoryMask): `Nearby -> Show on map` is a
   // temporary view, so it filters the walk and never the style.
   if (points != nullptr && style.pointSquarePx > 0 && points->beginMapPoints()) {
-    MapPointRef point;
-    while (points->nextMapPoint(point)) {
-      MapPointMarks::draw(canvas, point, style);
-    }
+    MapPointMarks::drawAll(canvas, *points, style);
   }
   if (timing) lap(timing->pointsMs, mark);
 

@@ -1,7 +1,5 @@
 #include "MapPointMarks.h"
 
-#include <Logging.h>
-
 #include "../../components/icons/poi_icons.h"
 
 namespace {
@@ -203,47 +201,39 @@ void drawGlyph(IMapCanvas& canvas, uint8_t category, int x, int y, int g) {
   // for a category this build does not know would say more than the file does.
 }
 
-}  // namespace
-
-namespace MapPointMarks {
-
-void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
-  if (point.kind == MapPointKind::Safety && !style.pointsSafetyEnabled) return;
-  if (point.kind == MapPointKind::Landmark && !style.pointsLandmarkEnabled) return;
-
-  // TEST ONLY: a category with a baked 24px icon (poi_icons.h) draws at its
-  // native size, whole mark included (halo + border + padding are baked into
-  // the sprite, per the maintainer's 2026-08-24 spec) -- style.pointSquarePx
-  // (18) is ignored for these categories so the icon is judged at the size it
-  // was designed for. Categories with no icon still use the old primitive
-  // path below, unchanged.
-  const freeink::Icon* icon =
-      point.category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
-          ? kPoiIconByCategory[point.category]
-          : nullptr;
-  LOG_DBG("POIICON", "category=%u tableSize=%u icon=%p", static_cast<unsigned>(point.category),
-          static_cast<unsigned>(sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])), (const void*)icon);
-  const int side = icon ? icon->w : style.pointSquarePx;
+// One mark for `category`, forced into a `side`x`side` box centred on
+// (cx, cy). `side` is the category's own natural size (icon->w, or
+// style.pointSquarePx for the primitive path) for a lone point, or
+// style.pointClusterCellPx for one slot for a tiled cluster -- either way the
+// box is what centres the white knock-out, the border-or-icon-halo and the
+// flag consistently.
+void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, int cx, int cy,
+                 const MapStyle& style) {
   if (side <= 0) return;
-
-  const int left = static_cast<int>(point.x) - side / 2;
-  const int top = static_cast<int>(point.y) - side / 2;
+  const freeink::Icon* icon = category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
+                                   ? kPoiIconByCategory[category]
+                                   : nullptr;
+  const int left = cx - side / 2;
+  const int top = cy - side / 2;
 
   // White under the square first: a mark sitting on a road casing or a
   // built-up tone is unreadable otherwise, and white is a real operation on
-  // this canvas (IMapCanvas.h). The knock-out is the square's own area only --
-  // no halo, which would eat the map around every POI.
+  // this canvas (IMapCanvas.h). The knock-out is the box's own area only --
+  // no halo beyond it, which would eat the map around every POI.
   fillRect(canvas, left, top, side, side, MapInk::White);
 
   if (icon) {
     // The border is already baked into the icon bitmap -- no separate
-    // rectOutline.
-    drawIconBitmap(canvas, *icon, left, top);
+    // rectOutline. Drawn at the icon's own natural size and centred in the
+    // box: for a tiled slot (side == pointClusterCellPx, a couple of pixels
+    // bigger than the 24px icon) this leaves a hairline gap between adjacent
+    // tiles' icons, which is what keeps them from reading as one shape.
+    drawIconBitmap(canvas, *icon, cx - icon->w / 2, cy - icon->h / 2);
   } else {
     rectOutline(canvas, left, top, side, side, style.pointBorderPx > 0 ? style.pointBorderPx : 1, MapInk::Black);
     const int glyph = style.pointGlyphPx;
     if (glyph > 0 && glyph <= side - 2) {
-      drawGlyph(canvas, point.category, left + (side - glyph) / 2, top + (side - glyph) / 2, glyph);
+      drawGlyph(canvas, category, cx - glyph / 2, cy - glyph / 2, glyph);
     }
   }
 
@@ -251,9 +241,172 @@ void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
   // so it wins over a glyph that reaches the corner. Never for not_potable:
   // that point is not written at all (MapPointMarks.h).
   const int flag = icon ? 6 : style.pointFlagPx;
-  if (flag > 0 && (point.flags & kPointFlaggedOnMapMask) != 0) {
+  if (flag > 0 && flags != 0) {
     const int x1 = left + side - 1;
     triangle(canvas, x1 - flag, top + 1, x1 - 1, top + 1, x1 - 1, top + flag, MapInk::Black);
+  }
+}
+
+int marksSide(uint8_t category, const MapStyle& style) {
+  const freeink::Icon* icon = category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
+                                   ? kPoiIconByCategory[category]
+                                   : nullptr;
+  return icon ? icon->w : style.pointSquarePx;
+}
+
+// One cluster: the running centroid of every merged point's screen position,
+// which category ids are present, and which of those carry a condition flag.
+// categoryMask/flagMask are bit i = MapSafetyCategory id i -- see
+// MapPointMarks.h, "a cluster's category mask assumes every point in it is
+// the same kind", for the one thing this does not yet handle.
+struct Cluster {
+  int32_t sumX = 0;
+  int32_t sumY = 0;
+  int32_t count = 0;
+  uint16_t categoryMask = 0;
+  uint16_t flagMask = 0;
+
+  int32_t cx() const { return count > 0 ? sumX / count : 0; }
+  int32_t cy() const { return count > 0 ? sumY / count : 0; }
+};
+
+// A viewport rarely opens more than a couple of z10 point shards
+// (docs/point-file-spec.md; safety.py's own docstring: "tens of nodes ... per
+// z10 shard"), so a few dozen distinct clusters is the expected ceiling, not
+// a hard limit on how many points can exist -- see the overflow branch in
+// addPoint() for what happens past it. 40 * sizeof(Cluster) is 640 B on the
+// stack, freed when drawAll() returns; no heap.
+constexpr int kMaxClusters = 40;
+
+int32_t dist2(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
+  const int64_t dx = x1 - x2;
+  const int64_t dy = y1 - y2;
+  const int64_t d2 = dx * dx + dy * dy;
+  return d2 > INT32_MAX ? INT32_MAX : static_cast<int32_t>(d2);
+}
+
+// Merges `point` into the nearest cluster within `radiusPx`, or starts a new
+// one. Past kMaxClusters, merges into the nearest cluster regardless of
+// radius rather than dropping the point -- a point folded into a slightly
+// wrong cluster is still on the map; a point silently skipped is not, and
+// this only fires when a single viewport opens more distinct locations than
+// any shard measured so far has shown.
+void addPoint(Cluster* clusters, int& count, int32_t radiusPx, int32_t x, int32_t y, uint8_t category,
+              bool flagged) {
+  int best = -1;
+  int32_t bestD2 = 0;
+  const int32_t r2 = radiusPx * radiusPx;
+  for (int i = 0; i < count; ++i) {
+    const int32_t d2 = dist2(x, y, clusters[i].cx(), clusters[i].cy());
+    if (d2 <= r2 && (best < 0 || d2 < bestD2)) {
+      best = i;
+      bestD2 = d2;
+    }
+  }
+  if (best < 0) {
+    if (count < kMaxClusters) {
+      best = count++;
+      clusters[best] = Cluster{};
+    } else {
+      for (int i = 0; i < count; ++i) {
+        const int32_t d2 = dist2(x, y, clusters[i].cx(), clusters[i].cy());
+        if (best < 0 || d2 < bestD2) {
+          best = i;
+          bestD2 = d2;
+        }
+      }
+    }
+  }
+  Cluster& c = clusters[best];
+  c.sumX += x;
+  c.sumY += y;
+  ++c.count;
+  if (category < 16) {
+    c.categoryMask |= static_cast<uint16_t>(1u << category);
+    if (flagged) c.flagMask |= static_cast<uint16_t>(1u << category);
+  }
+}
+
+void drawCluster(IMapCanvas& canvas, const Cluster& c, const MapStyle& style) {
+  uint8_t categories[16];
+  int n = 0;
+  for (uint8_t cat = 0; cat < 16 && n < 16; ++cat) {
+    if (c.categoryMask & (1u << cat)) categories[n++] = cat;
+  }
+  if (n == 0) return;
+
+  const int32_t cx = c.cx();
+  const int32_t cy = c.cy();
+  if (n == 1) {
+    const uint16_t flags = (c.flagMask & (1u << categories[0])) ? kPointFlaggedOnMapMask : 0;
+    drawMarkAt(canvas, categories[0], flags, marksSide(categories[0], style), cx, cy, style);
+    return;
+  }
+
+  // ceil(sqrt(n)): 2-4 categories -> 2x2, 5-9 -> 3x3, and so on. Never caps --
+  // the maintainer's call 2026-08-25 was that a crowded spot grows the tile
+  // rather than drop a category off the map.
+  int side = 1;
+  while (side * side < n) ++side;
+  const int cell = style.pointClusterCellPx;
+  const int32_t originX = cx - (side * cell) / 2;
+  const int32_t originY = cy - (side * cell) / 2;
+  for (int i = 0; i < n; ++i) {
+    const int row = i / side;
+    const int col = i % side;
+    const int32_t slotCx = originX + col * cell + cell / 2;
+    const int32_t slotCy = originY + row * cell + cell / 2;
+    const uint16_t flags = (c.flagMask & (1u << categories[i])) ? kPointFlaggedOnMapMask : 0;
+    drawMarkAt(canvas, categories[i], flags, cell, slotCx, slotCy, style);
+  }
+}
+
+}  // namespace
+
+namespace MapPointMarks {
+
+int16_t reachPx(const MapStyle& style) {
+  const int single = style.pointSquarePx / 2 + 1;
+  if (style.pointClusterRadiusPx == 0) return static_cast<int16_t>(single);
+  // Worst case for the query margin: every category a build knows about
+  // landed in one cluster, tiled as big as that makes it, merged from as far
+  // as pointClusterRadiusPx away.
+  int side = 1;
+  while (side * side < kSafetyCategoryCount) ++side;
+  const int tileHalf = (side * style.pointClusterCellPx) / 2;
+  const int reach = style.pointClusterRadiusPx + tileHalf + 1;
+  return static_cast<int16_t>(reach > single ? reach : single);
+}
+
+void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
+  if (point.kind == MapPointKind::Safety && !style.pointsSafetyEnabled) return;
+  if (point.kind == MapPointKind::Landmark && !style.pointsLandmarkEnabled) return;
+  const uint16_t flags = (point.flags & kPointFlaggedOnMapMask) != 0 ? kPointFlaggedOnMapMask : 0;
+  drawMarkAt(canvas, point.category, flags, marksSide(point.category, style), static_cast<int>(point.x),
+             static_cast<int>(point.y), style);
+}
+
+void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style) {
+  if (style.pointClusterRadiusPx == 0) {
+    // Clustering off: exactly today's per-point walk, no scratch buffer.
+    MapPointRef point;
+    while (source.nextMapPoint(point)) {
+      draw(canvas, point, style);
+    }
+    return;
+  }
+
+  Cluster clusters[kMaxClusters];
+  int clusterCount = 0;
+  MapPointRef point;
+  while (source.nextMapPoint(point)) {
+    if (point.kind == MapPointKind::Safety && !style.pointsSafetyEnabled) continue;
+    if (point.kind == MapPointKind::Landmark && !style.pointsLandmarkEnabled) continue;
+    addPoint(clusters, clusterCount, style.pointClusterRadiusPx, static_cast<int32_t>(point.x),
+             static_cast<int32_t>(point.y), point.category, (point.flags & kPointFlaggedOnMapMask) != 0);
+  }
+  for (int i = 0; i < clusterCount; ++i) {
+    drawCluster(canvas, clusters[i], style);
   }
 }
 

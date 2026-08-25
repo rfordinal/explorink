@@ -52,6 +52,7 @@ target_include_directories(map_window PRIVATE
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/JsonParser
+  ${REPO_ROOT}/freeink-sdk/libs/assets/Icons/include
   ${PREVIEW_DIR}
   ${REPLAY_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}

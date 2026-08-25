@@ -56,15 +56,49 @@
 // `not_potable` is not in that mask and never reaches this code: the writer
 // drops such a point from water entirely (../../../docs/point-file-spec.md), so
 // a square with a water glyph always means candidate for drinking water.
+// ## POI clustering, added 2026-08-25
+//
+// At a coarse zoom, points that are metres apart on the ground land on top of
+// each other in screen pixels -- an area with a dozen shelters would draw a
+// dozen overlapping squares, unreadable and no more informative than one.
+// `drawAll()` merges points whose screen positions land within
+// style.pointClusterRadiusPx of each other into one cluster before drawing:
+//
+// - **One category present**: draws exactly the mark `draw()` used to, at
+//   the centroid of the merged points -- an isolated point looks identical to
+//   before clustering existed.
+// - **More than one category present**: lays each distinct category out in a
+//   style.pointClusterCellPx square grid, `ceil(sqrt(n))` to a side, centred
+//   on the centroid. Two points of the *same* category collapse to one tile
+//   slot -- the honesty rule is "there is a shelter here", not "there are
+//   three".
+//
+// Merging is in screen pixels, not on the ground, which is what makes zoom
+// work with no per-rung tuning: the same two points are farther apart on
+// screen at a finer mpp, so they pull apart on their own as the rider zooms
+// in, and re-merge zooming out. `style.pointClusterRadiusPx == 0` disables
+// this entirely and restores one-mark-per-point.
+//
+// A cluster's category mask assumes every point in it is the *same kind*
+// (MapPointKind) -- true today because landmarks are off by default
+// (pointsLandmarkEnabled) and unbuilt (T-305). If landmarks start sharing the
+// safety categories' id space while both are on, a cluster mixing kinds would
+// misread as one category when it is really two; revisit this the day T-305
+// lands.
 namespace MapPointMarks {
 
 // The mark's half-width, for a source's off-screen margin: a square is drawn
 // centred on its point, so this is how far past the panel a point can still put
-// ink on it.
-inline int16_t reachPx(const MapStyle& style) { return static_cast<int16_t>(style.pointSquarePx / 2 + 1); }
+// ink on it. Accounts for the worst-case cluster tile (every category present,
+// clustered from as far as pointClusterRadiusPx away) when clustering is on.
+int16_t reachPx(const MapStyle& style);
 
 // One mark, centred on (x, y) in screen pixels. Draws nothing when the style
 // hides the layer (pointSquarePx == 0) or the kind is filtered out.
 void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style);
+
+// Draws every point `source` yields, clustering first per style.
+// pointClusterRadiusPx (see above). Same kind/enable filtering as draw().
+void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style);
 
 }  // namespace MapPointMarks

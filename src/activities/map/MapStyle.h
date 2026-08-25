@@ -205,6 +205,16 @@ struct MapStyle {
   // point look confirmed -- so it is a debug setting, never a style choice.
   uint8_t pointFlagPx;
 
+  // Clustering (docs/map-render-spec.md, "POI clustering"): points whose
+  // screen positions land within pointClusterRadiusPx of each other merge
+  // into one tile before drawing. A tile with more than one distinct category
+  // lays each out in a pointClusterCellPx square grid (ceil(sqrt(n)) side),
+  // same-category points collapsing to one mark. Screen pixels, so the same
+  // two points that merge at a coarse zoom pull apart at a fine one with no
+  // per-rung tuning. 0 disables clustering: every point draws its own mark.
+  uint8_t pointClusterRadiusPx;
+  uint8_t pointClusterCellPx;
+
   // layers.route. The route is distinguished from the roads by width alone --
   // there is no colour on 1-bit e-ink -- so this is deliberately wider than any
   // road class. 0 means the route is not drawn even when one is loaded.

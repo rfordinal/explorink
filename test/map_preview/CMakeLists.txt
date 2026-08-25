@@ -77,6 +77,7 @@ target_include_directories(marker_stamp PRIVATE
   ${REPO_ROOT}/src/activities/map
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
+  ${REPO_ROOT}/freeink-sdk/libs/assets/Icons/include
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(marker_stamp PRIVATE crosspoint_test_common ZLIB::ZLIB)
