@@ -36,6 +36,22 @@
 // keeps the mark one drawing decision: the flag is drawn in the same pass, over
 // the same square, and can be nudged if a glyph and a flag ever collide.
 //
+// **Superseded, 2026-08-25.** The comparison above judged Lucide against
+// primitives at 9px; it never judged a bitmap *designed for* a bigger mark.
+// The maintainer supplied a hand-drawn 24px set built for cartographic
+// symbology rather than UI icons (poi_icons.h, scripts/gen_poi_icons.py,
+// src/components/icons/poi_icons_24.png -- edit the PNG, rerun the script),
+// verified on a real screen (explorink-simulator, Samsung S10, 2026-08-24) at
+// 1:1 pixel mode: legible, clearly better than a primitive squeezed into
+// 11px. `drawMarkAt()` below draws it for every category that has one and
+// falls back to the primitives otherwise -- today that fallback is dead code
+// (all ten categories have an icon), kept for whatever category shows up
+// next without one yet. So there *is* an icon table in flash, contrary to
+// the line above it: read that paragraph as history, not as current
+// behaviour. Two categories' artwork (lodging, rescue) reads ambiguously at
+// this size and are the maintainer's to redraw in poi_icons_24.png -- that is
+// a content fix, not a reason to reconsider the icon-table decision itself.
+//
 // Two further notes worth keeping:
 //
 // - The emergency-phone glyph is an **exclamation mark**, not a handset. A
