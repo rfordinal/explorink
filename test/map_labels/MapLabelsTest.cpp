@@ -418,3 +418,61 @@ TEST(MapOccupancy, ASegmentEntirelyOffScreenMarksNothing) {
   grid.markSegment(-5000, -5000, -4000, -4000, 6);
   EXPECT_FALSE(grid.anySet(0, 0, 480, 800));
 }
+
+TEST(MapLabels, OneCornerOfThePanelCannotTakeEveryCandidateSlot) {
+  // The defect this guards, seen over Prague at rung 6: rank decides first, but
+  // among equal ranks the tie-break is distance from the anchor, and with
+  // hundreds of villages in range every slot went to the ring nearest the
+  // marker. Whole regions of the panel got dots and no names.
+  //
+  // Offer far more same-rank places than the buffer holds, all in one corner,
+  // then one in the opposite corner offered LAST -- so it loses on distance and
+  // would never have survived under the old rule.
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, 480, 800);
+  for (int i = 0; i < MapLabelScratch::kMaxCandidates * 2; ++i) {
+    MapLabels::offer(scratch, place(20 + (i % 5), 20 + (i % 7), 2, "Blizko"), 20, 20);
+  }
+  MapLabels::offer(scratch, place(460, 780, 2, "Daleko"), 20, 20);
+
+  bool farKept = false;
+  for (int i = 0; i < scratch.count; ++i) {
+    if (strcmp(scratch.candidates[i].name, "Daleko") == 0) farKept = true;
+  }
+  EXPECT_TRUE(farKept) << "a place in an empty corner lost its slot to a crowded one";
+
+  // And no single cell may hold more than its quota.
+  int perCell[MapLabelScratch::kCellsX * MapLabelScratch::kCellsY] = {};
+  for (int i = 0; i < scratch.count; ++i) {
+    const int cell = scratch.cellOf(scratch.candidates[i].x, scratch.candidates[i].y);
+    ASSERT_GE(cell, 0);
+    ++perCell[cell];
+  }
+  for (int cell = 0; cell < MapLabelScratch::kCellsX * MapLabelScratch::kCellsY; ++cell) {
+    EXPECT_LE(perCell[cell], MapLabelScratch::kPerCell) << "cell " << cell;
+  }
+}
+
+TEST(MapLabels, AnOffScreenPlaceNeverTakesACandidateSlot) {
+  // draw() skips a place whose dot is off the panel, so letting it win a slot
+  // only starves one that could have been named. The tile range is far wider
+  // than the screen -- 286 places for 32 slots over Prague at rung 6, of which
+  // only 17 were on the panel.
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, 480, 800);
+  MapLabels::offer(scratch, place(-50, 400, 1, "Mimo"), 240, 400);
+  MapLabels::offer(scratch, place(240, 900, 1, "TiezMimo"), 240, 400);
+  EXPECT_EQ(scratch.count, 0);
+
+  MapLabels::offer(scratch, place(240, 400, 1, "Na paneli"), 240, 400);
+  EXPECT_EQ(scratch.count, 1);
+}
+
+TEST(MapLabels, WithNoClipNothingIsRefusedAndCellsAreOff) {
+  // A caller that never sets a clip -- a probe, an older test -- must get the
+  // old global behaviour rather than a silently different one.
+  MapLabelScratch scratch;
+  MapLabels::offer(scratch, place(-50, 400, 1, "Mimo"), 240, 400);
+  EXPECT_EQ(scratch.count, 1);
+  EXPECT_EQ(scratch.cellOf(10, 10), -1);
+}

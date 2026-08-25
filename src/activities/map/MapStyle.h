@@ -187,6 +187,22 @@ struct MapStyle {
   // `placeLabelMaxWidthPx` caps a label's text width; a longer name is
   // truncated with an ellipsis. 0 means no cap.
   uint8_t placeMaxLabels;
+  // Per-tier caps, `max_labels_major` and `max_labels_minor`. Major is city and
+  // town (place rank <= 1), minor is everything smaller.
+  //
+  // Why a cap per tier and not just the total: the total is a cost backstop and
+  // says nothing about what a frame should look like. "Six towns and two
+  // villages" and "two towns and six villages" are the same total and different
+  // maps, and which one is right changes with the rung -- at 45 m/px the towns
+  // are the skeleton and the villages are texture, at 6 m/px it is the other
+  // way round.
+  //
+  // Absent from the style file means "the total, i.e. no extra restriction", so
+  // a style that never mentions them behaves exactly as before. 0 means none of
+  // that tier, which is a real thing to ask for: a rung that names towns only.
+  // `placeMaxLabels` still applies on top of both.
+  uint8_t placeMaxLabelsMajor;
+  uint8_t placeMaxLabelsMinor;
   uint8_t placeLabelGapPx;
   uint8_t placeLabelRouteOverlapPct;
   uint16_t placeLabelMaxWidthPx;

@@ -388,6 +388,14 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   if (route != nullptr) drawRoute(canvas, *route, style, labels != nullptr ? &labels->route : nullptr);
   if (timing) lap(timing->routeMs, mark);
 
+  // The panel, handed to the label scratch once per frame so offer() can refuse
+  // a place that could never be named (MapLabels.h, MapLabelScratch::setClip).
+  if (labels != nullptr) {
+    int clipX = 0, clipY = 0, clipW = 0, clipH = 0;
+    canvas.drawableRect(clipX, clipY, clipW, clipH);
+    labels->setClip(clipX, clipY, clipW, clipH);
+  }
+
   const int dotDiameter = style.placeDotDiameterPx;
   if (nearestOut) *nearestOut = MapNearestPlaces{};
   // Rank <= 1 is city/town (mapbuilder/build_config.json's place_ranks:

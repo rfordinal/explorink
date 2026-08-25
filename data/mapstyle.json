@@ -154,6 +154,19 @@
           "steps": [
             5
           ]
+        },
+        {
+          "steps": [6],
+          "max_labels": 32,
+          "max_labels_major": 5,
+          "max_labels_minor": 27,
+          "dot_radius_px": 3,
+          "label_px": 24,
+          "label_bold": true,
+          "label_minor_bold": false,
+          "label_minor_px": 8,
+          "label_max_width_px": 170,
+          "label_halo_px": 1
         }
       ]
     },
@@ -180,12 +193,12 @@
       "default": {
         "color": "#000000",
         "pattern": "solid",
-        "width": 0.83
+        "width": 1
       },
       "enabled": true,
       "rules": [
         {
-          "casing_px": 2,
+          "casing_px": 3,
           "color": "#000000",
           "hidden": false,
           "major": true,
@@ -195,9 +208,9 @@
             ]
           },
           "pattern": "solid",
-          "width": 9,
+          "width": 8,
           "fill": "tone",
-          "tone": "light"
+          "tone": "dark"
         },
         {
           "casing_px": 3,
@@ -209,7 +222,6 @@
               "trunk"
             ]
           },
-          "pattern": "solid",
           "when": [
             {
               "steps": [
@@ -243,13 +255,11 @@
               "steps": [
                 6
               ],
-              "width": 5,
-              "casing_px": 1
+              "width": 8,
+              "casing_px": 3
             }
           ],
-          "width": 10,
-          "fill": "tone",
-          "tone": "light"
+          "width": 10
         },
         {
           "casing_px": 2,
@@ -295,8 +305,8 @@
               "steps": [
                 6
               ],
-              "width": 3,
-              "casing_px": 0
+              "width": 6,
+              "casing_px": 1.5
             }
           ],
           "width": 9
@@ -412,7 +422,15 @@
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [
+                6
+              ],
+              "hidden": true
+            }
+          ]
         },
         {
           "casing_px": 0,

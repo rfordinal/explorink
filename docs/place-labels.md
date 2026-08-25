@@ -261,3 +261,64 @@ Edit them in mapbuilder's webapp, never by hand (parent `CLAUDE.md`).
 - **Labels avoiding other places' dots.** A label box can cover a neighbouring
   dot. Rare at the current label counts, and cheap to add to the `taken` grid if
   it shows up.
+
+
+## Two caps, and why one part of the panel cannot take every slot
+
+Added 2026-08-25, all three from one tuning session over Prague at rung 6.
+
+### `max_labels_major` and `max_labels_minor`
+
+`max_labels` is a cost backstop and says nothing about what a frame looks like.
+Six towns and two villages, and two towns and six villages, are the same total
+and different maps -- and which one is right changes with the rung: at 45 m/px
+the towns are the skeleton and the villages are texture, at 6 m/px it is the
+other way round.
+
+So `layers.places` takes a cap per tier. Major is rank <= 1 (city, town), minor
+is everything smaller (`kMajorMaxRank`). Absent means "the total", so a style
+that never mentions them behaves exactly as before; 0 means none of that tier,
+which is a real thing to ask for. Both work inside a `when`, so they are per
+rung. `max_labels` still applies on top.
+
+Measured over Prague east at rung 6, minor forced to 0 to isolate the tier:
+cap 0 draws 0, cap 4 draws 4, cap 32 draws 7 -- seven being every major that is
+both on the panel and fits.
+
+### An off-screen place no longer takes a candidate slot
+
+`offer()` kept the best `kMaxCandidates` by rank then distance and had no idea
+what was on the panel; `draw()` then skipped the ones that were not. The tile
+range is far wider than the screen, so most of the buffer was spent on places
+that could never be named: **286 places competed for 32 slots and only 17 of
+the winners were on the panel.** That is why raising `max_labels` past about 15
+changed nothing at all.
+
+The screen test moved into `offer()`. Same rule, applied where it costs
+something. Prague rung 6 went from 15 drawn / 2 dropped to 15 drawn / 14
+dropped -- the same names, but twelve more candidates now get a chance and the
+limit is honestly "no room" rather than "never offered".
+
+### A per-cell quota, because distance was deciding *where* names go
+
+Rank decides first and always did, so a city at the corner beats a town by the
+marker. But among equal ranks the tie-break is distance from the anchor, and at
+a coarse rung there are hundreds of villages -- so every remaining slot went to
+the ring nearest the marker. Over Prague that drew thirteen names in one band
+across the middle with the top third of the panel showing dots and no names at
+all. Maintainer's diagnosis, from the render: "nemoze to byt vzdialenostou od
+markera... proste to nie je tym padom dobre rozvrhnute."
+
+The panel is now bucketed 3 x 4 (160 x 200 px cells) and each cell keeps at
+most 3 candidates, which is why `kMaxCandidates` is 36 rather than 32. Inside a
+cell the order is unchanged -- rank, then distance -- and a full cell evicts
+**its own** worst rather than the globally worst, or the eviction would undo the
+spread.
+
+No scoring function was invented: the buffer simply cannot be monopolised by
+one part of the screen. Prague rung 6 went to 18 drawn / 4 dropped, and the
+empty third of the panel filled with names.
+
+With no clip set the cell cap and the screen test are both off, so a caller
+that does not set one (a unit test, a probe) gets the old behaviour rather than
+a silently different one.

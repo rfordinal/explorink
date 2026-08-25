@@ -502,6 +502,11 @@ def place_labels(style):
         "bg_border": _round_px(places.get("label_bg_border_px", 0), "layers.places.label_bg_border_px"),
         "halo": _round_px(places.get("label_halo_px", 0), "layers.places.label_halo_px"),
         "max_labels": int(places.get("max_labels", 0)) if enabled else 0,
+        # Absent means "the total", i.e. no extra restriction, so a style that
+        # never mentions the tier caps behaves exactly as it did before they
+        # existed. 0 is a real value and means none of that tier.
+        "max_labels_major": int(places.get("max_labels_major", places.get("max_labels", 0))) if enabled else 0,
+        "max_labels_minor": int(places.get("max_labels_minor", places.get("max_labels", 0))) if enabled else 0,
         "gap": _round_px(places.get("min_label_gap_px", 0), "layers.places.min_label_gap_px"),
         "route_overlap_pct": int(places.get("max_route_overlap_pct", 0)),
         "max_width": _round_px(places.get("label_max_width_px", 0), "layers.places.label_max_width_px"),
@@ -513,6 +518,8 @@ def place_labels(style):
                                  ("label_bg_border_px", out["bg_border"], 255),
                                  ("label_halo_px", out["halo"], 255),
                                  ("max_labels", out["max_labels"], 255),
+                                 ("max_labels_major", out["max_labels_major"], 255),
+                                 ("max_labels_minor", out["max_labels_minor"], 255),
                                  ("min_label_gap_px", out["gap"], 255),
                                  ("max_route_overlap_pct", out["route_overlap_pct"], 100),
                                  ("label_max_width_px", out["max_width"], 65535)):
@@ -520,6 +527,9 @@ def place_labels(style):
             sys.exit(f"gen_mapstyle.py: layers.places.{name} {value} is outside 0..{ceiling}")
     if out["max_labels"] == 0 and (out["px"] or out["minor_px"]):
         print("gen_mapstyle.py: layers.places.max_labels is 0 -- label sizes are set but no label will be drawn")
+    if out["max_labels_major"] == 0 and out["max_labels_minor"] == 0 and out["max_labels"] > 0:
+        print("gen_mapstyle.py: both layers.places tier caps are 0 -- max_labels says labels are wanted "
+              "but neither tier may draw one")
     # A halo behind a box is wasted work, and the renderer skips it (MapStyle.h).
     # Say so at generate time rather than leaving a style that reads as if it had
     # both.
@@ -689,6 +699,8 @@ def _style_literal(bundle):
         f"    .placeLabelBgBorderPx = {labels['bg_border']},",
         f"    .placeLabelHaloPx = {labels['halo']},",
         f"    .placeMaxLabels = {labels['max_labels']},",
+        f"    .placeMaxLabelsMajor = {labels['max_labels_major']},",
+        f"    .placeMaxLabelsMinor = {labels['max_labels_minor']},",
         f"    .placeLabelGapPx = {labels['gap']},",
         f"    .placeLabelRouteOverlapPct = {labels['route_overlap_pct']},",
         f"    .placeLabelMaxWidthPx = {labels['max_width']},",
@@ -751,7 +763,7 @@ def _print_summary(bundle, what):
     print(f"gen_mapstyle.py: {what}: route {route_px[0]}px wide, arrow {route_px[1]}x{route_px[2]}px")
     knockout = "box" if labels["bg"] else "halo {}px".format(labels["halo"])
     print(f"gen_mapstyle.py: {what}: place labels {labels['px']}px{' bold' if labels['bold'] else ''} major / "
-          f"{labels['minor_px']}px{' bold' if labels['minor_bold'] else ''} minor, max {labels['max_labels']}, "
+          f"{labels['minor_px']}px{' bold' if labels['minor_bold'] else ''} minor, max {labels['max_labels']} ({labels['max_labels_major']} major / {labels['max_labels_minor']} minor), "
           f"{knockout}, gap {labels['gap']}px, "
           f"route overlap <= {labels['route_overlap_pct']}%, width cap {labels['max_width']}px")
     if landuse_px[0]:
