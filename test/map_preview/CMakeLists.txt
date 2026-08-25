@@ -28,6 +28,7 @@ target_include_directories(map_preview PRIVATE
   ${REPO_ROOT}/src/activities/map
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
+  ${REPO_ROOT}/freeink-sdk/libs/assets/Icons/include
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 

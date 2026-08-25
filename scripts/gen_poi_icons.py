@@ -108,7 +108,7 @@ def main():
     out = [
         "#pragma once",
         "",
-        '#include "Icon.h"',
+        "#include <Icon.h>",
         "",
         "#include <cstdint>",
         "",

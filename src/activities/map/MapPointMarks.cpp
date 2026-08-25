@@ -1,6 +1,38 @@
 #include "MapPointMarks.h"
 
+#include <Logging.h>
+
+#include "../../components/icons/poi_icons.h"
+
 namespace {
+
+// TEST ONLY, not merged as the real drawing path: decodes a freeink::Icon's
+// packed 1bpp bits into IMapCanvas draw calls (one drawLine per contiguous
+// black run per row), so the 2026-08-24 24px icon proposal can be judged on
+// a real screen (explorink-simulator) before anyone decides whether to
+// replace the primitives below with it. See MapPointMarks.h and
+// scripts/gen_poi_icons.py for the "why not yet" reasoning; this function
+// exists so that question can be answered with pixels, the same way T-221
+// itself was settled.
+void drawIconBitmap(IMapCanvas& canvas, const freeink::Icon& icon, int x, int y) {
+  const int stride = (icon.w + 7) / 8;
+  for (int row = 0; row < icon.h; ++row) {
+    int runStart = -1;
+    for (int col = 0; col <= icon.w; ++col) {
+      bool ink = false;
+      if (col < icon.w) {
+        const uint8_t byte = icon.bits[row * stride + col / 8];
+        ink = ((byte >> (7 - (col % 8))) & 1) == 0;  // bit 0 = draw
+      }
+      if (ink && runStart < 0) {
+        runStart = col;
+      } else if (!ink && runStart >= 0) {
+        canvas.drawLine(x + runStart, y + row, x + col - 1, y + row, 1, MapInk::Black);
+        runStart = -1;
+      }
+    }
+  }
+}
 
 // A 1 px rectangle outline. IMapCanvas has no outline primitive -- fillRoundedRect
 // is a fill -- so four lines, which is what MapRenderer already does for a
@@ -176,10 +208,23 @@ void drawGlyph(IMapCanvas& canvas, uint8_t category, int x, int y, int g) {
 namespace MapPointMarks {
 
 void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
-  const int side = style.pointSquarePx;
-  if (side <= 0) return;
   if (point.kind == MapPointKind::Safety && !style.pointsSafetyEnabled) return;
   if (point.kind == MapPointKind::Landmark && !style.pointsLandmarkEnabled) return;
+
+  // TEST ONLY: a category with a baked 24px icon (poi_icons.h) draws at its
+  // native size, whole mark included (halo + border + padding are baked into
+  // the sprite, per the maintainer's 2026-08-24 spec) -- style.pointSquarePx
+  // (18) is ignored for these categories so the icon is judged at the size it
+  // was designed for. Categories with no icon still use the old primitive
+  // path below, unchanged.
+  const freeink::Icon* icon =
+      point.category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
+          ? kPoiIconByCategory[point.category]
+          : nullptr;
+  LOG_DBG("POIICON", "category=%u tableSize=%u icon=%p", static_cast<unsigned>(point.category),
+          static_cast<unsigned>(sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])), (const void*)icon);
+  const int side = icon ? icon->w : style.pointSquarePx;
+  if (side <= 0) return;
 
   const int left = static_cast<int>(point.x) - side / 2;
   const int top = static_cast<int>(point.y) - side / 2;
@@ -189,17 +234,23 @@ void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
   // this canvas (IMapCanvas.h). The knock-out is the square's own area only --
   // no halo, which would eat the map around every POI.
   fillRect(canvas, left, top, side, side, MapInk::White);
-  rectOutline(canvas, left, top, side, side, style.pointBorderPx > 0 ? style.pointBorderPx : 1, MapInk::Black);
 
-  const int glyph = style.pointGlyphPx;
-  if (glyph > 0 && glyph <= side - 2) {
-    drawGlyph(canvas, point.category, left + (side - glyph) / 2, top + (side - glyph) / 2, glyph);
+  if (icon) {
+    // The border is already baked into the icon bitmap -- no separate
+    // rectOutline.
+    drawIconBitmap(canvas, *icon, left, top);
+  } else {
+    rectOutline(canvas, left, top, side, side, style.pointBorderPx > 0 ? style.pointBorderPx : 1, MapInk::Black);
+    const int glyph = style.pointGlyphPx;
+    if (glyph > 0 && glyph <= side - 2) {
+      drawGlyph(canvas, point.category, left + (side - glyph) / 2, top + (side - glyph) / 2, glyph);
+    }
   }
 
   // One corner flag for "there is a condition attached", top-right, drawn last
   // so it wins over a glyph that reaches the corner. Never for not_potable:
   // that point is not written at all (MapPointMarks.h).
-  const int flag = style.pointFlagPx;
+  const int flag = icon ? 6 : style.pointFlagPx;
   if (flag > 0 && (point.flags & kPointFlaggedOnMapMask) != 0) {
     const int x1 = left + side - 1;
     triangle(canvas, x1 - flag, top + 1, x1 - 1, top + 1, x1 - 1, top + flag, MapInk::Black);
