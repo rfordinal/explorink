@@ -281,46 +281,58 @@ So the rule for thinning a class: **keep the casing while the road is one you
 steer by, and go to a solid hairline only when it stops being one.** Never the
 step in between.
 
-## The hairline proposal, measured and not committed
+## The hairline shape, applied
 
-`../../docs/style-hairline-proposal-2026-08-25.json` (parent repo) is a
-complete style carrying it. Rendered against the committed one:
-`../../docs/device-preview-shots/hairline-proposal-2026-08-25.png`.
+Maintainer's call 2026-08-25, after looking at the proposal: **secondary keeps
+2 px at rung 6 and tertiary takes the 1 px hairline**, so one step stays between
+the connecting network and the mesh. Both at 1 px would have made them the same
+mark, which is the thing width is the only way to say on 1-bit e-ink.
 
-The principle at the two widest rungs: three cased weights for the roads you
-steer by (motorway, trunk, primary), one thin solid for the connecting network
-(secondary), a 1 px hairline for the mesh (tertiary, and unclassified already).
-Railway gets a `when` for the first time.
+What the roads do across the ladder now (the compiled table, read off
+`MapStyleDefaults.h`):
 
-| | rung 4 | rung 5 | rung 6 |
-|---|---|---|---|
-| motorway | 7 px casing 2 | 6 casing 1 | 5 casing 1 |
-| trunk | 6 casing 1 | 5 casing 1 | 4 casing 1 |
-| primary | 5 casing 1 | 4 casing 1 | 3 solid |
-| secondary | 4 casing 1 | 2 solid | **1 solid** |
-| tertiary | 2 solid | **1 solid** | **1 solid** |
-| railway | 4 casing 1 | 3 casing 1 | 2 solid |
+| class | r0 | r1 | r2 | r3 | r4 | r5 | r6 |
+|---|---|---|---|---|---|---|---|
+| motorway | 11 | 11 | 9 | 7 | 7 | 6 | 5 |
+| trunk | 10 | 10 | 8 | 6 | 6 | 5 | 4 |
+| primary | 9 | 9 | 7 | 5 | 5 | 4 | 3 |
+| secondary | 8 | 8 | 6 | 4 | 4 | 2 | 2 |
+| tertiary | 7 | 7 | 5 | 3 | 2 | **1** | **1** |
+| railway | 4 | 4 | 4 | 4 | 4 | 3 | 2 |
+| unclassified | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 
-Ink, points of panel, marks off:
+Casings go 2, 2, 2, 1, 1 down the main classes and drop to 0 where the road
+becomes a hairline. Rung 6 ends with five distinct weights plus the hairline,
+which is the hierarchy that was missing.
 
-| | rung 3 | rung 4 | rung 5 | rung 6 |
+Ink, points of panel, POI marks off, before this pass and after:
+
+| | r3 | r4 | r5 | r6 |
 |---|---|---|---|---|
-| Prague, committed | 16.2 % | 19.2 % | 23.8 % | 25.7 % |
-| Prague, proposal | 16.2 % | 17.7 % | 18.6 % | **18.5 %** |
-| Pezinok, committed | 6.2 % | 7.5 % | 9.6 % | 10.6 % |
-| Pezinok, proposal | 6.2 % | 7.3 % | 8.7 % | **8.8 %** |
+| Prague east, before | 16.2 % | 19.2 % | 23.8 % | 25.7 % |
+| Prague east, now | 16.2 % | 17.7 % | 18.6 % | **20.6 %** |
+| Pezinok, before | 6.2 % | 7.5 % | 9.6 % | 10.6 % |
+| Pezinok, now | 6.2 % | 7.3 % | 8.7 % | **9.9 %** |
+
+Rung 6 over Prague is 20.6 % rather than the 18.5 % the all-hairline version
+measured. That 2.1 points is what the step between secondary and tertiary
+costs, and it was bought deliberately.
 
 What the render shows and the numbers do not: at rung 6 the motorway and trunk
 spine through Praha becomes the strongest thing on the panel instead of one
-strand in a tangle, and Neratovice, Kostelec, Klecany and Roztoky are readable.
-Prague's ink stops climbing with the rung, which was the defect.
+strand in a tangle, and Neratovice, Kostelec, Klecany, Roztoky and Libcice are
+readable. The reference ladders are re-rendered against this style
+(`../../docs/device-preview-shots/ref-prague-east-ladder-ride.png`,
+`ref-pezinok-modra-ladder-ride.png`).
 
-**It does not close the density gap**, only narrows it: 18.5 % against
-Pezinok's 8.8 % is still 2.1x, so a capital still draws twice the ink of
-countryside at the same rung. The density input discussed above is still the
-missing piece.
+**It does not close the density gap**, only narrows it: 20.6 % against
+Pezinok's 9.9 % is 2.08x, down from 2.42x. A capital still draws twice the ink
+of countryside at the same rung, and the density input discussed above is still
+the missing piece.
 
-Uncommitted because these are style numbers and the maintainer judges those.
+Two things the sheets are not evidence about. They are 480x800 frames scaled to
+200 px wide, so a 1 px hairline is being resampled and is softer there than on a
+panel. And nothing here has been on a panel at all.
 
 ## What a hardware pass has to check
 
