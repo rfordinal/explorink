@@ -106,7 +106,9 @@ build-time input, not a runtime one: `scripts/gen_mode_masks.py` compiles its
 `modes` block into the ride/hike/cycle class masks and `scripts/gen_mapstyle.py`
 compiles the drawing numbers into a `MapStyle` constant, both as `pre:` build
 steps; the device reads no style file at runtime. See
-[`docs/map-style.md`](./docs/map-style.md).
+[`docs/map-style.md`](./docs/map-style.md), and
+[`docs/map-style-variants.md`](./docs/map-style-variants.md) for the per-mode,
+per-zoom-rung part of it.
 
 The same renderer builds as a host binary — `pio run -t map-preview` renders real
 tiles to a PPM with no ESP32 toolchain and no flashing, which is how a style

@@ -6,6 +6,7 @@
 #include <string>
 
 #include "IMapCanvas.h"
+#include "MapRideMode.h"
 #include "MapStyle.h"
 
 // Shared by test/map_preview (the CLI tool) and the golden-file test
@@ -29,8 +30,13 @@ struct MapPreviewRequest {
   // which is why it is a free parameter here rather than a constant.
   int16_t markerY = 0;
 
-  // Style to draw with. nullptr means kDefaultMapStyle, i.e. the compiled
-  // data/mapstyle.json -- the same numbers the firmware build gets, which is
+  // Travel mode. Together with `zoom` it picks the style and the class mask,
+  // exactly as the device does -- data/mapstyle.json's `when` blocks are
+  // resolved per (mode, rung) at build time (MapStyleTable.h).
+  MapRideMode mode = MapRideMode::Ride;
+
+  // Style to draw with. nullptr means the compiled data/mapstyle.json resolved
+  // for `mode` at `zoom` -- the same numbers the firmware build gets, which is
   // the point of previewing here at all. The golden test pins its own frozen
   // style instead, so a style edit cannot break a fixture that exists to
   // guard the tile pipeline.
@@ -48,9 +54,10 @@ struct MapPreviewRequest {
   // (MapOffScreenReject in test/map_tile_reader/).
   bool rejectOffScreen = true;
 
-  // Override the rung's buildings decision (MapViewport::ZoomStep::buildings).
-  // Empty follows the rung, which is what the device does and what a preview
-  // should show by default.
+  // Override the rung's buildings decision (the style's `buildingsEnabled`,
+  // which data/mapstyle.json switches off above rung 0). Empty follows the
+  // style, which is what the device does and what a preview should show by
+  // default.
   //
   // Set it to compare the same view with and without them -- which is how the
   // "are buildings worth their cost at 3 m/px" question gets answered by looking

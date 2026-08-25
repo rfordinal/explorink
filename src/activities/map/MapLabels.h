@@ -135,12 +135,12 @@ void offer(MapLabelScratch& scratch, const MapPlaceRef& place, int anchorX, int 
 // scratch.route is marked) and after the place dots, since a label sits over
 // the map but a dot must not be hidden by another place's label box.
 //
-// `rungMaxLabels` is the zoom rung's own ceiling
-// (MapViewport::ZoomStep::maxLabels, carried in MapViewState); the smaller of it
-// and the style's `max_labels` wins. Two caps rather than one because they
-// answer different questions: the rung knows how much ground is on the panel and
-// therefore how many names that ground deserves, the style knows how many the
-// renderer may afford. Default 255 means "rung has no opinion".
-void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style, uint8_t rungMaxLabels = 255);
+// The cap is the style's own `max_labels`. It is per rung since 2026-08-25
+// (data/mapstyle.json, layers.places `when`: 3 names at rung 0, 14 at rung 6),
+// which is why there is one cap here and not two. There used to be a second
+// ceiling carried in MapViewState from MapViewport::ZoomStep::maxLabels, and
+// the smaller won -- the same number in two files, free to drift, answering the
+// same question. The rung's answer now arrives as the style itself.
+void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style);
 
 }  // namespace MapLabels

@@ -221,36 +221,44 @@ TEST(MapLabels, HonoursTheLabelCap) {
   EXPECT_EQ(scratch.placed, 2);
 }
 
-TEST(MapLabels, TheRungCapCanBeStricterThanTheStyle) {
+// The rung's own ceiling used to be a second argument here, taken from
+// MapViewport::ZoomStep::maxLabels, and the smaller of the two won. Since
+// 2026-08-25 the rung's answer *is* the style: data/mapstyle.json's
+// layers.places carries a `when` per rung (3 names at rung 0, 14 at rung 6) and
+// gen_mapstyle.py resolves it into the style this function is handed. One cap,
+// one place to edit it.
+TEST(MapLabels, TheRungsCapArrivesAsTheStylesOwn) {
   FakeCanvas canvas;
   MapLabelScratch scratch;
   MapStyle style = labelStyle();
-  style.placeMaxLabels = 6;
+  // Rung 0 shows 480 x 800 m: one settlement, so its resolved style allows few
+  // names however many the offer pass found.
+  style.placeMaxLabels = 2;
   for (int i = 0; i < 6; ++i) MapLabels::offer(scratch, place(100, 150 + i * 90, 2, "Vinosady"), 20, 780);
-  // Rung 0 shows 480 x 800 m: one settlement, so it allows fewer names than the
-  // style's own affordability cap (MapViewport::ZoomStep::maxLabels).
-  MapLabels::draw(canvas, scratch, style, 2);
+  MapLabels::draw(canvas, scratch, style);
 
   EXPECT_EQ(canvas.blackTexts().size(), 2u);
   EXPECT_EQ(scratch.placed, 2);
 }
 
-TEST(MapLabels, TheStyleCapStillWinsWhenItIsTheStricterOne) {
+TEST(MapLabels, ACapOfOneDrawsOnlyTheHighestRanked) {
   FakeCanvas canvas;
   MapLabelScratch scratch;
   MapStyle style = labelStyle();
   style.placeMaxLabels = 1;
   for (int i = 0; i < 4; ++i) MapLabels::offer(scratch, place(100, 150 + i * 90, 2, "Vinosady"), 20, 780);
-  MapLabels::draw(canvas, scratch, style, 14);
+  MapLabels::draw(canvas, scratch, style);
 
   EXPECT_EQ(canvas.blackTexts().size(), 1u);
 }
 
-TEST(MapLabels, ARungCapOfZeroDrawsNothing) {
+TEST(MapLabels, ACapOfZeroDrawsNothing) {
   FakeCanvas canvas;
   MapLabelScratch scratch;
+  MapStyle style = labelStyle();
+  style.placeMaxLabels = 0;
   MapLabels::offer(scratch, place(200, 400, 1, "Pezinok"), 20, 780);
-  MapLabels::draw(canvas, scratch, labelStyle(), 0);
+  MapLabels::draw(canvas, scratch, style);
 
   EXPECT_TRUE(canvas.texts.empty());
 }

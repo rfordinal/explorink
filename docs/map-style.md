@@ -4,6 +4,12 @@
 build-time input, compiled into the firmware by a generator, exactly like the
 i18n string tables.
 
+**The style is per travel mode and per zoom rung since 2026-08-25.** Any block in
+the file may carry a `when` list, and the generator resolves it into one compiled
+`MapStyle` per (mode, rung). The device still does no parsing -- it indexes a
+table. [`map-style-variants.md`](map-style-variants.md) is that mechanism: the
+grammar, the flash cost, and why the class filter is intersected with it.
+
 Verified by reading this tree on 2026-08-05 (branch `feat/mapstyle-to-renderer`,
 merged to `develop` the same day).
 

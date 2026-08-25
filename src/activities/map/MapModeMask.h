@@ -42,12 +42,33 @@ constexpr uint32_t mapClassBit(MapClassId id) { return 1u << static_cast<uint8_t
 
 // One mask per mode, indexed by MapRideMode. Default-constructed to the
 // compiled masks above, so an instance is usable with no loading step at all.
+// One mask per (mode, zoom rung), indexed by MapRideMode and the zoom ladder
+// step. Default-constructed to the compiled table, so an instance is usable
+// with no loading step at all.
+//
+// The rung is in here because a class filter that ignores zoom draws a
+// footpath at 45 m/px, where it is one pixel of noise, and drops nothing at
+// all at 1 m/px, where it is the thing being walked. gen_mode_masks.py builds
+// each entry as "the mode's classes AND the classes that rung's style draws",
+// so the filter can never let through a way the style then hides
+// (docs/map-data-spec.md, "Style is per mode and per rung").
 struct MapModeMasks {
-  uint32_t mask[kMapRideModeCount] = {kDefaultRideMask, kDefaultHikeMask, kDefaultCycleMask};
+  uint32_t mask[kMapRideModeCount][kMapZoomStepCount] = {
+      {kMapModeMasks[0][0], kMapModeMasks[0][1], kMapModeMasks[0][2], kMapModeMasks[0][3],
+       kMapModeMasks[0][4], kMapModeMasks[0][5], kMapModeMasks[0][6]},
+      {kMapModeMasks[1][0], kMapModeMasks[1][1], kMapModeMasks[1][2], kMapModeMasks[1][3],
+       kMapModeMasks[1][4], kMapModeMasks[1][5], kMapModeMasks[1][6]},
+      {kMapModeMasks[2][0], kMapModeMasks[2][1], kMapModeMasks[2][2], kMapModeMasks[2][3],
+       kMapModeMasks[2][4], kMapModeMasks[2][5], kMapModeMasks[2][6]},
+  };
 
-  uint32_t forMode(MapRideMode mode) const {
-    const uint8_t index = static_cast<uint8_t>(mode);
-    return index < kMapRideModeCount ? mask[index] : kDefaultRideMask;
+  // Out-of-range arguments clamp rather than fault: the rung comes from
+  // settings and the mode from a BLE or serial command, and neither may index
+  // past the array (../../../CLAUDE.md, "Security").
+  uint32_t forMode(MapRideMode mode, int zoomStep) const {
+    const uint8_t index = static_cast<uint8_t>(mode) < kMapRideModeCount ? static_cast<uint8_t>(mode) : 0;
+    const int step = zoomStep < 0 ? 0 : (zoomStep >= kMapZoomStepCount ? kMapZoomStepCount - 1 : zoomStep);
+    return mask[index][step];
   }
 };
 

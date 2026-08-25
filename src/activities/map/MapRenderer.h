@@ -21,28 +21,20 @@ struct MapViewState {
   int16_t markerX = 0;
   int16_t markerY = 0;
   MapHeading heading = MapHeading::N;
-  // Whether this frame draws buildings. Comes off the zoom rung
-  // (MapViewport::ZoomStep::buildings), because it is a decision about the rung
-  // rather than about the style -- and false means the layer is never opened, so
-  // it costs no card read either.
+  // Which rung of the zoom ladder this frame is drawn at.
   //
-  // Default true so a caller that does not know about rungs (a test, a probe)
-  // gets what the style asks for and nothing surprising.
-  bool drawBuildings = true;
-  // Whether this frame draws the built-up landuse class. Comes off the same rung
-  // table (MapViewport::ZoomStep::builtUp) and is the mirror of drawBuildings:
-  // rung 0 draws buildings without a wash, every rung above draws the wash
-  // instead. Forest is unaffected.
-  bool drawBuiltUp = true;
-  // Ceiling on place names for this frame, from the zoom rung
-  // (MapViewport::ZoomStep::maxLabels). The style's own `max_labels` caps it
-  // again, and the smaller of the two wins: the rung says how many names this
-  // much ground deserves, the style says how many the renderer may afford.
+  // It is here so the caller can pick the style for it -- mapStyleFor(mode,
+  // zoomStep) in MapStyleTable.h. render() itself never reads it: it is handed
+  // the resolved style and cannot tell which rung produced it, which is what
+  // keeps "the style says what is drawn" true with no second rung table beside
+  // it.
   //
-  // 255 by default so a caller that knows nothing about rungs (a test, a probe)
-  // gets the style's number and nothing surprising -- the same default reasoning
-  // as drawBuildings above.
-  uint8_t maxLabels = 255;
+  // Three fields used to live here instead -- drawBuildings, drawBuiltUp and
+  // maxLabels, each copied out of MapViewport::ZoomStep. They are now
+  // `when` blocks in data/mapstyle.json (layers.buildings.enabled, the built-up
+  // landuse rule, layers.places.max_labels), so the rung's drawing decisions and
+  // the style's are one table that is edited in one place.
+  uint8_t zoomStep = 0;
 };
 
 // Wall time each layer of one render() call spent, in milliseconds.

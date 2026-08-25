@@ -217,9 +217,8 @@ void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const 
   if (scratch.count < MapLabelScratch::kMaxCandidates) ++scratch.count;
 }
 
-void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style,
-                     const uint8_t rungMaxLabels) {
-  const uint8_t maxLabels = style.placeMaxLabels < rungMaxLabels ? style.placeMaxLabels : rungMaxLabels;
+void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style) {
+  const uint8_t maxLabels = style.placeMaxLabels;
   if (maxLabels == 0) return;
   if (style.placeLabelPx == 0 && style.placeLabelMinorPx == 0) return;
 

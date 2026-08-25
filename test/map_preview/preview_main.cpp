@@ -60,6 +60,10 @@ constexpr int SCREEN_HEIGHT = 800;
 
 bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& outPath) {
   bool haveLat = false, haveLon = false, haveTiles = false;
+  // --mode and --zoom together pick the class mask, and --mode may arrive
+  // first, so the mask cannot be built while the arguments are still coming in.
+  // Resolved once at the end, when both are known.
+  bool modeGiven = false;
   // -1 means "not given", which keeps the compiled style's marker_y_px rather
   // than snapping to the nearest ladder rung.
   int markerStep = -1;
@@ -112,7 +116,10 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
         std::fprintf(stderr, "--mode wants ride, hike or cycle\n");
         return false;
       }
-      request.classMask = MapModeMasks{}.forMode(mode);
+      // The mask is picked with the rung, so --mode must not be read before
+      // --zoom. Store the mode and let the pipeline resolve both together.
+      request.mode = mode;
+      modeGiven = true;
     } else if (arg == "--no-points") {
       request.drawPoints = false;
     } else if (arg == "--point-categories") {
@@ -178,6 +185,11 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
     }
     request.markerY = MapViewport::markerYForStep(markerStep);
   }
+  // Both known now. The device does exactly this lookup per frame
+  // (MapModeMasks::forMode), so a run with --mode reads off the card precisely
+  // the classes that mode draws at that rung -- and nothing the style hides
+  // there.
+  if (modeGiven) request.classMask = MapModeMasks{}.forMode(request.mode, request.zoom);
   // --fit-route takes the anchor off the route, so a coordinate is not only
   // unnecessary there, asking for one invites a mismatch between the two.
   if (request.fitRoute && !request.routePath.empty()) return haveTiles;

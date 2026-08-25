@@ -223,9 +223,12 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     // Two walks over one layer, built-up first: a park inside a housing estate
     // has to land on top of it, and a single walk would draw them in whatever
     // order the tile happens to store.
-    // Built-up is per rung (MapViewState::drawBuiltUp); forest is drawn at every
+    // Built-up is per rung, via the style (its landuse rule is hidden at rung 0,
+    // where the buildings themselves carry the settlement). drawLanduseClass
+    // already returns without a card walk when a class draws nothing, so there
+    // is no flag to test here. Forest is drawn at every
     // rung, because no building shows where a wood is.
-    if (state.drawBuiltUp) drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
+    drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
     drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
   }
   if (timing) lap(timing->landuseMs, mark);
@@ -233,8 +236,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // Both gates read: the style says whether buildings are drawn at all, the view
   // says whether this rung draws them. Either one false and the layer is not
   // opened -- and not opening it is what saves the card read, not just the
-  // drawing (MapStyle::buildingsEnabled, MapViewState::drawBuildings).
-  if (style.buildingsEnabled && state.drawBuildings && source.beginBuildings()) {
+  // drawing (MapStyle::buildingsEnabled, which is per rung since 2026-08-25).
+  if (style.buildingsEnabled && source.beginBuildings()) {
     MapWayRef ring;
     while (source.nextBuilding(ring)) {
       // Tone or hatch, whichever the style chose, then the outline on top so a
@@ -400,7 +403,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // Names last, over everything the map drew and under the marker the caller
   // draws next. A label is the only thing here that is placed rather than
   // simply drawn, so it has to see the finished picture (MapLabels.h).
-  if (labels != nullptr) MapLabels::draw(canvas, *labels, style, state.maxLabels);
+  if (labels != nullptr) MapLabels::draw(canvas, *labels, style);
   if (timing) lap(timing->labelsMs, mark);
 
   // No marker draw here -- MapActivity draws its own mode-specific one (ring +

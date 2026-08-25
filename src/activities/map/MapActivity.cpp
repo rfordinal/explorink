@@ -30,6 +30,7 @@
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
 #include "MapStyleDefaults.h"
+#include "MapStyleTable.h"
 #include "MapViewport.h"
 #include "MissingTilesConsoleSource.h"
 #include "MissingTilesStore.h"
@@ -1952,8 +1953,7 @@ void MapActivity::onEnter() {
   // (MapLabels.h). Allocated only when the compiled style actually draws labels,
   // so a style with max_labels 0 costs nothing. On OOM the map keeps its place
   // dots and loses the names -- a correct picture, one layer poorer, no crash.
-  if (kDefaultMapStyle.placeMaxLabels > 0 &&
-      (kDefaultMapStyle.placeLabelPx > 0 || kDefaultMapStyle.placeLabelMinorPx > 0)) {
+  if (mapStyleAnyDrawsPlaceLabels()) {
     labels_ = makeUniqueNoThrow<MapLabelScratch>();
     if (!labels_) LOG_ERR(kLogTag, "OOM: label scratch (%u bytes)", static_cast<unsigned>(sizeof(MapLabelScratch)));
   }
@@ -1976,7 +1976,7 @@ void MapActivity::onEnter() {
   // (SETTINGS.mapPointsEnabled): then nothing can open a shard, the `Nearby`
   // row is dimmed, and the 1.3 KB goes back to the heap the map screen is
   // always short of.
-  if (kDefaultMapStyle.pointSquarePx > 0 && pointsEnabled()) {
+  if (mapStyleAnyDrawsPointMarks() && pointsEnabled()) {
     pointFile_ = makeUniqueNoThrow<HalFileSource>();
     if (!pointFile_) {
       LOG_ERR(kLogTag, "OOM: HalFileSource for the point layer");
@@ -3860,7 +3860,7 @@ void MapActivity::drawViewedNearbyPoint() {
     LOG_DBG(kLogTag, "ring skipped: not in observe mode");
     return;
   }
-  if (kDefaultMapStyle.pointSquarePx <= 0) {
+  if (mapStyleFor(mode_, zoomStep()).pointSquarePx <= 0) {
     LOG_DBG(kLogTag, "ring skipped: the style draws no square");
     return;
   }
@@ -3882,7 +3882,7 @@ void MapActivity::drawViewedNearbyPoint() {
   // different *shape* is what carries at this size, so the highlight is a circle
   // around the square with a 5 px gap, and the gap is knocked out in white so
   // the map underneath cannot fill it in.
-  const int side = kDefaultMapStyle.pointSquarePx;
+  const int side = mapStyleFor(mode_, zoomStep()).pointSquarePx;
   const int gap = 5;                  // white between the square and the circle
   const int radius = side / 2 + gap;  // circle radius around the mark's centre
   const int box = radius * 2;
@@ -4456,7 +4456,7 @@ void MapActivity::syncLaddersFromConsole() {
     mode_ = requestedMode;
     LOG_DBG(kLogTag, "mode %s: zoom step %u, marker step %u, class mask 0x%08lx", mapRideModeName(mode_),
             static_cast<unsigned>(zoomStep()), static_cast<unsigned>(markerStep()),
-            static_cast<unsigned long>(modeMasks_.forMode(mode_)));
+            static_cast<unsigned long>(modeMasks_.forMode(mode_, zoomStep())));
   } else {
     const uint8_t index = static_cast<uint8_t>(mode_);
     if (consoleState_.zoomStep() < MapViewport::kZoomStepCount) zoomStep_[index] = consoleState_.zoomStep();
@@ -4976,9 +4976,7 @@ void MapActivity::renderRouteOverview() {
   view.markerY = anchorY;
   view.heading = static_cast<MapHeading>(fit.heading & 0x0F);
   // Same rule as the follow frame, from the rung the fit chose.
-  view.drawBuildings = MapViewport::kZoomLadder[fit.zoomStep].buildings;
-  view.drawBuiltUp = MapViewport::kZoomLadder[fit.zoomStep].builtUp;
-  view.maxLabels = MapViewport::kZoomLadder[fit.zoomStep].maxLabels;
+  view.zoomStep = static_cast<uint8_t>(fit.zoomStep);
 
   const uint32_t missing = drawMapLayers(range, canvas, view, nullptr, {}, &nearestPlaces_);
   // Pins on the overview too: "where is the car relative to this whole route" is
@@ -5044,6 +5042,12 @@ void MapActivity::renderRouteOverview() {
 uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCanvas& canvas, const MapViewState& view,
                                     MapRenderTiming* timing, MapLayerBits knownBadLayers,
                                     MapNearestPlaces* nearestOut) {
+  // The style for this frame's travel mode and zoom rung. Every rule in
+  // data/mapstyle.json was already resolved at build time, so this is one array
+  // lookup (MapStyleTable.h). It has to come before the tile config: the reject
+  // margin and the class filter are both read off it.
+  const MapStyle& style = mapStyleFor(mode_, view.zoomStep);
+
   MapTileSource::Config config;
   config.rootDir = kTileRoot;
   config.z = range.z;
@@ -5054,14 +5058,17 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // The mode filter. Same tiles, same bytes off the card, different classes
   // drawn -- never a different tile set (docs/map-data-spec.md, "Mode is a
   // render-time filter").
-  config.classMask = modeMasks_.forMode(mode_);
+  // The rung is in the filter too since 2026-08-25: a class the style hides at
+  // this rung is not read past its header, instead of being read, projected and
+  // then drawn at width 0.
+  config.classMask = modeMasks_.forMode(mode_, view.zoomStep);
   // The screen test: geometry whose bbox cannot reach the panel is dropped in
   // the source, before its points are projected (MapTileSource::Config). The
   // margin comes off the compiled style, so a wider road in mapstyle.json
   // widens it with no code change.
   config.screenWidth = static_cast<int16_t>(renderer.getScreenWidth());
   config.screenHeight = static_cast<int16_t>(renderer.getScreenHeight());
-  config.rejectMarginPx = mapStyleMaxStrokePx(kDefaultMapStyle);
+  config.rejectMarginPx = mapStyleMaxStrokePx(style);
   // Card time, so a slow frame can be split into "the card was slow" and "the
   // arithmetic was slow" -- the two have entirely different fixes.
   config.nowUs = &cardClockUs;
@@ -5070,9 +5077,9 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   config.knownBadLayers = knownBadLayers;
   source_->begin(config);
 
-  // kDefaultMapStyle is the compiled data/mapstyle.json (MapStyleDefaults.h,
-  // generated by scripts/gen_mapstyle.py). Nothing overrides it at runtime;
-  // the device reads no style file off the card.
+  // `style` is the compiled data/mapstyle.json resolved for this mode and rung
+  // (MapStyleDefaults.h, generated by scripts/gen_mapstyle.py). Nothing
+  // overrides it at runtime; the device reads no style file off the card.
   //
   // The route rides along as a second source, re-read from the card on every
   // reset and never held in RAM (IMapRouteSource.h). nullptr when the rider
@@ -5104,12 +5111,12 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     pointConfig.screenHeight = static_cast<int16_t>(renderer.getScreenHeight());
     // A mark is drawn centred on its point, so the margin is the mark's own
     // reach and not the widest stroke in the style.
-    pointConfig.rejectMarginPx = MapPointMarks::reachPx(kDefaultMapStyle);
+    pointConfig.rejectMarginPx = MapPointMarks::reachPx(style);
     points_->begin(pointConfig);
     pointSource = points_.get();
   }
 
-  MapRenderer::render(canvas, *source_, view, kDefaultMapStyle, route_.get(), timing, nearestOut, labels_.get(),
+  MapRenderer::render(canvas, *source_, view, style, route_.get(), timing, nearestOut, labels_.get(),
                       pointSource);
 
   // Hatch after the geometry, because which tiles are missing is only known
@@ -5255,9 +5262,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   view.heading = static_cast<MapHeading>(frameHeading & 0x0F);
   // Buildings are a rung decision (MapViewport::ZoomStep::buildings): only the
   // closest rung draws them, and on every other rung the layer is never opened.
-  view.drawBuildings = MapViewport::kZoomLadder[zoomStep()].buildings;
-  view.drawBuiltUp = MapViewport::kZoomLadder[zoomStep()].builtUp;
-  view.maxLabels = MapViewport::kZoomLadder[zoomStep()].maxLabels;
+  view.zoomStep = static_cast<uint8_t>(zoomStep());
 
   // Per-layer timing, so a slow reset can be attributed to a layer rather than
   // to the frame (docs/optimization/01-render-pipeline.md, step 1). Costs one

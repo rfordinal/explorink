@@ -40,6 +40,7 @@ add_custom_command(
   OUTPUT "${MAP_MODE_MASK_DEFAULTS}"
   COMMAND ${Python3_EXECUTABLE} "${REPO_ROOT}/scripts/gen_mode_masks.py" "${MAPSTYLE_JSON}" "${MAP_MODE_MASK_DEFAULTS}"
   DEPENDS "${MAPSTYLE_JSON}" "${REPO_ROOT}/scripts/gen_mode_masks.py"
+          "${REPO_ROOT}/scripts/mapstyle_variants.py"
   COMMENT "gen_mode_masks.py: mode class masks from mapstyle.json"
   VERBATIM
 )
@@ -48,11 +49,21 @@ add_custom_command(
   OUTPUT "${MAP_STYLE_DEFAULTS}"
   COMMAND ${Python3_EXECUTABLE} "${REPO_ROOT}/scripts/gen_mapstyle.py" "${MAPSTYLE_JSON}" "${MAP_STYLE_DEFAULTS}"
   DEPENDS "${MAPSTYLE_JSON}" "${REPO_ROOT}/scripts/gen_mapstyle.py"
+          "${REPO_ROOT}/scripts/mapstyle_variants.py"
   COMMENT "gen_mapstyle.py: MapStyle from mapstyle.json"
   VERBATIM
 )
 
 add_custom_target(map_generated_headers DEPENDS "${MAP_MODE_MASK_DEFAULTS}" "${MAP_STYLE_DEFAULTS}")
+
+# The `when` resolver is Python, and by the time the firmware sees a style every
+# rule in it is already gone -- so a mistake there compiles cleanly and draws the
+# wrong map. Its tests run under the same `ctest` as everything else rather than
+# needing a second command nobody remembers.
+add_test(
+  NAME MapstyleVariants
+  COMMAND ${Python3_EXECUTABLE} "${REPO_ROOT}/scripts/test_mapstyle_variants.py"
+)
 
 add_library(crosspoint_test_common INTERFACE)
 target_include_directories(crosspoint_test_common INTERFACE
@@ -95,4 +106,5 @@ add_subdirectory(map_tile_path)
 add_subdirectory(map_follow)
 add_subdirectory(map_replay)
 add_subdirectory(map_window)
+add_subdirectory(map_style_table)
 add_subdirectory(grayscale_shades)
