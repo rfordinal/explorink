@@ -229,6 +229,99 @@ per-rung cap rises to 14 names, which is right for a region of villages and too
 many for a metro area, and `max_label_width_px` truncates rather than dropping a
 name that will not fit. Same density gap, one layer over.
 
+## Which classes are the mesh, measured
+
+"Those dense lines around Neratovice" could not be identified by eye, which is
+the whole problem with tuning by looking. `mapbuilder/tools/class_census.py`
+(parent repo) reads the tiles and answers it. Eastern Prague at rung 6, 12 z11
+tiles, 24,160 ways, 6,313 km of road geometry:
+
+| class | ways | km | % of length | width at rung 6 | ink |
+|---|---|---|---|---|---|
+| railway | 2,399 | 1,140 | 18.1 % | 4 px | **26.4 %** |
+| tertiary | 8,602 | 2,243 | 35.5 % | 2 px | **26.0 %** |
+| motorway | 1,393 | 535 | 8.5 % | 5 px | 15.5 % |
+| secondary | 7,393 | 1,287 | 20.4 % | 2 px | 14.9 % |
+| trunk | 1,681 | 356 | 5.6 % | 4 px | 8.2 % |
+| primary | 1,486 | 235 | 3.7 % | 3 px | 4.1 % |
+| unclassified | 1,181 | 462 | 7.3 % | 1 px | 2.7 % |
+
+Ink is the line's length in screen pixels times its drawn width, against a
+384,000 px panel. They sum past 100 % because ways overlap and run off screen,
+so the ranking is the finding and not the total. One class at a time, rendered:
+`../../docs/device-preview-shots/per-class-prague-r6-2026-08-25.png`.
+
+Around Neratovice specifically (50.22-50.30 N, 14.46-14.58 E, 1,537 ways,
+734 km): tertiary 38.3 % of length, railway 21.5 %, secondary 13.6 %,
+unclassified 13.1 %. **The mesh is `tertiary`**, with `secondary` as its second
+layer.
+
+Two things fell out that nobody was looking for:
+
+- **`railway` had no `when` at all** and stayed 4 px ticked at 45 m/px, which
+  made it the single biggest ink item in the viewport. The first pass tuned
+  roads and never looked at it.
+- **`unclassified` is already the 1 px hairline** and reads exactly as a paper
+  map's minor road should: information when you look closely, silence at a
+  glance. That is the evidence that 1 px is the right weight for the mesh, not
+  a guess about it.
+
+## A casing spends less ink than a thinner solid line
+
+Found by getting it wrong. The first hairline proposal traded casings away for
+smaller widths and **ink went up** at rung 4, 19.2 % to 20.5 % over Prague.
+
+A casing draws the road at its full width in black and then a white stroke
+`2 * casing` narrower inside it, so a 4 px road with a 1 px casing inks two
+1 px edges: 2 px of black with white between them. A 3 px solid road inks 3 px.
+Narrower, more ink, and it also throws away the thing that made it read as a
+major road.
+
+So the rule for thinning a class: **keep the casing while the road is one you
+steer by, and go to a solid hairline only when it stops being one.** Never the
+step in between.
+
+## The hairline proposal, measured and not committed
+
+`../../docs/style-hairline-proposal-2026-08-25.json` (parent repo) is a
+complete style carrying it. Rendered against the committed one:
+`../../docs/device-preview-shots/hairline-proposal-2026-08-25.png`.
+
+The principle at the two widest rungs: three cased weights for the roads you
+steer by (motorway, trunk, primary), one thin solid for the connecting network
+(secondary), a 1 px hairline for the mesh (tertiary, and unclassified already).
+Railway gets a `when` for the first time.
+
+| | rung 4 | rung 5 | rung 6 |
+|---|---|---|---|
+| motorway | 7 px casing 2 | 6 casing 1 | 5 casing 1 |
+| trunk | 6 casing 1 | 5 casing 1 | 4 casing 1 |
+| primary | 5 casing 1 | 4 casing 1 | 3 solid |
+| secondary | 4 casing 1 | 2 solid | **1 solid** |
+| tertiary | 2 solid | **1 solid** | **1 solid** |
+| railway | 4 casing 1 | 3 casing 1 | 2 solid |
+
+Ink, points of panel, marks off:
+
+| | rung 3 | rung 4 | rung 5 | rung 6 |
+|---|---|---|---|---|
+| Prague, committed | 16.2 % | 19.2 % | 23.8 % | 25.7 % |
+| Prague, proposal | 16.2 % | 17.7 % | 18.6 % | **18.5 %** |
+| Pezinok, committed | 6.2 % | 7.5 % | 9.6 % | 10.6 % |
+| Pezinok, proposal | 6.2 % | 7.3 % | 8.7 % | **8.8 %** |
+
+What the render shows and the numbers do not: at rung 6 the motorway and trunk
+spine through Praha becomes the strongest thing on the panel instead of one
+strand in a tangle, and Neratovice, Kostelec, Klecany and Roztoky are readable.
+Prague's ink stops climbing with the rung, which was the defect.
+
+**It does not close the density gap**, only narrows it: 18.5 % against
+Pezinok's 8.8 % is still 2.1x, so a capital still draws twice the ink of
+countryside at the same rung. The density input discussed above is still the
+missing piece.
+
+Uncommitted because these are style numbers and the maintainer judges those.
+
 ## What a hardware pass has to check
 
 Nothing here has been on a panel. In order of what would hurt most:
