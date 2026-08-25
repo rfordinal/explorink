@@ -183,6 +183,52 @@ rung 4 goes 9.6 % to 7.5 %, at rung 5 11.2 % to 9.6 %, at rung 6 13.0 % to
 because which rung should stop drawing POIs is a style decision for the
 maintainer, not a mechanism decision, and 4 is a guess.
 
+## A rung says the scale, not the density, and a capital shows it
+
+Second reference view, added the same day at the maintainer's coordinates
+(50 04 29.0 N, 14 30 08.2 E, eastern Prague):
+`../../docs/device-preview-shots/ref-prague-east-ladder-ride.png`. POI marks off
+in both references from now on, also the maintainer's call -- a mark is a fixed
+18 px square and at the wide rungs the marks are most of the ink.
+
+Ink along the two ladders, same style, same mode, marks off:
+
+| rung | m/px | Pezinok | Prague east |
+|---|---|---|---|
+| 0 | 1 | 12.6 % | 11.9 % |
+| 2 | 6 | 9.5 % | 16.2 % |
+| 4 | 20 | 9.6 % | 19.2 % |
+| 5 | 32 | 11.2 % | 23.8 % |
+| 6 | 45 | 13.0 % | **25.7 %** |
+
+**They move in opposite directions.** Over Slovak countryside the ink falls as
+the rung widens, which is the per-rung widths doing their job. Over Prague it
+climbs steadily and ends at twice Pezinok's, and on the panel the city core is a
+black mass by rung 5 with no street network readable inside it.
+
+So the per-rung table is not wrong, it is **incomplete**: a rung tells the style
+how much ground a pixel covers, and says nothing about how much road is on that
+ground. The widths in the file were tuned on the Slovak view and a capital needs
+more thinning at the same rung. Nothing in the style can currently express that,
+because there is no density input to key a `when` on -- only mode and rung.
+
+Two shapes that could fix it, neither built and neither obviously right:
+
+- **Build-time.** The tile already knows how much it holds. A density figure per
+  tile, or a stricter class cull inside a dense z11 tile, keeps the style simple
+  and costs a tile rebuild. Same argument as the LOD culls
+  (`../../docs/map-data-spec.md`, "Which layers a LOD carries at all").
+- **Render-time.** The renderer counts what the viewport is about to draw and
+  picks a narrower variant above a threshold. Cheap to try, but it makes the
+  picture depend on where you are standing, which is the hysteresis problem the
+  zoom ladder was shaped to avoid.
+
+Also visible on the Prague sheet and not a road problem: **place labels collide
+and truncate at rungs 5 and 6** ("Kostelec na...", "Libcice nad..."). The
+per-rung cap rises to 14 names, which is right for a region of villages and too
+many for a metro area, and `max_label_width_px` truncates rather than dropping a
+name that will not fit. Same density gap, one layer over.
+
 ## What a hardware pass has to check
 
 Nothing here has been on a panel. In order of what would hurt most:
