@@ -1,8 +1,10 @@
 # Style is per travel mode and per zoom rung
 
-**Built 2026-08-25. Unverified on hardware** — there is no device to test on
-(the X4 was lost 2026-08-22). Host tests pass, the ESP32 build is clean, and the
-host renderer draws it; nothing here has been looked at on a panel.
+**Built 2026-08-25. Judged on the host renderer, not on a panel** — there is no
+device to test on (the X4 was lost 2026-08-22). Host tests pass, the ESP32 build
+is clean, and all seven rungs were rendered and compared: see "Judged on the host
+renderer" below. What the preview cannot answer is what the panel does with a
+5 px road next to a 4 px one, which is exactly the number this change tunes.
 
 ## The problem
 
@@ -130,6 +132,56 @@ style.
 | `src/activities/map/MapStyleTable.h` | `mapStyleFor(mode, rung)`. The entire runtime cost. |
 | `scripts/test_mapstyle_variants.py` | the resolver's tests, run by `ctest` as `MapstyleVariants`. |
 | `test/map_style_table/` | what the generators produced, and the invariants the firmware depends on. |
+
+## Judged on the host renderer, 2026-08-25
+
+The same `MapRenderer` builds as a host binary (`test/map_preview`), so a style
+can be judged without a panel. All seven rungs, ride mode, anchored at Pezinok
+so the view runs from a town centre out to Modra, Svaty Jur and Senec:
+`../../docs/device-preview-shots/per-rung-roads-ladder-2026-08-25.png`.
+
+| rung | m/px | ink before | ink after |
+|---|---|---|---|
+| 0 | 1 | 12.6 % | 12.6 % |
+| 1 | 3 | 12.5 % | 12.5 % |
+| 2 | 6 | 10.1 % | 9.5 % |
+| 3 | 12 | 8.9 % | 8.3 % |
+| 4 | 20 | 10.3 % | 9.6 % |
+| 5 | 32 | 11.2 % | 11.2 % |
+| 6 | 45 | 13.8 % | 13.0 % |
+
+Rungs 0 and 1 are byte-identical, which is the design and also the check that
+nothing resolved wrong. Rungs 2 to 4 are the clear win: the main-road network
+stops reading as a black web and the place names come forward. Rungs 5 and 6
+improve but less, and rung 5 barely moved.
+
+**What it is still missing** is a hierarchy at the far end. At rung 6 the five
+main classes are 5/4/4/3/2 px, which is close to flat: a motorway and a
+secondary road are one pixel apart. That is the number to tune next, and it
+argues for widening the spread rather than thinning everything further.
+
+## The bigger legibility win is not the roads
+
+Rendering the ladder made this obvious and it was not what the work set out to
+find. **At rungs 4 to 6 the POI marks are the picture.** A mark is a fixed 18 px
+square by design, so at 45 m/px each one covers 810 m of ground, and a few dozen
+of them bury the map they are marking.
+
+The mechanism this document describes makes that a one-line style edit:
+
+```json
+"points": { "square_px": 18, "when": [ {"steps": [4, 5, 6], "square_px": 0} ] }
+```
+
+`square_px == 0` hides the layer, and hidden means the shards are never opened,
+so the coarse rungs also stop paying for a file per 39 km.
+
+Rendered as a proposal, **not committed**:
+`../../docs/device-preview-shots/per-rung-poi-proposal-2026-08-25.png`. Ink at
+rung 4 goes 9.6 % to 7.5 %, at rung 5 11.2 % to 9.6 %, at rung 6 13.0 % to
+10.6 % -- three times the change the road widths bought. It is left uncommitted
+because which rung should stop drawing POIs is a style decision for the
+maintainer, not a mechanism decision, and 4 is a guess.
 
 ## What a hardware pass has to check
 
