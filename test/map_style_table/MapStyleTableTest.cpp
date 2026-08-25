@@ -47,6 +47,13 @@ TEST(MapStyleTable, RoadsGetNarrowerAsTheRungGetsCoarser) {
   // Not a check on any particular number: those are a style decision to judge
   // on the panel, and this test must not have to be edited every time one is
   // tuned. It checks the direction, which is the thing that would be a bug.
+  //
+  // **Motorway is deliberately exempt from having to narrow.** Maintainer's
+  // call 2026-08-25: it is 5 px of shaded inline inside a 2 px outline at every
+  // rung, because it is the class you find at a glance and it should not fade
+  // out at the widest view. It still may not get *wider* as the rung coarsens
+  // -- that is a bug at any width, and this test caught exactly that once, when
+  // a 6-then-7 ladder was proposed.
   const MapClassId mains[] = {MapClassId::Motorway, MapClassId::Trunk, MapClassId::Primary,
                               MapClassId::Secondary, MapClassId::Tertiary};
   for (const MapClassId classId : mains) {
@@ -58,8 +65,13 @@ TEST(MapStyleTable, RoadsGetNarrowerAsTheRungGetsCoarser) {
       EXPECT_LE(width, previous) << "class " << (int)index << " widens at rung " << step;
       previous = width;
     }
+    if (classId == MapClassId::Motorway) continue;
     EXPECT_LT(previous, atRungZero) << "class " << (int)index << " never narrows across the ladder";
   }
+  // And the ladder as a whole still has to thin, or the per-rung table is doing
+  // nothing at all -- which is what the exemption above could otherwise hide.
+  EXPECT_LT(mapStyleFor(MapRideMode::Ride, kRungs - 1).roadWidthPx[static_cast<uint8_t>(MapClassId::Tertiary)],
+            mapStyleFor(MapRideMode::Ride, 0).roadWidthPx[static_cast<uint8_t>(MapClassId::Tertiary)]);
 }
 
 TEST(MapStyleTable, TheMarkerAnchorIsTheSameAtEveryModeAndRung) {

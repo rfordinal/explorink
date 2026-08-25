@@ -185,7 +185,7 @@
       "enabled": true,
       "rules": [
         {
-          "casing_px": 3,
+          "casing_px": 2,
           "color": "#000000",
           "hidden": false,
           "major": true,
@@ -195,44 +195,7 @@
             ]
           },
           "pattern": "solid",
-          "when": [
-            {
-              "steps": [
-                2
-              ],
-              "width": 11,
-              "casing_px": 1
-            },
-            {
-              "steps": [
-                3
-              ],
-              "width": 9,
-              "casing_px": 1
-            },
-            {
-              "steps": [
-                4
-              ],
-              "width": 9,
-              "casing_px": 1
-            },
-            {
-              "steps": [
-                5
-              ],
-              "width": 8,
-              "casing_px": 1
-            },
-            {
-              "steps": [
-                6
-              ],
-              "width": 7,
-              "casing_px": 1
-            }
-          ],
-          "width": 11,
+          "width": 9,
           "fill": "tone",
           "tone": "light"
         },

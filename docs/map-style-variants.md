@@ -420,8 +420,20 @@ casing drops from 2 px back to 1 px and the widths go up:
 
 | class | r0 | r1 | r2 | r3 | r4 | r5 | r6 |
 |---|---|---|---|---|---|---|---|
-| motorway | 11/3 | 11/3 | 11/1 | 9/1 | 9/1 | 8/1 | 7/1 |
+| motorway | 9/2 | 9/2 | 9/2 | 9/2 | 9/2 | 9/2 | 9/2 |
 | trunk | 10/3 | 10/3 | 9/1 | 7/1 | 7/1 | 6/1 | 5/1 |
+
+**motorway is 5 px of inline inside a 2 px outline, at every rung.** Maintainer,
+2026-08-25, after looking at it on the phone. It is the one class deliberately
+exempt from thinning: it is what you find at a glance, and a motorway that fades
+out at the widest rung defeats the point of being at that rung. It still may not
+get *wider* as the rung coarsens -- `test/map_style_table` enforces that for
+every class, and it caught a 6-then-7 ladder once.
+
+The exemption cost almost nothing: **+0.3 points of ink at rung 6 and nothing at
+all below rung 4** over Prague. The interior stayed 5 px either way, so only the
+outline doubled, and that is 535 km of motorway against 6,313 km of road in the
+viewport.
 
 Measured over Prague east, marks off:
 
