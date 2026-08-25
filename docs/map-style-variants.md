@@ -236,15 +236,24 @@ the whole problem with tuning by looking. `mapbuilder/tools/class_census.py`
 (parent repo) reads the tiles and answers it. Eastern Prague at rung 6, 12 z11
 tiles, 24,160 ways, 6,313 km of road geometry:
 
-| class | ways | km | % of length | width at rung 6 | ink |
-|---|---|---|---|---|---|
-| railway | 2,399 | 1,140 | 18.1 % | 4 px | **26.4 %** |
-| tertiary | 8,602 | 2,243 | 35.5 % | 2 px | **26.0 %** |
-| motorway | 1,393 | 535 | 8.5 % | 5 px | 15.5 % |
-| secondary | 7,393 | 1,287 | 20.4 % | 2 px | 14.9 % |
-| trunk | 1,681 | 356 | 5.6 % | 4 px | 8.2 % |
-| primary | 1,486 | 235 | 3.7 % | 3 px | 4.1 % |
-| unclassified | 1,181 | 462 | 7.3 % | 1 px | 2.7 % |
+The `width` and `ink` columns are before this pass; the last two are after it,
+measured on the per-class renders rather than computed.
+
+| class | ways | km | % of length | width before | ink before | width now | ink now |
+|---|---|---|---|---|---|---|---|
+| railway | 2,399 | 1,140 | 18.1 % | 4 px | **26.4 %** | 2 px | 5.2 % |
+| tertiary | 8,602 | 2,243 | 35.5 % | 2 px | **26.0 %** | 1 px | 5.1 % |
+| motorway | 1,393 | 535 | 8.5 % | 5 px | 15.5 % | 5 px | 2.2 % |
+| secondary | 7,393 | 1,287 | 20.4 % | 2 px | 14.9 % | 1 px | 3.6 % |
+| trunk | 1,681 | 356 | 5.6 % | 4 px | 8.2 % | 4 px | 2.5 % |
+| primary | 1,486 | 235 | 3.7 % | 3 px | 4.1 % | 3 px | 3.2 % |
+| unclassified | 1,181 | 462 | 7.3 % | 1 px | 2.7 % | 1 px | 2.4 % |
+
+**Nothing dominates any more.** Every class now costs between 2.2 % and 5.2 % of
+the panel, where before two of them cost 26 % each. That matters beyond the
+totals: it means the remaining difference between Prague and Pezinok is density
+of road on the ground, not one class being drawn wrong, so the next move is the
+density question and not another width.
 
 Ink is the line's length in screen pixels times its drawn width, against a
 384,000 px panel. They sum past 100 % because ways overlap and run off screen,
