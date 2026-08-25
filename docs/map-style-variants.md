@@ -307,35 +307,56 @@ does too.
 What the roads do across the ladder now (the compiled table, read off
 `MapStyleDefaults.h`):
 
+Width and casing, `width/casing`:
+
 | class | r0 | r1 | r2 | r3 | r4 | r5 | r6 |
 |---|---|---|---|---|---|---|---|
-| motorway | 11 | 11 | 9 | 7 | 7 | 6 | 5 |
-| trunk | 10 | 10 | 8 | 6 | 6 | 5 | 4 |
-| primary | 9 | 9 | 7 | 5 | 5 | 4 | 3 |
-| secondary | 8 | 8 | 6 | 4 | 4 | 2 | **1** |
-| tertiary | 7 | 7 | 5 | 3 | 2 | **1** | **1** |
-| railway | 4 | 4 | 4 | 4 | 4 | 3 | 2 |
-| unclassified | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| motorway | 11/3 | 11/3 | 9/2 | 7/2 | 7/2 | 7/2 | **7/2** |
+| trunk | 10/3 | 10/3 | 8/2 | 6/2 | 6/2 | 5/2 | **5/2** |
+| primary | 9/2 | 9/2 | 7/2 | 5/1 | 5/1 | 4/1 | 3/0 |
+| secondary | 8/2 | 8/2 | 6/1 | 4/1 | 4/1 | 2/0 | **1/0** |
+| tertiary | 7/2 | 7/2 | 5/1 | 3/0 | 2/0 | **1/0** | **1/0** |
+| railway | 4/1 | 4/1 | 4/1 | 4/1 | 4/1 | 3/1 | 2/0 |
+| unclassified | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 |
 
-Casings go 2, 2, 2, 1, 1 down the main classes and drop to 0 where the road
-becomes a hairline. Rung 6 ends with five distinct weights plus the hairline,
-which is the hierarchy that was missing.
+**motorway and trunk keep a 2 px casing from rung 3 out**, not 1 px --
+maintainer's call, 2026-08-25: a 1 px edge is too faint to read as a road you
+steer by once the mesh below it is a hairline. That forced two widths, and both
+forcings are worth knowing:
+
+- `casing 2` needs `width > 4`, or `gen_mapstyle.py` drops it for having no
+  white core left. So trunk goes 4 to **5** at rung 6.
+- With trunk at 5, motorway at 5 would have been the same mark. It goes to
+  **7**, whose 3 px white core reads against trunk's 1 px.
+- motorway is then 7 at rungs 3 to 6 rather than thinning. Deliberate: it is the
+  one class that should not fade at the widest rung, because it is what you find
+  at a glance. It also has to be flat rather than 6 then 7, since a class that
+  gets *wider* as the rung coarsens is a bug the host test catches.
+
+Rung 6 ends with motorway and trunk as cased double lines, primary as a 3 px
+solid, and one hairline texture for everything below.
 
 Ink, points of panel, POI marks off, before this pass and after:
 
 | | r3 | r4 | r5 | r6 |
 |---|---|---|---|---|
 | Prague east, one width per class | 16.2 % | 19.2 % | 23.8 % | 25.7 % |
-| Prague east, secondary 2 px | 16.2 % | 17.7 % | 18.6 % | 20.6 % |
-| Prague east, secondary 1 px | 16.2 % | 17.7 % | 18.6 % | **18.5 %** |
+| Prague east, hairline mesh, casing 1 | 16.2 % | 17.7 % | 18.6 % | 18.5 % |
+| Prague east, hairline mesh, casing 2 | 16.9 % | 18.4 % | 19.9 % | **19.6 %** |
 | Pezinok, one width per class | 6.2 % | 7.5 % | 9.6 % | 10.6 % |
-| Pezinok, secondary 2 px | 6.2 % | 7.3 % | 8.7 % | 9.9 % |
-| Pezinok, secondary 1 px | 6.2 % | 7.3 % | 8.7 % | **8.8 %** |
+| Pezinok, hairline mesh, casing 1 | 6.2 % | 7.3 % | 8.7 % | 8.8 % |
+| Pezinok, hairline mesh, casing 2 | 6.2 % | 7.3 % | 8.7 % | **8.9 %** |
 
-**Rung 5 is now the densest rung on the ladder**, 18.6 % against rung 6's
-18.5 % over Prague. It still draws secondary at 2 px and railway at 3 px. That
-is the next thing to look at, and it is open: the same argument that took rung 6
-to a hairline applies at 32 m/px, where a 2 px secondary road is a 64 m band.
+The 2 px casing costs about **1.1 points over Prague and nothing over Pezinok**,
+which is the shape you would expect: it only touches motorway and trunk, and
+those are 535 km and 356 km in the Prague viewport against 2,243 km of tertiary.
+It buys the thing the ink number cannot show, which is that the network you
+steer by reads as a network rather than as the widest strands of the mesh.
+
+**Rung 5 is now the densest rung on the ladder**, 19.9 % against rung 6's
+19.6 % over Prague. It still draws secondary at 2 px and railway at 3 px, and
+the same argument that took rung 6 to a hairline applies at 32 m/px, where a
+2 px secondary road is a 64 m band. Open.
 
 What the render shows and the numbers do not: at rung 6 the motorway and trunk
 spine through Praha becomes the strongest thing on the panel instead of one
@@ -344,8 +365,8 @@ readable. The reference ladders are re-rendered against this style
 (`../../docs/device-preview-shots/ref-prague-east-ladder-ride.png`,
 `ref-pezinok-modra-ladder-ride.png`).
 
-**It does not close the density gap**, only narrows it: 18.5 % against
-Pezinok's 8.8 % is 2.10x, against 2.42x before any of this. A capital still draws twice the ink
+**It does not close the density gap**, only narrows it: 19.6 % against
+Pezinok's 8.9 % is 2.20x, against 2.42x before any of this. A capital still draws twice the ink
 of countryside at the same rung, and the density input discussed above is still
 the missing piece.
 

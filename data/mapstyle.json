@@ -176,7 +176,7 @@
       "ring_px": 3
     },
     "roads": {
-      "_comment": "Widths in DEVICE PIXELS (as is every length in this file). Rules match on `class`, the tile format's own class enum (mapbuilder/tilegen/class_spec.py) -- the same vocabulary `modes` uses -- not raw OSM `highway` tags; the tag-to-class mapping lives in mapbuilder/tilegen/tag_to_class.py. casing_px > 0 draws the road as two parallel black edges of that thickness with the road left white between them -- how a wide main road is distinguished from a thin one on 1-bit e-ink. `major` marks roads you would turn onto (the junctions layer keys off it, NOT off width, which is cosmetic). `hidden` means matched-but-not-drawn, and a class hidden at a rung is not even read off the card there -- gen_mode_masks.py intersects it out of that rung's class mask. Every class in the enum except `unknown` has a rule here; `unknown` is deliberately unstyled and falls to `default` below. The main classes carry a `when` list of per-rung widths (see _comment_when): a device pixel is 1 m of ground at rung 0 and 45 m at rung 6, so a fixed 11 px motorway is a 495 m band at the coarse end. The shape at the two widest rungs, measured on the Prague and Pezinok ladder references 2026-08-25: three cased weights for the roads you steer by (motorway, trunk, primary), a thin solid for the connecting network (secondary, 2 px), and a 1 px hairline for the mesh (tertiary; unclassified already was one). NEVER trade a casing for a thinner solid -- a casing inks two edges and leaves the middle white, so 4 px cased costs 2 px of black and 3 px solid costs 3, and doing it made rung 4 darker. UNVERIFIED on a panel: measured on the host renderer only.",
+      "_comment": "Widths in DEVICE PIXELS (as is every length in this file). Rules match on `class`, the tile format's own class enum (mapbuilder/tilegen/class_spec.py) -- the same vocabulary `modes` uses -- not raw OSM `highway` tags; the tag-to-class mapping lives in mapbuilder/tilegen/tag_to_class.py. casing_px > 0 draws the road as two parallel black edges of that thickness with the road left white between them -- how a wide main road is distinguished from a thin one on 1-bit e-ink. `major` marks roads you would turn onto (the junctions layer keys off it, NOT off width, which is cosmetic). `hidden` means matched-but-not-drawn, and a class hidden at a rung is not even read off the card there -- gen_mode_masks.py intersects it out of that rung's class mask. Every class in the enum except `unknown` has a rule here; `unknown` is deliberately unstyled and falls to `default` below. The main classes carry a `when` list of per-rung widths (see _comment_when): a device pixel is 1 m of ground at rung 0 and 45 m at rung 6, so a fixed 11 px motorway is a 495 m band at the coarse end. The shape at the two widest rungs, measured on the Prague and Pezinok ladder references 2026-08-25: three cased weights for the roads you steer by (motorway, trunk, primary), a thin solid for the connecting network (secondary, 2 px), and a 1 px hairline for the mesh (tertiary; unclassified already was one). NEVER trade a casing for a thinner solid -- a casing inks two edges and leaves the middle white, so 4 px cased costs 2 px of black and 3 px solid costs 3, and doing it made rung 4 darker. motorway and trunk carry a 2 px casing rather than 1 px from rung 3 out (maintainer 2026-08-25): a 1 px edge is too faint to read as a road you steer by once the mesh is a hairline. That forced two widths -- casing 2 needs width > 4 or gen_mapstyle.py drops it for having no white core, so trunk goes 4 to 5 at rung 6, and motorway goes 5 to 7 so its white core is 3 px against trunk's 1 px instead of both being the same mark. UNVERIFIED on a panel: measured on the host renderer only.",
       "default": {
         "color": "#000000",
         "pattern": "solid",
@@ -221,15 +221,15 @@
               "steps": [
                 5
               ],
-              "width": 6,
-              "casing_px": 1
+              "width": 7,
+              "casing_px": 2
             },
             {
               "steps": [
                 6
               ],
-              "width": 5,
-              "casing_px": 1
+              "width": 7,
+              "casing_px": 2
             }
           ],
           "width": 11
@@ -258,28 +258,28 @@
                 3
               ],
               "width": 6,
-              "casing_px": 1
+              "casing_px": 2
             },
             {
               "steps": [
                 4
               ],
               "width": 6,
-              "casing_px": 1
+              "casing_px": 2
             },
             {
               "steps": [
                 5
               ],
               "width": 5,
-              "casing_px": 1
+              "casing_px": 2
             },
             {
               "steps": [
                 6
               ],
-              "width": 4,
-              "casing_px": 1
+              "width": 5,
+              "casing_px": 2
             }
           ],
           "width": 10
