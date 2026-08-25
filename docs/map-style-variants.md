@@ -283,10 +283,17 @@ step in between.
 
 ## The hairline shape, applied
 
-Maintainer's call 2026-08-25, after looking at the proposal: **secondary keeps
-2 px at rung 6 and tertiary takes the 1 px hairline**, so one step stays between
-the connecting network and the mesh. Both at 1 px would have made them the same
-mark, which is the thing width is the only way to say on 1-bit e-ink.
+Maintainer's call 2026-08-25, in two steps. First secondary kept 2 px at rung 6
+with tertiary on the hairline, to hold one step between the connecting network
+and the mesh. Looked at again at 1:1: **still too dense, so secondary joins
+tertiary at 1 px.**
+
+The step between them is gone and that is accepted. At 1 px on 1-bit there is no
+axis left to separate two classes: width is spent, colour does not exist, and
+pattern is spoken for (dashed is a watercourse, ticked is a railway). What
+carries the hierarchy at that rung is motorway 5, trunk 4, primary 3 against one
+hairline texture for everything below, which is what a paper map at 1:400,000
+does too.
 
 What the roads do across the ladder now (the compiled table, read off
 `MapStyleDefaults.h`):
@@ -296,7 +303,7 @@ What the roads do across the ladder now (the compiled table, read off
 | motorway | 11 | 11 | 9 | 7 | 7 | 6 | 5 |
 | trunk | 10 | 10 | 8 | 6 | 6 | 5 | 4 |
 | primary | 9 | 9 | 7 | 5 | 5 | 4 | 3 |
-| secondary | 8 | 8 | 6 | 4 | 4 | 2 | 2 |
+| secondary | 8 | 8 | 6 | 4 | 4 | 2 | **1** |
 | tertiary | 7 | 7 | 5 | 3 | 2 | **1** | **1** |
 | railway | 4 | 4 | 4 | 4 | 4 | 3 | 2 |
 | unclassified | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
@@ -309,14 +316,17 @@ Ink, points of panel, POI marks off, before this pass and after:
 
 | | r3 | r4 | r5 | r6 |
 |---|---|---|---|---|
-| Prague east, before | 16.2 % | 19.2 % | 23.8 % | 25.7 % |
-| Prague east, now | 16.2 % | 17.7 % | 18.6 % | **20.6 %** |
-| Pezinok, before | 6.2 % | 7.5 % | 9.6 % | 10.6 % |
-| Pezinok, now | 6.2 % | 7.3 % | 8.7 % | **9.9 %** |
+| Prague east, one width per class | 16.2 % | 19.2 % | 23.8 % | 25.7 % |
+| Prague east, secondary 2 px | 16.2 % | 17.7 % | 18.6 % | 20.6 % |
+| Prague east, secondary 1 px | 16.2 % | 17.7 % | 18.6 % | **18.5 %** |
+| Pezinok, one width per class | 6.2 % | 7.5 % | 9.6 % | 10.6 % |
+| Pezinok, secondary 2 px | 6.2 % | 7.3 % | 8.7 % | 9.9 % |
+| Pezinok, secondary 1 px | 6.2 % | 7.3 % | 8.7 % | **8.8 %** |
 
-Rung 6 over Prague is 20.6 % rather than the 18.5 % the all-hairline version
-measured. That 2.1 points is what the step between secondary and tertiary
-costs, and it was bought deliberately.
+**Rung 5 is now the densest rung on the ladder**, 18.6 % against rung 6's
+18.5 % over Prague. It still draws secondary at 2 px and railway at 3 px. That
+is the next thing to look at, and it is open: the same argument that took rung 6
+to a hairline applies at 32 m/px, where a 2 px secondary road is a 64 m band.
 
 What the render shows and the numbers do not: at rung 6 the motorway and trunk
 spine through Praha becomes the strongest thing on the panel instead of one
@@ -325,14 +335,19 @@ readable. The reference ladders are re-rendered against this style
 (`../../docs/device-preview-shots/ref-prague-east-ladder-ride.png`,
 `ref-pezinok-modra-ladder-ride.png`).
 
-**It does not close the density gap**, only narrows it: 20.6 % against
-Pezinok's 9.9 % is 2.08x, down from 2.42x. A capital still draws twice the ink
+**It does not close the density gap**, only narrows it: 18.5 % against
+Pezinok's 8.8 % is 2.10x, against 2.42x before any of this. A capital still draws twice the ink
 of countryside at the same rung, and the density input discussed above is still
 the missing piece.
 
-Two things the sheets are not evidence about. They are 480x800 frames scaled to
-200 px wide, so a 1 px hairline is being resampled and is softer there than on a
-panel. And nothing here has been on a panel at all.
+**The sheets are 1:1 now**, one 480x800 frame per panel, never resampled --
+maintainer's standing rule, and it was caught here: the first sheets pasted each
+frame at 200 px wide, which turns a 1 px hairline into a grey smudge, so a
+decision about whether the minor network reads was being taken against an image
+that could not show it. Seven X4 panels side by side is 3,456 px and that is the
+correct file. See the parent repo's `CLAUDE.md`, "Every render is pixel perfect".
+
+Still true: nothing here has been on a panel at all.
 
 ## What a hardware pass has to check
 
