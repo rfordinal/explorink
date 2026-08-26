@@ -2079,29 +2079,27 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   }
 }
 
-void GfxRenderer::drawTextQuadrant(const int fontId, const int x, const int y, const char* text,
-                                   const uint8_t quadrant, const bool black,
-                                   const EpdFontFamily::Style style) const {
-  if (text == nullptr || *text == '\0') return;
+bool GfxRenderer::renderTextMask(const int fontId, const char* text, const EpdFontFamily::Style style,
+                                uint8_t* bits, const int strideBits, const int maxW, const int maxH, int& outW,
+                                int& outH) const {
+  outW = 0;
+  outH = 0;
+  if (text == nullptr || *text == '\0' || bits == nullptr) return false;
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
-    return;
+    return false;
   }
   const auto& font = fontIt->second;
   const EpdFontData* fontData = font.getData(style);
-  if (fontData == nullptr) return;
+  if (fontData == nullptr) return false;
 
-  // The unturned box: as wide as the string lays out, as deep as one line, with
-  // the baseline `ascender` down from its top. Every glyph pixel is placed in
-  // that box first and turned afterwards, so the turn is one transform in one
-  // place instead of four sets of anchor arithmetic.
   const int boxW = getTextWidth(fontId, text, style);
   const int boxH = getLineHeight(fontId);
-  if (boxW <= 0 || boxH <= 0) return;
+  if (boxW <= 0 || boxH <= 0 || boxW > maxW || boxH > maxH) return false;
+
   const int baseline = fontData->ascender;
   const bool is2Bit = fontData->is2Bit;
-
   int penX = 0;
   const uint8_t* cursor = reinterpret_cast<const uint8_t*>(text);
   uint32_t cp;
@@ -2126,37 +2124,19 @@ void GfxRenderer::drawTextQuadrant(const int fontId, const int x, const int y, c
             ink = ((byte >> (7 - (pixelPosition & 7))) & 1) != 0;
           }
           if (!ink) continue;
-
-          // Position inside the unturned box, then the quarter turn. Each case is
-          // an exact integer remap, which is why the digits stay as crisp turned
-          // as they are upright.
-          const int u = inkX + glyphX;
-          const int v = inkY + glyphY;
-          int dx, dy;
-          switch (quadrant & 3) {
-            case 1:  // glyph up ends up pointing right
-              dx = boxH - 1 - v;
-              dy = u;
-              break;
-            case 2:  // up points down
-              dx = boxW - 1 - u;
-              dy = boxH - 1 - v;
-              break;
-            case 3:  // up points left
-              dx = v;
-              dy = boxW - 1 - u;
-              break;
-            default:
-              dx = u;
-              dy = v;
-              break;
-          }
-          drawPixel(x + dx, y + dy, black);
+          const int x = inkX + glyphX;
+          const int y = inkY + glyphY;
+          if (x < 0 || y < 0 || x >= boxW || y >= boxH) continue;
+          const int index = y * strideBits + x;
+          bits[index >> 3] |= static_cast<uint8_t>(1 << (index & 7));
         }
       }
     }
     penX += fp4::toPixel(glyph->advanceX);
   }
+  outW = boxW;
+  outH = boxH;
+  return true;
 }
 
 uint8_t* GfxRenderer::getFrameBuffer() const { return frameBuffer; }

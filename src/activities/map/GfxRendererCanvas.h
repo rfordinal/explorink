@@ -5,6 +5,7 @@
 
 #include "GfxRenderer.h"
 #include "IMapCanvas.h"
+#include "MapTextMask.h"
 #include "MapStroke.h"
 #include "fontIds.h"
 
@@ -190,40 +191,32 @@ class GfxRendererCanvas : public IMapCanvas {
     renderer_.drawText(fontId, x, y, utf8, ink == MapInk::Black, styleFor(bold));
   }
 
-  // Quarter-turned text, all four turns, through GfxRenderer::drawTextQuadrant.
-  //
-  // That entry point is deliberately simpler than drawText -- advance widths
-  // only, no kerning, no ligatures, no combining marks -- because the only caller
-  // is the map's contour height numbers and tabular figures have no kerning to
-  // lose. It also takes the top-left of the TURNED box, which is why the
-  // conversion from a centre below swaps width and height for the quarter turns.
-  //
-  // Not `drawTextRotated90CW`: that one takes a cursor and its own ascender
-  // arithmetic, and it turns out to put the glyphs' up to the LEFT rather than
-  // the right (read off the pixel mapping in renderCharImpl: glyph +x maps to
-  // screen -y, so the text reads bottom-to-top). Routing all four turns through
-  // one function avoids having to be right about that at every call site.
-  //
-  // The geometry is derived from glyph metrics, not measured on a panel.
-  void drawTextTurned(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
-                      MapTextTurn turn) override {
+  // Freely rotated text: GfxRenderer rasterises the string into a mask, and the
+  // rotation is MapTextMask's, shared with the host canvas so the preview and the
+  // panel run the same arithmetic rather than merely agreeing in intent.
+  void drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int outline,
+                       int rightX, int rightY, int downX, int downY) override {
     if (utf8 == nullptr || *utf8 == '\0') return;
     const int fontId = fontIdForSize(sizePx);
     if (fontId == 0) return;
+    MapTextMask mask;
+    mask.reset(MapTextMask::kMaxW, MapTextMask::kMaxH);
     int w = 0, h = 0;
-    if (!measureText(utf8, sizePx, bold, w, h)) return;
-    const bool quarter = turn == MapTextTurn::Cw90 || turn == MapTextTurn::Ccw90;
-    const int boxW = quarter ? h : w;
-    const int boxH = quarter ? w : h;
-    // The enum's values ARE the quadrant codes, so the cast is the mapping. Pinned
-    // here rather than trusted: reordering MapTextTurn would otherwise turn every
-    // contour number the wrong way with nothing failing to compile.
-    static_assert(static_cast<uint8_t>(MapTextTurn::None) == 0, "quadrant 0 is up");
-    static_assert(static_cast<uint8_t>(MapTextTurn::Cw90) == 1, "quadrant 1 is right");
-    static_assert(static_cast<uint8_t>(MapTextTurn::Half) == 2, "quadrant 2 is down");
-    static_assert(static_cast<uint8_t>(MapTextTurn::Ccw90) == 3, "quadrant 3 is left");
-    renderer_.drawTextQuadrant(fontId, centreX - boxW / 2, centreY - boxH / 2, utf8,
-                               static_cast<uint8_t>(turn), ink == MapInk::Black, styleFor(bold));
+    if (!renderer_.renderTextMask(fontId, utf8, styleFor(bold), mask.bits, MapTextMask::kMaxW, MapTextMask::kMaxW,
+                                  MapTextMask::kMaxH, w, h)) {
+      return;
+    }
+    mask.w = w;
+    mask.h = h;
+    const bool black = ink == MapInk::Black;
+    if (outline > 0) {
+      MapTextMask grown;
+      mask.dilateInto(grown);
+      mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
+                      [this, black](const int x, const int y) { renderer_.drawPixel(x, y, !black); });
+    }
+    mapTextMaskBlit(mask, centreX, centreY, rightX, rightY, downX, downY,
+                    [this, black](const int x, const int y) { renderer_.drawPixel(x, y, black); });
   }
 
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {

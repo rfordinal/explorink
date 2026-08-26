@@ -1,5 +1,7 @@
 #include "PpmCanvas.h"
 
+#include "MapTextMask.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -186,60 +188,30 @@ void PpmCanvas::drawText(const int x, const int y, const char* utf8, const int s
       &sink);
 }
 
-void PpmCanvas::drawTextTurned(const int centreX, const int centreY, const char* utf8, const int sizePx,
-                               const bool bold, const MapInk ink, const MapTextTurn turn) {
+void PpmCanvas::drawTextRotated(const int centreX, const int centreY, const char* utf8, const int sizePx,
+                                const bool bold, const MapInk ink, const int outline, const int rightX,
+                                const int rightY, const int downX, const int downY) {
   const void* face = PreviewFont::pick(sizePx, bold);
   int w = 0, h = 0;
   if (!PreviewFont::measure(face, utf8, w, h)) return;
 
-  // **The same arithmetic GfxRenderer::drawTextQuadrant uses**, deliberately:
-  // compose into the unturned box, remap once, offset by the turned box's
-  // top-left. Rotating the plotted pixels about the centre instead would agree
-  // to within a pixel most of the time, and disagreeing with the device by a
-  // pixel is the whole class of bug the preview exists to catch rather than to
-  // introduce.
-  const bool quarter = turn == MapTextTurn::Cw90 || turn == MapTextTurn::Ccw90;
-  const int boxW = quarter ? h : w;
-  const int boxH = quarter ? w : h;
-
-  struct Sink {
-    PpmCanvas* canvas;
-    MapInk ink;
-    MapTextTurn turn;
-    int originX;
-    int originY;
-    int textW;
-    int textH;
-  } sink{this, ink, turn, centreX - boxW / 2, centreY - boxH / 2, w, h};
-
+  MapTextMask mask;
+  if (!mask.fits(w, h)) return;  // half a number is a wrong number
+  mask.reset(w, h);
   PreviewFont::draw(
       face, utf8, 0, 0,
-      [](const int px, const int py, void* ctx) {
-        auto* t = static_cast<Sink*>(ctx);
-        const int u = px;
-        const int v = py;
-        int dx = u;
-        int dy = v;
-        switch (t->turn) {
-          case MapTextTurn::Cw90:
-            dx = t->textH - 1 - v;
-            dy = u;
-            break;
-          case MapTextTurn::Half:
-            dx = t->textW - 1 - u;
-            dy = t->textH - 1 - v;
-            break;
-          case MapTextTurn::Ccw90:
-            dx = v;
-            dy = t->textW - 1 - u;
-            break;
-          case MapTextTurn::None:
-          default:
-            break;
-        }
-        t->canvas->setPixel(t->originX + dx, t->originY + dy, t->ink);
-      },
-      &sink);
+      [](const int px, const int py, void* ctx) { static_cast<MapTextMask*>(ctx)->set(px, py); }, &mask);
+
+  // The rotation is MapTextMask's, the same code the device canvas calls.
+  const MapInk opposite = ink == MapInk::Black ? MapInk::White : MapInk::Black;
+  if (outline > 0) {
+    MapTextMask grown;
+    mask.dilateInto(grown);
+    mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
+                    [this, opposite](const int x, const int y) { setPixel(x, y, opposite); });
+  }
+  mapTextMaskBlit(mask, centreX, centreY, rightX, rightY, downX, downY,
+                  [this, ink](const int x, const int y) { setPixel(x, y, ink); });
 }
 
 void PpmCanvas::drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const {

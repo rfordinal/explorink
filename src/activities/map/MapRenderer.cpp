@@ -257,15 +257,6 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
   }
 }
 
-// Half the ring of offsets a 1 px outline uses: eight directions at radius 1.
-// Same trick MapLabels uses for a place name's halo.
-struct ContourHaloOffset {
-  int dx;
-  int dy;
-};
-constexpr ContourHaloOffset kContourHalo[8] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1},
-                                               {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
-
 // The numbers, drawn after the place names so a settlement's name wins the
 // space.
 //
@@ -274,7 +265,9 @@ constexpr ContourHaloOffset kContourHalo[8] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1},
 // contour, the forest tone and anything else under a rectangle far bigger than
 // the strokes need. The outline knocks out only what the digits themselves
 // occupy, so the line still runs visibly behind the number
-// (maintainer's call, 2026-08-26).
+// (maintainer's call, 2026-08-26). It is drawn by the canvas from the same
+// rotated mask, so it follows the number's angle -- eight extra draws at offsets
+// would not.
 void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratch* labels,
                        const ContourLabelSlot* slots, int slotCount) {
   if (style.contourLabelPx == 0) return;
@@ -287,65 +280,69 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     snprintf(text, sizeof(text), "%ld", static_cast<long>(slots[i].elevation));
     int textW = 0, textH = 0;
     if (!canvas.measureText(text, sizePx, bold, textW, textH)) continue;
-    // **The top of the digits points at the higher ground.** That is the whole
-    // job of a contour label beyond saying its own height: the reader gets the
-    // direction of the slope from the number without counting anything.
+    // **The number sits along the contour, at the line's own bearing at that
+    // spot, with the digits' top toward the higher ground.** Not quantised: a
+    // contour running south-east given a number turned due south is exactly the
+    // mismatch a map reader notices first, because the point of the label is that
+    // it and the piece of line under it read as one thing.
     //
-    // One quantisation does both halves of it, because uphill is perpendicular to
-    // the contour by construction. Snap the uphill vector to the nearer axis and
-    // the tangent lands on the other axis for free: the digits' top points
-    // uphill to within 45 degrees **and** their baseline runs along the line to
-    // within 45 degrees. The two can never fight.
-    //
-    // A half turn is included, so a number on a contour whose higher side is
-    // below it on screen draws inverted. That is correct rather than a defect:
-    // on a paper topographic map contour labels sit at every angle including
-    // upside down, and inverting is exactly what carries "up is that way". An
-    // earlier version banned the half turn to keep every number readable
-    // screen-up, which threw away the information the number exists to give.
-    const int32_t ux = slots[i].upX;
-    const int32_t uy = slots[i].upY;
-    const int32_t aux = ux < 0 ? -ux : ux;
-    const int32_t auy = uy < 0 ? -uy : uy;
-    MapTextTurn turn = MapTextTurn::None;
-    if (aux > auy) {
-      // Upright text has up = (0, -1). A clockwise quarter turn sends that to
-      // (1, 0), a counter-clockwise one to (-1, 0), a half turn to (0, 1).
-      turn = ux > 0 ? MapTextTurn::Cw90 : MapTextTurn::Ccw90;
-    } else if (uy > 0) {
-      turn = MapTextTurn::Half;
+    // The basis falls out of two vectors already in hand. The reading direction is
+    // the tangent; "down the glyphs" is the tangent turned so it points away from
+    // the higher ground. Uphill is (-ty, tx) -- from the order the tile builder
+    // stores contour points in (mapbuilder/tilegen/contour.py) -- so down is its
+    // negation, (ty, -tx). Scaled to 1/1024ths for a device with no FPU.
+    const int32_t tx = slots[i].tanX;
+    const int32_t ty = slots[i].tanY;
+    int32_t tanLen2 = tx * tx + ty * ty;
+    int32_t rightX = 1024, rightY = 0, downX = 0, downY = 1024;
+    if (tanLen2 > 0) {
+      int32_t root = 1;
+      while (root * root < tanLen2) ++root;
+      if (root > 0) {
+        rightX = tx * 1024 / root;
+        rightY = ty * 1024 / root;
+        downX = ty * 1024 / root;
+        downY = -tx * 1024 / root;
+      }
     }
 
-    // A turned number is as tall as it was wide. Getting this the wrong way round
-    // would let two numbers overlap at the very angles the turn exists for.
-    const bool quarter = turn == MapTextTurn::Cw90 || turn == MapTextTurn::Ccw90;
-    const int boxW = quarter ? textH + 2 : textW + 4;
-    const int boxH = quarter ? textW + 4 : textH + 2;
+    // The claimed box is the rotated extent, so two numbers at different bearings
+    // cannot be judged as if both were horizontal.
+    const int32_t absR = rightX < 0 ? -rightX : rightX;
+    const int32_t absRY = rightY < 0 ? -rightY : rightY;
+    const int spanW = static_cast<int>((textW * absR + textH * absRY) >> 10) + 2;
+    const int spanH = static_cast<int>((textW * absRY + textH * absR) >> 10) + 2;
 
-    // Step off the line, on the uphill side, by half the number's own depth plus
-    // a pixel of air. Integer arithmetic throughout: this runs on every frame the
-    // device draws, and there is no floating point worth spending here.
+    // Step off the line, on the uphill side, so the number sits beside the
+    // contour rather than across it. Integer arithmetic: this runs on every frame
+    // the device draws.
+    const int32_t ux = slots[i].upX;
+    const int32_t uy = slots[i].upY;
     const int32_t upLen2 = ux * ux + uy * uy;
     int32_t shiftX = 0;
     int32_t shiftY = 0;
     if (upLen2 > 0) {
       int32_t root = 1;
       while (root * root < upLen2) ++root;
-      const int32_t step = (quarter ? boxW : boxH) / 2 + 1;
+      const int32_t step = textH / 2 + 1;
       shiftX = ux * step / root;
       shiftY = uy * step / root;
     }
     const int centreX = static_cast<int>(slots[i].x + shiftX);
     const int centreY = static_cast<int>(slots[i].y + shiftY);
-    const int boxX = centreX - boxW / 2;
-    const int boxY = centreY - boxH / 2;
+    const int boxX = centreX - spanW / 2;
+    const int boxY = centreY - spanH / 2;
+    const int boxW = spanW;
+    const int boxH = spanH;
     // Yield to a place name that already claimed this ground. A height is
     // countable from the next one along; a settlement's name is not.
     if (labels != nullptr && labels->taken.anySet(boxX, boxY, boxW, boxH)) continue;
-    for (const ContourHaloOffset& offset : kContourHalo) {
-      canvas.drawTextTurned(centreX + offset.dx, centreY + offset.dy, text, sizePx, bold, MapInk::White, turn);
-    }
-    canvas.drawTextTurned(centreX, centreY, text, sizePx, bold, MapInk::Black, turn);
+
+    // One call: the canvas draws the 1 px white outline from the same mask, so the
+    // outline follows the rotation instead of being eight more draws at the wrong
+    // angle.
+    canvas.drawTextRotated(centreX, centreY, text, sizePx, bold, MapInk::Black, 1, static_cast<int>(rightX),
+                           static_cast<int>(rightY), static_cast<int>(downX), static_cast<int>(downY));
     if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
     ++placed;
   }

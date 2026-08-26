@@ -31,8 +31,8 @@ class PpmCanvas : public IMapCanvas {
   // close.
   bool measureText(const char* utf8, int sizePx, bool bold, int& outWidth, int& outHeight) override;
   void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) override;
-  void drawTextTurned(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
-                      MapTextTurn turn) override;
+  void drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int outline,
+                       int rightX, int rightY, int downX, int downY) override;
 
   // The whole canvas: the preview has no header band to keep clear (the device
   // adapter does -- GfxRendererCanvas's minY).

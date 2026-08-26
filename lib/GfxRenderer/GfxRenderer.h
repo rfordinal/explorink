@@ -322,28 +322,25 @@ class GfxRenderer {
   void drawTextRotated90CW(int fontId, int x, int y, const char* text, bool black = true,
                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
 
-  // Text turned by a quarter, a half or three quarters, positioned by the
-  // top-left of the box it actually lands in.
+  // Rasterise `text` into a caller-owned 1bpp mask instead of onto the screen.
+  // MSB-free layout: bit index is `y * strideBits + x`, LSB first within a byte,
+  // matching MapTextMask.
   //
-  // `quadrant` is where the glyphs' own "up" ends up pointing: 0 up, 1 right,
-  // 2 down, 3 left. `x`, `y` is the top-left of the drawn extent -- of the
-  // TURNED extent, so for quadrants 1 and 3 the box is as wide as the text is
-  // tall. That is a different contract from drawText and drawTextRotated90CW,
-  // which both take a cursor, and it is the point: a caller placing a rotated
-  // label knows where the box goes and should not have to rederive an anchor
-  // from the ascender for each quadrant.
+  // This exists so a caller can rotate text freely without this class learning
+  // how: the map's contour height numbers sit along the contour at its own
+  // bearing, and the rotation happens over the mask (src/activities/map/
+  // MapTextMask.h). Adding a free rotation to renderCharImpl instead would put
+  // it in the text path every screen in the firmware draws through.
   //
-  // **Deliberately simpler than drawText.** It lays out on advance widths alone:
-  // no kerning, no ligatures, no combining marks, no CJK fallback, no 50 % scale.
-  // It exists for the map's contour height numbers, which are digits, and
-  // tabular figures have no kerning to lose. Anything with real text in it should
-  // use drawText and stay upright.
+  // **Deliberately simpler than drawText.** Advance widths only: no kerning, no
+  // ligatures, no combining marks, no CJK fallback, no 50 % scale. Its caller
+  // draws digits, and tabular figures have no kerning to lose. Anything with real
+  // text in it should use drawText.
   //
-  // Written 2026-08-26 for exactly that caller. The geometry is derived from the
-  // glyph metrics rather than measured on a panel; a hardware pass has not
-  // happened.
-  void drawTextQuadrant(int fontId, int x, int y, const char* text, uint8_t quadrant, bool black = true,
-                        EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  // Returns false when the font is missing or the string does not fit the mask --
+  // a caller must then draw nothing, because half a number is a wrong number.
+  bool renderTextMask(int fontId, const char* text, EpdFontFamily::Style style, uint8_t* bits, int strideBits,
+                      int maxW, int maxH, int& outW, int& outH) const;
   int getTextHeight(int fontId) const;
 
   // Grayscale functions
