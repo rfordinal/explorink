@@ -670,3 +670,214 @@ persisted-fix frame plausibly should not be followable -- but its written reason
 cites something that is gone. **Open:** find the real reason and rewrite the
 comment, or find that the flag no longer needs to exclude persisted fixes at
 all. Do not delete the comment without settling which.
+
+## Hike mode's second line
+
+**Verified on the desktop simulator, 2026-08-26; not yet on hardware.** Hike mode gets a second
+header line: elevation, when a fix has ever carried one, and the fix's own
+lat/lon, e.g. `812 m   48.14253, 17.10967`. Ride and Cycle are unchanged --
+single-row header, same as always. `MapActivity::mode_ == MapRideMode::Hike`
+is the only gate, checked inside `drawHikeElevationLine()` and
+`updateHikeElevationLine()` rather than at each call site, so a call site
+never needs to know which mode is active.
+
+**Why a second line and not a wider place name.** The place name
+(`drawHeaderPlaceName()`, the row above) answers "which town/suburb is near
+the marker" from `MapNearestPlaces`, which is a road/place-name-tagged tile
+layer walk -- it has nothing to say off the road network, which is most of a
+trail. Elevation and the raw coordinate answer "where am I" regardless of
+what tiles nearby happen to name, which is the more useful question at hiking
+pace and the one the maintainer asked for directly.
+
+### The header is a mode-aware height, not a constant, now
+
+`kHeaderBarHeight` (`MapActivity.cpp`) is still the single-row bar's height
+(36px) and is what row one's own layout reads -- the place name's vertical
+centring, the icon strip, `GUI.drawHeader()`'s rect. It never changes with
+mode.
+
+Everything that used to read that constant (or the `kHeaderSeparatorY`/
+`kMapContentTop` constants derived from it) for "where does the whole header
+bar end" now reads three `MapActivity` member functions instead, all three
+mode-aware:
+
+- `headerBarHeight()` -- `kHeaderBarHeight` in Ride/Cycle, plus one more
+  `kHeaderRowHeight` (not a new magic number -- that row already proved it
+  holds a small-font text line plus its own backing pad) in Hike. 58px in
+  Hike against 36px in Ride/Cycle.
+- `headerSeparatorY()` -- same value as `headerBarHeight()`, the 1px black
+  line's y. Kept as its own call so a read site says which one it means.
+- `mapContentTop()` -- `headerBarHeight() + 1`, the first row `GfxRendererCanvas`
+  clips the map to.
+
+Four call sites moved from the constants to the mode-aware calls:
+`updateHeaderStatus()`'s minute-tick window height (so the windowed refresh
+actually reaches the separator's new position, not just the framebuffer),
+`drawHeaderStatus()`'s separator draw, `drawViewedNearbyPoint()`'s
+off-panel-check bound, and the two `GfxRendererCanvas` constructions
+(`renderViewport()`, `renderRouteOverview()`) that clip the map's own drawing.
+
+A mode switch (`switchMode()`) always forces a full `renderCurrent()`, which
+`clearScreen()`s first -- so growing or shrinking the bar on a mode change
+never leaves stale pixels from the other height; there is no windowed-only
+path across a mode switch to get wrong.
+
+### Draw and repaint, same shape as the row above
+
+`drawHikeElevationLine()` draws the line (own white backing first, same
+reasoning as the icon strip's and the place name's -- this rect can land over
+last frame's separator or a longer/shorter string, not blank margin) and
+records what it drew into `drawnHikeLineText_`. Both full-frame render paths
+that draw the row above (`renderViewport()`, `renderRouteOverview()`) call it
+right after `drawHeaderStatus()`, unconditionally -- it is a no-op outside
+Hike mode.
+
+**`SMALL_FONT_ID`, not `UI_10_FONT_ID`.** The place name above is the primary
+label and stays at `UI_10_FONT_ID`; this line is secondary information, the
+same weight as the clock and battery percentage in row one, and was judged
+too large on the panel at `UI_10_FONT_ID` when first built -- confirmed on the
+desktop simulator, 2026-08-26 (see "Verified on the desktop simulator" below).
+
+**No `+3` vertical correction, unlike `drawHeaderPlaceName()`'s.** That
+offset (`kHeaderPlaceNameLeftX`'s own comment, 2026-08-11) was tuned on
+hardware for `UI_10_FONT_ID` centred in row one and does not carry over to a
+different font in a different row -- judged 2-3px too low on the panel at
+`+3`, 2026-08-26. `drawHikeElevationLine()`'s `y` is the plain centred value.
+
+**Degrees-minutes-seconds, not decimal degrees.** Maintainer's choice,
+2026-08-26, over decimal degrees (`48.60000, 17.30000`) and degrees-decimal-
+minutes. `formatDms()` rounds to the nearest whole second through integer
+arithmetic on total seconds (`std::lround(fabs(deg) * 3600.0)`, then
+`/3600`, `%3600/60`, `%60`) rather than rounding degrees, minutes and seconds
+separately -- the separate-rounding way can carry a `60` into either field
+(47.999999...° rounding to `47°59'60"` instead of `48°00'00"`) and integer
+division on one rounded total cannot. The degree sign is written as its
+literal UTF-8 bytes (`"\xC2\xB0"`), not a `°` escape, so it does not
+depend on this source file's own encoding or the toolchain's handling of
+`\u` in a narrow string literal.
+
+**Coordinates first, then a mountain icon, then altitude.** Maintainer's
+order and choice of symbol, 2026-08-26, over altitude-first and over no
+symbol at all -- coordinates, a 16px Lucide mountain glyph, then e.g.
+`340 m` with no gap between the icon and the number. `HikeIcons.h`
+(`src/activities/map/`) is one icon, `mountain.svg` rasterised to 16px by
+`freeink-sdk/libs/assets/Icons/tools/gen_icons.py` -- see that header's own
+comment for why this session's rasteriser was `cairosvg`, not the script's
+usual `rsvg-convert`. Drawn with `GfxRenderer::drawMono1bpp()`, not
+`drawIcon()`: the latter's quarter-turn compensation is for forced-Portrait
+UI themes and turned the map's own pin glyphs rot270 when tried here before
+(`GfxRenderer.h`, `drawMono1bpp()`'s own comment, measured 2026-08-17).
+
+The icon and altitude are **dropped together, not truncated**, when the row
+is already full of coordinates -- `neededWidth > maxContentWidth` skips both
+rather than drawing half an icon or a bare unit with no number. Coordinates
+themselves still truncate character-by-character if they alone overflow,
+same shape as `drawHeaderPlaceName()`'s loop.
+
+**`riderLatE7()`/`riderLonE7()`, not `lastLatE7_`/`lastLonE7_` directly.**
+Caught live on the simulator, 2026-08-26: switching to Observe mode and
+panning around visibly changed the coordinates this line showed, because
+`panBy()` repoints `lastLatE7_`/`lastLonE7_` at the pan target while Observe
+is up (`riderLatE7()`'s own comment) -- exactly the distinction eight other
+call sites in this file already existed to make (`pinSaveRefusal()`,
+`savePinAtRider()`, the nearby-point sector/distance calculations, the route
+save's `fixLatE7`/`fixLonE7`). This line asks "where is the rider", which a
+pan does not change, so it needed the same accessor those already use, not
+the pan-following fields the map's own drawing reads.
+
+**Stays clear of the compass's own halo, horizontally, not by shrinking the
+row's height.** The compass (`drawCompass()`) is drawn every frame at
+`centreY = kCompassCenterTop` (87), radius `kCompassGlyphRadius` (36) plus a
+`kCompassHaloMargin` (3) white halo -- so its halo's top edge sits at
+`87 - 36 - 3 = 48`, inside Hike's second line's band (`[36, 58)`) by design:
+the compass has always overlapped that y-range in every mode, because in
+Ride/Cycle nothing else is drawn there. `drawHikeElevationLine()`'s first cut
+gave its backing rect the full screen width, which erased the compass's halo
+and glyph every time it ran, because it draws *after* `drawCompass()` in the
+frame. Shrinking the line's height to clear 48px was not a real option --
+`SMALL_FONT_ID`'s own `advanceY` (23) does not fit in the 12px available
+between `kHeaderBarHeight` (36) and the halo's top (48).
+
+Fixed the same way `drawHeaderPlaceName()` already stays clear of the icon
+cluster: bound the row's right edge, not its height. Both the backing
+`fillRect` and the text's truncate-until-fits loop stop at
+`compassHaloLeft = (screenWidth - kCompassCenterMarginRight) - (kCompassGlyphRadius + kCompassHaloMargin)`
+-- the compass's halo's left edge -- rather than `screenWidth`. The line and
+the compass now occupy disjoint rectangles every frame, so the vertical
+overlap in `[36, 58)` no longer matters: neither one is ever drawn where the
+other one is.
+
+`drawnHikeLineText_` is written from the *untruncated* candidate, before the
+truncation loop runs on a local copy for drawing -- `updateHikeElevationLine()`
+compares its own untruncated candidate against this each poll, and a
+truncated cache would never match it again once truncation ever fired, which
+would keep repainting every poll forever.
+
+`updateHikeElevationLine()` is the between-frames keeper, called from
+`loop()` next to `updateHeaderStatus()`: polled every `kHeaderPollMs` (2s,
+shared with the row above), and only actually redraws when the candidate text
+differs from `drawnHikeLineText_` **and** `kHikeLineRepaintMs` (10s) has
+elapsed since the last repaint. The 10s floor exists because unlike the BLE
+bars above (which sit still most of the time), lat/lon can change on nearly
+every fix at hiking pace -- without a floor, every poll would cost a
+windowed refresh.
+
+The text comparison is a single `strcmp()` against the last-drawn string,
+not a separate quantisation of altitude and two coordinates: one function,
+`formatHikeLineText()`, builds the candidate for both the draw and the
+change check, so they can never format the same values differently.
+
+### Where altitude comes from
+
+`freeink::PositionUpdate::altitudeM`/`hasAltitude` (BLE fix) and
+`MapConsoleState::altitudeM()`/`hasAltitude()` (serial or BLE command
+console, `pos ... alt <m>`) both feed the same two members,
+`lastAltitudeM_`/`hasAltitudeReading_`, captured in `MapActivity::loop()`
+right where each channel's fix already lands. The console path captures it
+**unconditionally**, not only on the `moved` branch -- an altitude-only
+update (same lat/lon, new altitude) has no follow decision of its own to
+gate it on, unlike position.
+
+**Not reset when a fix without altitude arrives.** A phone that stops
+sending altitude mid-ride does not blank a number the rider was just
+reading; the line falls back to lat/lon only (no altitude ever received this
+session) rather than to "no reading right now" (had one, lost it) -- there is
+no code path that distinguishes those two today, and no report yet of
+whether that matters in practice.
+
+**Open:** the debug readout (`SETTINGS.mapDebugInfo`, drawn by
+`drawDebugLine()`) starts at `kTextTopY`, a fixed offset unrelated to
+`headerBarHeight()`. Its first line already sits inside row one on both
+Ride/Cycle and Hike (pre-existing, not something this change touches); its
+second line, at one line-pitch below that, lands inside Hike's second line's
+band. Nobody has looked at the panel with both `mapDebugInfo` on and Hike
+mode active to see what that overlap actually looks like -- flagged here
+rather than fixed, since the debug readout is a developer tool, not
+something a rider sees.
+
+### Verified on the desktop simulator, 2026-08-26
+
+Run against `firmware/explorink-simulator` (`docs/simulator.md`), a BLE fix
+sent with `tools/blepos.py 48.60 17.30 --alt 340 --sim 127.0.0.1:8765` and the
+mode switched with `tools/mapcmd.py --sim 127.0.0.1:8765 mode hike`. Confirmed
+on the resulting screenshot:
+
+- The second line draws (`48°36'00"N 17°18'00"E`, mountain icon, `340 m`), at
+  `SMALL_FONT_ID`, below the place name row.
+- The compass is intact -- no erased halo, no missing glyph -- which is what
+  the full-width-backing bug (fixed above, before this run) would have broken.
+- `mode ride` afterward reverts to the single-row header with no second line,
+  confirming Ride/Cycle are unaffected.
+- Toggling Observe mode and panning three times (`tools/mapcmd.py`'s console
+  grammar cannot drive this -- done with a scripted `RIGHT` key sequence) pans
+  the map to a different place name (`Cerová, Senica`) while the line's own
+  coordinates stayed at the rider's real fix, unchanged -- confirming the
+  `riderLatE7()`/`riderLonE7()` fix above.
+
+**What this does not check, per "What it is and is not" in `docs/simulator.md`**:
+no e-ink refresh timing, no ghosting, no grayscale pass, no `ESP.getFreeHeap()`
+under real RAM pressure (the simulator's heap reads a flat 1 MiB), and no
+`headerRowDrawn_`/windowed-repaint timing against a real waveform pass -- only
+that `updateHikeElevationLine()`'s windowed-refresh *call* runs without
+crashing, not that its timing is right on the panel. All of that still needs
+the device.

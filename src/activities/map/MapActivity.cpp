@@ -19,6 +19,7 @@
 #include "CrossPointState.h"
 #include "GfxRendererCanvas.h"
 #include "HeldTilesStore.h"
+#include "HikeIcons.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
 // missingTileAnchorFromLastFix(), for `fake` -- it seeds around the same origin
@@ -158,6 +159,13 @@ constexpr uint32_t kHeaderPollMs = 2000;
 // a real waveform pass on e-ink. A link appearing or dropping ignores this --
 // that one is not cosmetic.
 constexpr uint32_t kHeaderBarsRepaintMs = 30 * 1000;
+
+// Floor between two repaints of Hike mode's elevation/lat-lon line caused by
+// nothing but the fix drifting. Without it, a fix every second or two at
+// hiking pace would still spend a waveform pass every poll -- the lat/lon
+// digits move on almost every fix, unlike the bars above which sit still most
+// of the time.
+constexpr uint32_t kHikeLineRepaintMs = 10 * 1000;
 
 // Observe mode's clock granularity, in minutes. The minute tick is the only
 // thing that repaints the header while nothing else on the device is happening,
@@ -310,6 +318,46 @@ int headerClockSlotWidth(const GfxRenderer& renderer) {
   }
   return widestDigit * 4 + renderer.getTextWidth(SMALL_FONT_ID, ":");
 }
+
+// One coordinate, degrees-minutes-seconds -- the format picked over decimal
+// degrees, 2026-08-26. Rounds to the nearest whole second through integer
+// arithmetic on total seconds, not by rounding degrees/minutes/seconds
+// separately: the naive way can print "60" seconds or "60" minutes on a
+// carry (e.g. 47.999999... -> "47°59'60\"" instead of "48°00'00\""), and
+// integer division/modulo on a single rounded total cannot.
+//
+// "\xC2\xB0" is U+00B0 (degree sign) as its literal UTF-8 bytes, not a
+// compiler escape -- GfxRenderer::drawText expects UTF-8, and spelling the
+// bytes out here does not depend on this source file's own encoding or on
+// the toolchain's handling of \u in a narrow string literal.
+void formatDms(double deg, bool isLat, char* buf, size_t bufSize) {
+  const char hemisphere = isLat ? (deg >= 0 ? 'N' : 'S') : (deg >= 0 ? 'E' : 'W');
+  const long totalSeconds = std::lround(std::fabs(deg) * 3600.0);
+  const long wholeDegrees = totalSeconds / 3600;
+  const long remainderSeconds = totalSeconds % 3600;
+  const long wholeMinutes = remainderSeconds / 60;
+  const long wholeSeconds = remainderSeconds % 60;
+  snprintf(buf, bufSize, "%ld\xC2\xB0%02ld'%02ld\"%c", wholeDegrees, wholeMinutes, wholeSeconds, hemisphere);
+}
+
+// Hike mode's second header line's text, shared between the draw and the
+// windowed-repaint's change check so the two can never format it differently.
+// Altitude first, when known -- it is the number a hiker actually asked for;
+// the coordinate is always there because lastLatE7_/lastLonE7_ always are,
+// once a fix has landed.
+void formatHikeLineText(char* buf, size_t bufSize, bool hasAltitude, int16_t altitudeM, double lat, double lon) {
+  char latStr[16];
+  char lonStr[16];
+  formatDms(lat, /*isLat=*/true, latStr, sizeof(latStr));
+  formatDms(lon, /*isLat=*/false, lonStr, sizeof(lonStr));
+  // Coordinate first, altitude after -- maintainer's order, 2026-08-26: the
+  // fix is always known once a fix has landed, altitude is not.
+  if (hasAltitude) {
+    snprintf(buf, bufSize, "%s %s   %d m", latStr, lonStr, static_cast<int>(altitudeM));
+  } else {
+    snprintf(buf, bufSize, "%s %s", latStr, lonStr);
+  }
+}
 // GUI.drawHeader() does not clear anything the strip can rely on: BaseTheme
 // wipes only an 80px battery box (BaseTheme.cpp:383), but the shipped Lyra
 // theme wipes the **full width** of the rect it is handed (LyraTheme.cpp:112).
@@ -343,10 +391,11 @@ constexpr int kHeaderExtraMargin = 2;
 
 // The header is now a fixed-height contract, not a set of independent
 // clear-rects the map happens to get painted over: a single white strip,
-// [0, kHeaderBarHeight), a 1px black separator at its bottom edge, and the
-// map's own content starting only at kMapContentTop --
-// GfxRendererCanvas's minY clips it there, so nothing above the line is
-// drawn at all, not drawn-then-covered (docs/map-header-status.md).
+// [0, headerBarHeight()), a 1px black separator at its bottom edge
+// (headerSeparatorY()), and the map's own content starting only at
+// mapContentTop() -- GfxRendererCanvas's minY clips it there, so nothing
+// above the line is drawn at all, not drawn-then-covered
+// (docs/map-header-status.md).
 //
 // kHeaderBarHeight mirrors drawHeaderStatus()'s own former per-element
 // clear-bottom math (kHeaderMarginTop + 5 + kHeaderRowHeight, the +5 being
@@ -354,14 +403,35 @@ constexpr int kHeaderExtraMargin = 2;
 // kHeaderExtraMargin breathing room it already used below the icons, plus
 // 1 -- so the icon cluster's layout needs no retuning: everything it already
 // draws (battery bottom ~28px, BLE strip backing bottom ~31px) fits inside
-// with room to spare.
+// with room to spare. This is the single-row height, used unconditionally by
+// row one's own layout (place-name centring, the icon strip); the mode-aware
+// total lives in MapActivity::headerBarHeight()/headerSeparatorY()/
+// mapContentTop(), which add Hike's second line on top of this.
 constexpr int kHeaderBarHeight = kHeaderMarginTop + 5 + kHeaderRowHeight + kHeaderExtraMargin + 1;  // 36
-constexpr int kHeaderSeparatorY = kHeaderBarHeight;                                                 // the 1px black row
-constexpr int kMapContentTop = kHeaderBarHeight + 1;  // first row the map may draw into
-constexpr int kHeaderPlaceNameRightGap = 6;           // clearance before the icon cluster's own backing
+constexpr int kHeaderPlaceNameRightGap = 6;  // clearance before the icon cluster's own backing
 // 2px past kTextX -- confirmed on hardware 2026-08-11 that the debug
 // readout's own left margin read as too tight for this text specifically.
 constexpr int kHeaderPlaceNameLeftX = kTextX + 2;
+
+// Hike mode's second header line: elevation and lat/lon, both of which answer
+// "where am I" better than a place name at hiking pace, and both of which the
+// place-name walk already fails to answer off the road network. Ride and Cycle
+// keep the single-row header above untouched -- MapActivity::headerBarHeight()
+// is the only thing that reads mode_ here, and it is what
+// MapActivity::mapContentTop()/headerSeparatorY() are derived from, so the map
+// viewport, the separator and the marker-bounds check all move together.
+//
+// Exactly one more kHeaderRowHeight, not a new magic number: that row already
+// proved it holds a small-font text line plus its own backing pad, so the
+// second line reuses it instead of inventing a second constant to retune.
+constexpr int kHikeElevationLineHeight = kHeaderRowHeight;
+constexpr int kHikeElevationLeftX = kHeaderPlaceNameLeftX;
+// Clearance before the mountain icon, separating it from the coordinates --
+// judged on the panel 2026-08-26 to want more air than kHeaderPlaceNameRightGap
+// gives the icon cluster, hence its own doubled figure rather than that one
+// reused. No gap after the icon: it sits directly against the altitude value
+// it belongs to, same day's judgement.
+constexpr int kHikeIconGapBefore = kHeaderPlaceNameRightGap * 2;
 
 // North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
@@ -1361,9 +1431,9 @@ void MapActivity::updateHeaderStatus() {
   //
   // So the minute tick redraws the whole row through the one function that
   // already gets the order right, and refreshes the whole band. It costs a
-  // 480x36 window once a minute instead of a strip; the alternative is a
-  // second copy of drawHeaderStatus()'s ordering that has to be kept in step
-  // with it forever.
+  // 480x36 window once a minute (480x58 in Hike, headerBarHeight()) instead of
+  // a strip; the alternative is a second copy of drawHeaderStatus()'s
+  // ordering that has to be kept in step with it forever.
   // A destination change is a change to the place-name slot, and
   // drawHeaderStatusStrip() does not draw that slot -- only the whole-row path
   // does (and it is the one that gets the clear-then-draw order right).
@@ -1372,7 +1442,11 @@ void MapActivity::updateHeaderStatus() {
     x = 0;
     y = 0;
     w = renderer.getScreenWidth();
-    h = kHeaderBarHeight;
+    // headerBarHeight(), not the file-scope kHeaderBarHeight: in Hike mode
+    // drawHeaderStatus() moved the separator down a line, and a window sized
+    // to the base height would refresh the framebuffer without ever sending
+    // the new separator position to the panel.
+    h = headerBarHeight();
   } else {
     headerStatusRect(x, y, w, h);
     drawHeaderStatusStrip();  // records what it drew, for the comparisons above
@@ -1494,6 +1568,14 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   h = (iconBottom - contentTop) + kHeaderBackingPad * 2;
 }
 
+int MapActivity::headerBarHeight() const {
+  return kHeaderBarHeight + (mode_ == MapRideMode::Hike ? kHikeElevationLineHeight : 0);
+}
+
+int MapActivity::headerSeparatorY() const { return headerBarHeight(); }
+
+int MapActivity::mapContentTop() const { return headerBarHeight() + 1; }
+
 void MapActivity::drawHeaderStatus() {
   const int screenWidth = renderer.getScreenWidth();
 
@@ -1513,9 +1595,13 @@ void MapActivity::drawHeaderStatus() {
   drawHeaderPlaceName();
 
   // The line the map's own content starts below -- GfxRendererCanvas's minY
-  // (kMapContentTop) is what actually stops the map drawing above this, not
+  // (mapContentTop()) is what actually stops the map drawing above this, not
   // this line; this is only what a rider sees at the boundary.
-  renderer.fillRect(0, kHeaderSeparatorY, screenWidth, 1, true);
+  //
+  // headerSeparatorY(), not the file-scope kHeaderBarHeight/kHeaderSeparatorY:
+  // in Hike mode the bar is one line taller, and the separator belongs at its
+  // bottom edge, below the elevation line drawHikeElevationLine() owns.
+  renderer.fillRect(0, headerSeparatorY(), screenWidth, 1, true);
 }
 
 // Left side of the header: the nearest named place to the marker, from the
@@ -1575,6 +1661,138 @@ void MapActivity::drawHeaderPlaceName() {
   // tight.
   const int y = (kHeaderBarHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2 + 3;
   renderer.drawText(UI_10_FONT_ID, kHeaderPlaceNameLeftX, y, text, true);
+}
+
+// Hike mode's second header line, below drawHeaderPlaceName()'s row and above
+// headerSeparatorY(): elevation, when a fix has ever carried one, and the
+// rider's own lat/lon -- riderLatE7()/riderLonE7(), not lastLatE7_/lastLonE7_
+// directly. Those track whatever is on screen, and panBy() repoints them at
+// the pan target while Observe mode is up (riderLatE7()'s own comment); this
+// line answers "where is the rider", which does not change just because they
+// panned to look around. Ride and Cycle draw nothing here -- mode_ is the
+// only gate, and a rider who switches mode picks the line up or loses it on
+// the full frame switchMode() already forces.
+void MapActivity::drawHikeElevationLine() {
+  if (mode_ != MapRideMode::Hike) return;
+
+  // Full text, coords-then-altitude, is still what drawnHikeLineText_ holds
+  // for updateHikeElevationLine()'s change check -- unrelated to whether the
+  // icon fits below, which is a drawing-layout question, not a "did anything
+  // change" one.
+  char fullText[sizeof(drawnHikeLineText_)];
+  formatHikeLineText(fullText, sizeof(fullText), hasAltitudeReading_, lastAltitudeM_,
+                     static_cast<double>(riderLatE7()) / 1e7, static_cast<double>(riderLonE7()) / 1e7);
+  strncpy(drawnHikeLineText_, fullText, sizeof(drawnHikeLineText_) - 1);
+  drawnHikeLineText_[sizeof(drawnHikeLineText_) - 1] = '\0';
+
+  // Stays clear of the compass's own white halo (drawCompass(), drawn earlier
+  // this frame) -- its left edge is the hard right bound for both this row's
+  // backing and its content, not the screen edge. A full-width backing drawn
+  // after the compass would erase the compass's halo and glyph underneath it
+  // -- judged on the panel 2026-08-26. Same reasoning drawHeaderPlaceName()
+  // already uses against the icon cluster's headerStatusRect(), just against
+  // a different right-hand neighbour.
+  const int compassHaloLeft =
+      (renderer.getScreenWidth() - kCompassCenterMarginRight) - (kCompassGlyphRadius + kCompassHaloMargin);
+  const int maxContentWidth = compassHaloLeft - kHikeElevationLeftX - kHeaderPlaceNameRightGap;
+  if (maxContentWidth <= 0) return;
+
+  // Backing first, same reasoning as the icon strip's and the place name's:
+  // this rect can land over last frame's separator or last frame's own
+  // shorter/longer content, not blank margin.
+  renderer.fillRect(0, kHeaderBarHeight, compassHaloLeft, kHikeElevationLineHeight, false);
+
+  // SMALL_FONT_ID, not UI_10_FONT_ID: this is secondary information, the same
+  // weight as the clock/battery percentage in row one, not the primary
+  // place-name label -- UI_10 judged too large on the panel, 2026-08-26.
+  //
+  // No +3 correction here, unlike drawHeaderPlaceName()'s: that offset was
+  // tuned on hardware for UI_10_FONT_ID centred in row one
+  // (kHeaderPlaceNameLeftX's own comment, 2026-08-11) and does not carry over
+  // to a different font in a different row -- judged 2-3px too low on the
+  // panel at +3, 2026-08-26. The plain centred value still read 1-2px low on
+  // the simulator the same day, hence -2 here.
+  const int textY = kHeaderBarHeight + (kHikeElevationLineHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2 - 2;
+
+  // Coordinates first, maintainer's order, 2026-08-26. Own truncate-until-fits
+  // loop, same shape as drawHeaderPlaceName()'s -- coordinates are the one
+  // thing this line always has, so they are what survives when the icon and
+  // altitude do not fit, not what gets chopped mid-string to make room.
+  char coordsStr[32];
+  {
+    char latStr[16];
+    char lonStr[16];
+    formatDms(static_cast<double>(riderLatE7()) / 1e7, /*isLat=*/true, latStr, sizeof(latStr));
+    formatDms(static_cast<double>(riderLonE7()) / 1e7, /*isLat=*/false, lonStr, sizeof(lonStr));
+    snprintf(coordsStr, sizeof(coordsStr), "%s %s", latStr, lonStr);
+  }
+  for (size_t len = strlen(coordsStr); len > 0 && renderer.getTextWidth(SMALL_FONT_ID, coordsStr) > maxContentWidth;
+       --len) {
+    coordsStr[len - 1] = '\0';
+  }
+  renderer.drawText(SMALL_FONT_ID, kHikeElevationLeftX, textY, coordsStr, true);
+
+  if (!hasAltitudeReading_) return;
+
+  // Mountain icon before the altitude value it belongs to, same reading order
+  // a rider already gets from a compass rose or a trailhead sign -- picked
+  // over a bare "m" suffix, 2026-08-26 (docs/map-header-status.md, "Hike
+  // mode's second line"). Dropped whole, not truncated, when the row is
+  // already full of coordinates -- a half-drawn icon or a unit with no
+  // number is worse than neither.
+  char altStr[16];
+  snprintf(altStr, sizeof(altStr), "%d m", static_cast<int>(lastAltitudeM_));
+  const int coordsWidth = renderer.getTextWidth(SMALL_FONT_ID, coordsStr);
+  const int altWidth = renderer.getTextWidth(SMALL_FONT_ID, altStr);
+  const int iconSize = icon_mountain_16.w;
+  // No gap between the icon and altWidth below -- the icon sits directly
+  // against the value it belongs to.
+  const int neededWidth = coordsWidth + kHikeIconGapBefore + iconSize + altWidth;
+  if (neededWidth > maxContentWidth) return;
+
+  const int iconX = kHikeElevationLeftX + coordsWidth + kHikeIconGapBefore;
+  // -2: centred like the text above, then nudged up the same amount --
+  // judged 2px low against the text baseline on the panel, 2026-08-26.
+  const int iconY = kHeaderBarHeight + (kHikeElevationLineHeight - iconSize) / 2 - 2;
+  // drawMono1bpp(), not drawIcon(): drawIcon() applies a quarter-turn meant
+  // for forced-Portrait UI themes, which turned the map's own pin glyphs
+  // rot270 on this screen (GfxRenderer.h, drawMono1bpp()'s own comment,
+  // measured 2026-08-17). This icon sits over the plain white backing this
+  // function already filled, not over live map lines, so the single ink pass
+  // below is enough -- no silhouette-then-outline mask needed.
+  renderer.drawMono1bpp(icon_mountain_16.bits, iconX, iconY, iconSize, iconSize, true);
+  renderer.drawText(SMALL_FONT_ID, iconX + iconSize, textY, altStr, true);
+}
+
+// Keeps the hike line honest between full frames -- same windowed-repaint
+// shape as updateHeaderStatus(): polled, not checked every tick, and the
+// panel is only spent on a real change (drawnHikeLineText_ actually differs),
+// rate-capped so a fix arriving every second or two at hiking pace does not
+// spend a waveform pass on every one of them.
+void MapActivity::updateHikeElevationLine() {
+  // Same gate as updateHeaderStatus(): nothing to keep honest before a frame
+  // exists that carries a header row at all.
+  if (!headerRowDrawn_ || mode_ != MapRideMode::Hike) return;
+
+  const uint32_t now = millis();
+  if (nextHikeLinePollMs_ != 0 && now < nextHikeLinePollMs_) return;
+  nextHikeLinePollMs_ = now + kHeaderPollMs;
+
+  char candidate[sizeof(drawnHikeLineText_)];
+  formatHikeLineText(candidate, sizeof(candidate), hasAltitudeReading_, lastAltitudeM_,
+                     static_cast<double>(riderLatE7()) / 1e7, static_cast<double>(riderLonE7()) / 1e7);
+  if (strcmp(candidate, drawnHikeLineText_) == 0) return;
+  if (now < nextHikeLineRepaintMs_) return;
+  nextHikeLineRepaintMs_ = now + kHikeLineRepaintMs;
+
+  drawHikeElevationLine();
+
+  // Windowed, like the row above: the map on the rest of the panel is
+  // untouched and a full refresh would cost a second to redraw something a
+  // few characters wide.
+  if (!renderer.displayBufferWindow(0, kHeaderBarHeight, renderer.getScreenWidth(), kHikeElevationLineHeight)) {
+    LOG_ERR(kLogTag, "hike elevation line window rejected");
+  }
 }
 
 void MapActivity::drawHeaderStatusStrip() {
@@ -2250,13 +2468,16 @@ void MapActivity::loop() {
       // carries a MapHeading value, so the *2 fudge the old 8-step packet
       // needed is gone (BlePositionServer.h).
       //
-      // speed, utc and altitude are carried and stored, and nothing reads
-      // them yet -- auto zoom, the on-screen fix time and hike mode are
-      // later phases. Logged so the fields can be seen arriving before
-      // anything depends on them.
+      // speed and utc are carried and stored, and nothing reads them yet --
+      // auto zoom and the on-screen fix time are later phases. Altitude now
+      // feeds Hike mode's header line (drawHikeElevationLine()). Logged so
+      // the still-unused fields can be seen arriving before anything depends
+      // on them.
       char altStr[8];
       if (update.hasAltitude) {
         snprintf(altStr, sizeof(altStr), "%d", static_cast<int>(update.altitudeM));
+        lastAltitudeM_ = update.altitudeM;
+        hasAltitudeReading_ = true;
       } else {
         snprintf(altStr, sizeof(altStr), "unset");
       }
@@ -2289,6 +2510,14 @@ void MapActivity::loop() {
       const bool moved = consoleState_.latE7() != lastLatE7_ || consoleState_.lonE7() != lastLonE7_;
       hasReceivedAny_ = true;
       showingPersistedFix_ = false;
+      // Same field the BLE fix above stores, so `mapcmd.py pos ... alt <m>`
+      // exercises Hike mode's header line the same way a real fix does.
+      // Unconditional on `moved`: an altitude-only console update must still
+      // register, since altitude has no follow decision of its own to gate it.
+      if (consoleState_.hasAltitude()) {
+        lastAltitudeM_ = consoleState_.altitudeM();
+        hasAltitudeReading_ = true;
+      }
       if (moved) {
         // A `pos` goes through the same follow decision as a BLE fix: a metre
         // away must cost what a real fix a metre away costs, or the console
@@ -2329,6 +2558,9 @@ void MapActivity::loop() {
   // Also the link state and the signal bars, which have nothing to do with
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
+  // Hike mode's elevation/lat-lon line, kept current the same way: a no-op in
+  // Ride/Cycle (mode_ gate inside).
+  updateHikeElevationLine();
 
   // Advertising state and connection parameter requests, once per tick. A
   // restart that failed inside the NimBLE disconnect callback cannot be
@@ -3886,10 +4118,10 @@ void MapActivity::drawViewedNearbyPoint() {
   const int gap = 5;                  // white between the square and the circle
   const int radius = side / 2 + gap;  // circle radius around the mark's centre
   const int box = radius * 2;
-  if (sx - radius - 2 < 0 || sy - radius - 2 < kMapContentTop || sx + radius + 2 >= renderer.getScreenWidth() ||
+  if (sx - radius - 2 < 0 || sy - radius - 2 < mapContentTop() || sx + radius + 2 >= renderer.getScreenWidth() ||
       sy + radius + 2 >= renderer.getScreenHeight()) {
     LOG_DBG(kLogTag, "ring skipped: point at %d,%d off the panel (%dx%d, content top %d)", (int)sx, (int)sy,
-            renderer.getScreenWidth(), renderer.getScreenHeight(), kMapContentTop);
+            renderer.getScreenWidth(), renderer.getScreenHeight(), mapContentTop());
     return;
   }
 
@@ -4969,7 +5201,7 @@ void MapActivity::renderRouteOverview() {
   // the side hints, both of which are drawn after the map and would cover a name
   // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
   // bar and the busy badge already bottom out on.
-  GfxRendererCanvas canvas(renderer, kMapContentTop, kScaleMarginBottom, kSideHintReservedPx);
+  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
   view.markerX = anchorX;
@@ -4987,6 +5219,7 @@ void MapActivity::renderRouteOverview() {
   // the picture is turned.
   drawCompass(fit.heading);
   drawHeaderStatus();
+  drawHikeElevationLine();  // no-op outside Hike mode
   drawMapScale();
 
   if (SETTINGS.mapDebugInfo) {
@@ -5116,8 +5349,7 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     pointSource = points_.get();
   }
 
-  MapRenderer::render(canvas, *source_, view, style, route_.get(), timing, nearestOut, labels_.get(),
-                      pointSource);
+  MapRenderer::render(canvas, *source_, view, style, route_.get(), timing, nearestOut, labels_.get(), pointSource);
 
   // Hatch after the geometry, because which tiles are missing is only known
   // once the source has tried to open them, and asking up front would cost a
@@ -5250,7 +5482,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // the side hints, both of which are drawn after the map and would cover a name
   // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
   // bar and the busy badge already bottom out on.
-  GfxRendererCanvas canvas(renderer, kMapContentTop, kScaleMarginBottom, kSideHintReservedPx);
+  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
   view.markerX = MapViewport::kAnchorScreenX;
@@ -5304,6 +5536,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // is turned, and with a route holding the frame that is the route's direction.
   drawCompass(frameHeading);
   drawHeaderStatus();
+  drawHikeElevationLine();  // no-op outside Hike mode
   drawMapScale();
 
   // Does not count the marker or its patch save, both of which happen after the

@@ -269,8 +269,8 @@ class MapConsoleState {
   int32_t lonE7() const { return lonE7_; }
   uint8_t heading() const { return heading_; }  // 0-15, see MapHeading.h
   uint16_t speedKmh() const { return speedKmh_; }
-  // Metres above sea level, valid only if hasAltitude() -- not yet consumed
-  // by anything drawn, wired ahead of hike mode.
+  // Metres above sea level, valid only if hasAltitude() -- feeds Hike mode's
+  // header line (MapActivity::drawHikeElevationLine()).
   bool hasAltitude() const { return hasAltitude_; }
   int16_t altitudeM() const { return altitudeM_; }
 
