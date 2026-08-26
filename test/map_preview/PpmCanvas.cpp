@@ -186,6 +186,58 @@ void PpmCanvas::drawText(const int x, const int y, const char* utf8, const int s
       &sink);
 }
 
+void PpmCanvas::drawTextTurned(const int centreX, const int centreY, const char* utf8, const int sizePx,
+                               const bool bold, const MapInk ink, const MapTextTurn turn) {
+  const void* face = PreviewFont::pick(sizePx, bold);
+  int w = 0, h = 0;
+  if (!PreviewFont::measure(face, utf8, w, h)) return;
+
+  // PreviewFont plots in unturned glyph space, so the turn is applied in the
+  // plot callback: an exact integer remap of (dx, dy) about the box centre, no
+  // resampling and no holes at any of the four angles.
+  struct Sink {
+    PpmCanvas* canvas;
+    MapInk ink;
+    MapTextTurn turn;
+    int originX;  // unturned box top-left, in the same space PreviewFont plots in
+    int originY;
+    int centreX;
+    int centreY;
+    int w;
+    int h;
+  } sink{this, ink, turn, 0, 0, centreX, centreY, w, h};
+
+  PreviewFont::draw(
+      face, utf8, 0, 0,
+      [](const int px, const int py, void* ctx) {
+        auto* t = static_cast<Sink*>(ctx);
+        // Offset from the unturned box's own centre.
+        const int dx = px - (t->originX + t->w / 2);
+        const int dy = py - (t->originY + t->h / 2);
+        int rx = dx;
+        int ry = dy;
+        switch (t->turn) {
+          case MapTextTurn::Cw90:
+            rx = -dy;
+            ry = dx;
+            break;
+          case MapTextTurn::Half:
+            rx = -dx;
+            ry = -dy;
+            break;
+          case MapTextTurn::Ccw90:
+            rx = dy;
+            ry = -dx;
+            break;
+          case MapTextTurn::None:
+          default:
+            break;
+        }
+        t->canvas->setPixel(t->centreX + rx, t->centreY + ry, t->ink);
+      },
+      &sink);
+}
+
 void PpmCanvas::drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const {
   outX = 0;
   outY = 0;

@@ -14,6 +14,27 @@
 // both paint white over black that is already on the canvas.
 enum class MapInk : uint8_t { Black, White };
 
+// Quarter turns, and only quarter turns.
+//
+// A contour's height number should read with its top pointing uphill, which is
+// what lets the slope direction be read off the number alone on a paper map. The
+// bearing of a contour is any angle, so the honest thing would be to rotate the
+// glyphs by that angle -- and at a 12 px line on a 1-bit grid that is the wrong
+// trade: a smoothly rotated bitmap glyph is either holed (forward mapping) or
+// blurred into a two-value grid it cannot represent (inverse mapping with any
+// filtering). A quarter turn is an exact integer remap, so the digits stay as
+// crisp as they are upright, and the reader still gets the up direction to
+// within 45 degrees, which is all the number has to say.
+//
+// The turn is applied about the text's own centre, so a caller that knows where
+// the number goes does not also have to know how wide it came out.
+enum class MapTextTurn : uint8_t {
+  None = 0,   // up is screen up
+  Cw90 = 1,   // up points right
+  Half = 2,   // up points down
+  Ccw90 = 3,  // up points left
+};
+
 // Minimal drawing surface MapRenderer needs. Keeps MapRenderer free of any
 // HAL/GfxRenderer dependency, so the exact same drawing logic (what to draw,
 // where) runs both in the native preview (test/map_preview/PpmCanvas) and the
@@ -60,6 +81,12 @@ class IMapCanvas {
   // renderer then draws dots and no labels. It must not draw anything.
   virtual bool measureText(const char* utf8, int sizePx, bool bold, int& outWidth, int& outHeight) = 0;
   virtual void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) = 0;
+
+  // The same text, quarter-turned about (centreX, centreY) -- see MapTextTurn.
+  // `MapTextTurn::None` must draw exactly what drawText would draw with the box
+  // centred on that point, so a caller can use this unconditionally.
+  virtual void drawTextTurned(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
+                             MapTextTurn turn) = 0;
 
   // The rectangle this canvas will actually accept ink in, in screen pixels.
   //

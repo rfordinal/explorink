@@ -128,6 +128,14 @@ struct ContourLabelSlot {
   int32_t x = 0;
   int32_t y = 0;
   int32_t elevation = 0;
+  // The uphill direction at that vertex, in screen pixels. Derived from the
+  // order the contour's points are stored in, which the tile builder guarantees:
+  // find_contours runs with positive_orientation="low", so higher ground is at
+  // (-dy, dx) from the direction of travel (mapbuilder/tilegen/contour.py,
+  // contour_lines). It costs no bytes in the tile and it is what lets the number
+  // be turned so its top points up the slope.
+  int32_t upX = 0;
+  int32_t upY = 0;
   // |cross product| of the two segments meeting at the chosen vertex, scaled.
   // Lower is straighter, and straighter is where a number sits without looking
   // like it fell off the line.
@@ -141,7 +149,7 @@ struct ContourLabelSlot {
 // placed on a hairpin reads as belonging to whichever arm the eye follows first,
 // and on a 1-bit panel there is no second cue to fix that.
 bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int rectH, int margin,
-                     int32_t& outX, int32_t& outY, int32_t& outBend) {
+                     int32_t& outX, int32_t& outY, int32_t& outBend, int32_t& outUpX, int32_t& outUpY) {
   bool found = false;
   int32_t bestBend = 0;
   for (uint16_t i = 1; i + 1 < line.pointCount; ++i) {
@@ -165,6 +173,12 @@ bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int
       bestBend = bend;
       outX = x;
       outY = y;
+      // Direction of travel across this vertex, then a quarter turn clockwise on
+      // a screen whose y grows downward -- which is uphill, per contour.py.
+      const int32_t tx = line.xs[i + 1] - line.xs[i - 1];
+      const int32_t ty = line.ys[i + 1] - line.ys[i - 1];
+      outUpX = -ty;
+      outUpY = tx;
     }
   }
   outBend = bestBend;
@@ -194,13 +208,13 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     if (line.classId != index) continue;
     strokeWay(canvas, line, style.contourWidthPx[index], MapInk::Black);
     if (slots == nullptr || style.contourLabelPx == 0) continue;
-    int32_t vx = 0, vy = 0, bend = 0;
+    int32_t vx = 0, vy = 0, bend = 0, upX = 0, upY = 0;
     // The margin has to cover half the *box*, not half the text height: a
     // four-digit height is about three label heights wide, and a margin of one
     // put "1000" half off the left edge. Three is that half-width with room,
     // and it needs no text measured before a vertex is chosen.
     if (!bestLabelVertex(line, canvasX, canvasY, canvasW, canvasH,
-                         static_cast<int>(style.contourLabelPx) * 3, vx, vy, bend)) {
+                         static_cast<int>(style.contourLabelPx) * 3, vx, vy, bend, upX, upY)) {
       continue;
     }
     const int32_t elevation = static_cast<int32_t>(static_cast<int16_t>(line.flags));
@@ -224,14 +238,14 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
         // Too close to a number already claimed. Keep the straighter of the
         // two rather than whichever the stream offered first.
         if (bend < slots[i].bend) {
-          slots[i] = ContourLabelSlot{vx, vy, elevation, bend, true};
+          slots[i] = ContourLabelSlot{vx, vy, elevation, upX, upY, bend, true};
         }
         target = -1;
         break;
       }
     }
     if (target >= 0) {
-      slots[target] = ContourLabelSlot{vx, vy, elevation, bend, true};
+      slots[target] = ContourLabelSlot{vx, vy, elevation, upX, upY, bend, true};
     }
   }
 }
@@ -266,19 +280,45 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     snprintf(text, sizeof(text), "%ld", static_cast<long>(slots[i].elevation));
     int textW = 0, textH = 0;
     if (!canvas.measureText(text, sizePx, bold, textW, textH)) continue;
-    const int boxW = textW + 4;
-    const int boxH = textH + 2;
+    // The claimed box follows the turn: a turned number is as tall as it was
+    // wide. Getting this the wrong way round would let two numbers overlap at
+    // Which quarter turn puts the digits' top nearest the uphill direction.
+    // Upright text has up = (0, -1); a clockwise quarter turn sends that to
+    // (1, 0), a half turn to (0, 1), a counter-clockwise one to (-1, 0). So the
+    // dominant component of the uphill vector picks the turn.
+    // **Never a half turn**, whatever the slope says. Tried it and looked at it:
+    // an inverted "800" reads as "008", and a number you have to decode is worse
+    // than a number with no orientation at all. A quarter turn either way still
+    // reads, like a word on a book spine.
+    //
+    // So uphill picks between three turns, not four. When the slope runs down the
+    // screen the horizontal component decides, and the number ends up saying
+    // "uphill is on this side" to within 90 degrees instead of 45. That is the
+    // price of quantising, and it is the price paid for digits that stay crisp on
+    // a 1-bit grid at a 12 px line.
+    MapTextTurn turn = MapTextTurn::None;
+    const int32_t ux = slots[i].upX;
+    const int32_t uy = slots[i].upY;
+    const int32_t ax = ux < 0 ? -ux : ux;
+    const int32_t ay = uy < 0 ? -uy : uy;
+    if (ax > ay || uy > 0) {
+      if (ux != 0) turn = ux > 0 ? MapTextTurn::Cw90 : MapTextTurn::Ccw90;
+    }
+    // the very angles the turn exists for.
+    const bool quarter = turn == MapTextTurn::Cw90 || turn == MapTextTurn::Ccw90;
+    const int boxW = quarter ? textH + 2 : textW + 4;
+    const int boxH = quarter ? textW + 4 : textH + 2;
     const int boxX = slots[i].x - boxW / 2;
     const int boxY = slots[i].y - boxH / 2;
     // Yield to a place name that already claimed this ground. A height is
     // countable from the next one along; a settlement's name is not.
     if (labels != nullptr && labels->taken.anySet(boxX, boxY, boxW, boxH)) continue;
-    const int textX = boxX + 2;
-    const int textY = boxY + 1;
+    const int centreX = slots[i].x;
+    const int centreY = slots[i].y;
     for (const ContourHaloOffset& offset : kContourHalo) {
-      canvas.drawText(textX + offset.dx, textY + offset.dy, text, sizePx, bold, MapInk::White);
+      canvas.drawTextTurned(centreX + offset.dx, centreY + offset.dy, text, sizePx, bold, MapInk::White, turn);
     }
-    canvas.drawText(textX, textY, text, sizePx, bold, MapInk::Black);
+    canvas.drawTextTurned(centreX, centreY, text, sizePx, bold, MapInk::Black, turn);
     if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
     ++placed;
   }

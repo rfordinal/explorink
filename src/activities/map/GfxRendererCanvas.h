@@ -190,6 +190,39 @@ class GfxRendererCanvas : public IMapCanvas {
     renderer_.drawText(fontId, x, y, utf8, ink == MapInk::Black, styleFor(bold));
   }
 
+  // Quarter-turned text. **Two of the four turns are real here and two are not**,
+  // and that is a deliberate stop rather than an oversight.
+  //
+  // GfxRenderer has `drawTextRotated90CW` and nothing else. Adding `Half` and
+  // `Ccw90` is not a matter of another `if constexpr` branch: `renderCharImpl`'s
+  // rotation parameter also decides the direction the differential-rounding
+  // advance is applied in, which corner the strip-culling box is built from, and
+  // which `combiningMark::anchorOverRotated*` helper positions a mark -- and that
+  // last one exists for upright and 90CW only. Two more rotations means two more
+  // of each, in the text path every screen in the firmware draws through, with no
+  // device here to check the result on.
+  //
+  // So an unimplemented turn draws upright. A height number then reads with its
+  // top up instead of uphill, which is the same as having no rotation at all --
+  // wrong, but wrong in the direction of legible rather than of garbled.
+  // docs/contours-plan.md, "Open questions", carries what it would take.
+  void drawTextTurned(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
+                      MapTextTurn turn) override {
+    if (utf8 == nullptr || *utf8 == '\0') return;
+    const int fontId = fontIdForSize(sizePx);
+    if (fontId == 0) return;
+    int w = 0, h = 0;
+    if (!measureText(utf8, sizePx, bold, w, h)) return;
+    if (turn == MapTextTurn::Cw90) {
+      // Turned, the box is h wide and w tall. GfxRenderer's rotated entry point
+      // takes the same top-left contract as drawText does.
+      renderer_.drawTextRotated90CW(fontId, centreX - h / 2, centreY - w / 2, utf8, ink == MapInk::Black,
+                                    styleFor(bold));
+      return;
+    }
+    renderer_.drawText(fontId, centreX - w / 2, centreY - h / 2, utf8, ink == MapInk::Black, styleFor(bold));
+  }
+
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {
     outX = 0;
     outY = minY_;
