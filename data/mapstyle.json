@@ -41,8 +41,8 @@
     "contours": {
       "_comment": "Elevation contours, tile layer_id 7, two classes. A contour is a line of equal height; an index contour is every Nth one, drawn heavier so the eye can count. The tiles carry 20 m lines at the detail LOD with every 5th (100 m) as index, and 100 m lines from regional out with every 5th (500 m) as index (mapbuilder/tilegen/build_config.json). Solid strokes only: a dithered 1 px line reads as dashed and a dashed contour reads as a footpath, so weight is the only separator there is. Drawn over the landuse wash and under buildings, water and roads -- a contour crossing a road must not break it. `enabled: false` for ride and cycle means the layer is never opened, so those modes pay no card read at all. Rung 1 draws only the index lines and rungs 5-6 only the 500 m ones: 20 m at 3 m/px and 100 m at 32-45 m/px are wall to wall on a mountain flank, measured on 480x800 1:1 renders 2026-08-26 (docs/contours-plan.md).",
       "enabled": true,
-      "label_px": 15,
-      "label_bold": true,
+      "label_px": 9,
+      "label_bold": false,
       "label_max": 3,
       "label_min_gap_px": 200,
       "rules": [

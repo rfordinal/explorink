@@ -140,14 +140,20 @@ struct ContourLabelSlot {
 // Straightness is the cheap proxy for what a cartographer does by eye. A number
 // placed on a hairpin reads as belonging to whichever arm the eye follows first,
 // and on a 1-bit panel there is no second cue to fix that.
-bool bestLabelVertex(const MapWayRef& line, int screenW, int screenH, int margin,
+bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int rectH, int margin,
                      int32_t& outX, int32_t& outY, int32_t& outBend) {
   bool found = false;
   int32_t bestBend = 0;
   for (uint16_t i = 1; i + 1 < line.pointCount; ++i) {
     const int32_t x = line.xs[i];
     const int32_t y = line.ys[i];
-    if (x < margin || y < margin || x > screenW - margin || y > screenH - margin) continue;
+    // Against the canvas's own drawable rect, not against 0..w/0..h: on the
+    // device the header band is off limits and rectY is not zero
+    // (IMapCanvas::drawableRect).
+    if (x < rectX + margin || y < rectY + margin || x > rectX + rectW - margin ||
+        y > rectY + rectH - margin) {
+      continue;
+    }
     const int32_t ax = x - line.xs[i - 1];
     const int32_t ay = y - line.ys[i - 1];
     const int32_t bx = line.xs[i + 1] - x;
@@ -190,10 +196,11 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     if (slots == nullptr || style.contourLabelPx == 0) continue;
     int32_t vx = 0, vy = 0, bend = 0;
     // The margin has to cover half the *box*, not half the text height: a
-    // four-digit height at 15 px is about 40 px wide, and a margin of 15 put
-    // "1000" half off the left edge. Two label heights is that half-width with
-    // room, and it needs no text measured before a vertex is chosen.
-    if (!bestLabelVertex(line, canvasW, canvasH, static_cast<int>(style.contourLabelPx) * 2, vx, vy, bend)) {
+    // four-digit height is about three label heights wide, and a margin of one
+    // put "1000" half off the left edge. Three is that half-width with room,
+    // and it needs no text measured before a vertex is chosen.
+    if (!bestLabelVertex(line, canvasX, canvasY, canvasW, canvasH,
+                         static_cast<int>(style.contourLabelPx) * 3, vx, vy, bend)) {
       continue;
     }
     const int32_t elevation = static_cast<int32_t>(static_cast<int16_t>(line.flags));
@@ -229,9 +236,24 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
   }
 }
 
+// Half the ring of offsets a 1 px outline uses: eight directions at radius 1.
+// Same trick MapLabels uses for a place name's halo.
+struct ContourHaloOffset {
+  int dx;
+  int dy;
+};
+constexpr ContourHaloOffset kContourHalo[8] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1},
+                                               {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+
 // The numbers, drawn after the place names so a settlement's name wins the
-// space. Each one knocks a white box out of the line it names, which is what a
-// paper map does with a gap.
+// space.
+//
+// A 1 px white outline around the digits, not a white box behind them. The box
+// was the first attempt and it reads as a hole punched in the map: it wipes the
+// contour, the forest tone and anything else under a rectangle far bigger than
+// the strokes need. The outline knocks out only what the digits themselves
+// occupy, so the line still runs visibly behind the number
+// (maintainer's call, 2026-08-26).
 void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratch* labels,
                        const ContourLabelSlot* slots, int slotCount) {
   if (style.contourLabelPx == 0) return;
@@ -251,8 +273,12 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     // Yield to a place name that already claimed this ground. A height is
     // countable from the next one along; a settlement's name is not.
     if (labels != nullptr && labels->taken.anySet(boxX, boxY, boxW, boxH)) continue;
-    canvas.fillRoundedRect(boxX, boxY, boxW, boxH, 0, MapInk::White);
-    canvas.drawText(boxX + 2, boxY + 1, text, sizePx, bold, MapInk::Black);
+    const int textX = boxX + 2;
+    const int textY = boxY + 1;
+    for (const ContourHaloOffset& offset : kContourHalo) {
+      canvas.drawText(textX + offset.dx, textY + offset.dy, text, sizePx, bold, MapInk::White);
+    }
+    canvas.drawText(textX, textY, text, sizePx, bold, MapInk::Black);
     if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
     ++placed;
   }
