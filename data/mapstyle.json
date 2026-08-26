@@ -38,12 +38,14 @@
         }
       ]
     },
+
     "contours": {
       "_comment": "Elevation contours, tile layer_id 7, two classes. A contour is a line of equal height; an index contour is every Nth one, drawn heavier so the eye can count. The tiles carry 20 m lines at the detail LOD with every 5th (100 m) as index, and 100 m lines from regional out with every 5th (500 m) as index (mapbuilder/tilegen/build_config.json). Solid strokes only: a dithered 1 px line reads as dashed and a dashed contour reads as a footpath, so weight is the only separator there is. Drawn over the landuse wash and under buildings, water and roads -- a contour crossing a road must not break it. `enabled: false` for ride and cycle means the layer is never opened, so those modes pay no card read at all. Rung 1 draws only the index lines and rungs 5-6 only the 500 m ones: 20 m at 3 m/px and 100 m at 32-45 m/px are wall to wall on a mountain flank, measured on 480x800 1:1 renders 2026-08-26 (docs/contours-plan.md).",
       "enabled": true,
       "label_px": 12,
       "label_bold": false,
-      "label_max": 3,
+      "label_max": 4,
+      "label_halo_px": 2,
       "label_min_gap_px": 200,
       "rules": [
         {
@@ -74,6 +76,7 @@
         }
       ]
     },
+
     "junctions": {
       "_comment": "Junction dots, drawn ONLY along the route. Three filters: within max_dist_px of the route; significant, i.e. require_major means at least one road there is flagged major in the roads layer and not hidden (otherwise every side street and footpath in a village beads the whole route); and no two closer than min_spacing_px along the route. Keyed on the roads layer's `major` flag, NOT on rule width -- width is cosmetic, so thinning the major roads must not silently delete the dots. halo_px is a white ring around each dot, without which they are invisible where they sit on the black route. Sizes in device pixels.",
       "enabled": true,
@@ -83,10 +86,12 @@
       "radius_px": 4,
       "require_major": true
     },
+
     "landuse": {
       "_comment": "Forest and built-up areas, one tile layer (layer_id 6), two classes. Drawn under everything else: built-up first, then forest, then water, buildings and roads on top. Each class gets its own fill because they are background tones and two adjacent tones that match make their boundary vanish.",
       "enabled": true,
       "rules": [
+        
         {
           "color": "#000000",
           "fill": "tone",
@@ -111,6 +116,7 @@
             }
           ]
         },
+
         {
           "color": "#000000",
           "fill": "hatch",
@@ -121,10 +127,24 @@
               "forest"
             ]
           },
-          "outline_width": 0
+          "outline_width": 0,
+
+          "when": [
+            {
+              "steps": [0,1,2],
+              "modes": ["hike"],
+              "hidden": false,
+              "fill": "tone",
+              "tone": "dots",
+              "tone_period_px": 7,
+              "tone_stagger": true
+            }
+          ]
         }
+
       ]
     },
+
     "offscreen_places": {
       "_comment": "Edge indicators for villages OUTSIDE the viewport. A clipped-away village tells you nothing, but 'which way is the next village' is exactly what a glance needs -- so each gets a chevron on the screen edge where the ray from the position marker exits, pointing outward, with the name pulled back inside so it cannot be clipped too. Nearest first: if two want the same piece of edge (closer than min_gap_px) the further one is dropped rather than overlapped, and at most max_count are shown. Sizes in device pixels.",
       "arrow_len_px": 18,
@@ -141,6 +161,7 @@
       "min_gap_px": 70,
       "show_distance": true
     },
+
     "places": {
       "_comment": "Village/town dot + label, all sizes in DEVICE PIXELS. Two tiers: label_px/label_bold draw city and town (place rank <= 1), label_minor_px/label_minor_bold everything smaller (village/suburb/hamlet/farm) -- size and weight carry the hierarchy. label_px and label_minor_px are LINE HEIGHTS in device pixels, not point sizes: the renderer picks the largest built-in face that fits (29 px gets the Ubuntu UI bold, 24 px its regular -- the smallest built-in Noto Sans is a 34 px line), since 1-bit e-ink has no colour and all-caps reads worse at a glance. Names stay in their own Title Case. Legibility over a road network comes from label_halo_px, a white outline around the glyphs; label_bg true replaces it with the older opaque white box (label_bg_pad_px, label_bg_border_px), which is stronger but eats a rectangle of map. Declutter: labels are placed rank-first and each is dropped if its measured box collides with a label already placed (inflated by min_label_gap_px) or covers more than max_route_overlap_pct of itself with the route -- the route is the one thing a label must not hide. max_labels is a render-cost cap, not the declutter mechanism. label_max_width_px truncates a long name with an ellipsis; the dot is always drawn even when the label is not. See firmware docs/place-labels.md and docs/map-render-spec.md item 5. label_char_width_frac is the laptop sketch's character-count width estimate only -- the device and the firmware preview both measure the real font. max_labels is per rung since 2026-08-25 (see _comment_when): 3 names at rung 0, which shows 480 x 800 m and one settlement, up to 14 at rung 6, which shows 24 x 40 km. Those numbers came from MapViewport::ZoomStep::maxLabels, where they were a second table beside this file.",
       "dot_radius_px": 5,
@@ -211,6 +232,7 @@
         }
       ]
     },
+
     "points": {
       "_comment": "POI marks from the .tip point layer (safety points now, landmarks later). square/glyph/flag/cluster_* are DEVICE PIXELS: a mark is a screen decoration and must stay legible at every zoom rung, so it does not scale with mpp. square_px 0 hides the layer and the shards are then never opened. Sized 15/1/9/4 from a real-size render (MapPointMarks.h); grown 20 percent to 18/2/11/5 on the maintainer's call after seeing it on the panel 2026-08-22 -- the glyph shapes were judged at 9 px, so 11 px is a scale nobody has judged yet. cluster_radius_px/cluster_cell_px added 2026-08-25 for the 24px icon set's own clustering (docs/map-render-spec.md, \"POI clustering\") -- points within cluster_radius_px of each other on screen merge into one cluster_cell_px-celled tile.",
       "border_px": 2,

@@ -4,10 +4,11 @@
 // with a streaming one -- the golden file is the whole safety net for that
 // refactor, so it is never regenerated to make a test pass.
 //
-// **The fixtures were upgraded in place from format version 3 to 4**, 2026-08-26,
-// not rebuilt: the payload bytes are byte-identical and only the header grew a
-// seventh layer slot (an empty contour layer) with every offset shifted by one
-// directory entry. A rebuild would have pulled today's OSM data through today's
+// **The fixtures were upgraded in place, twice, on 2026-08-26** -- from format
+// version 3 to 4 (a seventh layer slot, an empty relief layer, every offset
+// shifted by one directory entry), and then again when `coord_shift` joined the
+// fixed header (every offset shifted by one more byte). Upgraded, not rebuilt:
+// the payload bytes are byte-identical both times. A rebuild would have pulled today's OSM data through today's
 // rules and moved the geometry, which would have taken the golden PPM with it --
 // and this file's whole point is that the PPM is never regenerated to make a test
 // pass.
@@ -92,6 +93,23 @@ constexpr MapStyle kGoldenStyle = {
 };
 
 std::string fixturesDir() { return std::string(MAP_TILE_READER_FIXTURES_DIR); }
+
+// The .tib fixed header and directory layout, by name.
+//
+// **These were magic numbers until 2026-08-26 and two of them were wrong.** The
+// tests below read layer_count from byte 35 and walked the directory in 13-byte
+// entries, which was the version-2 layout; version 3 widened an entry to 21 bytes
+// and moved layer_count, so both tests had been corrupting a byte at a garbage
+// offset ever since and passing because the byte happened to land inside some
+// layer anyway. Adding coord_shift in version 4 turned that into a segfault,
+// which is the only reason anyone found out.
+//
+// magic 4, version 2, z 1, x 4, y 4, origin 8, build_epoch 4, osm_epoch 4,
+// coord_shift 1, header_crc32 4, layer_count 1.
+constexpr size_t kLayerCountOffset = 36;
+constexpr size_t kDirStart = kLayerCountOffset + 1;
+constexpr size_t kDirEntryLen = 21;  // id 1, offset 4, length 4, crc32 4, index_off 4, index_len 4
+static_assert(kDirStart == 37, "the fixed header is 37 bytes in format version 4");
 
 MapPreviewRequest fixtureRequest() {
   MapPreviewRequest request;
@@ -216,19 +234,25 @@ TEST(MapTileReader, AcceptsEveryLayerTheBuilderWrites) {
 // is under test too. If a fixture is ever regenerated these must be recomputed
 // -- and a mismatch here is the intended way to find that out.
 //
-// **Both moved with format version 4** (contours, 2026-08-26), from 0x0EBD55C8
-// and 0xF7A3DE8D. The fold is over one u32 per layer slot, so a seventh slot
-// changes the answer for tile bytes that did not change -- which is exactly why
-// the version went up and every device re-downloads. The old values are kept in
-// this comment so a bisect can tell "the vectors moved" from "the fold broke".
+// **Both moved twice on 2026-08-26 and should not move again for a new layer.**
+// First with the relief layer, when the fold widened from six slots to seven;
+// then once more when the fold was frozen to a fixed fifteen slots
+// (MapTileReader::kContentIdSlots) instead of tracking the layer count. That
+// second change is the point: while the fold followed the layer count, adding a
+// layer changed the identity of every tile whose bytes had not moved and every
+// card read stale. Frozen, a new layer id is a data change.
+//
+// Superseded values, kept so a bisect can tell "the vectors moved" from "the fold
+// broke": six slots gave 0x0EBD55C8 and 0xF7A3DE8D, seven gave 0x4E19085C and
+// 0x1F932155.
 TEST(MapTileReader, ContentIdMatchesMapbuilder) {
   struct Case {
     const char* path;
     uint32_t contentId;
   };
   const Case cases[] = {
-      {MAP_TILE_READER_FIXTURES_DIR "/tiny-sd/base/13/4484/2829.tib", 0x4E19085Cu},
-      {MAP_TILE_READER_FIXTURES_DIR "/indexed-sd/base/13/4484/2829.tib", 0x1F932155u},
+      {MAP_TILE_READER_FIXTURES_DIR "/tiny-sd/base/13/4484/2829.tib", 0xA96102F1u},
+      {MAP_TILE_READER_FIXTURES_DIR "/indexed-sd/base/13/4484/2829.tib", 0x27B1DF42u},
   };
 
   for (const Case& c : cases) {
@@ -322,13 +346,13 @@ TEST(MapTileReader, CatchesLayerCrcCorruptionOnceTheLayerHasBeenRead) {
   // the trade this test now pins down, and the reason MapTileSource re-renders
   // when it sees a Failed.
   std::vector<uint8_t> data = readFile(fixturesDir() + "/tiny-sd/base/13/4484/2829.tib");
-  ASSERT_GT(data.size(), 36u);
+  ASSERT_GT(data.size(), kDirStart);
 
-  const uint8_t layerCount = data[35];
+  const uint8_t layerCount = data[kLayerCountOffset];
   uint8_t corruptedLayerId = 0;
   for (uint8_t i = 0; i < layerCount; ++i) {
-    const size_t entryOff = 36 + i * 13;
-    ASSERT_GE(data.size(), entryOff + 13);
+    const size_t entryOff = kDirStart + i * kDirEntryLen;
+    ASSERT_GE(data.size(), entryOff + kDirEntryLen);
     const uint8_t id = data[entryOff];
     uint32_t offset = 0, length = 0;
     std::memcpy(&offset, &data[entryOff + 1], sizeof(offset));
@@ -365,12 +389,12 @@ TEST(MapTileReader, SkipCrc32FoldsNothingAndSaysSo) {
   // test because it is a loaded gun -- a caller that sets it wrongly gets a
   // corrupt layer with no complaint.
   std::vector<uint8_t> data = readFile(fixturesDir() + "/tiny-sd/base/13/4484/2829.tib");
-  ASSERT_GT(data.size(), 36u);
+  ASSERT_GT(data.size(), kDirStart);
 
-  const uint8_t layerCount = data[35];
+  const uint8_t layerCount = data[kLayerCountOffset];
   uint8_t targetLayerId = 0;
   for (uint8_t i = 0; i < layerCount; ++i) {
-    const size_t entryOff = 36 + i * 13;
+    const size_t entryOff = kDirStart + i * kDirEntryLen;
     uint32_t offset = 0, length = 0;
     std::memcpy(&offset, &data[entryOff + 1], sizeof(offset));
     std::memcpy(&length, &data[entryOff + 5], sizeof(length));

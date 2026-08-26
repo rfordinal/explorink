@@ -5515,9 +5515,13 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // (docs/optimization/02-tile-io.md).
   if (source_->corruptLayers() > 0) {
     const MapLayerBits bad = source_->failedLayerMask();
-    LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%llx%016llx) -- redrawing without them",
-            static_cast<unsigned long>(source_->corruptLayers()), static_cast<unsigned long long>(bad.hi),
-            static_cast<unsigned long long>(bad.lo));
+    // Four words since the bit set widened to 256 bits for 15 layer slots
+    // (MapLayerBits.h). Printed high word first, so the string reads as one
+    // number.
+    LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%016llx%016llx%016llx%016llx) -- redrawing without them",
+            static_cast<unsigned long>(source_->corruptLayers()),
+            static_cast<unsigned long long>(bad.w[3]), static_cast<unsigned long long>(bad.w[2]),
+            static_cast<unsigned long long>(bad.w[1]), static_cast<unsigned long long>(bad.w[0]));
     renderer.clearScreen();
     missing = drawMapLayers(range, canvas, view, &timing, bad, &nearestPlaces_);
   }

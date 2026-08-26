@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "MapAreaClass.h"
+#include "MapTextMask.h"
 #include "MapAreaFill.h"
 #include "MapLabels.h"
 #include "MapPointMarks.h"
@@ -138,10 +139,6 @@ struct ContourLabelSlot {
   // be turned so its top points up the slope.
   int32_t upX = 0;
   int32_t upY = 0;
-  // The contour's own direction at that vertex. The number's baseline follows
-  // this, which is what makes it look like it belongs to the line.
-  int32_t tanX = 0;
-  int32_t tanY = 0;
   // |cross product| of the two segments meeting at the chosen vertex, scaled.
   // Lower is straighter, and straighter is where a number sits without looking
   // like it fell off the line.
@@ -155,8 +152,7 @@ struct ContourLabelSlot {
 // placed on a hairpin reads as belonging to whichever arm the eye follows first,
 // and on a 1-bit panel there is no second cue to fix that.
 bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int rectH, int margin,
-                     int32_t& outX, int32_t& outY, int32_t& outBend, int32_t& outUpX, int32_t& outUpY, int32_t& outTanX,
-                     int32_t& outTanY) {
+                     int32_t& outX, int32_t& outY, int32_t& outBend, int32_t& outUpX, int32_t& outUpY) {
   bool found = false;
   int32_t bestBend = 0;
   for (uint16_t i = 1; i + 1 < line.pointCount; ++i) {
@@ -184,8 +180,6 @@ bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int
       // a screen whose y grows downward -- which is uphill, per contour.py.
       const int32_t tx = line.xs[i + 1] - line.xs[i - 1];
       const int32_t ty = line.ys[i + 1] - line.ys[i - 1];
-      outTanX = tx;
-      outTanY = ty;
       outUpX = -ty;
       outUpY = tx;
     }
@@ -204,10 +198,10 @@ bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int
 // the index pass passes it: a number on a minor contour would be a number every
 // 20 m, which is the opposite of the two-or-three rule.
 void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style,
-                      const MapContourClass wanted, ContourLabelSlot* slots = nullptr,
+                      const MapReliefClass wanted, ContourLabelSlot* slots = nullptr,
                       int slotCount = 0) {
   const uint8_t index = static_cast<uint8_t>(wanted);
-  if (index >= kContourClassSlots || style.contourWidthPx[index] == 0) return;
+  if (index >= kReliefClassSlots || style.contourWidthPx[index] == 0) return;
   if (!source.beginContours()) return;
   int canvasX = 0, canvasY = 0, canvasW = 0, canvasH = 0;
   canvas.drawableRect(canvasX, canvasY, canvasW, canvasH);
@@ -217,13 +211,13 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     if (line.classId != index) continue;
     strokeWay(canvas, line, style.contourWidthPx[index], MapInk::Black);
     if (slots == nullptr || style.contourLabelPx == 0) continue;
-    int32_t vx = 0, vy = 0, bend = 0, upX = 0, upY = 0, tanX = 0, tanY = 0;
+    int32_t vx = 0, vy = 0, bend = 0, upX = 0, upY = 0;
     // The margin has to cover half the *box*, not half the text height: a
     // four-digit height is about three label heights wide, and a margin of one
     // put "1000" half off the left edge. Three is that half-width with room,
     // and it needs no text measured before a vertex is chosen.
     if (!bestLabelVertex(line, canvasX, canvasY, canvasW, canvasH,
-                         static_cast<int>(style.contourLabelPx) * 3, vx, vy, bend, upX, upY, tanX, tanY)) {
+                         static_cast<int>(style.contourLabelPx) * 3, vx, vy, bend, upX, upY)) {
       continue;
     }
     const int32_t elevation = static_cast<int32_t>(static_cast<int16_t>(line.flags));
@@ -247,14 +241,14 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
         // Too close to a number already claimed. Keep the straighter of the
         // two rather than whichever the stream offered first.
         if (bend < slots[i].bend) {
-          slots[i] = ContourLabelSlot{vx, vy, elevation, upX, upY, tanX, tanY, bend, true};
+          slots[i] = ContourLabelSlot{vx, vy, elevation, upX, upY, bend, true};
         }
         target = -1;
         break;
       }
     }
     if (target >= 0) {
-      slots[target] = ContourLabelSlot{vx, vy, elevation, upX, upY, tanX, tanY, bend, true};
+      slots[target] = ContourLabelSlot{vx, vy, elevation, upX, upY, bend, true};
     }
   }
 }
@@ -288,25 +282,16 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     // mismatch a map reader notices first, because the point of the label is that
     // it and the piece of line under it read as one thing.
     //
-    // The basis falls out of two vectors already in hand. The reading direction is
-    // the tangent; "down the glyphs" is the tangent turned so it points away from
-    // the higher ground. Uphill is (-ty, tx) -- from the order the tile builder
-    // stores contour points in (mapbuilder/tilegen/contour.py) -- so down is its
-    // negation, (ty, -tx). Scaled to 1/1024ths for a device with no FPU.
-    const int32_t tx = slots[i].tanX;
-    const int32_t ty = slots[i].tanY;
-    int32_t tanLen2 = tx * tx + ty * ty;
-    int32_t rightX = 1024, rightY = 0, downX = 0, downY = 1024;
-    if (tanLen2 > 0) {
-      int32_t root = 1;
-      while (root * root < tanLen2) ++root;
-      if (root > 0) {
-        rightX = tx * 1024 / root;
-        rightY = ty * 1024 / root;
-        downX = ty * 1024 / root;
-        downY = -tx * 1024 / root;
-      }
-    }
+    // One vector decides all of it. Uphill is (-dy, dx) from the order the tile
+    // builder stores contour points in (mapbuilder/tilegen/contour.py), and
+    // mapTextBasisFromUp turns that into the basis -- which is where this used to
+    // go wrong: giving it the tangent and the uphill normal separately let the two
+    // disagree, and that pair is a reflection, so every number came out mirrored.
+    // From `up` alone the determinant is positive by construction.
+    const int32_t ux = slots[i].upX;
+    const int32_t uy = slots[i].upY;
+    int rightX = 1024, rightY = 0, downX = 0, downY = 1024;
+    mapTextBasisFromUp(ux, uy, rightX, rightY, downX, downY);
 
     // The claimed box is the rotated extent, so two numbers at different bearings
     // cannot be judged as if both were horizontal.
@@ -315,23 +300,18 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     const int spanW = static_cast<int>((textW * absR + textH * absRY) >> 10) + 2;
     const int spanH = static_cast<int>((textW * absRY + textH * absR) >> 10) + 2;
 
-    // Step off the line, on the uphill side, so the number sits beside the
-    // contour rather than across it. Integer arithmetic: this runs on every frame
-    // the device draws.
-    const int32_t ux = slots[i].upX;
-    const int32_t uy = slots[i].upY;
-    const int32_t upLen2 = ux * ux + uy * uy;
-    int32_t shiftX = 0;
-    int32_t shiftY = 0;
-    if (upLen2 > 0) {
-      int32_t root = 1;
-      while (root * root < upLen2) ++root;
-      const int32_t step = textH / 2 + 1;
-      shiftX = ux * step / root;
-      shiftY = uy * step / root;
-    }
-    const int centreX = static_cast<int>(slots[i].x + shiftX);
-    const int centreY = static_cast<int>(slots[i].y + shiftY);
+    // **On the line, not beside it.** The number is centred on the vertex, so the
+    // contour runs through it and the 1 px white outline breaks the line only
+    // where the digits actually are. Sitting the label off to one side put its
+    // baseline above the contour and read as a caption for it rather than as part
+    // of it (maintainer's call, 2026-08-26).
+    //
+    // An earlier version stepped off to the uphill side deliberately, because the
+    // turn was quantised then and the offset was the only thing carrying the slope
+    // direction. The rotation carries it now, so the offset is redundant as well
+    // as wrong.
+    const int centreX = static_cast<int>(slots[i].x);
+    const int centreY = static_cast<int>(slots[i].y);
     const int boxX = centreX - spanW / 2;
     const int boxY = centreY - spanH / 2;
     const int boxW = spanW;
@@ -343,7 +323,8 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     // One call: the canvas draws the 1 px white outline from the same mask, so the
     // outline follows the rotation instead of being eight more draws at the wrong
     // angle.
-    canvas.drawTextRotated(centreX, centreY, text, sizePx, bold, MapInk::Black, 1, static_cast<int>(rightX),
+    canvas.drawTextRotated(centreX, centreY, text, sizePx, bold, MapInk::Black,
+                           static_cast<int>(style.contourLabelHaloPx), static_cast<int>(rightX),
                            static_cast<int>(rightY), static_cast<int>(downX), static_cast<int>(downY));
     if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
     ++placed;
@@ -512,8 +493,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // has something to choose between rather than taking the first that fits.
   ContourLabelSlot contourLabels[6] = {};
   if (style.contoursEnabled) {
-    drawContourClass(canvas, source, style, MapContourClass::Minor);
-    drawContourClass(canvas, source, style, MapContourClass::Index, contourLabels,
+    drawContourClass(canvas, source, style, MapReliefClass::ContourMinor);
+    drawContourClass(canvas, source, style, MapReliefClass::ContourIndex, contourLabels,
                      static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])));
   }
   if (timing) lap(timing->contoursMs, mark);

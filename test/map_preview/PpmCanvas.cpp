@@ -204,9 +204,8 @@ void PpmCanvas::drawTextRotated(const int centreX, const int centreY, const char
 
   // The rotation is MapTextMask's, the same code the device canvas calls.
   const MapInk opposite = ink == MapInk::Black ? MapInk::White : MapInk::Black;
-  if (outline > 0) {
-    MapTextMask grown;
-    mask.dilateInto(grown);
+  MapTextMask grown;
+  if (mask.dilateInto(grown, outline)) {
     mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
                     [this, opposite](const int x, const int y) { setPixel(x, y, opposite); });
   }

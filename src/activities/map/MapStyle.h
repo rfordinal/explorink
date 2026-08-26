@@ -173,6 +173,9 @@ struct MapStyle {
   // this is a known deviation from paper practice (docs/contours-plan.md).
   uint8_t contourLabelPx;
   bool contourLabelBold;
+  // White outline around the digits, in pixels. 0 draws none, which on a dotted
+  // area fill makes a number hard work: the dots sit inside the counters.
+  uint8_t contourLabelHaloPx;
   // How many may land on one frame. Held small on purpose.
   uint8_t contourLabelMax;
   // Minimum spacing between two numbers, so they spread instead of clustering

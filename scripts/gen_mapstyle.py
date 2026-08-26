@@ -448,6 +448,10 @@ def contours(style):
     labels = {
         "px": _round_px(layer.get("label_px", 0), "layers.contours.label_px"),
         "bold": bool(layer.get("label_bold", False)),
+        # A white outline round the digits. Default 1 rather than 0: on a dotted
+        # area fill a number with no halo has the dots sitting inside its
+        # counters, which is what this field was added for.
+        "halo": _round_px(layer.get("label_halo_px", 1), "layers.contours.label_halo_px"),
         "max": _round_px(layer.get("label_max", 0), "layers.contours.label_max"),
         "min_gap": _round_px(layer.get("label_min_gap_px", 0), "layers.contours.label_min_gap_px"),
     }
@@ -841,6 +845,7 @@ def _style_literal(bundle):
         *_array(c_widths, contour_names),
         f"    .contourLabelPx = {c_labels['px']},",
         f"    .contourLabelBold = {'true' if c_labels['bold'] else 'false'},",
+        f"    .contourLabelHaloPx = {c_labels['halo']},",
         f"    .contourLabelMax = {c_labels['max']},",
         f"    .contourLabelMinGapPx = {c_labels['min_gap']},",
         f"    .placeDotDiameterPx = {dot_diameter},",
@@ -929,7 +934,8 @@ def _print_summary(bundle, what):
     else:
         print(f"gen_mapstyle.py: {what}: landuse off")
     if contours_px[0]:
-        heights = (f", heights {contours_px[2]['px']}px x{contours_px[2]['max']}"
+        heights = (f", heights {contours_px[2]['px']}px x{contours_px[2]['max']} "
+                   f"halo {contours_px[2]['halo']}px"
                    if contours_px[2]["px"] else ", no heights")
         print(f"gen_mapstyle.py: {what}: contours on -- minor {contours_px[1][1]} px, "
               f"index {contours_px[1][2]} px{heights}")

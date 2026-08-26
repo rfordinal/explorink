@@ -46,11 +46,23 @@ enum class MapWaterClass : uint8_t {
 //
 // An **index contour** is every Nth line, drawn heavier so the eye can count.
 // Which N is a build-time decision per LOD, not something the device knows.
-enum class MapContourClass : uint8_t {
-  Minor = 1,
-  Index = 2,
+enum class MapReliefClass : uint8_t {
+  ContourMinor = 1,
+  ContourIndex = 2,
+  // Reserved, not built. A cliff is the one line on a mountain map that means
+  // "you cannot go this way", and its OSM way direction carries which side is
+  // higher, so a correct-side tick is possible from the point order the record
+  // already keeps. Measured at 0.4 kB per z13 tile in the High Tatras and 1.2 kB
+  // in Mala Fatra against a 35 kB contour layer -- noise.
+  Cliff = 3,
+  Ridge = 4,
 };
+
+// The names the contour code was written with, before the layer was named for its
+// vocabulary rather than for its first class.
+using MapContourClass = MapReliefClass;
 
 inline constexpr uint8_t kLanduseClassSlots = 4;
 inline constexpr uint8_t kWaterClassSlots = 4;
-inline constexpr uint8_t kContourClassSlots = 4;
+inline constexpr uint8_t kReliefClassSlots = 4;
+inline constexpr uint8_t kContourClassSlots = kReliefClassSlots;

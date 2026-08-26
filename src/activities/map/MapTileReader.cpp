@@ -19,8 +19,10 @@ namespace {
 // 1's 9. A reader must check the version before trusting the directory's shape
 // at all: parsing one version's entries at another's width produces
 // plausible-looking garbage offsets, not an error.
-constexpr size_t kHeaderFixedLen = 36;
-constexpr size_t kCrcFieldOffset = 31;  // struct.calcsize("<4sHBIIiiII")
+// 37 since version 4: coord_shift (u8) sits after osm_epoch, before
+// header_crc32 (mapbuilder/tilegen/tiles.py, build_tile_file).
+constexpr size_t kHeaderFixedLen = 37;
+constexpr size_t kCrcFieldOffset = 32;  // struct.calcsize("<4sHBIIiiIIB")
 constexpr size_t kDirEntryLen = 21;     // <BIIIII>
 constexpr uint8_t kMagic[4] = {'T', 'I', 'B', '1'};
 
@@ -102,6 +104,11 @@ bool MapTileReader::parseHeader() {
   off += sizeof(buildEpoch_);
   std::memcpy(&osmEpoch_, &hdr[off], sizeof(osmEpoch_));
   off += sizeof(osmEpoch_);
+  // coord_shift joined the header in version 4, between osm_epoch and the crc.
+  // A point is origin + (int16 << coordShift_), and 0 is one metre per unit --
+  // every tile written so far. MapProjection applies it.
+  coordShift_ = hdr[off];
+  off += sizeof(coordShift_);
   std::memcpy(&headerCrc32Stored_, &hdr[off], sizeof(headerCrc32Stored_));
   off += sizeof(headerCrc32Stored_);
   layerCount_ = hdr[off];
@@ -147,7 +154,7 @@ const MapTileReader::LayerEntry* MapTileReader::findLayer(Layer layer) const {
 }
 
 uint32_t MapTileReader::contentId() const {
-  // Seven u32 little endian, in layer id order 1..7, folded in one pass -- the
+  // Fifteen u32 little endian, in layer id order 1..15, folded in one pass -- the
   // byte sequence mapbuilder builds with struct.pack("<I", ...) per layer in
   // LAYER_IDS order (content_id_from_layer_crcs). Built on the stack rather
   // than fed byte by byte so the layout is visible and matches the Python
@@ -155,9 +162,11 @@ uint32_t MapTileReader::contentId() const {
   //
   // A layer the directory does not carry contributes 0, which is crc32 of
   // nothing -- so "no water layer" and "an empty water layer" are the same
-  // tile, exactly as on the writer side.
-  uint8_t buf[kMaxLayers * 4] = {};
-  for (uint8_t id = 1; id <= kMaxLayers; ++id) {
+  // tile, exactly as on the writer side. That is also what makes the slot count
+  // fixed rather than derived: slots 8..15 are all zero today, so a tile gains a
+  // layer without every other tile's identity moving.
+  uint8_t buf[kContentIdSlots * 4] = {};
+  for (uint8_t id = 1; id <= kContentIdSlots; ++id) {
     uint32_t crc = 0;
     for (uint8_t i = 0; i < layerCount_; ++i) {
       if (layers_[i].id == id) {

@@ -54,21 +54,74 @@ struct MapTextMask {
     return ((bits[index >> 3] >> (index & 7)) & 1) != 0;
   }
 
-  // `out` gets this mask grown by one pixel in all eight directions -- the white
-  // outline, built in mask space so it costs one extra rotated pass instead of
-  // eight (which is what a halo drawn by redrawing the text nine times costs).
-  void dilateInto(MapTextMask& out) const {
-    out.reset(w, h);
+  // `out` gets this mask grown by `radius` pixels in every direction -- the white
+  // outline, built in mask space so it costs one extra rotated pass rather than
+  // eight per radius (which is what a halo drawn by redrawing the text costs).
+  //
+  // **The output box grows by the radius on each side.** Reusing this mask's own
+  // size would clip the outermost ring of the halo against the text box, which is
+  // invisible at radius 1 -- glyphs rarely touch their own box edge -- and obvious
+  // at 2. Growing symmetrically also keeps the centre aligned, so the blit needs
+  // no separate offset.
+  //
+  // Returns false when the grown mask would not fit, and the caller must then
+  // draw no halo rather than a clipped one.
+  bool dilateInto(MapTextMask& out, const int radius) const {
+    if (radius <= 0) return false;
+    const int grownW = w + 2 * radius;
+    const int grownH = h + 2 * radius;
+    if (!out.fits(grownW, grownH)) return false;
+    out.reset(grownW, grownH);
     for (int y = 0; y < h; ++y) {
       for (int x = 0; x < w; ++x) {
         if (!get(x, y)) continue;
-        for (int oy = -1; oy <= 1; ++oy) {
-          for (int ox = -1; ox <= 1; ++ox) out.set(x + ox, y + oy);
+        for (int oy = -radius; oy <= radius; ++oy) {
+          for (int ox = -radius; ox <= radius; ++ox) out.set(x + radius + ox, y + radius + oy);
         }
       }
     }
+    return true;
   }
 };
+
+// The rotation basis for text whose glyphs' top should point along (upX, upY).
+//
+// **Built from `up` alone, and that is the whole point.** The first version took
+// the reading direction and the up direction separately -- right = the contour's
+// tangent, down = away from the higher ground -- and those two are not
+// independent: that pair has determinant -1, so it is a reflection and every
+// number came out mirrored. Seen on the panel-sized render, 2026-08-26, after it
+// had already been wrong once in the other direction.
+//
+// From `up` there is only one answer and it cannot be a reflection:
+//
+//     down  = -up
+//     right = (-up.y, up.x)     determinant = up.x^2 + up.y^2, always positive
+//
+// The reading direction falls out of it rather than being chosen, which is
+// correct: which way along a contour its points happen to be stored is arbitrary.
+//
+// Scale is 1/1024ths. Returns false when `up` is zero, and the caller must then
+// draw upright rather than draw nothing -- a number with no orientation still
+// says its height.
+inline bool mapTextBasisFromUp(const int32_t upX, const int32_t upY, int& rightX, int& rightY, int& downX,
+                               int& downY) {
+  const int32_t len2 = upX * upX + upY * upY;
+  if (len2 <= 0) {
+    rightX = 1024;
+    rightY = 0;
+    downX = 0;
+    downY = 1024;
+    return false;
+  }
+  int32_t root = 1;
+  while (root * root < len2) ++root;
+  rightX = static_cast<int>(-upY * 1024 / root);
+  rightY = static_cast<int>(upX * 1024 / root);
+  downX = static_cast<int>(-upX * 1024 / root);
+  downY = static_cast<int>(-upY * 1024 / root);
+  return true;
+}
 
 // Draw `mask` centred on (centreX, centreY), rotated by the orthonormal basis
 // (rightX, rightY) / (downX, downY), each in 1/1024ths. `plot(x, y)` receives

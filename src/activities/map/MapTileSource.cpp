@@ -251,7 +251,7 @@ bool MapTileSource::beginLanduse() { return startPass(MapTileReader::Layer::Land
 
 bool MapTileSource::nextLanduse(MapWayRef& out) { return nextWayRecord(out, false); }
 
-bool MapTileSource::beginContours() { return startPass(MapTileReader::Layer::Contours); }
+bool MapTileSource::beginContours() { return startPass(MapTileReader::Layer::Relief); }
 
 // `false`: no mode mask. The mask is a bitmap over the road class enum and a
 // contour's class byte belongs to MapContourClass, so testing it would filter

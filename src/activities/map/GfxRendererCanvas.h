@@ -220,9 +220,8 @@ class GfxRendererCanvas : public IMapCanvas {
     mask.w = w;
     mask.h = h;
     const bool black = ink == MapInk::Black;
-    if (outline > 0) {
-      MapTextMask grown;
-      mask.dilateInto(grown);
+    MapTextMask grown;
+    if (mask.dilateInto(grown, outline)) {
       mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
                       [this, black](const int x, const int y) { renderer_.drawPixel(x, y, !black); });
     }

@@ -29,11 +29,21 @@ class MapTileReader {
   // this is the number that has to move first when the builder gains a layer.
   // It did on 2026-08-05 (landuse), and until this was 6 every new tile read as
   // an unavailable one -- a whole card of hatch.
-  // Seven since 2026-08-26, when contours became layer 7. This is also the
-  // slot count contentId() folds over, so raising it changes every tile's
-  // content id -- which is exactly why kFormatVersion went to 4 with it
-  // (docs/contours-plan.md, "What the version bump breaks").
-  static constexpr size_t kMaxLayers = 7;
+  // **Fifteen, and generously so on purpose.** The only gate this reader has on
+  // layer count is `layerCount_ > kMaxLayers` in open(); layers themselves are
+  // found by a linear scan on the id byte (findLayer), so an id this build does
+  // not know is already ignored rather than fatal. So a layer added in 2027 needs
+  // no version bump at all -- provided this number is large enough today, and
+  // provided contentId() stopped folding over it, which it has.
+  //
+  // The tiles written today still declare 7. This is headroom, not content.
+  static constexpr size_t kMaxLayers = 15;
+
+  // How many slots contentId() folds, fixed and deliberately NOT kMaxLayers.
+  // Mirrors mapbuilder/tilegen/tiles.py's CONTENT_ID_SLOTS. If this ever tracked
+  // the layer count again, adding a layer would change the identity of every
+  // tile whose bytes had not moved and every card would read stale.
+  static constexpr uint8_t kContentIdSlots = 15;
 
   enum class Layer : uint8_t {
     Water = 1,
@@ -42,10 +52,14 @@ class MapTileReader {
     Places = 4,
     Junctions = 5,
     Landuse = 6,
-    // Contour lines. `classId` is MapContourClass (minor, index) and the
-    // record's `flags` field is the elevation in metres as an int16 -- not a
-    // bit field on this layer (docs/contours-plan.md, "The record").
-    Contours = 7,
+    // Terrain lines. Contours today, and named for the vocabulary rather than
+    // for its first class so the next one -- a cliff, an arete, a ridge --
+    // lands as a class here instead of as a reason to add layer 8.
+    //
+    // `classId` is MapReliefClass and the record's `flags` field is the
+    // elevation in metres as an int16 on the contour classes -- not a bit field
+    // on this layer (docs/contours-plan.md, "The record").
+    Relief = 7,
   };
 
   struct WayHeader {
@@ -84,6 +98,7 @@ class MapTileReader {
   uint32_t tileY() const { return y_; }
   int32_t originX() const { return originX_; }
   int32_t originY() const { return originY_; }
+  uint8_t coordShift() const { return coordShift_; }
   uint32_t buildEpoch() const { return buildEpoch_; }
   uint32_t osmEpoch() const { return osmEpoch_; }
 
@@ -347,6 +362,9 @@ class MapTileReader {
   uint32_t y_ = 0;
   int32_t originX_ = 0;
   int32_t originY_ = 0;
+  // coord_shift from the header: a point is origin + (int16 << this). 0 on every
+  // tile that exists; version 4 added the byte so a wider tile can be written.
+  uint8_t coordShift_ = 0;
   uint32_t buildEpoch_ = 0;
   uint32_t osmEpoch_ = 0;
   uint32_t headerCrc32Stored_ = 0;

@@ -21,37 +21,36 @@
 // So: an explicit 128-bit set, sized by static_assert against the tile cap, and
 // no guard at the call sites beyond what this offers.
 struct MapLayerBits {
-  // Layer ids run 1..7 (MapTileReader::Layer), so 8 slots per tile including
-  // the unused 0. Same layout crcBitFor() has always produced.
+  // Layer ids run 1..15 (MapTileReader::kMaxLayers), so 16 slots per tile
+  // including the unused 0. Same layout crcBitFor() has always produced.
   //
-  // 16 tiles x 8 slots is 128, which is kBitCount exactly. The static_assert
-  // below passes with nothing to spare: the next layer after contours has to
-  // raise kBitCount, it cannot ride on slack that is no longer there.
-  static constexpr uint32_t kSlotsPerTile = 8;
-  static constexpr uint32_t kBitCount = 128;
+  // 16 tiles x 16 slots is 256, which is kBitCount exactly -- and unlike the
+  // 8-slot version this is not a coincidence to be nervous about: the slot count
+  // was raised to 15 layers precisely so a future layer id needs no format
+  // change, and this table is what pays for that. 32 bytes per instance against
+  // 16, which is the whole cost of the guarantee.
+  static constexpr uint32_t kSlotsPerTile = 16;
+  static constexpr uint32_t kBitCount = 256;
 
-  uint64_t lo = 0;
-  uint64_t hi = 0;
+  uint64_t w[4] = {0, 0, 0, 0};
 
   bool test(uint32_t bit) const {
-    if (bit < 64) return ((lo >> bit) & 1ull) != 0;
-    if (bit < kBitCount) return ((hi >> (bit - 64)) & 1ull) != 0;
-    return false;
+    if (bit >= kBitCount) return false;
+    return ((w[bit >> 6] >> (bit & 63)) & 1ull) != 0;
   }
 
   void set(uint32_t bit) {
-    if (bit < 64) {
-      lo |= 1ull << bit;
-    } else if (bit < kBitCount) {
-      hi |= 1ull << (bit - 64);
-    }
+    if (bit >= kBitCount) return;
+    w[bit >> 6] |= 1ull << (bit & 63);
   }
 
-  bool any() const { return lo != 0 || hi != 0; }
+  bool any() const { return w[0] != 0 || w[1] != 0 || w[2] != 0 || w[3] != 0; }
 
   void clear() {
-    lo = 0;
-    hi = 0;
+    w[0] = 0;
+    w[1] = 0;
+    w[2] = 0;
+    w[3] = 0;
   }
 };
 
