@@ -119,7 +119,7 @@ them was settled by pushing renders to the panel and looking
 | thin hairline | a minor road, and in bulk the texture that says settlement |
 | dark surface with white waves knocked out | water |
 | diagonal hatch | forest |
-| stipple | built-up area |
+| stipple | built-up area (a period-3 dot grid -- see "Tone" below) |
 | cased line in alternating black and hollow blocks | a railway |
 
 Two consequences worth stating, because both were learned by getting them
@@ -313,16 +313,48 @@ carry a line pattern: a cross hatch at 4 px leaves a couple of ticks per house
 and a village reads as dirt on the screen. Judged on rendered output 2026-08-05,
 against a reference map the maintainer supplied.
 
-The answer on 1-bit is a **tone**: a screen-space pixel pattern with a period of
-two or three, which reads as flat grey from arm's length. `MapAreaTone`
-(`src/activities/map/MapAreaTone.h`) has four:
+The answer on 1-bit is a **tone**: a screen-space pixel pattern that reads as
+flat grey from arm's length. `MapAreaTone` (`src/activities/map/MapAreaTone.h`)
+has three fixed patterns and a family of dot grids:
 
 | tone | pattern | reads as |
 |---|---|---|
-| `Stipple` | 1 px in 9 (`x % 3 == 0 && y % 3 == 0`) | a fine dotted texture |
 | `Light` | 1 px in 4 | light grey |
 | `Dark` | 1 px in 2, checkerboard | mid grey |
 | `Solid` | every pixel | black, for shapes too small to texture |
+| a dot grid | 1 px per period x period cell | a dotted texture, lighter the longer the period |
+
+**A dot grid's period is packed into the tone value**, since 2026-08-26, so a
+style can name a density rather than a name: `tone: dots, tone_period_px: 5`.
+Shorthands exist for the three in use -- `dense` (period 2, 1 in 4), `stipple`
+(period 3, 1 in 9) and `micro` (period 4, 1 in 16) -- and each has a `_stagger`
+twin that offsets alternate dot rows by half the period.
+
+Packed rather than a second field beside the tone, because a tone travels alone
+through `IMapCanvas::fillSpan`, `MapAreaFill` and six fields of `MapStyle`. A
+parameter next to it would have to be threaded through every one of those, and
+the two could then disagree. `MapTone::dots(period, stagger)` builds one,
+`dotPeriod()` and `isStaggered()` read it back, and host tests round-trip every
+period from 2 to 15.
+
+**`micro` exists because a wash under contour lines wants less ink than
+stipple.** At 1 in 9 the dots compete with the lines; at 1 in 16 they read as a
+surface and the lines stay the loudest thing.
+
+**Why a staggered twin.** A single-dot-per-cell grid is perfectly regular, which
+is clean and is also the thing that can beat against the panel's own pixel
+structure, against a hatch, or against a neighbouring area's dots. The stagger
+breaks the vertical alignment at identical density, so the two can be compared
+with nothing else moving. **Which is better is a panel question and is open** --
+the host render cannot answer it, which is the whole reason both exist
+(maintainer's call, 2026-08-26).
+
+**A dot grid is painted in strides, not pixel by pixel.** `fillSpan` knows the
+period, so a row carrying no dots is skipped whole and a row carrying them is
+walked `period` at a time: at 1 in 16 that is one `drawPixel` per sixteen columns
+rather than sixteen tests. The lightest tone is therefore the cheapest to paint,
+not the dearest -- the opposite of what it was when `Stipple` was the only
+non-native pattern.
 
 `Light` and `Dark` are **GfxRenderer's own dither patterns**, not new ones
 (`GfxRenderer.cpp`, `drawPixelDither<Color::LightGray>` and `<Color::DarkGray>`).
@@ -346,6 +378,79 @@ courtyard stays white.
 it lands, a tone should map to one of those instead of to a dither pattern; the
 swap belongs in the two `IMapCanvas` implementations, behind `MapAreaTone`, and
 nothing above that line needs to know which it got.
+
+### Borders: what each layer actually has
+
+Four layers draw a boundary, and each has its own field for it. There is no
+shared "border" concept, which is worth knowing before looking for one.
+
+| layer | field | what it draws |
+|---|---|---|
+| buildings | `layers.buildings.rule.outline_width` | 1 px ring around each building, over its own fill |
+| landuse | `layers.landuse.rules[].outline_width` | per class, over the tone and the hatch |
+| water | `layers.water.rules[].outline_width` | the ring of a water **area** -- a lake |
+| roads | `layers.roads.rules[].casing_px` | not an outline: a black stroke with a narrower white or dithered one inside it |
+
+**Water's outline was the same number as its line width until 2026-08-26.** A
+lake's ring and a river's stroke shared `waterLinePx`, so widening the river
+widened every lake edge with it. `waterOutlinePx` splits them, and defaults to
+the line width when a style says nothing, so an existing style draws exactly
+what it drew. Today's style leaves the lake rule `hidden`, so both are 0 for
+lakes and the `Dark` tone defines the shape on its own -- see "Water" above.
+
+**A road's casing is not an outline and should not be read as one.** An outline
+is drawn around a shape that already has a fill; a casing is the fill: the class
+is stroked black at `width`, then a narrower stroke of white (or a tone) is laid
+inside it, so the "border" is whatever black is left at the edges. That is why
+`casing_px` is refused when `2 * casing >= width` -- there would be no inside
+left, and the road would be a solid black line drawn the slow way, in two passes.
+
+**Three things a border cannot do, all of them deliberate stops rather than
+oversights:**
+
+- **It is always black.** `MapRenderer` passes `MapInk::Black` at all three call
+  sites. A white outline is what would separate two adjacent dark areas, and it
+  would need the draw order to say which of the two owns the boundary -- so it is
+  a real feature and not a parameter.
+- **It is always drawn last** -- see below. (A dashed one arrived 2026-08-26 and
+  has its own section.)
+- **It is always drawn last.** Tone, then hatch, then outline, in every area
+  pass. An outline under a fill would let a hatch break the edge, which is
+  sometimes what a cartographer wants and is never what this draws.
+
+### A dashed area boundary, and why not on forest
+
+`layers.landuse.rules[].outline_dash_px` and `outline_gap_px`, both required
+together, turn that class's boundary into dashes. Both at 0 is solid, which is
+what "no dash" means; one without the other is refused at generation, because a
+dash with no gap is a solid line drawn the slow way and a gap with no dash draws
+nothing.
+
+**The dash phase runs along the whole ring, not per segment.** After
+simplification a ring has a vertex every pixel or two, so a per-segment reset
+would put a dash at every vertex -- a solid line with a stutter rather than a
+dashed boundary. `MapAreaFill::outlineRingDashed` carries the travelled distance
+across vertices, measured in Bresenham steps because that is the rhythm a pixel
+grid actually draws in.
+
+**Do not use it on forest in hike mode.** Judged at 1:1 on a Mala Fatra rung-1
+frame, 2026-08-26, against a solid 1 px edge on the same tiles: the dashed
+boundary is indistinguishable from the trails in the same frame. That is not a
+matter of taste. **In this style a dashed line already means a path** --
+`footway`, `path`, `steps` and the streams are all dashed -- so a dashed wood
+edge lands on the strongest existing meaning of a dash on the map. And it
+misleads in a specific way rather than a vague one: a trail along the edge of a
+wood is a real thing, so the boundary does not read as a mistake, it reads as a
+route that is not there.
+
+What the same renders did settle is that the edge needs *something*: with no
+outline the dot tone simply stops, and nothing says whether the wood ends there
+or the mapping does. A solid 1 px outline was the only variant where the boundary
+could be told from the trails at a glance.
+
+So the mechanism is here for the boundaries that do not collide -- `built_up`,
+and an administrative area if one ever arrives -- and forest wants
+`outline_width: 1` with no dash.
 
 ### Hatch, kept for large areas
 

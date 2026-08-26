@@ -4,6 +4,14 @@
 // with a streaming one -- the golden file is the whole safety net for that
 // refactor, so it is never regenerated to make a test pass.
 //
+// **The fixtures were upgraded in place from format version 3 to 4**, 2026-08-26,
+// not rebuilt: the payload bytes are byte-identical and only the header grew a
+// seventh layer slot (an empty contour layer) with every offset shifted by one
+// directory entry. A rebuild would have pulled today's OSM data through today's
+// rules and moved the geometry, which would have taken the golden PPM with it --
+// and this file's whole point is that the PPM is never regenerated to make a test
+// pass.
+//
 // The tile fixture (fixtures/tiny-sd) is one real .tib file copied from a
 // mapbuilder build around Sisulakov mlyn/Sisolaky (48.5312N 17.0728E) --
 // small enough to commit, real enough to exercise roads and places
@@ -207,14 +215,20 @@ TEST(MapTileReader, AcceptsEveryLayerTheBuilderWrites) {
 // Real bytes, not a synthetic vector, so the byte layout of the layer directory
 // is under test too. If a fixture is ever regenerated these must be recomputed
 // -- and a mismatch here is the intended way to find that out.
+//
+// **Both moved with format version 4** (contours, 2026-08-26), from 0x0EBD55C8
+// and 0xF7A3DE8D. The fold is over one u32 per layer slot, so a seventh slot
+// changes the answer for tile bytes that did not change -- which is exactly why
+// the version went up and every device re-downloads. The old values are kept in
+// this comment so a bisect can tell "the vectors moved" from "the fold broke".
 TEST(MapTileReader, ContentIdMatchesMapbuilder) {
   struct Case {
     const char* path;
     uint32_t contentId;
   };
   const Case cases[] = {
-      {MAP_TILE_READER_FIXTURES_DIR "/tiny-sd/base/13/4484/2829.tib", 0x0EBD55C8u},
-      {MAP_TILE_READER_FIXTURES_DIR "/indexed-sd/base/13/4484/2829.tib", 0xF7A3DE8Du},
+      {MAP_TILE_READER_FIXTURES_DIR "/tiny-sd/base/13/4484/2829.tib", 0x4E19085Cu},
+      {MAP_TILE_READER_FIXTURES_DIR "/indexed-sd/base/13/4484/2829.tib", 0x1F932155u},
   };
 
   for (const Case& c : cases) {
