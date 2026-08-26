@@ -119,7 +119,7 @@ them was settled by pushing renders to the panel and looking
 | thin hairline | a minor road, and in bulk the texture that says settlement |
 | dark surface with white waves knocked out | water |
 | diagonal hatch | forest |
-| stipple | built-up area |
+| stipple | built-up area (a period-3 dot grid -- see "Tone" below) |
 | cased line in alternating black and hollow blocks | a railway |
 
 Two consequences worth stating, because both were learned by getting them
@@ -313,16 +313,48 @@ carry a line pattern: a cross hatch at 4 px leaves a couple of ticks per house
 and a village reads as dirt on the screen. Judged on rendered output 2026-08-05,
 against a reference map the maintainer supplied.
 
-The answer on 1-bit is a **tone**: a screen-space pixel pattern with a period of
-two or three, which reads as flat grey from arm's length. `MapAreaTone`
-(`src/activities/map/MapAreaTone.h`) has four:
+The answer on 1-bit is a **tone**: a screen-space pixel pattern that reads as
+flat grey from arm's length. `MapAreaTone` (`src/activities/map/MapAreaTone.h`)
+has three fixed patterns and a family of dot grids:
 
 | tone | pattern | reads as |
 |---|---|---|
-| `Stipple` | 1 px in 9 (`x % 3 == 0 && y % 3 == 0`) | a fine dotted texture |
 | `Light` | 1 px in 4 | light grey |
 | `Dark` | 1 px in 2, checkerboard | mid grey |
 | `Solid` | every pixel | black, for shapes too small to texture |
+| a dot grid | 1 px per period x period cell | a dotted texture, lighter the longer the period |
+
+**A dot grid's period is packed into the tone value**, since 2026-08-26, so a
+style can name a density rather than a name: `tone: dots, tone_period_px: 5`.
+Shorthands exist for the three in use -- `dense` (period 2, 1 in 4), `stipple`
+(period 3, 1 in 9) and `micro` (period 4, 1 in 16) -- and each has a `_stagger`
+twin that offsets alternate dot rows by half the period.
+
+Packed rather than a second field beside the tone, because a tone travels alone
+through `IMapCanvas::fillSpan`, `MapAreaFill` and six fields of `MapStyle`. A
+parameter next to it would have to be threaded through every one of those, and
+the two could then disagree. `MapTone::dots(period, stagger)` builds one,
+`dotPeriod()` and `isStaggered()` read it back, and host tests round-trip every
+period from 2 to 15.
+
+**`micro` exists because a wash under contour lines wants less ink than
+stipple.** At 1 in 9 the dots compete with the lines; at 1 in 16 they read as a
+surface and the lines stay the loudest thing.
+
+**Why a staggered twin.** A single-dot-per-cell grid is perfectly regular, which
+is clean and is also the thing that can beat against the panel's own pixel
+structure, against a hatch, or against a neighbouring area's dots. The stagger
+breaks the vertical alignment at identical density, so the two can be compared
+with nothing else moving. **Which is better is a panel question and is open** --
+the host render cannot answer it, which is the whole reason both exist
+(maintainer's call, 2026-08-26).
+
+**A dot grid is painted in strides, not pixel by pixel.** `fillSpan` knows the
+period, so a row carrying no dots is skipped whole and a row carrying them is
+walked `period` at a time: at 1 in 16 that is one `drawPixel` per sixteen columns
+rather than sixteen tests. The lightest tone is therefore the cheapest to paint,
+not the dearest -- the opposite of what it was when `Stipple` was the only
+non-native pattern.
 
 `Light` and `Dark` are **GfxRenderer's own dither patterns**, not new ones
 (`GfxRenderer.cpp`, `drawPixelDither<Color::LightGray>` and `<Color::DarkGray>`).
