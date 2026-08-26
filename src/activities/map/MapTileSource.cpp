@@ -287,9 +287,13 @@ void MapTileSource::computeScreenBoxForTile() {
     double mercX = 0.0, mercY = 0.0;
     proj_.screenToMerc(corners[i][0], corners[i][1], mercX, mercY);
     // Inverse of MapProjection::projectTileLocal: localX = mercX - originX,
-    // localY = originY - mercY. Same relationship, read backwards.
-    const double localX = mercX - static_cast<double>(reader_.originX());
-    const double localY = static_cast<double>(reader_.originY()) - mercY;
+    // localY = originY - mercY. Same relationship, read backwards -- including
+    // the tile's coord_shift, which has to be divided out here or the cell
+    // window would be computed in metres against an index measured in stored
+    // units. Shift 0 makes the divisor 1, which is every tile today.
+    const double unit = static_cast<double>(1u << reader_.coordShift());
+    const double localX = (mercX - static_cast<double>(reader_.originX())) / unit;
+    const double localY = (static_cast<double>(reader_.originY()) - mercY) / unit;
     // Round outwards, never inwards: a truncation towards zero here could clip a
     // way that touches the very edge of the screen.
     const int32_t loX = static_cast<int32_t>(std::floor(localX));
@@ -395,7 +399,8 @@ bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
     }
 
     for (uint16_t i = 0; i < header.pointCount; ++i) {
-      proj_.projectTileLocal(reader_.originX(), reader_.originY(), xs_[i], ys_[i], xs_[i], ys_[i]);
+      proj_.projectTileLocal(reader_.originX(), reader_.originY(), xs_[i], ys_[i], xs_[i], ys_[i],
+                             reader_.coordShift());
     }
     pointsProjected_ += header.pointCount;
 
@@ -428,7 +433,8 @@ bool MapTileSource::nextPlace(MapPlaceRef& out) {
 
     int16_t sx = 0;
     int16_t sy = 0;
-    proj_.projectTileLocal(reader_.originX(), reader_.originY(), header.x, header.y, sx, sy);
+    proj_.projectTileLocal(reader_.originX(), reader_.originY(), header.x, header.y, sx, sy,
+                           reader_.coordShift());
     ++pointsProjected_;
 
     out.x = sx;
