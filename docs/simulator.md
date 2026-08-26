@@ -234,6 +234,29 @@ for i in $(seq 1 40); do ss -ltn | grep -q ':8765' && break; sleep 0.25; done
 `[verified]` -- hit twice on 2026-08-23, once with six simulators alive at once
 and one of them still carrying an earlier test's `auto_confirm(false)`.
 
+**Verify exactly one instance before trusting a command's result.**
+`ps aux | grep -c 'build/simulator/program'` -- more than one means an earlier
+launch's `pkill` missed it, and the *older* process still holds the port (the
+bind-fails-silently behaviour above), so a fresh `blepos.py`/`mapcmd.py` call
+talks to stale code while the window on screen may be a different process
+entirely. Confirmed the hard way, 2026-08-26: a rebuilt binary with a real code
+change showed no effect for several rounds of testing because an earlier
+process never actually died.
+
+Also worth doing when iterating on a UI change interactively: do not trust a
+`CROSSPOINT_SIM_SCREENSHOTS` timestamp scheduled at launch to still line up with
+where the session actually is. Those timestamps are ms-since-launch, and a slow
+interactive round trip (thinking time between commands, not just the commands
+themselves) can burn minutes of real time before the next command lands -- a
+screenshot scheduled for "shortly after launch" fires before anything the
+session did. A live grab of the actual current framebuffer sidesteps the
+question entirely:
+
+```bash
+DISPLAY=:0 xwininfo -root -tree | grep Simulator   # finds the window id
+DISPLAY=:0 import -window <id> out.png             # grabs it, right now
+```
+
 **`CROSSPOINT_SIM_SD` sets the SD root, and it is how parallel runs stay apart**
 (`src/HalStorage.cpp:20` in the simulator repo). Point it at a directory outside
 the repo and two runs cannot touch each other's evidence, with no `.gitignore`
