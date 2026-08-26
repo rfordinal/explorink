@@ -756,6 +756,35 @@ literal UTF-8 bytes (`"\xC2\xB0"`), not a `°` escape, so it does not
 depend on this source file's own encoding or the toolchain's handling of
 `\u` in a narrow string literal.
 
+**Coordinates first, then a mountain icon, then altitude.** Maintainer's
+order and choice of symbol, 2026-08-26, over altitude-first and over no
+symbol at all -- coordinates, a 16px Lucide mountain glyph, then e.g.
+`340 m` with no gap between the icon and the number. `HikeIcons.h`
+(`src/activities/map/`) is one icon, `mountain.svg` rasterised to 16px by
+`freeink-sdk/libs/assets/Icons/tools/gen_icons.py` -- see that header's own
+comment for why this session's rasteriser was `cairosvg`, not the script's
+usual `rsvg-convert`. Drawn with `GfxRenderer::drawMono1bpp()`, not
+`drawIcon()`: the latter's quarter-turn compensation is for forced-Portrait
+UI themes and turned the map's own pin glyphs rot270 when tried here before
+(`GfxRenderer.h`, `drawMono1bpp()`'s own comment, measured 2026-08-17).
+
+The icon and altitude are **dropped together, not truncated**, when the row
+is already full of coordinates -- `neededWidth > maxContentWidth` skips both
+rather than drawing half an icon or a bare unit with no number. Coordinates
+themselves still truncate character-by-character if they alone overflow,
+same shape as `drawHeaderPlaceName()`'s loop.
+
+**`riderLatE7()`/`riderLonE7()`, not `lastLatE7_`/`lastLonE7_` directly.**
+Caught live on the simulator, 2026-08-26: switching to Observe mode and
+panning around visibly changed the coordinates this line showed, because
+`panBy()` repoints `lastLatE7_`/`lastLonE7_` at the pan target while Observe
+is up (`riderLatE7()`'s own comment) -- exactly the distinction eight other
+call sites in this file already existed to make (`pinSaveRefusal()`,
+`savePinAtRider()`, the nearby-point sector/distance calculations, the route
+save's `fixLatE7`/`fixLonE7`). This line asks "where is the rider", which a
+pan does not change, so it needed the same accessor those already use, not
+the pan-following fields the map's own drawing reads.
+
 **Stays clear of the compass's own halo, horizontally, not by shrinking the
 row's height.** The compass (`drawCompass()`) is drawn every frame at
 `centreY = kCompassCenterTop` (87), radius `kCompassGlyphRadius` (36) plus a
@@ -833,12 +862,17 @@ sent with `tools/blepos.py 48.60 17.30 --alt 340 --sim 127.0.0.1:8765` and the
 mode switched with `tools/mapcmd.py --sim 127.0.0.1:8765 mode hike`. Confirmed
 on the resulting screenshot:
 
-- The second line draws (`340 m   48°36'00"N 17°18'00"E`), at `SMALL_FONT_ID`,
-  below the place name row.
+- The second line draws (`48°36'00"N 17°18'00"E`, mountain icon, `340 m`), at
+  `SMALL_FONT_ID`, below the place name row.
 - The compass is intact -- no erased halo, no missing glyph -- which is what
   the full-width-backing bug (fixed above, before this run) would have broken.
 - `mode ride` afterward reverts to the single-row header with no second line,
   confirming Ride/Cycle are unaffected.
+- Toggling Observe mode and panning three times (`tools/mapcmd.py`'s console
+  grammar cannot drive this -- done with a scripted `RIGHT` key sequence) pans
+  the map to a different place name (`Cerová, Senica`) while the line's own
+  coordinates stayed at the rider's real fix, unchanged -- confirming the
+  `riderLatE7()`/`riderLonE7()` fix above.
 
 **What this does not check, per "What it is and is not" in `docs/simulator.md`**:
 no e-ink refresh timing, no ghosting, no grayscale pass, no `ESP.getFreeHeap()`

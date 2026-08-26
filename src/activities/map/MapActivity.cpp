@@ -19,6 +19,7 @@
 #include "CrossPointState.h"
 #include "GfxRendererCanvas.h"
 #include "HeldTilesStore.h"
+#include "HikeIcons.h"
 #include "MapFollow.h"
 #include "MapHatch.h"
 // missingTileAnchorFromLastFix(), for `fake` -- it seeds around the same origin
@@ -349,8 +350,10 @@ void formatHikeLineText(char* buf, size_t bufSize, bool hasAltitude, int16_t alt
   char lonStr[16];
   formatDms(lat, /*isLat=*/true, latStr, sizeof(latStr));
   formatDms(lon, /*isLat=*/false, lonStr, sizeof(lonStr));
+  // Coordinate first, altitude after -- maintainer's order, 2026-08-26: the
+  // fix is always known once a fix has landed, altitude is not.
   if (hasAltitude) {
-    snprintf(buf, bufSize, "%d m   %s %s", static_cast<int>(altitudeM), latStr, lonStr);
+    snprintf(buf, bufSize, "%s %s   %d m", latStr, lonStr, static_cast<int>(altitudeM));
   } else {
     snprintf(buf, bufSize, "%s %s", latStr, lonStr);
   }
@@ -423,6 +426,12 @@ constexpr int kHeaderPlaceNameLeftX = kTextX + 2;
 // second line reuses it instead of inventing a second constant to retune.
 constexpr int kHikeElevationLineHeight = kHeaderRowHeight;
 constexpr int kHikeElevationLeftX = kHeaderPlaceNameLeftX;
+// Clearance before the mountain icon, separating it from the coordinates --
+// judged on the panel 2026-08-26 to want more air than kHeaderPlaceNameRightGap
+// gives the icon cluster, hence its own doubled figure rather than that one
+// reused. No gap after the icon: it sits directly against the altitude value
+// it belongs to, same day's judgement.
+constexpr int kHikeIconGapBefore = kHeaderPlaceNameRightGap * 2;
 
 // North indicator geometry, top-right corner. Ported 1:1 (scale 1
 // design-unit = 1 pixel) from the user's exact vector spec (2026-08-05): a
@@ -1656,44 +1665,43 @@ void MapActivity::drawHeaderPlaceName() {
 
 // Hike mode's second header line, below drawHeaderPlaceName()'s row and above
 // headerSeparatorY(): elevation, when a fix has ever carried one, and the
-// fix's own lat/lon, which lastLatE7_/lastLonE7_ already hold once
-// hasReceivedAny_ is true. Ride and Cycle draw nothing here -- mode_ is the
+// rider's own lat/lon -- riderLatE7()/riderLonE7(), not lastLatE7_/lastLonE7_
+// directly. Those track whatever is on screen, and panBy() repoints them at
+// the pan target while Observe mode is up (riderLatE7()'s own comment); this
+// line answers "where is the rider", which does not change just because they
+// panned to look around. Ride and Cycle draw nothing here -- mode_ is the
 // only gate, and a rider who switches mode picks the line up or loses it on
 // the full frame switchMode() already forces.
 void MapActivity::drawHikeElevationLine() {
   if (mode_ != MapRideMode::Hike) return;
 
-  char text[sizeof(drawnHikeLineText_)];
-  formatHikeLineText(text, sizeof(text), hasAltitudeReading_, lastAltitudeM_, static_cast<double>(lastLatE7_) / 1e7,
-                     static_cast<double>(lastLonE7_) / 1e7);
-  // Recorded before truncation: updateHikeElevationLine() formats the same
-  // untruncated candidate to compare against this, and a mismatch there
-  // would repaint every poll forever if this held the truncated text instead.
-  strncpy(drawnHikeLineText_, text, sizeof(drawnHikeLineText_) - 1);
+  // Full text, coords-then-altitude, is still what drawnHikeLineText_ holds
+  // for updateHikeElevationLine()'s change check -- unrelated to whether the
+  // icon fits below, which is a drawing-layout question, not a "did anything
+  // change" one.
+  char fullText[sizeof(drawnHikeLineText_)];
+  formatHikeLineText(fullText, sizeof(fullText), hasAltitudeReading_, lastAltitudeM_,
+                     static_cast<double>(riderLatE7()) / 1e7, static_cast<double>(riderLonE7()) / 1e7);
+  strncpy(drawnHikeLineText_, fullText, sizeof(drawnHikeLineText_) - 1);
   drawnHikeLineText_[sizeof(drawnHikeLineText_) - 1] = '\0';
 
   // Stays clear of the compass's own white halo (drawCompass(), drawn earlier
   // this frame) -- its left edge is the hard right bound for both this row's
-  // backing and its text, not the screen edge. A full-width backing drawn
+  // backing and its content, not the screen edge. A full-width backing drawn
   // after the compass would erase the compass's halo and glyph underneath it
   // -- judged on the panel 2026-08-26. Same reasoning drawHeaderPlaceName()
   // already uses against the icon cluster's headerStatusRect(), just against
   // a different right-hand neighbour.
   const int compassHaloLeft =
       (renderer.getScreenWidth() - kCompassCenterMarginRight) - (kCompassGlyphRadius + kCompassHaloMargin);
-  const int maxTextWidth = compassHaloLeft - kHikeElevationLeftX - kHeaderPlaceNameRightGap;
-  if (maxTextWidth <= 0) return;
-
-  // Same truncate-until-fits loop drawHeaderPlaceName() uses, against a local
-  // copy -- drawnHikeLineText_ above already holds the untruncated text.
-  for (size_t len = strlen(text); len > 0 && renderer.getTextWidth(SMALL_FONT_ID, text) > maxTextWidth; --len) {
-    text[len - 1] = '\0';
-  }
+  const int maxContentWidth = compassHaloLeft - kHikeElevationLeftX - kHeaderPlaceNameRightGap;
+  if (maxContentWidth <= 0) return;
 
   // Backing first, same reasoning as the icon strip's and the place name's:
   // this rect can land over last frame's separator or last frame's own
-  // shorter/longer text, not blank margin.
+  // shorter/longer content, not blank margin.
   renderer.fillRect(0, kHeaderBarHeight, compassHaloLeft, kHikeElevationLineHeight, false);
+
   // SMALL_FONT_ID, not UI_10_FONT_ID: this is secondary information, the same
   // weight as the clock/battery percentage in row one, not the primary
   // place-name label -- UI_10 judged too large on the panel, 2026-08-26.
@@ -1702,9 +1710,58 @@ void MapActivity::drawHikeElevationLine() {
   // tuned on hardware for UI_10_FONT_ID centred in row one
   // (kHeaderPlaceNameLeftX's own comment, 2026-08-11) and does not carry over
   // to a different font in a different row -- judged 2-3px too low on the
-  // panel at +3, 2026-08-26.
-  const int y = kHeaderBarHeight + (kHikeElevationLineHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2;
-  renderer.drawText(SMALL_FONT_ID, kHikeElevationLeftX, y, text, true);
+  // panel at +3, 2026-08-26. The plain centred value still read 1-2px low on
+  // the simulator the same day, hence -2 here.
+  const int textY = kHeaderBarHeight + (kHikeElevationLineHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2 - 2;
+
+  // Coordinates first, maintainer's order, 2026-08-26. Own truncate-until-fits
+  // loop, same shape as drawHeaderPlaceName()'s -- coordinates are the one
+  // thing this line always has, so they are what survives when the icon and
+  // altitude do not fit, not what gets chopped mid-string to make room.
+  char coordsStr[32];
+  {
+    char latStr[16];
+    char lonStr[16];
+    formatDms(static_cast<double>(riderLatE7()) / 1e7, /*isLat=*/true, latStr, sizeof(latStr));
+    formatDms(static_cast<double>(riderLonE7()) / 1e7, /*isLat=*/false, lonStr, sizeof(lonStr));
+    snprintf(coordsStr, sizeof(coordsStr), "%s %s", latStr, lonStr);
+  }
+  for (size_t len = strlen(coordsStr); len > 0 && renderer.getTextWidth(SMALL_FONT_ID, coordsStr) > maxContentWidth;
+       --len) {
+    coordsStr[len - 1] = '\0';
+  }
+  renderer.drawText(SMALL_FONT_ID, kHikeElevationLeftX, textY, coordsStr, true);
+
+  if (!hasAltitudeReading_) return;
+
+  // Mountain icon before the altitude value it belongs to, same reading order
+  // a rider already gets from a compass rose or a trailhead sign -- picked
+  // over a bare "m" suffix, 2026-08-26 (docs/map-header-status.md, "Hike
+  // mode's second line"). Dropped whole, not truncated, when the row is
+  // already full of coordinates -- a half-drawn icon or a unit with no
+  // number is worse than neither.
+  char altStr[16];
+  snprintf(altStr, sizeof(altStr), "%d m", static_cast<int>(lastAltitudeM_));
+  const int coordsWidth = renderer.getTextWidth(SMALL_FONT_ID, coordsStr);
+  const int altWidth = renderer.getTextWidth(SMALL_FONT_ID, altStr);
+  const int iconSize = icon_mountain_16.w;
+  // No gap between the icon and altWidth below -- the icon sits directly
+  // against the value it belongs to.
+  const int neededWidth = coordsWidth + kHikeIconGapBefore + iconSize + altWidth;
+  if (neededWidth > maxContentWidth) return;
+
+  const int iconX = kHikeElevationLeftX + coordsWidth + kHikeIconGapBefore;
+  // -2: centred like the text above, then nudged up the same amount --
+  // judged 2px low against the text baseline on the panel, 2026-08-26.
+  const int iconY = kHeaderBarHeight + (kHikeElevationLineHeight - iconSize) / 2 - 2;
+  // drawMono1bpp(), not drawIcon(): drawIcon() applies a quarter-turn meant
+  // for forced-Portrait UI themes, which turned the map's own pin glyphs
+  // rot270 on this screen (GfxRenderer.h, drawMono1bpp()'s own comment,
+  // measured 2026-08-17). This icon sits over the plain white backing this
+  // function already filled, not over live map lines, so the single ink pass
+  // below is enough -- no silhouette-then-outline mask needed.
+  renderer.drawMono1bpp(icon_mountain_16.bits, iconX, iconY, iconSize, iconSize, true);
+  renderer.drawText(SMALL_FONT_ID, iconX + iconSize, textY, altStr, true);
 }
 
 // Keeps the hike line honest between full frames -- same windowed-repaint
@@ -1723,7 +1780,7 @@ void MapActivity::updateHikeElevationLine() {
 
   char candidate[sizeof(drawnHikeLineText_)];
   formatHikeLineText(candidate, sizeof(candidate), hasAltitudeReading_, lastAltitudeM_,
-                     static_cast<double>(lastLatE7_) / 1e7, static_cast<double>(lastLonE7_) / 1e7);
+                     static_cast<double>(riderLatE7()) / 1e7, static_cast<double>(riderLonE7()) / 1e7);
   if (strcmp(candidate, drawnHikeLineText_) == 0) return;
   if (now < nextHikeLineRepaintMs_) return;
   nextHikeLineRepaintMs_ = now + kHikeLineRepaintMs;
