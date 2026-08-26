@@ -309,10 +309,18 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     const int32_t aty = ty < 0 ? -ty : ty;
     MapTextTurn turn = MapTextTurn::None;
     if (aty > atx) {
-      // Both quarter turns read -- neither mirrors a glyph. Pick by the tangent's
-      // sign so two numbers on one contour never disagree about which way along
-      // it they run.
-      turn = ty > 0 ? MapTextTurn::Cw90 : MapTextTurn::Ccw90;
+      // **Always the same quarter turn**, never chosen from the tangent's sign.
+      // Picking by sign was the last version and it looked broken: two numbers a
+      // few centimetres apart read in opposite directions, and the one running
+      // bottom-to-top reads as reversed digits to anyone who did not expect it.
+      // Neither turn mirrors a glyph, so consistency is worth more than matching
+      // the direction the contour happens to be stored in. The slope is carried by
+      // the offset below, not by which end of the number comes first.
+      //
+      // Clockwise specifically, so a vertical number reads top-to-bottom -- and
+      // because it is the one quarter turn GfxRenderer implements, which keeps the
+      // device and the host drawing the same thing.
+      turn = MapTextTurn::Cw90;
     }
 
     // A turned number is as tall as it was wide. Getting this the wrong way round

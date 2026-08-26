@@ -202,9 +202,10 @@ class GfxRendererCanvas : public IMapCanvas {
   // of each, in the text path every screen in the firmware draws through, with no
   // device here to check the result on.
   //
-  // So an unimplemented turn draws upright. A height number then reads with its
-  // top up instead of uphill, which is the same as having no rotation at all --
-  // wrong, but wrong in the direction of legible rather than of garbled.
+  // So an unimplemented turn draws upright. **Nothing asks for one today**: the
+  // contour height numbers use `None` and `Cw90` only, deliberately, so that the
+  // device and the host draw the same picture (MapRenderer, drawContourLabels).
+  // The two gaps are here for the next caller, not for this one.
   // docs/contours-plan.md, "Open questions", carries what it would take.
   void drawTextTurned(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
                       MapTextTurn turn) override {
