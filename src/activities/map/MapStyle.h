@@ -139,6 +139,14 @@ struct MapStyle {
   MapAreaTone landuseTone[kLanduseClassSlots];
   MapAreaFill::Pattern landuseHatch[kLanduseClassSlots];
   uint8_t landuseHatchSpacingPx[kLanduseClassSlots];
+  // A dashed boundary, per landuse class. 0 in either field means solid.
+  //
+  // Dashes on an area outline exist for one reason: a forest edge on foot is a
+  // real thing to navigate by, and a dot tone ending is not an edge -- nothing
+  // says whether the wood stops there or the mapping does. A boundary line
+  // settles it (docs/map-style.md, "Borders").
+  uint8_t landuseOutlineDashPx[kLanduseClassSlots];
+  uint8_t landuseOutlineGapPx[kLanduseClassSlots];
 
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.

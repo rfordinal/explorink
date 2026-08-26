@@ -412,14 +412,45 @@ oversights:**
   sites. A white outline is what would separate two adjacent dark areas, and it
   would need the draw order to say which of the two owns the boundary -- so it is
   a real feature and not a parameter.
-- **It cannot be dashed.** `MapAreaFill::outlineRing` calls `drawLine` per
-  segment, nothing else, so a boundary that should read as a boundary rather than
-  a fence -- a park edge, an administrative line -- is not expressible. The road
-  layer's `pattern`/`dash_px`/`gap_px` exist for exactly this and are not wired to
-  area outlines.
+- **It is always drawn last** -- see below. (A dashed one arrived 2026-08-26 and
+  has its own section.)
 - **It is always drawn last.** Tone, then hatch, then outline, in every area
   pass. An outline under a fill would let a hatch break the edge, which is
   sometimes what a cartographer wants and is never what this draws.
+
+### A dashed area boundary, and why not on forest
+
+`layers.landuse.rules[].outline_dash_px` and `outline_gap_px`, both required
+together, turn that class's boundary into dashes. Both at 0 is solid, which is
+what "no dash" means; one without the other is refused at generation, because a
+dash with no gap is a solid line drawn the slow way and a gap with no dash draws
+nothing.
+
+**The dash phase runs along the whole ring, not per segment.** After
+simplification a ring has a vertex every pixel or two, so a per-segment reset
+would put a dash at every vertex -- a solid line with a stutter rather than a
+dashed boundary. `MapAreaFill::outlineRingDashed` carries the travelled distance
+across vertices, measured in Bresenham steps because that is the rhythm a pixel
+grid actually draws in.
+
+**Do not use it on forest in hike mode.** Judged at 1:1 on a Mala Fatra rung-1
+frame, 2026-08-26, against a solid 1 px edge on the same tiles: the dashed
+boundary is indistinguishable from the trails in the same frame. That is not a
+matter of taste. **In this style a dashed line already means a path** --
+`footway`, `path`, `steps` and the streams are all dashed -- so a dashed wood
+edge lands on the strongest existing meaning of a dash on the map. And it
+misleads in a specific way rather than a vague one: a trail along the edge of a
+wood is a real thing, so the boundary does not read as a mistake, it reads as a
+route that is not there.
+
+What the same renders did settle is that the edge needs *something*: with no
+outline the dot tone simply stops, and nothing says whether the wood ends there
+or the mapping does. A solid 1 px outline was the only variant where the boundary
+could be told from the trails at a glance.
+
+So the mechanism is here for the boundaries that do not collide -- `built_up`,
+and an administrative area if one ever arrives -- and forest wants
+`outline_width: 1` with no dash.
 
 ### Hatch, kept for large areas
 

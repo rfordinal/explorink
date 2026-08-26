@@ -437,11 +437,13 @@ def landuse(style):
     """
     layer = style.get("layers", {}).get("landuse", {})
     outlines = [0] * _LANDUSE_SLOTS
+    outline_dashes = [0] * _LANDUSE_SLOTS
+    outline_gaps = [0] * _LANDUSE_SLOTS
     tones = ["MapAreaTone::None"] * _LANDUSE_SLOTS
     patterns = ["None"] * _LANDUSE_SLOTS
     spacings = [0] * _LANDUSE_SLOTS
     if not layer.get("enabled", False):
-        return False, outlines, tones, patterns, spacings
+        return False, outlines, outline_dashes, outline_gaps, tones, patterns, spacings
 
     for index, rule in enumerate(layer.get("rules", [])):
         what = f"layers.landuse.rules[{index}]"
@@ -461,11 +463,27 @@ def landuse(style):
             # so this is a drawing decision only.
             if rule.get("hidden", False):
                 outlines[class_id] = 0
+                outline_dashes[class_id] = 0
+                outline_gaps[class_id] = 0
                 tones[class_id] = "MapAreaTone::None"
                 patterns[class_id] = "None"
                 spacings[class_id] = 0
                 continue
             outlines[class_id] = _round_px(rule.get("outline_width", 0), f"{what}.outline_width")
+            # A dashed boundary. Both numbers or neither: a dash length with no
+            # gap is a solid line the slow way, and a gap with no dash draws
+            # nothing at all -- either would be a style that silently does not
+            # do what it says.
+            dash = _round_px(rule.get("outline_dash_px", 0), f"{what}.outline_dash_px")
+            gap = _round_px(rule.get("outline_gap_px", 0), f"{what}.outline_gap_px")
+            if (dash > 0) != (gap > 0):
+                sys.exit(f"gen_mapstyle.py: {what}: outline_dash_px and outline_gap_px go together -- "
+                         f"got {dash} and {gap}. A dash with no gap is a solid line, a gap with no dash "
+                         f"draws nothing.")
+            if dash > 0 and outlines[class_id] == 0:
+                sys.exit(f"gen_mapstyle.py: {what}: a dashed outline needs outline_width above 0")
+            outline_dashes[class_id] = dash
+            outline_gaps[class_id] = gap
             tones[class_id] = _tone(rule, what)
             patterns[class_id], spacings[class_id] = _hatch(rule, what)
             if outlines[class_id] == 0 and tones[class_id] == "MapAreaTone::None" and patterns[class_id] == "None":
@@ -476,8 +494,8 @@ def landuse(style):
         # may legitimately empty the layer there -- but the caller (the layer's
         # `enabled`) is what decides whether the card is read, and that is not
         # per class. Report it off, which is exactly what gets drawn.
-        return False, outlines, tones, patterns, spacings
-    return True, outlines, tones, patterns, spacings
+        return False, outlines, outline_dashes, outline_gaps, tones, patterns, spacings
+    return True, outlines, outline_dashes, outline_gaps, tones, patterns, spacings
 
 
 def place_dot_diameter(style):
@@ -719,7 +737,7 @@ def _style_literal(bundle):
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
     (w_enabled, w_widths, w_outlines, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing,
      w_white) = water_px
-    l_enabled, l_outlines, l_tones, l_patterns, l_spacings = landuse_px
+    l_enabled, l_outlines, l_dashes, l_gaps, l_tones, l_patterns, l_spacings = landuse_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
     landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
     lines += [
@@ -753,6 +771,10 @@ def _style_literal(bundle):
         *_array([f"MapAreaFill::Pattern::{p}" for p in l_patterns], landuse_names),
         "    .landuseHatchSpacingPx =",
         *_array(l_spacings, landuse_names),
+        "    .landuseOutlineDashPx =",
+        *_array(l_dashes, landuse_names),
+        "    .landuseOutlineGapPx =",
+        *_array(l_gaps, landuse_names),
         f"    .placeDotDiameterPx = {dot_diameter},",
         f"    .placeLabelPx = {labels['px']},",
         f"    .placeLabelBold = {'true' if labels['bold'] else 'false'},",
@@ -833,8 +855,8 @@ def _print_summary(bundle, what):
           f"{knockout}, gap {labels['gap']}px, "
           f"route overlap <= {labels['route_overlap_pct']}%, width cap {labels['max_width']}px")
     if landuse_px[0]:
-        print(f"gen_mapstyle.py: {what}: landuse on -- forest tone {_toneLabel(landuse_px[2][1])}/hatch {landuse_px[3][1]}, "
-              f"built_up tone {_toneLabel(landuse_px[2][2])}/hatch {landuse_px[3][2]}")
+        print(f"gen_mapstyle.py: {what}: landuse on -- forest tone {_toneLabel(landuse_px[4][1])}/hatch {landuse_px[5][1]}, "
+              f"built_up tone {_toneLabel(landuse_px[4][2])}/hatch {landuse_px[5][2]}")
     else:
         print(f"gen_mapstyle.py: {what}: landuse off")
 
