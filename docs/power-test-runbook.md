@@ -450,35 +450,73 @@ light sleep engages, so mid-run evidence is `power.csv` and BLE, nothing else.
 
 **We do not know what the maintainer owns.** So the plan degrades:
 
-**No meter ever reaches the cell, and that is settled rather than open.** The
-parent `CLAUDE.md` rule of 2026-08-22 -- "Never open a device. Ever. Add to it
-instead." -- makes every plan in this file that begins "a meter in series with the
-battery" unbuildable. No back cover, no unplugged cell, no probe on an internal
-pad, on any device, permanently. What is allowed is additive: something strapped or
-printed onto the outside, and anything through a connector the device already
-exposes.
+**No meter ever reaches the cell of a device, and that is settled rather than
+open.** The parent `CLAUDE.md` rule of 2026-08-22 -- "Never open a device. Ever. Add
+to it instead." -- makes every plan in this file that begins "a meter in series with
+the battery" unbuildable **on X4, X4 Pro and X3**. No back cover, no unplugged cell,
+no probe on an internal pad, on any of them, permanently. What is allowed is
+additive: something strapped or printed onto the outside, and anything through a
+connector the device already exposes.
 
 Two things that were written here as the better measurement are therefore struck
-out rather than left to be tried:
+out **for those devices** rather than left to be tried:
 
 - ~~**Source-meter mode -- the meter replaces the cell.**~~ It would have removed
   the discharge curve as a confounder entirely, by holding the supply at a fixed
-  voltage. It needs the cell disconnected. Dead.
+  voltage. It needs the cell disconnected. Dead on a device.
 - ~~**Ampere-meter mode -- in series with the existing cell.**~~ Needs a battery
-  lead broken. Dead. Which also retires the burden-voltage trap described below --
-  worth reading anyway, because it explains why a uA range is dangerous in general,
-  but it is no longer a decision anyone here has to make.
+  lead broken. Dead on a device. The burden-voltage trap described below is still
+  worth reading, because it explains why a uA range is dangerous in general.
 
-**So experiment 1 cannot be done**, and the board's own floor is permanently
-`[open]`, knowable only as an upper bound from the cheapest state a run reaches --
-1.76 %/h as of run 5. `power-management.md`, "The board's own floor is unpriced",
-carries the same note.
+**So experiment 1 cannot be done on any Xteink device**, and each board's own floor
+stays `[open]` there, knowable only as an upper bound from the cheapest state a run
+reaches -- 1.76 %/h as of run 5. `power-management.md`, "The board's own floor is
+unpriced", carries the same note.
 
-**What is left, in full:** what the firmware measures about itself (`power.csv`),
-what a meter on the **outside** of the USB port can see, and what a device with a
-fuel gauge reports over I2C -- X3 carries a BQ27220 whose average-current register
-the firmware already reads, X4 has none. That is the whole instrument set, and no
-purchase enlarges it.
+### But the rule stops at a finished product, and a development board is not one
+
+**Scope clarified in the parent `CLAUDE.md`, 2026-08-26.** The never-open rule covers
+a finished device: a case, and a cell inside that case. It does **not** reach a bare
+development board whose cell arrives on a connector. On such a board a meter in series
+at the battery connector, a bench supply in the cell's place, and probing a
+schematic-named test point are ordinary use rather than opening anything. Desoldering,
+rework and cutting traces stay banned everywhere, and a board put in a case is a
+device again.
+
+**The board that makes this concrete is the LilyGo T5 E-Paper S3 Pro**, which this
+project bought on 2026-08-24 as its non-Xteink validation board. What its published
+schematic gives us, read 2026-08-26 (`hardware/T5 E-paper S3 Pro V1.0 24-12-24.pdf`,
+sheet "Battery Interface", in `Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO`, branch
+`H752-01`):
+
+- **`P2` is the battery connector**: pin 1 VBAT, pin 2 NTC, pin 3 GND, plus two
+  grounded pins. A meter or a bench supply goes there, and unplugging a connector is
+  not removing a cover.
+- **The NTC bias divider is on the board** (`R9` 30.1k from `REGN`, `R20` 5.23k to
+  ground), so a supply on VBAT with no pack attached should not trip the charger's
+  temperature fault. Read off the schematic, not tested.
+- **`R36` is a 10 mOhm sense resistor** between `BAT` and the `BQ27220YZFR` fuel
+  gauge's `SRP`/`SRN` pins (I2C 0x55). The shunt is already fitted. At 100 mA it drops
+  1 mV; at 873 uA it drops 8.7 uV, so it reads active states and not a sleep floor.
+- **The charger is a BQ25896 at I2C 0x6B** with `CE` pulled through 10k, so charging
+  is controllable in software rather than only by unplugging USB. Its **ship mode**
+  (BATFET open) is a second, deeper off state than deep sleep, and the power button is
+  wired to the charger's `QON` pin rather than to the MCU.
+
+**So experiment 1 is buildable on that board**, on the same reasoning that killed it
+on the devices. Two numbers exist to aim at: the vendor's own README publishes a
+photograph of a bench multimeter in series with a bare board reading `00.8728`, so
+**~873 uA whole-board deep sleep** with the radios' rail down, the frontlight at zero
+duty and the panel powered off `[read off a vendor photograph]`, and ship mode is
+unmeasured by anyone.
+
+**What is left on a device, in full:** what the firmware measures about itself
+(`power.csv`), what a meter on the **outside** of the USB port can see, and what a
+device with a fuel gauge reports over I2C -- X3 carries a BQ27220 whose
+average-current register the firmware already reads, X4 has none. That is the whole
+instrument set **for the sealed devices**, and no purchase enlarges it. **For the
+development board it is enlarged by exactly one purchase**, an instrument that can sit
+in series at `P2`: parent task T-553.
 
 **A candidate for the no-teardown route, 2026-08-21: Joy-IT JT-UM120.** Read off
 the manufacturer's page (`https://joy-it.net/en/products/JT-UM120`) **[primary]**:
@@ -515,6 +553,15 @@ per the parent `CLAUDE.md` research-numbers rule.
   option if nothing suitable exists -- on the order of USD 100 **[assumed]**,
   and the price must be read off a distributor page before buying, per the
   repo's research-numbers rule.
+  **Live again since 2026-08-26**, and this is the entry that was struck out
+  hardest: it dies on a sealed device and works on the development board's `P2`
+  connector. The capability the parent repo settled on is sub-10 uA at the floor,
+  ~500 mA of headroom, autoranging, and a **logged waveform rather than an
+  average** -- because ship mode, ~873 uA deep sleep, the panel refresh peak and a
+  LoRa burst all have to fit one range. A bench DMM is an average and cannot show
+  three of those four. Vendor and distributor pages for every candidate were
+  Cloudflare-gated from this machine on 2026-08-26, so range, resolution and price
+  stay `[open]` until a human reads them in a browser.
 - **A cheap multimeter in series** can answer experiment 1's *decisive*
   question -- is the floor 1 mA or more -- on its mA range, where 0.1 mA
   resolution is enough for that verdict. What it cannot do: resolve 10 uA from
