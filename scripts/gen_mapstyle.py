@@ -380,13 +380,15 @@ def water(style):
     layer = style.get("layers", {}).get("water", {})
     widths = [0] * _WATER_SLOTS
     if not layer.get("enabled", False):
-        return False, widths, ["Solid"] * _WATER_SLOTS, [0] * _WATER_SLOTS, [0] * _WATER_SLOTS, "MapAreaTone::None", "None", 0, False
+        return (False, widths, [0] * _WATER_SLOTS, ["Solid"] * _WATER_SLOTS, [0] * _WATER_SLOTS,
+                [0] * _WATER_SLOTS, "MapAreaTone::None", "None", 0, False)
 
     default_width = max(_round_px(layer.get("default", {}).get("width", 1), "layers.water.default.width"), 1)
     for class_id in _WATER_CLASS.values():
         widths[class_id] = default_width
 
     patterns_w = ["Solid"] * _WATER_SLOTS
+    outlines = [0] * _WATER_SLOTS
     dashes = [0] * _WATER_SLOTS
     gaps = [0] * _WATER_SLOTS
     tone, pattern, spacing, white = "MapAreaTone::None", "None", 0, False
@@ -404,6 +406,13 @@ def water(style):
             if width > 255:
                 sys.exit(f"gen_mapstyle.py: {what}: width {width}px does not fit a uint8_t")
             widths[_WATER_CLASS[name]] = 0 if rule.get("hidden", False) else width
+            # The ring border of a water *area*. Defaults to the class's line
+            # width, which is what it was before this field existed, so a style
+            # that says nothing draws exactly what it drew.
+            outline = _round_px(rule.get("outline_width", width), f"{what}.outline_width")
+            if outline > 255:
+                sys.exit(f"gen_mapstyle.py: {what}: outline_width {outline}px does not fit a uint8_t")
+            outlines[_WATER_CLASS[name]] = 0 if rule.get("hidden", False) else outline
             (patterns_w[_WATER_CLASS[name]], dashes[_WATER_CLASS[name]],
              gaps[_WATER_CLASS[name]]) = _dash(rule, what)
         # Water is the one layer that wants a tone *and* a pattern: a surface
@@ -416,7 +425,7 @@ def water(style):
             pattern, spacing = _hatch(dict(rule, fill="hatch"), what)
             if rule.get("hatch_white"):
                 white = True
-    return True, widths, patterns_w, dashes, gaps, tone, pattern, spacing, white
+    return True, widths, outlines, patterns_w, dashes, gaps, tone, pattern, spacing, white
 
 
 def landuse(style):
@@ -708,7 +717,8 @@ def _style_literal(bundle):
         lines.append(f"        {tones[class_id]},  // {class_id} {name}")
     radius, ring, arrow = puck_px
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
-    w_enabled, w_widths, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing, w_white = water_px
+    (w_enabled, w_widths, w_outlines, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing,
+     w_white) = water_px
     l_enabled, l_outlines, l_tones, l_patterns, l_spacings = landuse_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
     landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
@@ -722,6 +732,8 @@ def _style_literal(bundle):
         f"    .waterEnabled = {'true' if w_enabled else 'false'},",
         "    .waterLinePx =",
         *_array(w_widths, water_names),
+        "    .waterOutlinePx =",
+        *_array(w_outlines, water_names),
         "    .waterPattern =",
         *_array([f"MapLinePattern::{p}" for p in w_patterns], water_names),
         "    .waterDashPx =",
@@ -807,8 +819,9 @@ def _print_summary(bundle, what):
     print(f"gen_mapstyle.py: {what}: buildings {'on' if buildings_px[0] else 'off'} "
           f"(outline {buildings_px[1]}px, tone {_toneLabel(buildings_px[2])}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "
-          f"(widths {water_px[1]}, dashes {water_px[3]}/{water_px[4]}, tone {_toneLabel(water_px[5])}, "
-          f"hatch {water_px[6]}/{water_px[7]}px{' white' if water_px[8] else ''})")
+          f"(widths {water_px[1]}, outlines {water_px[2]}, dashes {water_px[4]}/{water_px[5]}, "
+          f"tone {_toneLabel(water_px[6])}, "
+          f"hatch {water_px[7]}/{water_px[8]}px{' white' if water_px[9] else ''})")
     widest_road = max(widths)
     if route_px[0] and route_px[0] <= widest_road:
         print(f"gen_mapstyle.py: warning -- {what}: route width {route_px[0]}px is not wider than the "

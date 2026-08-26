@@ -307,7 +307,11 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         // is what makes waves on water rather than waves under it.
         MapAreaFill::hatchRing(canvas, way.xs, way.ys, way.pointCount, style.waterHatch, style.waterHatchSpacingPx,
                                style.waterHatchWhite ? MapInk::White : MapInk::Black);
-        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
+        // The ring's own border width, not the class's line width. A lake edge
+        // and a river's stroke are different decisions and used to share one
+        // number (MapStyle::waterOutlinePx).
+        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterOutlinePx[waterClass],
+                                 MapInk::Black);
       } else if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
         strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
                         MapInk::Black);

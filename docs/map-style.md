@@ -379,6 +379,48 @@ it lands, a tone should map to one of those instead of to a dither pattern; the
 swap belongs in the two `IMapCanvas` implementations, behind `MapAreaTone`, and
 nothing above that line needs to know which it got.
 
+### Borders: what each layer actually has
+
+Four layers draw a boundary, and each has its own field for it. There is no
+shared "border" concept, which is worth knowing before looking for one.
+
+| layer | field | what it draws |
+|---|---|---|
+| buildings | `layers.buildings.rule.outline_width` | 1 px ring around each building, over its own fill |
+| landuse | `layers.landuse.rules[].outline_width` | per class, over the tone and the hatch |
+| water | `layers.water.rules[].outline_width` | the ring of a water **area** -- a lake |
+| roads | `layers.roads.rules[].casing_px` | not an outline: a black stroke with a narrower white or dithered one inside it |
+
+**Water's outline was the same number as its line width until 2026-08-26.** A
+lake's ring and a river's stroke shared `waterLinePx`, so widening the river
+widened every lake edge with it. `waterOutlinePx` splits them, and defaults to
+the line width when a style says nothing, so an existing style draws exactly
+what it drew. Today's style leaves the lake rule `hidden`, so both are 0 for
+lakes and the `Dark` tone defines the shape on its own -- see "Water" above.
+
+**A road's casing is not an outline and should not be read as one.** An outline
+is drawn around a shape that already has a fill; a casing is the fill: the class
+is stroked black at `width`, then a narrower stroke of white (or a tone) is laid
+inside it, so the "border" is whatever black is left at the edges. That is why
+`casing_px` is refused when `2 * casing >= width` -- there would be no inside
+left, and the road would be a solid black line drawn the slow way, in two passes.
+
+**Three things a border cannot do, all of them deliberate stops rather than
+oversights:**
+
+- **It is always black.** `MapRenderer` passes `MapInk::Black` at all three call
+  sites. A white outline is what would separate two adjacent dark areas, and it
+  would need the draw order to say which of the two owns the boundary -- so it is
+  a real feature and not a parameter.
+- **It cannot be dashed.** `MapAreaFill::outlineRing` calls `drawLine` per
+  segment, nothing else, so a boundary that should read as a boundary rather than
+  a fence -- a park edge, an administrative line -- is not expressible. The road
+  layer's `pattern`/`dash_px`/`gap_px` exist for exactly this and are not wired to
+  area outlines.
+- **It is always drawn last.** Tone, then hatch, then outline, in every area
+  pass. An outline under a fill would let a hatch break the edge, which is
+  sometimes what a cartographer wants and is never what this draws.
+
 ### Hatch, kept for large areas
 
 A solid black building on 1-bit swallows the roads around it and reads as a hole
