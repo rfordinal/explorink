@@ -116,8 +116,19 @@ class GfxRendererCanvas : public IMapCanvas {
       renderer_.fillRectDither(x1, y, x2 - x1 + 1, 1, colorFor(tone));
       return;
     }
-    // Stipple has no GfxRenderer equivalent, so it is painted pixel by pixel.
-    // Only every third pixel is touched, which is what makes that affordable.
+    // A dot grid has no GfxRenderer equivalent, so it is painted by hand. Not
+    // pixel by pixel though: the period is known, so a row with no dots on it is
+    // skipped whole and a row with dots is walked in strides. At 1 in 16 that is
+    // one drawPixel per sixteen columns rather than sixteen tests -- which makes
+    // the lightest tone the cheapest to paint, not the dearest.
+    const int period = MapTone::dotPeriod(tone);
+    if (period > 0) {
+      if ((y % period) != 0) return;
+      for (int x = MapTone::firstInkedX(x1, y, tone); x <= x2; x += period) {
+        renderer_.drawPixel(x, y, true);
+      }
+      return;
+    }
     for (int x = x1; x <= x2; ++x) {
       if (MapTone::inkAt(x, y, tone)) renderer_.drawPixel(x, y, true);
     }
@@ -257,8 +268,10 @@ class GfxRendererCanvas : public IMapCanvas {
         return Color::DarkGray;
       case MapAreaTone::Light:
         return Color::LightGray;
-      case MapAreaTone::Stipple:
-      case MapAreaTone::None:
+      default:
+        // Every dot grid, and None. Only the three above have a GfxRenderer
+        // dither behind them; the rest are painted by fillSpan and never reach
+        // here, which hasNativeDither is what guarantees.
         break;
     }
     return Color::Clear;

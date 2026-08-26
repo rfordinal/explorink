@@ -206,7 +206,13 @@ TEST(MapAreaFill, ToneDensityMatchesItsName) {
     MapAreaTone tone;
     double fraction;
   };
-  const Expectation expectations[] = {{MapAreaTone::Stipple, 1.0 / 9.0},
+  const Expectation expectations[] = {{MapAreaTone::Micro, 1.0 / 16.0},
+                                       {MapAreaTone::MicroStagger, 1.0 / 16.0},
+                                       {MapAreaTone::Stipple, 1.0 / 9.0},
+                                       {MapAreaTone::StippleStagger, 1.0 / 9.0},
+                                       {MapTone::dots(5, false), 1.0 / 25.0},
+                                       {MapTone::dots(5, true), 1.0 / 25.0},
+                                       {MapAreaTone::Dense, 1.0 / 4.0},
                                        {MapAreaTone::Light, 1.0 / 4.0},
                                        {MapAreaTone::Dark, 1.0 / 2.0},
                                        {MapAreaTone::Solid, 1.0}};
@@ -215,6 +221,55 @@ TEST(MapAreaFill, ToneDensityMatchesItsName) {
     MapAreaFill::toneRing(canvas, ring.xs.data(), ring.ys.data(), count, expected.tone);
     const double got = blackCount(canvas) / area;
     EXPECT_NEAR(got, expected.fraction, 0.06) << "tone " << static_cast<int>(expected.tone);
+  }
+}
+
+// A staggered dot grid has the same density as its regular twin and a different
+// picture. Both halves matter: same density is what makes them comparable on the
+// panel with nothing else moving, and a different picture is the whole point.
+TEST(MapAreaFill, StaggerChangesThePatternAndNotTheDensity) {
+  const Ring ring = square(10, 10, 90);
+  const uint16_t count = static_cast<uint16_t>(ring.xs.size());
+
+  for (const int period : {3, 4, 5}) {
+    PpmCanvas plain(kSize, kSize);
+    PpmCanvas offset(kSize, kSize);
+    MapAreaFill::toneRing(plain, ring.xs.data(), ring.ys.data(), count, MapTone::dots(period, false));
+    MapAreaFill::toneRing(offset, ring.xs.data(), ring.ys.data(), count, MapTone::dots(period, true));
+    // Near, not equal: in an infinite plane the two densities are identical, and
+    // in a 90x90 window the offset shifts which columns fall inside the ring, so
+    // the counts differ by a few dots at the edge. Measured 342 against 333 at
+    // period 5. Asserting equality would be asserting the window, not the tone.
+    const double plainCount = blackCount(plain);
+    const double offsetCount = blackCount(offset);
+    EXPECT_NEAR(offsetCount / plainCount, 1.0, 0.05) << "period " << period << ": density must not move";
+    EXPECT_NE(plain.pixels(), offset.pixels()) << "period " << period << ": stagger must change the picture";
+  }
+}
+
+// The period is packed into the tone value, so a style can name a density
+// directly. If the packing and the decoders ever disagree, every dot tone shifts
+// silently -- these are the round trips that would break first.
+TEST(MapAreaFill, DotPeriodSurvivesThePacking) {
+  for (int period = MapTone::kMinDotPeriod; period <= MapTone::kMaxDotPeriod; ++period) {
+    for (const bool stagger : {false, true}) {
+      const MapAreaTone tone = MapTone::dots(period, stagger);
+      EXPECT_TRUE(MapTone::isDots(tone)) << period;
+      EXPECT_EQ(MapTone::dotPeriod(tone), period);
+      EXPECT_EQ(MapTone::isStaggered(tone), stagger) << period;
+      // A dot grid must never be claimed by the native dither path: that would
+      // paint GfxRenderer's period-2 pattern instead of the asked-for one.
+      EXPECT_FALSE(MapTone::hasNativeDither(tone)) << period;
+    }
+  }
+  // Out-of-range periods clamp rather than producing a value that decodes as
+  // something else entirely.
+  EXPECT_EQ(MapTone::dotPeriod(MapTone::dots(1, false)), MapTone::kMinDotPeriod);
+  EXPECT_EQ(MapTone::dotPeriod(MapTone::dots(99, false)), MapTone::kMaxDotPeriod);
+  // And the fixed patterns stay out of the dot range.
+  for (const MapAreaTone tone : {MapAreaTone::None, MapAreaTone::Light, MapAreaTone::Dark, MapAreaTone::Solid}) {
+    EXPECT_FALSE(MapTone::isDots(tone)) << static_cast<int>(tone);
+    EXPECT_EQ(MapTone::dotPeriod(tone), 0);
   }
 }
 
