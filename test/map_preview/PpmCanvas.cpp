@@ -192,48 +192,52 @@ void PpmCanvas::drawTextTurned(const int centreX, const int centreY, const char*
   int w = 0, h = 0;
   if (!PreviewFont::measure(face, utf8, w, h)) return;
 
-  // PreviewFont plots in unturned glyph space, so the turn is applied in the
-  // plot callback: an exact integer remap of (dx, dy) about the box centre, no
-  // resampling and no holes at any of the four angles.
+  // **The same arithmetic GfxRenderer::drawTextQuadrant uses**, deliberately:
+  // compose into the unturned box, remap once, offset by the turned box's
+  // top-left. Rotating the plotted pixels about the centre instead would agree
+  // to within a pixel most of the time, and disagreeing with the device by a
+  // pixel is the whole class of bug the preview exists to catch rather than to
+  // introduce.
+  const bool quarter = turn == MapTextTurn::Cw90 || turn == MapTextTurn::Ccw90;
+  const int boxW = quarter ? h : w;
+  const int boxH = quarter ? w : h;
+
   struct Sink {
     PpmCanvas* canvas;
     MapInk ink;
     MapTextTurn turn;
-    int originX;  // unturned box top-left, in the same space PreviewFont plots in
+    int originX;
     int originY;
-    int centreX;
-    int centreY;
-    int w;
-    int h;
-  } sink{this, ink, turn, 0, 0, centreX, centreY, w, h};
+    int textW;
+    int textH;
+  } sink{this, ink, turn, centreX - boxW / 2, centreY - boxH / 2, w, h};
 
   PreviewFont::draw(
       face, utf8, 0, 0,
       [](const int px, const int py, void* ctx) {
         auto* t = static_cast<Sink*>(ctx);
-        // Offset from the unturned box's own centre.
-        const int dx = px - (t->originX + t->w / 2);
-        const int dy = py - (t->originY + t->h / 2);
-        int rx = dx;
-        int ry = dy;
+        const int u = px;
+        const int v = py;
+        int dx = u;
+        int dy = v;
         switch (t->turn) {
           case MapTextTurn::Cw90:
-            rx = -dy;
-            ry = dx;
+            dx = t->textH - 1 - v;
+            dy = u;
             break;
           case MapTextTurn::Half:
-            rx = -dx;
-            ry = -dy;
+            dx = t->textW - 1 - u;
+            dy = t->textH - 1 - v;
             break;
           case MapTextTurn::Ccw90:
-            rx = dy;
-            ry = -dx;
+            dx = v;
+            dy = t->textW - 1 - u;
             break;
           case MapTextTurn::None:
           default:
             break;
         }
-        t->canvas->setPixel(t->centreX + rx, t->centreY + ry, t->ink);
+        t->canvas->setPixel(t->originX + dx, t->originY + dy, t->ink);
       },
       &sink);
 }

@@ -2079,6 +2079,86 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   }
 }
 
+void GfxRenderer::drawTextQuadrant(const int fontId, const int x, const int y, const char* text,
+                                   const uint8_t quadrant, const bool black,
+                                   const EpdFontFamily::Style style) const {
+  if (text == nullptr || *text == '\0') return;
+  const auto fontIt = fontMap.find(fontId);
+  if (fontIt == fontMap.end()) {
+    LOG_ERR("GFX", "Font %d not found", fontId);
+    return;
+  }
+  const auto& font = fontIt->second;
+  const EpdFontData* fontData = font.getData(style);
+  if (fontData == nullptr) return;
+
+  // The unturned box: as wide as the string lays out, as deep as one line, with
+  // the baseline `ascender` down from its top. Every glyph pixel is placed in
+  // that box first and turned afterwards, so the turn is one transform in one
+  // place instead of four sets of anchor arithmetic.
+  const int boxW = getTextWidth(fontId, text, style);
+  const int boxH = getLineHeight(fontId);
+  if (boxW <= 0 || boxH <= 0) return;
+  const int baseline = fontData->ascender;
+  const bool is2Bit = fontData->is2Bit;
+
+  int penX = 0;
+  const uint8_t* cursor = reinterpret_cast<const uint8_t*>(text);
+  uint32_t cp;
+  while ((cp = utf8NextCodepoint(&cursor))) {
+    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    if (glyph == nullptr) continue;
+    const uint8_t* bitmap = getGlyphBitmap(fontData, glyph);
+    if (bitmap != nullptr) {
+      const int inkX = penX + glyph->left;
+      const int inkY = baseline - glyph->top;
+      int pixelPosition = 0;
+      for (int glyphY = 0; glyphY < glyph->height; glyphY++) {
+        for (int glyphX = 0; glyphX < glyph->width; glyphX++, pixelPosition++) {
+          bool ink;
+          if (is2Bit) {
+            const uint8_t byte = bitmap[pixelPosition >> 2];
+            const uint8_t shift = (3 - (pixelPosition & 3)) * 2;
+            // Same BW rule renderCharImpl uses: anything not white is ink.
+            ink = (3 - ((byte >> shift) & 0x3)) < 3;
+          } else {
+            const uint8_t byte = bitmap[pixelPosition >> 3];
+            ink = ((byte >> (7 - (pixelPosition & 7))) & 1) != 0;
+          }
+          if (!ink) continue;
+
+          // Position inside the unturned box, then the quarter turn. Each case is
+          // an exact integer remap, which is why the digits stay as crisp turned
+          // as they are upright.
+          const int u = inkX + glyphX;
+          const int v = inkY + glyphY;
+          int dx, dy;
+          switch (quadrant & 3) {
+            case 1:  // glyph up ends up pointing right
+              dx = boxH - 1 - v;
+              dy = u;
+              break;
+            case 2:  // up points down
+              dx = boxW - 1 - u;
+              dy = boxH - 1 - v;
+              break;
+            case 3:  // up points left
+              dx = v;
+              dy = boxW - 1 - u;
+              break;
+            default:
+              dx = u;
+              dy = v;
+              break;
+          }
+          drawPixel(x + dx, y + dy, black);
+        }
+      }
+    }
+    penX += fp4::toPixel(glyph->advanceX);
+  }
+}
+
 uint8_t* GfxRenderer::getFrameBuffer() const { return frameBuffer; }
 
 size_t GfxRenderer::getBufferSize() const { return frameBufferSize; }

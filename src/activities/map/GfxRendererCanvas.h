@@ -190,25 +190,21 @@ class GfxRendererCanvas : public IMapCanvas {
     renderer_.drawText(fontId, x, y, utf8, ink == MapInk::Black, styleFor(bold));
   }
 
-  // Quarter-turned text. **Two of the four turns are real here and two are not**,
-  // and that is a deliberate stop rather than an oversight.
+  // Quarter-turned text, all four turns, through GfxRenderer::drawTextQuadrant.
   //
-  // GfxRenderer has `drawTextRotated90CW` and nothing else. Adding `Half` and
-  // `Ccw90` is not a matter of another `if constexpr` branch: `renderCharImpl`'s
-  // rotation parameter also decides the direction the differential-rounding
-  // advance is applied in, which corner the strip-culling box is built from, and
-  // which `combiningMark::anchorOverRotated*` helper positions a mark -- and that
-  // last one exists for upright and 90CW only. Two more rotations means two more
-  // of each, in the text path every screen in the firmware draws through, with no
-  // device here to check the result on.
+  // That entry point is deliberately simpler than drawText -- advance widths
+  // only, no kerning, no ligatures, no combining marks -- because the only caller
+  // is the map's contour height numbers and tabular figures have no kerning to
+  // lose. It also takes the top-left of the TURNED box, which is why the
+  // conversion from a centre below swaps width and height for the quarter turns.
   //
-  // So an unimplemented turn draws upright, and **that is a live gap, not a
-  // spare-capacity note**: the contour height numbers orient their digits' top at
-  // the higher ground, which needs all four turns, and two of them are missing
-  // here. On the panel a number whose uphill side is to the west (Ccw90) or below
-  // it (Half) draws screen-up instead, so it says nothing about the slope and
-  // silently disagrees with the same frame rendered on the host.
-  // docs/contours-plan.md, "Open questions", carries what closing it takes.
+  // Not `drawTextRotated90CW`: that one takes a cursor and its own ascender
+  // arithmetic, and it turns out to put the glyphs' up to the LEFT rather than
+  // the right (read off the pixel mapping in renderCharImpl: glyph +x maps to
+  // screen -y, so the text reads bottom-to-top). Routing all four turns through
+  // one function avoids having to be right about that at every call site.
+  //
+  // The geometry is derived from glyph metrics, not measured on a panel.
   void drawTextTurned(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
                       MapTextTurn turn) override {
     if (utf8 == nullptr || *utf8 == '\0') return;
@@ -216,14 +212,18 @@ class GfxRendererCanvas : public IMapCanvas {
     if (fontId == 0) return;
     int w = 0, h = 0;
     if (!measureText(utf8, sizePx, bold, w, h)) return;
-    if (turn == MapTextTurn::Cw90) {
-      // Turned, the box is h wide and w tall. GfxRenderer's rotated entry point
-      // takes the same top-left contract as drawText does.
-      renderer_.drawTextRotated90CW(fontId, centreX - h / 2, centreY - w / 2, utf8, ink == MapInk::Black,
-                                    styleFor(bold));
-      return;
-    }
-    renderer_.drawText(fontId, centreX - w / 2, centreY - h / 2, utf8, ink == MapInk::Black, styleFor(bold));
+    const bool quarter = turn == MapTextTurn::Cw90 || turn == MapTextTurn::Ccw90;
+    const int boxW = quarter ? h : w;
+    const int boxH = quarter ? w : h;
+    // The enum's values ARE the quadrant codes, so the cast is the mapping. Pinned
+    // here rather than trusted: reordering MapTextTurn would otherwise turn every
+    // contour number the wrong way with nothing failing to compile.
+    static_assert(static_cast<uint8_t>(MapTextTurn::None) == 0, "quadrant 0 is up");
+    static_assert(static_cast<uint8_t>(MapTextTurn::Cw90) == 1, "quadrant 1 is right");
+    static_assert(static_cast<uint8_t>(MapTextTurn::Half) == 2, "quadrant 2 is down");
+    static_assert(static_cast<uint8_t>(MapTextTurn::Ccw90) == 3, "quadrant 3 is left");
+    renderer_.drawTextQuadrant(fontId, centreX - boxW / 2, centreY - boxH / 2, utf8,
+                               static_cast<uint8_t>(turn), ink == MapInk::Black, styleFor(bold));
   }
 
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {

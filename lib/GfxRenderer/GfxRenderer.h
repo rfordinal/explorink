@@ -321,6 +321,29 @@ class GfxRenderer {
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)
   void drawTextRotated90CW(int fontId, int x, int y, const char* text, bool black = true,
                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+
+  // Text turned by a quarter, a half or three quarters, positioned by the
+  // top-left of the box it actually lands in.
+  //
+  // `quadrant` is where the glyphs' own "up" ends up pointing: 0 up, 1 right,
+  // 2 down, 3 left. `x`, `y` is the top-left of the drawn extent -- of the
+  // TURNED extent, so for quadrants 1 and 3 the box is as wide as the text is
+  // tall. That is a different contract from drawText and drawTextRotated90CW,
+  // which both take a cursor, and it is the point: a caller placing a rotated
+  // label knows where the box goes and should not have to rederive an anchor
+  // from the ascender for each quadrant.
+  //
+  // **Deliberately simpler than drawText.** It lays out on advance widths alone:
+  // no kerning, no ligatures, no combining marks, no CJK fallback, no 50 % scale.
+  // It exists for the map's contour height numbers, which are digits, and
+  // tabular figures have no kerning to lose. Anything with real text in it should
+  // use drawText and stay upright.
+  //
+  // Written 2026-08-26 for exactly that caller. The geometry is derived from the
+  // glyph metrics rather than measured on a panel; a hardware pass has not
+  // happened.
+  void drawTextQuadrant(int fontId, int x, int y, const char* text, uint8_t quadrant, bool black = true,
+                        EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   int getTextHeight(int fontId) const;
 
   // Grayscale functions
