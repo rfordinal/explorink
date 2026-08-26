@@ -435,13 +435,24 @@ grid actually draws in.
 
 **Do not use it on forest in hike mode.** Judged at 1:1 on a Mala Fatra rung-1
 frame, 2026-08-26, against a solid 1 px edge on the same tiles: the dashed
-boundary is indistinguishable from the trails in the same frame. That is not a
-matter of taste. **In this style a dashed line already means a path** --
-`footway`, `path`, `steps` and the streams are all dashed -- so a dashed wood
-edge lands on the strongest existing meaning of a dash on the map. And it
-misleads in a specific way rather than a vague one: a trail along the edge of a
-wood is a real thing, so the boundary does not read as a mistake, it reads as a
-route that is not there.
+boundary is indistinguishable from the other dashed lines in the same frame.
+That is not a matter of taste.
+
+**Corrected 2026-08-26, and the correction makes the case stronger rather than
+weaker.** This paragraph first said a dash means a *path* in this style, and that
+is wrong. Resolved from the committed file, hike at rung 0: dashed is
+**water** (`unknown`, `river`, `stream`), **ferry** and **aerialway**; railway is
+`Ticked`; and every pedestrian class -- `footway`, `path`, `pedestrian`,
+`cycleway`, `bridleway` -- is `pattern: solid, width: 1`, with `steps` and
+`track` hidden. The lines the dashed forest edge could not be told from were
+**streams**.
+
+Which is worse than colliding with a path. A dashed hairline running along a
+hillside and crossing contours reads as a watercourse, and one Tatra bbox holds
+2,298 `waterway=stream` ways. A wood edge misread as a path is a wrong route; a
+wood edge misread as a stream is a wrong water source, on the layer a walker
+plans resupply from. It is also the argument for leaving dashed to water and
+never giving it to a trail.
 
 What the same renders did settle is that the edge needs *something*: with no
 outline the dot tone simply stops, and nothing says whether the wood ends there
