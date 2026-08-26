@@ -35,6 +35,24 @@ constexpr int bookmarkStatusIconTopCrop = 2;
 // Reported on the S8 2026-08-24: a long confirm title was drawn centered on
 // the full screen width with no wrap at all, so it ran off both edges of the
 // dialog (and the screen) instead of fitting inside it.
+// Width of the icon column, gap included -- 0 when the spec carries no icons
+// at all. One number, shared by optionPopupGeometry() (which needs it to size
+// the dialog and place the rows) and drawOptionPopup() (which needs the same
+// number to place the icon and shift the label after it); the two must never
+// disagree; or a tap would land on a row a pixel off from where it drew.
+//
+// A flat gap rather than each icon's own width: the icon set a single popup
+// draws is homogeneous (one pin catalogue, or one POI category table), so
+// every icon in it is already the same size, and using the first one avoids
+// a second pass over every icon just to find a max.
+int optionPopupIconColumnWidth(const BaseTheme::OptionPopupSpec& spec, const BaseTheme::OptionPopupSpacing& spacing) {
+  if (spec.icons == nullptr || spec.icons->empty()) return 0;
+  for (const freeink::Icon* icon : *spec.icons) {
+    if (icon != nullptr) return icon->w + spacing.itemSpacing;
+  }
+  return 0;
+}
+
 std::vector<std::string> wrapOptionPopupTitle(const GfxRenderer& renderer, const char* title, int maxWidth) {
   std::vector<std::string> lines;
   if (title == nullptr || *title == '\0') {
@@ -52,8 +70,7 @@ std::vector<std::string> wrapOptionPopupTitle(const GfxRenderer& renderer, const
     const size_t next = text.find(' ', pos);
     const std::string word = text.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
     const std::string candidate = current.empty() ? word : current + " " + word;
-    if (!current.empty() &&
-        renderer.getTextWidth(UI_12_FONT_ID, candidate.c_str(), EpdFontFamily::BOLD) > maxWidth) {
+    if (!current.empty() && renderer.getTextWidth(UI_12_FONT_ID, candidate.c_str(), EpdFontFamily::BOLD) > maxWidth) {
       lines.push_back(current);
       current = word;
     } else {
@@ -1179,7 +1196,7 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
     // (measured on the S8: AddR list 280px, confirm dialog 363px, both hinted
     // at 280).
     const int hinted = spec.minDialogWidth * 100 / spacing.widthPercent - spacing.innerPadding * 2 -
-                        spacing.selectionHPadding * 2 - counterReserve;
+                       spacing.selectionHPadding * 2 - counterReserve;
     if (hinted > 0 && hinted < titleMaxWidth) titleMaxWidth = hinted;
   }
   const std::vector<std::string> titleLines =
@@ -1200,8 +1217,9 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
     const int noteWidth = renderer.getTextWidth(optionFontId, spec.note, EpdFontFamily::REGULAR);
     if (noteWidth > maxTextWidth) maxTextWidth = noteWidth;
   }
+  const int iconColumnW = optionPopupIconColumnWidth(spec, spacing);
   for (int i = 0; i < optionCount; i++) {
-    int w = renderer.getTextWidth(optionFontId, (*spec.options)[i].c_str(), optionStyle);
+    int w = iconColumnW + renderer.getTextWidth(optionFontId, (*spec.options)[i].c_str(), optionStyle);
     if (spec.values && i < static_cast<int>(spec.values->size()) && !(*spec.values)[i].empty()) {
       w += spacing.selectionHPadding + renderer.getTextWidth(optionFontId, (*spec.values)[i].c_str(), optionStyle) +
            spacing.valuePadding * 2;
@@ -1270,6 +1288,7 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
   const int optionCount = spec.options ? static_cast<int>(spec.options->size()) : 0;
   const int frameThickness = metrics.popupFrameThickness;
   const int frameRadius = metrics.popupCornerRadius;
+  const int iconColumnW = optionPopupIconColumnWidth(spec, spacing);
 
   if (frameRadius > 0) {
     renderer.fillRoundedRect(dialog.x - frameThickness, dialog.y - frameThickness, dialog.width + frameThickness * 2,
@@ -1309,7 +1328,7 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
     // (measured on the S8: AddR list 280px, confirm dialog 363px, both hinted
     // at 280).
     const int hinted = spec.minDialogWidth * 100 / spacing.widthPercent - spacing.innerPadding * 2 -
-                        spacing.selectionHPadding * 2 - counterReserve;
+                       spacing.selectionHPadding * 2 - counterReserve;
     if (hinted > 0 && hinted < titleMaxWidth) titleMaxWidth = hinted;
   }
   const std::vector<std::string> titleLines =
@@ -1372,13 +1391,25 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
 
     const int textW = renderer.getTextWidth(optionFontId, labelText, optionStyle);
     const int textY = itemY + (geometry.rowHeight - optionLineHeight) / 2;
-    const int textX =
-        spec.leftAlign ? geometry.rowX + spacing.selectionHPadding : geometry.rowX + (geometry.rowWidth - textW) / 2;
+    const int textX = spec.leftAlign ? geometry.rowX + spacing.selectionHPadding + iconColumnW
+                                     : geometry.rowX + iconColumnW + (geometry.rowWidth - iconColumnW - textW) / 2;
     // Unselected items: text is dark (invert=true means draw on white bg).
     // Selected on dark bg: text must be white (invert=false).
     // Selected on light bg: text stays dark (invert=true).
     const bool invertText = selected ? metrics.optionPopupSelectionLight : true;
     renderer.drawText(optionFontId, textX, textY, labelText, invertText, optionStyle);
+
+    // The icon, at the column's fixed x regardless of whether this row's own
+    // entry is null -- a null entry (Nearby's `Hide all` among category rows)
+    // leaves the column blank rather than pulling the label back over it, so
+    // every label in the list still starts at the same x.
+    const freeink::Icon* icon =
+        spec.icons != nullptr && i < static_cast<int>(spec.icons->size()) ? (*spec.icons)[i] : nullptr;
+    if (icon != nullptr) {
+      const int iconX = spec.leftAlign ? geometry.rowX + spacing.selectionHPadding : geometry.rowX;
+      const int iconY = itemY + (geometry.rowHeight - icon->h) / 2;
+      renderer.drawMono1bpp(icon->bits, iconX, iconY, icon->w, icon->h, invertText);
+    }
 
     // The value, right-aligned, boxed on the selected row -- the same "this is
     // the changeable part" cue the Settings list gives (LyraTheme::drawList()).

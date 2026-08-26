@@ -319,6 +319,18 @@ class BaseTheme {
     // screen first carried its two facts as inert rows, and walking a cursor
     // through text that does nothing reads as a hack (maintainer, on hardware).
     const char* note = nullptr;
+    // One icon per row, parallel to `options`. A null entry (or a short
+    // vector) draws that row with no glyph, but the column is still reserved
+    // -- so a picker where every row carries the same kind of icon (a pin
+    // type, a POI category) stays aligned even for the one row that does not
+    // (Nearby's `Hide all`). nullptr means no icon column at all, the
+    // pre-existing layout.
+    //
+    // Exists so a picker can show the *same* glyph the thing it is naming
+    // draws elsewhere -- PinIcons.h's pin balloon glyph, poi_icons.h's
+    // kPoiIconByCategory -- rather than a second, different symbol for the
+    // same type.
+    const std::vector<const freeink::Icon*>* icons = nullptr;
   };
   // Where the dialog and its visible rows land. One function, two readers: the
   // drawing pass and OptionPopup's hit test, which must agree or a tap misses

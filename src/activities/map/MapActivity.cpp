@@ -39,6 +39,7 @@
 #include "PinIcons.h"
 #include "PinLabels.h"
 #include "components/UITheme.h"
+#include "components/icons/poi_icons.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 
@@ -3491,8 +3492,10 @@ void MapActivity::openNearbyMenu() {
 
   std::vector<std::string> options;
   std::vector<std::string> values;
+  std::vector<const freeink::Icon*> icons;
   options.reserve(kSafetyCategoryCount);
   values.reserve(kSafetyCategoryCount);
+  icons.reserve(kSafetyCategoryCount);
 
   char value[24];
   char none[24];
@@ -3503,6 +3506,11 @@ void MapActivity::openNearbyMenu() {
   // the truth (../../../docs/safety-concept.md, "Nearby").
   for (uint8_t category = 1; category < kSafetyCategoryCount; ++category) {
     options.emplace_back(I18N.get(nearbyCategoryLabel(category)));
+    // The same mark the map itself draws for this category (MapPointMarks.cpp,
+    // kPoiIconByCategory) -- so picking a category and finding it on the map
+    // are the same glyph, not two different ideas of "water".
+    icons.push_back(category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0]) ? kPoiIconByCategory[category]
+                                                                                          : nullptr);
     if (nearbyDistances_[category] == MapPointQuery::kNoDistance) {
       values.emplace_back(none);
     } else {
@@ -3544,6 +3552,7 @@ void MapActivity::openNearbyMenu() {
     nearbyRow_ = 0;
     pendingNearbyPopup_ = NearbyPopup::Category;
   });
+  optionPopup_.setIcons(std::move(icons));
   optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
@@ -3856,12 +3865,15 @@ void MapActivity::openPinsAddList() {
   // (BaseTheme::optionPopupGeometry()).
   std::vector<std::string> options;
   std::vector<std::string> values;
+  std::vector<const freeink::Icon*> icons;
   options.reserve(kPinSlotCount);
   values.reserve(kPinSlotCount);
+  icons.reserve(kPinSlotCount);
 
   char distance[16];
   for (size_t i = 0; i < kPinSlotCount; ++i) {
     options.emplace_back(pinTypeLabel(i));
+    icons.push_back(pinGlyphIcon(i));
     const PinEntry& entry = pins_.store().at(i);
     if (entry.present) {
       pinDistanceText(entry, distance, sizeof(distance));
@@ -3888,6 +3900,7 @@ void MapActivity::openPinsAddList() {
     pendingPinArg_ = static_cast<uint8_t>(catalogIndex);
     pendingPinPopup_ = PinPopup::ConfirmSet;
   });
+  optionPopup_.setIcons(std::move(icons));
   optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);

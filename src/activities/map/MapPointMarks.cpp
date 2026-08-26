@@ -4,14 +4,13 @@
 
 namespace {
 
-// TEST ONLY, not merged as the real drawing path: decodes a freeink::Icon's
+// The real drawing path since 2026-08-25 (`feat: wire the 24px POI icon set
+// into MapPointMarks for on-panel judgment`): decodes a freeink::Icon's
 // packed 1bpp bits into IMapCanvas draw calls (one drawLine per contiguous
-// black run per row), so the 2026-08-24 24px icon proposal can be judged on
-// a real screen (explorink-simulator) before anyone decides whether to
-// replace the primitives below with it. See MapPointMarks.h and
-// scripts/gen_poi_icons.py for the "why not yet" reasoning; this function
-// exists so that question can be answered with pixels, the same way T-221
-// itself was settled.
+// black run per row) so drawMarkAt() below can draw kPoiIconByCategory's 24px
+// icons instead of the hand-drawn primitives further down this file. Those
+// primitives (glyphWater() etc.) are now the fallback for an icon-less
+// category only -- see drawMarkAt()'s `if (icon) ... else ...`.
 void drawIconBitmap(IMapCanvas& canvas, const freeink::Icon& icon, int x, int y) {
   const int stride = (icon.w + 7) / 8;
   for (int row = 0; row < icon.h; ++row) {
@@ -207,12 +206,10 @@ void drawGlyph(IMapCanvas& canvas, uint8_t category, int x, int y, int g) {
 // style.pointClusterCellPx for one slot for a tiled cluster -- either way the
 // box is what centres the white knock-out, the border-or-icon-halo and the
 // flag consistently.
-void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, int cx, int cy,
-                 const MapStyle& style) {
+void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, int cx, int cy, const MapStyle& style) {
   if (side <= 0) return;
-  const freeink::Icon* icon = category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
-                                   ? kPoiIconByCategory[category]
-                                   : nullptr;
+  const freeink::Icon* icon =
+      category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0]) ? kPoiIconByCategory[category] : nullptr;
   const int left = cx - side / 2;
   const int top = cy - side / 2;
 
@@ -248,9 +245,8 @@ void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, 
 }
 
 int marksSide(uint8_t category, const MapStyle& style) {
-  const freeink::Icon* icon = category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
-                                   ? kPoiIconByCategory[category]
-                                   : nullptr;
+  const freeink::Icon* icon =
+      category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0]) ? kPoiIconByCategory[category] : nullptr;
   return icon ? icon->w : style.pointSquarePx;
 }
 
@@ -291,8 +287,7 @@ int32_t dist2(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
 // wrong cluster is still on the map; a point silently skipped is not, and
 // this only fires when a single viewport opens more distinct locations than
 // any shard measured so far has shown.
-void addPoint(Cluster* clusters, int& count, int32_t radiusPx, int32_t x, int32_t y, uint8_t category,
-              bool flagged) {
+void addPoint(Cluster* clusters, int& count, int32_t radiusPx, int32_t x, int32_t y, uint8_t category, bool flagged) {
   int best = -1;
   int32_t bestD2 = 0;
   const int32_t r2 = radiusPx * radiusPx;

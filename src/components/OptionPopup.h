@@ -1,5 +1,6 @@
 #pragma once
 #include <I18n.h>
+#include <Icon.h>
 
 #include <algorithm>
 #include <functional>
@@ -134,6 +135,21 @@ class OptionPopup {
         }
       }
     }
+    layoutValid = false;
+  }
+
+  // One icon per row, parallel to `options` -- the same glyph the thing a row
+  // names draws elsewhere (a pin's balloon glyph, a POI category's map mark),
+  // so a picker shows one symbol per type instead of two. A null entry draws
+  // that row with no icon but keeps the column, so a row that carries none
+  // (Nearby's `Hide all` among category rows) still lines its label up with
+  // every row that does.
+  //
+  // Set after a show*() call, which clears it -- same rule as
+  // setDisabledRows().
+  void setIcons(std::vector<const freeink::Icon*> icons) {
+    ownedIcons = std::move(icons);
+    ownedIcons.resize(ownedStrings.size());
     layoutValid = false;
   }
 
@@ -388,6 +404,7 @@ class OptionPopup {
     s.minDialogWidth = minDialogWidth;
     s.minVisibleRows = minVisibleRows;
     s.note = note.empty() ? nullptr : note.c_str();
+    s.icons = ownedIcons.empty() ? nullptr : &ownedIcons;
     return s;
   }
 
@@ -468,6 +485,7 @@ class OptionPopup {
     minVisibleRows = 0;
     ownedDisabled.clear();
     ownedKeepOpen.clear();
+    ownedIcons.clear();
   }
 
   bool isRowDisabled(const int index) const {
@@ -499,6 +517,8 @@ class OptionPopup {
   std::vector<uint8_t> ownedKeepOpen;
   // Empty unless showWithValues() was used; sized to ownedStrings there.
   std::vector<std::string> ownedValues;
+  // Empty unless setIcons() was called; sized to ownedStrings there.
+  std::vector<const freeink::Icon*> ownedIcons;
   bool leftAligned = false;
   bool compact = false;
   int selectedIndex = 0;
