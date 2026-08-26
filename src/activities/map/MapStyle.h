@@ -147,6 +147,23 @@ struct MapStyle {
   bool contoursEnabled;
   uint8_t contourWidthPx[kContourClassSlots];
 
+  // Height numbers on the index contours. Two or three on a frame is the whole
+  // design: the rest of the ladder is countable from them, and a number per
+  // line would bury the map it is describing.
+  //
+  // 0 px switches them off. The number is drawn into a white knockout box
+  // rather than a halo, because a gap in the line is what a paper contour map
+  // does and it reads better than letters floating on the line they belong to.
+  // Not rotated to follow the contour -- the canvas has no rotated text, so
+  // this is a known deviation from paper practice (docs/contours-plan.md).
+  uint8_t contourLabelPx;
+  bool contourLabelBold;
+  // How many may land on one frame. Held small on purpose.
+  uint8_t contourLabelMax;
+  // Minimum spacing between two numbers, so they spread instead of clustering
+  // wherever the stream happened to offer straight contour first.
+  uint8_t contourLabelMinGapPx;
+
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.
   uint8_t placeDotDiameterPx;

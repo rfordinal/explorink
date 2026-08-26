@@ -381,8 +381,19 @@ def contours(style):
     """
     layer = style.get("layers", {}).get("contours", {})
     widths = [0] * _CONTOUR_SLOTS
+    # Height numbers on the index contours. Two or three a frame: the rest of the
+    # ladder is countable from them.
+    labels = {
+        "px": _round_px(layer.get("label_px", 0), "layers.contours.label_px"),
+        "bold": bool(layer.get("label_bold", False)),
+        "max": _round_px(layer.get("label_max", 0), "layers.contours.label_max"),
+        "min_gap": _round_px(layer.get("label_min_gap_px", 0), "layers.contours.label_min_gap_px"),
+    }
+    if labels["px"] and not labels["max"]:
+        sys.exit("gen_mapstyle.py: layers.contours: label_px is set but label_max is 0, so no "
+                 "number would ever be drawn. Set label_max, or drop label_px.")
     if not layer.get("enabled", False):
-        return False, widths
+        return False, widths, labels
 
     for index, rule in enumerate(layer.get("rules", [])):
         what = f"layers.contours.rules[{index}]"
@@ -406,8 +417,12 @@ def contours(style):
     if not any(widths):
         # Every class hidden at this rung. Report the layer off, which is what
         # gets drawn -- and what stops the card being read for nothing.
-        return False, widths
-    return True, widths
+        return False, widths, labels
+    if widths[_CONTOUR_CLASS["index"]] == 0:
+        # No index contour at this rung means nothing to hang a number on: the
+        # numbers ride the heavy lines only.
+        labels = dict(labels, px=0)
+    return True, widths, labels
 
 
 def landuse(style):
@@ -701,7 +716,7 @@ def _style_literal(bundle):
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
     w_enabled, w_widths, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing, w_white = water_px
     l_enabled, l_outlines, l_tones, l_patterns, l_spacings = landuse_px
-    c_enabled, c_widths = contours_px
+    c_enabled, c_widths, c_labels = contours_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
     landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
     contour_names = ["(unused)", "minor", "index", "(unused)"]
@@ -737,6 +752,10 @@ def _style_literal(bundle):
         f"    .contoursEnabled = {'true' if c_enabled else 'false'},",
         "    .contourWidthPx =",
         *_array(c_widths, contour_names),
+        f"    .contourLabelPx = {c_labels['px']},",
+        f"    .contourLabelBold = {'true' if c_labels['bold'] else 'false'},",
+        f"    .contourLabelMax = {c_labels['max']},",
+        f"    .contourLabelMinGapPx = {c_labels['min_gap']},",
         f"    .placeDotDiameterPx = {dot_diameter},",
         f"    .placeLabelPx = {labels['px']},",
         f"    .placeLabelBold = {'true' if labels['bold'] else 'false'},",
@@ -822,8 +841,10 @@ def _print_summary(bundle, what):
     else:
         print(f"gen_mapstyle.py: {what}: landuse off")
     if contours_px[0]:
+        heights = (f", heights {contours_px[2]['px']}px x{contours_px[2]['max']}"
+                   if contours_px[2]["px"] else ", no heights")
         print(f"gen_mapstyle.py: {what}: contours on -- minor {contours_px[1][1]} px, "
-              f"index {contours_px[1][2]} px")
+              f"index {contours_px[1][2]} px{heights}")
     else:
         print(f"gen_mapstyle.py: {what}: contours off")
 

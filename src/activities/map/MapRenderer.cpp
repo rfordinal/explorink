@@ -120,20 +120,141 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
   }
 }
 
+// A height number waiting to be drawn, picked while the contour it belongs to
+// streams past. Collected during the draw pass rather than in a second walk of
+// the layer: the elevation and the geometry are both in the record, and a third
+// read of a 39 KB layer to find them again buys nothing.
+struct ContourLabelSlot {
+  int32_t x = 0;
+  int32_t y = 0;
+  int32_t elevation = 0;
+  // |cross product| of the two segments meeting at the chosen vertex, scaled.
+  // Lower is straighter, and straighter is where a number sits without looking
+  // like it fell off the line.
+  int32_t bend = 0;
+  bool used = false;
+};
+
+// The straightest on-screen vertex of one contour, or none.
+//
+// Straightness is the cheap proxy for what a cartographer does by eye. A number
+// placed on a hairpin reads as belonging to whichever arm the eye follows first,
+// and on a 1-bit panel there is no second cue to fix that.
+bool bestLabelVertex(const MapWayRef& line, int screenW, int screenH, int margin,
+                     int32_t& outX, int32_t& outY, int32_t& outBend) {
+  bool found = false;
+  int32_t bestBend = 0;
+  for (uint16_t i = 1; i + 1 < line.pointCount; ++i) {
+    const int32_t x = line.xs[i];
+    const int32_t y = line.ys[i];
+    if (x < margin || y < margin || x > screenW - margin || y > screenH - margin) continue;
+    const int32_t ax = x - line.xs[i - 1];
+    const int32_t ay = y - line.ys[i - 1];
+    const int32_t bx = line.xs[i + 1] - x;
+    const int32_t by = line.ys[i + 1] - y;
+    int32_t bend = ax * by - ay * bx;
+    if (bend < 0) bend = -bend;
+    if (!found || bend < bestBend) {
+      found = true;
+      bestBend = bend;
+      outX = x;
+      outY = y;
+    }
+  }
+  outBend = bestBend;
+  return found;
+}
+
 // One contour class, stroked. Called once per class for the same reason as
 // landuse: minor and index share a single tile layer and sit at different
 // depths, so the heavy line has to land on the fine one and not the other way
 // round. A width of 0 is the style hiding this class at this rung, and it
 // returns before walking the layer rather than reading records to drop them.
+//
+// `slots`, when given, collects height-number candidates from this class. Only
+// the index pass passes it: a number on a minor contour would be a number every
+// 20 m, which is the opposite of the two-or-three rule.
 void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style,
-                      const MapContourClass wanted) {
+                      const MapContourClass wanted, ContourLabelSlot* slots = nullptr,
+                      int slotCount = 0) {
   const uint8_t index = static_cast<uint8_t>(wanted);
   if (index >= kContourClassSlots || style.contourWidthPx[index] == 0) return;
   if (!source.beginContours()) return;
+  int canvasX = 0, canvasY = 0, canvasW = 0, canvasH = 0;
+  canvas.drawableRect(canvasX, canvasY, canvasW, canvasH);
+  const int minGap = static_cast<int>(style.contourLabelMinGapPx);
   MapWayRef line;
   while (source.nextContour(line)) {
     if (line.classId != index) continue;
     strokeWay(canvas, line, style.contourWidthPx[index], MapInk::Black);
+    if (slots == nullptr || style.contourLabelPx == 0) continue;
+    int32_t vx = 0, vy = 0, bend = 0;
+    // The margin has to cover half the *box*, not half the text height: a
+    // four-digit height at 15 px is about 40 px wide, and a margin of 15 put
+    // "1000" half off the left edge. Two label heights is that half-width with
+    // room, and it needs no text measured before a vertex is chosen.
+    if (!bestLabelVertex(line, canvasW, canvasH, static_cast<int>(style.contourLabelPx) * 2, vx, vy, bend)) {
+      continue;
+    }
+    const int32_t elevation = static_cast<int32_t>(static_cast<int16_t>(line.flags));
+    int target = -1;
+    bool duplicate = false;
+    for (int i = 0; i < slotCount; ++i) {
+      // Three numbers reading 900, 900, 900 say less than 900, 1000, 1200: the
+      // second set gives the direction of the slope for free. A level already
+      // claimed elsewhere on the frame does not get a second number.
+      if (slots[i].used && slots[i].elevation == elevation) duplicate = true;
+    }
+    if (duplicate) continue;
+    for (int i = 0; i < slotCount; ++i) {
+      if (!slots[i].used) {
+        if (target < 0) target = i;
+        continue;
+      }
+      const int32_t dx = slots[i].x - vx;
+      const int32_t dy = slots[i].y - vy;
+      if (dx * dx + dy * dy < static_cast<int32_t>(minGap) * minGap) {
+        // Too close to a number already claimed. Keep the straighter of the
+        // two rather than whichever the stream offered first.
+        if (bend < slots[i].bend) {
+          slots[i] = ContourLabelSlot{vx, vy, elevation, bend, true};
+        }
+        target = -1;
+        break;
+      }
+    }
+    if (target >= 0) {
+      slots[target] = ContourLabelSlot{vx, vy, elevation, bend, true};
+    }
+  }
+}
+
+// The numbers, drawn after the place names so a settlement's name wins the
+// space. Each one knocks a white box out of the line it names, which is what a
+// paper map does with a gap.
+void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratch* labels,
+                       const ContourLabelSlot* slots, int slotCount) {
+  if (style.contourLabelPx == 0) return;
+  const int sizePx = static_cast<int>(style.contourLabelPx);
+  const bool bold = style.contourLabelBold;
+  int placed = 0;
+  for (int i = 0; i < slotCount && placed < static_cast<int>(style.contourLabelMax); ++i) {
+    if (!slots[i].used) continue;
+    char text[8];
+    snprintf(text, sizeof(text), "%ld", static_cast<long>(slots[i].elevation));
+    int textW = 0, textH = 0;
+    if (!canvas.measureText(text, sizePx, bold, textW, textH)) continue;
+    const int boxW = textW + 4;
+    const int boxH = textH + 2;
+    const int boxX = slots[i].x - boxW / 2;
+    const int boxY = slots[i].y - boxH / 2;
+    // Yield to a place name that already claimed this ground. A height is
+    // countable from the next one along; a settlement's name is not.
+    if (labels != nullptr && labels->taken.anySet(boxX, boxY, boxW, boxH)) continue;
+    canvas.fillRoundedRect(boxX, boxY, boxW, boxH, 0, MapInk::White);
+    canvas.drawText(boxX + 2, boxY + 1, text, sizePx, bold, MapInk::Black);
+    if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
+    ++placed;
   }
 }
 
@@ -295,9 +416,13 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // contour crossing a road or a river must not break it -- black over black is
   // nothing (docs/map-render-spec.md, "1-bit rules") and the wider feature has
   // to win. Minor first, so an index line lands on top where the two touch.
+  // Room for a couple more candidates than may be drawn, so the min-gap filter
+  // has something to choose between rather than taking the first that fits.
+  ContourLabelSlot contourLabels[6] = {};
   if (style.contoursEnabled) {
     drawContourClass(canvas, source, style, MapContourClass::Minor);
-    drawContourClass(canvas, source, style, MapContourClass::Index);
+    drawContourClass(canvas, source, style, MapContourClass::Index, contourLabels,
+                     static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])));
   }
   if (timing) lap(timing->contoursMs, mark);
 
@@ -485,6 +610,10 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // draws next. A label is the only thing here that is placed rather than
   // simply drawn, so it has to see the finished picture (MapLabels.h).
   if (labels != nullptr) MapLabels::draw(canvas, *labels, style);
+  if (style.contoursEnabled) {
+    drawContourLabels(canvas, style, labels, contourLabels,
+                      static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])));
+  }
   if (timing) lap(timing->labelsMs, mark);
 
   // No marker draw here -- MapActivity draws its own mode-specific one (ring +
