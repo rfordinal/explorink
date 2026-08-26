@@ -432,6 +432,32 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // The globe's own slot, and the strip drawHeaderStatus() backs and repaints.
   // One source for both, or the repaint clips what the draw put down.
   void headerStatusRect(int& x, int& y, int& w, int& h) const;
+  // Height of the header bar on the panel right now: the base single-row bar
+  // in Ride/Cycle, one kHeaderRowHeight taller in Hike to hold the elevation
+  // line. Everything that used to read the file-scope kHeaderBarHeight
+  // constant for "where does the map start" now reads this instead, so a mode
+  // switch moves the map viewport, the separator and the marker-bounds check
+  // together. Text *inside* row one (the place name, the battery/BLE icons)
+  // still centres against the unchanged single-row constant -- only the
+  // content boundary below the whole bar depends on mode_.
+  int headerBarHeight() const;
+  // The 1px black separator's y, same value as headerBarHeight() -- kept as
+  // its own call so a read site says which one it means without doing the
+  // arithmetic itself.
+  int headerSeparatorY() const;
+  // First row the map may draw into. GfxRendererCanvas's minY clips there, so
+  // in Hike mode the map starts one kHeaderRowHeight lower than in Ride/Cycle.
+  int mapContentTop() const;
+  // Hike-only second header line: elevation (from whichever fix last carried
+  // one -- BLE or the serial/BLE command console) and the fix's own lat/lon,
+  // already known from lastLatE7_/lastLonE7_. Ride and Cycle draw nothing here
+  // -- see docs/map-header-status.md, "Hike mode's second line".
+  void drawHikeElevationLine();
+  // Keeps the hike line honest between full frames, the same windowed-repaint
+  // shape updateHeaderStatus() uses for the row above: polled, not checked
+  // every tick, and repainted only when the text it would draw actually
+  // changed.
+  void updateHikeElevationLine();
   void showBusy();
 
   // Raise the CPU back to full speed before anything the rider waits on.
@@ -888,6 +914,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   int32_t lastLatE7_ = 0;
   int32_t lastLonE7_ = 0;
   uint8_t lastHeading_ = 0;
+  // The most recent fix's altitude, from whichever channel carried one --
+  // BLE's PositionUpdate or the serial/BLE command console's `pos ... alt`.
+  // Not reset when a fix without altitude arrives: a phone that stops sending
+  // altitude mid-ride should not blank a number the rider was just reading,
+  // and there is no "altitude just became unknown" event worth reacting to
+  // the way there is for the destination readout appearing or going away.
+  int16_t lastAltitudeM_ = 0;
+  bool hasAltitudeReading_ = false;
   // True from onEnter() bootstrapping the last-saved fix off the card until
   // the first real fix of this session lands -- distinguishes "showing
   // where the rider was last seen" from "showing where they actually are
@@ -1109,6 +1143,23 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // crossing a threshold may spend a waveform pass.
   uint32_t nextHeaderPollMs_ = 0;
   uint32_t nextBarsRepaintMs_ = 0;
+
+  // ## Hike mode's second header line (elevation + lat/lon)
+  //
+  // The text currently on the panel, compared byte-for-byte against the next
+  // candidate string rather than against the numbers that fed it -- one
+  // comparison instead of separately quantising altitude and two coordinates,
+  // and it can never disagree with what drawHikeElevationLine() actually drew.
+  // Empty means nothing has been drawn there yet (mode entry, or before the
+  // first fix).
+  char drawnHikeLineText_[40] = "";
+  // millis() deadlines, same shape as nextHeaderPollMs_/nextBarsRepaintMs_
+  // above: the poll interval bounds how often the candidate text is even
+  // formatted, and the repaint interval is the floor between two panel
+  // refreshes caused only by the fix drifting (lat/lon change on every fix at
+  // hiking pace otherwise repaints every poll).
+  uint32_t nextHikeLinePollMs_ = 0;
+  uint32_t nextHikeLineRepaintMs_ = 0;
 
   // One state, two channels. A `zoom 3` over USB and a `zoom 3` over BLE
   // land on the same number because they share this object, not because two

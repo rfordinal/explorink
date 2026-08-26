@@ -670,3 +670,106 @@ persisted-fix frame plausibly should not be followable -- but its written reason
 cites something that is gone. **Open:** find the real reason and rewrite the
 comment, or find that the flag no longer needs to exclude persisted fixes at
 all. Do not delete the comment without settling which.
+
+## Hike mode's second line
+
+**Read off the code, not yet measured on hardware.** Hike mode gets a second
+header line: elevation, when a fix has ever carried one, and the fix's own
+lat/lon, e.g. `812 m   48.14253, 17.10967`. Ride and Cycle are unchanged --
+single-row header, same as always. `MapActivity::mode_ == MapRideMode::Hike`
+is the only gate, checked inside `drawHikeElevationLine()` and
+`updateHikeElevationLine()` rather than at each call site, so a call site
+never needs to know which mode is active.
+
+**Why a second line and not a wider place name.** The place name
+(`drawHeaderPlaceName()`, the row above) answers "which town/suburb is near
+the marker" from `MapNearestPlaces`, which is a road/place-name-tagged tile
+layer walk -- it has nothing to say off the road network, which is most of a
+trail. Elevation and the raw coordinate answer "where am I" regardless of
+what tiles nearby happen to name, which is the more useful question at hiking
+pace and the one the maintainer asked for directly.
+
+### The header is a mode-aware height, not a constant, now
+
+`kHeaderBarHeight` (`MapActivity.cpp`) is still the single-row bar's height
+(36px) and is what row one's own layout reads -- the place name's vertical
+centring, the icon strip, `GUI.drawHeader()`'s rect. It never changes with
+mode.
+
+Everything that used to read that constant (or the `kHeaderSeparatorY`/
+`kMapContentTop` constants derived from it) for "where does the whole header
+bar end" now reads three `MapActivity` member functions instead, all three
+mode-aware:
+
+- `headerBarHeight()` -- `kHeaderBarHeight` in Ride/Cycle, plus one more
+  `kHeaderRowHeight` (not a new magic number -- that row already proved it
+  holds a small-font text line plus its own backing pad) in Hike. 58px in
+  Hike against 36px in Ride/Cycle.
+- `headerSeparatorY()` -- same value as `headerBarHeight()`, the 1px black
+  line's y. Kept as its own call so a read site says which one it means.
+- `mapContentTop()` -- `headerBarHeight() + 1`, the first row `GfxRendererCanvas`
+  clips the map to.
+
+Four call sites moved from the constants to the mode-aware calls:
+`updateHeaderStatus()`'s minute-tick window height (so the windowed refresh
+actually reaches the separator's new position, not just the framebuffer),
+`drawHeaderStatus()`'s separator draw, `drawViewedNearbyPoint()`'s
+off-panel-check bound, and the two `GfxRendererCanvas` constructions
+(`renderViewport()`, `renderRouteOverview()`) that clip the map's own drawing.
+
+A mode switch (`switchMode()`) always forces a full `renderCurrent()`, which
+`clearScreen()`s first -- so growing or shrinking the bar on a mode change
+never leaves stale pixels from the other height; there is no windowed-only
+path across a mode switch to get wrong.
+
+### Draw and repaint, same shape as the row above
+
+`drawHikeElevationLine()` draws the line (own white backing first, same
+reasoning as the icon strip's and the place name's -- this rect can land over
+last frame's separator or a longer/shorter string, not blank margin) and
+records what it drew into `drawnHikeLineText_`. Both full-frame render paths
+that draw the row above (`renderViewport()`, `renderRouteOverview()`) call it
+right after `drawHeaderStatus()`, unconditionally -- it is a no-op outside
+Hike mode.
+
+`updateHikeElevationLine()` is the between-frames keeper, called from
+`loop()` next to `updateHeaderStatus()`: polled every `kHeaderPollMs` (2s,
+shared with the row above), and only actually redraws when the candidate text
+differs from `drawnHikeLineText_` **and** `kHikeLineRepaintMs` (10s) has
+elapsed since the last repaint. The 10s floor exists because unlike the BLE
+bars above (which sit still most of the time), lat/lon can change on nearly
+every fix at hiking pace -- without a floor, every poll would cost a
+windowed refresh.
+
+The text comparison is a single `strcmp()` against the last-drawn string,
+not a separate quantisation of altitude and two coordinates: one function,
+`formatHikeLineText()`, builds the candidate for both the draw and the
+change check, so they can never format the same values differently.
+
+### Where altitude comes from
+
+`freeink::PositionUpdate::altitudeM`/`hasAltitude` (BLE fix) and
+`MapConsoleState::altitudeM()`/`hasAltitude()` (serial or BLE command
+console, `pos ... alt <m>`) both feed the same two members,
+`lastAltitudeM_`/`hasAltitudeReading_`, captured in `MapActivity::loop()`
+right where each channel's fix already lands. The console path captures it
+**unconditionally**, not only on the `moved` branch -- an altitude-only
+update (same lat/lon, new altitude) has no follow decision of its own to
+gate it on, unlike position.
+
+**Not reset when a fix without altitude arrives.** A phone that stops
+sending altitude mid-ride does not blank a number the rider was just
+reading; the line falls back to lat/lon only (no altitude ever received this
+session) rather than to "no reading right now" (had one, lost it) -- there is
+no code path that distinguishes those two today, and no report yet of
+whether that matters in practice.
+
+**Open:** the debug readout (`SETTINGS.mapDebugInfo`, drawn by
+`drawDebugLine()`) starts at `kTextTopY`, a fixed offset unrelated to
+`headerBarHeight()`. Its first line already sits inside row one on both
+Ride/Cycle and Hike (pre-existing, not something this change touches); its
+second line, at one line-pitch below that, lands inside Hike's second line's
+band. Nobody has looked at the panel with both `mapDebugInfo` on and Hike
+mode active to see what that overlap actually looks like -- flagged here
+rather than fixed, since the debug readout is a developer tool, not
+something a rider sees.
