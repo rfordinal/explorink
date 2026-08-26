@@ -188,15 +188,15 @@ void PpmCanvas::drawText(const int x, const int y, const char* utf8, const int s
       &sink);
 }
 
-void PpmCanvas::drawTextRotated(const int centreX, const int centreY, const char* utf8, const int sizePx,
+bool PpmCanvas::drawTextRotated(const int centreX, const int centreY, const char* utf8, const int sizePx,
                                 const bool bold, const MapInk ink, const int outline, const int rightX,
                                 const int rightY, const int downX, const int downY) {
   const void* face = PreviewFont::pick(sizePx, bold);
   int w = 0, h = 0;
-  if (!PreviewFont::measure(face, utf8, w, h)) return;
+  if (!PreviewFont::measure(face, utf8, w, h)) return false;
 
   MapTextMask mask;
-  if (!mask.fits(w, h)) return;  // half a number is a wrong number
+  if (!mask.fits(w, h)) return false;  // half a number is a wrong number
   mask.reset(w, h);
   PreviewFont::draw(
       face, utf8, 0, 0,
@@ -205,12 +205,17 @@ void PpmCanvas::drawTextRotated(const int centreX, const int centreY, const char
   // The rotation is MapTextMask's, the same code the device canvas calls.
   const MapInk opposite = ink == MapInk::Black ? MapInk::White : MapInk::Black;
   MapTextMask grown;
-  if (mask.dilateInto(grown, outline)) {
+  if (outline > 0) {
+    // Same refusal as the device canvas: an outline that does not fit means black
+    // digits on the black line they name, so the label is dropped instead. The
+    // preview has to agree, or a style tuned against it loses labels on hardware.
+    if (!mask.dilateInto(grown, outline)) return false;
     mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
                     [this, opposite](const int x, const int y) { setPixel(x, y, opposite); });
   }
   mapTextMaskBlit(mask, centreX, centreY, rightX, rightY, downX, downY,
                   [this, ink](const int x, const int y) { setPixel(x, y, ink); });
+  return true;
 }
 
 void PpmCanvas::drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const {

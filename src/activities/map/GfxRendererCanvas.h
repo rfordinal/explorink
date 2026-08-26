@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <Logging.h>
 #include <cmath>
 
 #include "GfxRenderer.h"
@@ -205,28 +206,50 @@ class GfxRendererCanvas : public IMapCanvas {
   // Freely rotated text: GfxRenderer rasterises the string into a mask, and the
   // rotation is MapTextMask's, shared with the host canvas so the preview and the
   // panel run the same arithmetic rather than merely agreeing in intent.
-  void drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int outline,
+  bool drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int outline,
                        int rightX, int rightY, int downX, int downY) override {
-    if (utf8 == nullptr || *utf8 == '\0') return;
+    if (utf8 == nullptr || *utf8 == '\0') return false;
     const int fontId = fontIdForSize(sizePx);
-    if (fontId == 0) return;
-    MapTextMask mask;
+    if (fontId == 0) {
+      LOG_ERR("MAPCANVAS", "rotated text: no face for %d px", sizePx);
+      return false;
+    }
+    // **Static, not stack.** Two masks are 656 bytes, and this sits at the deepest
+    // point of the render chain (MapActivity::render -> MapRenderer::render ->
+    // drawContourLabels -> here) against the project's 256-byte local-variable
+    // rule. One render task, serialised by RenderLock, so a single pair is enough;
+    // the cost is 656 bytes of DRAM held for the life of the firmware instead of
+    // 656 bytes of a stack that is already carrying a deep call chain.
+    static MapTextMask mask;
+    static MapTextMask grown;
     mask.reset(MapTextMask::kMaxW, MapTextMask::kMaxH);
     int w = 0, h = 0;
     if (!renderer_.renderTextMask(fontId, utf8, styleFor(bold), mask.bits, MapTextMask::kMaxW, MapTextMask::kMaxW,
                                   MapTextMask::kMaxH, w, h)) {
-      return;
+      LOG_ERR("MAPCANVAS", "rotated text '%s' at %d px exceeds the %dx%d mask", utf8, sizePx, MapTextMask::kMaxW,
+              MapTextMask::kMaxH);
+      return false;
     }
     mask.w = w;
     mask.h = h;
     const bool black = ink == MapInk::Black;
-    MapTextMask grown;
-    if (mask.dilateInto(grown, outline)) {
-      mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
-                      [this, black](const int x, const int y) { renderer_.drawPixel(x, y, !black); });
+    if (outline > 0) {
+      if (mask.dilateInto(grown, outline)) {
+        mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
+                        [this, black](const int x, const int y) { renderer_.drawPixel(x, y, !black); });
+      } else {
+        // Refuse the whole label rather than ink digits with no outline. An
+        // outline was asked for because the number sits on the line it names;
+        // without it the digits are black on black and unreadable, which is worse
+        // than no number -- the next contour along carries the same information.
+        LOG_ERR("MAPCANVAS", "rotated text '%s': halo %d does not fit the %dx%d mask, label dropped", utf8, outline,
+                MapTextMask::kMaxW, MapTextMask::kMaxH);
+        return false;
+      }
     }
     mapTextMaskBlit(mask, centreX, centreY, rightX, rightY, downX, downY,
                     [this, black](const int x, const int y) { renderer_.drawPixel(x, y, black); });
+    return true;
   }
 
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {

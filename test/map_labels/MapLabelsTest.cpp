@@ -52,11 +52,12 @@ class FakeCanvas : public IMapCanvas {
   // Recorded the same way, with the centre converted to the top-left this fake's
   // assertions already speak in. Nothing here places a turned label yet; the
   // override exists because IMapCanvas requires it.
-  void drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int, int, int,
+  bool drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int, int, int,
                        int, int) override {
     int w = 0, h = 0;
     measureText(utf8, sizePx, bold, w, h);
     texts.push_back({centreX - w / 2, centreY - h / 2, utf8 == nullptr ? "" : utf8, sizePx, bold, ink});
+    return true;
   }
 
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {

@@ -323,9 +323,14 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     // One call: the canvas draws the 1 px white outline from the same mask, so the
     // outline follows the rotation instead of being eight more draws at the wrong
     // angle.
-    canvas.drawTextRotated(centreX, centreY, text, sizePx, bold, MapInk::Black,
-                           static_cast<int>(style.contourLabelHaloPx), static_cast<int>(rightX),
-                           static_cast<int>(rightY), static_cast<int>(downX), static_cast<int>(downY));
+    if (!canvas.drawTextRotated(centreX, centreY, text, sizePx, bold, MapInk::Black,
+                                static_cast<int>(style.contourLabelHaloPx), static_cast<int>(rightX),
+                                static_cast<int>(rightY), static_cast<int>(downX), static_cast<int>(downY))) {
+      // Nothing was inked, so nothing may be claimed: marking the rect here let a
+      // label that does not exist block a place name, and counting it spent one of
+      // contourLabelMax on empty ground. The canvas logs why.
+      continue;
+    }
     if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
     ++placed;
   }

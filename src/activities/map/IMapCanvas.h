@@ -76,7 +76,15 @@ class IMapCanvas {
   // Both implementations rasterise into a MapTextMask and share one rotation
   // (MapTextMask.h), so the preview and the panel are the same arithmetic and not
   // merely the same intent.
-  virtual void drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
+  //
+  // **Returns whether the text was actually inked**, and the caller has to look:
+  // the mask has a fixed ceiling, so a string too large for it draws nothing, and
+  // a halo too large draws the number with no outline -- black digits straight
+  // onto the black line they name, which is the illegibility this call exists to
+  // prevent. Both used to be silent while the caller still counted the label as
+  // placed and marked its ground taken, so a phantom number blocked a place name
+  // off ground nothing occupied.
+  virtual bool drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
                                int outline, int rightX, int rightY, int downX, int downY) = 0;
 
   // The rectangle this canvas will actually accept ink in, in screen pixels.

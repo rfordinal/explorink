@@ -102,8 +102,11 @@ class MapTileReader {
   uint32_t buildEpoch() const { return buildEpoch_; }
   uint32_t osmEpoch() const { return osmEpoch_; }
 
-  // What this tile draws, as one number: crc32 over the six per-layer crc32s,
-  // little endian, in layer id order 1..6 (Water..Landuse).
+  // What this tile draws, as one number: crc32 over kContentIdSlots per-layer
+  // crc32s, little endian, in layer id order 1..15 -- a fixed slot range, not
+  // the list of layers that happen to exist. A layer id nothing writes folds its
+  // absence as crc 0, which is what makes adding layer 8 later a data change
+  // rather than a format change (docs/map-data-spec.md, "Version 4").
   //
   // This is the whole tile-freshness signal -- see docs/tile-freshness.md and
   // mapbuilder/tile_index.py. It answers "is my copy the same as the published

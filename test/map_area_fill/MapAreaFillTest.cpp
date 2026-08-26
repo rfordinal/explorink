@@ -293,6 +293,41 @@ TEST(MapTextMask, BasisIsARotationAndNeverAReflection) {
   }
 }
 
+// A huge `up` must not hang. Only the *chosen* label vertex is required to be on
+// screen, so its neighbour is an unclamped projected coordinate and can be
+// millions of pixels away. The old linear `while (root * root < len2) ++root;`
+// overflowed int32 around |up| = 46,341, wrapped negative, and spun until the
+// watchdog reset the device. The test is the timing: if the loop is still linear
+// in the value, INT32_MAX/2 does not return.
+TEST(MapTextMask, HugeUpStillProducesARotation) {
+  const int32_t huge[][2] = {
+      {46341, 0}, {0, 46341}, {46341, 46341}, {1 << 20, 1 << 20}, {INT32_MAX / 2, -(INT32_MAX / 2)}, {INT32_MAX, 1},
+  };
+  for (const auto& up : huge) {
+    int rx = 0, ry = 0, dx = 0, dy = 0;
+    ASSERT_TRUE(mapTextBasisFromUp(up[0], up[1], rx, ry, dx, dy)) << up[0] << "," << up[1];
+    const long det = static_cast<long>(rx) * dy - static_cast<long>(ry) * dx;
+    EXPECT_GT(det, 0) << up[0] << "," << up[1];
+    EXPECT_NEAR(static_cast<double>(det) / (1024.0 * 1024.0), 1.0, 0.05) << up[0] << "," << up[1];
+  }
+}
+
+// The square root itself, against the definition. Floor, and exact on squares --
+// a root one too small would let the basis exceed 1024 and step the blit outside
+// the mask.
+TEST(MapTextMask, IntegerSqrtIsFloorAndExactOnSquares) {
+  EXPECT_EQ(mapTextIsqrt(0u), 0u);
+  EXPECT_EQ(mapTextIsqrt(1u), 1u);
+  EXPECT_EQ(mapTextIsqrt(3u), 1u);
+  EXPECT_EQ(mapTextIsqrt(4u), 2u);
+  for (uint32_t n = 1; n < 2000; ++n) {
+    EXPECT_EQ(mapTextIsqrt(n * n), n) << n;
+    EXPECT_EQ(mapTextIsqrt(n * n - 1), n - 1) << n;
+  }
+  EXPECT_EQ(mapTextIsqrt(0xFFFFFFFFu), 65535u);
+  EXPECT_EQ(mapTextIsqrt(65535u * 65535u), 65535u);
+}
+
 // Zero up must not divide by anything. Upright is the right answer: a number with
 // no orientation still says its height.
 TEST(MapTextMask, ZeroUpFallsBackToUpright) {

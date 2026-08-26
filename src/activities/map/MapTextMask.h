@@ -104,9 +104,44 @@ struct MapTextMask {
 // Scale is 1/1024ths. Returns false when `up` is zero, and the caller must then
 // draw upright rather than draw nothing -- a number with no orientation still
 // says its height.
+// Integer square root, floor, one bit at a time: 16 iterations for any input, no
+// float, and -- unlike the `while (root * root < len2) ++root;` this replaces --
+// no loop whose length depends on the value. That version was a hang: `up` comes
+// from two neighbouring contour vertices, only the chosen one is required to be
+// on screen (MapRenderer::bestLabelVertex), and a tile-projected neighbour can be
+// millions of pixels away. At |up| around 46,341 the square overflows int32,
+// `root * root` wraps negative, the condition never goes false, and the render
+// task spins until the watchdog resets the device.
+inline uint32_t mapTextIsqrt(uint32_t value) {
+  uint32_t rest = value;
+  uint32_t root = 0;
+  uint32_t bit = 1u << 30;
+  while (bit > rest) bit >>= 2;
+  while (bit != 0) {
+    if (rest >= root + bit) {
+      rest -= root + bit;
+      root = (root >> 1) + bit;
+    } else {
+      root >>= 1;
+    }
+    bit >>= 2;
+  }
+  return root;
+}
+
 inline bool mapTextBasisFromUp(const int32_t upX, const int32_t upY, int& rightX, int& rightY, int& downX,
                                int& downY) {
-  const int32_t len2 = upX * upX + upY * upY;
+  // Only the direction matters, so shrinking the vector is free -- and it is the
+  // guard that keeps the square inside int32 for any input the projection can
+  // produce. 16,384^2 * 2 is 536 M, comfortably under 2^31, and halving reaches
+  // that from INT32_MAX in 17 steps.
+  int32_t ax = upX;
+  int32_t ay = upY;
+  while (ax > 16384 || ax < -16384 || ay > 16384 || ay < -16384) {
+    ax /= 2;
+    ay /= 2;
+  }
+  const int32_t len2 = ax * ax + ay * ay;
   if (len2 <= 0) {
     rightX = 1024;
     rightY = 0;
@@ -114,12 +149,14 @@ inline bool mapTextBasisFromUp(const int32_t upX, const int32_t upY, int& rightX
     downY = 1024;
     return false;
   }
-  int32_t root = 1;
-  while (root * root < len2) ++root;
-  rightX = static_cast<int>(-upY * 1024 / root);
-  rightY = static_cast<int>(upX * 1024 / root);
-  downX = static_cast<int>(-upX * 1024 / root);
-  downY = static_cast<int>(-upY * 1024 / root);
+  // Ceil, not floor: the basis has to reach 1024 rather than exceed it, or the
+  // blit's transpose-inverse can step outside the mask.
+  int32_t root = static_cast<int32_t>(mapTextIsqrt(static_cast<uint32_t>(len2)));
+  if (root * root < len2) ++root;
+  rightX = static_cast<int>(-ay * 1024 / root);
+  rightY = static_cast<int>(ax * 1024 / root);
+  downX = static_cast<int>(-ax * 1024 / root);
+  downY = static_cast<int>(-ay * 1024 / root);
   return true;
 }
 
