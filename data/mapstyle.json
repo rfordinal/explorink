@@ -67,6 +67,11 @@
               "steps": [
                 0
               ]
+            },
+            {
+              "steps": [5,6],
+              "hidden": false,
+              "tone": "light"
             }
           ]
         },
@@ -166,7 +171,7 @@
           "label_minor_bold": false,
           "label_minor_px": 8,
           "label_max_width_px": 170,
-          "label_halo_px": 1
+          "label_halo_px": 2
         }
       ]
     },
@@ -209,8 +214,18 @@
           },
           "pattern": "solid",
           "width": 8,
-          "fill": "tone",
-          "tone": "dark"
+          "when": [
+            {
+              "steps": [5],
+              "width": 10,
+              "casing_px": 3
+            },
+            {
+              "steps": [6],
+              "width": 8,
+              "casing_px": 3
+            }
+          ]
         },
         {
           "casing_px": 3,
@@ -245,16 +260,12 @@
               "casing_px": 1
             },
             {
-              "steps": [
-                5
-              ],
+              "steps": [5],
               "width": 6,
-              "casing_px": 1
+              "casing_px": 2
             },
             {
-              "steps": [
-                6
-              ],
+              "steps": [6],
               "width": 8,
               "casing_px": 3
             }
@@ -295,16 +306,12 @@
               "casing_px": 1
             },
             {
-              "steps": [
-                5
-              ],
-              "width": 4,
-              "casing_px": 1
+              "steps": [5],
+              "width": 7,
+              "casing_px": 2
             },
             {
-              "steps": [
-                6
-              ],
+              "steps": [6],
               "width": 6,
               "casing_px": 1.5
             }
@@ -345,17 +352,13 @@
               "casing_px": 1
             },
             {
-              "steps": [
-                5
-              ],
-              "width": 2,
-              "casing_px": 0
+              "steps": [5],
+              "width": 5,
+              "tone": "dark"
             },
             {
-              "steps": [
-                6
-              ],
-              "width": 1,
+              "steps": [6],
+              "width": 2,
               "casing_px": 0
             }
           ],
@@ -428,7 +431,7 @@
               "steps": [
                 6
               ],
-              "hidden": true
+              "hidden": false
             }
           ]
         },
@@ -604,16 +607,14 @@
           "width": 4,
           "when": [
             {
-              "steps": [
-                5
-              ],
-              "width": 3,
+              "steps": [5],
+              "width": 1,
               "casing_px": 1
             },
             {
-              "steps": [
-                6
-              ],
+              "steps": [6],
+              "_comment": "solve later",
+              "hidden": true,
               "width": 2,
               "casing_px": 0
             }
