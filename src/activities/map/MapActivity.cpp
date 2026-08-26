@@ -318,16 +318,41 @@ int headerClockSlotWidth(const GfxRenderer& renderer) {
   return widestDigit * 4 + renderer.getTextWidth(SMALL_FONT_ID, ":");
 }
 
+// One coordinate, degrees-minutes-seconds -- the format picked over decimal
+// degrees, 2026-08-26. Rounds to the nearest whole second through integer
+// arithmetic on total seconds, not by rounding degrees/minutes/seconds
+// separately: the naive way can print "60" seconds or "60" minutes on a
+// carry (e.g. 47.999999... -> "47°59'60\"" instead of "48°00'00\""), and
+// integer division/modulo on a single rounded total cannot.
+//
+// "\xC2\xB0" is U+00B0 (degree sign) as its literal UTF-8 bytes, not a
+// compiler escape -- GfxRenderer::drawText expects UTF-8, and spelling the
+// bytes out here does not depend on this source file's own encoding or on
+// the toolchain's handling of \u in a narrow string literal.
+void formatDms(double deg, bool isLat, char* buf, size_t bufSize) {
+  const char hemisphere = isLat ? (deg >= 0 ? 'N' : 'S') : (deg >= 0 ? 'E' : 'W');
+  const long totalSeconds = std::lround(std::fabs(deg) * 3600.0);
+  const long wholeDegrees = totalSeconds / 3600;
+  const long remainderSeconds = totalSeconds % 3600;
+  const long wholeMinutes = remainderSeconds / 60;
+  const long wholeSeconds = remainderSeconds % 60;
+  snprintf(buf, bufSize, "%ld\xC2\xB0%02ld'%02ld\"%c", wholeDegrees, wholeMinutes, wholeSeconds, hemisphere);
+}
+
 // Hike mode's second header line's text, shared between the draw and the
 // windowed-repaint's change check so the two can never format it differently.
 // Altitude first, when known -- it is the number a hiker actually asked for;
 // the coordinate is always there because lastLatE7_/lastLonE7_ always are,
 // once a fix has landed.
 void formatHikeLineText(char* buf, size_t bufSize, bool hasAltitude, int16_t altitudeM, double lat, double lon) {
+  char latStr[16];
+  char lonStr[16];
+  formatDms(lat, /*isLat=*/true, latStr, sizeof(latStr));
+  formatDms(lon, /*isLat=*/false, lonStr, sizeof(lonStr));
   if (hasAltitude) {
-    snprintf(buf, bufSize, "%d m   %.5f, %.5f", static_cast<int>(altitudeM), lat, lon);
+    snprintf(buf, bufSize, "%d m   %s %s", static_cast<int>(altitudeM), latStr, lonStr);
   } else {
-    snprintf(buf, bufSize, "%.5f, %.5f", lat, lon);
+    snprintf(buf, bufSize, "%s %s", latStr, lonStr);
   }
 }
 // GUI.drawHeader() does not clear anything the strip can rely on: BaseTheme
@@ -1672,7 +1697,13 @@ void MapActivity::drawHikeElevationLine() {
   // SMALL_FONT_ID, not UI_10_FONT_ID: this is secondary information, the same
   // weight as the clock/battery percentage in row one, not the primary
   // place-name label -- UI_10 judged too large on the panel, 2026-08-26.
-  const int y = kHeaderBarHeight + (kHikeElevationLineHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2 + 3;
+  //
+  // No +3 correction here, unlike drawHeaderPlaceName()'s: that offset was
+  // tuned on hardware for UI_10_FONT_ID centred in row one
+  // (kHeaderPlaceNameLeftX's own comment, 2026-08-11) and does not carry over
+  // to a different font in a different row -- judged 2-3px too low on the
+  // panel at +3, 2026-08-26.
+  const int y = kHeaderBarHeight + (kHikeElevationLineHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2;
   renderer.drawText(SMALL_FONT_ID, kHikeElevationLeftX, y, text, true);
 }
 

@@ -738,6 +738,24 @@ same weight as the clock and battery percentage in row one, and was judged
 too large on the panel at `UI_10_FONT_ID` when first built -- confirmed on the
 desktop simulator, 2026-08-26 (see "Verified on the desktop simulator" below).
 
+**No `+3` vertical correction, unlike `drawHeaderPlaceName()`'s.** That
+offset (`kHeaderPlaceNameLeftX`'s own comment, 2026-08-11) was tuned on
+hardware for `UI_10_FONT_ID` centred in row one and does not carry over to a
+different font in a different row -- judged 2-3px too low on the panel at
+`+3`, 2026-08-26. `drawHikeElevationLine()`'s `y` is the plain centred value.
+
+**Degrees-minutes-seconds, not decimal degrees.** Maintainer's choice,
+2026-08-26, over decimal degrees (`48.60000, 17.30000`) and degrees-decimal-
+minutes. `formatDms()` rounds to the nearest whole second through integer
+arithmetic on total seconds (`std::lround(fabs(deg) * 3600.0)`, then
+`/3600`, `%3600/60`, `%60`) rather than rounding degrees, minutes and seconds
+separately -- the separate-rounding way can carry a `60` into either field
+(47.999999...° rounding to `47°59'60"` instead of `48°00'00"`) and integer
+division on one rounded total cannot. The degree sign is written as its
+literal UTF-8 bytes (`"\xC2\xB0"`), not a `°` escape, so it does not
+depend on this source file's own encoding or the toolchain's handling of
+`\u` in a narrow string literal.
+
 **Stays clear of the compass's own halo, horizontally, not by shrinking the
 row's height.** The compass (`drawCompass()`) is drawn every frame at
 `centreY = kCompassCenterTop` (87), radius `kCompassGlyphRadius` (36) plus a
@@ -815,7 +833,7 @@ sent with `tools/blepos.py 48.60 17.30 --alt 340 --sim 127.0.0.1:8765` and the
 mode switched with `tools/mapcmd.py --sim 127.0.0.1:8765 mode hike`. Confirmed
 on the resulting screenshot:
 
-- The second line draws (`340 m   48.60000, 17.30000`), at `SMALL_FONT_ID`,
+- The second line draws (`340 m   48°36'00"N 17°18'00"E`), at `SMALL_FONT_ID`,
   below the place name row.
 - The compass is intact -- no erased halo, no missing glyph -- which is what
   the full-width-backing bug (fixed above, before this run) would have broken.
