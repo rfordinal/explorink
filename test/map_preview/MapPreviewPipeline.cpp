@@ -18,6 +18,7 @@
 #include "MapRouteFit.h"
 #include "MapRouteSource.h"
 #include "MapStyleDefaults.h"
+#include "MapStyleTable.h"
 #include "MapTileGrid.h"
 #include "MapTileSource.h"
 #include "MapViewport.h"
@@ -44,7 +45,18 @@ std::string tilePath(const std::string& tilesDir, uint8_t z, uint32_t col, uint3
 
 MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& canvas) {
   MapPreviewResult result;
-  const MapStyle& style = request.style ? *request.style : kDefaultMapStyle;
+
+  // The style for this mode and rung, resolved at firmware build time from
+  // data/mapstyle.json's `when` blocks (MapStyleTable.h) -- so this pane shows
+  // what the panel will show at that rung and not a nicer version of it.
+  const int rung = std::clamp(request.zoom, 0, MapViewport::kZoomStepCount - 1);
+  MapStyle styleStorage = request.style ? *request.style : mapStyleFor(request.mode, rung);
+  // The one preview-only override: draw buildings at a rung whose style has
+  // them off, to answer "are they worth their cost here" by looking. It patches
+  // the resolved style rather than riding beside it in MapViewState, so there is
+  // still exactly one thing that says what gets drawn.
+  if (request.drawBuildings.has_value()) styleStorage.buildingsEnabled = *request.drawBuildings;
+  const MapStyle& style = styleStorage;
 
   MapProjection proj;
 
@@ -139,15 +151,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   view.markerX = anchorX;
   view.markerY = markerY;
   view.heading = static_cast<MapHeading>(heading);
-  // Same rung rule the device applies (MapViewport::ZoomStep::buildings), so the
-  // laptop preview shows what the panel will show rather than a nicer version of
-  // it. Draws buildings at rung 0 only.
-  const int rung = std::clamp(request.zoom, 0, MapViewport::kZoomStepCount - 1);
-  view.drawBuildings = request.drawBuildings.value_or(MapViewport::kZoomLadder[rung].buildings);
-  view.drawBuiltUp = MapViewport::kZoomLadder[rung].builtUp;
-  // The rung's own label ceiling, so this pane thins names exactly where the
-  // panel does (MapViewport::ZoomStep::maxLabels).
-  view.maxLabels = MapViewport::kZoomLadder[rung].maxLabels;
+  view.zoomStep = static_cast<uint8_t>(rung);
 
   StdioFileSource file;
   // Heap, not a local: MapTileSource is ~5 KB and CLAUDE.md caps stack
@@ -209,7 +213,12 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   MapLabelScratch labels;
 
   HeapProbe::reset();
-  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr, &labels, points.get());
+  // nullptr for the scratch is how the renderer is told to skip the whole
+  // label pass -- the same thing the device does when the style draws no names
+  // (MapLabels.h). Not a style edit: the style still says what a name looks
+  // like, this frame just does not draw one.
+  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr,
+                      request.drawLabels ? &labels : nullptr, points.get());
   // render() does not draw the marker (MapActivity draws its own mode-specific
   // one). This preview has no travel mode, so it draws the style's puck
   // explicitly -- except in a route overview, which is framed on the route and

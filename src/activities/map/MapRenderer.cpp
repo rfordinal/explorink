@@ -132,6 +132,46 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
 // The label placer needs to know where the route is and there is no second
 // cheap way to find out: the route lives in a file, and walking it again is a
 // second pass over SD (IMapRouteSource.h). So the pass that draws it records it.
+// Dither the inside of a cased road, one segment at a time.
+//
+// A stroke is not a ring, so it cannot go through toneRing() whole -- but each
+// segment's interior *is* a quad, and a quad is a ring with four corners. That
+// is the whole trick: no new canvas primitive, no new fill code, and the tone
+// stays the same screen-anchored dither an area uses, so a road and a built-up
+// area under it cannot drift out of phase.
+//
+// The offset here is the true perpendicular, unlike MapStroke's stacking. The
+// reason MapStroke avoids it does not apply: it stripes when you stack 1 px
+// *lines* 1.41 px apart on a diagonal, and this is a filled quad with no gaps
+// to stripe.
+//
+// Joints are left as overlapping quads rather than mitred. Two consequences,
+// both checked by looking: the overlap costs nothing because the tone is a
+// position test and painting a pixel twice is the same pixel, and the outside
+// of a bend keeps a small unfilled wedge. On a texture that is at most every
+// other pixel, that wedge is far less visible than it would be in a solid fill.
+void toneWayInterior(IMapCanvas& canvas, const MapWayRef& way, const int innerWidth, const MapAreaTone tone) {
+  // Below 2 px there is no interior to texture: a period-2 tone needs two
+  // pixels to say anything and the period-3 stipple needs three.
+  if (tone == MapAreaTone::None || innerWidth < 2 || way.pointCount < 2) return;
+  const double half = innerWidth * 0.5;
+  for (uint16_t i = 1; i < way.pointCount; ++i) {
+    const double x0 = way.xs[i - 1], y0 = way.ys[i - 1];
+    const double x1 = way.xs[i], y1 = way.ys[i];
+    const double dx = x1 - x0, dy = y1 - y0;
+    const double len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.5) continue;  // a zero-length segment has no perpendicular
+    const double nx = -dy / len * half, ny = dx / len * half;
+    const int16_t rx[5] = {static_cast<int16_t>(std::lround(x0 + nx)), static_cast<int16_t>(std::lround(x1 + nx)),
+                           static_cast<int16_t>(std::lround(x1 - nx)), static_cast<int16_t>(std::lround(x0 - nx)),
+                           static_cast<int16_t>(std::lround(x0 + nx))};
+    const int16_t ry[5] = {static_cast<int16_t>(std::lround(y0 + ny)), static_cast<int16_t>(std::lround(y1 + ny)),
+                           static_cast<int16_t>(std::lround(y1 - ny)), static_cast<int16_t>(std::lround(y0 - ny)),
+                           static_cast<int16_t>(std::lround(y0 + ny))};
+    MapAreaFill::toneRing(canvas, rx, ry, 5, tone);
+  }
+}
+
 void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style, MapOccupancyGrid* occupancy) {
   if (style.routeWidthPx == 0) return;
   if (!route.beginRoute()) return;
@@ -223,9 +263,12 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     // Two walks over one layer, built-up first: a park inside a housing estate
     // has to land on top of it, and a single walk would draw them in whatever
     // order the tile happens to store.
-    // Built-up is per rung (MapViewState::drawBuiltUp); forest is drawn at every
+    // Built-up is per rung, via the style (its landuse rule is hidden at rung 0,
+    // where the buildings themselves carry the settlement). drawLanduseClass
+    // already returns without a card walk when a class draws nothing, so there
+    // is no flag to test here. Forest is drawn at every
     // rung, because no building shows where a wood is.
-    if (state.drawBuiltUp) drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
+    drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
     drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
   }
   if (timing) lap(timing->landuseMs, mark);
@@ -233,8 +276,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // Both gates read: the style says whether buildings are drawn at all, the view
   // says whether this rung draws them. Either one false and the layer is not
   // opened -- and not opening it is what saves the card read, not just the
-  // drawing (MapStyle::buildingsEnabled, MapViewState::drawBuildings).
-  if (style.buildingsEnabled && state.drawBuildings && source.beginBuildings()) {
+  // drawing (MapStyle::buildingsEnabled, which is per rung since 2026-08-25).
+  if (style.buildingsEnabled && source.beginBuildings()) {
     MapWayRef ring;
     while (source.nextBuilding(ring)) {
       // Tone or hatch, whichever the style chose, then the outline on top so a
@@ -313,7 +356,12 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       const int casing = style.roadCasingPx[way.classId];
       if (casing > 0) {
         // The generator guarantees 2 * casing < width, so this is at least 1.
-        strokeWay(canvas, way, lineWidth - 2 * casing, MapInk::White);
+        const int inner = lineWidth - 2 * casing;
+        strokeWay(canvas, way, inner, MapInk::White);
+        // The tone goes on after that white, never instead of it: the white is
+        // what clears the first pass's black, and the tone is a texture laid
+        // into the cleared middle.
+        toneWayInterior(canvas, way, inner, style.roadFillTone[way.classId]);
       }
       // Sleepers, drawn in this pass rather than a third one. They have to
       // land after their own way's white fill or that fill erases them, and
@@ -339,6 +387,14 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // the route is exactly what item 4 of the render spec draws.
   if (route != nullptr) drawRoute(canvas, *route, style, labels != nullptr ? &labels->route : nullptr);
   if (timing) lap(timing->routeMs, mark);
+
+  // The panel, handed to the label scratch once per frame so offer() can refuse
+  // a place that could never be named (MapLabels.h, MapLabelScratch::setClip).
+  if (labels != nullptr) {
+    int clipX = 0, clipY = 0, clipW = 0, clipH = 0;
+    canvas.drawableRect(clipX, clipY, clipW, clipH);
+    labels->setClip(clipX, clipY, clipW, clipH);
+  }
 
   const int dotDiameter = style.placeDotDiameterPx;
   if (nearestOut) *nearestOut = MapNearestPlaces{};
@@ -400,7 +456,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // Names last, over everything the map drew and under the marker the caller
   // draws next. A label is the only thing here that is placed rather than
   // simply drawn, so it has to see the finished picture (MapLabels.h).
-  if (labels != nullptr) MapLabels::draw(canvas, *labels, style, state.maxLabels);
+  if (labels != nullptr) MapLabels::draw(canvas, *labels, style);
   if (timing) lap(timing->labelsMs, mark);
 
   // No marker draw here -- MapActivity draws its own mode-specific one (ring +

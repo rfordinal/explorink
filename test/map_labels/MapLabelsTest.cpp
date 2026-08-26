@@ -221,36 +221,44 @@ TEST(MapLabels, HonoursTheLabelCap) {
   EXPECT_EQ(scratch.placed, 2);
 }
 
-TEST(MapLabels, TheRungCapCanBeStricterThanTheStyle) {
+// The rung's own ceiling used to be a second argument here, taken from
+// MapViewport::ZoomStep::maxLabels, and the smaller of the two won. Since
+// 2026-08-25 the rung's answer *is* the style: data/mapstyle.json's
+// layers.places carries a `when` per rung (3 names at rung 0, 14 at rung 6) and
+// gen_mapstyle.py resolves it into the style this function is handed. One cap,
+// one place to edit it.
+TEST(MapLabels, TheRungsCapArrivesAsTheStylesOwn) {
   FakeCanvas canvas;
   MapLabelScratch scratch;
   MapStyle style = labelStyle();
-  style.placeMaxLabels = 6;
+  // Rung 0 shows 480 x 800 m: one settlement, so its resolved style allows few
+  // names however many the offer pass found.
+  style.placeMaxLabels = 2;
   for (int i = 0; i < 6; ++i) MapLabels::offer(scratch, place(100, 150 + i * 90, 2, "Vinosady"), 20, 780);
-  // Rung 0 shows 480 x 800 m: one settlement, so it allows fewer names than the
-  // style's own affordability cap (MapViewport::ZoomStep::maxLabels).
-  MapLabels::draw(canvas, scratch, style, 2);
+  MapLabels::draw(canvas, scratch, style);
 
   EXPECT_EQ(canvas.blackTexts().size(), 2u);
   EXPECT_EQ(scratch.placed, 2);
 }
 
-TEST(MapLabels, TheStyleCapStillWinsWhenItIsTheStricterOne) {
+TEST(MapLabels, ACapOfOneDrawsOnlyTheHighestRanked) {
   FakeCanvas canvas;
   MapLabelScratch scratch;
   MapStyle style = labelStyle();
   style.placeMaxLabels = 1;
   for (int i = 0; i < 4; ++i) MapLabels::offer(scratch, place(100, 150 + i * 90, 2, "Vinosady"), 20, 780);
-  MapLabels::draw(canvas, scratch, style, 14);
+  MapLabels::draw(canvas, scratch, style);
 
   EXPECT_EQ(canvas.blackTexts().size(), 1u);
 }
 
-TEST(MapLabels, ARungCapOfZeroDrawsNothing) {
+TEST(MapLabels, ACapOfZeroDrawsNothing) {
   FakeCanvas canvas;
   MapLabelScratch scratch;
+  MapStyle style = labelStyle();
+  style.placeMaxLabels = 0;
   MapLabels::offer(scratch, place(200, 400, 1, "Pezinok"), 20, 780);
-  MapLabels::draw(canvas, scratch, labelStyle(), 0);
+  MapLabels::draw(canvas, scratch, style);
 
   EXPECT_TRUE(canvas.texts.empty());
 }
@@ -409,4 +417,62 @@ TEST(MapOccupancy, ASegmentEntirelyOffScreenMarksNothing) {
   MapOccupancyGrid grid;
   grid.markSegment(-5000, -5000, -4000, -4000, 6);
   EXPECT_FALSE(grid.anySet(0, 0, 480, 800));
+}
+
+TEST(MapLabels, OneCornerOfThePanelCannotTakeEveryCandidateSlot) {
+  // The defect this guards, seen over Prague at rung 6: rank decides first, but
+  // among equal ranks the tie-break is distance from the anchor, and with
+  // hundreds of villages in range every slot went to the ring nearest the
+  // marker. Whole regions of the panel got dots and no names.
+  //
+  // Offer far more same-rank places than the buffer holds, all in one corner,
+  // then one in the opposite corner offered LAST -- so it loses on distance and
+  // would never have survived under the old rule.
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, 480, 800);
+  for (int i = 0; i < MapLabelScratch::kMaxCandidates * 2; ++i) {
+    MapLabels::offer(scratch, place(20 + (i % 5), 20 + (i % 7), 2, "Blizko"), 20, 20);
+  }
+  MapLabels::offer(scratch, place(460, 780, 2, "Daleko"), 20, 20);
+
+  bool farKept = false;
+  for (int i = 0; i < scratch.count; ++i) {
+    if (strcmp(scratch.candidates[i].name, "Daleko") == 0) farKept = true;
+  }
+  EXPECT_TRUE(farKept) << "a place in an empty corner lost its slot to a crowded one";
+
+  // And no single cell may hold more than its quota.
+  int perCell[MapLabelScratch::kCellsX * MapLabelScratch::kCellsY] = {};
+  for (int i = 0; i < scratch.count; ++i) {
+    const int cell = scratch.cellOf(scratch.candidates[i].x, scratch.candidates[i].y);
+    ASSERT_GE(cell, 0);
+    ++perCell[cell];
+  }
+  for (int cell = 0; cell < MapLabelScratch::kCellsX * MapLabelScratch::kCellsY; ++cell) {
+    EXPECT_LE(perCell[cell], MapLabelScratch::kPerCell) << "cell " << cell;
+  }
+}
+
+TEST(MapLabels, AnOffScreenPlaceNeverTakesACandidateSlot) {
+  // draw() skips a place whose dot is off the panel, so letting it win a slot
+  // only starves one that could have been named. The tile range is far wider
+  // than the screen -- 286 places for 32 slots over Prague at rung 6, of which
+  // only 17 were on the panel.
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, 480, 800);
+  MapLabels::offer(scratch, place(-50, 400, 1, "Mimo"), 240, 400);
+  MapLabels::offer(scratch, place(240, 900, 1, "TiezMimo"), 240, 400);
+  EXPECT_EQ(scratch.count, 0);
+
+  MapLabels::offer(scratch, place(240, 400, 1, "Na paneli"), 240, 400);
+  EXPECT_EQ(scratch.count, 1);
+}
+
+TEST(MapLabels, WithNoClipNothingIsRefusedAndCellsAreOff) {
+  // A caller that never sets a clip -- a probe, an older test -- must get the
+  // old global behaviour rather than a silently different one.
+  MapLabelScratch scratch;
+  MapLabels::offer(scratch, place(-50, 400, 1, "Mimo"), 240, 400);
+  EXPECT_EQ(scratch.count, 1);
+  EXPECT_EQ(scratch.cellOf(10, 10), -1);
 }

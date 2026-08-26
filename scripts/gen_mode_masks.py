@@ -19,9 +19,27 @@ Usage:
 
 Defaults: data/mapstyle.json -> src/activities/map/MapModeMaskDefaults.h.
 """
+import importlib.util
 import json
 import os
 import sys
+
+# scripts/mapstyle_variants.py, loaded by path -- see the same helper in
+# gen_mapstyle.py for why a plain import cannot work under SCons.
+mapstyle_variants = None
+
+
+def _load_variants(repo_root):
+    global mapstyle_variants
+    if mapstyle_variants is not None:
+        return
+    path = os.path.join(repo_root, "scripts", "mapstyle_variants.py")
+    spec = importlib.util.spec_from_file_location("mapstyle_variants", path)
+    if spec is None or spec.loader is None:
+        sys.exit(f"gen_mode_masks.py: cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mapstyle_variants = module
 
 # Fixed order, independent of the JSON's key order -- this is what
 # MapRideMode (Ride=0, Hike=1, Cycle=2) and MapModeMasks's default array
@@ -85,7 +103,59 @@ def compute_masks(style):
     return masks
 
 
-def gen_cpp(masks):
+def drawn_mask(resolved):
+    """Bits for the classes this resolved style actually draws.
+
+    Mirrors gen_mapstyle.py's road_widths() exactly: a visible class is forced
+    to at least 1 px there, so "drawn" is precisely "the roads layer is on and
+    no rule hides this class". Keep the two in step -- if they disagree, the
+    device pays a card read and a projection for a way it then draws at width 0.
+    """
+    roads = resolved.get("layers", {}).get("roads", {})
+    if not roads.get("enabled", True):
+        return 0
+    mask = 0
+    for class_id in _CLASS_ID.values():
+        mask |= 1 << class_id
+    for index, rule in enumerate(roads.get("rules", [])):
+        if not rule.get("hidden", False):
+            continue
+        for name in rule.get("match", {}).get("class", []):
+            if name not in _CLASS_ID:
+                sys.exit(f"gen_mode_masks.py: layers.roads.rules[{index}]: unknown class '{name}'")
+            mask &= ~(1 << _CLASS_ID[name])
+    return mask
+
+
+def compute_table(style):
+    """masks[mode][rung] -- what the tile reader lets through.
+
+    Two filters, intersected, and the intersection is the point. `modes` says
+    which classes a travel mode cares about at all; the style's `hidden` says
+    which ones this rung draws. Before they were intersected, a class the style
+    hid was still read off the card and projected, then drawn at width 0 -- the
+    whole cost and none of the picture. Intersecting also makes it impossible
+    for the filter and the style to disagree, which is a bug that would look
+    like a missing road and read like a corrupt tile.
+    """
+    table = []
+    for mode_name in _MODE_ORDER:
+        row = []
+        for step in range(mapstyle_variants.ZOOM_STEPS):
+            try:
+                resolved = mapstyle_variants.resolve(style, mode_name, step)
+            except mapstyle_variants.VariantError as error:
+                sys.exit(f"gen_mode_masks.py: {mode_name}@{step}: {error}")
+            mask = compute_masks(resolved)[mode_name] & drawn_mask(resolved)
+            if mask == 0:
+                sys.exit(f"gen_mode_masks.py: {mode_name}@rung {step} resolves to an empty class mask "
+                         f"-- a rung that draws no roads at all is never what a style file means")
+            row.append(mask)
+        table.append(row)
+    return table
+
+
+def gen_cpp(base_masks, table):
     lines = [
         "#pragma once",
         "",
@@ -93,11 +163,26 @@ def gen_cpp(masks):
         "",
         "#include <cstdint>",
         "",
+        '#include "MapRideMode.h"',
+        "",
+        "// The per-mode class lists on their own, with no rung applied. Kept",
+        "// because a mode's own vocabulary is a real thing to test against and",
+        "// to print in a diagnostic; the renderer uses the table below.",
     ]
     for mode_name in _MODE_ORDER:
         cpp_name = "".join(p.capitalize() for p in mode_name.split("_"))
-        lines.append(f"inline constexpr uint32_t kDefault{cpp_name}Mask = 0x{masks[mode_name]:08x}u;")
-    lines.append("")
+        lines.append(f"inline constexpr uint32_t kDefault{cpp_name}Mask = 0x{base_masks[mode_name]:08x}u;")
+    lines += [
+        "",
+        "// What MapTileSource filters with: the mode's classes intersected with the",
+        "// classes that rung's style actually draws. A way outside it is not read",
+        "// past its header, so a class hidden at a coarse rung costs nothing at all.",
+        "inline constexpr uint32_t kMapModeMasks[kMapRideModeCount][kMapZoomStepCount] = {",
+    ]
+    for mode_index, mode_name in enumerate(_MODE_ORDER):
+        row = ", ".join(f"0x{mask:08x}u" for mask in table[mode_index])
+        lines.append(f"    {{{row}}},  // {mode_name}")
+    lines += ["};", ""]
     return "\n".join(lines)
 
 
@@ -107,18 +192,38 @@ def main(repo_root, style_path=None, output_path=None):
     if output_path is None:
         output_path = os.path.join(repo_root, "src", "activities", "map", "MapModeMaskDefaults.h")
 
+    _load_variants(repo_root)
+
     if not os.path.isfile(style_path):
         sys.exit(f"gen_mode_masks.py: {style_path} not found")
 
     with open(style_path) as f:
         style = json.load(f)
 
-    masks = compute_masks(style)
-    for mode_name in _MODE_ORDER:
-        print(f"gen_mode_masks.py: {mode_name} 0x{masks[mode_name]:08x}")
+    try:
+        base_masks = compute_masks(mapstyle_variants.base(style))
+    except mapstyle_variants.VariantError as error:
+        sys.exit(f"gen_mode_masks.py: {error}")
+    table = compute_table(style)
+    id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
+    for mode_index, mode_name in enumerate(_MODE_ORDER):
+        rungs = " ".join(f"0x{mask:08x}" for mask in table[mode_index])
+        print(f"gen_mode_masks.py: {mode_name} base 0x{base_masks[mode_name]:08x} | per rung {rungs}")
+        # A class the mode asks for and the style hides at every rung is not a
+        # bug, but it is always a surprise -- `modes` reads like the list of
+        # what a mode draws, and it is only half of it. Say so rather than
+        # letting the two disagree quietly.
+        drawn_anywhere = 0
+        for step_mask in table[mode_index]:
+            drawn_anywhere |= step_mask
+        never = base_masks[mode_name] & ~drawn_anywhere
+        if never:
+            hidden = ", ".join(id_to_name[bit] for bit in sorted(id_to_name) if never & (1 << bit))
+            print(f"gen_mode_masks.py: note -- {mode_name} lists {hidden}, but the style hides "
+                  f"{'them' if never & (never - 1) else 'it'} at every rung, so nothing is drawn")
 
     with open(output_path, "w") as f:
-        f.write(gen_cpp(masks))
+        f.write(gen_cpp(base_masks, table))
     print(f"gen_mode_masks.py: wrote {output_path}")
 
 

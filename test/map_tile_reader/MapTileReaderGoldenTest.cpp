@@ -21,6 +21,7 @@
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPreviewPipeline.h"
+#include "MapStyleTable.h"
 #include "MapTileReader.h"
 #include "MapTileSource.h"
 #include "MapViewport.h"
@@ -395,10 +396,15 @@ TEST(MapModeFilter, HikeDrawsEverythingRideDoesAndMore) {
   // strict superset of ride, and cycle sits between them. This is what makes
   // "switch to hike and see more" true everywhere rather than only where
   // the test fixture happens to have a footpath.
-  const MapModeMasks masks;
-  const uint32_t ride = masks.forMode(MapRideMode::Ride);
-  const uint32_t hike = masks.forMode(MapRideMode::Hike);
-  const uint32_t cycle = masks.forMode(MapRideMode::Cycle);
+  // The *vocabulary* masks, i.e. mapstyle.json's `modes` lists on their own.
+  // What MapTileSource actually filters with is narrower -- it is these
+  // intersected with the classes that rung's style draws (MapModeMasks::forMode,
+  // asserted below) -- but the superset property belongs to the vocabulary: it
+  // is what "switch to hike and see more" means, and a style that hides a class
+  // at one rung must not be able to falsify it.
+  const uint32_t ride = kDefaultRideMask;
+  const uint32_t hike = kDefaultHikeMask;
+  const uint32_t cycle = kDefaultCycleMask;
 
   EXPECT_EQ(ride & hike, ride) << "hike must draw everything ride does";
   EXPECT_NE(ride, hike) << "and strictly more, or the mode switch is invisible";
@@ -422,7 +428,7 @@ TEST(MapModeFilter, SameTilesSameBytesDifferentWaysDrawn) {
   // gate. What is checkable here is the mechanism: drop one class from the
   // mask and the same tile reads identically and draws less.
   MapPreviewRequest withTracks = fixtureRequest();
-  withTracks.classMask = MapModeMasks{}.forMode(MapRideMode::Ride);
+  withTracks.classMask = kDefaultRideMask;
   PpmCanvas withCanvas(kScreenWidth, kScreenHeight);
   const MapPreviewResult with = renderMapPreview(withTracks, withCanvas);
 
@@ -633,23 +639,35 @@ TEST(MapCellIndex, AnUnindexedLayerFallsBackToTheWholeLayer) {
 }
 
 TEST(MapBuildingsPerRung, OnlyTheClosestRungDrawsThemAndSkippingThemSkipsTheRead) {
-  // The rule (MapViewport::ZoomStep::buildings): rung 0 draws buildings, no other
-  // rung does. Decided by the maintainer 2026-08-06 -- at 3 m/px a building is
-  // 7 px and the layer cost 4,122 ms of that rung's 7,463 on hardware.
-  EXPECT_TRUE(MapViewport::kZoomLadder[0].buildings);
-  for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
-    EXPECT_FALSE(MapViewport::kZoomLadder[step].buildings) << "step " << step;
-  }
-  // And the mirror: built-up is the wash that replaces them, so exactly the rungs
-  // without buildings have it. Every rung must draw one or the other, or a village
-  // is roads in empty white -- which is what rung 1 looked like for one build.
-  EXPECT_FALSE(MapViewport::kZoomLadder[0].builtUp);
-  for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
-    EXPECT_TRUE(MapViewport::kZoomLadder[step].builtUp) << "step " << step;
-  }
-  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
-    EXPECT_NE(MapViewport::kZoomLadder[step].buildings, MapViewport::kZoomLadder[step].builtUp)
-        << "step " << step << " must draw buildings or the wash, never neither and never both";
+  // The rule, and since 2026-08-25 it is data/mapstyle.json's own rather than a
+  // table beside it: layers.buildings carries `when: [{steps: [1..6], enabled:
+  // false}]`, so rung 0 draws buildings and no other rung does. Decided by the
+  // maintainer 2026-08-06 -- at 3 m/px a building is 7 px and the layer cost
+  // 4,122 ms of that rung's 7,463 on hardware.
+  //
+  // Asserted through mapStyleFor() for every mode, because the resolver is
+  // per (mode, rung) and a `when` that named a mode by mistake would otherwise
+  // pass unnoticed at the two modes nobody tested.
+  for (int modeIndex = 0; modeIndex < kMapRideModeCount; ++modeIndex) {
+    const MapRideMode mode = static_cast<MapRideMode>(modeIndex);
+    EXPECT_TRUE(mapStyleFor(mode, 0).buildingsEnabled) << mapRideModeName(mode);
+    for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
+      EXPECT_FALSE(mapStyleFor(mode, step).buildingsEnabled) << mapRideModeName(mode) << " step " << step;
+    }
+    // And the mirror: built-up is the wash that replaces them, so exactly the
+    // rungs without buildings have it. Every rung must draw one or the other, or
+    // a village is roads in empty white -- which is what rung 1 looked like for
+    // one build. The wash is a landuse class, so "drawn" is "its tone or its
+    // hatch is not None".
+    for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+      const MapStyle& style = mapStyleFor(mode, step);
+      const int builtUp = static_cast<int>(MapLanduseClass::BuiltUp);
+      const bool washDrawn = style.landuseTone[builtUp] != MapAreaTone::None ||
+                             style.landuseHatch[builtUp] != MapAreaFill::Pattern::None;
+      EXPECT_NE(style.buildingsEnabled, washDrawn)
+          << mapRideModeName(mode) << " step " << step
+          << " must draw buildings or the wash, never neither and never both";
+    }
   }
 
   // And the flag actually reaches the renderer. The golden style has buildings

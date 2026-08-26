@@ -100,7 +100,25 @@ struct MapLabelScratch {
   // 32 costs 1,280 bytes of the budget above and covers every rung measured so
   // far. A frame with more on-screen places than this still names the nearest 32,
   // which is the right thing to lose.
-  static constexpr int kMaxCandidates = 32;
+  static constexpr int kMaxCandidates = 36;
+
+  // The panel is bucketed into kCellsX x kCellsY, and each cell keeps at most
+  // kPerCell candidates. This is what stops the names bunching.
+  //
+  // Rank decides first and always will: a city at the corner beats a town by
+  // the marker. But among equal ranks the tie-break is distance from the
+  // anchor, and at a coarse rung there are hundreds of villages -- so every
+  // slot went to the ring nearest the marker and whole regions of the panel
+  // got dots and no names. Seen over Prague at rung 6: thirteen names in one
+  // band across the middle, the top third empty (maintainer, 2026-08-25).
+  //
+  // A per-cell cap fixes it without inventing a scoring function: the buffer
+  // cannot be monopolised by one part of the screen, and inside a cell the
+  // rank-then-distance order is still exactly right. 3 x 4 over 480x800 is
+  // 160x200 px cells, and 12 x 3 = 36 is why kMaxCandidates is 36.
+  static constexpr int kCellsX = 3;
+  static constexpr int kCellsY = 4;
+  static constexpr int kPerCell = 3;
 
   MapOccupancyGrid route;
   MapOccupancyGrid taken;
@@ -110,12 +128,53 @@ struct MapLabelScratch {
   uint8_t placed = 0;
   uint8_t dropped = 0;
 
+  // The panel, so offer() can refuse a place that cannot be named anyway.
+  //
+  // Without it every slot is contested by the whole tile range, which is far
+  // wider than the screen: measured over Prague at rung 6, 286 places compete
+  // for 32 slots and only 17 of the winners are on the panel. The cap then
+  // silently decides *where* names may go, which is the exact failure the
+  // kMaxCandidates comment above describes at its old value of 12. Set once per
+  // frame by setClip(); zero width means "not set", and then nothing is
+  // refused -- a caller that forgets it gets the old behaviour rather than a
+  // blank map.
+  int16_t clipX = 0, clipY = 0, clipW = 0, clipH = 0;
+
+  void setClip(int x, int y, int w, int h) {
+    clipX = static_cast<int16_t>(x);
+    clipY = static_cast<int16_t>(y);
+    clipW = static_cast<int16_t>(w);
+    clipH = static_cast<int16_t>(h);
+  }
+
+  bool onScreen(int x, int y) const {
+    if (clipW <= 0 || clipH <= 0) return true;
+    return x >= clipX && y >= clipY && x < clipX + clipW && y < clipY + clipH;
+  }
+
+  // Which bucket of the panel a screen point falls in, or -1 when no clip has
+  // been set. -1 disables the per-cell cap entirely, so a caller that does not
+  // set a clip (a unit test, a probe) gets the old global behaviour rather
+  // than a silently different one.
+  int cellOf(int x, int y) const {
+    if (clipW <= 0 || clipH <= 0) return -1;
+    int cx = (x - clipX) * kCellsX / clipW;
+    int cy = (y - clipY) * kCellsY / clipH;
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx >= kCellsX) cx = kCellsX - 1;
+    if (cy >= kCellsY) cy = kCellsY - 1;
+    return cy * kCellsX + cx;
+  }
+
   void reset() {
     route.clear();
     taken.clear();
     count = 0;
     placed = 0;
     dropped = 0;
+    clipW = 0;
+    clipH = 0;
   }
 };
 
@@ -135,12 +194,12 @@ void offer(MapLabelScratch& scratch, const MapPlaceRef& place, int anchorX, int 
 // scratch.route is marked) and after the place dots, since a label sits over
 // the map but a dot must not be hidden by another place's label box.
 //
-// `rungMaxLabels` is the zoom rung's own ceiling
-// (MapViewport::ZoomStep::maxLabels, carried in MapViewState); the smaller of it
-// and the style's `max_labels` wins. Two caps rather than one because they
-// answer different questions: the rung knows how much ground is on the panel and
-// therefore how many names that ground deserves, the style knows how many the
-// renderer may afford. Default 255 means "rung has no opinion".
-void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style, uint8_t rungMaxLabels = 255);
+// The cap is the style's own `max_labels`. It is per rung since 2026-08-25
+// (data/mapstyle.json, layers.places `when`: 3 names at rung 0, 14 at rung 6),
+// which is why there is one cap here and not two. There used to be a second
+// ceiling carried in MapViewState from MapViewport::ZoomStep::maxLabels, and
+// the smaller won -- the same number in two files, free to drift, answering the
+// same question. The rung's answer now arrives as the style itself.
+void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style);
 
 }  // namespace MapLabels

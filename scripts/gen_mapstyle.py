@@ -18,9 +18,31 @@ Usage:
 
 Defaults: data/mapstyle.json -> src/activities/map/MapStyleDefaults.h.
 """
+import importlib.util
 import json
 import os
 import sys
+
+# scripts/mapstyle_variants.py, loaded by path rather than imported by name.
+# Under PlatformIO this file is exec'd by SCons with no `__file__` and with
+# scripts/ nowhere on sys.path, so a plain `import` works from the command
+# line and fails in the build -- the same trap the SCons entry point at the
+# bottom already documents. main() always knows the repo root, so the load
+# happens there and this stays a plain module reference everywhere else.
+mapstyle_variants = None
+
+
+def _load_variants(repo_root):
+    global mapstyle_variants
+    if mapstyle_variants is not None:
+        return
+    path = os.path.join(repo_root, "scripts", "mapstyle_variants.py")
+    spec = importlib.util.spec_from_file_location("mapstyle_variants", path)
+    if spec is None or spec.loader is None:
+        sys.exit(f"gen_mapstyle.py: cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mapstyle_variants = module
 
 # The tile format's own class_id enum (mapbuilder/tilegen/class_spec.py, mirrored in
 # MapClassEnum.h). Duplicated here for the same reason gen_mode_masks.py
@@ -94,9 +116,10 @@ def road_widths(style):
     patterns = ["Solid"] * _CLASS_SLOTS
     dashes = [0] * _CLASS_SLOTS
     gaps = [0] * _CLASS_SLOTS
+    tones = ["None"] * _CLASS_SLOTS
     if not roads.get("enabled", True):
         print("gen_mapstyle.py: layers.roads.enabled is false -- no roads will be drawn")
-        return widths, casings, patterns, dashes, gaps
+        return widths, casings, patterns, dashes, gaps, tones
 
     default_width = _round_px(roads.get("default", {}).get("width", 1), "layers.roads.default.width")
     for class_id in _CLASS_ID.values():
@@ -113,6 +136,7 @@ def road_widths(style):
                 patterns[_CLASS_ID[name]] = "Solid"
                 dashes[_CLASS_ID[name]] = 0
                 gaps[_CLASS_ID[name]] = 0
+                tones[_CLASS_ID[name]] = "None"
                 continue
             width = _round_px(rule.get("width", default_width), f"layers.roads.rules[{index}].width")
             # A visible class must stay visible. Rounding 0.4px to 0 would
@@ -134,10 +158,27 @@ def road_widths(style):
             (patterns[_CLASS_ID[name]], dashes[_CLASS_ID[name]],
              gaps[_CLASS_ID[name]]) = _dash(rule, f"layers.roads.rules[{index}]")
 
+            # `fill: tone` shades the inside of a cased road instead of leaving
+            # it white -- a paper map's motorway, a thin outline around a
+            # shaded ribbon. Refused where it cannot show: with no casing there
+            # is no interior at all, and an interior under 2 px cannot carry a
+            # period-2 pattern. Refused rather than ignored, because a style
+            # that silently draws nothing is the bug this file keeps hitting.
+            tone = _tone(rule, f"layers.roads.rules[{index}]")
+            if tone != "None":
+                if casing == 0:
+                    sys.exit(f"gen_mapstyle.py: class '{name}': `fill: tone` needs a casing -- with "
+                             f"none, the road is solid black and has no interior to shade")
+                if width - 2 * casing < 2:
+                    sys.exit(f"gen_mapstyle.py: class '{name}': `fill: tone` needs an interior of at "
+                             f"least 2px, but {width}px with a {casing}px casing leaves "
+                             f"{width - 2 * casing}px")
+            tones[_CLASS_ID[name]] = tone
+
     if not any(widths):
         sys.exit("gen_mapstyle.py: every road class resolves to width 0 -- a style that draws no "
                  "roads at all is never what a style file means")
-    return widths, casings, patterns, dashes, gaps
+    return widths, casings, patterns, dashes, gaps, tones
 
 
 def puck(style):
@@ -351,6 +392,17 @@ def landuse(style):
                 sys.exit(f"gen_mapstyle.py: {what}: unknown landuse class '{name}' "
                          f"(one of {sorted(_LANDUSE_CLASS)})")
             class_id = _LANDUSE_CLASS[name]
+            # `hidden` is how a rung switches a landuse class off without
+            # deleting its numbers -- built-up is hidden at rung 0, where the
+            # buildings themselves are drawn and a wash under them is a second
+            # grey that adds nothing. The layer is still read (forest needs it),
+            # so this is a drawing decision only.
+            if rule.get("hidden", False):
+                outlines[class_id] = 0
+                tones[class_id] = "None"
+                patterns[class_id] = "None"
+                spacings[class_id] = 0
+                continue
             outlines[class_id] = _round_px(rule.get("outline_width", 0), f"{what}.outline_width")
             tones[class_id] = _tone(rule, what)
             patterns[class_id], spacings[class_id] = _hatch(rule, what)
@@ -358,7 +410,11 @@ def landuse(style):
                 sys.exit(f"gen_mapstyle.py: {what}: class '{name}' draws neither an outline, a tone nor a "
                          f"hatch. Drop the rule instead -- an enabled layer is read off the card in full.")
     if not any(outlines) and not any(t != "None" for t in tones) and not any(p != "None" for p in patterns):
-        sys.exit("gen_mapstyle.py: layers.landuse is enabled but no rule draws anything. Disable the layer.")
+        # Every class hidden at once. Not an error at a single rung -- a `when`
+        # may legitimately empty the layer there -- but the caller (the layer's
+        # `enabled`) is what decides whether the card is read, and that is not
+        # per class. Report it off, which is exactly what gets drawn.
+        return False, outlines, tones, patterns, spacings
     return True, outlines, tones, patterns, spacings
 
 
@@ -446,6 +502,11 @@ def place_labels(style):
         "bg_border": _round_px(places.get("label_bg_border_px", 0), "layers.places.label_bg_border_px"),
         "halo": _round_px(places.get("label_halo_px", 0), "layers.places.label_halo_px"),
         "max_labels": int(places.get("max_labels", 0)) if enabled else 0,
+        # Absent means "the total", i.e. no extra restriction, so a style that
+        # never mentions the tier caps behaves exactly as it did before they
+        # existed. 0 is a real value and means none of that tier.
+        "max_labels_major": int(places.get("max_labels_major", places.get("max_labels", 0))) if enabled else 0,
+        "max_labels_minor": int(places.get("max_labels_minor", places.get("max_labels", 0))) if enabled else 0,
         "gap": _round_px(places.get("min_label_gap_px", 0), "layers.places.min_label_gap_px"),
         "route_overlap_pct": int(places.get("max_route_overlap_pct", 0)),
         "max_width": _round_px(places.get("label_max_width_px", 0), "layers.places.label_max_width_px"),
@@ -457,6 +518,8 @@ def place_labels(style):
                                  ("label_bg_border_px", out["bg_border"], 255),
                                  ("label_halo_px", out["halo"], 255),
                                  ("max_labels", out["max_labels"], 255),
+                                 ("max_labels_major", out["max_labels_major"], 255),
+                                 ("max_labels_minor", out["max_labels_minor"], 255),
                                  ("min_label_gap_px", out["gap"], 255),
                                  ("max_route_overlap_pct", out["route_overlap_pct"], 100),
                                  ("label_max_width_px", out["max_width"], 65535)):
@@ -464,6 +527,9 @@ def place_labels(style):
             sys.exit(f"gen_mapstyle.py: layers.places.{name} {value} is outside 0..{ceiling}")
     if out["max_labels"] == 0 and (out["px"] or out["minor_px"]):
         print("gen_mapstyle.py: layers.places.max_labels is 0 -- label sizes are set but no label will be drawn")
+    if out["max_labels_major"] == 0 and out["max_labels_minor"] == 0 and out["max_labels"] > 0:
+        print("gen_mapstyle.py: both layers.places tier caps are 0 -- max_labels says labels are wanted "
+              "but neither tier may draw one")
     # A halo behind a box is wasted work, and the renderer skips it (MapStyle.h).
     # Say so at generate time rather than leaving a style that reads as if it had
     # both.
@@ -518,20 +584,23 @@ def _array(values, comments):
     return lines
 
 
-def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, labels,
-            points_px, route_px, marker_x, marker_y, puck_px):
+def _style_literal(bundle):
+    """One MapStyle's braced initialiser, as a list of lines.
+
+    Designated initialisers on purpose: this file is generated, and a field
+    reordered in MapStyle.h must break the build rather than silently shift a
+    number into the wrong member (it did once, 2026-08-05).
+
+    The text is also the dedup key -- two (mode, rung) pairs whose styles
+    resolve identically share one entry in the emitted table, so a style with
+    no `when` blocks at all costs one struct and a 21-byte index rather than
+    21 structs.
+    """
+    (widths, casings, patterns, dashes, gaps, tones, buildings_px, water_px, landuse_px, dot_diameter,
+     labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
-        "#pragma once",
-        "",
-        f"// {_HEADER_NOTE}",
-        "",
-        '#include "MapStyle.h"',
-        "",
-        "// Designated initialisers on purpose: this file is generated, and a field",
-        "// reordered in MapStyle.h must break the build rather than silently shift a",
-        "// number into the wrong member (it did once, 2026-08-05).",
-        "inline constexpr MapStyle kDefaultMapStyle = {",
+        "{",
         "    // Road width per MapClassId. 0 = not drawn.",
         "    .roadWidthPx =",
         "    {",
@@ -575,6 +644,15 @@ def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, lan
     for class_id in range(_CLASS_SLOTS):
         name = id_to_name.get(class_id, "(reserved)")
         lines.append(f"        {gaps[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
+        "    // Dither tone for the inside of a cased road. None leaves it white.",
+        "    .roadFillTone =",
+        "    {",
+    ]
+    for class_id in range(_CLASS_SLOTS):
+        name = id_to_name.get(class_id, "(reserved)")
+        lines.append(f"        MapAreaTone::{tones[class_id]},  // {class_id} {name}")
     radius, ring, arrow = puck_px
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
     w_enabled, w_widths, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing, w_white = water_px
@@ -621,6 +699,8 @@ def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, lan
         f"    .placeLabelBgBorderPx = {labels['bg_border']},",
         f"    .placeLabelHaloPx = {labels['halo']},",
         f"    .placeMaxLabels = {labels['max_labels']},",
+        f"    .placeMaxLabelsMajor = {labels['max_labels_major']},",
+        f"    .placeMaxLabelsMinor = {labels['max_labels_minor']},",
         f"    .placeLabelGapPx = {labels['gap']},",
         f"    .placeLabelRouteOverlapPct = {labels['route_overlap_pct']},",
         f"    .placeLabelMaxWidthPx = {labels['max_width']},",
@@ -640,9 +720,112 @@ def gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, lan
         f"    .puckRadiusPx = {radius},",
         f"    .puckRingPx = {ring},",
         f"    .puckArrowPx = {arrow},",
+        "}",
+    ]
+    return lines
+
+
+def compile_style(style):
+    """Every number MapStyle holds, for one already-resolved style dict.
+
+    Takes a style with no `when` left in it (mapstyle_variants.resolve), so
+    every validation below runs per variant: a rung that hides a class the
+    hard way, or patches a width past 255, fails the build at that rung and
+    names it.
+    """
+    widths, casings, patterns, dashes, gaps, tones = road_widths(style)
+    return (widths, casings, patterns, dashes, gaps, tones,
+            buildings(style), water(style), landuse(style), place_dot_diameter(style),
+            place_labels(style), points_style(style), route(style),
+            *marker_anchor(style), puck(style))
+
+
+def _print_summary(bundle, what):
+    (widths, casings, _patterns, _dashes, _gaps, _tones, buildings_px, water_px, landuse_px, dot_diameter,
+     labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
+    drawn = sum(1 for w in widths if w)
+    cased = sum(1 for c in casings if c)
+    print(f"gen_mapstyle.py: {what}: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
+          f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
+          f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
+    print(f"gen_mapstyle.py: {what}: POI marks {'safety' if points_px[0] else '-'}"
+          f"{'+landmark' if points_px[1] else ''} square {points_px[2]}px, glyph {points_px[4]}px, "
+          f"flag {points_px[5]}px, cluster radius {points_px[6]}px cell {points_px[7]}px")
+    print(f"gen_mapstyle.py: {what}: buildings {'on' if buildings_px[0] else 'off'} "
+          f"(outline {buildings_px[1]}px, tone {buildings_px[2]}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
+          f"water {'on' if water_px[0] else 'off'} "
+          f"(widths {water_px[1]}, dashes {water_px[3]}/{water_px[4]}, tone {water_px[5]}, "
+          f"hatch {water_px[6]}/{water_px[7]}px{' white' if water_px[8] else ''})")
+    widest_road = max(widths)
+    if route_px[0] and route_px[0] <= widest_road:
+        print(f"gen_mapstyle.py: warning -- {what}: route width {route_px[0]}px is not wider than the "
+              f"widest road ({widest_road}px); width is the only thing telling them apart on 1-bit e-ink")
+    print(f"gen_mapstyle.py: {what}: route {route_px[0]}px wide, arrow {route_px[1]}x{route_px[2]}px")
+    knockout = "box" if labels["bg"] else "halo {}px".format(labels["halo"])
+    print(f"gen_mapstyle.py: {what}: place labels {labels['px']}px{' bold' if labels['bold'] else ''} major / "
+          f"{labels['minor_px']}px{' bold' if labels['minor_bold'] else ''} minor, max {labels['max_labels']} ({labels['max_labels_major']} major / {labels['max_labels_minor']} minor), "
+          f"{knockout}, gap {labels['gap']}px, "
+          f"route overlap <= {labels['route_overlap_pct']}%, width cap {labels['max_width']}px")
+    if landuse_px[0]:
+        print(f"gen_mapstyle.py: {what}: landuse on -- forest tone {landuse_px[2][1]}/hatch {landuse_px[3][1]}, "
+              f"built_up tone {landuse_px[2][2]}/hatch {landuse_px[3][2]}")
+    else:
+        print(f"gen_mapstyle.py: {what}: landuse off")
+
+
+def _indent(lines, spaces):
+    pad = " " * spaces
+    return [pad + line if line else line for line in lines]
+
+
+def gen_cpp(base_bundle, variants, index):
+    """The whole generated header: the base style, the variant table, the index.
+
+    `variants` is the deduplicated list of resolved styles, `index[mode][step]`
+    the slot each (mode, rung) pair uses. The device does one array lookup --
+    every rule in mapstyle.json was already evaluated here.
+    """
+    lines = [
+        "#pragma once",
+        "",
+        f"// {_HEADER_NOTE}",
+        "",
+        '#include "MapRideMode.h"',
+        '#include "MapStyle.h"',
+        "",
+        "// The style before any mode or rung has its say. This is what an",
+        "// invariant is read off -- MapViewport's marker anchor is a constexpr",
+        "// built on it, and `when` is banned under `device` for exactly that",
+        "// reason (scripts/mapstyle_variants.py).",
+        "inline constexpr MapStyle kDefaultMapStyle =",
+    ]
+    lines += _indent(_style_literal(base_bundle), 4)
+    lines[-1] = lines[-1] + ";"
+    lines += [
+        "",
+        "// One entry per style that actually differs. Two (mode, rung) pairs whose",
+        "// resolved styles are identical share a slot, so a mapstyle.json with no",
+        "// `when` blocks compiles to exactly one struct here.",
+        f"inline constexpr MapStyle kMapStyleVariants[{len(variants)}] = {{",
+    ]
+    for slot, (bundle, users) in enumerate(variants):
+        who = ", ".join(f"{mode}@{step}" for mode, step in users)
+        lines.append(f"    // [{slot}] {who}")
+        body = _indent(_style_literal(bundle), 4)
+        body[-1] = body[-1] + ","
+        lines += body
+    lines += [
         "};",
         "",
+        "// kMapStyleIndex[mode][rung] -- MapRideMode order (Ride, Hike, Cycle),",
+        "// MapViewport's zoom ladder order. mapStyleFor() in MapStyleTable.h is the",
+        "// only thing that should read this.",
+        f"inline constexpr uint8_t kMapStyleIndex[kMapRideModeCount][kMapZoomStepCount] = {{",
     ]
+    for mode_id, mode_name in enumerate(mapstyle_variants.MODE_ORDER):
+        row = ", ".join(str(index[mode_id][step]) for step in range(mapstyle_variants.ZOOM_STEPS))
+        lines.append(f"    {{{row}}},  // {mode_name}")
+    lines += ["};", ""]
     return "\n".join(lines)
 
 
@@ -652,55 +835,62 @@ def main(repo_root, style_path=None, output_path=None):
     if output_path is None:
         output_path = os.path.join(repo_root, "src", "activities", "map", "MapStyleDefaults.h")
 
+    _load_variants(repo_root)
+
     if not os.path.isfile(style_path):
         sys.exit(f"gen_mapstyle.py: {style_path} not found")
 
     with open(style_path) as f:
         style = json.load(f)
 
-    widths, casings, patterns, dashes, gaps = road_widths(style)
-    buildings_px = buildings(style)
-    water_px = water(style)
-    landuse_px = landuse(style)
-    dot_diameter = place_dot_diameter(style)
-    labels = place_labels(style)
-    points_px = points_style(style)
-    route_px = route(style)
-    marker_x, marker_y = marker_anchor(style)
-    puck_px = puck(style)
+    try:
+        base_style = mapstyle_variants.base(style)
+    except mapstyle_variants.VariantError as error:
+        sys.exit(f"gen_mapstyle.py: {error}")
+    base_bundle = compile_style(base_style)
+    _print_summary(base_bundle, "base")
 
-    drawn = sum(1 for w in widths if w)
-    cased = sum(1 for c in casings if c)
-    print(f"gen_mapstyle.py: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
-          f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
-          f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
-    print(f"gen_mapstyle.py: POI marks {'safety' if points_px[0] else '-'}"
-          f"{'+landmark' if points_px[1] else ''} square {points_px[2]}px, glyph {points_px[4]}px, "
-          f"flag {points_px[5]}px, cluster radius {points_px[6]}px cell {points_px[7]}px")
-    print(f"gen_mapstyle.py: buildings {'on' if buildings_px[0] else 'off'} "
-          f"(outline {buildings_px[1]}px, tone {buildings_px[2]}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
-          f"water {'on' if water_px[0] else 'off'} "
-          f"(widths {water_px[1]}, dashes {water_px[3]}/{water_px[4]}, tone {water_px[5]}, "
-          f"hatch {water_px[6]}/{water_px[7]}px{' white' if water_px[8] else ''})")
-    widest_road = max(widths)
-    if route_px[0] and route_px[0] <= widest_road:
-        print(f"gen_mapstyle.py: warning -- route width {route_px[0]}px is not wider than the widest road "
-              f"({widest_road}px); width is the only thing telling them apart on 1-bit e-ink")
-    print(f"gen_mapstyle.py: route {route_px[0]}px wide, arrow {route_px[1]}x{route_px[2]}px")
-    knockout = "box" if labels["bg"] else "halo {}px".format(labels["halo"])
-    print(f"gen_mapstyle.py: place labels {labels['px']}px{' bold' if labels['bold'] else ''} major / "
-          f"{labels['minor_px']}px{' bold' if labels['minor_bold'] else ''} minor, max {labels['max_labels']}, "
-          f"{knockout}, gap {labels['gap']}px, "
-          f"route overlap <= {labels['route_overlap_pct']}%, width cap {labels['max_width']}px")
-    if landuse_px[0]:
-        print(f"gen_mapstyle.py: landuse on -- forest tone {landuse_px[2][1]}/hatch {landuse_px[3][1]}, "
-              f"built_up tone {landuse_px[2][2]}/hatch {landuse_px[3][2]}")
-    else:
-        print("gen_mapstyle.py: landuse off")
+    # Resolve every (mode, rung) pair and deduplicate by the generated text.
+    # The dedup is what keeps this cheap: a style with no variants at all is
+    # one struct, and a style that varies only the road widths at the coarse
+    # rungs is a handful.
+    variants = []
+    by_text = {}
+    index = [[0] * mapstyle_variants.ZOOM_STEPS for _ in mapstyle_variants.MODE_ORDER]
+    for mode_id, mode_name in enumerate(mapstyle_variants.MODE_ORDER):
+        for step in range(mapstyle_variants.ZOOM_STEPS):
+            try:
+                resolved = mapstyle_variants.resolve(style, mode_name, step)
+            except mapstyle_variants.VariantError as error:
+                sys.exit(f"gen_mapstyle.py: {mode_name}@{step}: {error}")
+            bundle = compile_style(resolved)
+            text = "\n".join(_style_literal(bundle))
+            slot = by_text.get(text)
+            if slot is None:
+                slot = len(variants)
+                by_text[text] = slot
+                variants.append((bundle, []))
+            variants[slot][1].append((mode_name, step))
+            index[mode_id][step] = slot
+
+    # The marker anchor must be the same everywhere: MapViewport turns it into
+    # a constexpr and the tile arithmetic is built on it. `when` is banned under
+    # `device`, so this can only trip on a hand-edited generator -- it is here
+    # because the failure would otherwise be a viewport that disagrees with
+    # itself at one rung, which is very hard to see on a panel.
+    for bundle, users in variants:
+        if (bundle[12], bundle[13]) != (base_bundle[12], base_bundle[13]):
+            sys.exit(f"gen_mapstyle.py: {users[0][0]}@{users[0][1]}: marker anchor differs from the base "
+                     f"style -- the viewport anchor cannot vary by mode or rung")
+
+    print(f"gen_mapstyle.py: {len(variants)} distinct style(s) across "
+          f"{len(mapstyle_variants.MODE_ORDER)} modes x {mapstyle_variants.ZOOM_STEPS} rungs")
+    if len(variants) > 1:
+        for slot, (bundle, users) in enumerate(variants):
+            _print_summary(bundle, f"[{slot}] {users[0][0]}@{users[0][1]}")
 
     with open(output_path, "w") as f:
-        f.write(gen_cpp(widths, casings, patterns, dashes, gaps, buildings_px, water_px, landuse_px, dot_diameter, labels,
-                        points_px, route_px, marker_x, marker_y, puck_px))
+        f.write(gen_cpp(base_bundle, variants, index))
     print(f"gen_mapstyle.py: wrote {output_path}")
 
 

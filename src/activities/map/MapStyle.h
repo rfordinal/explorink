@@ -60,6 +60,22 @@ struct MapStyle {
   // with real space -- one number for both would force the same rhythm.
   uint8_t roadGapPx[kClassEnumSlots];
 
+  // Dither tone for the inside of a cased road, layers.roads.rules[]'s
+  // `fill: "tone"` plus `tone`. `None` leaves the interior white, which is what
+  // every cased road did until 2026-08-25.
+  //
+  // What it is for: a wide road drawn as two black edges with white between
+  // them is a heavy mark, and at the coarse rungs a lot of them is most of the
+  // ink. Paper maps draw a motorway as a thin outline with a *shaded* middle
+  // instead, so it reads as a wide ribbon rather than a black band. On 1-bit
+  // the shading is the same screen-anchored dither an area fill uses
+  // (MapAreaTone), so a road and a built-up area cannot disagree about what
+  // grey means.
+  //
+  // Needs `casing > 0` and an interior at least 2 px wide: a 1 px interior
+  // cannot carry a period-2 pattern, let alone the period-3 stipple.
+  MapAreaTone roadFillTone[kClassEnumSlots];
+
   // layers.buildings. A ring is drawn as an optional outline plus a hatch --
   // never a solid fill, which on 1-bit swallows the roads around it
   // (docs/map-render-spec.md).
@@ -171,6 +187,22 @@ struct MapStyle {
   // `placeLabelMaxWidthPx` caps a label's text width; a longer name is
   // truncated with an ellipsis. 0 means no cap.
   uint8_t placeMaxLabels;
+  // Per-tier caps, `max_labels_major` and `max_labels_minor`. Major is city and
+  // town (place rank <= 1), minor is everything smaller.
+  //
+  // Why a cap per tier and not just the total: the total is a cost backstop and
+  // says nothing about what a frame should look like. "Six towns and two
+  // villages" and "two towns and six villages" are the same total and different
+  // maps, and which one is right changes with the rung -- at 45 m/px the towns
+  // are the skeleton and the villages are texture, at 6 m/px it is the other
+  // way round.
+  //
+  // Absent from the style file means "the total, i.e. no extra restriction", so
+  // a style that never mentions them behaves exactly as before. 0 means none of
+  // that tier, which is a real thing to ask for: a rung that names towns only.
+  // `placeMaxLabels` still applies on top of both.
+  uint8_t placeMaxLabelsMajor;
+  uint8_t placeMaxLabelsMinor;
   uint8_t placeLabelGapPx;
   uint8_t placeLabelRouteOverlapPct;
   uint16_t placeLabelMaxWidthPx;

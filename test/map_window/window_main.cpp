@@ -536,7 +536,8 @@ int main(int argc, char** argv) {
     request.heading = headingStep;
     request.zoom = zoomStep;
     request.markerY = anchorRow;
-    request.classMask = modeMasks.forMode(mode);
+    request.mode = mode;
+    request.classMask = modeMasks.forMode(mode, zoomStep);
     request.drawPoints = drawPoints;
     request.pointCategoryMask = pointCategoryMask;
     request.drawBuildings = drawBuildings;
@@ -685,7 +686,7 @@ int main(int argc, char** argv) {
         // MapActivity.cpp:4424's line, same wording.
         pushLog(logLines, "MAP mode %s: zoom step %u, marker step %u, class mask 0x%08lx", mapRideModeName(mode),
                 (unsigned)zoomStepFor[static_cast<int>(mode)], (unsigned)markerStepFor[static_cast<int>(mode)],
-                (unsigned long)modeMasks.forMode(mode));
+                (unsigned long)modeMasks.forMode(mode, zoomStepFor[static_cast<int>(mode)]));
         applySettingChange("mode");
         break;
       case Act::Poi:

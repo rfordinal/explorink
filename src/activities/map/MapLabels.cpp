@@ -190,6 +190,10 @@ bool fitName(IMapCanvas& canvas, const char* name, const int sizePx, const bool 
 
 void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const int anchorX, const int anchorY) {
   if (place.name == nullptr || place.name[0] == '\0') return;
+  // A place whose dot is off the panel cannot be named -- draw() skips it -- so
+  // letting it win a candidate slot only starves a place that could have been.
+  // Same test draw() applies, moved to where it costs something.
+  if (!scratch.onScreen(place.x, place.y)) return;
 
   MapLabelCandidate incoming;
   incoming.x = place.x;
@@ -200,6 +204,28 @@ void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const 
   const long distSq = dx * dx + dy * dy;
   incoming.distSq = distSq > 0xFFFFFFFF ? 0xFFFFFFFFu : static_cast<uint32_t>(distSq);
   std::snprintf(incoming.name, MapLabelCandidate::kNameLen, "%s", place.name);
+
+  // The cell's own quota, checked before the global one. Without it the whole
+  // buffer goes to whichever part of the panel happens to be densest, which
+  // over Prague at rung 6 is the ring around the marker (MapLabels.h,
+  // kPerCell). Inside a cell the order is unchanged: rank, then distance.
+  const int cell = scratch.cellOf(place.x, place.y);
+  if (cell >= 0) {
+    int inCell = 0, worstInCell = -1;
+    for (int i = 0; i < scratch.count; ++i) {
+      if (scratch.cellOf(scratch.candidates[i].x, scratch.candidates[i].y) != cell) continue;
+      ++inCell;
+      worstInCell = i;  // the array is sorted, so the last match is the worst
+    }
+    if (inCell >= MapLabelScratch::kPerCell) {
+      if (worstInCell < 0 || !betterCandidate(incoming, scratch.candidates[worstInCell])) return;
+      // Drop the cell's worst so the incoming one can take its place, rather
+      // than evicting the globally worst -- which would be in some other cell
+      // and would undo the spread this cap exists to create.
+      for (int i = worstInCell; i + 1 < scratch.count; ++i) scratch.candidates[i] = scratch.candidates[i + 1];
+      --scratch.count;
+    }
+  }
 
   if (scratch.count == MapLabelScratch::kMaxCandidates &&
       !betterCandidate(incoming, scratch.candidates[scratch.count - 1])) {
@@ -217,9 +243,8 @@ void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const 
   if (scratch.count < MapLabelScratch::kMaxCandidates) ++scratch.count;
 }
 
-void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style,
-                     const uint8_t rungMaxLabels) {
-  const uint8_t maxLabels = style.placeMaxLabels < rungMaxLabels ? style.placeMaxLabels : rungMaxLabels;
+void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style) {
+  const uint8_t maxLabels = style.placeMaxLabels;
   if (maxLabels == 0) return;
   if (style.placeLabelPx == 0 && style.placeLabelMinorPx == 0) return;
 
@@ -239,6 +264,10 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
   const int knockoutPad = style.placeLabelBg ? style.placeLabelBgPadPx + style.placeLabelBgBorderPx
                                              : static_cast<int>(style.placeLabelHaloPx);
 
+  // Per-tier counters. Candidates are already sorted rank-first (sortKey
+  // above), so the majors are offered before the minors and a major can never
+  // be crowded out by a village that happened to fit first.
+  int placedMajor = 0, placedMinor = 0;
   for (int i = 0; i < scratch.count; ++i) {
     if (scratch.placed >= maxLabels) break;
     const MapLabelCandidate& candidate = scratch.candidates[i];
@@ -255,6 +284,12 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
     }
 
     const bool minor = candidate.rank > kMajorMaxRank;
+    // The tier's own cap. Tested before the name is measured and before a
+    // position is searched for, so a tier that is full costs nothing per
+    // candidate -- and a skipped candidate is not a *dropped* label: it was
+    // never a candidate for this frame, the same reasoning as the off-screen
+    // test above.
+    if (minor ? placedMinor >= style.placeMaxLabelsMinor : placedMajor >= style.placeMaxLabelsMajor) continue;
     const int sizePx = minor ? style.placeLabelMinorPx : style.placeLabelPx;
     const bool bold = minor ? style.placeLabelMinorBold : style.placeLabelBold;
     if (sizePx == 0) continue;
@@ -327,6 +362,7 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       canvas.drawText(textBox.x, textBox.y, text, sizePx, bold, MapInk::Black);
       scratch.taken.markRect(knockout.x, knockout.y, knockout.w, knockout.h);
       ++scratch.placed;
+      if (minor) ++placedMinor; else ++placedMajor;
       drew = true;
       break;
     }
