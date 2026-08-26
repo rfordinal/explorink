@@ -2427,6 +2427,23 @@ void MapActivity::loop() {
   if (optionPopup_.handleInput(mappedInput, [this] { optionPopup_.processRender(renderer, mappedInput); })) {
     if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       suppressBackRelease_ = true;
+    }
+    if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      suppressConfirmRelease_ = true;
+    }
+    const bool justClosed = popupWasActive && !optionPopup_.isActive();
+    if (justClosed && mapMenuModeChanged_) {
+      // The Mode row cycled mode_ while the menu stayed open (openMapMenu()'s
+      // modeIdx is exempt from OptionPopup's auto-close) -- however the menu
+      // just closed, Back or a tap outside, menuBackdrop_ is the frame from
+      // before that change. Restoring it would put the old mode's map back,
+      // so a real redraw settles it instead.
+      mapMenuModeChanged_ = false;
+      dropMenuBackdrop();
+      redrawDueMs_ = 0;
+      showBusy();
+      renderCurrent();
+    } else if (justClosed && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       // handleInput() already set active=false and fired the redraw callback
       // above, but that callback is optionPopup_.processRender(), which is a
       // no-op once inactive -- nothing repaints the map underneath, and the
@@ -2441,14 +2458,12 @@ void MapActivity::loop() {
         showBusy();  // the popup's pixels are still up; say the redraw started
         renderCurrent();
       }
+    } else if (justClosed && menuBackdrop_) {
+      // Dismissed by a tap outside the dialog (touch panels): no row callback
+      // ran and no button edge lands in the branch above, so a backdrop still
+      // held here is the only sign the map is sitting under the popup's pixels.
+      restoreMenuBackdrop();
     }
-    if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      suppressConfirmRelease_ = true;
-    }
-    // Dismissed by a tap outside the dialog (touch panels): no row callback
-    // ran and no button edge lands in either branch above, so a backdrop still
-    // held here is the only sign the map is sitting under the popup's pixels.
-    if (popupWasActive && !optionPopup_.isActive() && menuBackdrop_) restoreMenuBackdrop();
     return;
   }
 
@@ -3031,7 +3046,7 @@ void MapActivity::openMapMenu() {
         // buffer is not held across a tile read.
         // The pins list opens over the same map, so it keeps the backdrop --
         // openPinsMenu() gives it up itself if its own dialog outgrows the rect.
-        if (idx != zoomModeIdx && idx != pinsIdx && idx != nearbyIdx) dropMenuBackdrop();
+        if (idx != zoomModeIdx && idx != pinsIdx && idx != nearbyIdx && idx != modeIdx) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
         } else if (idx == pinsIdx) {
@@ -3061,12 +3076,16 @@ void MapActivity::openMapMenu() {
           showBusy();
           renderRouteOverview();
         } else if (idx == modeIdx) {
-          // One Select steps ride->hike->cycle->ride and closes, same as every
-          // other row -- picking a mode is a deliberate, one-shot choice, not the
-          // start of a cycling gesture. A rider who wants to step again presses
-          // CONFIRM again. mapRideModeName()'s array order.
+          // Steps ride->hike->cycle->ride, one CONFIRM per step, and the menu
+          // stays open (setKeepOpenRows() below) -- a rider steps to the mode
+          // they want and leaves deliberately (Back, or any other row), rather
+          // than one press picking blind and reloading behind it. mode_ is
+          // committed and saved right away; the map redraw itself is deferred
+          // to loop()'s menu-close handling, off mapMenuModeChanged_.
           const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
           switchMode(static_cast<MapRideMode>(next));
+          optionPopup_.setRowValue(modeIdx, I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
+          mapMenuModeChanged_ = true;
         } else if (idx == zoomModeIdx) {
           // No new frame: the setting has no runtime effect yet (auto zoom is
           // not wired up, docs/map-data-spec.md), so the map underneath is
@@ -3122,6 +3141,13 @@ void MapActivity::openMapMenu() {
     std::vector<uint8_t> disabled(options.size(), 0);
     disabled[static_cast<size_t>(nearbyIdx)] = 1;
     optionPopup_.setDisabledRows(std::move(disabled));
+  }
+  // Mode is the one row a rider steps through rather than picks once --
+  // see the modeIdx branch above.
+  {
+    std::vector<uint8_t> keepOpen(options.size(), 0);
+    keepOpen[static_cast<size_t>(modeIdx)] = 1;
+    optionPopup_.setKeepOpenRows(std::move(keepOpen));
   }
   // After show() (the layout the rect comes from needs the rows) and before
   // the first draw (the framebuffer still holds the map).
@@ -4624,12 +4650,11 @@ void MapActivity::switchMode(MapRideMode newMode) {
   mode_ = newMode;
   LOG_DBG(kLogTag, "menu: mode -> %s", mapRideModeName(mode_));
   publishLadders();
-  // A deliberate menu pick, not a ladder step -- redraw now, same as the
-  // console's `mode` command (syncLaddersFromConsole()), not coalesced.
-  redrawDueMs_ = 0;
-  showBusy();
-  renderCurrent();
   armSave();
+  // No redraw here: the one caller is openMapMenu()'s Mode row, which keeps
+  // the menu open across a cycle (setKeepOpenRows()) and owes the map a
+  // redraw only once the rider actually leaves that row -- loop() does it
+  // when the menu closes, off mapMenuModeChanged_.
 }
 
 void MapActivity::stepZoom(int delta) {

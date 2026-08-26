@@ -137,6 +137,29 @@ class OptionPopup {
     layoutValid = false;
   }
 
+  // Rows that fire onSelect without closing the popup -- for a row whose
+  // value is a small cycle (ride/hike/cycle) the rider steps through in
+  // place, one CONFIRM per step, instead of one press picking blind and
+  // reloading behind it. The caller decides when to leave: Back or a tap
+  // outside still close the popup as normal.
+  //
+  // Set after a show*() call, which clears it -- same rule as
+  // setDisabledRows().
+  void setKeepOpenRows(std::vector<uint8_t> keepOpen) {
+    ownedKeepOpen = std::move(keepOpen);
+    ownedKeepOpen.resize(ownedStrings.size());
+  }
+
+  // Updates one row's value column in place, for a keep-open row whose
+  // onSelect callback just changed what it shows -- without this the popup
+  // would keep the value it opened with until the caller show()s it again,
+  // which setKeepOpenRows() exists precisely to avoid.
+  void setRowValue(int index, std::string value) {
+    if (index < 0 || index >= static_cast<int>(ownedValues.size())) return;
+    ownedValues[index] = std::move(value);
+    layoutValid = false;
+  }
+
   // Per-row actions, opt-in.
   //
   // The front Left and Right buttons are **not free** in a popup: they are
@@ -239,7 +262,7 @@ class OptionPopup {
         // route the button walk refuses.
         if (isRowDisabled(i)) return true;
         selectedIndex = i;
-        active = false;
+        if (!isRowKeepOpen(i)) active = false;
         if (onSelectCallback) onSelectCallback(selectedIndex);
         requestUpdate();
         return true;
@@ -287,7 +310,7 @@ class OptionPopup {
       // Belt and braces: the walk never leaves the selection on a disabled row,
       // but a caller can disable the row the popup opened on.
       if (isRowDisabled(selectedIndex)) return true;
-      active = false;
+      if (!isRowKeepOpen(selectedIndex)) active = false;
       if (onSelectCallback) onSelectCallback(selectedIndex);
       requestUpdate();
       return true;
@@ -444,10 +467,15 @@ class OptionPopup {
     minDialogWidth = 0;
     minVisibleRows = 0;
     ownedDisabled.clear();
+    ownedKeepOpen.clear();
   }
 
   bool isRowDisabled(const int index) const {
     return index >= 0 && index < static_cast<int>(ownedDisabled.size()) && ownedDisabled[index] != 0;
+  }
+
+  bool isRowKeepOpen(const int index) const {
+    return index >= 0 && index < static_cast<int>(ownedKeepOpen.size()) && ownedKeepOpen[index] != 0;
   }
 
   bool anyRowEnabled() const {
@@ -467,6 +495,8 @@ class OptionPopup {
   std::vector<std::string> ownedStrings;
   // Empty unless setDisabledRows() was called; sized to ownedStrings there.
   std::vector<uint8_t> ownedDisabled;
+  // Empty unless setKeepOpenRows() was called; sized to ownedStrings there.
+  std::vector<uint8_t> ownedKeepOpen;
   // Empty unless showWithValues() was used; sized to ownedStrings there.
   std::vector<std::string> ownedValues;
   bool leftAligned = false;
