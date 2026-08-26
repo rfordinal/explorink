@@ -105,6 +105,13 @@ struct MapStyle {
   // `waterEnabled` gates the read, not the draw -- see buildings above.
   bool waterEnabled;
   uint8_t waterLinePx[kWaterClassSlots];
+  // Border thickness for a water *area* -- a lake's ring -- per class.
+  //
+  // Separate from waterLinePx since 2026-08-26. The two were one number, so a
+  // lake's border and a river's stroke width could not be set apart: widen the
+  // river and the lake outline widened with it. Defaults to the class's line
+  // width when a style says nothing, so an existing style draws the same.
+  uint8_t waterOutlinePx[kWaterClassSlots];
   // Dash length per water class, 0 for a solid stroke. Same reason as
   // roadDashPx: a solid black line is a road, and a stream drawn as one sends
   // the eye down the river instead of the road beside it.
@@ -132,6 +139,14 @@ struct MapStyle {
   MapAreaTone landuseTone[kLanduseClassSlots];
   MapAreaFill::Pattern landuseHatch[kLanduseClassSlots];
   uint8_t landuseHatchSpacingPx[kLanduseClassSlots];
+  // A dashed boundary, per landuse class. 0 in either field means solid.
+  //
+  // Dashes on an area outline exist for one reason: a forest edge on foot is a
+  // real thing to navigate by, and a dot tone ending is not an edge -- nothing
+  // says whether the wood stops there or the mapping does. A boundary line
+  // settles it (docs/map-style.md, "Borders").
+  uint8_t landuseOutlineDashPx[kLanduseClassSlots];
+  uint8_t landuseOutlineGapPx[kLanduseClassSlots];
 
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.

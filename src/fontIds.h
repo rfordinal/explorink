@@ -13,6 +13,14 @@
 #define UI_12_FONT_ID (1635686837)
 #define SMALL_FONT_ID (674098198)
 
+// Added by hand, 2026-08-26, and deliberately NOT by build-font-ids.sh.
+// That script regenerates every id from the current font headers, and the
+// headers have moved since the committed ids were produced -- reproducing its
+// hash over today's files gives different numbers for UI_10, UI_12 and SMALL.
+// So a regeneration would renumber faces that are working. This is the same
+// formula (sum of per-file SHA-256 mod 2^32 minus 2^31) over the one new file.
+#define MAP_SMALL_FONT_ID (-60068520)
+
 // Font ID 0 is reserved as the "not found" sentinel.
 // Guard against any hash accidentally producing 0.
 static_assert(NOTOSERIF_12_FONT_ID != 0, "Font ID collision with sentinel");

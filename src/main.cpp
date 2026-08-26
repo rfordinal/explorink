@@ -104,6 +104,13 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, 
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
 
+// The map's own small face: a 12 px line, where the smallest face before it was
+// 23 px. It exists for the contour height numbers, which have to be readable
+// without becoming the loudest thing on a terrain frame. Regular only -- a
+// number has no second tier (docs/place-labels.md, "The font").
+EpdFont mapSmallFont(&ubuntu_5_regular);
+EpdFontFamily mapSmallFontFamily(&mapSmallFont);
+
 EpdFont ui10RegularFont(&ubuntu_10_regular);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
@@ -300,6 +307,7 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
+  renderer.insertFont(MAP_SMALL_FONT_ID, mapSmallFontFamily);
 
   // Discover and load SD card fonts
   sdFontSystem.begin(renderer);
