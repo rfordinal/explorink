@@ -265,7 +265,23 @@ environment variable early enough).
 Nothing builds on the phone. The APK is cross-compiled on the laptop; gradle
 only packages the `.so`.
 
-## BLE console over real radio, 2026-08-24
+## BLE console over real radio, 2026-08-24 -- `[OPRAVA 2026-08-26]` this never ran with the shim off
+
+**Corrected 2026-08-26.** The claim below was that a plain `am start`, port
+unset, still reaches a real Android radio. Re-tested against both the S10 and
+a Galaxy S8 with `CROSSPOINT_SIM_BLE_PORT` genuinely cleared
+(`tools/android/set_env.sh --clear`) -- neither phone advertised anything a
+laptop `BleakScanner` could see. `adb shell run-as org.explorink.simulator cat
+files/sim-env` on the S10, checked *before* touching it this time, read
+`CROSSPOINT_SIM_BLE_PORT=8765`: a leftover from earlier bridge testing that
+was never cleared, so the 2026-08-24 run below almost certainly went through
+the bridge without anyone checking for it. There is also no code path that
+could explain the port-unset case working -- the simulator repo's only
+Android code that calls `BluetoothLeAdvertiser`/`BluetoothGattServer` is
+`BleBridge.java`, gated on the same port being set
+(`firmware/explorink-simulator/ANDROID.md`, `[OPRAVA 2026-08-26]`). **BLE on
+Android always needs the bridge; check `sim-env` before trusting a
+"no bridge" result in this file or that one.**
 
 The Android build's NimBLE is real by default -- the TCP shim only exists
 when `CROSSPOINT_SIM_BLE_PORT` is set, and a plain `am start` leaves it
@@ -274,7 +290,7 @@ console straight over the phone's own advertised GATT service: `zoom N`,
 `mode ride`, `pos <lat> <lon> heading <N>`, `info` all round-tripped against
 a Samsung S10 with no bridge and no `adb forward`. Confirms the Android
 build is a real test target for anything the console can reach, not just a
-visual check.
+visual check. **This did not hold up -- see the correction just above.**
 
 Also reproduced from a different firmware branch than the 2026-08-23
 baseline (`scripts/android_build.py --out .../jniLibs/arm64-v8a/libmain.so`
