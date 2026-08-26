@@ -834,10 +834,20 @@ Today's "off" measures near zero only because cutting the latch
 **Consequence for every number in this file.** If that floor is 1 mA or more, the
 SoC's 5 uA deep sleep is irrelevant, and on X4 it is the only term left to argue
 about at all now that the crystal is ruled out.
-It has never been measured and **now it never will be**: measuring it needs a uA
-meter in series with the battery, and no device is ever opened (parent
+It has never been measured and **on X4 and X3 it never will be**: measuring it needs
+a uA meter in series with the battery, and no device is ever opened (parent
 `CLAUDE.md`, "Never open a device. Ever. Add to it instead.", 2026-08-22). The
 `power.csv` instrument cannot see microamps and a USB meter charges the cell.
+
+**The "never" is about devices, not about this project.** The parent rule's scope was
+clarified 2026-08-26: it covers a finished product with a case and a cell inside it,
+not a bare development board whose cell arrives on a connector. So this same floor
+**is** measurable on the LilyGo T5 E-Paper S3 Pro, whose cell lands on connector `P2`
+and which already carries a 10 mOhm shunt into a BQ27220 -- see
+`power-test-runbook.md`, "But the rule stops at a finished product". That number will
+not transfer to an X4: different silicon, different rails, a different PMIC. What it
+gives is the first floor this project can measure at all, and a method that works the
+next time hardware arrives on a connector.
 
 So the floor is not an open question with a plan behind it, it is a **permanent
 upper bound**: whatever it is, it is below the cheapest state a run has reached,
