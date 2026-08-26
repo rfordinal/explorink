@@ -147,7 +147,7 @@ const MapTileReader::LayerEntry* MapTileReader::findLayer(Layer layer) const {
 }
 
 uint32_t MapTileReader::contentId() const {
-  // Six u32 little endian, in layer id order 1..6, folded in one pass -- the
+  // Seven u32 little endian, in layer id order 1..7, folded in one pass -- the
   // byte sequence mapbuilder builds with struct.pack("<I", ...) per layer in
   // LAYER_IDS order (content_id_from_layer_crcs). Built on the stack rather
   // than fed byte by byte so the layout is visible and matches the Python

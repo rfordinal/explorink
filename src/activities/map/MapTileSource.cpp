@@ -251,6 +251,13 @@ bool MapTileSource::beginLanduse() { return startPass(MapTileReader::Layer::Land
 
 bool MapTileSource::nextLanduse(MapWayRef& out) { return nextWayRecord(out, false); }
 
+bool MapTileSource::beginContours() { return startPass(MapTileReader::Layer::Contours); }
+
+// `false`: no mode mask. The mask is a bitmap over the road class enum and a
+// contour's class byte belongs to MapContourClass, so testing it would filter
+// contours by whether some unrelated road class is drawn.
+bool MapTileSource::nextContour(MapWayRef& out) { return nextWayRecord(out, false); }
+
 void MapTileSource::computeScreenBoxForTile() {
   screenBoxValid_ = false;
   if (config_.screenWidth <= 0 || config_.screenHeight <= 0) return;

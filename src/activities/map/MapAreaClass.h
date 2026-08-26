@@ -40,5 +40,17 @@ enum class MapWaterClass : uint8_t {
 // Slots to size a per-class style table with. Small on purpose -- these are not
 // the road enum's 32, and a table indexed by one of these costs a handful of
 // bytes of flash.
+// Contour layer (MapTileReader::Layer::Contours). Mirrors mapbuilder's
+// contour_class.py. No `unknown`, like landuse: the builder writes one of
+// these two or nothing, so a 0 is a corrupt byte and both passes skip it.
+//
+// An **index contour** is every Nth line, drawn heavier so the eye can count.
+// Which N is a build-time decision per LOD, not something the device knows.
+enum class MapContourClass : uint8_t {
+  Minor = 1,
+  Index = 2,
+};
+
 inline constexpr uint8_t kLanduseClassSlots = 4;
 inline constexpr uint8_t kWaterClassSlots = 4;
+inline constexpr uint8_t kContourClassSlots = 4;

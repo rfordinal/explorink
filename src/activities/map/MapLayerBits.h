@@ -21,9 +21,13 @@
 // So: an explicit 128-bit set, sized by static_assert against the tile cap, and
 // no guard at the call sites beyond what this offers.
 struct MapLayerBits {
-  // Layer ids run 1..6 (MapTileReader::Layer), so 7 slots per tile including
+  // Layer ids run 1..7 (MapTileReader::Layer), so 8 slots per tile including
   // the unused 0. Same layout crcBitFor() has always produced.
-  static constexpr uint32_t kSlotsPerTile = 7;
+  //
+  // 16 tiles x 8 slots is 128, which is kBitCount exactly. The static_assert
+  // below passes with nothing to spare: the next layer after contours has to
+  // raise kBitCount, it cannot ride on slack that is no longer there.
+  static constexpr uint32_t kSlotsPerTile = 8;
   static constexpr uint32_t kBitCount = 128;
 
   uint64_t lo = 0;

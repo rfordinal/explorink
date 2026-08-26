@@ -120,6 +120,23 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
   }
 }
 
+// One contour class, stroked. Called once per class for the same reason as
+// landuse: minor and index share a single tile layer and sit at different
+// depths, so the heavy line has to land on the fine one and not the other way
+// round. A width of 0 is the style hiding this class at this rung, and it
+// returns before walking the layer rather than reading records to drop them.
+void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style,
+                      const MapContourClass wanted) {
+  const uint8_t index = static_cast<uint8_t>(wanted);
+  if (index >= kContourClassSlots || style.contourWidthPx[index] == 0) return;
+  if (!source.beginContours()) return;
+  MapWayRef line;
+  while (source.nextContour(line)) {
+    if (line.classId != index) continue;
+    strokeWay(canvas, line, style.contourWidthPx[index], MapInk::Black);
+  }
+}
+
 // The route: one thick black polyline, with a filled arrowhead at the far end
 // (docs/map-render-spec.md item 3). Streamed, never collected -- two points are
 // live at a time whatever the route's length (IMapRouteSource.h).
@@ -272,6 +289,17 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
   }
   if (timing) lap(timing->landuseMs, mark);
+
+  // Contours sit over the landuse wash and under everything else. Over, because
+  // a contour hidden under forest hatch is not a contour; under, because a
+  // contour crossing a road or a river must not break it -- black over black is
+  // nothing (docs/map-render-spec.md, "1-bit rules") and the wider feature has
+  // to win. Minor first, so an index line lands on top where the two touch.
+  if (style.contoursEnabled) {
+    drawContourClass(canvas, source, style, MapContourClass::Minor);
+    drawContourClass(canvas, source, style, MapContourClass::Index);
+  }
+  if (timing) lap(timing->contoursMs, mark);
 
   // Both gates read: the style says whether buildings are drawn at all, the view
   // says whether this rung draws them. Either one false and the layer is not

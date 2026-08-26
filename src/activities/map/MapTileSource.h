@@ -93,6 +93,9 @@ class MapTileSource : public IMapSource {
   bool nextWater(MapWayRef& out) override;
   bool beginLanduse() override;
   bool nextLanduse(MapWayRef& out) override;
+
+  bool beginContours() override;
+  bool nextContour(MapWayRef& out) override;
   bool beginPlaces() override;
   bool nextPlace(MapPlaceRef& out) override;
 

@@ -133,6 +133,20 @@ struct MapStyle {
   MapAreaFill::Pattern landuseHatch[kLanduseClassSlots];
   uint8_t landuseHatchSpacingPx[kLanduseClassSlots];
 
+  // layers.contours. Stroke width per contour class (MapContourClass: minor,
+  // index), 0 for a class this rung does not draw -- which is how rung 1 shows
+  // only the 100 m lines and rungs 5-6 only the 500 m ones
+  // (docs/contours-plan.md, "Interval per LOD").
+  //
+  // No tone, no hatch and no dash: a contour is a line, and "a 1 px line under
+  // a checkerboard becomes a dashed line" (docs/map-render-spec.md, "1-bit
+  // rules"), which reads as a footpath. Weight is the only separator there is.
+  //
+  // `contoursEnabled` gates the read, not the draw -- see buildings above. Ride
+  // and cycle resolve it false, so those modes never open the layer at all.
+  bool contoursEnabled;
+  uint8_t contourWidthPx[kContourClassSlots];
+
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.
   uint8_t placeDotDiameterPx;

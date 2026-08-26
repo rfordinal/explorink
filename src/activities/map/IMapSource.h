@@ -87,6 +87,17 @@ class IMapSource {
   virtual bool beginLanduse() = 0;
   virtual bool nextLanduse(MapWayRef& out) = 0;
 
+  // The contour layer. Way records like the area layers, but always open
+  // lines -- a closed contour comes back with its first point repeated and is
+  // still stroked, never filled. `classId` is MapContourClass, and `flags` is
+  // the elevation in metres as an int16 rather than a bit field.
+  //
+  // Walked twice, minor then index, so a heavy line lands on top of a fine one
+  // where they touch -- the same shape as landuse's two class walks. Not
+  // touched by the mode mask: a contour is not a road class.
+  virtual bool beginContours() = 0;
+  virtual bool nextContour(MapWayRef& out) = 0;
+
   virtual bool beginPlaces() = 0;
   virtual bool nextPlace(MapPlaceRef& out) = 0;
 };

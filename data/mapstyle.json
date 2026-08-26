@@ -38,6 +38,38 @@
         }
       ]
     },
+    "contours": {
+      "_comment": "Elevation contours, tile layer_id 7, two classes. A contour is a line of equal height; an index contour is every Nth one, drawn heavier so the eye can count. The tiles carry 20 m lines at the detail LOD with every 5th (100 m) as index, and 100 m lines from regional out with every 5th (500 m) as index (mapbuilder/tilegen/build_config.json). Solid strokes only: a dithered 1 px line reads as dashed and a dashed contour reads as a footpath, so weight is the only separator there is. Drawn over the landuse wash and under buildings, water and roads -- a contour crossing a road must not break it. `enabled: false` for ride and cycle means the layer is never opened, so those modes pay no card read at all. Rung 1 draws only the index lines and rungs 5-6 only the 500 m ones: 20 m at 3 m/px and 100 m at 32-45 m/px are wall to wall on a mountain flank, measured on 480x800 1:1 renders 2026-08-26 (docs/contours-plan.md).",
+      "enabled": true,
+      "rules": [
+        {
+          "match": {
+            "class": ["minor"]
+          },
+          "color": "#000000",
+          "width": 1,
+          "when": [
+            {
+              "steps": [1,5,6],
+              "hidden": true
+            }
+          ]
+        },
+        {
+          "match": {
+            "class": ["index"]
+          },
+          "color": "#000000",
+          "width": 2
+        }
+      ],
+      "when": [
+        {
+          "modes": ["ride","cycle"],
+          "enabled": false
+        }
+      ]
+    },
     "junctions": {
       "_comment": "Junction dots, drawn ONLY along the route. Three filters: within max_dist_px of the route; significant, i.e. require_major means at least one road there is flagged major in the roads layer and not hidden (otherwise every side street and footpath in a village beads the whole route); and no two closer than min_spacing_px along the route. Keyed on the roads layer's `major` flag, NOT on rule width -- width is cosmetic, so thinning the major roads must not silently delete the dots. halo_px is a white ring around each dot, without which they are invisible where they sit on the black route. Sizes in device pixels.",
       "enabled": true,

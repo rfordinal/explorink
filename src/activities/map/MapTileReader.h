@@ -29,7 +29,11 @@ class MapTileReader {
   // this is the number that has to move first when the builder gains a layer.
   // It did on 2026-08-05 (landuse), and until this was 6 every new tile read as
   // an unavailable one -- a whole card of hatch.
-  static constexpr size_t kMaxLayers = 6;
+  // Seven since 2026-08-26, when contours became layer 7. This is also the
+  // slot count contentId() folds over, so raising it changes every tile's
+  // content id -- which is exactly why kFormatVersion went to 4 with it
+  // (docs/contours-plan.md, "What the version bump breaks").
+  static constexpr size_t kMaxLayers = 7;
 
   enum class Layer : uint8_t {
     Water = 1,
@@ -38,6 +42,10 @@ class MapTileReader {
     Places = 4,
     Junctions = 5,
     Landuse = 6,
+    // Contour lines. `classId` is MapContourClass (minor, index) and the
+    // record's `flags` field is the elevation in metres as an int16 -- not a
+    // bit field on this layer (docs/contours-plan.md, "The record").
+    Contours = 7,
   };
 
   struct WayHeader {
@@ -296,7 +304,7 @@ class MapTileReader {
   // dropped from the missing list -- and is then rejected by the reader on the
   // next render and recorded as missing all over again. The transfer is not
   // wasted once; it is wasted on every fetch.
-  static constexpr uint16_t kFormatVersion = 3;
+  static constexpr uint16_t kFormatVersion = 4;
 
  private:
   struct LayerEntry {

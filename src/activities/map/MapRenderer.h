@@ -52,6 +52,7 @@ struct MapViewState {
 struct MapRenderTiming {
   uint32_t (*nowMs)() = nullptr;
   uint32_t landuseMs = 0;
+  uint32_t contoursMs = 0;
   uint32_t buildingsMs = 0;
   uint32_t waterMs = 0;
   uint32_t roadsMs = 0;
