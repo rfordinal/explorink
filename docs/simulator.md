@@ -406,6 +406,9 @@ device screenshot of the same screen would settle it.
 [`simulator-android.md`](./simulator-android.md) has the build/link history.
 Status: it runs -- boots, draws the map, real BLE works
 (verified 2026-08-23, three phones). It is also a confirmed test target for
-the map console: `tools/mapcmd.py --ble <cmd>` reaches it directly over the
-phone's own radio, no `--sim`, no bridge, no `adb forward` -- see
-`simulator-android.md`, "BLE console over real radio".
+the map console: `tools/mapcmd.py --ble <cmd>` reaches it over the phone's own
+radio -- with the bridge running (`CROSSPOINT_SIM_BLE_PORT` set), not without
+it. `simulator-android.md`, "BLE console over real radio", used to say "no
+bridge" here; that was never actually tested with the shim off, and re-tested
+2026-08-26 it does not hold on either phone that was said to prove it. See the
+`[OPRAVA 2026-08-26]` there.
