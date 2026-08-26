@@ -287,40 +287,33 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     snprintf(text, sizeof(text), "%ld", static_cast<long>(slots[i].elevation));
     int textW = 0, textH = 0;
     if (!canvas.measureText(text, sizePx, bold, textW, textH)) continue;
-    // Two decisions, and separating them is what fixed this.
+    // **The top of the digits points at the higher ground.** That is the whole
+    // job of a contour label beyond saying its own height: the reader gets the
+    // direction of the slope from the number without counting anything.
     //
-    // **The baseline follows the contour, not the slope.** The first version
-    // picked the turn from the uphill direction, so on a contour running down the
-    // screen the number's baseline cut across the line it names -- which does not
-    // look like it belongs to it. The line's own direction picks the turn now,
-    // quantised to the nearer axis: a near-horizontal contour gets upright text, a
-    // near-vertical one a quarter turn, and either way the digits run along it.
+    // One quantisation does both halves of it, because uphill is perpendicular to
+    // the contour by construction. Snap the uphill vector to the nearer axis and
+    // the tangent lands on the other axis for free: the digits' top points
+    // uphill to within 45 degrees **and** their baseline runs along the line to
+    // within 45 degrees. The two can never fight.
     //
-    // **The slope is shown by which side of the line the number sits on**, not by
-    // the glyphs pointing at it. That is the only way out of the corner the first
-    // version was in: with quarter turns, "top points uphill" and "never upside
-    // down" cannot both hold -- a contour running east with higher ground south
-    // wants a half turn, which reads "008". Offsetting to the uphill side says the
-    // same thing, stays readable at every bearing, and is what a paper map does
-    // when it cannot rotate either.
-    const int32_t tx = slots[i].tanX;
-    const int32_t ty = slots[i].tanY;
-    const int32_t atx = tx < 0 ? -tx : tx;
-    const int32_t aty = ty < 0 ? -ty : ty;
+    // A half turn is included, so a number on a contour whose higher side is
+    // below it on screen draws inverted. That is correct rather than a defect:
+    // on a paper topographic map contour labels sit at every angle including
+    // upside down, and inverting is exactly what carries "up is that way". An
+    // earlier version banned the half turn to keep every number readable
+    // screen-up, which threw away the information the number exists to give.
+    const int32_t ux = slots[i].upX;
+    const int32_t uy = slots[i].upY;
+    const int32_t aux = ux < 0 ? -ux : ux;
+    const int32_t auy = uy < 0 ? -uy : uy;
     MapTextTurn turn = MapTextTurn::None;
-    if (aty > atx) {
-      // **Always the same quarter turn**, never chosen from the tangent's sign.
-      // Picking by sign was the last version and it looked broken: two numbers a
-      // few centimetres apart read in opposite directions, and the one running
-      // bottom-to-top reads as reversed digits to anyone who did not expect it.
-      // Neither turn mirrors a glyph, so consistency is worth more than matching
-      // the direction the contour happens to be stored in. The slope is carried by
-      // the offset below, not by which end of the number comes first.
-      //
-      // Clockwise specifically, so a vertical number reads top-to-bottom -- and
-      // because it is the one quarter turn GfxRenderer implements, which keeps the
-      // device and the host drawing the same thing.
-      turn = MapTextTurn::Cw90;
+    if (aux > auy) {
+      // Upright text has up = (0, -1). A clockwise quarter turn sends that to
+      // (1, 0), a counter-clockwise one to (-1, 0), a half turn to (0, 1).
+      turn = ux > 0 ? MapTextTurn::Cw90 : MapTextTurn::Ccw90;
+    } else if (uy > 0) {
+      turn = MapTextTurn::Half;
     }
 
     // A turned number is as tall as it was wide. Getting this the wrong way round
@@ -332,8 +325,6 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     // Step off the line, on the uphill side, by half the number's own depth plus
     // a pixel of air. Integer arithmetic throughout: this runs on every frame the
     // device draws, and there is no floating point worth spending here.
-    const int32_t ux = slots[i].upX;
-    const int32_t uy = slots[i].upY;
     const int32_t upLen2 = ux * ux + uy * uy;
     int32_t shiftX = 0;
     int32_t shiftY = 0;
