@@ -673,7 +673,7 @@ all. Do not delete the comment without settling which.
 
 ## Hike mode's second line
 
-**Read off the code, not yet measured on hardware.** Hike mode gets a second
+**Verified on the desktop simulator, 2026-08-26; not yet on hardware.** Hike mode gets a second
 header line: elevation, when a fix has ever carried one, and the fix's own
 lat/lon, e.g. `812 m   48.14253, 17.10967`. Ride and Cycle are unchanged --
 single-row header, same as always. `MapActivity::mode_ == MapRideMode::Hike`
@@ -732,6 +732,40 @@ that draw the row above (`renderViewport()`, `renderRouteOverview()`) call it
 right after `drawHeaderStatus()`, unconditionally -- it is a no-op outside
 Hike mode.
 
+**`SMALL_FONT_ID`, not `UI_10_FONT_ID`.** The place name above is the primary
+label and stays at `UI_10_FONT_ID`; this line is secondary information, the
+same weight as the clock and battery percentage in row one, and was judged
+too large on the panel at `UI_10_FONT_ID` when first built -- confirmed on the
+desktop simulator, 2026-08-26 (see "Verified on the desktop simulator" below).
+
+**Stays clear of the compass's own halo, horizontally, not by shrinking the
+row's height.** The compass (`drawCompass()`) is drawn every frame at
+`centreY = kCompassCenterTop` (87), radius `kCompassGlyphRadius` (36) plus a
+`kCompassHaloMargin` (3) white halo -- so its halo's top edge sits at
+`87 - 36 - 3 = 48`, inside Hike's second line's band (`[36, 58)`) by design:
+the compass has always overlapped that y-range in every mode, because in
+Ride/Cycle nothing else is drawn there. `drawHikeElevationLine()`'s first cut
+gave its backing rect the full screen width, which erased the compass's halo
+and glyph every time it ran, because it draws *after* `drawCompass()` in the
+frame. Shrinking the line's height to clear 48px was not a real option --
+`SMALL_FONT_ID`'s own `advanceY` (23) does not fit in the 12px available
+between `kHeaderBarHeight` (36) and the halo's top (48).
+
+Fixed the same way `drawHeaderPlaceName()` already stays clear of the icon
+cluster: bound the row's right edge, not its height. Both the backing
+`fillRect` and the text's truncate-until-fits loop stop at
+`compassHaloLeft = (screenWidth - kCompassCenterMarginRight) - (kCompassGlyphRadius + kCompassHaloMargin)`
+-- the compass's halo's left edge -- rather than `screenWidth`. The line and
+the compass now occupy disjoint rectangles every frame, so the vertical
+overlap in `[36, 58)` no longer matters: neither one is ever drawn where the
+other one is.
+
+`drawnHikeLineText_` is written from the *untruncated* candidate, before the
+truncation loop runs on a local copy for drawing -- `updateHikeElevationLine()`
+compares its own untruncated candidate against this each poll, and a
+truncated cache would never match it again once truncation ever fired, which
+would keep repainting every poll forever.
+
 `updateHikeElevationLine()` is the between-frames keeper, called from
 `loop()` next to `updateHeaderStatus()`: polled every `kHeaderPollMs` (2s,
 shared with the row above), and only actually redraws when the candidate text
@@ -773,3 +807,25 @@ band. Nobody has looked at the panel with both `mapDebugInfo` on and Hike
 mode active to see what that overlap actually looks like -- flagged here
 rather than fixed, since the debug readout is a developer tool, not
 something a rider sees.
+
+### Verified on the desktop simulator, 2026-08-26
+
+Run against `firmware/explorink-simulator` (`docs/simulator.md`), a BLE fix
+sent with `tools/blepos.py 48.60 17.30 --alt 340 --sim 127.0.0.1:8765` and the
+mode switched with `tools/mapcmd.py --sim 127.0.0.1:8765 mode hike`. Confirmed
+on the resulting screenshot:
+
+- The second line draws (`340 m   48.60000, 17.30000`), at `SMALL_FONT_ID`,
+  below the place name row.
+- The compass is intact -- no erased halo, no missing glyph -- which is what
+  the full-width-backing bug (fixed above, before this run) would have broken.
+- `mode ride` afterward reverts to the single-row header with no second line,
+  confirming Ride/Cycle are unaffected.
+
+**What this does not check, per "What it is and is not" in `docs/simulator.md`**:
+no e-ink refresh timing, no ghosting, no grayscale pass, no `ESP.getFreeHeap()`
+under real RAM pressure (the simulator's heap reads a flat 1 MiB), and no
+`headerRowDrawn_`/windowed-repaint timing against a real waveform pass -- only
+that `updateHikeElevationLine()`'s windowed-refresh *call* runs without
+crashing, not that its timing is right on the panel. All of that still needs
+the device.

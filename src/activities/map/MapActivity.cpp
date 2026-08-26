@@ -1641,19 +1641,39 @@ void MapActivity::drawHikeElevationLine() {
   char text[sizeof(drawnHikeLineText_)];
   formatHikeLineText(text, sizeof(text), hasAltitudeReading_, lastAltitudeM_, static_cast<double>(lastLatE7_) / 1e7,
                      static_cast<double>(lastLonE7_) / 1e7);
+  // Recorded before truncation: updateHikeElevationLine() formats the same
+  // untruncated candidate to compare against this, and a mismatch there
+  // would repaint every poll forever if this held the truncated text instead.
+  strncpy(drawnHikeLineText_, text, sizeof(drawnHikeLineText_) - 1);
+  drawnHikeLineText_[sizeof(drawnHikeLineText_) - 1] = '\0';
+
+  // Stays clear of the compass's own white halo (drawCompass(), drawn earlier
+  // this frame) -- its left edge is the hard right bound for both this row's
+  // backing and its text, not the screen edge. A full-width backing drawn
+  // after the compass would erase the compass's halo and glyph underneath it
+  // -- judged on the panel 2026-08-26. Same reasoning drawHeaderPlaceName()
+  // already uses against the icon cluster's headerStatusRect(), just against
+  // a different right-hand neighbour.
+  const int compassHaloLeft =
+      (renderer.getScreenWidth() - kCompassCenterMarginRight) - (kCompassGlyphRadius + kCompassHaloMargin);
+  const int maxTextWidth = compassHaloLeft - kHikeElevationLeftX - kHeaderPlaceNameRightGap;
+  if (maxTextWidth <= 0) return;
+
+  // Same truncate-until-fits loop drawHeaderPlaceName() uses, against a local
+  // copy -- drawnHikeLineText_ above already holds the untruncated text.
+  for (size_t len = strlen(text); len > 0 && renderer.getTextWidth(SMALL_FONT_ID, text) > maxTextWidth; --len) {
+    text[len - 1] = '\0';
+  }
 
   // Backing first, same reasoning as the icon strip's and the place name's:
   // this rect can land over last frame's separator or last frame's own
   // shorter/longer text, not blank margin.
-  renderer.fillRect(0, kHeaderBarHeight, renderer.getScreenWidth(), kHikeElevationLineHeight, false);
-  // Vertically centred in its own row the same way drawHeaderPlaceName()
-  // centres in row one -- same font, same +3 correction, just kHeaderBarHeight
-  // lower.
-  const int y = kHeaderBarHeight + (kHikeElevationLineHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2 + 3;
-  renderer.drawText(UI_10_FONT_ID, kHikeElevationLeftX, y, text, true);
-
-  strncpy(drawnHikeLineText_, text, sizeof(drawnHikeLineText_) - 1);
-  drawnHikeLineText_[sizeof(drawnHikeLineText_) - 1] = '\0';
+  renderer.fillRect(0, kHeaderBarHeight, compassHaloLeft, kHikeElevationLineHeight, false);
+  // SMALL_FONT_ID, not UI_10_FONT_ID: this is secondary information, the same
+  // weight as the clock/battery percentage in row one, not the primary
+  // place-name label -- UI_10 judged too large on the panel, 2026-08-26.
+  const int y = kHeaderBarHeight + (kHikeElevationLineHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2 + 3;
+  renderer.drawText(SMALL_FONT_ID, kHikeElevationLeftX, y, text, true);
 }
 
 // Keeps the hike line honest between full frames -- same windowed-repaint
