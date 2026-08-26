@@ -176,7 +176,8 @@ class GfxRendererCanvas : public IMapCanvas {
   // still declared, so they stay here for builds that do carry them, and
   // fontIdForSize() skips whatever the renderer has not been given -- see the
   // note there, this cost a log flood once.
-  static constexpr int kLabelFontIds[] = {SMALL_FONT_ID,       UI_10_FONT_ID,       UI_12_FONT_ID,
+  static constexpr int kLabelFontIds[] = {MAP_SMALL_FONT_ID,   SMALL_FONT_ID,       UI_10_FONT_ID,
+                                          UI_12_FONT_ID,
                                           NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
                                           NOTOSANS_18_FONT_ID};
 
