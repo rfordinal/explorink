@@ -119,6 +119,7 @@ is its point size at 150 DPI, not its pixel height
 
 | face | line height | ascender | weights |
 |---|---|---|---|
+| `ubuntu_5` | 12 | 10 | regular only -- **the map's own small face**, added 2026-08-26 |
 | `notosans_8` | 23 | 18 | regular only |
 | `ubuntu_10` | 24 | 20 | regular, bold |
 | `ubuntu_12` | 29 | 24 | regular, bold |
@@ -126,6 +127,48 @@ is its point size at 150 DPI, not its pixel height
 | `notosans_14` | 40 | 32 | regular, bold |
 | `notosans_16` | 45 | 36 | regular, bold |
 | `notosans_18` | 51 | 41 | regular, bold |
+
+### A face below 23 px, and why it had to be cut rather than picked
+
+**2026-08-26.** Every face in the table above except the new first row is 23 px or
+taller, so a contour height number came out the same size as a village name --
+asked for at 9 px, 11 px and 15 px, and identical in all three, because the picker
+takes the largest face that does not exceed the request and falls back to the
+smallest when none fits.
+
+`ubuntu_5_regular` fixes that: a 12 px line, 10 px ascender, cut from the Ubuntu
+TTF already in the repo. Three things about how it was made are worth keeping:
+
+- **Ubuntu, not the small Noto Sans cut** the earlier plan preferred
+  (`docs/place-labels-plan.md`). That plan was about replacing *both* place-label
+  tiers; this is a third tier beside them, and the place labels are Ubuntu UI
+  24/29 -- so an Ubuntu cut keeps one family on the map, which is the constraint
+  this file already pins.
+- **Latin only, no Hebrew, no Arabic, no Vietnamese.** The existing UI cuts pull
+  three extra fontstacks into every face, which is what makes them fat. A number
+  needs digits.
+- **`--force-autohint`**, because at 10 ppem stem consistency is the whole battle
+  and Ubuntu's native hints are weak there.
+
+```
+python3 fontconvert.py ubuntu_5_regular 5 \
+  ../builtinFonts/source/Ubuntu/Ubuntu-Regular.ttf \
+  --force-autohint > ../builtinFonts/ubuntu_5_regular.h
+```
+
+Judged at 1:1 on a Malá Fatra rung-1 frame against cuts at size 4 (10 px line)
+and size 6 (14 px), plus the old 23 px for reference. 10 px read but the stems
+went thin under the white outline; 14 px was safe and slightly heavy; 12 px was
+clean and left the terrain dominant, which is the point. **Not yet judged on the
+panel** -- e-ink with a 1 px outline around a 1 px stem is exactly where a host
+render can be optimistic.
+
+**`fontIds.h` got the new id by hand, and that was deliberate.**
+`build-font-ids.sh` regenerates every id from the current font headers, and the
+headers have moved since the committed ids were produced: reproducing its hash
+over today's files gives different numbers for `UI_10`, `UI_12` and `SMALL`. So a
+regeneration would renumber faces that work. `MAP_SMALL_FONT_ID` is the same
+formula (sum of per-file SHA-256 mod 2^32 minus 2^31) over the one new file.
 
 ### The candidate list is mostly not in the build
 
