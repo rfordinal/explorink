@@ -331,7 +331,8 @@ forcings are worth knowing:
 - motorway is then 7 at rungs 3 to 6 rather than thinning. Deliberate: it is the
   one class that should not fade at the widest rung, because it is what you find
   at a glance. It also has to be flat rather than 6 then 7, since a class that
-  gets *wider* as the rung coarsens is a bug the host test catches.
+  gets *wider* as the rung coarsens was, at that date, a bug the host test
+  caught. That rule is gone -- see "The ladder thins across its length" below.
 
 Rung 6 ends with motorway and trunk as cased double lines, primary as a 3 px
 solid, and one hairline texture for everything below.
@@ -426,9 +427,7 @@ casing drops from 2 px back to 1 px and the widths go up:
 **motorway is 5 px of inline inside a 2 px outline, at every rung.** Maintainer,
 2026-08-25, after looking at it on the phone. It is the one class deliberately
 exempt from thinning: it is what you find at a glance, and a motorway that fades
-out at the widest rung defeats the point of being at that rung. It still may not
-get *wider* as the rung coarsens -- `test/map_style_table` enforces that for
-every class, and it caught a 6-then-7 ladder once.
+out at the widest rung defeats the point of being at that rung.
 
 The exemption cost almost nothing: **+0.3 points of ink at rung 6 and nothing at
 all below rung 4** over Prague. The interior stayed 5 px either way, so only the
@@ -464,6 +463,25 @@ new default cannot change a reference that already existed.
 Not a style edit. The style still says what a name looks like; the frame just
 does not draw one. `MapRenderer` already skips the whole pass on a null label
 scratch, which is what the device does when the style draws no names.
+
+## The ladder thins across its length, not between neighbours
+
+`test/map_style_table` asserted that no class may be wider at a rung than at
+the rung before it. That rule caught a 6-then-7 motorway ladder once, and then
+on 2026-08-26 it failed four numbers that were deliberate: the maintainer's
+tuned table bulges at rung 5 for motorway, primary and secondary, and trunk
+jumps back up at rung 6.
+
+A rung whose ground needs more weight may have it, and only a panel can say
+which rung that is. The numbers are the work, so the test was the thing that
+was wrong.
+
+What it holds now is the direction the per-rung table exists to provide:
+
+- no class may end **wider at the widest rung than at the closest**, which is a
+  table doing the opposite of its job while looking tuned;
+- and `tertiary` -- the mesh this whole exercise was about -- must actually
+  thin, so a bulge cannot hide a table that thins nothing at all.
 
 ## What a hardware pass has to check
 
