@@ -27,7 +27,15 @@
 // casing and all, and lays short marks across it -- that is a railway, and it
 // reads as one continuous line that happens to be ticked. Every modern map
 // draws them that way round.
-enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked };
+// `None` is not "no pattern chosen", it is **draw no line at all**. Added
+// 2026-08-27 because `solid` had come to mean two different things on a water
+// class: a solid stroke when there is no tone, and nothing drawn when there is
+// one -- the tone being the whole mark. One word with two meanings is the same
+// defect as two words for one thing, so the second meaning got its own word.
+//
+// Only the water pass reads it. The generator refuses it on a road, where a class
+// that draws nothing is what `hidden: true` already says.
+enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked, None };
 
 // The bits of a way record's `roughness` byte that hold the 0-7 judgement.
 //

@@ -373,6 +373,9 @@ _LINE_DASH_PX = {
     # the sleepers of a railway. The opposite rhythm to a dash, which is why
     # it cannot be expressed by tuning "dashed".
     "ticked": (2, 8),
+    # Draw no line at all. For a water class whose whole mark is its tone: a
+    # stream as an unbroken toned band, with no stroke over or under it.
+    "none": (0, 0),
 }
 
 
@@ -383,7 +386,13 @@ def _dash(rule, what):
         sys.exit(f"gen_mapstyle.py: {what}: pattern '{pattern}' is not one of "
                  f"{sorted(_LINE_DASH_PX)}")
     dash, gap = _LINE_DASH_PX[pattern]
-    kind = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dashed", "ticked": "Ticked"}[pattern]
+    kind = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dashed", "ticked": "Ticked",
+            "none": "None"}[pattern]
+    if pattern == "none" and not what.startswith("layers.water."):
+        sys.exit(f"gen_mapstyle.py: {what}: pattern 'none' is only meaningful on a water class, "
+                 f"whose mark can be its tone alone. A road or a contour that draws no line is "
+                 f"`hidden: true` -- and unlike 'none' that also keeps the class out of the rung's "
+                 f"tile read (gen_mode_masks.py)")
     if rule.get("dash_px") is not None:
         dash = _round_px(rule["dash_px"], f"{what}.dash_px")
     if rule.get("gap_px") is not None:

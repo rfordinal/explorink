@@ -637,9 +637,12 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       } else if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
         strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
                         MapInk::Black);
-      } else {
+      } else if (style.waterPattern[waterClass] != MapLinePattern::None) {
         MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
       }
+      // `None` with no tone draws nothing, which is a style saying so rather than
+      // a mistake -- `hidden: true` is the way to also stop reading the class.
+
     }
   }
   if (timing) lap(timing->waterMs, mark);

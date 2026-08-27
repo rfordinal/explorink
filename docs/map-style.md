@@ -86,11 +86,31 @@ pass).
 
 Three more things before tuning it.
 
-- **Whatever carries the tone must be at least 2 px** -- the full width when there
-  is no casing, `width - 2 * casing` when there is. `toneWayInterior` refuses
-  below that, because a 1 px dither reads as a dashed line and in this style a
-  dash already means water. The generator warns, and skips `lake`, which is always
-  a ring and gets filled by `toneRing` regardless of any line width.
+- **`pattern: "none"` is how you say "no line, only the tone".** It exists because
+  `solid` had come to mean two things on a toned water class -- a solid stroke
+  without a tone, nothing drawn with one. `none` states it. It is water-only: the
+  generator refuses it elsewhere, because a road that draws no line is
+  `hidden: true`, and unlike `none` that also keeps the class out of the rung's
+  tile read.
+- **2 px is the hard floor, and it is nowhere near enough to read as a surface.**
+  `toneWayInterior` refuses below 2 px because a 1 px dither reads as a dashed
+  line and a dash already means water here. But the floor is not the answer:
+  measured at rung 1 over Vratna, a 3 px band with `dark` -- the densest dither
+  there is -- comes out as
+
+  ```
+  ......#.#....
+  .....#.#.....
+  ......#.#....
+  .....#.#.....
+  ```
+
+  two thin dotted columns, alternating. It reads as a pair of hairlines, not as a
+  band. A checkerboard is 1 pixel in 2, so in a 3 px channel there is no room for
+  it to be a texture rather than a lattice. Give a dithered watercourse **5 px or
+  more**, or use `tone: "solid"` if what is wanted is a filled band -- and then
+  the tone is doing what a plain thick stroke does, which is worth knowing before
+  reaching for it. Where the readable floor actually sits is a panel question.
 - **The tone is per class now.** It was a single layer-wide `waterTone`, which
   meant a lake and a river had to agree about what water looks like and a toned
   stroke had no tone of its own. The wave **hatch** stays layer-wide: only rings
