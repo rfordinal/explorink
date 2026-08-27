@@ -44,6 +44,68 @@ a screen that redraws on demand. And z0 and z1 read **the same bytes** yet diffe
 by 700 ms, so the extra time is drawing, not I/O: at 1 m/px the same geometry
 covers far more pixels.
 
+## Line types beyond solid and dashed
+
+**Why more than a dash.** On 1-bit there is no colour, so rhythm and shape are the
+whole vocabulary for telling one line class from another -- and two of those
+distinctions matter on a hike map. 28.7 % of the pedestrian ways around Vratna are
+on a waymarked route and the rest are farm and forest tracks (measured 2026-08-27),
+drawn as the same 1 px hairline. And a `natural=cliff` at 2 px was the same line as
+an index contour, where one says "a hundred metres of height" and the other says
+"you fall here".
+
+Three patterns, all per class, all off unless a style asks:
+
+```json
+{ "pattern": "dash_mark", "mark": "comb", "mark_px": 7,
+  "dash_px": 10, "gap_px": 10, "width": 1 }
+
+{ "pattern": "hachured", "tick_px": 3, "gap_px": 8, "width": 2 }
+
+{ "pattern": "none" }
+```
+
+- **`dash_mark`** -- dash, gap, mark, gap, repeating. Needs `mark`; takes
+  `mark_px` (odd; an even size has no centre pixel so every stamp would lean the
+  same way, and the generator rounds up).
+- **`hachured`** -- the line stays whole and short combs hang off its right-hand
+  side. `tick_px` is the reach, `gap_px` the spacing. On a road class `dash_px`
+  carries the reach instead, because a hachured line has no dash of its own.
+- **`none`** -- no line at all; see "A toned watercourse".
+
+The marks: `dot`, `square`, `circle`, `diamond`, `cross`, `u`, `comb`.
+
+**Rasterised and counted, because the silhouettes do not separate where you would
+guess.** At 3 px a circle and a square are the *same nine pixels* -- there is no
+room for a corner to be missing -- and a diamond is a plus of 5. At 5 px they are
+25 / 21 / 13; at 7 px, 49 / 37 / 25. So below 5 px only `cross`, `diamond`, `u` and
+`comb` say anything at all.
+
+**Two of them turn, the rest do not, and the split is not arbitrary.** A square
+rotated is the same square, and rotating it would put its edges on diagonals where
+1-bit has no grey to soften a staircase -- the maintainer's own reason, 2026-08-27,
+for keeping it axis-aligned. But `u` and `comb` are *statements about a direction*:
+their floor faces the drop. So those two are turned, and **snapped to four
+directions** rather than turned freely, which keeps every edge on the pixel grid
+and still says which way the ground goes.
+
+Where the direction comes from is data, not taste: OSM puts a cliff's lower ground
+on the right of the way's direction of travel, and the tile keeps its points in OSM
+order precisely so the mark can face the right way without a refetch
+(`docs/map-data-spec.md`, "The relief layer's second class"). Get the sign wrong
+and every rock face on the map claims the drop is uphill.
+
+**`comb` is the cartographic one** -- a bar along the line with three teeth on the
+drop side, the escarpment hachure every topographic sheet uses. `u` is the same
+idea with two, lighter at small sizes. Reference: the Prosiecka dolina sheet.
+
+**A relief class refuses `dashed` and `ticked`.** A broken contour reads as a
+footpath and a cliff wants combs rather than a railway's sleepers, so the generator
+refuses both rather than drawing a wrong mark.
+
+**None of this has been on a panel.** Which mark survives on glass, at what size,
+is exactly the question a host render cannot answer.
+
 ## A toned watercourse
 
 **A closed ring is the only thing that made water a surface, and a stream is

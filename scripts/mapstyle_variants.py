@@ -78,6 +78,19 @@ def _check_entry(entry, path):
         for step in steps:
             if not isinstance(step, int) or isinstance(step, bool) or not 0 <= step < ZOOM_STEPS:
                 raise VariantError(f"{path}: rung {step!r} is not in 0..{ZOOM_STEPS - 1}")
+    # **A singular selector is the dangerous typo, so it is refused by name.**
+    # `mode` and `step` are not selectors, so they were taken as *patch fields*:
+    # the entry then had no selector at all, which means "every mode and every
+    # rung", so a block written to change hike changed ride and cycle too, and the
+    # stray key rode into the resolved rule where the layer parser ignored it.
+    # Found 2026-08-27 in a live style -- `{"mode": ["hike"], "pattern": "dashed"}`
+    # had overridden every one of the 15 variants.
+    for singular, plural in (("mode", "modes"), ("step", "steps")):
+        if singular in entry:
+            raise VariantError(
+                f"{path}: `{singular}` is not a selector -- did you mean `{plural}`? "
+                f"As written it is treated as a field to patch, and an entry with no "
+                f"selector matches every mode and every rung")
     for key in entry:
         if key in _UNPATCHABLE:
             raise VariantError(f"{path}: `{key}` cannot be patched by a `when` entry")

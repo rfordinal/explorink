@@ -35,7 +35,62 @@
 //
 // Only the water pass reads it. The generator refuses it on a road, where a class
 // that draws nothing is what `hidden: true` already says.
-enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked, None };
+enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked, None, DashMark, Hachured };
+
+// **`Hachured` is the rock-face mark, and it is not `Ticked`.** Ticked lays its
+// marks *across* a whole line -- a railway's sleepers. Hachured leaves the line
+// whole and hangs short combs off **one** side of it, which is how every hiking
+// map in this part of the world draws a `natural=cliff`: a rock formation that
+// ends in a sudden drop, the combs pointing the way down. Maintainer's reference
+// 2026-08-27, the Prosiecka dolina sheet.
+//
+// The side is not a choice. OSM's convention puts the lower ground on the right
+// of the way's direction of travel, and the tile keeps the points in OSM order
+// exactly so a correct-side comb is possible without refetching
+// (docs/map-data-spec.md, "The relief layer's second class"; fetch_osm.py). Draw
+// them on the left and the map says the drop is uphill.
+
+// The mark a `DashMark` period carries between its dashes: dash, gap, mark, gap,
+// repeating. The classic way a paper map separates route classes without colour,
+// and on a 1-bit panel colour is exactly what there is none of -- a waymarked
+// trail and a farm track are both a 1 px hairline today, and 28.7 % of the
+// pedestrian ways around Vratna are on a waymarked route (measured 2026-08-27).
+//
+// Three shapes, not a vocabulary. Each one is a thing that has to survive on
+// glass at 3 px, and none of them has been looked at on a panel.
+//
+// **Screen-aligned, not turned to the line, and that is for sharpness rather than
+// for cheapness.** Maintainer's call 2026-08-27: a square with one fixed
+// orientation reads better. An axis-aligned square lands on the pixel grid
+// exactly, so all four edges are hard; rotate it and every edge becomes a
+// staircase the panel has no grey to soften. One orientation everywhere also
+// makes the mark recognisable as *the same mark* along a winding trail, which a
+// turning one is not. It costs nothing either -- no perpendicular, no square root
+// per mark -- but that is the smaller reason.
+// **Silhouettes only separate from 5 px.** Rasterised and counted: at 3 px a
+// circle and a square are the *same nine pixels* -- there is no room for a corner
+// to be missing -- and a diamond is a plus sign of 5. At 5 px they are 25 / 21 /
+// 13 and the outlines differ; at 7 px, 49 / 37 / 25. So the shape is a choice
+// about 5 px and up, and below that only `Cross` and `Diamond` say anything at
+// all. Which of them survives on glass nobody has asked yet.
+// `U` is the rock-face mark asked for 2026-08-27: a bracket on the line, its floor
+// **turned towards the drop**, which is how the reference sheet (Prosiecka dolina)
+// draws a rock face. It is the one shape here whose orientation is its meaning --
+// a square rotated is the same square, a U rotated is a different statement -- so
+// unlike the others it is turned, using the side the tile already carries: OSM
+// order puts the lower ground on the right of the way's direction.
+//
+// **Snapped to four directions, not turned freely.** Free rotation would put the
+// U's edges on diagonals, and on 1-bit there is no grey to soften a staircase --
+// the maintainer's own reason for keeping a square axis-aligned. Snapping to
+// up/down/left/right keeps every edge on the pixel grid and still says which way
+// the ground goes, which is all the mark has to say.
+// `Comb` is the cartographic one, and the maintainer's final call 2026-08-27: a
+// short bar laid along the line with **three** teeth hanging off the drop side,
+// where `U` has two. That is the escarpment hachure every topographic sheet uses,
+// and the reference (Prosiecka dolina) is full of them. `U` stays because it is
+// lighter at small sizes, but `Comb` is the correct symbol.
+enum class MapLineMark : uint8_t { None = 0, Dot, Square, Cross, Circle, Diamond, U, Comb };
 
 // The bits of a way record's `roughness` byte that hold the 0-7 judgement.
 //
@@ -130,10 +185,16 @@ struct MapStyle {
   // start and read by nothing at all.
   MapLinePattern roadPattern[kClassEnumSlots];
   uint8_t roadDashPx[kClassEnumSlots];
+
   // Gap between dashes. Separate from the dash so a railway can be long runs
   // with short ticks (the modern-map look) while a watercourse is short marks
   // with real space -- one number for both would force the same rhythm.
   uint8_t roadGapPx[kClassEnumSlots];
+  // The mark and its size for a `DashMark` class. The generator refuses that
+  // pattern without a mark rather than quietly drawing a plain dash: a pattern
+  // that needs a mark and has none is a typo, not a choice.
+  MapLineMark roadMark[kClassEnumSlots];
+  uint8_t roadMarkPx[kClassEnumSlots];
 
   // Dither tone for the inside of a cased road, layers.roads.rules[]'s
   // `fill: "tone"` plus `tone`. `None` leaves the interior white, which is what
@@ -271,6 +332,20 @@ struct MapStyle {
   // and cycle resolve it false, so those modes never open the layer at all.
   bool contoursEnabled;
   uint8_t contourWidthPx[kContourClassSlots];
+
+  // Per relief class, so a cliff is not the same line as an index contour. It was
+  // width alone until 2026-08-27, which made them identical marks at 2 px -- and
+  // on a hike map those two must never be confused: one says "a hundred metres of
+  // height", the other says "you fall here".
+  //
+  // `contourTickPx` is how far a `Hachured` comb reaches off the line and
+  // `contourGapPx` how often one is hung; both are ignored by every other
+  // pattern.
+  MapLinePattern contourPattern[kContourClassSlots];
+  uint8_t contourTickPx[kContourClassSlots];
+  uint8_t contourGapPx[kContourClassSlots];
+  MapLineMark contourMark[kContourClassSlots];
+  uint8_t contourMarkPx[kContourClassSlots];
 
   // Height numbers on the index contours. Two or three on a frame is the whole
   // design: the rest of the ladder is countable from them, and a number per

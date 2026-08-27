@@ -63,6 +63,210 @@ void strokeWay(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, MapInk i
 // Restarting is the obvious implementation and it is wrong: a curved way is
 // made of many short segments, so every vertex would start a fresh dash and a
 // bend would fill in solid -- exactly where the eye is looking.
+// One mark, stamped screen-aligned at (cx, cy). Built from drawLine because that
+// and fillSpan are the whole canvas -- there is no rect primitive, and a width-N
+// line of length N is an N x N block.
+//
+// Axis-aligned on purpose (MapStyle.h, MapLineMark): the edges land on the pixel
+// grid, and on 1-bit there is no grey to soften a staircase.
+// `towardsX/towardsY` is the direction the mark should face when it has one -- for
+// a cliff, the downslope side. Only `U` reads it; every other shape is the same
+// shape turned and ignores it.
+void stampMark(IMapCanvas& canvas, const int cx, const int cy, const MapLineMark mark, const int sizePx,
+               const MapInk ink, const int towardsX = 0, const int towardsY = 0) {
+  if (mark == MapLineMark::None || sizePx <= 0) return;
+  const int half = sizePx / 2;
+  switch (mark) {
+    case MapLineMark::Dot:
+      // A dot is a square of the same width; the name is what a style author
+      // reaches for when they mean "small", so it is a size shorthand and the
+      // generator halves it rather than a second shape to judge on glass.
+      canvas.drawLine(cx, cy, cx, cy, sizePx, ink);
+      break;
+    case MapLineMark::Square:
+      // Length sizePx at width sizePx: a filled block, one call.
+      canvas.drawLine(cx - half, cy, cx - half + sizePx - 1, cy, sizePx, ink);
+      break;
+    case MapLineMark::Cross:
+      canvas.drawLine(cx - half, cy, cx + half, cy, 1, ink);
+      canvas.drawLine(cx, cy - half, cx, cy + half, 1, ink);
+      break;
+    case MapLineMark::Diamond:
+      // Row by row rather than four strokes: a stroked diamond at 5 px is two
+      // pixels of outline and three of hole, and what is wanted is a solid
+      // silhouette. Half-width shrinks by one per row from the middle.
+      for (int dy = -half; dy <= half; ++dy) {
+        const int w = half - (dy < 0 ? -dy : dy);
+        canvas.drawLine(cx - w, cy + dy, cx + w, cy + dy, 1, ink);
+      }
+      break;
+    case MapLineMark::Comb: {
+      // Bar along the line, three teeth towards the drop. Same four-way snap as
+      // `U` and for the same reason: every edge stays on the pixel grid.
+      const int ax = towardsX < 0 ? -towardsX : towardsX;
+      const int ay = towardsY < 0 ? -towardsY : towardsY;
+      int fx = 0, fy = 1;
+      if (ax > ay) {
+        fx = towardsX > 0 ? 1 : -1;
+        fy = 0;
+      } else if (ay > 0) {
+        fy = towardsY > 0 ? 1 : -1;
+        fx = 0;
+      }
+      const int px = -fy, py = fx;  // along the bar
+      // The bar sits on the line, the teeth reach `half` towards the drop.
+      canvas.drawLine(cx - px * half, cy - py * half, cx + px * half, cy + py * half, 1, ink);
+      for (int t = -1; t <= 1; ++t) {
+        const int bx = cx + px * half * t;
+        const int by = cy + py * half * t;
+        canvas.drawLine(bx, by, bx + fx * half, by + fy * half, 1, ink);
+      }
+      break;
+    }
+    case MapLineMark::U: {
+      // Two uprights and a floor, the floor on the side `towards` points at.
+      // Snapped to four directions so every edge stays on the pixel grid
+      // (MapStyle.h, MapLineMark::U).
+      const int ax = towardsX < 0 ? -towardsX : towardsX;
+      const int ay = towardsY < 0 ? -towardsY : towardsY;
+      // Which axis dominates decides the facing; ties and a zero direction fall
+      // to "floor at the bottom", the upright U.
+      int fx = 0, fy = 1;
+      if (ax > ay) {
+        fx = towardsX > 0 ? 1 : -1;
+        fy = 0;
+      } else if (ay > 0) {
+        fy = towardsY > 0 ? 1 : -1;
+        fx = 0;
+      }
+      // The floor is the edge at +f; the uprights are perpendicular to it.
+      const int px = -fy, py = fx;  // along the floor
+      const int f0x = cx + fx * half, f0y = cy + fy * half;
+      canvas.drawLine(f0x - px * half, f0y - py * half, f0x + px * half, f0y + py * half, 1, ink);
+      canvas.drawLine(f0x - px * half, f0y - py * half, f0x - px * half - fx * (sizePx - 1),
+                      f0y - py * half - fy * (sizePx - 1), 1, ink);
+      canvas.drawLine(f0x + px * half, f0y + py * half, f0x + px * half - fx * (sizePx - 1),
+                      f0y + py * half - fy * (sizePx - 1), 1, ink);
+      break;
+    }
+    case MapLineMark::Circle:
+      // A disc, by the integer circle test per row. Not a stroked ring: a ring at
+      // 5 px is one pixel wide and reads as a dash, which is the mark it has to
+      // be distinguishable from.
+      for (int dy = -half; dy <= half; ++dy) {
+        int w = 0;
+        while ((w + 1) * (w + 1) + dy * dy <= half * half + half) ++w;
+        canvas.drawLine(cx - w, cy + dy, cx + w, cy + dy, 1, ink);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// A whole line with short combs hanging off one side of it: the rock-face mark
+// (MapStyle.h, MapLinePattern::Hachured).
+//
+// **Right of the direction of travel, and that is the whole point.** OSM puts a
+// cliff's lower ground on the right of the way's direction and the tile keeps the
+// points in that order, so the comb direction is data rather than taste. In screen
+// coordinates y grows downwards, so rotating the travel vector by +90 degrees --
+// (dx, dy) -> (-dy, dx) -- lands on the right-hand side: facing east, that is
+// south, which is right. Get the sign wrong and every cliff on the map claims the
+// drop is uphill.
+void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int tickPx,
+                       const int gapPx, const MapInk ink) {
+  if (lineWidth <= 0 || way.pointCount < 2) return;
+  // The line itself, unbroken. A cliff is continuous ground; only the combs are
+  // periodic.
+  strokeWay(canvas, way, lineWidth, ink);
+  if (tickPx <= 0 || gapPx <= 0) return;
+
+  int phase = 0;  // distance since the last comb
+  for (uint16_t i = 1; i < way.pointCount; ++i) {
+    const int x0 = way.xs[i - 1], y0 = way.ys[i - 1];
+    const int x1 = way.xs[i], y1 = way.ys[i];
+    const int dx = x1 - x0, dy = y1 - y0;
+    const int len =
+        static_cast<int>(std::lround(std::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy)));
+    if (len <= 0) continue;
+
+    int walked = 0;
+    while (walked < len) {
+      const int step = std::min(gapPx - phase, len - walked);
+      if (phase + step >= gapPx) {
+        const int at = walked + step;
+        const int px = x0 + dx * at / len;
+        const int py = y0 + dy * at / len;
+        // Right of travel, scaled to the tick length. Integer, so a short segment
+        // with a large tick still points the right way.
+        const int tx = -dy * tickPx / len;
+        const int ty = dx * tickPx / len;
+        canvas.drawLine(px, py, px + tx, py + ty, 1, ink);
+        phase = 0;
+      } else {
+        phase += step;
+      }
+      walked += step;
+    }
+  }
+}
+
+// dash, gap, mark, gap -- repeating. The rhythm a paper map uses to separate
+// route classes when it cannot use colour, which on this panel is always.
+//
+// Same arc-length walk as strokeWayDashed, with a four-slot period instead of
+// two. The mark is stamped once, at the middle of its slot, the first time the
+// walk crosses that middle -- not every step, or a segment boundary landing
+// inside the slot would stamp it twice.
+void strokeWayDashMark(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int dashPx,
+                       const int gapPx, const MapLineMark mark, const int markPx, const MapInk ink) {
+  if (lineWidth <= 0 || dashPx <= 0 || gapPx <= 0 || markPx <= 0) return;
+  const int markStart = dashPx + gapPx;
+  const int markEnd = markStart + markPx;
+  const int period = markEnd + gapPx;
+  const int markMid = markStart + markPx / 2;
+  int phase = 0;
+
+  for (uint16_t i = 1; i < way.pointCount; ++i) {
+    const int x0 = way.xs[i - 1], y0 = way.ys[i - 1];
+    const int x1 = way.xs[i], y1 = way.ys[i];
+    const int dx = x1 - x0, dy = y1 - y0;
+    const int len =
+        static_cast<int>(std::lround(std::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy)));
+    if (len <= 0) continue;
+
+    int walked = 0;
+    while (walked < len) {
+      // The next boundary in the period, so a step never straddles two slots.
+      int nextEdge = period;
+      if (phase < dashPx) {
+        nextEdge = dashPx;
+      } else if (phase < markStart) {
+        nextEdge = markStart;
+      } else if (phase < markEnd) {
+        nextEdge = markEnd;
+      }
+      const int step = std::min(nextEdge - phase, len - walked);
+      if (phase < dashPx) {
+        const int ax = x0 + dx * walked / len;
+        const int ay = y0 + dy * walked / len;
+        const int bx = x0 + dx * (walked + step) / len;
+        const int by = y0 + dy * (walked + step) / len;
+        canvas.drawLine(ax, ay, bx, by, lineWidth, ink);
+      } else if (phase <= markMid && phase + step > markMid) {
+        const int at = walked + (markMid - phase);
+        // Right of travel, which on a cliff record is the downslope side (OSM
+        // order; docs/map-data-spec.md, "The relief layer's second class"). y grows
+        // downwards on screen, so +90 degrees is (dx, dy) -> (-dy, dx).
+        stampMark(canvas, x0 + dx * at / len, y0 + dy * at / len, mark, markPx, ink, -dy, dx);
+      }
+      walked += step;
+      phase = (phase + step) % period;
+    }
+  }
+}
+
 void strokeWayDashed(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, int dashPx, int gapPx, MapInk ink) {
   if (lineWidth <= 0 || dashPx <= 0 || gapPx <= 0) return;
   const int period = dashPx + gapPx;
@@ -106,6 +310,8 @@ struct RoadStroke {
   int dash = 0;
   int gap = 0;
   MapAreaTone tone = MapAreaTone::None;
+  MapLineMark mark = MapLineMark::None;
+  int markPx = 0;
 };
 
 // A class id past the enum's slots can only come from a corrupt tile; reserved
@@ -128,6 +334,8 @@ RoadStroke roadStrokeFor(const MapStyle& style, const MapWayRef& way) {
   stroke.pattern = style.roadPattern[way.classId];
   stroke.dash = style.roadDashPx[way.classId];
   stroke.gap = style.roadGapPx[way.classId];
+  stroke.mark = style.roadMark[way.classId];
+  stroke.markPx = style.roadMarkPx[way.classId];
   stroke.tone = style.roadFillTone[way.classId];
 
   // First match wins, in file order, and a match replaces the whole stroke
@@ -150,6 +358,11 @@ RoadStroke roadStrokeFor(const MapStyle& style, const MapWayRef& way) {
     // its class had. Stated rather than inherited: a shaded ribbon whose width
     // was just replaced has no interior anyone reasoned about.
     stroke.tone = MapAreaTone::None;
+    // Same reasoning for the mark: a flag rule replaces the stroke, so it does
+    // not inherit a rhythm the class chose. A flag rule that wants a marked line
+    // says so itself.
+    stroke.mark = MapLineMark::None;
+    stroke.markPx = 0;
     return stroke;
   }
   return stroke;
@@ -666,7 +879,17 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       const RoadStroke stroke = roadStrokeFor(style, way);
       if (stroke.pattern == MapLinePattern::Dashed) {
         strokeWayDashed(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black);
-      } else {
+      } else if (stroke.pattern == MapLinePattern::DashMark) {
+        strokeWayDashMark(canvas, way, stroke.width, stroke.dash, stroke.gap, stroke.mark, stroke.markPx,
+                          MapInk::Black);
+      } else if (stroke.pattern == MapLinePattern::Hachured) {
+        // Wired here too, not only on the relief layer: a road class can want it
+        // (an embankment, a cutting), and without this branch it fell through to a
+        // plain stroke -- the pattern silently doing nothing, which is the failure
+        // mode this file keeps having to be saved from. `dash` is the comb reach on
+        // a road, since a hachured line has no dash of its own.
+        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black);
+      } else if (stroke.pattern != MapLinePattern::None) {
         strokeWay(canvas, way, stroke.width, MapInk::Black);
       }
     }
