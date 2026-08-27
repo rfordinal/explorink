@@ -36,6 +36,27 @@ static constexpr uint8_t kWaymarkPairMax = 62;
 // no pattern is not a pattern.
 static constexpr uint8_t kWaymarkOffTable = 63;
 
+// Nothing in src/ or lib/ includes this header yet, so a regeneration across
+// the repo boundary could drift the bit layout and no build would notice.
+// These asserts are that check, and test/map_flag_rules/MapFlagRulesTest.cpp
+// includes the header so they are actually compiled. Hand-added, not in the
+// generator's template yet.
+static_assert(kMapWaymarkShift == 8, "the waymark id starts at flags bit 8");
+static_assert(kMapWaymarkMask == 0x3F00, "six bits, 8 through 13");
+static_assert((kMapWaymarkMask >> kMapWaymarkShift) == kWaymarkIdSlots - 1, "the mask must cover all 64 ids");
+static_assert((kMapWaymarkMask & 0xC000u) == 0, "bits 14-15 are seasonal and permit (scripts/gen_mapstyle.py:218)");
+static_assert((kMapWaymarkMask & 0x00FFu) == 0, "bits 0-7 are the named way flags (scripts/gen_mapstyle.py:210)");
+static_assert(kWaymarkNotWaymarked == 0, "sentinel");
+static_assert(kWaymarkRouteNoSymbol == 1, "sentinel");
+static_assert(kWaymarkOffTable == kWaymarkIdSlots - 1, "sentinel, the top of the range");
+static_assert(kWaymarkPairMin == kWaymarkRouteNoSymbol + 1, "the pairs start above the low sentinels");
+static_assert(kWaymarkPairMax == kWaymarkOffTable - 1, "the pairs stop below the high sentinel");
+static_assert(kWaymarkPairMax - kWaymarkPairMin + 1 == 61, "61 colour+shape pairs");
+static_assert(mapWaymarkId(0x0000) == kWaymarkNotWaymarked, "an unflagged way is not waymarked");
+static_assert(mapWaymarkId(0xFFFF) == kWaymarkOffTable, "all bits set reads as the top id, not as an overflow");
+static_assert(mapWaymarkId(0x0100) == 1, "bit 8 alone is id 1");
+static_assert(mapWaymarkId(0xC0FF) == kWaymarkNotWaymarked, "the other flag bits must not leak into the id");
+
 enum class MapWaymarkColour : uint8_t {
   Black = 0,
   Blue = 1,
@@ -260,3 +281,20 @@ static constexpr const char* kMapWaymarkShapes[64] = {
   nullptr,
 };
 // clang-format on
+
+// The three tables are parallel, one row per id, and a regeneration that drops
+// or adds a row is the drift these catch. Compiled by
+// test/map_flag_rules/MapFlagRulesTest.cpp, same as the bit asserts above.
+static_assert(sizeof(kMapWaymarkNames) / sizeof(kMapWaymarkNames[0]) == kWaymarkIdSlots, "one name per id");
+static_assert(sizeof(kMapWaymarkColours) / sizeof(kMapWaymarkColours[0]) == kWaymarkIdSlots, "one colour per id");
+static_assert(sizeof(kMapWaymarkShapes) / sizeof(kMapWaymarkShapes[0]) == kWaymarkIdSlots, "one shape per id");
+static_assert(kMapWaymarkColours[kWaymarkNotWaymarked] == MapWaymarkColour::None, "a sentinel has no colour");
+static_assert(kMapWaymarkColours[kWaymarkRouteNoSymbol] == MapWaymarkColour::None, "a sentinel has no colour");
+static_assert(kMapWaymarkColours[kWaymarkOffTable] == MapWaymarkColour::None, "a sentinel has no colour");
+static_assert(kMapWaymarkShapes[kWaymarkNotWaymarked] == nullptr, "a sentinel has no shape");
+static_assert(kMapWaymarkShapes[kWaymarkRouteNoSymbol] == nullptr, "a sentinel has no shape");
+static_assert(kMapWaymarkShapes[kWaymarkOffTable] == nullptr, "a sentinel has no shape");
+static_assert(kMapWaymarkColours[kWaymarkPairMin] != MapWaymarkColour::None, "a pair carries a colour");
+static_assert(kMapWaymarkColours[kWaymarkPairMax] != MapWaymarkColour::None, "a pair carries a colour");
+static_assert(kMapWaymarkShapes[kWaymarkPairMin] != nullptr, "a pair carries a shape");
+static_assert(kMapWaymarkShapes[kWaymarkPairMax] != nullptr, "a pair carries a shape");

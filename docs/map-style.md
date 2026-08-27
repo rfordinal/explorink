@@ -934,3 +934,12 @@ python3 gen_waymark_enum.py --cpp-out <firmware>/src/activities/map/MapWaymark.h
 run from a tilegen checkout. `gen_waymark_enum.py` refuses to write anything
 unless its 61-entry table still re-derives from the committed taginfo snapshot,
 so a hand edit on either side of the boundary is caught rather than shipped.
+
+**`MapWaymark.h` also carries hand-added `static_assert`s that the generator's
+template does not print yet**, on the bit layout (mask `0x3F00`, shift 8, no
+overlap with bits 14-15) and on the three parallel 64-entry tables.
+`test/map_flag_rules/MapFlagRulesTest.cpp` includes the header for the sole
+purpose of compiling them, because until 2026-08-27 no translation unit included
+it at all and a drift would have shipped unnoticed. Two consequences: do not drop
+that include as unused, and a regeneration from tilegen drops both the asserts
+and the corrected Norway comment until the template carries them.

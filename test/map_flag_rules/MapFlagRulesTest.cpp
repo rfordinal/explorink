@@ -25,6 +25,13 @@
 #include "MapClassEnum.h"
 #include "MapRenderer.h"
 #include "MapStyleDefaults.h"
+// Included for its static_asserts, not for a symbol used below. MapWaymark.h is
+// generated in the tilegen repo and committed here, and until 2026-08-27 no
+// translation unit included it, so a drift in the bit layout or in the three
+// parallel 64-entry tables compiled cleanly and shipped. This is the flags word
+// the waymark id lives in (bits 8-13), so this is the file that should carry it.
+// Do not drop the include as unused.
+#include "MapWaymark.h"
 #include "PpmCanvas.h"
 
 namespace {
