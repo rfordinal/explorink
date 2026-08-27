@@ -63,23 +63,34 @@ takes and deliberately not by a second mechanism:
 { "match": {"class": ["stream"]},
   "pattern": "dashed", "width": 1,
   "when": [{ "steps": [0, 1, 2], "modes": ["hike"],
-             "pattern": "solid", "width": 7, "casing_px": 2,
+             "pattern": "solid", "width": 7, "casing_px": 0,
              "fill": "tone", "tone": "dark" }] }
 ```
 
-Black at the full width, white at the interior, then the tone laid into the
-cleared middle (`MapRenderer.cpp`, the `waterCasingPx > 0` branch;
-`toneWayInterior` is the same primitive a cased road's tone uses).
+**`casing_px` decides whether the ribbon has edges, and 0 is a real answer.**
 
-Four things to know before tuning it.
+- **`casing_px: 0` -- edgeless.** The tone is the whole stroke, full width, no
+  black rim. Maintainer's call 2026-08-27: *"I want the interior to eat the edge
+  too, I do not want a border."* What it buys is that the mark reads as a
+  **surface** rather than as a channel with banks: a 7 px ribbon with 2 px of
+  black each side is mostly rim, and the tone becomes a detail inside a border
+  instead of the thing itself.
+- **`casing_px > 0` -- edged.** The same three steps a cased road takes, and
+  deliberately the same ones rather than a second way of saying it: black at the
+  full width, white at the interior, then the tone laid into the cleared middle.
 
-- **`casing_px` is required.** Without it there is no interior and nothing is
-  drawn. The generator warns, naming the class -- but only for classes that
-  arrive as open ways: a lake is always a ring, so `fill: tone` with no casing is
-  correct there and warning about it was noise on the first run.
-- **The interior must be at least 2 px**, so `width >= 2 * casing + 2`.
-  `toneWayInterior` refuses below that, because a 1 px dither reads as a dashed
-  line and in this style a dash already means water. The generator warns.
+`toneWayInterior` does the tone in both cases -- the same primitive a cased road's
+tone uses; the only difference is whether it is handed the full width or the
+interior (`MapRenderer.cpp`, the `tone != MapAreaTone::None` branch of the water
+pass).
+
+Three more things before tuning it.
+
+- **Whatever carries the tone must be at least 2 px** -- the full width when there
+  is no casing, `width - 2 * casing` when there is. `toneWayInterior` refuses
+  below that, because a 1 px dither reads as a dashed line and in this style a
+  dash already means water. The generator warns, and skips `lake`, which is always
+  a ring and gets filled by `toneRing` regardless of any line width.
 - **The tone is per class now.** It was a single layer-wide `waterTone`, which
   meant a lake and a river had to agree about what water looks like and a toned
   stroke had no tone of its own. The wave **hatch** stays layer-wide: only rings

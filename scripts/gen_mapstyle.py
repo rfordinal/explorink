@@ -575,20 +575,22 @@ def water(style):
             # stream gets a surface at all (MapStyle.h, waterCasingPx).
             class_tone = _tone(rule, what)
             tones[_WATER_CLASS[name]] = class_tone
-            # Only for the classes that arrive as open ways. A lake is always a
-            # ring, so `fill: tone` with no casing is exactly right there and
-            # warning about it would be noise -- which it was, on the first run.
-            if class_tone != "MapAreaTone::None" and casing == 0 and name != "lake":
-                print(f"gen_mapstyle.py: warning -- {what}: `fill: tone` on '{name}' with no "
-                      f"usable casing_px. Where this class arrives as a closed ring (a river "
-                      f"mapped as an area) the tone fills it, but an open way -- which is what a "
-                      f"stream always is -- has no interior to texture and nothing is drawn. Give "
-                      f"it a casing and a width of at least 2*casing+2 (docs/map-style.md, 'A "
-                      f"toned watercourse')")
-            elif class_tone != "MapAreaTone::None" and casing > 0 and width - 2 * casing < 2:
-                print(f"gen_mapstyle.py: warning -- {what}: a {width - 2 * casing}px interior "
-                      f"cannot carry a tone -- toneWayInterior refuses below 2px, because a 1px "
-                      f"dither reads as a dashed line and a dash means water already")
+            # What carries the tone on an open way: the interior when there is a
+            # casing, the whole stroke when there is not. `casing_px: 0` with a
+            # tone is a real answer -- an edgeless toned ribbon -- and not a
+            # missing casing, so it is not warned about.
+            #
+            # The 2 px floor is toneWayInterior's own: below it there is nothing to
+            # texture, and a 1 px dither reads as a dashed line where a dash
+            # already means water. Skipped for `lake`, which is always a ring and
+            # gets filled by toneRing regardless of any line width.
+            toned = width - 2 * casing
+            if class_tone != "MapAreaTone::None" and name != "lake" and toned < 2:
+                print(f"gen_mapstyle.py: warning -- {what}: '{name}' is toned but only {toned}px "
+                      f"wide carries it -- toneWayInterior refuses below 2px, because a 1px dither "
+                      f"reads as a dashed line and a dash means water already. Widen it, or drop "
+                      f"casing_px to 0 for an edgeless ribbon (docs/map-style.md, 'A toned "
+                      f"watercourse')")
         # Water is the one layer that wants a tone *and* a pattern: a surface
         # dense enough to read as water, with waves knocked out of it in white.
         # Everywhere else `fill` picks one or the other, so both are read here

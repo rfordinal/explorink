@@ -796,7 +796,7 @@
               ],
               "pattern": "dashed",
               "width": 5,
-              "casing_px": 5,
+              "casing_px": 0,
               "fill": "tone",
               "tone": "dark"
             }

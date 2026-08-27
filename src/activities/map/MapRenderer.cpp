@@ -598,26 +598,37 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         // number (MapStyle::waterOutlinePx).
         MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterOutlinePx[waterClass],
                                  MapInk::Black);
-      } else if (style.waterCasingPx[waterClass] > 0) {
-        // **A watercourse that carries a surface.** Same three steps a cased road
-        // takes, and deliberately the same ones rather than a second way of
-        // saying it: black at the full width, white at the interior, then the
-        // tone laid into the cleared middle.
+      } else if (tone != MapAreaTone::None) {
+        // **A watercourse that carries a surface.** `mapWayIsClosedRing` is the
+        // only thing separating a lake or an area-mapped river from a stream, and
+        // a stream is always an open way -- so before 2026-08-27 `fill: tone` on a
+        // stream rule drew nothing at all, because toneRing is reached only above.
+        // A walker crossing a stream cares as much as a rider crossing the
+        // Danube, and width alone could not say it.
         //
-        // This branch is why it exists. `mapWayIsClosedRing` is the only thing
-        // separating a lake or an area-mapped river from a stream, and a stream is
-        // always an open way -- so before 2026-08-27 `fill: tone` on a stream rule
-        // drew nothing at all, because toneRing is reached only above. A walker
-        // crossing a stream cares as much as a rider crossing the Danube, and
-        // width alone could not say it.
+        // `casing_px` decides whether the ribbon has edges, and 0 is a real answer
+        // rather than a missing one (maintainer's call 2026-08-27: "I want the
+        // interior to eat the edge too, I do not want a border").
         const int casing = style.waterCasingPx[waterClass];
-        // The generator guarantees 2 * casing < width, so the interior is >= 1.
-        const int inner = lineWidth - 2 * casing;
-        strokeWay(canvas, way, lineWidth, MapInk::Black);
-        strokeWay(canvas, way, inner, MapInk::White);
-        toneWayInterior(canvas, way, inner, tone);
+        if (casing > 0) {
+          // Edged: the same three steps a cased road takes, deliberately the same
+          // ones rather than a second way of saying it. Black at the full width,
+          // white at the interior, then the tone laid into the cleared middle. The
+          // generator guarantees 2 * casing < width, so the interior is >= 1.
+          const int inner = lineWidth - 2 * casing;
+          strokeWay(canvas, way, lineWidth, MapInk::Black);
+          strokeWay(canvas, way, inner, MapInk::White);
+          toneWayInterior(canvas, way, inner, tone);
+        } else {
+          // Edgeless: the tone is the whole stroke, full width, no black rim. What
+          // this buys is that the mark reads as a *surface* and not as a channel
+          // with banks -- a 7 px ribbon with 2 px of black on each side is mostly
+          // rim, and at that point the tone is a detail inside a border rather
+          // than the thing itself.
+          toneWayInterior(canvas, way, lineWidth, tone);
+        }
         // The dash still applies, over the finished surface rather than instead of
-        // it: a dashed cased watercourse is a broken ribbon, which is what an
+        // it: a dashed watercourse is a broken ribbon, which is what an
         // intermittent stream should look like.
         if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
           strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
