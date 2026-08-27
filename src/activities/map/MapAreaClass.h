@@ -60,8 +60,19 @@ enum class MapReliefClass : uint8_t {
   // direction of travel. Nothing draws a correct-side tick yet, and the order
   // is what makes adding one a render change rather than a refetch.
   Cliff = 3,
-  // Reserved, not built. kReliefClassSlots is 4, so this is the last class that
-  // fits a per-class style table without widening it.
+  // Reserved, not built. `Cliff = 3` is the last class that fits a per-class
+  // style table: kReliefClassSlots is 4, so the valid indices are 0-3, and
+  // `drawContourClass` returns before it reads anything when
+  // `index >= kReliefClassSlots` (MapRenderer.cpp:255). A Ridge left at 4
+  // against a table of 4 therefore draws nothing at all, with no build error
+  // and no log line.
+  //
+  // Building it means widening the table first, and that is cheap:
+  // `contourWidthPx` is one byte per slot (MapStyle.h:277) and
+  // data/mapstyle.json compiles to 14 MapStyle variants plus the base
+  // (MapStyleDefaults.h:12 and :377), so a fifth slot costs 15 bytes of flash
+  // before padding. `_CONTOUR_SLOTS` (scripts/gen_mapstyle.py:88) has to move
+  // with it. Read off the code 2026-08-27, not measured.
   Ridge = 4,
 };
 

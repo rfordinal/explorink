@@ -851,6 +851,32 @@ rung 3 out. At that weight **a cliff is indistinguishable from an index
 contour**, which is the wrong outcome and is the thing a hardware pass has to
 settle. The correct mark is a ticked line with the ticks on the low side.
 
+**A cliff is invisible in ride and cycle mode, at every rung.** Two gates, and
+the outer one wins. `data/mapstyle.json:86-91` resolves
+`layers.contours.enabled` to false for `ride` and `cycle`, and the whole relief
+draw sits behind `if (style.contoursEnabled)` (`MapRenderer.cpp:553`, the cliff
+pass at `MapRenderer.cpp:562`). So a motorcyclist never sees the one line that
+means "you cannot go this way". The cliff rule's own `hidden` from rung 3 out is
+a much smaller claim than that and says nothing about ride: nothing inside the
+layer can reach a mode whose layer is never opened. Read off the code
+2026-08-27.
+
+**Whether a motorcyclist should see cliffs is an open product question, and the
+maintainer owns it.** It is not an oversight and it is not a bug to fix in
+passing. What the decision costs, so it can be taken on numbers:
+
+- **No firmware change is needed.** Cliffs in ride mode is expressible in the
+  style today: enable the layer for `ride`, then hide `minor` and `index` for
+  `ride`. The widths resolve to 0 and `drawContourClass` returns before reading
+  anything (`MapRenderer.cpp:255`).
+- **But the tile read is per layer, not per class.** `contoursEnabled` gates
+  the layer, and each enabled class pass calls `beginContours()` and walks every
+  relief record, skipping the other classes by id (`MapRenderer.cpp:256`,
+  `:261-262`). So ride would pay a full walk of a 32 kB
+  z13 relief layer (the table below) to draw 0.3 kB of cliffs.
+- **And at 2 px a cliff still reads as an index contour**, so the mark has to be
+  designed before the answer means anything on the panel.
+
 **What it costs, measured on a Mala Fatra build 2026-08-27** (297 `natural=cliff`
 ways in the bbox), against the same build with `layers.cliffs` off:
 
@@ -910,7 +936,7 @@ Whenever it is picked up, it needs a style decision first. `mapstyle.json` has o
 `layers.position` block and no per-mode marker sizes, so either the style grows
 them (a `modes.<name>.marker` block) or one set of numbers is scaled per mode.
 
-## Both generated headers are gitignored, and one generated header is not
+## Two generated headers are gitignored, and two are not
 
 `MapStyleDefaults.h` and `MapModeMaskDefaults.h` are build products, never
 committed (`.gitignore`). PlatformIO regenerates them on every build; for the

@@ -28,7 +28,20 @@ static constexpr uint8_t mapWaymarkId(uint16_t flags) {
 static constexpr uint8_t kWaymarkNotWaymarked = 0;
 // On a waymarked route, and nothing is known about how the waymark looks.
 // The correct rendering is a plain emphasised trail line, not a question mark:
-// this is what the whole of North America and most of Norway resolve to.
+// this is what the whole of North America resolves to, because the ways there
+// carry no `osmc:symbol` at all.
+//
+// **Norway does not land here.** The DNT mark is `red:white:::T:red`, which
+// resolves through the text clause to the pair (red, "T"); that pair is not one
+// of the 61 the table holds, so Norway lands on kWaymarkOffTable (63). Every
+// Jotunheimen relation measured for docs/map-data-spec.md carries exactly that
+// value. Anyone designing the glyph collapse must count Norway in the off-table
+// bucket, not in this one.
+//
+// These two paragraphs diverge from the generator's template on purpose: it
+// still prints the old "and most of Norway" claim, so fix it in
+// gen_waymark_enum.py (tilegen) or the next regeneration brings the wrong
+// country back.
 static constexpr uint8_t kWaymarkRouteNoSymbol = 1;
 static constexpr uint8_t kWaymarkPairMin = 2;
 static constexpr uint8_t kWaymarkPairMax = 62;
@@ -44,8 +57,8 @@ static constexpr uint8_t kWaymarkOffTable = 63;
 static_assert(kMapWaymarkShift == 8, "the waymark id starts at flags bit 8");
 static_assert(kMapWaymarkMask == 0x3F00, "six bits, 8 through 13");
 static_assert((kMapWaymarkMask >> kMapWaymarkShift) == kWaymarkIdSlots - 1, "the mask must cover all 64 ids");
-static_assert((kMapWaymarkMask & 0xC000u) == 0, "bits 14-15 are seasonal and permit (scripts/gen_mapstyle.py:218)");
-static_assert((kMapWaymarkMask & 0x00FFu) == 0, "bits 0-7 are the named way flags (scripts/gen_mapstyle.py:210)");
+static_assert((kMapWaymarkMask & 0xC000u) == 0, "bits 14-15 are seasonal and permit (scripts/gen_mapstyle.py:218-219)");
+static_assert((kMapWaymarkMask & 0x00FFu) == 0, "bits 0-7 are the named way flags (scripts/gen_mapstyle.py:210-217)");
 static_assert(kWaymarkNotWaymarked == 0, "sentinel");
 static_assert(kWaymarkRouteNoSymbol == 1, "sentinel");
 static_assert(kWaymarkOffTable == kWaymarkIdSlots - 1, "sentinel, the top of the range");
