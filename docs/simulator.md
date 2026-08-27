@@ -179,6 +179,31 @@ the map data:
 - The zoom `+`/`-` buttons are still clipped by the right edge, the open item from
   2026-08-23 below. Unchanged.
 
+## Three window scales
+
+Since 2026-08-27 the window is not fixed at 1:1. `CROSSPOINT_SIM_SCALE` takes
+`1:1` (the default), `zoom:N` for an integer 2..8, or `real[:<monitor-dpi>]`. The
+fork's `README.md` has the table and the reasoning; three things matter on this
+side.
+
+**It is the same three modes `tools/style_watch.py` has**, deliberately: 1:1 is
+the default and the only mode a hairline decision may be taken in, zoom is for
+reading a 12 px height number, and real answers "is this road a hairline in the
+hand" (`docs/device-preview.md`, "1:1 and real size", has the arithmetic and the
+per-device ppi).
+
+**1:1 and zoom sample nearest; real samples linear.** Upstream set linear
+unconditionally, which is right for an e-reader and wrong here -- a 1-bit map's
+dither is judged as dots, and a filtered hairline is the smudge the parent repo's
+1:1 rule was written against.
+
+**A screenshot is 480x800 whatever the window is.** `CROSSPOINT_SIM_SCREENSHOTS`
+composes into a panel-sized target rather than reading the window's drawable, so
+`tools/sim_e2e.py` and every artifact built from a grab are unaffected by the
+scale. Verified: byte-identical BMPs across 1:1, zoom x3, zoom x4, real and
+real:157, and the e2e harness passes 48 of 48 under `CROSSPOINT_SIM_SCALE=3`
+exactly as at 1:1.
+
 ## Device profiles
 
 One env per device and panel controller, extending `[env:simulator]`: the base
