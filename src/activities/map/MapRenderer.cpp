@@ -796,6 +796,11 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
     drawContourClass(canvas, source, style, MapReliefClass::ContourMinor, nullptr, 0, lineCount);
     drawContourClass(canvas, source, style, MapReliefClass::ContourIndex, contourLabels,
                      static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])), lineCount);
+    // Cliffs last, so the one line that means "you cannot go this way" lands on
+    // top of the height lines it crosses. No label slots: `flags` on a cliff
+    // record is 0 rather than an elevation (tilegen relief_class.py), so a
+    // number hung on one would read "0 m".
+    drawContourClass(canvas, source, style, MapReliefClass::Cliff, nullptr, 0, lineCount);
   }
   if (timing) lap(timing->contoursMs, mark);
 

@@ -538,19 +538,53 @@ Both examples in this file compile; the two that used to be here did not.
   renderer -- a flag rule that appeared to un-hide it would draw nothing and read
   as a bug in the rule.
 
-### The warning: bits 8-15 exist and carry nothing
+### Bits 8-15: three of the five are filled now
 
 `docs/map-data-spec.md` allocates the whole remaining flag budget -- waymark id
-(8-13), `seasonal` (14), `permit` (15) -- and `roughness` bits 3-5 (`sac_scale`)
-and 6-7 (`trail_visibility`). **The builder writes zero into all of them today.**
-Measured, not assumed: across 474,178 ways in the mirror, not one has a `flags`
-bit above 7 or a `roughness` bit above 2 set.
+(`flags` 8-13), `seasonal` (14), `permit` (15) -- and `roughness` bits 3-5
+(`sac_scale`) and 6-7 (`trail_visibility`).
 
-So `{"match": {"flag": "seasonal"}}` compiles, validates, and **can never
-match**. `gen_mapstyle.py` prints a warning naming the flag when a rule uses one
-of those two names, rather than letting it look like a working rule that happens
-to find nothing. The waymark bits have no names at all, which is the stronger
-version of the same protection.
+**Superseded 2026-08-27.** This section used to say the builder writes zero into
+all of them, measured across 474,178 ways in the mirror. That was true when it
+was written and is no longer: tilegen fills the waymark id, `sac_scale` and
+`trail_visibility` as of that date. `seasonal` and `permit` are still zero, so
+`{"match": {"flag": "seasonal"}}` still compiles, validates and can never match,
+and `gen_mapstyle.py` still prints a warning naming those two.
+
+**Every tile in `mapbuilder/cdn/` predates this**, so a local render shows the
+old bytes until the area is rebuilt. `rules_hash` moved (the new tilegen modules
+are in `_RULE_SOURCE_MODULES`), which is what `tools/rebuild_stale_rules.py`
+keys on.
+
+**What the renderer must do differently.** `roughness` is now three fields, not
+one number. An unmasked compare reads an alpine path -- `sac_scale=alpine_hiking`
+sets bit 5, so the byte is at least 0x20 -- as surface grade 32, worse than
+impassable. `MapStyle.h` has the masks and two accessors:
+
+| field | bits | accessor |
+|---|---|---|
+| roughness 0-7 | 0-2 | `roughness & kMapRoughnessValueMask` |
+| `sac_scale` 0-6 | 3-5 | `mapSacScale(roughness)` |
+| `trail_visibility` 0-3 | 6-7 | `mapTrailVisibility(roughness)` |
+
+`MapRenderer.cpp`'s flag-rule pass already masked (`roadStrokeFor`), which is why
+this landed without a render change. Nothing else reads `roughness` today.
+
+**The waymark id has names now.** `src/activities/map/MapWaymark.h` is generated
+by tilegen's `gen_waymark_enum.py` from `waymark_spec.py`, exactly as
+`MapClassEnum.h` is generated from `class_spec.py`, and it carries
+`mapWaymarkId(flags)`, the three sentinels, and per-id colour and shape tables.
+Nothing in the renderer reads it yet -- **the glyphs are not designed**, and
+`docs/map-data-spec.md` is explicit that the collapse from 61 ids to the dozen a
+11 px panel can distinguish has to be collision-aware rather than a truncation.
+
+What the data looks like, measured on a Mala Fatra build 2026-08-27: 26.8 % of
+z13 pedestrian records carry a nonzero waymark id, spread over seven ids --
+`green_bar` 66, `blue_bar` 63, `yellow_bar` 39, `off_table` 42, `green_backslash`
+9, `red_triangle` 5, `green_triangle` 1. So the Slovak network really is a
+handful of coloured bars, and the off-table bucket is the fourth largest, which
+is a shape question rather than a bug: `green_slash`, `red_turned_T` and
+`blue_corner` are all below the world top-61 cut.
 
 ### What it costs
 
@@ -933,6 +967,75 @@ nothing can check (`docs/map-data-spec.md`, "One vocabulary, not two"). The
 laptop sketch resolves through the same class table, so both panels style a
 river the same way.
 
+## The relief layer draws cliffs as well as contours
+
+Layer 7 is **relief**, not "contours" -- named for its vocabulary, so a terrain
+line that is not a height line lands as a class rather than as a reason to add
+layer 8. `natural=cliff` is the first of those, built 2026-08-27.
+
+`MapReliefClass::Cliff = 3`. `MapRenderer` draws it with the same
+`drawContourClass()` the two contour classes use, last, so the one line that
+means "you cannot go this way" lands on top of the height lines it crosses.
+
+**Two things about a cliff record differ from a contour, and a reader that
+misses either gets it wrong:**
+
+- **`flags` is 0, not an elevation.** On this layer `flags` is an `i16` height. A
+  cliff runs across contours and has no single height, so nothing may print it.
+  That is why the cliff pass is given no label slots -- a number on it would read
+  "0 m".
+- **The point order is OSM's and is not normalised.** OSM's convention puts the
+  lower ground on the right of the way's direction, so the record already carries
+  which side the drop is on. **Nothing draws a tick yet.** Keeping the order is
+  what makes drawing one later a render change rather than a refetch.
+
+**The style is provisional and has not been on a panel.** `data/mapstyle.json`
+gives cliff 2 px solid, which is the index contour's weight, and hides it from
+rung 3 out. At that weight **a cliff is indistinguishable from an index
+contour**, which is the wrong outcome and is the thing a hardware pass has to
+settle. The correct mark is a ticked line with the ticks on the low side.
+
+**A cliff is invisible in ride and cycle mode, at every rung.** Two gates, and
+the outer one wins. `data/mapstyle.json:86-91` resolves
+`layers.contours.enabled` to false for `ride` and `cycle`, and the whole relief
+draw sits behind `if (style.contoursEnabled)` (`MapRenderer.cpp:553`, the cliff
+pass at `MapRenderer.cpp:562`). So a motorcyclist never sees the one line that
+means "you cannot go this way". The cliff rule's own `hidden` from rung 3 out is
+a much smaller claim than that and says nothing about ride: nothing inside the
+layer can reach a mode whose layer is never opened. Read off the code
+2026-08-27.
+
+**Whether a motorcyclist should see cliffs is an open product question, and the
+maintainer owns it.** It is not an oversight and it is not a bug to fix in
+passing. What the decision costs, so it can be taken on numbers:
+
+- **No firmware change is needed.** Cliffs in ride mode is expressible in the
+  style today: enable the layer for `ride`, then hide `minor` and `index` for
+  `ride`. The widths resolve to 0 and `drawContourClass` returns before reading
+  anything (`MapRenderer.cpp:255`).
+- **But the tile read is per layer, not per class.** `contoursEnabled` gates
+  the layer, and each enabled class pass calls `beginContours()` and walks every
+  relief record, skipping the other classes by id (`MapRenderer.cpp:256`,
+  `:261-262`). So ride would pay a full walk of a 32 kB
+  z13 relief layer (the table below) to draw 0.3 kB of cliffs.
+- **And at 2 px a cliff still reads as an index contour**, so the mark has to be
+  designed before the answer means anything on the panel.
+
+**What it costs, measured on a Mala Fatra build 2026-08-27** (297 `natural=cliff`
+ways in the bbox), against the same build with `layers.cliffs` off:
+
+| LOD | relief layer before | after | per tile | records |
+|---|---|---|---|---|
+| detail z13 | 31,826 B avg | 32,160 B avg | **+334 B (+1.0 %)** | 81 |
+| regional z12 | 6,899 B avg | 8,559 B avg | **+1,660 B (+24 %)** | 300 |
+| overview z11 | unchanged | unchanged | 0 | 0 |
+
+z13 matches the 0.4 kB per tile the format spec predicted. z12 does not, and the
+24 % is worth knowing before it is enabled on a region: a z12 tile covers four
+times the ground with a fifth of the contour detail, so the cliffs are a much
+larger share of a much smaller layer. Whether a cliff earns that at 6 m/px is a
+panel question, and `build_config.json`'s `layers.cliffs` is the switch.
+
 ## Adding the next area layer
 
 The path is now well worn. For each new layer:
@@ -977,7 +1080,7 @@ Whenever it is picked up, it needs a style decision first. `mapstyle.json` has o
 `layers.position` block and no per-mode marker sizes, so either the style grows
 them (a `modes.<name>.marker` block) or one set of numbers is scaled per mode.
 
-## Both generated headers are gitignored
+## Two generated headers are gitignored, and two are not
 
 `MapStyleDefaults.h` and `MapModeMaskDefaults.h` are build products, never
 committed (`.gitignore`). PlatformIO regenerates them on every build; for the
@@ -985,3 +1088,28 @@ host build, `test/CMakeLists.txt` runs the same two generators as CMake custom
 commands. That second wiring is not cosmetic — before it existed a host build
 reused whatever a previous firmware build had left in the source tree, so a
 style edit did not reach the native preview at all.
+
+`MapClassEnum.h` and `MapWaymark.h` are the opposite case and **are** committed.
+Their generators live in the tilegen repo (`gen_class_enum.py`,
+`gen_waymark_enum.py`), which this repo does not have and must not need: it is
+pushed to GitHub and has to build standalone. So they are generated across the
+repo boundary by hand, deliberately, and carry a "do not hand-edit" banner
+instead of a gitignore entry. Regenerate with:
+
+```
+python3 gen_class_enum.py   --cpp-out <firmware>/src/activities/map/MapClassEnum.h
+python3 gen_waymark_enum.py --cpp-out <firmware>/src/activities/map/MapWaymark.h
+```
+
+run from a tilegen checkout. `gen_waymark_enum.py` refuses to write anything
+unless its 61-entry table still re-derives from the committed taginfo snapshot,
+so a hand edit on either side of the boundary is caught rather than shipped.
+
+**`MapWaymark.h` also carries hand-added `static_assert`s that the generator's
+template does not print yet**, on the bit layout (mask `0x3F00`, shift 8, no
+overlap with bits 14-15) and on the three parallel 64-entry tables.
+`test/map_flag_rules/MapFlagRulesTest.cpp` includes the header for the sole
+purpose of compiling them, because until 2026-08-27 no translation unit included
+it at all and a drift would have shipped unnoticed. Two consequences: do not drop
+that include as unused, and a regeneration from tilegen drops both the asserts
+and the corrected Norway comment until the template carries them.

@@ -79,7 +79,10 @@ _CLASS_SLOTS = 32
 # a record's layer id already says which vocabulary its class byte belongs to.
 _WATER_CLASS = {"unknown": 0, "river": 1, "stream": 2, "lake": 3}
 _LANDUSE_CLASS = {"forest": 1, "built_up": 2}
-_CONTOUR_CLASS = {"minor": 1, "index": 2}
+# Mirrors mapbuilder/tilegen/relief_class.py. `cliff` is a terrain line rather
+# than a contour and shares the layer: it has no elevation, so no label ever
+# hangs on it (drawContourClass is passed no slots for it).
+_CONTOUR_CLASS = {"minor": 1, "index": 2, "cliff": 3}
 _WATER_SLOTS = 4
 _LANDUSE_SLOTS = 4
 _CONTOUR_SLOTS = 4
@@ -1120,7 +1123,7 @@ def _style_literal(bundle):
      c_dashes) = contours_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
     landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
-    contour_names = ["(unused)", "minor", "index", "(unused)"]
+    contour_names = ["(unused)", "minor", "index", "cliff"]
     lines += [
         "    },",
         f"    .buildingsEnabled = {'true' if b_enabled else 'false'},",
@@ -1271,7 +1274,7 @@ def _print_summary(bundle, what):
                    f"halo {contours_px[2]['halo']}px"
                    if contours_px[2]["px"] else ", no heights")
         print(f"gen_mapstyle.py: {what}: contours on -- minor {contours_px[1][1]} px, "
-              f"index {contours_px[1][2]} px{heights}")
+              f"index {contours_px[1][2]} px, cliff {contours_px[1][3]} px{heights}")
     else:
         print(f"gen_mapstyle.py: {what}: contours off")
 
