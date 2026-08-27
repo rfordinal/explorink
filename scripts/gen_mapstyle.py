@@ -688,6 +688,7 @@ def contours(style):
     gaps_c = [0] * _CONTOUR_SLOTS
     marks_c = ["None"] * _CONTOUR_SLOTS
     mark_pxs_c = [0] * _CONTOUR_SLOTS
+    dashes_c = [0] * _CONTOUR_SLOTS
     # Height numbers on the index contours. Two or three a frame: the rest of the
     # ladder is countable from them.
     labels = {
@@ -704,7 +705,7 @@ def contours(style):
         sys.exit("gen_mapstyle.py: layers.contours: label_px is set but label_max is 0, so no "
                  "number would ever be drawn. Set label_max, or drop label_px.")
     if not layer.get("enabled", False):
-        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c
+        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c
 
     for index, rule in enumerate(layer.get("rules", [])):
         what = f"layers.contours.rules[{index}]"
@@ -724,13 +725,14 @@ def contours(style):
                 gaps_c[class_id] = 0
                 marks_c[class_id] = "None"
                 mark_pxs_c[class_id] = 0
+                dashes_c[class_id] = 0
                 continue
             widths[class_id] = _round_px(rule.get("width", 0), f"{what}.width")
             if widths[class_id] == 0:
                 sys.exit(f"gen_mapstyle.py: {what}: class '{name}' has width 0 and is not "
                          f"hidden. Use `hidden: true` to switch a class off at a rung -- "
                          f"a width of 0 reads as an accident.")
-            kind, _dash_unused, gap = _dash(rule, what)
+            kind, dash, gap = _dash(rule, what)
             if kind in ("Dashed", "Ticked"):
                 # A contour is a line of equal height and a broken one reads as a
                 # path; a cliff wants combs, not sleepers. Refused rather than
@@ -741,6 +743,10 @@ def contours(style):
                          f"'hachured' for a rock face, or 'dash_mark'.")
             patterns_c[class_id] = kind
             gaps_c[class_id] = gap
+            dashes_c[class_id] = dash
+            if kind == "DashMark" and dash < 1:
+                sys.exit(f"gen_mapstyle.py: {what}: 'dash_mark' needs dash_px of at least 1 -- the "
+                         f"marks have to hang off something")
             if kind == "Hachured":
                 ticks[class_id] = _round_px(rule.get("tick_px", 3), f"{what}.tick_px")
                 if ticks[class_id] < 1:
@@ -753,12 +759,12 @@ def contours(style):
     if not any(widths):
         # Every class hidden at this rung. Report the layer off, which is what
         # gets drawn -- and what stops the card being read for nothing.
-        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c
+        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c
     if widths[_CONTOUR_CLASS["index"]] == 0:
         # No index contour at this rung means nothing to hang a number on: the
         # numbers ride the heavy lines only.
         labels = dict(labels, px=0)
-    return True, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c
+    return True, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c
 
 
 def landuse(style):
@@ -1110,7 +1116,8 @@ def _style_literal(bundle):
     (w_enabled, w_widths, w_outlines, w_patterns, w_dashes, w_gaps, w_casings, w_tones, w_pattern, w_spacing,
      w_white) = water_px
     l_enabled, l_outlines, l_dashes, l_gaps, l_tones, l_patterns, l_spacings = landuse_px
-    (c_enabled, c_widths, c_labels, c_patterns, c_ticks, c_gaps, c_marks, c_mark_pxs) = contours_px
+    (c_enabled, c_widths, c_labels, c_patterns, c_ticks, c_gaps, c_marks, c_mark_pxs,
+     c_dashes) = contours_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
     landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
     contour_names = ["(unused)", "minor", "index", "(unused)"]
@@ -1163,6 +1170,8 @@ def _style_literal(bundle):
         *_array(c_ticks, contour_names),
         "    .contourGapPx =",
         *_array(c_gaps, contour_names),
+        "    .contourDashPx =",
+        *_array(c_dashes, contour_names),
         "    .contourMark =",
         *_array([f"MapLineMark::{m}" for m in c_marks], contour_names),
         "    .contourMarkPx =",

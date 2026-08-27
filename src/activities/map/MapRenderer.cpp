@@ -471,9 +471,37 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
   canvas.drawableRect(canvasX, canvasY, canvasW, canvasH);
   const int minGap = static_cast<int>(style.contourLabelMinGapPx);
   MapWayRef line;
+  const int lineWidth = style.contourWidthPx[index];
+  const MapLinePattern pattern = style.contourPattern[index];
   while (source.nextContour(line)) {
     if (line.classId != index) continue;
-    strokeWay(canvas, line, style.contourWidthPx[index], MapInk::Black);
+    // **The per-class pattern, which this loop used to ignore.** MapStyle grew
+    // contourPattern/TickPx/GapPx/Mark/MarkPx and gen_mapstyle.py learned to parse
+    // and emit them, and `strokeWayHachured` was wired into the roads pass only --
+    // so a style could say `"pattern": "hachured"` on the cliff class, be
+    // validated, and draw a plain line. Which is the exact shape of defect this
+    // file keeps producing: a field the generator accepts and nothing reads.
+    //
+    // It mattered here more than most. The obvious first thing to do with the
+    // cliff class is give it a comb, and at 2 px solid a cliff is the same mark as
+    // an index contour -- one says "a hundred metres of height", the other says
+    // "you fall here". A panel pass would have been judging a render the style did
+    // not perform.
+    switch (pattern) {
+      case MapLinePattern::Hachured:
+        strokeWayHachured(canvas, line, lineWidth, style.contourTickPx[index], style.contourGapPx[index],
+                          MapInk::Black);
+        break;
+      case MapLinePattern::DashMark:
+        strokeWayDashMark(canvas, line, lineWidth, style.contourDashPx[index], style.contourGapPx[index],
+                          style.contourMark[index], style.contourMarkPx[index], MapInk::Black);
+        break;
+      case MapLinePattern::None:
+        break;
+      default:
+        strokeWay(canvas, line, lineWidth, MapInk::Black);
+        break;
+    }
     if (drawn != nullptr) ++*drawn;
     if (slots == nullptr || style.contourLabelPx == 0) continue;
     int32_t vx = 0, vy = 0, bend = 0, upX = 0, upY = 0;

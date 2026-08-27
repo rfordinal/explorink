@@ -344,6 +344,9 @@ struct MapStyle {
   MapLinePattern contourPattern[kContourClassSlots];
   uint8_t contourTickPx[kContourClassSlots];
   uint8_t contourGapPx[kContourClassSlots];
+  // A `DashMark` relief class needs a real dash length. It briefly borrowed the
+  // gap, which is a number nobody chose for it.
+  uint8_t contourDashPx[kContourClassSlots];
   MapLineMark contourMark[kContourClassSlots];
   uint8_t contourMarkPx[kContourClassSlots];
 
