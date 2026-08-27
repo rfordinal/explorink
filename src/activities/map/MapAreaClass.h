@@ -49,12 +49,19 @@ enum class MapWaterClass : uint8_t {
 enum class MapReliefClass : uint8_t {
   ContourMinor = 1,
   ContourIndex = 2,
-  // Reserved, not built. A cliff is the one line on a mountain map that means
-  // "you cannot go this way", and its OSM way direction carries which side is
-  // higher, so a correct-side tick is possible from the point order the record
-  // already keeps. Measured at 0.4 kB per z13 tile in the High Tatras and 1.2 kB
-  // in Mala Fatra against a 35 kB contour layer -- noise.
+  // A cliff is the one line on a mountain map that means "you cannot go this
+  // way". Built 2026-08-27 from `natural=cliff`; measured at 0.4 kB per z13 tile
+  // in the High Tatras and 1.2 kB in Mala Fatra against a 35 kB contour layer.
+  //
+  // Two things a reader of this layer must handle differently for a cliff:
+  // `flags` is **0**, not an elevation -- a cliff runs across contours and has
+  // no single height -- so nothing may print it as a number; and the record's
+  // point order is OSM's, which puts the lower ground on the right of the
+  // direction of travel. Nothing draws a correct-side tick yet, and the order
+  // is what makes adding one a render change rather than a refetch.
   Cliff = 3,
+  // Reserved, not built. kReliefClassSlots is 4, so this is the last class that
+  // fits a per-class style table without widening it.
   Ridge = 4,
 };
 

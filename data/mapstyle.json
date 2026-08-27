@@ -67,6 +67,20 @@
           },
           "color": "#000000",
           "width": 2
+        },
+        {
+          "_comment": "natural=cliff, carried in the relief layer beside the contours since 2026-08-27. PROVISIONAL, NOT JUDGED ON A PANEL. 2 px solid is the index contour's weight, picked so a cliff is at least as loud as a height line, not because anything was looked at -- and at that weight a cliff and an index contour are indistinguishable, which is the wrong outcome. What a cliff should look like is a ticked line with the ticks on the low side; the record's OSM point order already carries which side that is (mapbuilder/tilegen/relief_class.py) and the renderer does not draw it yet. Hidden from rung 3 out: a cliff at 12 m/px and coarser is a line nobody can act on, and the overview LOD writes no cliff records at all (build_config.json, layers.cliffs).",
+          "match": {
+            "class": ["cliff"]
+          },
+          "color": "#000000",
+          "width": 2,
+          "when": [
+            {
+              "steps": [3,4,5,6],
+              "hidden": true
+            }
+          ]
         }
       ],
       "when": [

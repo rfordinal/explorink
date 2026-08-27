@@ -29,17 +29,47 @@
 // draws them that way round.
 enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked };
 
-// The bits of a way record's `roughness` byte that hold the 0-7 judgement.
+// A way record's `roughness` byte is three fields, not one number.
 //
 // Not in MapClassEnum.h, which is generated from tilegen's class_spec.py and
 // says "do not hand-edit" -- a constant added there is lost on the next
 // regeneration. The layout is docs/map-data-spec.md, "The rest of the flag
 // budget is allocated": bits 0-2 are roughness (0 unknown, 1 best .. 7 worst),
-// bits 3-5 are `sac_scale` and 6-7 `trail_visibility`. **The builder writes
-// zeros into bits 3-7 today** (measured: 474,178 road ways in the local mirror,
-// not one with a bit above 2 set), so masking is about not reading a future
-// field as a worse surface, not about data that exists.
+// bits 3-5 are `sac_scale` and 6-7 `trail_visibility`.
+//
+// **The builder fills bits 3-7 since 2026-08-27** (tilegen `roughness.py`,
+// `roughness_byte_for_tags`). Until then it wrote zeros there, which is why
+// this mask existed before the fields did -- and why it now matters: an
+// unmasked compare against `roughness` reads an alpine path
+// (`sac_scale=alpine_hiking` -> 0x20) as surface grade 32, i.e. as worse than
+// impassable. Measured on the extracts the tiles are built from
+// (`mapbuilder/tools/osm_tag_census.py`, 2026-08-27): 13.1 % of High Tatras
+// pedestrian ways carry `sac_scale` and 6.1 % `trail_visibility`, against
+// 1.2 % and 0.2 % in Mala Fatra. Sparse, and densest exactly where a walker
+// needs it.
 static constexpr uint8_t kMapRoughnessValueMask = 0x07;
+
+// `sac_scale`, bits 3-5. 0 unknown, 1 hiking, 2 mountain_hiking,
+// 3 demanding_mountain_hiking, 4 alpine_hiking, 5 demanding_alpine_hiking,
+// 6 difficult_alpine_hiking. 7 is reserved and never written by the builder, so
+// a 7 read here is a corrupt byte and must be treated as unknown.
+static constexpr uint8_t kMapSacScaleShift = 3;
+static constexpr uint8_t kMapSacScaleMask = 0x07;
+
+// `trail_visibility`, bits 6-7. 0 unknown, 1 obvious (OSM excellent/good),
+// 2 patchy (intermediate), 3 absent (bad/horrible/no).
+//
+// 0 is not "fine". On a Slovak forest track a missing tag is the normal case --
+// 99.8 % of Mala Fatra pedestrian ways -- so a style that draws state 0 like
+// state 1 is asserting something nobody surveyed.
+static constexpr uint8_t kMapTrailVisibilityShift = 6;
+static constexpr uint8_t kMapTrailVisibilityMask = 0x03;
+
+static constexpr uint8_t mapSacScale(uint8_t roughness) { return (roughness >> kMapSacScaleShift) & kMapSacScaleMask; }
+
+static constexpr uint8_t mapTrailVisibility(uint8_t roughness) {
+  return (roughness >> kMapTrailVisibilityShift) & kMapTrailVisibilityMask;
+}
 
 // A stroke that replaces a road class's own, for a way whose `flags` or
 // `roughness` says so (docs/map-data-spec.md, "Flag bits"; MapWayFlag in
