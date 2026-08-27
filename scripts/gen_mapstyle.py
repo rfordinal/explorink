@@ -522,7 +522,8 @@ def water(style):
     widths = [0] * _WATER_SLOTS
     if not layer.get("enabled", False):
         return (False, widths, [0] * _WATER_SLOTS, ["Solid"] * _WATER_SLOTS, [0] * _WATER_SLOTS,
-                [0] * _WATER_SLOTS, "MapAreaTone::None", "None", 0, False)
+                [0] * _WATER_SLOTS, [0] * _WATER_SLOTS, ["MapAreaTone::None"] * _WATER_SLOTS,
+                "None", 0, False)
 
     default_width = max(_round_px(layer.get("default", {}).get("width", 1), "layers.water.default.width"), 1)
     for class_id in _WATER_CLASS.values():
@@ -532,7 +533,9 @@ def water(style):
     outlines = [0] * _WATER_SLOTS
     dashes = [0] * _WATER_SLOTS
     gaps = [0] * _WATER_SLOTS
-    tone, pattern, spacing, white = "MapAreaTone::None", "None", 0, False
+    casings = [0] * _WATER_SLOTS
+    tones = ["MapAreaTone::None"] * _WATER_SLOTS
+    pattern, spacing, white = "None", 0, False
     for index, rule in enumerate(layer.get("rules", [])):
         what = f"layers.water.rules[{index}]"
         classes = rule.get("match", {}).get("class")
@@ -556,17 +559,49 @@ def water(style):
             outlines[_WATER_CLASS[name]] = 0 if rule.get("hidden", False) else outline
             (patterns_w[_WATER_CLASS[name]], dashes[_WATER_CLASS[name]],
              gaps[_WATER_CLASS[name]]) = _dash(rule, what)
+
+            # Casing, exactly a road's, and the same guard: a casing that leaves
+            # no interior is dropped rather than drawn, because two black edges
+            # touching each other is a solid line with extra passes.
+            casing = _round_px(rule.get("casing_px", 0), f"{what}.casing_px")
+            if casing > 0 and 2 * casing >= width:
+                print(f"gen_mapstyle.py: {what}: casing_px leaves no white inside a {width}px "
+                      f"stroke -- drawing it solid instead")
+                casing = 0
+            casings[_WATER_CLASS[name]] = 0 if rule.get("hidden", False) else casing
+
+            # The tone is per class now. On a ring it fills the polygon; on an
+            # open way it textures the cased stroke's interior, which is how a
+            # stream gets a surface at all (MapStyle.h, waterCasingPx).
+            class_tone = _tone(rule, what)
+            tones[_WATER_CLASS[name]] = class_tone
+            # Only for the classes that arrive as open ways. A lake is always a
+            # ring, so `fill: tone` with no casing is exactly right there and
+            # warning about it would be noise -- which it was, on the first run.
+            if class_tone != "MapAreaTone::None" and casing == 0 and name != "lake":
+                print(f"gen_mapstyle.py: warning -- {what}: `fill: tone` on '{name}' with no "
+                      f"usable casing_px. Where this class arrives as a closed ring (a river "
+                      f"mapped as an area) the tone fills it, but an open way -- which is what a "
+                      f"stream always is -- has no interior to texture and nothing is drawn. Give "
+                      f"it a casing and a width of at least 2*casing+2 (docs/map-style.md, 'A "
+                      f"toned watercourse')")
+            elif class_tone != "MapAreaTone::None" and casing > 0 and width - 2 * casing < 2:
+                print(f"gen_mapstyle.py: warning -- {what}: a {width - 2 * casing}px interior "
+                      f"cannot carry a tone -- toneWayInterior refuses below 2px, because a 1px "
+                      f"dither reads as a dashed line and a dash means water already")
         # Water is the one layer that wants a tone *and* a pattern: a surface
         # dense enough to read as water, with waves knocked out of it in white.
         # Everywhere else `fill` picks one or the other, so both are read here
         # rather than switching on it.
-        if rule.get("tone") and tone == "MapAreaTone::None":
-            tone = _tone(dict(rule, fill="tone"), what)
+        # The tone is read per class above. The hatch stays a layer-wide
+        # decision: it is the wave pattern knocked out of a filled ring in white,
+        # only rings ever carry it, and one water surface should not have two
+        # wave rhythms on one panel.
         if rule.get("hatch") and pattern == "None":
             pattern, spacing = _hatch(dict(rule, fill="hatch"), what)
             if rule.get("hatch_white"):
                 white = True
-    return True, widths, outlines, patterns_w, dashes, gaps, tone, pattern, spacing, white
+    return True, widths, outlines, patterns_w, dashes, gaps, casings, tones, pattern, spacing, white
 
 
 def contours(style):
@@ -959,7 +994,7 @@ def _style_literal(bundle):
 
     radius, ring, arrow = puck_px
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
-    (w_enabled, w_widths, w_outlines, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing,
+    (w_enabled, w_widths, w_outlines, w_patterns, w_dashes, w_gaps, w_casings, w_tones, w_pattern, w_spacing,
      w_white) = water_px
     l_enabled, l_outlines, l_dashes, l_gaps, l_tones, l_patterns, l_spacings = landuse_px
     c_enabled, c_widths, c_labels = contours_px
@@ -984,7 +1019,10 @@ def _style_literal(bundle):
         *_array(w_dashes, water_names),
         "    .waterGapPx =",
         *_array(w_gaps, water_names),
-        f"    .waterTone = {w_tone},",
+        "    .waterCasingPx =",
+        *_array(w_casings, water_names),
+        "    .waterTone =",
+        *_array(w_tones, water_names),
         f"    .waterHatch = MapAreaFill::Pattern::{w_pattern},",
         f"    .waterHatchSpacingPx = {w_spacing},",
         f"    .waterHatchWhite = {'true' if w_white else 'false'},",
@@ -1077,8 +1115,8 @@ def _print_summary(bundle, what):
           f"(outline {buildings_px[1]}px, tone {_toneLabel(buildings_px[2])}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "
           f"(widths {water_px[1]}, outlines {water_px[2]}, dashes {water_px[4]}/{water_px[5]}, "
-          f"tone {_toneLabel(water_px[6])}, "
-          f"hatch {water_px[7]}/{water_px[8]}px{' white' if water_px[9] else ''})")
+          f"casings {water_px[6]}, tones {[_toneLabel(t) for t in water_px[7]]}, "
+          f"hatch {water_px[8]}/{water_px[9]}px{' white' if water_px[10] else ''})")
     widest_road = max(widths)
     if route_px[0] and route_px[0] <= widest_road:
         print(f"gen_mapstyle.py: warning -- {what}: route width {route_px[0]}px is not wider than the "

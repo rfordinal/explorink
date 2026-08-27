@@ -202,7 +202,25 @@ struct MapStyle {
   MapLinePattern waterPattern[kWaterClassSlots];
   uint8_t waterDashPx[kWaterClassSlots];
   uint8_t waterGapPx[kWaterClassSlots];
-  MapAreaTone waterTone;
+
+  // Casing per water class, exactly a road's: above 0 the stroke is drawn black
+  // at the full width with a white stroke `2 * casing` narrower inside it. Added
+  // 2026-08-27 so a *line* can carry a surface.
+  //
+  // **Why a stream wanted one.** The Danube reads as an obstacle because it
+  // arrives as a closed ring and the ring branch tones it. A stream arrives as an
+  // open way -- `mapWayIsClosedRing` is the only thing that tells the two apart --
+  // so it could only ever be a stroke, and `fill: tone` on a stream rule drew
+  // nothing at all: `toneRing` is called in the ring branch and nowhere else. A
+  // walker crossing a stream cares as much as a rider crossing the Danube, and
+  // the mark has to say so.
+  uint8_t waterCasingPx[kWaterClassSlots];
+
+  // Tone per water class rather than one for the layer. It was a single
+  // `waterTone` until 2026-08-27, which meant a lake and a river had to agree
+  // about what water looks like, and a *toned stroke* had no tone of its own to
+  // read at all. The ring branch and the stroke branch both index this.
+  MapAreaTone waterTone[kWaterClassSlots];
   MapAreaFill::Pattern waterHatch;
   uint8_t waterHatchSpacingPx;
   // White waves on a dark surface is the whole point of the water fill: a tone

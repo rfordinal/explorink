@@ -586,8 +586,9 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // record.
       const uint8_t waterClass = way.classId < kWaterClassSlots ? way.classId : 0;
       const int lineWidth = style.waterLinePx[waterClass];
+      const MapAreaTone tone = style.waterTone[waterClass];
       if (mapWayIsClosedRing(way)) {
-        MapAreaFill::toneRing(canvas, way.xs, way.ys, way.pointCount, style.waterTone);
+        MapAreaFill::toneRing(canvas, way.xs, way.ys, way.pointCount, tone);
         // Tone first, then the pattern knocked out of it in white -- the order
         // is what makes waves on water rather than waves under it.
         MapAreaFill::hatchRing(canvas, way.xs, way.ys, way.pointCount, style.waterHatch, style.waterHatchSpacingPx,
@@ -597,6 +598,31 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         // number (MapStyle::waterOutlinePx).
         MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterOutlinePx[waterClass],
                                  MapInk::Black);
+      } else if (style.waterCasingPx[waterClass] > 0) {
+        // **A watercourse that carries a surface.** Same three steps a cased road
+        // takes, and deliberately the same ones rather than a second way of
+        // saying it: black at the full width, white at the interior, then the
+        // tone laid into the cleared middle.
+        //
+        // This branch is why it exists. `mapWayIsClosedRing` is the only thing
+        // separating a lake or an area-mapped river from a stream, and a stream is
+        // always an open way -- so before 2026-08-27 `fill: tone` on a stream rule
+        // drew nothing at all, because toneRing is reached only above. A walker
+        // crossing a stream cares as much as a rider crossing the Danube, and
+        // width alone could not say it.
+        const int casing = style.waterCasingPx[waterClass];
+        // The generator guarantees 2 * casing < width, so the interior is >= 1.
+        const int inner = lineWidth - 2 * casing;
+        strokeWay(canvas, way, lineWidth, MapInk::Black);
+        strokeWay(canvas, way, inner, MapInk::White);
+        toneWayInterior(canvas, way, inner, tone);
+        // The dash still applies, over the finished surface rather than instead of
+        // it: a dashed cased watercourse is a broken ribbon, which is what an
+        // intermittent stream should look like.
+        if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
+          strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
+                          MapInk::Black);
+        }
       } else if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
         strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
                         MapInk::Black);

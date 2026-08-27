@@ -44,6 +44,57 @@ a screen that redraws on demand. And z0 and z1 read **the same bytes** yet diffe
 by 700 ms, so the extra time is drawing, not I/O: at 1 m/px the same geometry
 covers far more pixels.
 
+## A toned watercourse
+
+**A closed ring is the only thing that made water a surface, and a stream is
+never one.** `MapRenderer`'s water pass branches on `mapWayIsClosedRing(way)`:
+a ring gets `toneRing`, then the wave hatch knocked out of it in white, then its
+border. An open way got a stroke and nothing else. So the Danube reads as an
+obstacle because OSM maps it as a polygon, while a stream -- always a
+`waterway=*` line -- could only ever be a black hairline, and `fill: tone` on a
+stream rule drew **nothing at all**: `toneRing` is reached only in the ring
+branch. The maintainer asked for a stream that reads as an obstacle, 2026-08-27,
+and width alone could not say it.
+
+Since then an open way can carry a surface, by the same three steps a cased road
+takes and deliberately not by a second mechanism:
+
+```json
+{ "match": {"class": ["stream"]},
+  "pattern": "dashed", "width": 1,
+  "when": [{ "steps": [0, 1, 2], "modes": ["hike"],
+             "pattern": "solid", "width": 7, "casing_px": 2,
+             "fill": "tone", "tone": "dark" }] }
+```
+
+Black at the full width, white at the interior, then the tone laid into the
+cleared middle (`MapRenderer.cpp`, the `waterCasingPx > 0` branch;
+`toneWayInterior` is the same primitive a cased road's tone uses).
+
+Four things to know before tuning it.
+
+- **`casing_px` is required.** Without it there is no interior and nothing is
+  drawn. The generator warns, naming the class -- but only for classes that
+  arrive as open ways: a lake is always a ring, so `fill: tone` with no casing is
+  correct there and warning about it was noise on the first run.
+- **The interior must be at least 2 px**, so `width >= 2 * casing + 2`.
+  `toneWayInterior` refuses below that, because a 1 px dither reads as a dashed
+  line and in this style a dash already means water. The generator warns.
+- **The tone is per class now.** It was a single layer-wide `waterTone`, which
+  meant a lake and a river had to agree about what water looks like and a toned
+  stroke had no tone of its own. The wave **hatch** stays layer-wide: only rings
+  carry it, and one water surface should not have two wave rhythms on a panel.
+- **A dash still applies over the finished ribbon**, not instead of it, which is
+  what an intermittent stream should look like.
+
+**Which tone reads as an obstacle is a panel question.** Compared at rung 1 over
+Vratna on a 3 px interior: `stipple` (period 3, 1 in 9) is about one dot per 3 px
+of length and barely registers; `dense` (period 2) reads as a textured channel;
+`dark` (checkerboard) reads as a grey ribbon and is the strongest. `dark` is also
+what the lake and the area-mapped river use, so a stream set to it is the same
+water surface in a narrow channel -- which is the literal form of the request.
+Judged on host renders only. Nothing here has been on glass.
+
 ## The path
 
 ```
