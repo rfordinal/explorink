@@ -322,7 +322,19 @@ bool MapTileSource::screenCellWindow(uint32_t& col0, uint32_t& col1, uint32_t& r
   // (computeScreenBoxForTile), so the window is a division. Cell size comes from
   // the tile's own span, and the grid has to be the one mapbuilder wrote with
   // (MapTileReader::kCellGrid mirrors tiles.py's CELL_GRID).
-  const double span = MapTileGrid::kWorldSizeM / static_cast<double>(1u << config_.z);
+  //
+  // **In stored units, not metres.** computeScreenBoxForTile has already divided
+  // the box by the tile's coord_shift, and the writer files a record into its cell
+  // from bounds that are also in stored units, so the cell size has to be divided
+  // by the same unit or the two sides are measuring a different grid. Both sides
+  // used to make the identical mistake -- span in metres against bounds in stored
+  // units -- which cancelled out at shift 0 and only at shift 0. tiles.py's
+  // build_lod now passes `tile_span_m(z) / (1 << coord_shift)`; this is the
+  // mirror of it. At shift 1 the untouched version asked for cells four times too
+  // coarse and read the wrong byte ranges, which is geometry silently missing from
+  // the screen rather than any kind of error.
+  const double unit = static_cast<double>(1u << reader_.coordShift());
+  const double span = MapTileGrid::kWorldSizeM / static_cast<double>(1u << config_.z) / unit;
   const double cell = span / static_cast<double>(MapTileReader::kCellGrid);
   const int32_t last = static_cast<int32_t>(MapTileReader::kCellGrid) - 1;
 

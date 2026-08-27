@@ -351,9 +351,16 @@ blocks -- there is no second place to say things.
   "width": 1, "pattern": "dotted" }
 
 { "match": {"flag": ["no_motor", "no_bicycle"], "roughness_min": 5},
-  "hidden": true,
-  "when": [{"modes": ["hike"], "hidden": false}] }
+  "width": 1, "pattern": "dotted",
+  "when": [{"modes": ["ride"], "hidden": true}] }
 ```
+
+**A rule any variant can draw needs its `width` in the file.** `when` patches
+rather than replaces, so `hidden: true` plus a `when` that unhides resolves to a
+visible rule with no width, and `gen_mapstyle.py` refuses it -- correctly, since
+there is no class width for a flag rule to inherit. Write the width once at the
+rule and let `when` hide it where it is not wanted, which is the direction above.
+Both examples in this file compile; the two that used to be here did not.
 
 - **`flag`** is a name or a list of names. A list is **any bit set**, not all of
   them -- the same reading `match.class` already has.

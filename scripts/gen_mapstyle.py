@@ -310,7 +310,10 @@ def road_flag_rules(style):
             if rule.get("width") is None:
                 sys.exit(f"gen_mapstyle.py: {what}: a flag rule must state its own `width` -- it "
                          f"replaces the class's stroke rather than patching it, and there is no one "
-                         f"class width for it to inherit (MapStyle.h, MapRoadFlagRule)")
+                         f"class width for it to inherit (MapStyle.h, MapRoadFlagRule). If the rule "
+                         f"reads `hidden: true` in the file, a `when` entry has unhidden it for this "
+                         f"variant: a rule any variant can unhide needs a width in the file, not only "
+                         f"in the branch that draws it")
             width = _round_px(rule["width"], f"{what}.width")
             width = max(width, 1)
             if width > 255:

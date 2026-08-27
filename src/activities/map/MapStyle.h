@@ -74,8 +74,10 @@ struct MapRoadFlagRule {
   // "unknown" and not "smooth".
   uint8_t roughnessMin = 0;
   // Full stroke width in device pixels. Never 0 in a used slot that is not
-  // `hidden` -- the generator refuses that, because 0 would read as "hidden"
-  // and there is already a word for hidden.
+  // `hidden`, because 0 would read as "hidden" and there is already a word for
+  // hidden -- but the generator gets there by flooring, not by refusing: a width
+  // that rounds to zero becomes 1 (gen_mapstyle.py, `width = max(width, 1)`).
+  // What it refuses is a *missing* width on a rule any variant can draw.
   uint8_t widthPx = 0;
   uint8_t casingPx = 0;
   uint8_t dashPx = 0;
