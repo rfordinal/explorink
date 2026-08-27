@@ -250,7 +250,7 @@ bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int
 // the index pass passes it: a number on a minor contour would be a number every
 // 20 m, which is the opposite of the two-or-three rule.
 void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style, const MapReliefClass wanted,
-                      ContourLabelSlot* slots = nullptr, int slotCount = 0) {
+                      ContourLabelSlot* slots = nullptr, int slotCount = 0, uint32_t* drawn = nullptr) {
   const uint8_t index = static_cast<uint8_t>(wanted);
   if (index >= kReliefClassSlots || style.contourWidthPx[index] == 0) return;
   if (!source.beginContours()) return;
@@ -261,6 +261,7 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
   while (source.nextContour(line)) {
     if (line.classId != index) continue;
     strokeWay(canvas, line, style.contourWidthPx[index], MapInk::Black);
+    if (drawn != nullptr) ++*drawn;
     if (slots == nullptr || style.contourLabelPx == 0) continue;
     int32_t vx = 0, vy = 0, bend = 0, upX = 0, upY = 0;
     // The margin has to cover half the *box*, not half the text height: a
@@ -316,7 +317,7 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
 // rotated mask, so it follows the number's angle -- eight extra draws at offsets
 // would not.
 void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratch* labels,
-                       const ContourLabelSlot* slots, int slotCount) {
+                       const ContourLabelSlot* slots, int slotCount, uint32_t* placedOut = nullptr) {
   if (style.contourLabelPx == 0) return;
   const int sizePx = static_cast<int>(style.contourLabelPx);
   const bool bold = style.contourLabelBold;
@@ -385,6 +386,7 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
     if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
     ++placed;
   }
+  if (placedOut != nullptr) *placedOut = static_cast<uint32_t>(placed);
 }
 
 // The route: one thick black polyline, with a filled arrowhead at the far end
@@ -549,9 +551,10 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // has something to choose between rather than taking the first that fits.
   ContourLabelSlot contourLabels[6] = {};
   if (style.contoursEnabled) {
-    drawContourClass(canvas, source, style, MapReliefClass::ContourMinor);
+    uint32_t* const lineCount = timing != nullptr ? &timing->contourLines : nullptr;
+    drawContourClass(canvas, source, style, MapReliefClass::ContourMinor, nullptr, 0, lineCount);
     drawContourClass(canvas, source, style, MapReliefClass::ContourIndex, contourLabels,
-                     static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])));
+                     static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])), lineCount);
   }
   if (timing) lap(timing->contoursMs, mark);
 
@@ -743,7 +746,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   if (labels != nullptr) MapLabels::draw(canvas, *labels, style);
   if (style.contoursEnabled) {
     drawContourLabels(canvas, style, labels, contourLabels,
-                      static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])));
+                      static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])),
+                      timing != nullptr ? &timing->contourLabels : nullptr);
   }
   if (timing) lap(timing->labelsMs, mark);
 
