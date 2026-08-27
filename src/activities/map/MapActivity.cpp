@@ -1334,9 +1334,10 @@ int16_t MapActivity::clockTick(uint32_t& localNowOut) const {
 }
 
 void MapActivity::updateHeaderStatus() {
-  // Nothing to update before there is a frame to update: the waiting banner
-  // draws no header row at all, and painting one onto it would leave a floating
-  // status row over a screen with no map.
+  // Nothing to update before there is a frame to update: onEnter()'s state
+  // reset runs before any frame exists, so headerRowDrawn_ is still false for
+  // the instant between entering the screen and the first renderWaiting() or
+  // renderViewport() call.
   //
   // Gated on headerRowDrawn_, not viewportDrawn_. Those two used to be the same
   // flag, but they answer different questions: viewportDrawn_ is "may an
@@ -4806,8 +4807,14 @@ void MapActivity::renderWaiting() {
   // ordinary map, not the overview.
   overviewShown_ = false;
   renderer.clearScreen();
-  renderer.drawText(UI_10_FONT_ID, 8, 8, bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE),
-                    true);
+  // Drawn even here: this screen is exactly where a rider most wants to know
+  // whether the phone is even connected, and before this the BLE bars did not
+  // exist until the first fix landed -- so a phone that never paired and one
+  // that paired fine looked identical. Same reasoning as renderViewport()'s
+  // unconditional call (docs/map-header-status.md).
+  drawHeaderStatus();
+  renderer.drawText(UI_10_FONT_ID, 8, mapContentTop() + 8,
+                    bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE), true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
@@ -4817,9 +4824,10 @@ void MapActivity::renderWaiting() {
   // No map and no marker on this frame: there is nothing for a fix to move
   // inside, so the next one draws a real viewport (applyFix()).
   viewportDrawn_ = false;
-  // No header row either -- this frame is just the waiting text, drawn with
-  // renderer.drawText() above, not drawHeaderStatus().
-  headerRowDrawn_ = false;
+  // The header row is on the panel now, so updateHeaderStatus()'s windowed
+  // repaint should keep it live while the rider waits -- same as
+  // renderViewport()'s unconditional drawHeaderStatus() does.
+  headerRowDrawn_ = true;
   markerPatchValid_ = false;
 }
 

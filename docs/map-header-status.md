@@ -193,9 +193,9 @@ Four rate limits, each for its own reason:
   and it is 30x slower than the bars' floor. It is the only condition that
   fires while nothing else on the device is happening.
 
-Nothing repaints before `viewportDrawn_`: the waiting banner draws no header row
-at all, and painting one onto it would leave a floating status row over a screen
-with no map.
+Nothing repaints before `headerRowDrawn_` (see "The waiting banner draws a
+header row too" below) -- that flag, not `viewportDrawn_`, is what gates this
+polling loop.
 
 ## The coarse clock in Observe, and the masked digit that says so (2026-08-22)
 
@@ -631,10 +631,11 @@ next to the existing `viewportDrawn_` assignment there:
   overview stayed up, on the same mechanism as the bug above. Not separately
   reported by the maintainer -- found by tracing every `viewportDrawn_` reader
   while building this fix, not by a second hardware session.
-- `renderWaiting()` and `onEnter()`'s state reset -- `false`. Neither draws a
-  header row (`renderWaiting()` draws only the waiting text; `onEnter()` runs
-  before any frame exists), so the row must stay ungated-off here exactly as
-  before.
+- `renderWaiting()` -- `false` at the time this fix was written (it drew only
+  the waiting text), later changed to `true` -- see "The waiting banner draws a
+  header row too" below.
+- `onEnter()`'s state reset -- `false`. It runs before any frame exists, so the
+  row must stay ungated-off here regardless of what any render function does.
 
 Every other `viewportDrawn_` reader was checked and left alone:
 `panBy()` (`MapActivity.cpp`, guards on `source_` instead, by its own comment,
@@ -670,6 +671,63 @@ persisted-fix frame plausibly should not be followable -- but its written reason
 cites something that is gone. **Open:** find the real reason and rewrite the
 comment, or find that the flag no longer needs to exclude persisted fixes at
 all. Do not delete the comment without settling which.
+
+## The waiting banner draws a header row too (2026-08-26)
+
+**Built 2026-08-26, untested on hardware.** Found while chasing a report that
+tile-freshness sync "does not work" on the Android simulator: the real cause
+there was no persisted fix (`docs/tile-freshness.md` -- no fix means no tile is
+ever rendered, so `HeldTilesStore` stays empty and there is nothing to check),
+but tracing it surfaced this row's own gap.
+
+Before this change, `renderWaiting()` (`MapActivity.cpp`) drew only the
+`STR_MAP_WAITING_BLE` / `STR_MAP_BLE_START_FAILED` text and left
+`headerRowDrawn_ = false`. That is exactly the state described above as "the
+case where a rider most wants to know whether the phone is still there" --
+except here there has never been a fix at all, not even a stale persisted one,
+so the rider has no signal whatsoever: a phone that never paired and one that
+paired instantly and is just waiting for a GPS lock looked identical, both
+just the waiting sentence.
+
+`renderWaiting()` now calls `drawHeaderStatus()` unconditionally, the same
+call `renderViewport()` and `renderRouteOverview()` already make, and sets
+`headerRowDrawn_ = true` instead of `false` so `updateHeaderStatus()`'s
+windowed repaint keeps the BLE bars, battery and clock live while the rider
+waits. The waiting text moved from a hardcoded `y=8` to `mapContentTop() + 8`
+so it starts below the header instead of under it.
+
+`drawHeaderPlaceName()` and `drawHeaderStatusStrip()` were checked for a
+dependency on a fix or a loaded tile before making this change:
+`drawHeaderPlaceName()` reads `nearestPlaces_`, which is a freshly-constructed
+`MapNearestPlaces` with `hasFine`/`hasCoarse` both false at this point, so it
+returns early and draws nothing (`MapActivity.cpp` -- `drawHeaderPlaceName()`,
+the `else` branch). `drawHeaderStatusStrip()` reads BLE connection state,
+battery and the clock, none of which need a fix or a tile. Both are safe to
+call from a screen with no map loaded.
+
+**Verified on the Android simulator (S8, `org.explorink.simulator`)
+2026-08-27, not yet on real X4 hardware.** All three things listed above to
+check, checked:
+
+- The header row appears immediately on entering the waiting screen, before
+  any BLE central has connected -- `X` (no link), battery, no place name.
+- Connecting a central (`tools/blefakephone.py`) flips the `X` to signal bars
+  *while still on the waiting screen*, caught mid-connection in a screenshot
+  before the first fix landed and moved the screen to the viewport. Confirms
+  `updateHeaderStatus()`'s poll keeps running once `headerRowDrawn_ = true`,
+  same as it already did for the persisted-fix and overview screens.
+- The waiting text sits cleanly below the separator, no collision, at every
+  screen state observed.
+
+**One thing seen and not chased down:** the place-name slot showed
+`0°00'00"N 0°00'00"E` instead of blank, both before and during the BLE
+connection. `drawHeaderPlaceName()`'s analysis above says this slot should be
+empty with `nearestPlaces_` freshly constructed -- so either `destHeaderText()`
+(checked first, not traced here) returns a formatted string for an unset
+destination's default `0,0`, or something else sets a coordinate destination
+before onEnter finishes. Cosmetic, not a crash or a layout break, and outside
+this fix's scope. **Open** -- read `destHeaderText()` before touching this
+slot again.
 
 ## Hike mode's second line
 
