@@ -152,6 +152,34 @@
               "tone": "dots",
               "tone_period_px": 7,
               "tone_stagger": true
+            },
+            {
+              "steps": [
+                3,
+                4
+              ],
+              "modes": [
+                "hike"
+              ],
+              "hidden": false,
+              "fill": "tone",
+              "tone": "dots",
+              "tone_period_px": 5,
+              "tone_stagger": true
+            },
+            {
+              "steps": [
+                5,
+                6
+              ],
+              "modes": [
+                "hike"
+              ],
+              "hidden": false,
+              "fill": "tone",
+              "tone": "dots",
+              "tone_period_px": 4,
+              "tone_stagger": true
             }
           ]
         }
@@ -497,6 +525,12 @@
               ],
               "width": 1,
               "casing_px": 0
+            },
+            {
+              "steps": [0,1,2,3],
+              "modes": ["hike"],
+              "width": 7,
+              "casing_px": 1
             }
           ],
           "width": 7
@@ -519,9 +553,23 @@
                 6
               ],
               "hidden": false
+            },
+            {
+              "steps": [
+                0,
+                1,
+                2
+              ],
+              "modes": [
+                "hike"
+              ],
+              "hidden": false,
+              "width": 6,
+              "casing_px": 2
             }
           ]
         },
+
         {
           "casing_px": 0,
           "color": "#888888",
@@ -533,8 +581,22 @@
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [0,1],
+              "modes": ["hike"],
+              "width": 4,
+              "casing_px": 1
+            },
+            {
+              "steps": [2],
+              "modes": ["hike"],
+              "hidden": true
+            }
+          ]
         },
+
         {
           "casing_px": 0,
           "color": "#888888",
@@ -559,7 +621,21 @@
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [1],
+              "modes": ["ride"],
+              "casing_px": 1,
+              "width": 4
+            },
+            {
+              "steps": [0,1],
+              "modes": ["hike"],
+              "casing_px": 1,
+              "width": 4
+            }
+          ]
         },
         {
           "casing_px": 0,
@@ -569,19 +645,6 @@
           "match": {
             "class": [
               "pedestrian"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": true,
-          "major": false,
-          "match": {
-            "class": [
-              "track"
             ]
           },
           "pattern": "solid",
@@ -636,8 +699,46 @@
               "path"
             ]
           },
+          "pattern": "dash_mark",
+          "width": 1,
+          "when": [
+            {
+              "modes": [
+                "hike"
+              ],
+              "major": "true",
+              "width": 2,
+              "pattern": "dashed"
+            }
+          ],
+          "mark": "diamond",
+          "mark_px": 7,
+          "dash_px": 10,
+          "gap_px": 5
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "class": [
+              "track"
+            ]
+          },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "modes": [
+                "hike"
+              ],
+              "major": "true",
+              "hidden": false,
+              "width": 1,
+              "pattern": "dashed"
+            }
+          ]
         },
         {
           "casing_px": 0,
@@ -722,7 +823,22 @@
             ]
           },
           "pattern": "dashed",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [
+                0,
+                1,
+                2
+              ],
+              "modes": [
+                "hike"
+              ],
+              "_comment": "lanovka",
+              "width": 3,
+              "casing_px": 1
+            }
+          ]
         }
       ]
     },
@@ -765,13 +881,34 @@
           "when": [
             {
               "steps": [
+                0,
+                1,
                 2
               ],
               "modes": [
                 "hike"
               ],
-              "width": 10,
-              "casing_px": 5
+              "pattern": "solid",
+              "width": 7,
+              "casing_px": 0,
+              "fill": "tone",
+              "tone": "dark"
+            },
+            {
+              "steps": [
+                3,
+                4,
+                5,
+                6
+              ],
+              "modes": [
+                "hike"
+              ],
+              "pattern": "solid",
+              "width": 7,
+              "casing_px": 0,
+              "fill": "tone",
+              "tone": "dark"
             }
           ]
         },
@@ -786,16 +923,19 @@
           "width": 1,
           "when": [
             {
-              "steps": [
-                0,
-                1,
-                2
-              ],
-              "modes": [
-                "hike"
-              ],
-              "pattern": "dashed",
-              "width": 5,
+              "steps": [0],
+              "modes": ["hike"],
+              "pattern": "solid",
+              "width": 7,
+              "casing_px": 0,
+              "fill": "tone",
+              "tone": "light"
+            },
+            {
+              "steps": [1,2],
+              "modes": ["hike"],
+              "pattern": "solid",
+              "width": 3,
               "casing_px": 0,
               "fill": "tone",
               "tone": "dark"
