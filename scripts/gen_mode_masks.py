@@ -175,8 +175,15 @@ def gen_cpp(base_masks, table):
     lines += [
         "",
         "// What MapTileSource filters with: the mode's classes intersected with the",
-        "// classes that rung's style actually draws. A way outside it is not read",
-        "// past its header, so a class hidden at a coarse rung costs nothing at all.",
+        "// classes that rung's style actually draws.",
+        "//",
+        "// **A class hidden at a coarse rung is not free.** Its bytes are still read",
+        "// off the card: the point coordinates are what advance the stream to the next",
+        "// record, so the filter can skip the projection and nothing else",
+        "// (MapTileSource::nextWayRecord). Only a generation-time filter removes the",
+        "// bytes, and that granularity is the LOD, not the rung -- z11 serves rungs 3",
+        "// through 6 from one tile. This comment used to claim the opposite, which is",
+        "// the wrong thing to believe while tuning a rung's style.",
         "inline constexpr uint32_t kMapModeMasks[kMapRideModeCount][kMapZoomStepCount] = {",
     ]
     for mode_index, mode_name in enumerate(_MODE_ORDER):
