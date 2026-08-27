@@ -65,6 +65,7 @@ with:
 | `puckRadiusPx`, `puckRingPx`, `puckArrowPx` | `layers.position` | `MapRenderer::drawMarker` |
 | `buildingsEnabled`, `buildingOutlinePx`, `buildingHatch`, `buildingHatchSpacingPx` | `layers.buildings` | `MapRenderer.cpp`, buildings pass |
 | `waterEnabled`, `waterLinePx`, `waterHatch`, `waterHatchSpacingPx` | `layers.water` | `MapRenderer.cpp`, water pass |
+| `roadFlagRules[4]` | a `layers.roads.rules[]` entry whose `match` names `flag` / `roughness_min` | `MapRenderer.cpp`, `roadStrokeFor()`, both road passes |
 
 `arrow_px` is the arrow's tip-to-tail length. The tail sits a quarter of it
 behind the anchor and the base is half of it wide, so the style's 28 px draws the
@@ -272,6 +273,185 @@ Two separate zeros, worth not confusing:
 - **width 0** — this class is never drawn, in any travel mode. From `hidden`.
 - **not in the mode mask** — dropped earlier, in `MapTileSource`, and only for
   the current travel mode. From `modes` and `MapModeMaskDefaults.h`.
+- **a flag rule's `hidden`** -- added 2026-08-27, and it is a third thing again:
+  the class is drawn, this *way* is not. The bytes are still read off the card,
+  because the filter is per way and the class mask is per class. See below.
+
+## Matching a way's flag bits
+
+**Added 2026-08-27. The mechanism is in; no style uses it yet, on purpose.**
+
+Every `.tib` way record has carried two attribute bytes since the first tile was
+written -- `roughness` and a 16-bit `flags` -- and until this change `MapRenderer`
+read **neither**. `MapTileReader` parsed them (`MapTileReader.cpp:379-380`), `MapWayRef` already
+declared both (`IMapSource.h:33-34`) and `MapTileSource` already filled them in
+(`MapTileSource.cpp:408-409`) -- so the carry-through was never the missing half.
+The renderer simply never read the fields. It does now, in one place:
+`roadStrokeFor()`, `MapRenderer.cpp:119`. The concrete cost: a track tagged `access=no` was drawn as
+the same hairline as an open path, so the map told a hiker a closed track was
+open.
+
+### How much data is actually there
+
+Measured 2026-08-27 with a throwaway Python walk over the whole local mirror
+(`mapbuilder/cdn/base` in the parent repo): **1,291 tiles, 474,178 road-layer way
+records** -- 86 tiles / 36,604 ways at z11, 262 / 146,694 at z12, 943 / 290,880 at
+z13. **Measured, not read off the code.**
+
+One caveat, and it matters: every tile in that mirror is **format version 3**, and
+this branch's reader accepts version 4 only
+(`MapTileReader::kFormatVersion`). So the counts came from a standalone parser,
+not through `MapTileReader`, and the local `map_preview` cannot render that mirror
+at all on this branch.
+
+| bit | flag | ways set, all zooms | share | share at z13 |
+|---|---|---|---|---|
+| 0 | `link` | 5,985 | 1.3 % | 0.6 % |
+| 1 | `bridge` | 17,142 | 3.6 % | 2.6 % |
+| 2 | `tunnel` | 2,120 | 0.4 % | 0.6 % |
+| 3 | `oneway` | 41,115 | 8.7 % | 6.4 % |
+| 4 | `unpaved` | 43,665 | 9.2 % | 8.1 % |
+| 5 | `no_motor` | 24,000 | 5.1 % | 6.7 % |
+| 6 | `no_bicycle` | 21,342 | 4.5 % | 6.0 % |
+| 7 | `no_foot` | 20,264 | 4.3 % | 5.7 % |
+| 8-15 | waymark id, `seasonal`, `permit` | **0** | 0 % | 0 % |
+
+**28,920 ways carry at least one access restriction** (bits 5-7), 21,700 of them
+at the detail LOD, which is where a walker actually reads the map. Per class, the
+restriction is concentrated rather than spread: `service` is 21.3 % `no_motor`
+(12,654 ways), `ferry` 25.8 %, `track` 5.3 %, `footway` 3.1 % `no_bicycle`. So
+this is not a rounding error in the data; it is a fifth of the service roads in
+the mirror.
+
+`roughness` is real too. Its low three bits, across the same 474,178 ways:
+
+| value | meaning | ways | share |
+|---|---|---|---|
+| 0 | unknown | 218,951 | 46.2 % |
+| 1 | best | 123,685 | 26.1 % |
+| 2 | | 40,865 | 8.6 % |
+| 3 | | 15,071 | 3.2 % |
+| 4 | | 35,770 | 7.5 % |
+| 5 | | 26,207 | 5.5 % |
+| 6 | | 13,504 | 2.8 % |
+| 7 | worst | 125 | 0.0 % |
+
+**53.8 % of road ways carry a non-zero roughness.** Note that 0 is *unknown*, not
+*smooth*, so a rule with a floor of 1 restyles a bit over half the network and a
+rule that swept 0 in would restyle all of it.
+
+### The grammar
+
+A rule in `layers.roads.rules[]` whose `match` names `flag` or `roughness_min`
+instead of `class` is a **flag rule**. Same list, same rule shape, same `when`
+blocks -- there is no second place to say things.
+
+```json
+{ "match": {"flag": "no_foot"},
+  "width": 1, "pattern": "dotted" }
+
+{ "match": {"flag": ["no_motor", "no_bicycle"], "roughness_min": 5},
+  "hidden": true,
+  "when": [{"modes": ["hike"], "hidden": false}] }
+```
+
+- **`flag`** is a name or a list of names. A list is **any bit set**, not all of
+  them -- the same reading `match.class` already has.
+- **`roughness_min`** is 1-7 and means `roughness & 0x07 >= this`. Only the low
+  three bits are looked at, so a future `sac_scale` in bits 3-5 cannot be
+  mistaken for a worse surface.
+- Both together is **and**.
+- Names, and only these: `link`, `bridge`, `tunnel`, `oneway`, `unpaved`,
+  `no_motor`, `no_bicycle`, `no_foot`, `seasonal`, `permit`. Bits 8-13 are one
+  6-bit waymark *symbol id*, not six flags, so no single bit of it has a name --
+  a rule on "bit 9" could not be right.
+- A rule may **not** carry both `class` and `flag`. Split it, or narrow it with
+  `when`.
+- **It replaces the stroke, it does not patch it.** So the rule must state its
+  own `width`, or say `hidden: true`. `casing_px`, `pattern`, `dash_px` and
+  `gap_px` default to a solid uncased line. There is no per-field inherit,
+  because a flag rule spans classes and there is no one class width to inherit
+  from -- and the trap that follows is that a rule matching `bridge` flattens a
+  motorway to the width it names.
+- `fill`, `tone` and `major` are **refused** on a flag rule rather than ignored.
+  A tone is validated against its class's casing and interior width, and a rule
+  spanning classes has no one interior to check. Open -- add it when a panel pass
+  says a shaded flag treatment is wanted.
+- **At most four rules** per resolved style (`kMapRoadFlagRuleSlots`,
+  `MapStyle.h`). A fifth fails the build with the reason.
+- **First match wins**, in file order. Deliberately not the `when` list's
+  last-wins rule: a `when` entry patches, a flag rule replaces, and replacing
+  twice is not a merge.
+- **A class the style hides stays hidden.** `gen_mode_masks.py` intersects a
+  hidden class out of that rung's tile class mask, so its ways never reach the
+  renderer -- a flag rule that appeared to un-hide it would draw nothing and read
+  as a bug in the rule.
+
+### The warning: bits 8-15 exist and carry nothing
+
+`docs/map-data-spec.md` allocates the whole remaining flag budget -- waymark id
+(8-13), `seasonal` (14), `permit` (15) -- and `roughness` bits 3-5 (`sac_scale`)
+and 6-7 (`trail_visibility`). **The builder writes zero into all of them today.**
+Measured, not assumed: across 474,178 ways in the mirror, not one has a `flags`
+bit above 7 or a `roughness` bit above 2 set.
+
+So `{"match": {"flag": "seasonal"}}` compiles, validates, and **can never
+match**. `gen_mapstyle.py` prints a warning naming the flag when a rule uses one
+of those two names, rather than letting it look like a working rule that happens
+to find nothing. The waymark bits have no names at all, which is the stronger
+version of the same protection.
+
+### What it costs
+
+- **Flash: +826 bytes**, measured on `pio run -e default` before and after
+  (3,990,165 → 3,990,991 bytes). Of that, 600 bytes is the table itself:
+  `sizeof(MapRoadFlagRule)` is 10, four slots is 40, and `data/mapstyle.json`
+  compiles to 14 distinct variants plus the base. The rest is `roadStrokeFor()`.
+- **RAM: 0 bytes.** Unchanged at 59,012 both sides. The table is `constexpr` in
+  the generated header, so it lives in flash; `RoadStroke` is a 24-byte local,
+  well inside the 256-byte stack rule.
+- **Per way, per pass:** up to four compares against an all-zero slot, on values
+  that are in flash beside the widths the pass already reads. No allocation, no
+  per-way state. **Read off the code -- not measured on hardware.**
+
+### What a panel pass has to check
+
+**Nothing here has been on a device.** There is no X4 attached
+(`docs/PROGRESS.md`, the hardware gap), and the shipped style carries no flag
+rule, so the only thing a hardware run can confirm today is that the render is
+*unchanged* -- which is what `test/map_tile_reader`'s golden PPM already asserts
+bit for bit on the host.
+
+When the maintainer does turn a rule on, the panel questions are:
+
+- Does a dotted or thinned hairline still read as a path at all on the glass? A
+  1 px line under any break is close to invisible in daylight
+  (`../../docs/map-legibility.md`).
+- Does hiding restricted ways leave a hole a rider reads as "no data" rather than
+  "no route"? That is the same failure the missing-tile hatch exists to prevent.
+- At the coarse rungs, does a 5.7 % share of restyled ways read as a distinction
+  or as noise?
+
+Judge it through `tools/style_watch.py` first (`docs/device-preview.md`), then on
+the panel. Never off a laptop PNG -- that rule is in the parent `CLAUDE.md` and it
+is what this whole default-off arrangement is built around.
+
+### Where the tests are
+
+Two halves, because the grammar is evaluated on the laptop and only the resolved
+structs reach the device:
+
+- `scripts/test_mapstyle_flag_rules.py` -- the parsing: masks, the bit names, the
+  refusals, and an assertion that the shipped `data/mapstyle.json` still carries
+  no flag rule. Runs under `ctest` as `MapstyleFlagRules`.
+- `test/map_flag_rules/MapFlagRulesTest.cpp` -- the drawing: a rendered way,
+  checked for thickness and ink. Includes the default-unchanged pair (a way with
+  every data-carrying flag set draws identically to an open one under
+  `kDefaultMapStyle`), which is the test that should go red the day the knob is
+  turned on.
+
+`test/map_tile_reader`'s golden PPM is the whole-frame version of the same claim
+and is unchanged by this work.
 
 ## What is still not from the style
 

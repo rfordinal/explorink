@@ -65,6 +65,15 @@ add_test(
   COMMAND ${Python3_EXECUTABLE} "${REPO_ROOT}/scripts/test_mapstyle_variants.py"
 )
 
+# Same reasoning for the flag/roughness rule grammar: the device gets four
+# resolved MapRoadFlagRule structs and never a rule, so a parsing mistake here
+# draws the wrong map from a clean build. The renderer half is
+# test/map_flag_rules.
+add_test(
+  NAME MapstyleFlagRules
+  COMMAND ${Python3_EXECUTABLE} "${REPO_ROOT}/scripts/test_mapstyle_flag_rules.py"
+)
+
 add_library(crosspoint_test_common INTERFACE)
 target_include_directories(crosspoint_test_common INTERFACE
   ${REPO_ROOT}
@@ -107,4 +116,5 @@ add_subdirectory(map_follow)
 add_subdirectory(map_replay)
 add_subdirectory(map_window)
 add_subdirectory(map_style_table)
+add_subdirectory(map_flag_rules)
 add_subdirectory(grayscale_shades)

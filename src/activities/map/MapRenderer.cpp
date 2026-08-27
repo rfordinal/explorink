@@ -5,10 +5,10 @@
 #include <cstdio>
 
 #include "MapAreaClass.h"
-#include "MapTextMask.h"
 #include "MapAreaFill.h"
 #include "MapLabels.h"
 #include "MapPointMarks.h"
+#include "MapTextMask.h"
 
 namespace {
 
@@ -93,12 +93,66 @@ void strokeWayDashed(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, in
   }
 }
 
-// Width the style draws this class at, or 0 for "do not draw". A class id past
-// the enum's slots can only come from a corrupt tile; reserved slots carry
-// width 0 anyway, so this guard is about the array bound, not the style.
-int roadWidthFor(const MapStyle& style, const MapWayRef& way) {
-  if (way.classId >= kClassEnumSlots) return 0;
-  return style.roadWidthPx[way.classId];
+// The stroke one way is actually drawn with. The class's own numbers, unless a
+// flag rule matched and replaced them (MapStyle.h, MapRoadFlagRule).
+//
+// Resolved once per way and shared by both road passes, so the black stroke and
+// the white fill inside it can never disagree about how wide the road is. Width
+// 0 means "do not draw".
+struct RoadStroke {
+  int width = 0;
+  int casing = 0;
+  MapLinePattern pattern = MapLinePattern::Solid;
+  int dash = 0;
+  int gap = 0;
+  MapAreaTone tone = MapAreaTone::None;
+};
+
+// A class id past the enum's slots can only come from a corrupt tile; reserved
+// slots carry width 0 anyway, so that guard is about the array bound, not the
+// style.
+//
+// Costs one loop over kMapRoadFlagRuleSlots per way per pass, and every slot is
+// empty in every style shipped today, so it is four compares against a `flagMask
+// == 0 && roughnessMin == 0` that is in flash beside the widths already being
+// read. No allocation, no per-way state.
+RoadStroke roadStrokeFor(const MapStyle& style, const MapWayRef& way) {
+  RoadStroke stroke;
+  if (way.classId >= kClassEnumSlots) return stroke;
+  stroke.width = style.roadWidthPx[way.classId];
+  // A class the style hides stays hidden. Its ways are already intersected out
+  // of the rung's tile class mask (gen_mode_masks.py), so a flag rule that
+  // un-hid it would draw nothing at all -- see MapStyle::roadFlagRules.
+  if (stroke.width == 0) return stroke;
+  stroke.casing = style.roadCasingPx[way.classId];
+  stroke.pattern = style.roadPattern[way.classId];
+  stroke.dash = style.roadDashPx[way.classId];
+  stroke.gap = style.roadGapPx[way.classId];
+  stroke.tone = style.roadFillTone[way.classId];
+
+  // First match wins, in file order, and a match replaces the whole stroke
+  // rather than patching fields of it.
+  for (uint8_t slot = 0; slot < kMapRoadFlagRuleSlots; ++slot) {
+    const MapRoadFlagRule& rule = style.roadFlagRules[slot];
+    if (rule.flagMask == 0 && rule.roughnessMin == 0) continue;  // unused slot
+    if (rule.flagMask != 0 && (way.flags & rule.flagMask) == 0) continue;
+    if (rule.roughnessMin != 0 && (way.roughness & kMapRoughnessValueMask) < rule.roughnessMin) continue;
+    if (rule.hidden) {
+      stroke = RoadStroke{};
+      return stroke;
+    }
+    stroke.width = rule.widthPx;
+    stroke.casing = rule.casingPx;
+    stroke.pattern = rule.pattern;
+    stroke.dash = rule.dashPx;
+    stroke.gap = rule.gapPx;
+    // A flag rule carries no tone (MapStyle.h), so a matched way loses the one
+    // its class had. Stated rather than inherited: a shaded ribbon whose width
+    // was just replaced has no interior anyone reasoned about.
+    stroke.tone = MapAreaTone::None;
+    return stroke;
+  }
+  return stroke;
 }
 
 // One landuse class, drawn as tone then hatch then outline. Called once per
@@ -118,8 +172,7 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     MapAreaFill::hatchRing(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseHatch[index],
                            style.landuseHatchSpacingPx[index], MapInk::Black);
     MapAreaFill::outlineRingDashed(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseOutlinePx[index],
-                                  style.landuseOutlineDashPx[index], style.landuseOutlineGapPx[index],
-                                  MapInk::Black);
+                                   style.landuseOutlineDashPx[index], style.landuseOutlineGapPx[index], MapInk::Black);
   }
 }
 
@@ -151,8 +204,8 @@ struct ContourLabelSlot {
 // Straightness is the cheap proxy for what a cartographer does by eye. A number
 // placed on a hairpin reads as belonging to whichever arm the eye follows first,
 // and on a 1-bit panel there is no second cue to fix that.
-bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int rectH, int margin,
-                     int32_t& outX, int32_t& outY, int32_t& outBend, int32_t& outUpX, int32_t& outUpY) {
+bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int rectH, int margin, int32_t& outX,
+                     int32_t& outY, int32_t& outBend, int32_t& outUpX, int32_t& outUpY) {
   bool found = false;
   int32_t bestBend = 0;
   for (uint16_t i = 1; i + 1 < line.pointCount; ++i) {
@@ -161,8 +214,7 @@ bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int
     // Against the canvas's own drawable rect, not against 0..w/0..h: on the
     // device the header band is off limits and rectY is not zero
     // (IMapCanvas::drawableRect).
-    if (x < rectX + margin || y < rectY + margin || x > rectX + rectW - margin ||
-        y > rectY + rectH - margin) {
+    if (x < rectX + margin || y < rectY + margin || x > rectX + rectW - margin || y > rectY + rectH - margin) {
       continue;
     }
     const int32_t ax = x - line.xs[i - 1];
@@ -197,9 +249,8 @@ bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int
 // `slots`, when given, collects height-number candidates from this class. Only
 // the index pass passes it: a number on a minor contour would be a number every
 // 20 m, which is the opposite of the two-or-three rule.
-void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style,
-                      const MapReliefClass wanted, ContourLabelSlot* slots = nullptr,
-                      int slotCount = 0) {
+void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style, const MapReliefClass wanted,
+                      ContourLabelSlot* slots = nullptr, int slotCount = 0) {
   const uint8_t index = static_cast<uint8_t>(wanted);
   if (index >= kReliefClassSlots || style.contourWidthPx[index] == 0) return;
   if (!source.beginContours()) return;
@@ -216,8 +267,8 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     // four-digit height is about three label heights wide, and a margin of one
     // put "1000" half off the left edge. Three is that half-width with room,
     // and it needs no text measured before a vertex is chosen.
-    if (!bestLabelVertex(line, canvasX, canvasY, canvasW, canvasH,
-                         static_cast<int>(style.contourLabelPx) * 3, vx, vy, bend, upX, upY)) {
+    if (!bestLabelVertex(line, canvasX, canvasY, canvasW, canvasH, static_cast<int>(style.contourLabelPx) * 3, vx, vy,
+                         bend, upX, upY)) {
       continue;
     }
     const int32_t elevation = static_cast<int32_t>(static_cast<int16_t>(line.flags));
@@ -569,13 +620,11 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // Width 0 is the style hiding this class outright (mapstyle.json's
       // `hidden`). Distinct from the mode mask, which drops the way earlier,
       // in the source, and per travel mode rather than for every mode.
-      const MapLinePattern pattern =
-          way.classId < kClassEnumSlots ? style.roadPattern[way.classId] : MapLinePattern::Solid;
-      if (pattern == MapLinePattern::Dashed) {
-        strokeWayDashed(canvas, way, roadWidthFor(style, way), style.roadDashPx[way.classId],
-                        style.roadGapPx[way.classId], MapInk::Black);
+      const RoadStroke stroke = roadStrokeFor(style, way);
+      if (stroke.pattern == MapLinePattern::Dashed) {
+        strokeWayDashed(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black);
       } else {
-        strokeWay(canvas, way, roadWidthFor(style, way), MapInk::Black);
+        strokeWay(canvas, way, stroke.width, MapInk::Black);
       }
     }
   }
@@ -586,9 +635,10 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   if (source.beginWays()) {
     MapWayRef way;
     while (source.nextWay(way)) {
-      const int lineWidth = roadWidthFor(style, way);
+      const RoadStroke stroke = roadStrokeFor(style, way);
+      const int lineWidth = stroke.width;
       if (lineWidth == 0) continue;
-      const int casing = style.roadCasingPx[way.classId];
+      const int casing = stroke.casing;
       if (casing > 0) {
         // The generator guarantees 2 * casing < width, so this is at least 1.
         const int inner = lineWidth - 2 * casing;
@@ -596,7 +646,7 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         // The tone goes on after that white, never instead of it: the white is
         // what clears the first pass's black, and the tone is a texture laid
         // into the cleared middle.
-        toneWayInterior(canvas, way, inner, style.roadFillTone[way.classId]);
+        toneWayInterior(canvas, way, inner, stroke.tone);
       }
       // Sleepers, drawn in this pass rather than a third one. They have to
       // land after their own way's white fill or that fill erases them, and
@@ -607,9 +657,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // The residue: a *later* cased road crossing this one paints its white
       // fill over these ticks. That is a level crossing, where the road is
       // meant to read as on top anyway, so it looks right rather than broken.
-      if (style.roadPattern[way.classId] == MapLinePattern::Ticked) {
-        strokeWayDashed(canvas, way, lineWidth, style.roadDashPx[way.classId], style.roadGapPx[way.classId],
-                        MapInk::Black);
+      if (stroke.pattern == MapLinePattern::Ticked) {
+        strokeWayDashed(canvas, way, lineWidth, stroke.dash, stroke.gap, MapInk::Black);
       }
     }
   }

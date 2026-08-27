@@ -29,6 +29,71 @@
 // draws them that way round.
 enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked };
 
+// The bits of a way record's `roughness` byte that hold the 0-7 judgement.
+//
+// Not in MapClassEnum.h, which is generated from tilegen's class_spec.py and
+// says "do not hand-edit" -- a constant added there is lost on the next
+// regeneration. The layout is docs/map-data-spec.md, "The rest of the flag
+// budget is allocated": bits 0-2 are roughness (0 unknown, 1 best .. 7 worst),
+// bits 3-5 are `sac_scale` and 6-7 `trail_visibility`. **The builder writes
+// zeros into bits 3-7 today** (measured: 474,178 road ways in the local mirror,
+// not one with a bit above 2 set), so masking is about not reading a future
+// field as a worse surface, not about data that exists.
+static constexpr uint8_t kMapRoughnessValueMask = 0x07;
+
+// A stroke that replaces a road class's own, for a way whose `flags` or
+// `roughness` says so (docs/map-data-spec.md, "Flag bits"; MapWayFlag in
+// MapClassEnum.h).
+//
+// **Why this exists at all.** Every .tib tile ever written carries `flags` and
+// `roughness` per way, and until 2026-08-27 the renderer read neither. So a
+// track tagged `access=no` was drawn as the same hairline as an open path: the
+// map told a hiker a closed track was open. Measured in the local mirror,
+// 24,000 ways carry no_motor, 21,342 no_bicycle and 20,264 no_foot -- 5.1 %,
+// 4.5 % and 4.3 % of 474,178 road ways, and 6.7 / 6.0 / 5.7 % at the detail LOD
+// where a walker is actually reading the map.
+//
+// **It replaces, it does not patch.** A matched way is drawn with this rule's
+// width, casing and pattern instead of its class's -- there is no per-field
+// "inherit", because a flag rule spans classes and there is no single class
+// width for it to inherit from. Consequence, and it is the trap to remember: a
+// rule matching `bridge` flattens a motorway to whatever width it names. Match
+// on bits whose classes you actually mean to restyle, or restrict the rule with
+// `when` (docs/map-style.md, "Matching a way's flag bits").
+//
+// **No tone.** `fill: tone` is deliberately outside this grammar: the generator
+// validates a tone against its class's casing and interior width, and a rule
+// that spans classes has no one interior to check. Open -- add it when a panel
+// pass says a shaded flag treatment is wanted.
+struct MapRoadFlagRule {
+  // Bits that make this rule match, OR'd together -- any one of them set on the
+  // way is a match. 0 with `roughnessMin` 0 means the slot is unused.
+  uint16_t flagMask = 0;
+  // Lowest `roughness & kMapRoughnessValueMask` that matches. 0 means the rule
+  // does not look at roughness at all; 1 upward excludes roughness 0, which is
+  // "unknown" and not "smooth".
+  uint8_t roughnessMin = 0;
+  // Full stroke width in device pixels. Never 0 in a used slot that is not
+  // `hidden` -- the generator refuses that, because 0 would read as "hidden"
+  // and there is already a word for hidden.
+  uint8_t widthPx = 0;
+  uint8_t casingPx = 0;
+  uint8_t dashPx = 0;
+  uint8_t gapPx = 0;
+  MapLinePattern pattern = MapLinePattern::Solid;
+  // Matched and not drawn. Distinct from width 0 on a class, which also keeps
+  // the class out of that rung's tile read (gen_mode_masks.py); this one is a
+  // draw-time decision, so the bytes are still read.
+  bool hidden = false;
+};
+
+// How many flag rules one style may carry. Four, and the number is a flash
+// budget rather than a taste judgement: data/mapstyle.json compiles to 14
+// distinct MapStyle variants plus the base, so each slot costs 15 copies of
+// sizeof(MapRoadFlagRule) -- 10 bytes -- i.e. 150 bytes of flash per slot.
+// Raise it when a style needs a fifth, and say what it bought.
+static constexpr uint8_t kMapRoadFlagRuleSlots = 4;
+
 struct MapStyle {
   // Road line width per class_id -- index with MapClassId, whose slot count
   // this array matches. 0 means the class is not drawn, which is how
@@ -75,6 +140,23 @@ struct MapStyle {
   // Needs `casing > 0` and an interior at least 2 px wide: a 1 px interior
   // cannot carry a period-2 pattern, let alone the period-3 stipple.
   MapAreaTone roadFillTone[kClassEnumSlots];
+
+  // Flag/roughness overrides, applied in file order with the **first match
+  // winning** -- so an earlier rule in data/mapstyle.json has priority, and a
+  // way matched by one rule is never also restyled by the next.
+  //
+  // Empty in every style shipped today (an all-zero slot is unused), so the
+  // renderer's flag path is dead code until a style file asks for it and the
+  // render is byte-identical to the one before this field existed. That is
+  // deliberate: a mark on the map is judged on the panel, and there is no
+  // device to judge it on yet.
+  //
+  // A rule is not consulted at all for a class the style hides
+  // (roadWidthPx == 0). A hidden class is intersected out of the rung's tile
+  // class mask (gen_mode_masks.py), so its ways never reach the renderer -- a
+  // flag rule that appeared to un-hide it would draw nothing and read as a bug
+  // in the rule.
+  MapRoadFlagRule roadFlagRules[kMapRoadFlagRuleSlots];
 
   // layers.buildings. A ring is drawn as an optional outline plus a hatch --
   // never a solid fill, which on 1-bit swallows the roads around it
@@ -349,5 +431,8 @@ inline uint8_t mapStyleMaxStrokePx(const MapStyle& style) {
   for (uint8_t i = 0; i < kLanduseClassSlots; ++i) take(style.landuseOutlinePx[i]);
   take(style.buildingOutlinePx);
   take(style.routeWidthPx);
+  // A flag rule can name a width no class has, and the reject margin has to
+  // allow for it or a flag-widened way just off the panel loses its ink.
+  for (uint8_t i = 0; i < kMapRoadFlagRuleSlots; ++i) take(style.roadFlagRules[i].widthPx);
   return widest;
 }

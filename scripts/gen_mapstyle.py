@@ -196,6 +196,142 @@ def road_widths(style):
     return widths, casings, patterns, dashes, gaps, tones
 
 
+# The way record's `flags` bits that are single, independently meaningful flags
+# (docs/map-data-spec.md, "Flag bits"). Duplicated here for the same reason
+# _CLASS_ID is: nothing outside this repo may be read to build this repo.
+#
+# Bits 8-13 are deliberately absent. They are one 6-bit waymark *symbol id*, not
+# six flags, so "bit 9 set" means nothing on its own and a name for it would
+# invite a rule that cannot be right.
+_FLAG_BIT = {
+    "link": 0,
+    "bridge": 1,
+    "tunnel": 2,
+    "oneway": 3,
+    "unpaved": 4,
+    "no_motor": 5,
+    "no_bicycle": 6,
+    "no_foot": 7,
+    "seasonal": 14,
+    "permit": 15,
+}
+
+# Bits the builder allocates but still writes zero into, so a rule matching one
+# can never fire. Measured 2026-08-27 over the whole local mirror: 474,178 road
+# ways across 1,291 tiles, zero with any bit above 7 set, and zero with a
+# `roughness` bit above 2 set.
+_FLAG_BITS_NOT_WRITTEN_YET = {"seasonal", "permit"}
+
+# MapStyle.h's kMapRoadFlagRuleSlots.
+_FLAG_RULE_SLOTS = 4
+
+# What a flag rule may say. Narrower than a class rule on purpose: `major` is a
+# junctions-layer property of a class, and `fill`/`tone` needs an interior width
+# a rule spanning classes does not have (MapStyle.h, MapRoadFlagRule).
+_FLAG_RULE_KEYS = {"match", "when", "hidden", "width", "casing_px", "pattern",
+                   "dash_px", "gap_px", "color", "_comment"}
+
+
+def _is_flag_rule(rule):
+    match = rule.get("match", {})
+    return "flag" in match or "roughness_min" in match
+
+
+def road_flag_rules(style):
+    """The flag/roughness stroke overrides, as _FLAG_RULE_SLOTS tuples.
+
+    A rule in layers.roads.rules[] whose `match` names `flag` or
+    `roughness_min` is one of these instead of a per-class width: it cannot be
+    folded into the per-class arrays, because it applies across classes.
+
+    An unused slot is all zeros, which MapRenderer reads as "no rule". A
+    mapstyle.json with no flag rule at all therefore compiles to the same
+    picture it compiled to before this grammar existed.
+    """
+    roads = style.get("layers", {}).get("roads")
+    if roads is None:
+        sys.exit("gen_mapstyle.py: layers.roads missing")
+
+    empty = (0, 0, 0, 0, 0, 0, "Solid", False)
+    out = []
+    if not roads.get("enabled", True):
+        return [empty] * _FLAG_RULE_SLOTS
+
+    for index, rule in enumerate(roads.get("rules", [])):
+        what = f"layers.roads.rules[{index}]"
+        match = rule.get("match", {})
+        if not _is_flag_rule(rule):
+            # A class rule. Caught here rather than silently ignored: a rule
+            # whose match names nothing this generator knows used to compile
+            # clean and draw nothing at all.
+            if not match.get("class"):
+                sys.exit(f"gen_mapstyle.py: {what}: `match` names neither `class` nor `flag`/"
+                         f"`roughness_min`, so this rule can never apply to anything")
+            continue
+        if match.get("class"):
+            sys.exit(f"gen_mapstyle.py: {what}: a rule cannot match both `class` and `flag`/"
+                     f"`roughness_min` -- a flag rule spans classes (MapStyle.h, MapRoadFlagRule). "
+                     f"Split it into two rules, or restrict this one with `when`")
+        for key in rule:
+            if key not in _FLAG_RULE_KEYS:
+                sys.exit(f"gen_mapstyle.py: {what}: `{key}` has no meaning on a flag rule "
+                         f"(allowed: {sorted(_FLAG_RULE_KEYS)})")
+
+        names = match.get("flag", [])
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, list):
+            sys.exit(f"gen_mapstyle.py: {what}.match.flag: expected a flag name or a list of them")
+        mask = 0
+        for name in names:
+            if name not in _FLAG_BIT:
+                sys.exit(f"gen_mapstyle.py: {what}.match.flag: unknown flag '{name}' "
+                         f"(one of {sorted(_FLAG_BIT)})")
+            if name in _FLAG_BITS_NOT_WRITTEN_YET:
+                print(f"gen_mapstyle.py: warning -- {what}: flag '{name}' is allocated in the tile "
+                      f"format but the builder writes zero into it, so this rule can never match "
+                      f"(docs/map-style.md, 'Matching a way's flag bits')")
+            mask |= 1 << _FLAG_BIT[name]
+
+        roughness_min = match.get("roughness_min", 0)
+        if not isinstance(roughness_min, int) or isinstance(roughness_min, bool):
+            sys.exit(f"gen_mapstyle.py: {what}.match.roughness_min: expected an integer 0..7")
+        if not 0 <= roughness_min <= 7:
+            sys.exit(f"gen_mapstyle.py: {what}.match.roughness_min: {roughness_min} is not in 0..7 "
+                     f"-- the roughness field is three bits (docs/map-data-spec.md)")
+        if mask == 0 and roughness_min == 0:
+            sys.exit(f"gen_mapstyle.py: {what}: a flag rule that names no flag and no "
+                     f"roughness_min above 0 matches every way, which is a class rule's job")
+
+        hidden = bool(rule.get("hidden", False))
+        if hidden:
+            out.append((mask, roughness_min, 0, 0, 0, 0, "Solid", True))
+        else:
+            if rule.get("width") is None:
+                sys.exit(f"gen_mapstyle.py: {what}: a flag rule must state its own `width` -- it "
+                         f"replaces the class's stroke rather than patching it, and there is no one "
+                         f"class width for it to inherit (MapStyle.h, MapRoadFlagRule)")
+            width = _round_px(rule["width"], f"{what}.width")
+            width = max(width, 1)
+            if width > 255:
+                sys.exit(f"gen_mapstyle.py: {what}: width {width}px does not fit a uint8_t")
+            casing = _round_px(rule.get("casing_px", 0), f"{what}.casing_px")
+            if casing > 0 and 2 * casing >= width:
+                casing = 0
+                print(f"gen_mapstyle.py: {what}: casing_px leaves no white inside a {width}px "
+                      f"stroke -- drawing it solid instead")
+            pattern, dash, gap = _dash(rule, what)
+            out.append((mask, roughness_min, width, casing, dash, gap, pattern, False))
+
+    if len(out) > _FLAG_RULE_SLOTS:
+        sys.exit(f"gen_mapstyle.py: {len(out)} flag rules, but MapStyle holds "
+                 f"{_FLAG_RULE_SLOTS} (kMapRoadFlagRuleSlots). Raise the slot count in "
+                 f"MapStyle.h and say what it bought, or merge two rules")
+    while len(out) < _FLAG_RULE_SLOTS:
+        out.append(empty)
+    return out
+
+
 def puck(style):
     """(radius, ring, arrow) for layers.position, in px.
 
@@ -739,8 +875,8 @@ def _style_literal(bundle):
     no `when` blocks at all costs one struct and a 21-byte index rather than
     21 structs.
     """
-    (widths, casings, patterns, dashes, gaps, tones, buildings_px, water_px, landuse_px, contours_px,
-     dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
+    (widths, casings, patterns, dashes, gaps, tones, flag_rules, buildings_px, water_px, landuse_px,
+     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
         "{",
@@ -796,6 +932,28 @@ def _style_literal(bundle):
     for class_id in range(_CLASS_SLOTS):
         name = id_to_name.get(class_id, "(reserved)")
         lines.append(f"        {tones[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
+        "    // Flag/roughness stroke overrides. First match wins; an all-zero slot",
+        "    // is unused, which is every slot unless mapstyle.json says otherwise.",
+        "    .roadFlagRules =",
+        "    {",
+    ]
+    flag_names = {bit: name for name, bit in _FLAG_BIT.items()}
+    for mask, roughness_min, width, casing, dash, gap, pattern, hidden in flag_rules:
+        if mask == 0 and roughness_min == 0:
+            lines.append("        {},  // unused")
+            continue
+        who = "|".join(flag_names[bit] for bit in range(16) if mask & (1 << bit))
+        if roughness_min:
+            who = (who + " " if who else "") + f"roughness>={roughness_min}"
+        lines.append(
+            "        {"
+            f".flagMask = 0x{mask:04x}, .roughnessMin = {roughness_min}, .widthPx = {width}, "
+            f".casingPx = {casing}, .dashPx = {dash}, .gapPx = {gap}, "
+            f".pattern = MapLinePattern::{pattern}, .hidden = {'true' if hidden else 'false'}"
+            f"}},  // {who}")
+
     radius, ring, arrow = puck_px
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
     (w_enabled, w_widths, w_outlines, w_patterns, w_dashes, w_gaps, w_tone, w_pattern, w_spacing,
@@ -894,7 +1052,7 @@ def compile_style(style):
     names it.
     """
     widths, casings, patterns, dashes, gaps, tones = road_widths(style)
-    return (widths, casings, patterns, dashes, gaps, tones,
+    return (widths, casings, patterns, dashes, gaps, tones, road_flag_rules(style),
             buildings(style), water(style), landuse(style), contours(style),
             place_dot_diameter(style),
             place_labels(style), points_style(style), route(style),
@@ -902,8 +1060,8 @@ def compile_style(style):
 
 
 def _print_summary(bundle, what):
-    (widths, casings, _patterns, _dashes, _gaps, _tones, buildings_px, water_px, landuse_px, contours_px, dot_diameter,
-     labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
+    (widths, casings, _patterns, _dashes, _gaps, _tones, flag_rules, buildings_px, water_px, landuse_px,
+     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
     drawn = sum(1 for w in widths if w)
     cased = sum(1 for c in casings if c)
     print(f"gen_mapstyle.py: {what}: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
@@ -1048,8 +1206,16 @@ def main(repo_root, style_path=None, output_path=None):
     # `device`, so this can only trip on a hand-edited generator -- it is here
     # because the failure would otherwise be a viewport that disagrees with
     # itself at one rung, which is very hard to see on a panel.
+    #
+    # **Indexed from the end, and that is a fix, not a style choice.** This read
+    # `bundle[12], bundle[13]` from 2026-08-25 until 2026-08-27, and compile_style's
+    # tuple has the marker anchor at 14 and 15 -- so the check was comparing the
+    # POI and route blocks and had never once looked at the anchor it names. It
+    # passed because neither of those varies today. compile_style ends with
+    # `*marker_anchor(style), puck(style)`, so -3 and -2 are the anchor whatever
+    # is added in front of it.
     for bundle, users in variants:
-        if (bundle[12], bundle[13]) != (base_bundle[12], base_bundle[13]):
+        if (bundle[-3], bundle[-2]) != (base_bundle[-3], base_bundle[-2]):
             sys.exit(f"gen_mapstyle.py: {users[0][0]}@{users[0][1]}: marker anchor differs from the base "
                      f"style -- the viewport anchor cannot vary by mode or rung")
 
