@@ -37,38 +37,12 @@ static constexpr uint8_t kWaymarkNotWaymarked = 0;
 // Jotunheimen relation measured for docs/map-data-spec.md carries exactly that
 // value. Anyone designing the glyph collapse must count Norway in the off-table
 // bucket, not in this one.
-//
-// These two paragraphs diverge from the generator's template on purpose: it
-// still prints the old "and most of Norway" claim, so fix it in
-// gen_waymark_enum.py (tilegen) or the next regeneration brings the wrong
-// country back.
 static constexpr uint8_t kWaymarkRouteNoSymbol = 1;
 static constexpr uint8_t kWaymarkPairMin = 2;
 static constexpr uint8_t kWaymarkPairMax = 62;
 // A real pattern the table does not hold. Distinct from kWaymarkRouteNoSymbol:
 // no pattern is not a pattern.
 static constexpr uint8_t kWaymarkOffTable = 63;
-
-// Nothing in src/ or lib/ includes this header yet, so a regeneration across
-// the repo boundary could drift the bit layout and no build would notice.
-// These asserts are that check, and test/map_flag_rules/MapFlagRulesTest.cpp
-// includes the header so they are actually compiled. Hand-added, not in the
-// generator's template yet.
-static_assert(kMapWaymarkShift == 8, "the waymark id starts at flags bit 8");
-static_assert(kMapWaymarkMask == 0x3F00, "six bits, 8 through 13");
-static_assert((kMapWaymarkMask >> kMapWaymarkShift) == kWaymarkIdSlots - 1, "the mask must cover all 64 ids");
-static_assert((kMapWaymarkMask & 0xC000u) == 0, "bits 14-15 are seasonal and permit (scripts/gen_mapstyle.py:218-219)");
-static_assert((kMapWaymarkMask & 0x00FFu) == 0, "bits 0-7 are the named way flags (scripts/gen_mapstyle.py:210-217)");
-static_assert(kWaymarkNotWaymarked == 0, "sentinel");
-static_assert(kWaymarkRouteNoSymbol == 1, "sentinel");
-static_assert(kWaymarkOffTable == kWaymarkIdSlots - 1, "sentinel, the top of the range");
-static_assert(kWaymarkPairMin == kWaymarkRouteNoSymbol + 1, "the pairs start above the low sentinels");
-static_assert(kWaymarkPairMax == kWaymarkOffTable - 1, "the pairs stop below the high sentinel");
-static_assert(kWaymarkPairMax - kWaymarkPairMin + 1 == 61, "61 colour+shape pairs");
-static_assert(mapWaymarkId(0x0000) == kWaymarkNotWaymarked, "an unflagged way is not waymarked");
-static_assert(mapWaymarkId(0xFFFF) == kWaymarkOffTable, "all bits set reads as the top id, not as an overflow");
-static_assert(mapWaymarkId(0x0100) == 1, "bit 8 alone is id 1");
-static_assert(mapWaymarkId(0xC0FF) == kWaymarkNotWaymarked, "the other flag bits must not leak into the id");
 
 enum class MapWaymarkColour : uint8_t {
   Black = 0,
@@ -294,6 +268,27 @@ static constexpr const char* kMapWaymarkShapes[64] = {
   nullptr,
 };
 // clang-format on
+
+//
+// Nothing in src/ or lib/ includes this header, so a regeneration across
+// the repo boundary could drift the bit layout and no build would notice.
+// These asserts are that check, and test/map_flag_rules/MapFlagRulesTest.cpp
+static_assert(kMapWaymarkShift == 8, "the waymark id starts at flags bit 8");
+static_assert(kMapWaymarkMask == 0x3F00, "six bits, 8 through 13");
+static_assert((kMapWaymarkMask >> kMapWaymarkShift) == kWaymarkIdSlots - 1, "the mask must cover all 64 ids");
+static_assert((kMapWaymarkMask & 0xC000u) == 0, "bits 14-15 are seasonal and permit (scripts/gen_mapstyle.py:218-219)");
+static_assert((kMapWaymarkMask & 0x00FFu) == 0, "bits 0-7 are the named way flags (scripts/gen_mapstyle.py:210-217)");
+static_assert(kWaymarkNotWaymarked == 0, "sentinel");
+static_assert(kWaymarkRouteNoSymbol == 1, "sentinel");
+static_assert(kWaymarkOffTable == kWaymarkIdSlots - 1, "sentinel, the top of the range");
+static_assert(kWaymarkPairMin == kWaymarkRouteNoSymbol + 1, "the pairs start above the low sentinels");
+static_assert(kWaymarkPairMax == kWaymarkOffTable - 1, "the pairs stop below the high sentinel");
+static_assert(kWaymarkPairMax - kWaymarkPairMin + 1 == 61, "61 colour+shape pairs");
+static_assert(mapWaymarkId(0x0000) == kWaymarkNotWaymarked, "an unflagged way is not waymarked");
+static_assert(mapWaymarkId(0xFFFF) == kWaymarkOffTable, "all bits set reads as the top id, not as an overflow");
+static_assert(mapWaymarkId(0x0100) == 1, "bit 8 alone is id 1");
+static_assert(mapWaymarkId(0xC0FF) == kWaymarkNotWaymarked, "the other flag bits must not leak into the id");
+
 
 // The three tables are parallel, one row per id, and a regeneration that drops
 // or adds a row is the drift these catch. Compiled by
