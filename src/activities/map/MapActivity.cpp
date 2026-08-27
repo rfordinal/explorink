@@ -39,6 +39,7 @@
 #include "PinIcons.h"
 #include "PinLabels.h"
 #include "components/UITheme.h"
+#include "components/icons/poi_icons.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 
@@ -1333,9 +1334,10 @@ int16_t MapActivity::clockTick(uint32_t& localNowOut) const {
 }
 
 void MapActivity::updateHeaderStatus() {
-  // Nothing to update before there is a frame to update: the waiting banner
-  // draws no header row at all, and painting one onto it would leave a floating
-  // status row over a screen with no map.
+  // Nothing to update before there is a frame to update: onEnter()'s state
+  // reset runs before any frame exists, so headerRowDrawn_ is still false for
+  // the instant between entering the screen and the first renderWaiting() or
+  // renderViewport() call.
   //
   // Gated on headerRowDrawn_, not viewportDrawn_. Those two used to be the same
   // flag, but they answer different questions: viewportDrawn_ is "may an
@@ -2427,6 +2429,23 @@ void MapActivity::loop() {
   if (optionPopup_.handleInput(mappedInput, [this] { optionPopup_.processRender(renderer, mappedInput); })) {
     if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       suppressBackRelease_ = true;
+    }
+    if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      suppressConfirmRelease_ = true;
+    }
+    const bool justClosed = popupWasActive && !optionPopup_.isActive();
+    if (justClosed && mapMenuModeChanged_) {
+      // The Mode row cycled mode_ while the menu stayed open (openMapMenu()'s
+      // modeIdx is exempt from OptionPopup's auto-close) -- however the menu
+      // just closed, Back or a tap outside, menuBackdrop_ is the frame from
+      // before that change. Restoring it would put the old mode's map back,
+      // so a real redraw settles it instead.
+      mapMenuModeChanged_ = false;
+      dropMenuBackdrop();
+      redrawDueMs_ = 0;
+      showBusy();
+      renderCurrent();
+    } else if (justClosed && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       // handleInput() already set active=false and fired the redraw callback
       // above, but that callback is optionPopup_.processRender(), which is a
       // no-op once inactive -- nothing repaints the map underneath, and the
@@ -2441,14 +2460,12 @@ void MapActivity::loop() {
         showBusy();  // the popup's pixels are still up; say the redraw started
         renderCurrent();
       }
+    } else if (justClosed && menuBackdrop_) {
+      // Dismissed by a tap outside the dialog (touch panels): no row callback
+      // ran and no button edge lands in the branch above, so a backdrop still
+      // held here is the only sign the map is sitting under the popup's pixels.
+      restoreMenuBackdrop();
     }
-    if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      suppressConfirmRelease_ = true;
-    }
-    // Dismissed by a tap outside the dialog (touch panels): no row callback
-    // ran and no button edge lands in either branch above, so a backdrop still
-    // held here is the only sign the map is sitting under the popup's pixels.
-    if (popupWasActive && !optionPopup_.isActive() && menuBackdrop_) restoreMenuBackdrop();
     return;
   }
 
@@ -3031,7 +3048,7 @@ void MapActivity::openMapMenu() {
         // buffer is not held across a tile read.
         // The pins list opens over the same map, so it keeps the backdrop --
         // openPinsMenu() gives it up itself if its own dialog outgrows the rect.
-        if (idx != zoomModeIdx && idx != pinsIdx && idx != nearbyIdx) dropMenuBackdrop();
+        if (idx != zoomModeIdx && idx != pinsIdx && idx != nearbyIdx && idx != modeIdx) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
         } else if (idx == pinsIdx) {
@@ -3061,12 +3078,16 @@ void MapActivity::openMapMenu() {
           showBusy();
           renderRouteOverview();
         } else if (idx == modeIdx) {
-          // One Select steps ride->hike->cycle->ride and closes, same as every
-          // other row -- picking a mode is a deliberate, one-shot choice, not the
-          // start of a cycling gesture. A rider who wants to step again presses
-          // CONFIRM again. mapRideModeName()'s array order.
+          // Steps ride->hike->cycle->ride, one CONFIRM per step, and the menu
+          // stays open (setKeepOpenRows() below) -- a rider steps to the mode
+          // they want and leaves deliberately (Back, or any other row), rather
+          // than one press picking blind and reloading behind it. mode_ is
+          // committed and saved right away; the map redraw itself is deferred
+          // to loop()'s menu-close handling, off mapMenuModeChanged_.
           const uint8_t next = (static_cast<uint8_t>(mode_) + 1) % kMapRideModeCount;
           switchMode(static_cast<MapRideMode>(next));
+          optionPopup_.setRowValue(modeIdx, I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
+          mapMenuModeChanged_ = true;
         } else if (idx == zoomModeIdx) {
           // No new frame: the setting has no runtime effect yet (auto zoom is
           // not wired up, docs/map-data-spec.md), so the map underneath is
@@ -3122,6 +3143,13 @@ void MapActivity::openMapMenu() {
     std::vector<uint8_t> disabled(options.size(), 0);
     disabled[static_cast<size_t>(nearbyIdx)] = 1;
     optionPopup_.setDisabledRows(std::move(disabled));
+  }
+  // Mode is the one row a rider steps through rather than picks once --
+  // see the modeIdx branch above.
+  {
+    std::vector<uint8_t> keepOpen(options.size(), 0);
+    keepOpen[static_cast<size_t>(modeIdx)] = 1;
+    optionPopup_.setKeepOpenRows(std::move(keepOpen));
   }
   // After show() (the layout the rect comes from needs the rows) and before
   // the first draw (the framebuffer still holds the map).
@@ -3465,8 +3493,10 @@ void MapActivity::openNearbyMenu() {
 
   std::vector<std::string> options;
   std::vector<std::string> values;
+  std::vector<const freeink::Icon*> icons;
   options.reserve(kSafetyCategoryCount);
   values.reserve(kSafetyCategoryCount);
+  icons.reserve(kSafetyCategoryCount);
 
   char value[24];
   char none[24];
@@ -3477,6 +3507,11 @@ void MapActivity::openNearbyMenu() {
   // the truth (../../../docs/safety-concept.md, "Nearby").
   for (uint8_t category = 1; category < kSafetyCategoryCount; ++category) {
     options.emplace_back(I18N.get(nearbyCategoryLabel(category)));
+    // The same mark the map itself draws for this category (MapPointMarks.cpp,
+    // kPoiIconByCategory) -- so picking a category and finding it on the map
+    // are the same glyph, not two different ideas of "water".
+    icons.push_back(category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0]) ? kPoiIconByCategory[category]
+                                                                                          : nullptr);
     if (nearbyDistances_[category] == MapPointQuery::kNoDistance) {
       values.emplace_back(none);
     } else {
@@ -3518,6 +3553,7 @@ void MapActivity::openNearbyMenu() {
     nearbyRow_ = 0;
     pendingNearbyPopup_ = NearbyPopup::Category;
   });
+  optionPopup_.setIcons(std::move(icons));
   optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
@@ -3830,12 +3866,15 @@ void MapActivity::openPinsAddList() {
   // (BaseTheme::optionPopupGeometry()).
   std::vector<std::string> options;
   std::vector<std::string> values;
+  std::vector<const freeink::Icon*> icons;
   options.reserve(kPinSlotCount);
   values.reserve(kPinSlotCount);
+  icons.reserve(kPinSlotCount);
 
   char distance[16];
   for (size_t i = 0; i < kPinSlotCount; ++i) {
     options.emplace_back(pinTypeLabel(i));
+    icons.push_back(pinGlyphIcon(i));
     const PinEntry& entry = pins_.store().at(i);
     if (entry.present) {
       pinDistanceText(entry, distance, sizeof(distance));
@@ -3862,6 +3901,7 @@ void MapActivity::openPinsAddList() {
     pendingPinArg_ = static_cast<uint8_t>(catalogIndex);
     pendingPinPopup_ = PinPopup::ConfirmSet;
   });
+  optionPopup_.setIcons(std::move(icons));
   optionPopup_.setSizeHint(menuDialogWidth_, menuVisibleRows_);
   dropBackdropIfPopupOutgrew();
   optionPopup_.processRender(renderer, mappedInput);
@@ -4624,12 +4664,11 @@ void MapActivity::switchMode(MapRideMode newMode) {
   mode_ = newMode;
   LOG_DBG(kLogTag, "menu: mode -> %s", mapRideModeName(mode_));
   publishLadders();
-  // A deliberate menu pick, not a ladder step -- redraw now, same as the
-  // console's `mode` command (syncLaddersFromConsole()), not coalesced.
-  redrawDueMs_ = 0;
-  showBusy();
-  renderCurrent();
   armSave();
+  // No redraw here: the one caller is openMapMenu()'s Mode row, which keeps
+  // the menu open across a cycle (setKeepOpenRows()) and owes the map a
+  // redraw only once the rider actually leaves that row -- loop() does it
+  // when the menu closes, off mapMenuModeChanged_.
 }
 
 void MapActivity::stepZoom(int delta) {
@@ -4768,8 +4807,14 @@ void MapActivity::renderWaiting() {
   // ordinary map, not the overview.
   overviewShown_ = false;
   renderer.clearScreen();
-  renderer.drawText(UI_10_FONT_ID, 8, 8, bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE),
-                    true);
+  // Drawn even here: this screen is exactly where a rider most wants to know
+  // whether the phone is even connected, and before this the BLE bars did not
+  // exist until the first fix landed -- so a phone that never paired and one
+  // that paired fine looked identical. Same reasoning as renderViewport()'s
+  // unconditional call (docs/map-header-status.md).
+  drawHeaderStatus();
+  renderer.drawText(UI_10_FONT_ID, 8, mapContentTop() + 8,
+                    bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE), true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
@@ -4779,9 +4824,10 @@ void MapActivity::renderWaiting() {
   // No map and no marker on this frame: there is nothing for a fix to move
   // inside, so the next one draws a real viewport (applyFix()).
   viewportDrawn_ = false;
-  // No header row either -- this frame is just the waiting text, drawn with
-  // renderer.drawText() above, not drawHeaderStatus().
-  headerRowDrawn_ = false;
+  // The header row is on the panel now, so updateHeaderStatus()'s windowed
+  // repaint should keep it live while the rider waits -- same as
+  // renderViewport()'s unconditional drawHeaderStatus() does.
+  headerRowDrawn_ = true;
   markerPatchValid_ = false;
 }
 

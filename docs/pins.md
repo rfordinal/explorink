@@ -261,6 +261,14 @@ Camp                   -      Meet
   (`BaseTheme::optionPopupGeometry()`).
 - A pin whose key this build does not know shows the raw key, and can still be
   shown, replaced and deleted.
+- **Added 2026-08-26: each Add / Replace row carries the same 22px glyph the
+  pin's own balloon draws on the map** (`PinIcons.h::pinGlyphIcon()`, wrapping
+  the existing `pinGlyphBits()` bitmaps as a `freeink::Icon`), through a new
+  icon column on `OptionPopup` (`BaseTheme::OptionPopupSpec::icons`,
+  `OptionPopup::setIcons()`) that Nearby's category list
+  (`docs/nearby-menu.md`) uses the same way for its POI icons. **Untested on
+  hardware** -- read off the code that the 22px glyph fits the compact popup's
+  row height; not measured, not on the panel.
 
 ### What is confirmed, and what a save refuses
 

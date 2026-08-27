@@ -76,6 +76,13 @@ that is currently executing.
   without opening anything.
 - **A `*` marks a category whose marks are on the map** right now, and a
   `Hide all` row appears only while at least one is.
+- **Each row carries the same 24px icon `Useful places` draws for that category
+  on the map** (`kPoiIconByCategory`, `poi_icons.h`) -- picking `Water` in the
+  menu and finding the drop-shaped mark on the map are the same glyph, not two
+  different ideas of "water". Wired through a new `BaseTheme::OptionPopupSpec
+  ::icons` column (`OptionPopup::setIcons()`, `MapActivity::openNearbyMenu()`),
+  which the pin-type-add list uses the same way for the pin catalogue's own
+  balloon glyphs (`docs/pins-plan.md`). **Untested on hardware** -- see below.
 - **With no fix, the menu refuses.** It puts up `No position yet -- nothing to
   search from` and opens nothing. The search starts at the rider, so with no
   rider there is no question to answer -- and a list measured from 0,0 would be
@@ -462,6 +469,11 @@ edge marker to the same 0.1 km step.
   button walk and by a tap.
 - The three popups' layout at the map menu's dialog size: row count, the value
   column with `?` in it, and a long POI name in the title.
+- **The category-row icon column, added 2026-08-26.** Read off the code only:
+  the 24px POI icons should fit inside the compact popup's row height (the
+  option font's line height plus `optionPopupSelectionVPadding * 2`), leaving
+  the label and the value box both readable. Not measured, not rendered
+  through the `firmware` device-preview panel, not on the panel itself.
 - ~~Whether the 15 px square and the 9 px glyph read on the glass.~~
   **Judged on the panel 2026-08-21 and accepted by the maintainer.** No flash was
   involved: a `test/map_preview` frame (Vratna, 25 marks -- bus stops, beds, a

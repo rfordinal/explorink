@@ -1210,6 +1210,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // an action from. Set in loop() alongside suppressBackRelease_, cleared in
   // handleButtons() the one time it is meant to swallow.
   bool suppressConfirmRelease_ = false;
+  // Set when openMapMenu()'s Mode row cycles mode_ -- that row keeps the menu
+  // open (OptionPopup::setKeepOpenRows()), so the map itself is not
+  // redrawn there. Checked and cleared where the menu actually closes
+  // (loop()): true means menuBackdrop_ is the old mode's frame and a real
+  // redraw is owed instead of a cheap restore.
+  bool mapMenuModeChanged_ = false;
 
   // Map files pushed over the same BLE connection the position packets use.
   // Attached while this screen is up and only while it is up: the receiver
