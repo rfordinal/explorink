@@ -61,6 +61,32 @@ class IMapCanvas {
   virtual bool measureText(const char* utf8, int sizePx, bool bold, int& outWidth, int& outHeight) = 0;
   virtual void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) = 0;
 
+  // The same text, centred on (centreX, centreY) and rotated freely.
+  //
+  // The rotation is given as an orthonormal basis in 1/1024ths -- where the
+  // text's own +x (reading direction) and +y (down the glyphs) end up on screen.
+  // A caller that has a direction vector already has this; a caller that has an
+  // angle does not want to hand a float to a device with no FPU.
+  //
+  // `outline` non-zero draws the glyphs grown by one pixel in the OPPOSITE ink
+  // first, so the text keeps a 1 px halo without the caller drawing it eight more
+  // times. That is where a rotated label needs it most: it sits on the line it
+  // names, at that line's angle.
+  //
+  // Both implementations rasterise into a MapTextMask and share one rotation
+  // (MapTextMask.h), so the preview and the panel are the same arithmetic and not
+  // merely the same intent.
+  //
+  // **Returns whether the text was actually inked**, and the caller has to look:
+  // the mask has a fixed ceiling, so a string too large for it draws nothing, and
+  // a halo too large draws the number with no outline -- black digits straight
+  // onto the black line they name, which is the illegibility this call exists to
+  // prevent. Both used to be silent while the caller still counted the label as
+  // placed and marked its ground taken, so a phantom number blocked a place name
+  // off ground nothing occupied.
+  virtual bool drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink,
+                               int outline, int rightX, int rightY, int downX, int downY) = 0;
+
   // The rectangle this canvas will actually accept ink in, in screen pixels.
   //
   // Every other primitive here is fire-and-forget: the canvas clips, and a

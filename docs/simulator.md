@@ -111,6 +111,99 @@ Keys: `BACK`, `ENTER`, `LEFT`, `RIGHT`, `UP`, `DOWN`, `POWER`, `SLEEP`, `HOME`,
 `QUIT`. Screenshots are BMP at the host's drawable resolution. Upstream's
 `README.md` has the touch actions, the sleep/wake pair and the heap overrides.
 
+## End to end against real tiles
+
+**What the other checks do not cover.** A tilegen test proves the writer's bytes.
+A host test proves the reader and the renderer against a fixture. A golden PPM
+proves the preview. None of them reads a real `.tib` off a filesystem, through the
+real `MapTileReader`, into the real `MapRenderer`, onto the real framebuffer. This
+simulator does, so it is the cheapest place a format change can be *shown* to work
+rather than argued to.
+
+`tools/sim_e2e.py` in the parent repo drives it. It builds tiles from the cached
+Overpass extract and the cached SRTM cells (no network), symlinks them in as
+`fs_/trailink/base`, seeds a fix and a mode in `fs_/.crosspoint/settings.json`, and
+runs the binary once per case with a scripted keypress and a timed screenshot:
+
+```bash
+python3 tools/sim_e2e.py --firmware .worktrees/firmware/<topic> \
+                         --tilegen  .worktrees/tilegen/<topic>
+```
+
+**It asserts on the render telemetry, not on pixels**, wherever it can. `MAP`'s
+render line carries `relief <ms>` and `N contour lines, M heights`
+(`MapActivity.cpp`, the second `LOG_DBG` in `renderViewport`), and a count says
+"the relief layer drew 16 lines" where a screenshot only says "something is dark
+here". The counters exist for this: `contoursMs` alone cannot tell a layer that is
+switched off from one that is on and empty (`MapRenderer.h`, `MapRenderTiming`).
+
+Verified 2026-08-27, 48 of 48 checks, on 14 format-4 tiles over Vratna in Mala
+Fatra:
+
+| case | what it proves | measured |
+|---|---|---|
+| tiles are v4 | the harness runs on what it claims to | 9 z13 tiles, version 4, shift 0, relief > 10 kB |
+| hike draws contours | reader, relief layer, renderer, rotated height numbers | 2 tiles, 0 missing, 107,469 B, 16 lines, 4 heights |
+| ride draws none | the mode axis, end to end | 0 lines, 0 heights, 45,413 B, 78 ways vs hike's 236 |
+| coarse rung | the rung ladder picks the LOD and thins the set | rung 5 reads z11, 14 lines |
+| determinism | nothing in the path depends on time or iteration order | two runs byte-identical |
+| corrupt relief | the crc32 refusal reaches the picture | detected, frame redrawn, 10 lines vs 16 |
+
+**Two things that pass came out of getting them wrong first**, and both are the
+kind of mistake a green suite hides:
+
+- **The corruption case has to hit a tile the viewport reads.** The first version
+  picked the first tile on disk, which was outside the viewport, so the run drew
+  the same 16 lines as the clean one and every assertion passed without the
+  corruption being touched. The harness now reads the tile keys out of a clean
+  run's `reset z13 col A..B row C..D` line.
+- **A corrupt layer produces two render lines, and the first describes a picture
+  that was thrown away.** The crc32 is folded while the layer streams, so a bad
+  record is already on the framebuffer when the sum fails; `MapActivity` answers by
+  clearing and drawing the whole frame again with that layer marked unavailable
+  (`MapActivity.cpp`, "redrawing without them"). Reading the first line reported
+  *more* contour lines with a layer refused than without -- which read as garbage
+  being drawn when the opposite had happened.
+
+**What it cannot show: the panel.** Whether a 1 px contour reads on glass in
+daylight, whether a dot tone resolves as grey, whether a refresh ghosts. Those
+need a device. No count here settles one, and the harness prints that line itself
+so a run cannot be quoted as if it did.
+
+**Two cosmetic faults visible in every frame it takes**, unfixed and unrelated to
+the map data:
+
+- The scale bar's labels overlap: the `0` tick and the `200 m` legend land on top
+  of each other, reading `0200 m`. Present in ride and hike alike, so it predates
+  the contour work.
+- The zoom `+`/`-` buttons are still clipped by the right edge, the open item from
+  2026-08-23 below. Unchanged.
+
+## Three window scales
+
+Since 2026-08-27 the window is not fixed at 1:1. `CROSSPOINT_SIM_SCALE` takes
+`1:1` (the default), `zoom:N` for an integer 2..8, or `real[:<monitor-dpi>]`. The
+fork's `README.md` has the table and the reasoning; three things matter on this
+side.
+
+**It is the same three modes `tools/style_watch.py` has**, deliberately: 1:1 is
+the default and the only mode a hairline decision may be taken in, zoom is for
+reading a 12 px height number, and real answers "is this road a hairline in the
+hand" (`docs/device-preview.md`, "1:1 and real size", has the arithmetic and the
+per-device ppi).
+
+**1:1 and zoom sample nearest; real samples linear.** Upstream set linear
+unconditionally, which is right for an e-reader and wrong here -- a 1-bit map's
+dither is judged as dots, and a filtered hairline is the smudge the parent repo's
+1:1 rule was written against.
+
+**A screenshot is 480x800 whatever the window is.** `CROSSPOINT_SIM_SCREENSHOTS`
+composes into a panel-sized target rather than reading the window's drawable, so
+`tools/sim_e2e.py` and every artifact built from a grab are unaffected by the
+scale. Verified: byte-identical BMPs across 1:1, zoom x3, zoom x4, real and
+real:157, and the e2e harness passes 48 of 48 under `CROSSPOINT_SIM_SCALE=3`
+exactly as at 1:1.
+
 ## Device profiles
 
 One env per device and panel controller, extending `[env:simulator]`: the base

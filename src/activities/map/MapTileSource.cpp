@@ -251,6 +251,13 @@ bool MapTileSource::beginLanduse() { return startPass(MapTileReader::Layer::Land
 
 bool MapTileSource::nextLanduse(MapWayRef& out) { return nextWayRecord(out, false); }
 
+bool MapTileSource::beginContours() { return startPass(MapTileReader::Layer::Relief); }
+
+// `false`: no mode mask. The mask is a bitmap over the road class enum and a
+// contour's class byte belongs to MapContourClass, so testing it would filter
+// contours by whether some unrelated road class is drawn.
+bool MapTileSource::nextContour(MapWayRef& out) { return nextWayRecord(out, false); }
+
 void MapTileSource::computeScreenBoxForTile() {
   screenBoxValid_ = false;
   if (config_.screenWidth <= 0 || config_.screenHeight <= 0) return;
@@ -280,9 +287,13 @@ void MapTileSource::computeScreenBoxForTile() {
     double mercX = 0.0, mercY = 0.0;
     proj_.screenToMerc(corners[i][0], corners[i][1], mercX, mercY);
     // Inverse of MapProjection::projectTileLocal: localX = mercX - originX,
-    // localY = originY - mercY. Same relationship, read backwards.
-    const double localX = mercX - static_cast<double>(reader_.originX());
-    const double localY = static_cast<double>(reader_.originY()) - mercY;
+    // localY = originY - mercY. Same relationship, read backwards -- including
+    // the tile's coord_shift, which has to be divided out here or the cell
+    // window would be computed in metres against an index measured in stored
+    // units. Shift 0 makes the divisor 1, which is every tile today.
+    const double unit = static_cast<double>(1u << reader_.coordShift());
+    const double localX = (mercX - static_cast<double>(reader_.originX())) / unit;
+    const double localY = (static_cast<double>(reader_.originY()) - mercY) / unit;
     // Round outwards, never inwards: a truncation towards zero here could clip a
     // way that touches the very edge of the screen.
     const int32_t loX = static_cast<int32_t>(std::floor(localX));
@@ -311,7 +322,19 @@ bool MapTileSource::screenCellWindow(uint32_t& col0, uint32_t& col1, uint32_t& r
   // (computeScreenBoxForTile), so the window is a division. Cell size comes from
   // the tile's own span, and the grid has to be the one mapbuilder wrote with
   // (MapTileReader::kCellGrid mirrors tiles.py's CELL_GRID).
-  const double span = MapTileGrid::kWorldSizeM / static_cast<double>(1u << config_.z);
+  //
+  // **In stored units, not metres.** computeScreenBoxForTile has already divided
+  // the box by the tile's coord_shift, and the writer files a record into its cell
+  // from bounds that are also in stored units, so the cell size has to be divided
+  // by the same unit or the two sides are measuring a different grid. Both sides
+  // used to make the identical mistake -- span in metres against bounds in stored
+  // units -- which cancelled out at shift 0 and only at shift 0. tiles.py's
+  // build_lod now passes `tile_span_m(z) / (1 << coord_shift)`; this is the
+  // mirror of it. At shift 1 the untouched version asked for cells four times too
+  // coarse and read the wrong byte ranges, which is geometry silently missing from
+  // the screen rather than any kind of error.
+  const double unit = static_cast<double>(1u << reader_.coordShift());
+  const double span = MapTileGrid::kWorldSizeM / static_cast<double>(1u << config_.z) / unit;
   const double cell = span / static_cast<double>(MapTileReader::kCellGrid);
   const int32_t last = static_cast<int32_t>(MapTileReader::kCellGrid) - 1;
 
@@ -388,7 +411,8 @@ bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
     }
 
     for (uint16_t i = 0; i < header.pointCount; ++i) {
-      proj_.projectTileLocal(reader_.originX(), reader_.originY(), xs_[i], ys_[i], xs_[i], ys_[i]);
+      proj_.projectTileLocal(reader_.originX(), reader_.originY(), xs_[i], ys_[i], xs_[i], ys_[i],
+                             reader_.coordShift());
     }
     pointsProjected_ += header.pointCount;
 
@@ -421,7 +445,8 @@ bool MapTileSource::nextPlace(MapPlaceRef& out) {
 
     int16_t sx = 0;
     int16_t sy = 0;
-    proj_.projectTileLocal(reader_.originX(), reader_.originY(), header.x, header.y, sx, sy);
+    proj_.projectTileLocal(reader_.originX(), reader_.originY(), header.x, header.y, sx, sy,
+                           reader_.coordShift());
     ++pointsProjected_;
 
     out.x = sx;

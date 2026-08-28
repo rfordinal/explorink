@@ -44,6 +44,158 @@ a screen that redraws on demand. And z0 and z1 read **the same bytes** yet diffe
 by 700 ms, so the extra time is drawing, not I/O: at 1 m/px the same geometry
 covers far more pixels.
 
+## Line types beyond solid and dashed
+
+**Why more than a dash.** On 1-bit there is no colour, so rhythm and shape are the
+whole vocabulary for telling one line class from another -- and two of those
+distinctions matter on a hike map. 28.7 % of the pedestrian ways around Vratna are
+on a waymarked route and the rest are farm and forest tracks (measured 2026-08-27),
+drawn as the same 1 px hairline. And a `natural=cliff` at 2 px was the same line as
+an index contour, where one says "a hundred metres of height" and the other says
+"you fall here".
+
+Three patterns, all per class, all off unless a style asks:
+
+```json
+{ "pattern": "dash_mark", "mark": "comb", "mark_px": 7,
+  "dash_px": 10, "gap_px": 10, "width": 1 }
+
+{ "pattern": "hachured", "tick_px": 3, "gap_px": 8, "width": 2 }
+
+{ "pattern": "none" }
+```
+
+- **`dash_mark`** -- dash, gap, mark, gap, repeating. Needs `mark`; takes
+  `mark_px` (odd; an even size has no centre pixel so every stamp would lean the
+  same way, and the generator rounds up).
+- **`hachured`** -- the line stays whole and short combs hang off one side of it.
+  `tick_px` is the reach, `gap_px` the spacing, `tick_width_px` the thickness of a
+  tooth (default 1), and `tick_side` which side: `downhill` (default) or `uphill`,
+  spelled `right` and `left` if that reads better. On a road class `dash_px`
+  carries the reach instead, because a hachured line has no dash of its own.
+
+  `downhill` is right of the way's direction of travel, which is OSM's own
+  convention for `natural=cliff` and the reason the tile keeps its points in OSM
+  order. `uphill` exists because a convention is a convention: a feature that is
+  not a cliff can want the other side, and a region whose mappers put it the other
+  way round is a thing a style should be able to answer without a rebuild.
+- **`none`** -- no line at all; see "A toned watercourse".
+
+The marks: `dot`, `square`, `circle`, `diamond`, `cross`, `u`, `comb`.
+
+**Rasterised and counted, because the silhouettes do not separate where you would
+guess.** At 3 px a circle and a square are the *same nine pixels* -- there is no
+room for a corner to be missing -- and a diamond is a plus of 5. At 5 px they are
+25 / 21 / 13; at 7 px, 49 / 37 / 25. So below 5 px only `cross`, `diamond`, `u` and
+`comb` say anything at all.
+
+**Two of them turn, the rest do not, and the split is not arbitrary.** A square
+rotated is the same square, and rotating it would put its edges on diagonals where
+1-bit has no grey to soften a staircase -- the maintainer's own reason, 2026-08-27,
+for keeping it axis-aligned. But `u` and `comb` are *statements about a direction*:
+their floor faces the drop. So those two are turned, and **snapped to four
+directions** rather than turned freely, which keeps every edge on the pixel grid
+and still says which way the ground goes.
+
+Where the direction comes from is data, not taste: OSM puts a cliff's lower ground
+on the right of the way's direction of travel, and the tile keeps its points in OSM
+order precisely so the mark can face the right way without a refetch
+(`docs/map-data-spec.md`, "The relief layer's second class"). Get the sign wrong
+and every rock face on the map claims the drop is uphill.
+
+**`comb` is the cartographic one** -- a bar along the line with three teeth on the
+drop side, the escarpment hachure every topographic sheet uses. `u` is the same
+idea with two, lighter at small sizes. Reference: the Prosiecka dolina sheet.
+
+**A relief class refuses `dashed` and `ticked`.** A broken contour reads as a
+footpath and a cliff wants combs rather than a railway's sleepers, so the generator
+refuses both rather than drawing a wrong mark.
+
+**None of this has been on a panel.** Which mark survives on glass, at what size,
+is exactly the question a host render cannot answer.
+
+## A toned watercourse
+
+**A closed ring is the only thing that made water a surface, and a stream is
+never one.** `MapRenderer`'s water pass branches on `mapWayIsClosedRing(way)`:
+a ring gets `toneRing`, then the wave hatch knocked out of it in white, then its
+border. An open way got a stroke and nothing else. So the Danube reads as an
+obstacle because OSM maps it as a polygon, while a stream -- always a
+`waterway=*` line -- could only ever be a black hairline, and `fill: tone` on a
+stream rule drew **nothing at all**: `toneRing` is reached only in the ring
+branch. The maintainer asked for a stream that reads as an obstacle, 2026-08-27,
+and width alone could not say it.
+
+Since then an open way can carry a surface, by the same three steps a cased road
+takes and deliberately not by a second mechanism:
+
+```json
+{ "match": {"class": ["stream"]},
+  "pattern": "dashed", "width": 1,
+  "when": [{ "steps": [0, 1, 2], "modes": ["hike"],
+             "pattern": "solid", "width": 7, "casing_px": 0,
+             "fill": "tone", "tone": "dark" }] }
+```
+
+**`casing_px` decides whether the ribbon has edges, and 0 is a real answer.**
+
+- **`casing_px: 0` -- edgeless.** The tone is the whole stroke, full width, no
+  black rim. Maintainer's call 2026-08-27: *"I want the interior to eat the edge
+  too, I do not want a border."* What it buys is that the mark reads as a
+  **surface** rather than as a channel with banks: a 7 px ribbon with 2 px of
+  black each side is mostly rim, and the tone becomes a detail inside a border
+  instead of the thing itself.
+- **`casing_px > 0` -- edged.** The same three steps a cased road takes, and
+  deliberately the same ones rather than a second way of saying it: black at the
+  full width, white at the interior, then the tone laid into the cleared middle.
+
+`toneWayInterior` does the tone in both cases -- the same primitive a cased road's
+tone uses; the only difference is whether it is handed the full width or the
+interior (`MapRenderer.cpp`, the `tone != MapAreaTone::None` branch of the water
+pass).
+
+Three more things before tuning it.
+
+- **`pattern: "none"` is how you say "no line, only the tone".** It exists because
+  `solid` had come to mean two things on a toned water class -- a solid stroke
+  without a tone, nothing drawn with one. `none` states it. It is water-only: the
+  generator refuses it elsewhere, because a road that draws no line is
+  `hidden: true`, and unlike `none` that also keeps the class out of the rung's
+  tile read.
+- **2 px is the hard floor, and it is nowhere near enough to read as a surface.**
+  `toneWayInterior` refuses below 2 px because a 1 px dither reads as a dashed
+  line and a dash already means water here. But the floor is not the answer:
+  measured at rung 1 over Vratna, a 3 px band with `dark` -- the densest dither
+  there is -- comes out as
+
+  ```
+  ......#.#....
+  .....#.#.....
+  ......#.#....
+  .....#.#.....
+  ```
+
+  two thin dotted columns, alternating. It reads as a pair of hairlines, not as a
+  band. A checkerboard is 1 pixel in 2, so in a 3 px channel there is no room for
+  it to be a texture rather than a lattice. Give a dithered watercourse **5 px or
+  more**, or use `tone: "solid"` if what is wanted is a filled band -- and then
+  the tone is doing what a plain thick stroke does, which is worth knowing before
+  reaching for it. Where the readable floor actually sits is a panel question.
+- **The tone is per class now.** It was a single layer-wide `waterTone`, which
+  meant a lake and a river had to agree about what water looks like and a toned
+  stroke had no tone of its own. The wave **hatch** stays layer-wide: only rings
+  carry it, and one water surface should not have two wave rhythms on a panel.
+- **A dash still applies over the finished ribbon**, not instead of it, which is
+  what an intermittent stream should look like.
+
+**Which tone reads as an obstacle is a panel question.** Compared at rung 1 over
+Vratna on a 3 px interior: `stipple` (period 3, 1 in 9) is about one dot per 3 px
+of length and barely registers; `dense` (period 2) reads as a textured channel;
+`dark` (checkerboard) reads as a grey ribbon and is the strongest. `dark` is also
+what the lake and the area-mapped river use, so a stream set to it is the same
+water surface in a narrow channel -- which is the literal form of the request.
+Judged on host renders only. Nothing here has been on glass.
+
 ## The path
 
 ```
@@ -65,6 +217,7 @@ with:
 | `puckRadiusPx`, `puckRingPx`, `puckArrowPx` | `layers.position` | `MapRenderer::drawMarker` |
 | `buildingsEnabled`, `buildingOutlinePx`, `buildingHatch`, `buildingHatchSpacingPx` | `layers.buildings` | `MapRenderer.cpp`, buildings pass |
 | `waterEnabled`, `waterLinePx`, `waterHatch`, `waterHatchSpacingPx` | `layers.water` | `MapRenderer.cpp`, water pass |
+| `roadFlagRules[4]` | a `layers.roads.rules[]` entry whose `match` names `flag` / `roughness_min` | `MapRenderer.cpp`, `roadStrokeFor()`, both road passes |
 
 `arrow_px` is the arrow's tip-to-tail length. The tail sits a quarter of it
 behind the anchor and the base is half of it wide, so the style's 28 px draws the
@@ -272,6 +425,226 @@ Two separate zeros, worth not confusing:
 - **width 0** — this class is never drawn, in any travel mode. From `hidden`.
 - **not in the mode mask** — dropped earlier, in `MapTileSource`, and only for
   the current travel mode. From `modes` and `MapModeMaskDefaults.h`.
+- **a flag rule's `hidden`** -- added 2026-08-27, and it is a third thing again:
+  the class is drawn, this *way* is not. The bytes are still read off the card,
+  because the filter is per way and the class mask is per class. See below.
+
+## Matching a way's flag bits
+
+**Added 2026-08-27. The mechanism is in; no style uses it yet, on purpose.**
+
+Every `.tib` way record has carried two attribute bytes since the first tile was
+written -- `roughness` and a 16-bit `flags` -- and until this change `MapRenderer`
+read **neither**. `MapTileReader` parsed them (`MapTileReader.cpp:379-380`), `MapWayRef` already
+declared both (`IMapSource.h:33-34`) and `MapTileSource` already filled them in
+(`MapTileSource.cpp:408-409`) -- so the carry-through was never the missing half.
+The renderer simply never read the fields. It does now, in one place:
+`roadStrokeFor()`, `MapRenderer.cpp:119`. The concrete cost: a track tagged `access=no` was drawn as
+the same hairline as an open path, so the map told a hiker a closed track was
+open.
+
+### How much data is actually there
+
+Measured 2026-08-27 with a throwaway Python walk over the whole local mirror
+(`mapbuilder/cdn/base` in the parent repo): **1,291 tiles, 474,178 road-layer way
+records** -- 86 tiles / 36,604 ways at z11, 262 / 146,694 at z12, 943 / 290,880 at
+z13. **Measured, not read off the code.**
+
+One caveat, and it matters: every tile in that mirror is **format version 3**, and
+this branch's reader accepts version 4 only
+(`MapTileReader::kFormatVersion`). So the counts came from a standalone parser,
+not through `MapTileReader`, and the local `map_preview` cannot render that mirror
+at all on this branch.
+
+| bit | flag | ways set, all zooms | share | share at z13 |
+|---|---|---|---|---|
+| 0 | `link` | 5,985 | 1.3 % | 0.6 % |
+| 1 | `bridge` | 17,142 | 3.6 % | 2.6 % |
+| 2 | `tunnel` | 2,120 | 0.4 % | 0.6 % |
+| 3 | `oneway` | 41,115 | 8.7 % | 6.4 % |
+| 4 | `unpaved` | 43,665 | 9.2 % | 8.1 % |
+| 5 | `no_motor` | 24,000 | 5.1 % | 6.7 % |
+| 6 | `no_bicycle` | 21,342 | 4.5 % | 6.0 % |
+| 7 | `no_foot` | 20,264 | 4.3 % | 5.7 % |
+| 8-15 | waymark id, `seasonal`, `permit` | **0** | 0 % | 0 % |
+
+**28,920 ways carry at least one access restriction** (bits 5-7), 21,700 of them
+at the detail LOD, which is where a walker actually reads the map. Per class, the
+restriction is concentrated rather than spread: `service` is 21.3 % `no_motor`
+(12,654 ways), `ferry` 25.8 %, `track` 5.3 %, `footway` 3.1 % `no_bicycle`. So
+this is not a rounding error in the data; it is a fifth of the service roads in
+the mirror.
+
+`roughness` is real too. Its low three bits, across the same 474,178 ways:
+
+| value | meaning | ways | share |
+|---|---|---|---|
+| 0 | unknown | 218,951 | 46.2 % |
+| 1 | best | 123,685 | 26.1 % |
+| 2 | | 40,865 | 8.6 % |
+| 3 | | 15,071 | 3.2 % |
+| 4 | | 35,770 | 7.5 % |
+| 5 | | 26,207 | 5.5 % |
+| 6 | | 13,504 | 2.8 % |
+| 7 | worst | 125 | 0.0 % |
+
+**53.8 % of road ways carry a non-zero roughness.** Note that 0 is *unknown*, not
+*smooth*, so a rule with a floor of 1 restyles a bit over half the network and a
+rule that swept 0 in would restyle all of it.
+
+### The grammar
+
+A rule in `layers.roads.rules[]` whose `match` names `flag` or `roughness_min`
+instead of `class` is a **flag rule**. Same list, same rule shape, same `when`
+blocks -- there is no second place to say things.
+
+```json
+{ "match": {"flag": "no_foot"},
+  "width": 1, "pattern": "dotted" }
+
+{ "match": {"flag": ["no_motor", "no_bicycle"], "roughness_min": 5},
+  "width": 1, "pattern": "dotted",
+  "when": [{"modes": ["ride"], "hidden": true}] }
+```
+
+**A rule any variant can draw needs its `width` in the file.** `when` patches
+rather than replaces, so `hidden: true` plus a `when` that unhides resolves to a
+visible rule with no width, and `gen_mapstyle.py` refuses it -- correctly, since
+there is no class width for a flag rule to inherit. Write the width once at the
+rule and let `when` hide it where it is not wanted, which is the direction above.
+Both examples in this file compile; the two that used to be here did not.
+
+- **`flag`** is a name or a list of names. A list is **any bit set**, not all of
+  them -- the same reading `match.class` already has.
+- **`roughness_min`** is 1-7 and means `roughness & 0x07 >= this`. Only the low
+  three bits are looked at, so a future `sac_scale` in bits 3-5 cannot be
+  mistaken for a worse surface.
+- Both together is **and**.
+- Names, and only these: `link`, `bridge`, `tunnel`, `oneway`, `unpaved`,
+  `no_motor`, `no_bicycle`, `no_foot`, `seasonal`, `permit`. Bits 8-13 are one
+  6-bit waymark *symbol id*, not six flags, so no single bit of it has a name --
+  a rule on "bit 9" could not be right.
+- A rule may **not** carry both `class` and `flag`. Split it, or narrow it with
+  `when`.
+- **It replaces the stroke, it does not patch it.** So the rule must state its
+  own `width`, or say `hidden: true`. `casing_px`, `pattern`, `dash_px` and
+  `gap_px` default to a solid uncased line. There is no per-field inherit,
+  because a flag rule spans classes and there is no one class width to inherit
+  from -- and the trap that follows is that a rule matching `bridge` flattens a
+  motorway to the width it names.
+- `fill`, `tone` and `major` are **refused** on a flag rule rather than ignored.
+  A tone is validated against its class's casing and interior width, and a rule
+  spanning classes has no one interior to check. Open -- add it when a panel pass
+  says a shaded flag treatment is wanted.
+- **At most four rules** per resolved style (`kMapRoadFlagRuleSlots`,
+  `MapStyle.h`). A fifth fails the build with the reason.
+- **First match wins**, in file order. Deliberately not the `when` list's
+  last-wins rule: a `when` entry patches, a flag rule replaces, and replacing
+  twice is not a merge.
+- **A class the style hides stays hidden.** `gen_mode_masks.py` intersects a
+  hidden class out of that rung's tile class mask, so its ways never reach the
+  renderer -- a flag rule that appeared to un-hide it would draw nothing and read
+  as a bug in the rule.
+
+### Bits 8-15: three of the five are filled now
+
+`docs/map-data-spec.md` allocates the whole remaining flag budget -- waymark id
+(`flags` 8-13), `seasonal` (14), `permit` (15) -- and `roughness` bits 3-5
+(`sac_scale`) and 6-7 (`trail_visibility`).
+
+**Superseded 2026-08-27.** This section used to say the builder writes zero into
+all of them, measured across 474,178 ways in the mirror. That was true when it
+was written and is no longer: tilegen fills the waymark id, `sac_scale` and
+`trail_visibility` as of that date. `seasonal` and `permit` are still zero, so
+`{"match": {"flag": "seasonal"}}` still compiles, validates and can never match,
+and `gen_mapstyle.py` still prints a warning naming those two.
+
+**Every tile in `mapbuilder/cdn/` predates this**, so a local render shows the
+old bytes until the area is rebuilt. `rules_hash` moved (the new tilegen modules
+are in `_RULE_SOURCE_MODULES`), which is what `tools/rebuild_stale_rules.py`
+keys on.
+
+**What the renderer must do differently.** `roughness` is now three fields, not
+one number. An unmasked compare reads an alpine path -- `sac_scale=alpine_hiking`
+sets bit 5, so the byte is at least 0x20 -- as surface grade 32, worse than
+impassable. `MapStyle.h` has the masks and two accessors:
+
+| field | bits | accessor |
+|---|---|---|
+| roughness 0-7 | 0-2 | `roughness & kMapRoughnessValueMask` |
+| `sac_scale` 0-6 | 3-5 | `mapSacScale(roughness)` |
+| `trail_visibility` 0-3 | 6-7 | `mapTrailVisibility(roughness)` |
+
+`MapRenderer.cpp`'s flag-rule pass already masked (`roadStrokeFor`), which is why
+this landed without a render change. Nothing else reads `roughness` today.
+
+**The waymark id has names now.** `src/activities/map/MapWaymark.h` is generated
+by tilegen's `gen_waymark_enum.py` from `waymark_spec.py`, exactly as
+`MapClassEnum.h` is generated from `class_spec.py`, and it carries
+`mapWaymarkId(flags)`, the three sentinels, and per-id colour and shape tables.
+Nothing in the renderer reads it yet -- **the glyphs are not designed**, and
+`docs/map-data-spec.md` is explicit that the collapse from 61 ids to the dozen a
+11 px panel can distinguish has to be collision-aware rather than a truncation.
+
+What the data looks like, measured on a Mala Fatra build 2026-08-27: 26.8 % of
+z13 pedestrian records carry a nonzero waymark id, spread over seven ids --
+`green_bar` 66, `blue_bar` 63, `yellow_bar` 39, `off_table` 42, `green_backslash`
+9, `red_triangle` 5, `green_triangle` 1. So the Slovak network really is a
+handful of coloured bars, and the off-table bucket is the fourth largest, which
+is a shape question rather than a bug: `green_slash`, `red_turned_T` and
+`blue_corner` are all below the world top-61 cut.
+
+### What it costs
+
+- **Flash: +826 bytes**, measured on `pio run -e default` before and after
+  (3,990,165 → 3,990,991 bytes). Of that, 600 bytes is the table itself:
+  `sizeof(MapRoadFlagRule)` is 10, four slots is 40, and `data/mapstyle.json`
+  compiles to 14 distinct variants plus the base. The rest is `roadStrokeFor()`.
+- **RAM: 0 bytes.** Unchanged at 59,012 both sides. The table is `constexpr` in
+  the generated header, so it lives in flash; `RoadStroke` is a 24-byte local,
+  well inside the 256-byte stack rule.
+- **Per way, per pass:** up to four compares against an all-zero slot, on values
+  that are in flash beside the widths the pass already reads. No allocation, no
+  per-way state. **Read off the code -- not measured on hardware.**
+
+### What a panel pass has to check
+
+**Nothing here has been on a device.** There is no X4 attached
+(`docs/PROGRESS.md`, the hardware gap), and the shipped style carries no flag
+rule, so the only thing a hardware run can confirm today is that the render is
+*unchanged* -- which is what `test/map_tile_reader`'s golden PPM already asserts
+bit for bit on the host.
+
+When the maintainer does turn a rule on, the panel questions are:
+
+- Does a dotted or thinned hairline still read as a path at all on the glass? A
+  1 px line under any break is close to invisible in daylight
+  (`../../docs/map-legibility.md`).
+- Does hiding restricted ways leave a hole a rider reads as "no data" rather than
+  "no route"? That is the same failure the missing-tile hatch exists to prevent.
+- At the coarse rungs, does a 5.7 % share of restyled ways read as a distinction
+  or as noise?
+
+Judge it through `tools/style_watch.py` first (`docs/device-preview.md`), then on
+the panel. Never off a laptop PNG -- that rule is in the parent `CLAUDE.md` and it
+is what this whole default-off arrangement is built around.
+
+### Where the tests are
+
+Two halves, because the grammar is evaluated on the laptop and only the resolved
+structs reach the device:
+
+- `scripts/test_mapstyle_flag_rules.py` -- the parsing: masks, the bit names, the
+  refusals, and an assertion that the shipped `data/mapstyle.json` still carries
+  no flag rule. Runs under `ctest` as `MapstyleFlagRules`.
+- `test/map_flag_rules/MapFlagRulesTest.cpp` -- the drawing: a rendered way,
+  checked for thickness and ink. Includes the default-unchanged pair (a way with
+  every data-carrying flag set draws identically to an open one under
+  `kDefaultMapStyle`), which is the test that should go red the day the knob is
+  turned on.
+
+`test/map_tile_reader`'s golden PPM is the whole-frame version of the same claim
+and is unchanged by this work.
 
 ## What is still not from the style
 
@@ -602,6 +975,75 @@ nothing can check (`docs/map-data-spec.md`, "One vocabulary, not two"). The
 laptop sketch resolves through the same class table, so both panels style a
 river the same way.
 
+## The relief layer draws cliffs as well as contours
+
+Layer 7 is **relief**, not "contours" -- named for its vocabulary, so a terrain
+line that is not a height line lands as a class rather than as a reason to add
+layer 8. `natural=cliff` is the first of those, built 2026-08-27.
+
+`MapReliefClass::Cliff = 3`. `MapRenderer` draws it with the same
+`drawContourClass()` the two contour classes use, last, so the one line that
+means "you cannot go this way" lands on top of the height lines it crosses.
+
+**Two things about a cliff record differ from a contour, and a reader that
+misses either gets it wrong:**
+
+- **`flags` is 0, not an elevation.** On this layer `flags` is an `i16` height. A
+  cliff runs across contours and has no single height, so nothing may print it.
+  That is why the cliff pass is given no label slots -- a number on it would read
+  "0 m".
+- **The point order is OSM's and is not normalised.** OSM's convention puts the
+  lower ground on the right of the way's direction, so the record already carries
+  which side the drop is on. **Nothing draws a tick yet.** Keeping the order is
+  what makes drawing one later a render change rather than a refetch.
+
+**The style is provisional and has not been on a panel.** `data/mapstyle.json`
+gives cliff 2 px solid, which is the index contour's weight, and hides it from
+rung 3 out. At that weight **a cliff is indistinguishable from an index
+contour**, which is the wrong outcome and is the thing a hardware pass has to
+settle. The correct mark is a ticked line with the ticks on the low side.
+
+**A cliff is invisible in ride and cycle mode, at every rung.** Two gates, and
+the outer one wins. `data/mapstyle.json:86-91` resolves
+`layers.contours.enabled` to false for `ride` and `cycle`, and the whole relief
+draw sits behind `if (style.contoursEnabled)` (`MapRenderer.cpp:553`, the cliff
+pass at `MapRenderer.cpp:562`). So a motorcyclist never sees the one line that
+means "you cannot go this way". The cliff rule's own `hidden` from rung 3 out is
+a much smaller claim than that and says nothing about ride: nothing inside the
+layer can reach a mode whose layer is never opened. Read off the code
+2026-08-27.
+
+**Whether a motorcyclist should see cliffs is an open product question, and the
+maintainer owns it.** It is not an oversight and it is not a bug to fix in
+passing. What the decision costs, so it can be taken on numbers:
+
+- **No firmware change is needed.** Cliffs in ride mode is expressible in the
+  style today: enable the layer for `ride`, then hide `minor` and `index` for
+  `ride`. The widths resolve to 0 and `drawContourClass` returns before reading
+  anything (`MapRenderer.cpp:255`).
+- **But the tile read is per layer, not per class.** `contoursEnabled` gates
+  the layer, and each enabled class pass calls `beginContours()` and walks every
+  relief record, skipping the other classes by id (`MapRenderer.cpp:256`,
+  `:261-262`). So ride would pay a full walk of a 32 kB
+  z13 relief layer (the table below) to draw 0.3 kB of cliffs.
+- **And at 2 px a cliff still reads as an index contour**, so the mark has to be
+  designed before the answer means anything on the panel.
+
+**What it costs, measured on a Mala Fatra build 2026-08-27** (297 `natural=cliff`
+ways in the bbox), against the same build with `layers.cliffs` off:
+
+| LOD | relief layer before | after | per tile | records |
+|---|---|---|---|---|
+| detail z13 | 31,826 B avg | 32,160 B avg | **+334 B (+1.0 %)** | 81 |
+| regional z12 | 6,899 B avg | 8,559 B avg | **+1,660 B (+24 %)** | 300 |
+| overview z11 | unchanged | unchanged | 0 | 0 |
+
+z13 matches the 0.4 kB per tile the format spec predicted. z12 does not, and the
+24 % is worth knowing before it is enabled on a region: a z12 tile covers four
+times the ground with a fifth of the contour detail, so the cliffs are a much
+larger share of a much smaller layer. Whether a cliff earns that at 6 m/px is a
+panel question, and `build_config.json`'s `layers.cliffs` is the switch.
+
 ## Adding the next area layer
 
 The path is now well worn. For each new layer:
@@ -646,7 +1088,7 @@ Whenever it is picked up, it needs a style decision first. `mapstyle.json` has o
 `layers.position` block and no per-mode marker sizes, so either the style grows
 them (a `modes.<name>.marker` block) or one set of numbers is scaled per mode.
 
-## Both generated headers are gitignored
+## Two generated headers are gitignored, and two are not
 
 `MapStyleDefaults.h` and `MapModeMaskDefaults.h` are build products, never
 committed (`.gitignore`). PlatformIO regenerates them on every build; for the
@@ -654,3 +1096,28 @@ host build, `test/CMakeLists.txt` runs the same two generators as CMake custom
 commands. That second wiring is not cosmetic — before it existed a host build
 reused whatever a previous firmware build had left in the source tree, so a
 style edit did not reach the native preview at all.
+
+`MapClassEnum.h` and `MapWaymark.h` are the opposite case and **are** committed.
+Their generators live in the tilegen repo (`gen_class_enum.py`,
+`gen_waymark_enum.py`), which this repo does not have and must not need: it is
+pushed to GitHub and has to build standalone. So they are generated across the
+repo boundary by hand, deliberately, and carry a "do not hand-edit" banner
+instead of a gitignore entry. Regenerate with:
+
+```
+python3 gen_class_enum.py   --cpp-out <firmware>/src/activities/map/MapClassEnum.h
+python3 gen_waymark_enum.py --cpp-out <firmware>/src/activities/map/MapWaymark.h
+```
+
+run from a tilegen checkout. `gen_waymark_enum.py` refuses to write anything
+unless its 61-entry table still re-derives from the committed taginfo snapshot,
+so a hand edit on either side of the boundary is caught rather than shipped.
+
+**`MapWaymark.h` also carries hand-added `static_assert`s that the generator's
+template does not print yet**, on the bit layout (mask `0x3F00`, shift 8, no
+overlap with bits 14-15) and on the three parallel 64-entry tables.
+`test/map_flag_rules/MapFlagRulesTest.cpp` includes the header for the sole
+purpose of compiling them, because until 2026-08-27 no translation unit included
+it at all and a drift would have shipped unnoticed. Two consequences: do not drop
+that include as unused, and a regeneration from tilegen drops both the asserts
+and the corrected Norway comment until the template carries them.

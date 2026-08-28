@@ -49,9 +49,14 @@ void MapProjection::projectMercWide(double mercX, double mercY, int32_t& outScre
 }
 
 void MapProjection::projectTileLocal(int32_t originX, int32_t originY, int16_t localX, int16_t localY,
-                                     int16_t& outScreenX, int16_t& outScreenY) const {
-  const double mercX = static_cast<double>(originX) + static_cast<double>(localX);
-  const double mercY = static_cast<double>(originY) - static_cast<double>(localY);
+                                     int16_t& outScreenX, int16_t& outScreenY, const uint8_t coordShift) const {
+  // Widen before shifting: `localX` is int16 and a shift of 1 on a coordinate
+  // near the tile edge overflows it. Shift 0 leaves both arithmetic and result
+  // exactly what they were before the byte existed.
+  const int32_t offX = static_cast<int32_t>(localX) << coordShift;
+  const int32_t offY = static_cast<int32_t>(localY) << coordShift;
+  const double mercX = static_cast<double>(originX) + static_cast<double>(offX);
+  const double mercY = static_cast<double>(originY) - static_cast<double>(offY);
   projectMerc(mercX, mercY, outScreenX, outScreenY);
 }
 

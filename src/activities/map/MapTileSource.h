@@ -93,6 +93,9 @@ class MapTileSource : public IMapSource {
   bool nextWater(MapWayRef& out) override;
   bool beginLanduse() override;
   bool nextLanduse(MapWayRef& out) override;
+
+  bool beginContours() override;
+  bool nextContour(MapWayRef& out) override;
   bool beginPlaces() override;
   bool nextPlace(MapPlaceRef& out) override;
 
@@ -233,9 +236,28 @@ class MapTileSource : public IMapSource {
   // screen box to derive it from, in which case the caller reads whole layers.
   bool screenCellWindow(uint32_t& col0, uint32_t& col1, uint32_t& row0, uint32_t& row1) const;
   // Bit index for a (tile index, layer id) pair in crc32Validated_.
+  //
+  // The stride is MapLayerBits::kSlotsPerTile, and it has to be: it was a
+  // hardcoded 7 while layer ids ran 1..6, which left exactly one spare slot per
+  // tile. Relief took it. The next layer id -- 8, which is the whole point of
+  // raising kMaxLayers to 15 -- would have aliased onto the *next tile's* water
+  // layer at stride 7: bit 7t+8 == 7(t+1)+1. That reads as "already validated",
+  // so a layer whose crc32 was never checked gets streamed with skipCrc32, and
+  // symmetrically one tile's failure hatches a neighbour's water. Silent, and no
+  // test could have caught it before layer 8 existed.
+  //
+  // MapLayerBits already sizes itself off kSlotsPerTile and static_asserts the
+  // product against its bit count, so this is now one constant rather than two
+  // that have to be remembered together.
   static uint32_t crcBitFor(uint32_t tileIndex, MapTileReader::Layer layer) {
-    return tileIndex * 7u + static_cast<uint32_t>(layer);
+    return tileIndex * MapLayerBits::kSlotsPerTile + static_cast<uint32_t>(layer);
   }
+  // The guard that was missing. MapLayerBits already asserts the table is big
+  // enough; nothing asserted that the stride is wider than the highest layer id,
+  // which is the half that actually aliases.
+  static_assert(MapTileReader::kMaxLayers < MapLayerBits::kSlotsPerTile,
+                "crcBitFor's stride must exceed the highest layer id, or one tile's top layer shares a bit with "
+                "the next tile's first");
   // Opens the next tile in the range that actually has the current layer.
   // Returns false when the range is exhausted.
   bool advanceToNextTile();
@@ -280,9 +302,9 @@ class MapTileSource : public IMapSource {
   bool screenBoxValid_ = false;
 
   // One bit per (tile index, layer id) pair that has passed its crc32 in this
-  // frame. 16 tiles at most (MapViewport::kMaxTiles) and layer ids run 1..6
-  // (MapTileReader::Layer), so 16 x 7 = 112 bits -- two words, held by
-  // MapLayerBits, which says why it is not one. Cleared in begin(), exactly
+  // frame. 16 tiles at most (MapViewport::kMaxTiles) and a layer id can be
+  // 1..15 (MapTileReader::kMaxLayers), so 16 x 16 = 256 bits -- four words, held
+  // by MapLayerBits, which says why it is not one. Cleared in begin(), exactly
   // like unavailableMask_.
   //
   // Why it is safe to trust: a file on the card cannot become corrupt between

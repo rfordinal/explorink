@@ -321,6 +321,30 @@ class GfxRenderer {
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)
   void drawTextRotated90CW(int fontId, int x, int y, const char* text, bool black = true,
                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+
+  // Rasterise `text` into a caller-owned 1bpp mask instead of onto the screen.
+  // MSB-free layout: bit index is `y * strideBits + x`, LSB first within a byte,
+  // matching MapTextMask.
+  //
+  // This exists so a caller can rotate text freely without this class learning
+  // how: the map's contour height numbers sit along the contour at its own
+  // bearing, and the rotation happens over the mask (src/activities/map/
+  // MapTextMask.h). Adding a free rotation to renderCharImpl instead would put
+  // it in the text path every screen in the firmware draws through.
+  //
+  // **Deliberately simpler than drawText.** Advance widths only: no kerning, no
+  // ligatures, no combining marks, no CJK fallback, no 50 % scale. Its caller
+  // draws digits, and tabular figures have no kerning to lose. Anything with real
+  // text in it should use drawText.
+  //
+  // Returns false when the font is missing or the string does not fit the mask --
+  // a caller must then draw nothing, because half a number is a wrong number.
+  // Rasterise `text` into a 1bpp mask. `bits` is cleared here before inking, so a
+  // reused buffer carries no ghosts of the previous string. Advance widths only:
+  // no kerning, no ligatures, no combining marks, which is why the only caller
+  // passes digits.
+  bool renderTextMask(int fontId, const char* text, EpdFontFamily::Style style, uint8_t* bits, int strideBits,
+                      int maxW, int maxH, int& outW, int& outH) const;
   int getTextHeight(int fontId) const;
 
   // Grayscale functions

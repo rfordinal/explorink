@@ -40,5 +40,47 @@ enum class MapWaterClass : uint8_t {
 // Slots to size a per-class style table with. Small on purpose -- these are not
 // the road enum's 32, and a table indexed by one of these costs a handful of
 // bytes of flash.
+// Contour layer (MapTileReader::Layer::Contours). Mirrors mapbuilder's
+// contour_class.py. No `unknown`, like landuse: the builder writes one of
+// these two or nothing, so a 0 is a corrupt byte and both passes skip it.
+//
+// An **index contour** is every Nth line, drawn heavier so the eye can count.
+// Which N is a build-time decision per LOD, not something the device knows.
+enum class MapReliefClass : uint8_t {
+  ContourMinor = 1,
+  ContourIndex = 2,
+  // A cliff is the one line on a mountain map that means "you cannot go this
+  // way". Built 2026-08-27 from `natural=cliff`; measured at 0.4 kB per z13 tile
+  // in the High Tatras and 1.2 kB in Mala Fatra against a 35 kB contour layer.
+  //
+  // Two things a reader of this layer must handle differently for a cliff:
+  // `flags` is **0**, not an elevation -- a cliff runs across contours and has
+  // no single height -- so nothing may print it as a number; and the record's
+  // point order is OSM's, which puts the lower ground on the right of the
+  // direction of travel. Nothing draws a correct-side tick yet, and the order
+  // is what makes adding one a render change rather than a refetch.
+  Cliff = 3,
+  // Reserved, not built. `Cliff = 3` is the last class that fits a per-class
+  // style table: kReliefClassSlots is 4, so the valid indices are 0-3, and
+  // `drawContourClass` returns before it reads anything when
+  // `index >= kReliefClassSlots` (MapRenderer.cpp:255). A Ridge left at 4
+  // against a table of 4 therefore draws nothing at all, with no build error
+  // and no log line.
+  //
+  // Building it means widening the table first, and that is cheap:
+  // `contourWidthPx` is one byte per slot (MapStyle.h:277) and
+  // data/mapstyle.json compiles to 14 MapStyle variants plus the base
+  // (MapStyleDefaults.h:12 and :377), so a fifth slot costs 15 bytes of flash
+  // before padding. `_CONTOUR_SLOTS` (scripts/gen_mapstyle.py:88) has to move
+  // with it. Read off the code 2026-08-27, not measured.
+  Ridge = 4,
+};
+
+// The names the contour code was written with, before the layer was named for its
+// vocabulary rather than for its first class.
+using MapContourClass = MapReliefClass;
+
 inline constexpr uint8_t kLanduseClassSlots = 4;
 inline constexpr uint8_t kWaterClassSlots = 4;
+inline constexpr uint8_t kReliefClassSlots = 4;
+inline constexpr uint8_t kContourClassSlots = kReliefClassSlots;

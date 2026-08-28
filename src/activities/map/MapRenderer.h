@@ -52,6 +52,7 @@ struct MapViewState {
 struct MapRenderTiming {
   uint32_t (*nowMs)() = nullptr;
   uint32_t landuseMs = 0;
+  uint32_t contoursMs = 0;
   uint32_t buildingsMs = 0;
   uint32_t waterMs = 0;
   uint32_t roadsMs = 0;
@@ -66,6 +67,15 @@ struct MapRenderTiming {
   // (MapLabels.cpp), so this is the field that says whether the halo is
   // affordable at a given size.
   uint32_t labelsMs = 0;
+
+  // Two counts rather than times, and they ride in the timing struct because
+  // that is the one thing the renderer already fills and MapActivity already
+  // logs. Without them a run has no way to say whether the relief layer drew
+  // anything: `contoursMs` is 0 both when the layer is off and when it is on and
+  // empty, and an e2e check against a screenshot cannot tell a missing layer
+  // from a flat one (docs/simulator.md, "End to end against real tiles").
+  uint32_t contourLines = 0;
+  uint32_t contourLabels = 0;
 };
 
 // Nearest named place to the marker, by screen-pixel distance, picked while

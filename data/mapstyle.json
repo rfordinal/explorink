@@ -38,6 +38,81 @@
         }
       ]
     },
+    "contours": {
+      "_comment": "Elevation contours, tile layer_id 7, two classes. A contour is a line of equal height; an index contour is every Nth one, drawn heavier so the eye can count. The tiles carry 20 m lines at the detail LOD with every 5th (100 m) as index, and 100 m lines from regional out with every 5th (500 m) as index (mapbuilder/tilegen/build_config.json). Solid strokes only: a dithered 1 px line reads as dashed and a dashed contour reads as a footpath, so weight is the only separator there is. Drawn over the landuse wash and under buildings, water and roads -- a contour crossing a road must not break it. `enabled: false` for ride and cycle means the layer is never opened, so those modes pay no card read at all -- and that includes the cliff class, so a motorcyclist never sees the one line that means \"you cannot go this way\", at any rung (MapRenderer.cpp:553 gates the whole relief draw, cliff pass at :562). Whether ride should show cliffs is an open product question the maintainer owns, not an oversight; docs/map-style.md, \"The relief layer draws cliffs as well as contours\", has what the answer costs. Rung 1 draws only the index lines and rungs 5-6 only the 500 m ones: 20 m at 3 m/px and 100 m at 32-45 m/px are wall to wall on a mountain flank, measured on 480x800 1:1 renders 2026-08-26 (docs/contours-plan.md).",
+      "enabled": true,
+      "label_px": 12,
+      "label_bold": false,
+      "label_max": 4,
+      "label_halo_px": 2,
+      "label_min_gap_px": 200,
+      "rules": [
+        {
+          "match": {
+            "class": [
+              "minor"
+            ]
+          },
+          "color": "#000000",
+          "width": 1,
+          "when": [
+            {
+              "steps": [
+                1,
+                5,
+                6
+              ],
+              "hidden": true
+            }
+          ]
+        },
+        {
+          "match": {
+            "class": [
+              "index"
+            ]
+          },
+          "color": "#000000",
+          "width": 2
+        },
+        {
+          "_comment": "natural=cliff, carried in the relief layer beside the contours since 2026-08-27. PROVISIONAL, NOT JUDGED ON A PANEL. 2 px solid is the index contour's weight, picked so a cliff is at least as loud as a height line, not because anything was looked at -- and at that weight a cliff and an index contour are indistinguishable, which is the wrong outcome. What a cliff should look like is a ticked line with the ticks on the low side; the record's OSM point order already carries which side that is (mapbuilder/tilegen/relief_class.py) and the renderer does not draw it yet. Hidden from rung 3 out: a cliff at 12 m/px and coarser is a line nobody can act on, and the overview LOD writes no cliff records at all (build_config.json, layers.cliffs). Hidden from ride and cycle entirely, and not by this rule: the layer's own `enabled: false` for those modes is the outer gate, so nothing written here can make a cliff visible to a motorcyclist.",
+          "match": {
+            "class": ["cliff"]
+          },
+          "color": "#000000",
+          
+          "width": 1,
+          "pattern": "hachured", "tick_px": 5, "gap_px": 7,
+
+          "when": [
+            {
+              "steps": [2],
+              "hidden": false,
+              "width": 1,
+              "pattern": "dash_mark",
+              "mark": "comb",
+              "mark_px": 10,
+              "dash_px": 14,
+              "gap_px": 6
+            },
+            {
+              "steps": [3,4,5,6],
+              "hidden": true
+            }
+          ]
+        }
+      ],
+      "when": [
+        {
+          "modes": [
+            "ride",
+            "cycle"
+          ],
+          "enabled": false
+        }
+      ]
+    },
     "junctions": {
       "_comment": "Junction dots, drawn ONLY along the route. Three filters: within max_dist_px of the route; significant, i.e. require_major means at least one road there is flagged major in the roads layer and not hidden (otherwise every side street and footpath in a village beads the whole route); and no two closer than min_spacing_px along the route. Keyed on the roads layer's `major` flag, NOT on rule width -- width is cosmetic, so thinning the major roads must not silently delete the dots. halo_px is a white ring around each dot, without which they are invisible where they sit on the black route. Sizes in device pixels.",
       "enabled": true,
@@ -69,7 +144,10 @@
               ]
             },
             {
-              "steps": [5,6],
+              "steps": [
+                5,
+                6
+              ],
               "hidden": false,
               "tone": "light"
             }
@@ -85,7 +163,52 @@
               "forest"
             ]
           },
-          "outline_width": 0
+          "outline_width": 0,
+          "when": [
+            {
+              "steps": [
+                0,
+                1,
+                2
+              ],
+              "modes": [
+                "hike"
+              ],
+              "hidden": false,
+              "fill": "tone",
+              "tone": "dots",
+              "tone_period_px": 7,
+              "tone_stagger": true
+            },
+            {
+              "steps": [
+                3,
+                4
+              ],
+              "modes": [
+                "hike"
+              ],
+              "hidden": false,
+              "fill": "tone",
+              "tone": "dots",
+              "tone_period_px": 5,
+              "tone_stagger": true
+            },
+            {
+              "steps": [
+                5,
+                6
+              ],
+              "modes": [
+                "hike"
+              ],
+              "hidden": false,
+              "fill": "tone",
+              "tone": "dots",
+              "tone_period_px": 4,
+              "tone_stagger": true
+            }
+          ]
         }
       ]
     },
@@ -161,7 +284,9 @@
           ]
         },
         {
-          "steps": [6],
+          "steps": [
+            6
+          ],
           "max_labels": 32,
           "max_labels_major": 5,
           "max_labels_minor": 27,
@@ -200,6 +325,7 @@
         "pattern": "solid",
         "width": 1
       },
+      "_comment_flag_rules": "A rule in `rules` may match on the way record's FLAG BITS or its ROUGHNESS instead of on `class`, and then it replaces the matched way's stroke. Put `flag` (a name or a list of names; any one bit set is a match) and/or `roughness_min` (1-7) in `match` instead of `class` -- a rule may not carry both `class` and `flag`. Flag names: link, bridge, tunnel, oneway, unpaved, no_motor, no_bicycle, no_foot, seasonal, permit. It REPLACES rather than patches, so the rule must state its own `width` (or `hidden: true`); `casing_px`, `pattern`, `dash_px` and `gap_px` default to a solid uncased line, and `fill`/`tone`/`major` are not allowed here. At most four such rules per style (MapStyle.h kMapRoadFlagRuleSlots), first match wins, and `when` works on them like any other object. THERE IS NONE TODAY, on purpose: a mark on the map is judged on the panel and there is no device to judge one on, so the mechanism ships switched off and the render is byte-identical to the one before it existed. To turn it on, paste a rule into `rules` -- e.g. {\"match\": {\"flag\": \"no_foot\"}, \"width\": 1, \"pattern\": \"dotted\"} draws a footpath a walker may not use as a dotted hairline, and {\"match\": {\"flag\": \"no_foot\"}, \"width\": 1, \"pattern\": \"dotted\", \"when\": [{\"modes\": [\"hike\"], \"hidden\": true}]} draws it that way in ride and cycle and drops it from the hike map. The `width` is needed even in the variant that hides the rule: `when` patches, so a rule any variant can draw must carry a width in the file or the generator refuses it. WARNING: bits 8-15 (the waymark id, seasonal, permit) and roughness bits 3-7 (sac_scale, trail_visibility) are allocated in the format but the builder still writes ZERO into them, measured across the whole local mirror 2026-08-27 -- so `seasonal` and `permit` compile and can never match. See firmware docs/map-style.md, 'Matching a way's flag bits'.",
       "enabled": true,
       "rules": [
         {
@@ -216,12 +342,16 @@
           "width": 8,
           "when": [
             {
-              "steps": [5],
+              "steps": [
+                5
+              ],
               "width": 10,
               "casing_px": 3
             },
             {
-              "steps": [6],
+              "steps": [
+                6
+              ],
               "width": 8,
               "casing_px": 3
             }
@@ -260,12 +390,16 @@
               "casing_px": 1
             },
             {
-              "steps": [5],
+              "steps": [
+                5
+              ],
               "width": 6,
               "casing_px": 2
             },
             {
-              "steps": [6],
+              "steps": [
+                6
+              ],
               "width": 8,
               "casing_px": 3
             }
@@ -306,12 +440,16 @@
               "casing_px": 1
             },
             {
-              "steps": [5],
+              "steps": [
+                5
+              ],
               "width": 7,
               "casing_px": 2
             },
             {
-              "steps": [6],
+              "steps": [
+                6
+              ],
               "width": 6,
               "casing_px": 1.5
             }
@@ -352,12 +490,16 @@
               "casing_px": 1
             },
             {
-              "steps": [5],
+              "steps": [
+                5
+              ],
               "width": 5,
               "tone": "dark"
             },
             {
-              "steps": [6],
+              "steps": [
+                6
+              ],
               "width": 2,
               "casing_px": 0
             }
@@ -410,6 +552,12 @@
               ],
               "width": 1,
               "casing_px": 0
+            },
+            {
+              "steps": [0,1,2,3],
+              "modes": ["hike"],
+              "width": 7,
+              "casing_px": 1
             }
           ],
           "width": 7
@@ -432,9 +580,23 @@
                 6
               ],
               "hidden": false
+            },
+            {
+              "steps": [
+                0,
+                1,
+                2
+              ],
+              "modes": [
+                "hike"
+              ],
+              "hidden": false,
+              "width": 6,
+              "casing_px": 2
             }
           ]
         },
+
         {
           "casing_px": 0,
           "color": "#888888",
@@ -446,8 +608,22 @@
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [0,1],
+              "modes": ["hike"],
+              "width": 4,
+              "casing_px": 1
+            },
+            {
+              "steps": [2],
+              "modes": ["hike"],
+              "hidden": true
+            }
+          ]
         },
+
         {
           "casing_px": 0,
           "color": "#888888",
@@ -472,7 +648,21 @@
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [1],
+              "modes": ["ride"],
+              "casing_px": 1,
+              "width": 4
+            },
+            {
+              "steps": [0,1],
+              "modes": ["hike"],
+              "casing_px": 1,
+              "width": 4
+            }
+          ]
         },
         {
           "casing_px": 0,
@@ -482,19 +672,6 @@
           "match": {
             "class": [
               "pedestrian"
-            ]
-          },
-          "pattern": "solid",
-          "width": 1
-        },
-        {
-          "casing_px": 0,
-          "color": "#888888",
-          "hidden": true,
-          "major": false,
-          "match": {
-            "class": [
-              "track"
             ]
           },
           "pattern": "solid",
@@ -549,8 +726,46 @@
               "path"
             ]
           },
+          "pattern": "dash_mark",
+          "width": 1,
+          "when": [
+            {
+              "modes": [
+                "hike"
+              ],
+              "major": "true",
+              "width": 2,
+              "pattern": "dashed"
+            }
+          ],
+          "mark": "diamond",
+          "mark_px": 7,
+          "dash_px": 10,
+          "gap_px": 5
+        },
+        {
+          "casing_px": 0,
+          "color": "#888888",
+          "hidden": true,
+          "major": false,
+          "match": {
+            "class": [
+              "track"
+            ]
+          },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "modes": [
+                "hike"
+              ],
+              "major": "true",
+              "hidden": false,
+              "width": 1,
+              "pattern": "dashed"
+            }
+          ]
         },
         {
           "casing_px": 0,
@@ -607,12 +822,16 @@
           "width": 4,
           "when": [
             {
-              "steps": [5],
+              "steps": [
+                5
+              ],
               "width": 1,
               "casing_px": 1
             },
             {
-              "steps": [6],
+              "steps": [
+                6
+              ],
               "_comment": "solve later",
               "hidden": true,
               "width": 2,
@@ -631,7 +850,22 @@
             ]
           },
           "pattern": "dashed",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [
+                0,
+                1,
+                2
+              ],
+              "modes": [
+                "hike"
+              ],
+              "_comment": "lanovka",
+              "width": 3,
+              "casing_px": 1
+            }
+          ]
         }
       ]
     },
@@ -670,7 +904,40 @@
             ]
           },
           "pattern": "dashed",
-          "width": 2
+          "width": 2,
+          "when": [
+            {
+              "steps": [
+                0,
+                1,
+                2
+              ],
+              "modes": [
+                "hike"
+              ],
+              "pattern": "solid",
+              "width": 7,
+              "casing_px": 0,
+              "fill": "tone",
+              "tone": "dark"
+            },
+            {
+              "steps": [
+                3,
+                4,
+                5,
+                6
+              ],
+              "modes": [
+                "hike"
+              ],
+              "pattern": "solid",
+              "width": 7,
+              "casing_px": 0,
+              "fill": "tone",
+              "tone": "dark"
+            }
+          ]
         },
         {
           "color": "#000000",
@@ -680,7 +947,27 @@
             ]
           },
           "pattern": "dashed",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "steps": [0],
+              "modes": ["hike"],
+              "pattern": "solid",
+              "width": 7,
+              "casing_px": 0,
+              "fill": "tone",
+              "tone": "light"
+            },
+            {
+              "steps": [1,2],
+              "modes": ["hike"],
+              "pattern": "solid",
+              "width": 3,
+              "casing_px": 0,
+              "fill": "tone",
+              "tone": "dark"
+            }
+          ]
         },
         {
           "color": "#000000",

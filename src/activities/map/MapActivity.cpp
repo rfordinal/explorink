@@ -5561,10 +5561,21 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // (docs/optimization/02-tile-io.md).
   if (source_->corruptLayers() > 0) {
     const MapLayerBits bad = source_->failedLayerMask();
-    LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%llx%016llx) -- redrawing without them",
-            static_cast<unsigned long>(source_->corruptLayers()), static_cast<unsigned long long>(bad.hi),
-            static_cast<unsigned long long>(bad.lo));
+    // Four words since the bit set widened to 256 bits for 15 layer slots
+    // (MapLayerBits.h). Printed high word first, so the string reads as one
+    // number.
+    LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%016llx%016llx%016llx%016llx) -- redrawing without them",
+            static_cast<unsigned long>(source_->corruptLayers()),
+            static_cast<unsigned long long>(bad.w[3]), static_cast<unsigned long long>(bad.w[2]),
+            static_cast<unsigned long long>(bad.w[1]), static_cast<unsigned long long>(bad.w[0]));
     renderer.clearScreen();
+    // The counts describe the finished frame, so they start again; the times do
+    // not, because they describe work spent and both passes really were spent.
+    // Without this the log reported *more* contour lines with a layer refused than
+    // without it -- the two passes summed -- which reads as garbage being drawn
+    // when the opposite happened.
+    timing.contourLines = 0;
+    timing.contourLabels = 0;
     missing = drawMapLayers(range, canvas, view, &timing, bad, &nearestPlaces_);
   }
 
@@ -5637,15 +5648,18 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // frame, which is the render path's own unit of work; the per-layer times say
   // which layer spent it.
   LOG_DBG(kLogTag,
-          "render %lu ms: landuse %lu, buildings %lu, water %lu, roads %lu, route %lu, places %lu, labels %lu; "
+          "render %lu ms: landuse %lu, relief %lu, buildings %lu, water %lu, roads %lu, route %lu, places %lu, "
+          "labels %lu; %lu contour lines, %lu heights; "
           "%lu points projected, %lu ways off screen, %lu ms in the card, %lu crc32 skipped, "
           "%lu cells skipped (%lu KB)",
-          static_cast<unsigned long>(timing.landuseMs + timing.buildingsMs + timing.waterMs + timing.roadsMs +
-                                     timing.routeMs + timing.placesMs + timing.labelsMs),
-          static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.buildingsMs),
+          static_cast<unsigned long>(timing.landuseMs + timing.contoursMs + timing.buildingsMs + timing.waterMs +
+                                     timing.roadsMs + timing.routeMs + timing.placesMs + timing.labelsMs),
+          static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.contoursMs),
+          static_cast<unsigned long>(timing.buildingsMs),
           static_cast<unsigned long>(timing.waterMs), static_cast<unsigned long>(timing.roadsMs),
           static_cast<unsigned long>(timing.routeMs), static_cast<unsigned long>(timing.placesMs),
-          static_cast<unsigned long>(timing.labelsMs), static_cast<unsigned long>(source_->pointsProjected()),
+          static_cast<unsigned long>(timing.labelsMs), static_cast<unsigned long>(timing.contourLines),
+          static_cast<unsigned long>(timing.contourLabels), static_cast<unsigned long>(source_->pointsProjected()),
           static_cast<unsigned long>(source_->waysOffScreen()), static_cast<unsigned long>(source_->ioUs() / 1000u),
           static_cast<unsigned long>(source_->crc32Skipped()), static_cast<unsigned long>(source_->cellsSkipped()),
           static_cast<unsigned long>(source_->bytesSkippedByIndex() / 1024u));
