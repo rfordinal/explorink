@@ -339,6 +339,10 @@ class GfxRenderer {
   //
   // Returns false when the font is missing or the string does not fit the mask --
   // a caller must then draw nothing, because half a number is a wrong number.
+  // Rasterise `text` into a 1bpp mask. `bits` is cleared here before inking, so a
+  // reused buffer carries no ghosts of the previous string. Advance widths only:
+  // no kerning, no ligatures, no combining marks, which is why the only caller
+  // passes digits.
   bool renderTextMask(int fontId, const char* text, EpdFontFamily::Style style, uint8_t* bits, int strideBits,
                       int maxW, int maxH, int& outW, int& outH) const;
   int getTextHeight(int fontId) const;

@@ -222,6 +222,8 @@ class GfxRendererCanvas : public IMapCanvas {
     // 656 bytes of a stack that is already carrying a deep call chain.
     static MapTextMask mask;
     static MapTextMask grown;
+    // Sets the extents; the zeroing it also does is redundant since
+    // renderTextMask clears the buffer itself (GfxRenderer.h).
     mask.reset(MapTextMask::kMaxW, MapTextMask::kMaxH);
     int w = 0, h = 0;
     if (!renderer_.renderTextMask(fontId, utf8, styleFor(bold), mask.bits, MapTextMask::kMaxW, MapTextMask::kMaxW,

@@ -1,4 +1,5 @@
 #include "GfxRenderer.h"
+#include <cstring>
 
 #include <BidiUtils.h>
 #include <BuildScratch.h>
@@ -2085,6 +2086,12 @@ bool GfxRenderer::renderTextMask(const int fontId, const char* text, const EpdFo
   outW = 0;
   outH = 0;
   if (text == nullptr || *text == '\0' || bits == nullptr) return false;
+  // **Cleared here, not by the caller.** The inking loop ORs into `bits`, and
+  // nothing in the signature said the buffer had to arrive zeroed -- the one
+  // caller happened to reset it first, so the next one would have got the previous
+  // string's ghosts with no way to know why. A contract that has to be remembered
+  // is the shape of defect this file keeps producing, so it is enforced instead.
+  std::memset(bits, 0, static_cast<size_t>((strideBits * maxH + 7) / 8));
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);

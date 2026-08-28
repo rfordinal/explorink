@@ -304,9 +304,13 @@ void strokeWayDashed(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, in
 // The stroke one way is actually drawn with. The class's own numbers, unless a
 // flag rule matched and replaced them (MapStyle.h, MapRoadFlagRule).
 //
-// Resolved once per way and shared by both road passes, so the black stroke and
-// the white fill inside it can never disagree about how wide the road is. Width
-// 0 means "do not draw".
+// Re-resolved per way in **each** road pass, not once and shared -- an earlier
+// comment here claimed the latter and the code never did it. Harmless, because
+// roadStrokeFor is a pure function of the style and the way, so both passes get
+// the same answer; but a comment asserting a guarantee the code does not give is
+// how the next person reasons wrongly about a change.
+//
+// Width 0 means "do not draw".
 struct RoadStroke {
   int width = 0;
   int casing = 0;
@@ -404,7 +408,11 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
 struct ContourLabelSlot {
   int32_t x = 0;
   int32_t y = 0;
-  int32_t elevation = 0;
+  // int16_t, not int32_t: the value comes from the record's `flags` word read as
+  // an i16 and nothing widens it. Declared wide, it made `snprintf` into a `char
+  // text[8]` a -Wformat-truncation warning on every host build -- the only new
+  // warning this branch produced, in a repo that reports clean builds.
+  int16_t elevation = 0;
   // The uphill direction at that vertex, in screen pixels. Derived from the
   // order the contour's points are stored in, which the tile builder guarantees:
   // find_contours runs with positive_orientation="low", so higher ground is at
@@ -416,7 +424,7 @@ struct ContourLabelSlot {
   // |cross product| of the two segments meeting at the chosen vertex, scaled.
   // Lower is straighter, and straighter is where a number sits without looking
   // like it fell off the line.
-  int32_t bend = 0;
+  int64_t bend = 0;
   bool used = false;
 };
 
@@ -426,9 +434,9 @@ struct ContourLabelSlot {
 // placed on a hairpin reads as belonging to whichever arm the eye follows first,
 // and on a 1-bit panel there is no second cue to fix that.
 bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int rectH, int margin, int32_t& outX,
-                     int32_t& outY, int32_t& outBend, int32_t& outUpX, int32_t& outUpY) {
+                     int32_t& outY, int64_t& outBend, int32_t& outUpX, int32_t& outUpY) {
   bool found = false;
-  int32_t bestBend = 0;
+  int64_t bestBend = 0;
   for (uint16_t i = 1; i + 1 < line.pointCount; ++i) {
     const int32_t x = line.xs[i];
     const int32_t y = line.ys[i];
@@ -442,7 +450,13 @@ bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int
     const int32_t ay = y - line.ys[i - 1];
     const int32_t bx = line.xs[i + 1] - x;
     const int32_t by = line.ys[i + 1] - y;
-    int32_t bend = ax * by - ay * bx;
+    // **int64, because the neighbours are not clamped.** Only the *chosen* vertex is
+    // required to be on screen; `line.xs[i-1]` and `line.xs[i+1]` are raw int16
+    // tile-local values, so each product reaches about 1.13e9 and the difference
+    // 2.26e9 -- past INT32_MAX, and signed overflow is undefined. Rare, needing two
+    // neighbours at opposite ends of the int16 range, and exactly the assumption
+    // that produced the isqrt hang in mapTextBasisFromUp.
+    int64_t bend = static_cast<int64_t>(ax) * by - static_cast<int64_t>(ay) * bx;
     if (bend < 0) bend = -bend;
     if (!found || bend < bestBend) {
       found = true;
@@ -512,7 +526,8 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     }
     if (drawn != nullptr) ++*drawn;
     if (slots == nullptr || style.contourLabelPx == 0) continue;
-    int32_t vx = 0, vy = 0, bend = 0, upX = 0, upY = 0;
+    int32_t vx = 0, vy = 0, upX = 0, upY = 0;
+    int64_t bend = 0;
     // The margin has to cover half the *box*, not half the text height: a
     // four-digit height is about three label heights wide, and a margin of one
     // put "1000" half off the left edge. Three is that half-width with room,
@@ -521,7 +536,7 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
                          bend, upX, upY)) {
       continue;
     }
-    const int32_t elevation = static_cast<int32_t>(static_cast<int16_t>(line.flags));
+    const int16_t elevation = static_cast<int16_t>(line.flags);
     int target = -1;
     bool duplicate = false;
     for (int i = 0; i < slotCount; ++i) {
@@ -573,8 +588,10 @@ void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratc
   int placed = 0;
   for (int i = 0; i < slotCount && placed < static_cast<int>(style.contourLabelMax); ++i) {
     if (!slots[i].used) continue;
+    // 7 is the worst case an int16 can need ("-32768" plus NUL); 8 leaves one
+    // spare and the format now matches the type, so the compiler can see it fits.
     char text[8];
-    snprintf(text, sizeof(text), "%ld", static_cast<long>(slots[i].elevation));
+    snprintf(text, sizeof(text), "%d", static_cast<int>(slots[i].elevation));
     int textW = 0, textH = 0;
     if (!canvas.measureText(text, sizePx, bold, textW, textH)) continue;
     // **The number sits along the contour, at the line's own bearing at that
@@ -795,7 +812,23 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // a contour hidden under forest hatch is not a contour; under, because a
   // contour crossing a road or a river must not break it -- black over black is
   // nothing (docs/map-render-spec.md, "1-bit rules") and the wider feature has
-  // to win. Minor first, so an index line lands on top where the two touch.
+  // to win.
+  //
+  // **Three walks of the relief layer, one per class**, and the order is the
+  // reason: minor first so an index line lands on top where they touch, cliff last
+  // so a rock face is never broken by either. Each walk is its own
+  // `beginContours()`, so the layer's bytes are read three times per frame -- and
+  // `MapTileSource` skips the crc32 after the first, so the cost is the read and
+  // the parse rather than the checksum.
+  //
+  // Measured on the Prosiecka reference tile: the relief layer is about 32 kB at
+  // z13, so this is roughly 64 kB of extra reading per frame at rungs 0 to 2, where
+  // the class is drawn at all. A single walk collecting per class would need the
+  // whole layer in RAM, which is the thing the streaming reader exists to avoid.
+  //
+  // `contoursMs` is one number for all three, so a run cannot say which class spent
+  // it. Open, and the fix is three fields rather than one -- not done here because
+  // nothing has yet needed to attribute it.
   // Room for a couple more candidates than may be drawn, so the min-gap filter
   // has something to choose between rather than taking the first that fits.
   ContourLabelSlot contourLabels[6] = {};
