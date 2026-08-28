@@ -818,13 +818,19 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // reason: minor first so an index line lands on top where they touch, cliff last
   // so a rock face is never broken by either. Each walk is its own
   // `beginContours()`, so the layer's bytes are read three times per frame -- and
-  // `MapTileSource` skips the crc32 after the first, so the cost is the read and
-  // the parse rather than the checksum.
+  // `MapTileSource` skips the crc32 after the first pass (MapTileSource.cpp:212-214,
+  // `alreadyValidated` -> `beginLayer(layer_, true)`), so the repeat cost is the
+  // read and the parse, never the checksum.
   //
-  // Measured on the Prosiecka reference tile: the relief layer is about 32 kB at
-  // z13, so this is roughly 64 kB of extra reading per frame at rungs 0 to 2, where
-  // the class is drawn at all. A single walk collecting per class would need the
-  // whole layer in RAM, which is the thing the streaming reader exists to avoid.
+  // Measured 2026-08-28 over the 763 z13 tiles in the local mirror that carry a
+  // relief layer: median 4.5 kB, mean 6.7 kB, max 52.7 kB. The Prosiecka reference
+  // tile is 35.0 kB and 305 records, the **4th largest of the 763** -- it was picked
+  // for cliff density, so it is the worst case and not the norm. An earlier version
+  // of this comment quoted it as "about 32 kB at z13", which reads as typical and is
+  // roughly 8x the median. So the extra reading is about 9 kB per tile typically and
+  // up to 70 kB on the densest, times the tiles on screen, at rungs 0 to 2 where the
+  // class is drawn at all. A single walk collecting per class would need the whole
+  // layer in RAM, which is the thing the streaming reader exists to avoid.
   //
   // `contoursMs` is one number for all three, so a run cannot say which class spent
   // it. Open, and the fix is three fields rather than one -- not done here because
