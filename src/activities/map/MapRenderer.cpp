@@ -175,7 +175,8 @@ void stampMark(IMapCanvas& canvas, const int cx, const int cy, const MapLineMark
 // south, which is right. Get the sign wrong and every cliff on the map claims the
 // drop is uphill.
 void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int tickPx,
-                       const int gapPx, const MapInk ink) {
+                       const int gapPx, const MapInk ink, const MapTickSide side = MapTickSide::Downhill,
+                       const int tickWidth = 1) {
   if (lineWidth <= 0 || way.pointCount < 2) return;
   // The line itself, unbroken. A cliff is continuous ground; only the combs are
   // periodic.
@@ -200,9 +201,12 @@ void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineW
         const int py = y0 + dy * at / len;
         // Right of travel, scaled to the tick length. Integer, so a short segment
         // with a large tick still points the right way.
-        const int tx = -dy * tickPx / len;
-        const int ty = dx * tickPx / len;
-        canvas.drawLine(px, py, px + tx, py + ty, 1, ink);
+        // Right of travel is (dx, dy) -> (-dy, dx) with y growing downwards, which
+        // is OSM's downhill side; Uphill is the mirror.
+        const int sign = side == MapTickSide::Uphill ? -1 : 1;
+        const int tx = sign * -dy * tickPx / len;
+        const int ty = sign * dx * tickPx / len;
+        canvas.drawLine(px, py, px + tx, py + ty, tickWidth < 1 ? 1 : tickWidth, ink);
         phase = 0;
       } else {
         phase += step;
@@ -312,6 +316,8 @@ struct RoadStroke {
   MapAreaTone tone = MapAreaTone::None;
   MapLineMark mark = MapLineMark::None;
   int markPx = 0;
+  MapTickSide tickSide = MapTickSide::Downhill;
+  int tickWidth = 1;
 };
 
 // A class id past the enum's slots can only come from a corrupt tile; reserved
@@ -336,6 +342,8 @@ RoadStroke roadStrokeFor(const MapStyle& style, const MapWayRef& way) {
   stroke.gap = style.roadGapPx[way.classId];
   stroke.mark = style.roadMark[way.classId];
   stroke.markPx = style.roadMarkPx[way.classId];
+  stroke.tickSide = style.roadTickSide[way.classId];
+  stroke.tickWidth = style.roadTickWidthPx[way.classId];
   stroke.tone = style.roadFillTone[way.classId];
 
   // First match wins, in file order, and a match replaces the whole stroke
@@ -490,7 +498,7 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     switch (pattern) {
       case MapLinePattern::Hachured:
         strokeWayHachured(canvas, line, lineWidth, style.contourTickPx[index], style.contourGapPx[index],
-                          MapInk::Black);
+                          MapInk::Black, style.contourTickSide[index], style.contourTickWidthPx[index]);
         break;
       case MapLinePattern::DashMark:
         strokeWayDashMark(canvas, line, lineWidth, style.contourDashPx[index], style.contourGapPx[index],
@@ -921,7 +929,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         // plain stroke -- the pattern silently doing nothing, which is the failure
         // mode this file keeps having to be saved from. `dash` is the comb reach on
         // a road, since a hachured line has no dash of its own.
-        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black);
+        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black, stroke.tickSide,
+                          stroke.tickWidth);
       } else if (stroke.pattern != MapLinePattern::None) {
         strokeWay(canvas, way, stroke.width, MapInk::Black);
       }

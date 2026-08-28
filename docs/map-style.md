@@ -68,9 +68,17 @@ Three patterns, all per class, all off unless a style asks:
 - **`dash_mark`** -- dash, gap, mark, gap, repeating. Needs `mark`; takes
   `mark_px` (odd; an even size has no centre pixel so every stamp would lean the
   same way, and the generator rounds up).
-- **`hachured`** -- the line stays whole and short combs hang off its right-hand
-  side. `tick_px` is the reach, `gap_px` the spacing. On a road class `dash_px`
+- **`hachured`** -- the line stays whole and short combs hang off one side of it.
+  `tick_px` is the reach, `gap_px` the spacing, `tick_width_px` the thickness of a
+  tooth (default 1), and `tick_side` which side: `downhill` (default) or `uphill`,
+  spelled `right` and `left` if that reads better. On a road class `dash_px`
   carries the reach instead, because a hachured line has no dash of its own.
+
+  `downhill` is right of the way's direction of travel, which is OSM's own
+  convention for `natural=cliff` and the reason the tile keeps its points in OSM
+  order. `uphill` exists because a convention is a convention: a feature that is
+  not a cliff can want the other side, and a region whose mappers put it the other
+  way round is a thing a style should be able to answer without a rebuild.
 - **`none`** -- no line at all; see "A toned watercourse".
 
 The marks: `dot`, `square`, `circle`, `diamond`, `cross`, `u`, `comb`.

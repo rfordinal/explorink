@@ -81,8 +81,21 @@
             "class": ["cliff"]
           },
           "color": "#000000",
-          "width": 2,
+          
+          "width": 1,
+          "pattern": "hachured", "tick_px": 5, "gap_px": 7,
+
           "when": [
+            {
+              "steps": [2],
+              "hidden": false,
+              "width": 1,
+              "pattern": "dash_mark",
+              "mark": "comb",
+              "mark_px": 10,
+              "dash_px": 14,
+              "gap_px": 6
+            },
             {
               "steps": [3,4,5,6],
               "hidden": true

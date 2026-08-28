@@ -92,6 +92,17 @@ enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked, None, DashMark,
 // lighter at small sizes, but `Comb` is the correct symbol.
 enum class MapLineMark : uint8_t { None = 0, Dot, Square, Cross, Circle, Diamond, U, Comb };
 
+// Which side of the way a hachure's combs hang off, and which way an oriented mark
+// faces.
+//
+// `Downhill` is the default and means "right of the direction of travel", which is
+// OSM's own convention for `natural=cliff` and is why the tile keeps its points in
+// OSM order. `Uphill` is the mirror. It exists because the convention is a
+// convention: a feature that is not a cliff can want the other side (an embankment
+// seen from the other way), and a region whose mappers got it backwards is a real
+// thing that a style should be able to answer without a rebuild.
+enum class MapTickSide : uint8_t { Downhill = 0, Uphill };
+
 // A way record's `roughness` byte is three fields, not one number.
 //
 // Not in MapClassEnum.h, which is generated from tilegen's class_spec.py and
@@ -225,6 +236,9 @@ struct MapStyle {
   // that needs a mark and has none is a typo, not a choice.
   MapLineMark roadMark[kClassEnumSlots];
   uint8_t roadMarkPx[kClassEnumSlots];
+  // Same two knobs on a road class, for the same reason.
+  MapTickSide roadTickSide[kClassEnumSlots];
+  uint8_t roadTickWidthPx[kClassEnumSlots];
 
   // Dither tone for the inside of a cased road, layers.roads.rules[]'s
   // `fill: "tone"` plus `tone`. `None` leaves the interior white, which is what
@@ -379,6 +393,11 @@ struct MapStyle {
   uint8_t contourDashPx[kContourClassSlots];
   MapLineMark contourMark[kContourClassSlots];
   uint8_t contourMarkPx[kContourClassSlots];
+  // A hachure's comb: which side it hangs off, and how thick each tooth is. Both
+  // were hardcoded (right of travel, 1 px) until 2026-08-28, which is a decision
+  // the renderer should not be making for the style.
+  MapTickSide contourTickSide[kContourClassSlots];
+  uint8_t contourTickWidthPx[kContourClassSlots];
 
   // Height numbers on the index contours. Two or three on a frame is the whole
   // design: the rest of the ladder is countable from them, and a number per

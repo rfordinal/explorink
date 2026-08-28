@@ -21,6 +21,7 @@ Defaults: data/mapstyle.json -> src/activities/map/MapStyleDefaults.h.
 import importlib.util
 import json
 import os
+import re
 import sys
 
 # scripts/mapstyle_variants.py, loaded by path rather than imported by name.
@@ -136,10 +137,12 @@ def road_widths(style):
     gaps = [0] * _CLASS_SLOTS
     marks = ["None"] * _CLASS_SLOTS
     mark_pxs = [0] * _CLASS_SLOTS
+    tick_sides = ["Downhill"] * _CLASS_SLOTS
+    tick_widths = [1] * _CLASS_SLOTS
     tones = ["MapAreaTone::None"] * _CLASS_SLOTS
     if not roads.get("enabled", True):
         print("gen_mapstyle.py: layers.roads.enabled is false -- no roads will be drawn")
-        return widths, casings, patterns, dashes, gaps, marks, mark_pxs, tones
+        return widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths, tones
 
     default_width = _round_px(roads.get("default", {}).get("width", 1), "layers.roads.default.width")
     for class_id in _CLASS_ID.values():
@@ -158,6 +161,8 @@ def road_widths(style):
                 gaps[_CLASS_ID[name]] = 0
                 marks[_CLASS_ID[name]] = "None"
                 mark_pxs[_CLASS_ID[name]] = 0
+                tick_sides[_CLASS_ID[name]] = "Downhill"
+                tick_widths[_CLASS_ID[name]] = 1
                 tones[_CLASS_ID[name]] = "MapAreaTone::None"
                 continue
             width = _round_px(rule.get("width", default_width), f"layers.roads.rules[{index}].width")
@@ -181,6 +186,8 @@ def road_widths(style):
              gaps[_CLASS_ID[name]]) = _dash(rule, f"layers.roads.rules[{index}]")
             (marks[_CLASS_ID[name]], mark_pxs[_CLASS_ID[name]]) = _mark(
                 rule, f"layers.roads.rules[{index}]", patterns[_CLASS_ID[name]])
+            (tick_sides[_CLASS_ID[name]], tick_widths[_CLASS_ID[name]]) = _tick(
+                rule, f"layers.roads.rules[{index}]", patterns[_CLASS_ID[name]])
 
             # `fill: tone` shades the inside of a cased road instead of leaving
             # it white -- a paper map's motorway, a thin outline around a
@@ -202,7 +209,7 @@ def road_widths(style):
     if not any(widths):
         sys.exit("gen_mapstyle.py: every road class resolves to width 0 -- a style that draws no "
                  "roads at all is never what a style file means")
-    return widths, casings, patterns, dashes, gaps, marks, mark_pxs, tones
+    return widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths, tones
 
 
 # The way record's `flags` bits that are single, independently meaningful flags
@@ -397,6 +404,32 @@ _LINE_DASH_PX = {
 # "small", and two names for one silhouette would be two ways of saying a thing.
 _LINE_MARK = {"dot": "Dot", "square": "Square", "cross": "Cross", "circle": "Circle",
               "diamond": "Diamond", "u": "U", "comb": "Comb"}
+
+
+_TICK_SIDE = {"downhill": "Downhill", "uphill": "Uphill",
+              # `right`/`left` read naturally when someone is looking at the map
+              # rather than thinking about OSM way direction, and they mean the
+              # same two sides: OSM puts the lower ground on the right of travel.
+              "right": "Downhill", "left": "Uphill"}
+
+
+def _tick(rule, what, pattern_kind):
+    """(side, tooth width) for a hachured rule, else the defaults."""
+    if pattern_kind != "Hachured":
+        for key in ("tick_side", "tick_width_px"):
+            if rule.get(key) is not None:
+                print(f"gen_mapstyle.py: warning -- {what}: `{key}` has no effect without "
+                      f"`pattern: \"hachured\"`")
+        return "Downhill", 1
+    name = str(rule.get("tick_side", "downhill")).strip().lower()
+    if name not in _TICK_SIDE:
+        sys.exit(f"gen_mapstyle.py: {what}.tick_side: expected one of {sorted(_TICK_SIDE)}")
+    width = _round_px(rule.get("tick_width_px", 1), f"{what}.tick_width_px")
+    if width < 1:
+        width = 1
+    if width > 255:
+        sys.exit(f"gen_mapstyle.py: {what}: tick_width_px {width} does not fit a uint8_t")
+    return _TICK_SIDE[name], width
 
 
 def _mark(rule, what, pattern_kind):
@@ -692,6 +725,8 @@ def contours(style):
     marks_c = ["None"] * _CONTOUR_SLOTS
     mark_pxs_c = [0] * _CONTOUR_SLOTS
     dashes_c = [0] * _CONTOUR_SLOTS
+    tick_sides_c = ["Downhill"] * _CONTOUR_SLOTS
+    tick_widths_c = [1] * _CONTOUR_SLOTS
     # Height numbers on the index contours. Two or three a frame: the rest of the
     # ladder is countable from them.
     labels = {
@@ -708,7 +743,7 @@ def contours(style):
         sys.exit("gen_mapstyle.py: layers.contours: label_px is set but label_max is 0, so no "
                  "number would ever be drawn. Set label_max, or drop label_px.")
     if not layer.get("enabled", False):
-        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c
+        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c, tick_sides_c, tick_widths_c
 
     for index, rule in enumerate(layer.get("rules", [])):
         what = f"layers.contours.rules[{index}]"
@@ -759,15 +794,16 @@ def contours(style):
                     sys.exit(f"gen_mapstyle.py: {what}: 'hachured' needs gap_px of at least 2 -- "
                              f"combs closer than that fill in and the mark becomes a band")
             (marks_c[class_id], mark_pxs_c[class_id]) = _mark(rule, what, kind)
+            (tick_sides_c[class_id], tick_widths_c[class_id]) = _tick(rule, what, kind)
     if not any(widths):
         # Every class hidden at this rung. Report the layer off, which is what
         # gets drawn -- and what stops the card being read for nothing.
-        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c
+        return False, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c, tick_sides_c, tick_widths_c
     if widths[_CONTOUR_CLASS["index"]] == 0:
         # No index contour at this rung means nothing to hang a number on: the
         # numbers ride the heavy lines only.
         labels = dict(labels, px=0)
-    return True, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c
+    return True, widths, labels, patterns_c, ticks, gaps_c, marks_c, mark_pxs_c, dashes_c, tick_sides_c, tick_widths_c
 
 
 def landuse(style):
@@ -1018,7 +1054,7 @@ def _style_literal(bundle):
     no `when` blocks at all costs one struct and a 21-byte index rather than
     21 structs.
     """
-    (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tones, flag_rules, buildings_px, water_px, landuse_px,
+    (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths, tones, flag_rules, buildings_px, water_px, landuse_px,
      contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
@@ -1085,6 +1121,23 @@ def _style_literal(bundle):
         lines.append(f"        {mark_pxs[class_id]},  // {class_id} {name}")
     lines += [
         "    },",
+        "    // A hachured class: which side the combs hang off, and how thick a tooth is.",
+        "    .roadTickSide =",
+        "    {",
+    ]
+    for class_id in range(_CLASS_SLOTS):
+        name = id_to_name.get(class_id, "(reserved)")
+        lines.append(f"        MapTickSide::{tick_sides[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
+        "    .roadTickWidthPx =",
+        "    {",
+    ]
+    for class_id in range(_CLASS_SLOTS):
+        name = id_to_name.get(class_id, "(reserved)")
+        lines.append(f"        {tick_widths[class_id]},  // {class_id} {name}")
+    lines += [
+        "    },",
         "    // Dither tone for the inside of a cased road. None leaves it white.",
         "    .roadFillTone =",
         "    {",
@@ -1120,7 +1173,7 @@ def _style_literal(bundle):
      w_white) = water_px
     l_enabled, l_outlines, l_dashes, l_gaps, l_tones, l_patterns, l_spacings = landuse_px
     (c_enabled, c_widths, c_labels, c_patterns, c_ticks, c_gaps, c_marks, c_mark_pxs,
-     c_dashes) = contours_px
+     c_dashes, c_tick_sides, c_tick_widths) = contours_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
     landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
     contour_names = ["(unused)", "minor", "index", "cliff"]
@@ -1179,6 +1232,10 @@ def _style_literal(bundle):
         *_array([f"MapLineMark::{m}" for m in c_marks], contour_names),
         "    .contourMarkPx =",
         *_array(c_mark_pxs, contour_names),
+        "    .contourTickSide =",
+        *_array([f"MapTickSide::{v}" for v in c_tick_sides], contour_names),
+        "    .contourTickWidthPx =",
+        *_array(c_tick_widths, contour_names),
         f"    .contourLabelPx = {c_labels['px']},",
         f"    .contourLabelBold = {'true' if c_labels['bold'] else 'false'},",
         f"    .contourLabelHaloPx = {c_labels['halo']},",
@@ -1221,6 +1278,94 @@ def _style_literal(bundle):
     return lines
 
 
+
+def _style_header_path():
+    """Where MapStyle.h is, without assuming `__file__` exists.
+
+    PlatformIO runs this script through `exec` as a pre-build step, and there
+    `__file__` is not defined -- the first version of this check turned every
+    device build into `NameError: name '__file__' is not defined`. So: try the
+    module path, fall back to argv[0], and if neither resolves just skip the check.
+    The compiler still catches a real mis-order; this only makes the message
+    readable.
+    """
+    for base in (globals().get("__file__"), sys.argv[0] if sys.argv else None):
+        if not base:
+            continue
+        root = os.path.dirname(os.path.dirname(os.path.abspath(base)))
+        candidate = os.path.join(root, "src", "activities", "map", "MapStyle.h")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _check_designator_order(lines):
+    """Refuse an emit whose `.field =` order differs from MapStyle's declaration.
+
+    **C++20 designated initialisers must appear in declaration order**, so a field
+    added to the struct in one place and to this emit in another is a compile
+    error -- and a confusing one, because it names a field that looks fine. Worse,
+    a *reordering* that happens to stay legal assigns the right values to the wrong
+    members and every test still passes.
+
+    This has now bitten three times in one lineage, twice while adding a field to
+    MapStyle and once in a merge review's prediction. So the generator checks
+    itself: it reads the field order out of MapStyle.h and compares. A mismatch is
+    a one-line message here instead of a wall of gcc.
+    """
+    path = _style_header_path()
+    if not path:
+        return  # cannot locate the header from here; the compiler still catches it
+    try:
+        header = open(path).read()
+    except OSError:
+        return
+    field_re = r"^\s{2}(?:[A-Za-z_][\w:]*\s+)+([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*(?:=|;)"
+
+    def fields_of(struct_name):
+        try:
+            body = header[header.index(f"struct {struct_name} {{"):]
+        except ValueError:
+            return []
+        body = body[:body.index("\n};")]
+        out = []
+        for m in re.finditer(field_re, body, re.M):
+            if m.group(1) not in out:
+                out.append(m.group(1))
+        return out
+
+    declared = fields_of("MapStyle")
+    # The emit also carries designators for the nested structs MapStyle holds --
+    # a flag rule's `.flagMask`, `.casingPx` and so on. Those are somebody else's
+    # declaration order and are skipped here rather than treated as a MapStyle
+    # field out of place, which is what the first version of this check did.
+    nested = set()
+    for other in re.findall(r"^struct (\w+)", header, re.M):
+        if other != "MapStyle":
+            nested.update(fields_of(other))
+    emitted = [m.group(1) for line in lines
+               for m in [re.match(r"\s*(?:f?\")?\s*\.(\w+)\s*=", line)] if m]
+    order = {name: i for i, name in enumerate(declared)}
+    seen = -1
+    for name in emitted:
+        if name not in order:
+            if name in nested:
+                continue  # a nested struct's own initialiser, not MapStyle's
+            sys.exit(f"gen_mapstyle.py: emits `.{name}`, which is a field of no struct in "
+                     f"MapStyle.h -- a typo, or a field that was renamed on one side only")
+        if order[name] == 0:
+            # A new variant block: MapStyleDefaults.h emits the whole designator
+            # list once per (mode, rung), so the order legitimately returns to the
+            # first field. Monotonicity is a within-block property.
+            seen = -1
+        if order[name] < seen:
+            sys.exit(f"gen_mapstyle.py: `.{name}` is emitted out of declaration order. C++20 "
+                     f"designated initialisers must follow the struct, so this either fails to "
+                     f"compile or silently assigns the wrong array to the wrong field. Declared "
+                     f"order around it: {declared[max(0, order[name] - 1):order[name] + 2]}")
+        seen = order[name]
+
+
 def compile_style(style):
     """Every number MapStyle holds, for one already-resolved style dict.
 
@@ -1229,8 +1374,9 @@ def compile_style(style):
     hard way, or patches a width past 255, fails the build at that rung and
     names it.
     """
-    widths, casings, patterns, dashes, gaps, marks, mark_pxs, tones = road_widths(style)
-    return (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tones, road_flag_rules(style),
+    (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths,
+     tones) = road_widths(style)
+    return (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths, tones, road_flag_rules(style),
             buildings(style), water(style), landuse(style), contours(style),
             place_dot_diameter(style),
             place_labels(style), points_style(style), route(style),
@@ -1238,7 +1384,7 @@ def compile_style(style):
 
 
 def _print_summary(bundle, what):
-    (widths, casings, _patterns, _dashes, _gaps, _marks, _mark_pxs, _tones, flag_rules, buildings_px, water_px, landuse_px,
+    (widths, casings, _patterns, _dashes, _gaps, _marks, _mark_pxs, _tick_sides, _tick_widths, _tones, flag_rules, buildings_px, water_px, landuse_px,
      contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
     drawn = sum(1 for w in widths if w)
     cased = sum(1 for c in casings if c)
@@ -1332,6 +1478,7 @@ def gen_cpp(base_bundle, variants, index):
         row = ", ".join(str(index[mode_id][step]) for step in range(mapstyle_variants.ZOOM_STEPS))
         lines.append(f"    {{{row}}},  // {mode_name}")
     lines += ["};", ""]
+    _check_designator_order(lines)
     return "\n".join(lines)
 
 
