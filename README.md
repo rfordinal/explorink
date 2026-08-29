@@ -7,8 +7,10 @@
 
 # ExplorInk
 
-An outdoor trip companion for e-ink readers: offline maps and navigation for
-motorcycle rides and hiking. A fork of
+An outdoor trip companion for e-ink readers: a paper map with a dot that knows
+where you are. It answers where you are and what is around you, not whether you
+are going the right way — no turn by turn, no voice, no rerouting. Maps sit on
+the SD card, position arrives from your phone over BLE. A fork of
 [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader),
 which is where nearly everything that makes this device work came from — see
 [Credits](#credits).
@@ -63,9 +65,9 @@ Project site, with real panel screenshots and the development log:
 
 ## Why a separate fork
 
-A phone is a bad navigation display on a motorbike. The screen washes out in
-direct sun, it overheats in a handlebar mount, and the battery does not last a
-day of riding. E-ink has the opposite properties: readable in full sunlight,
+A phone is a bad map to travel by. The screen washes out in direct sun, it
+overheats in a handlebar mount, the battery does not last a day out, and in a
+city it pulls you out of the place you came to look at. E-ink has the opposite properties: readable in full sunlight,
 free to hold an image on screen, and tens of hours of runtime because power is
 only spent when the picture changes.
 
@@ -125,8 +127,8 @@ Everything that makes an ESP32-C3 e-ink device work is CrossPoint's: the display
 driver, the partial refresh path, the activity system, settings, i18n, the web
 server and file manager, the build and test setup. This fork adds a map
 activity, a BLE position server and the map style file, and over time strips out
-the e-reader stack — EPUB, OPDS, dictionary, the font library — that a
-navigation device does not need.
+the e-reader stack — EPUB, OPDS, dictionary, the font library — that a map
+device does not need.
 
 Upstream fixes therefore still matter here. The intent is to keep tracking
 CrossPoint rather than drift away from it.
