@@ -313,7 +313,23 @@ sent to it was dropped**. Not one `CMD:` reply, including read-only ones. An
 `esptool ... --after hard-reset` fixed it immediately and the same script then
 worked first try.
 
-**What is established is the symptom, not the layer.** The first version of this
+**Diagnosed 2026-08-31, and it was two faults wearing one symptom.** The
+firmware now logs the head byte it is refusing to consume, and it named it: `0x5B`
+(`[`) with 17 bytes pending -- the first character of this firmware's own log
+lines, arriving on its own RX. So the peek trap really was one of the causes, and
+the loop now drains such a byte after five seconds instead of only complaining
+about it. The other cause was **deep sleep**: `CMD:GNSS PROBE` answered
+`reset=DEEPSLEEP`, so the board had put itself to sleep and the vanished device
+node was that, not an unplug. At least today's dropouts are therefore auto-sleep
+and not a bus fault, which is what this section previously suspected.
+
+Where 17 bytes of our own output come from is still unexplained. A loopback in
+the USB Serial/JTAG peripheral would do it; so would something on the host
+writing back what it read. **Open**, and cheap to narrow: the drain now dumps the
+byte, so extend it to dump all of them once and the content will say whether it
+is our own log text.
+
+**What was established before that was the symptom, not the layer.** The first version of this
 note called it "the CDC came up transmit-only", which places the fault in USB
 without evidence. Review named an alternative this firmware documents against
 itself: the command reader consumes only whitespace before a `'C'`, so **any

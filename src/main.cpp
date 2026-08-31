@@ -24,6 +24,7 @@
 #include <BoardT5S3.h>
 #include <Gnss.h>
 #include <Wire.h>
+#include <esp_system.h>
 #endif
 
 #include <cstring>
@@ -127,6 +128,27 @@ static bool gnssReadExpanderRegister(uint8_t reg, uint8_t* value) {
   }
   *value = Wire.read();
   return true;
+}
+
+// Why the reset cause belongs in the PROBE reply and not in the boot log: the
+// answer is only meaningful on a POWERON boot, and the ROM's own line is printed
+// before the host can open the CDC, so it was missed on every attempt. This is
+// read from the chip's retained reason, valid for the whole boot, so the
+// precondition travels in the same line as the values it qualifies.
+static const char* gnssResetReasonName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "POWERON";
+    case ESP_RST_EXT: return "EXT";
+    case ESP_RST_SW: return "SW";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT_WDT";
+    case ESP_RST_TASK_WDT: return "TASK_WDT";
+    case ESP_RST_WDT: return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "UNKNOWN";
+  }
 }
 
 // CMD:GNSS RAW passthrough. The parser hands over the sentence with its "*hh"
@@ -740,23 +762,41 @@ void loop() {
   // screen's own console reads this port too (MapSerialConsole), so a non-'C'
   // head is perfectly normal while that is running and warning on it would cry
   // wolf on every map session.
+  //
+  // And then DRAIN it, which is the difference between a diagnosis and a fix.
+  // Measured twice on 2026-08-31: after a cold power-on the head byte was 0x5B
+  // ('['), the first character of this firmware's own log lines, and every CMD:
+  // for the next eight minutes was silently ignored. Two whole bring-up runs were
+  // lost to it before the log line above existed.
+  //
+  // Five seconds of the SAME byte is the trigger, not merely a non-'C' byte,
+  // because the other reader on this port (MapSerialConsole) legitimately leaves
+  // its own input at the head -- and it consumes within milliseconds when it is
+  // running, so it never reaches this timeout. Draining one byte per pass rather
+  // than the whole buffer keeps that true even if something arrives mid-line.
   {
     static bool reportedStuckHead = false;
     static int lastHead = -1;
     static unsigned long headSince = 0;
-    const int head = logSerial.available() > 0 ? logSerial.peek() : -1;
+    const int pending = logSerial.available();
+    const int head = pending > 0 ? logSerial.peek() : -1;
     if (head < 0 || head == 'C') {
       lastHead = -1;
       headSince = 0;
     } else if (head != lastHead) {
       lastHead = head;
       headSince = millis();
-    } else if (!reportedStuckHead && headSince != 0 && millis() - headSince > 5000) {
-      reportedStuckHead = true;
-      LOG_ERR("MAIN",
-              "serial head byte 0x%02X (%c) unconsumed for 5 s -- every CMD: is being ignored until "
-              "it is drained",
-              head, (head >= 32 && head < 127) ? static_cast<char>(head) : '?');
+    } else if (headSince != 0 && millis() - headSince > 5000) {
+      if (!reportedStuckHead) {
+        reportedStuckHead = true;
+        LOG_ERR("MAIN",
+                "serial head byte 0x%02X (%c), %d pending, unconsumed for 5 s -- draining it; every "
+                "CMD: was being ignored",
+                head, (head >= 32 && head < 127) ? static_cast<char>(head) : '?', pending);
+      }
+      logSerial.read();
+      lastHead = -1;
+      headSince = 0;
     }
   }
 
@@ -1057,12 +1097,21 @@ void loop() {
           // reading. Check the ROM's reset cause in the boot log too: only
           // POWERON makes the answer mean anything.
           uint8_t config0 = 0;
+          uint8_t config1 = 0;
           uint8_t output0 = 0;
           uint8_t input0 = 0;
           const bool haveConfig = gnssReadExpanderRegister(0x06, &config0);
+          // CONFIG1 is the addressing cross-check, because this firmware really
+          // does configure port 1: prepareEpdPower() sets IO10, IO11, IO13, IO14,
+          // IO15 as outputs and IO16, IO17 as inputs, and nothing that runs
+          // configures IO12 (BoardT5S3::begin(), which would, is never called).
+          // So under the datasheet's all-inputs default this must read 0xC4. If
+          // it does, register 0x06 is being addressed correctly too and the port 0
+          // reading has to be believed.
+          const bool haveConfig1 = gnssReadExpanderRegister(0x07, &config1);
           const bool haveOutput = gnssReadExpanderRegister(0x02, &output0);
           const bool haveInput = gnssReadExpanderRegister(0x00, &input0);
-          if (!haveConfig || !haveOutput || !haveInput) {
+          if (!haveConfig || !haveConfig1 || !haveOutput || !haveInput) {
             logSerial.printf("GNSS_PROBE_ERR:expander read failed\n");
           } else {
             const bool isInput = (config0 & 0x01) != 0;
@@ -1079,9 +1128,9 @@ void loop() {
               gnss.poll();
             }
             logSerial.printf(
-                "GNSS_PROBE:cfg0=0x%02X out0=0x%02X in0=0x%02X io00_dir=%s io00_level=%s bytes=%lu "
-                "sent=%lu cserr=%lu ferr=%lu\n",
-                config0, output0, input0, isInput ? "input" : "output",
+                "GNSS_PROBE:reset=%s cfg0=0x%02X cfg1=0x%02X(want 0xC4) out0=0x%02X in0=0x%02X "
+                "io00_dir=%s io00_level=%s bytes=%lu sent=%lu cserr=%lu ferr=%lu\n",
+                gnssResetReasonName(), config0, config1, output0, input0, isInput ? "input" : "output",
                 (input0 & 0x01) ? "high" : "low", static_cast<unsigned long>(gnss.bytesRead()),
                 static_cast<unsigned long>(gnss.sentencesParsed()),
                 static_cast<unsigned long>(gnss.checksumErrors()),

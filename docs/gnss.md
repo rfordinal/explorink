@@ -34,7 +34,7 @@ shown, or labelled open.
 | On any screen | no |
 | Feeding the map | no -- the map still takes its position over BLE from the phone |
 | Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works |
-| Still open | idle current, why the rail is on, whether SPI contention is real, a TTFF measured from the receiver's own power-on |
+| Still open | idle current, whether the rail is on by design or by an uncleared latch, whether SPI contention is real, a TTFF from the receiver's own power-on |
 
 **A working fix indoors**, on a desk, through a ceiling: `q=1`, 8 satellites
 used, 19 in view, 9 tracked, best C/N0 32 dB-Hz, HDOP 2.0. That was not the
@@ -315,7 +315,10 @@ Three candidates, and this probe cannot separate them:
 2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
    configuration registers to 0xFF; a second-source part or a clone may not.
    Datasheet question, no hardware needed.
-3. **The read is misaddressed** and these are not the registers I think. Review
+3. ~~**The read is misaddressed**~~ -- **excluded 2026-08-31.** `CONFIG1` reads
+   **0xC4**, exactly the value predicted from `prepareEpdPower()`'s writes, so
+   register 0x06 is being addressed correctly and `cfg0=0x00` has to be believed.
+   Review
    added a specific mechanism for this that I had not considered: the PCA9535
    holds a command-byte pointer until it is rewritten, and a read with the
    pointer at 0x00 returns Input Port 0, whose value is the external pin levels
@@ -326,8 +329,36 @@ Three candidates, and this probe cannot separate them:
 
 **What the datasheet makes most likely is candidate 1**, and it also names the
 fix: the experiment needs an outage long enough to take the rail below 0.2 V, so
-**minutes, not 21 seconds**. That single change is worth more than any further
-reasoning here.
+**minutes, not 21 seconds**.
+
+#### The detection method was wrong, and it cost three attempts
+
+**A vanished USB device node does not mean the board lost power.** It means the
+USB peripheral went down, and on this board the ordinary cause is the firmware
+falling asleep. Three probe attempts on 2026-08-31 waited for the node to
+disappear and treated that as an unplug; at least two of them were **deep sleep**,
+with the board alive the whole time. The give-away was in the logs and took far
+too long to read: `millis` continued straight across the gap, which no power loss
+can do.
+
+`reset=DEEPSLEEP` in the probe reply is what finally settled it. Which is the
+lesson: **the device is the only authority on whether it lost power**, and the
+probe now self-certifies -- the register values arrive in the same line as the
+reset cause that qualifies them. No line saying `reset=POWERON`, no conclusion.
+This is why that field was added, and it earned itself on the first run.
+
+Two consequences for any repeat, both free:
+
+- **Keep the board awake.** Real input resets its sleep deadline, so a harmless
+  read-only command every 15 s during a long wait stops it dropping off. The
+  three failed attempts each sat silent for minutes and were put to sleep by
+  their own patience.
+- **Wait in one long window, not four short ones.** The firmware's stuck-byte
+  drain (below) only fires after 5 s of the same byte, so a reader that gives up
+  after 12 s can never see the recovery it triggered.
+
+And it explains something the bring-up doc had filed as an open USB fault: at
+least today's dropouts were auto-sleep, not a bus problem.
 
 **The cheap check that excludes 3, and it has not been run:** read `CONFIG1`
 (0x07) in the same probe. This firmware *does* configure port 1, for the EPD
@@ -632,8 +663,13 @@ Same run as the probe above, on the build carrying all of them.
   it having lost nothing at all. It is a proxy, and the header now says "almost
   certainly" rather than "means". Loss itself is knowable only to the driver.
   n=1 positive against n=2 negative.
-- **The `cserr` / `ferr` split did NOT achieve what it was for**, and the same run
-  proves it. One status showed `cserr=0 ferr=1`, which is what the split was
+- **The first-sentence discard is verified, 2026-08-31.** A mid-stream open on an
+  already-talking receiver -- 1,633 bytes and 36 sentences parsed -- reported
+  **`cserr=0 ferr=0`**. Before the fix the identical situation put a 1 in one
+  counter or the other depending on where the first sentence tore. So `cserr` now
+  means what this file says it means.
+- **The `cserr` / `ferr` split did NOT achieve what it was for** on its own, and
+  the run before that proved it. One status showed `cserr=0 ferr=1`, which is what the split was
   meant to deliver -- and the `PROBE` in the same session, also a mid-stream open,
   showed `cserr=1 ferr=0`. Two mid-opens, one in each counter.
 
