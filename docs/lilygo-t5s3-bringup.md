@@ -132,14 +132,14 @@ unmeasured.
   here says the map redraw is slow *for this panel* rather than slow for the
   amount of work: it is a firmware-side number, not a panel measurement.
 
-### The map cannot be operated on this board
+### The map is half-operable on this board
 
 `MapActivity` is driven entirely by the logical buttons Up / Down / Left /
 Right / Confirm / Back (`src/activities/map/MapActivity.cpp:2706-2760`): in
 Follow, Up and Down are the zoom ladder and Left/Right move the look-ahead; in
 Observe the four pan and a held Up/Down zooms; Confirm opens the menu that
-carries Zoom in and Zoom out (`map-menu.md`). **The activity reads no touch at
-all** -- no `wasScreenTap`, no `rowTouch`, nothing.
+carries Zoom in and Zoom out (`map-menu.md`). The activity's own code reads no
+touch -- no `wasScreenTap`, no `rowTouch`.
 
 On the T5 the profile assigns none of those buttons: `input` is
 `{PIN_UNASSIGNED x6, 0, false}` (`BoardConfig.h:884-885`), where the `0` is the
@@ -149,10 +149,30 @@ never calls it** -- the symbol does not appear anywhere in `src/` or `lib/`.
 `LILYGO_T5_PRO_GT911` does not set `synthConfirm` either
 (`BoardConfig.h:611-613`).
 
-So a rider reaching the map on this board can neither zoom, nor pan, nor open
-the menu, nor leave. Touch works on the list screens (Home and Settings were
-navigated by finger), because those activities read touch; the map does not.
-Tracked as T-573 in the parent repo.
+**Two of the six work anyway, and it is worth knowing why**, because it is not
+in `MapActivity` at all:
+
+- **Back** comes from a gesture one layer down.
+  `MappedInputManager::wasPressed()` returns true for `Button::Back` whenever
+  `wasBackGesture()` fires (`src/MappedInputManager.cpp:312-315`), and that is a
+  left-to-right swipe starting inside the left 25 % of the screen
+  (`MappedInputManager.cpp:268-280`). So the map exits by finger without
+  knowing a finger exists. **Confirmed on the board by the maintainer,
+  2026-08-31.**
+- **Home** is handled globally: `ActivityManager::loop()` takes
+  `wasHomeGesture()` -- an upward swipe from the bottom 14 % -- for every
+  activity that is not Home (`src/activities/ActivityManager.cpp:75`).
+
+What is missing on the map, then, is **Confirm, Up, Down, Left and Right**: the
+menu, the zoom ladder, the look-ahead and panning. A rider on this board can
+reach the map, see it, and leave it, and can change nothing about the view.
+
+**One gesture already exists for the gap.** `wasMenuGesture()` -- a downward
+swipe from the top 14 % (`MappedInputManager.cpp:283-294`) -- is consumed by
+exactly one place in the firmware, the reader (`ReaderUtils.h:110`). Routing it
+to `openMapMenu()` puts Zoom in and Zoom out within reach without inventing an
+input model, because the menu already carries them. Tracked as T-573 in the
+parent repo.
 
 ## What is wrong or missing
 
