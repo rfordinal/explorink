@@ -20,6 +20,11 @@
 #include <WiFi.h>
 #include <builtinFonts/all.h>
 
+#ifdef ENABLE_GNSS_CMD
+#include <BoardT5S3.h>
+#include <Gnss.h>
+#endif
+
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -48,6 +53,57 @@ SdCardFontSystem sdFontSystem;
 // Inert on every board whose profile has no frontlight (X4, X3), so it is
 // unconditional here — FrontlightManager::present() is the runtime question.
 FrontlightManager frontlight;
+
+#ifdef ENABLE_GNSS_CMD
+// Bring-up instrument for the LilyGo T5 S3 Pro's on-board L76K receiver, driven
+// entirely from CMD:GNSS below. There is no UI and no map integration yet: the
+// point is to find out whether the receiver is wired the way the header says
+// before anything depends on it (docs/gnss.md).
+Gnss gnss;
+
+// The receiver's power rail is a single PCA9535 expander pin that powers the
+// LoRa radio along with it -- there is no way to have GNSS on this board
+// without also powering the SX1262 (BoardT5S3Pins.h:70).
+//
+// That matters more than it looks. LORA_CS (GPIO46) is also handed to LovyanGFX
+// as the panel bus's pin_oe *and* pin_pwr (LilyGoT5S3LgfxConfig.cpp:162,166),
+// and Bus_EPD really does drive both as plain GPIOs, one of them as the i80
+// bus's DC line (M5GFX Bus_EPD.cpp:83,85,120,129,143). So once the rail is up,
+// every panel refresh asserts the radio's chip select -- on the same SPI bus
+// the SD card is on, where a second device driving MISO corrupts tile reads.
+//
+// The defence is to hold the SX1262 in reset, which parks its MISO high-Z. It
+// is done here rather than left to BoardT5S3::disableGpsLora(), because nothing
+// in this firmware calls BoardT5S3::begin(): that function has never run on
+// this board, so LORA_RST is undriven at boot and cannot be assumed low.
+static bool gnssPowerEnable(bool on) {
+  if (BoardConfig::ACTIVE.board != BoardConfig::Board::LilyGoT5S3) return false;
+
+  // Wire is normally already up from GT911 touch init (InputManager.cpp:839).
+  // Only re-run the board's own I2C setup if the expander does not answer, so
+  // a working bus is never reinitialised underneath the touch driver.
+  if (!BoardT5S3::pca9535Present()) {
+    BoardT5S3::beginI2C();
+    if (!BoardT5S3::pca9535Present()) return false;
+  }
+
+  pinMode(T5S3_LORA_RST, OUTPUT);
+  digitalWrite(T5S3_LORA_RST, LOW);
+
+  // Level before direction, matching disableGpsLora(): switching an expander
+  // pin to output first would drive whatever the output register happens to
+  // hold, which on a cold boot is the PCA9535's power-on default of high.
+  if (!BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, on)) return false;
+  return BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
+}
+
+// CMD:GNSS RAW passthrough. The '$' is stripped by the parser, so put it back:
+// a line pasted out of this log should be feedable to any NMEA tool unchanged.
+static void gnssRawSink(const char* sentence, size_t length) {
+  (void)length;
+  logSerial.printf("GNSS_RAW:$%s\n", sentence);
+}
+#endif
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
 
@@ -606,6 +662,14 @@ void loop() {
     lastMemPrint = millis();
   }
 
+#ifdef ENABLE_GNSS_CMD
+  // Drain the receiver's UART every iteration. The parser does no work beyond
+  // what the port already buffered, and at 9600 baud a full NMEA cycle is well
+  // under 1 kB per second -- but the driver's own RX buffer is 256 bytes, so
+  // skipping iterations is how sentences get lost.
+  gnss.poll();
+#endif
+
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings
   //
@@ -868,6 +932,87 @@ void loop() {
             frontlight.setBrightness(static_cast<uint8_t>(pct));
           }
           logSerial.printf("LIGHT_OK:%u\n", static_cast<unsigned>(frontlight.brightness()));
+        }
+#endif
+#ifdef ENABLE_GNSS_CMD
+      } else if (cmd == "GNSS" || cmd.startsWith("GNSS ")) {
+        // Bring-up instrument for the on-board GNSS receiver, and the only way
+        // to reach it: there is no UI and the map still takes its position over
+        // BLE from the phone. Devel-only on purpose (-DENABLE_GNSS_CMD lives in
+        // env:t5s3pro and in no release env) for two separate reasons -- it
+        // powers a radio rail, and its reply is the rider's exact position.
+        //
+        //   CMD:GNSS           ->  GNSS_FIX:... | GNSS_NOFIX:... | GNSS_OFF
+        //   CMD:GNSS ON        ->  GNSS_OK:on
+        //   CMD:GNSS OFF       ->  GNSS_OK:off
+        //   CMD:GNSS RAW ON    ->  GNSS_OK:raw=1   (every sentence to the log)
+        //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
+        String argument = cmd.substring(4);
+        argument.trim();
+        argument.toUpperCase();
+
+        if (argument == "ON") {
+          GnssConfig config;
+          config.serial = &Serial1;
+          // Board header names these GPS_RXD / GPS_TXD, which does not say whose
+          // RX it means. Read as MCU-side here: RXD 44 is where the S3 receives,
+          // so it goes to the receiver's TX. Both are UART0's default pins on an
+          // S3, free only because this env runs its console over USB CDC. If a
+          // bring-up sees no bytes at all, swapping these two is the first thing
+          // to try -- the symptom is identical to a dead receiver.
+          config.rxPin = T5S3_GPS_RXD;
+          config.txPin = T5S3_GPS_TXD;
+          // L76K default per Quectel, still unverified against the datasheet.
+          config.baud = 9600;
+          config.powerEnable = gnssPowerEnable;
+          if (gnss.begin(config)) {
+            logSerial.printf("GNSS_OK:on\n");
+          } else {
+            logSerial.printf("GNSS_ERR:power rail or expander unavailable\n");
+          }
+        } else if (argument == "OFF") {
+          gnss.end();
+          logSerial.printf("GNSS_OK:off\n");
+        } else if (argument == "RAW ON" || argument == "RAW") {
+          gnss.setRawSink(gnssRawSink);
+          logSerial.printf("GNSS_OK:raw=1\n");
+        } else if (argument == "RAW OFF") {
+          gnss.setRawSink(nullptr);
+          logSerial.printf("GNSS_OK:raw=0\n");
+        } else if (argument.length() > 0) {
+          logSerial.printf("GNSS_ERR:expected ON, OFF, RAW ON or RAW OFF\n");
+        } else if (!gnss.running()) {
+          logSerial.printf("GNSS_OFF\n");
+        } else {
+          // One line, fixed key=value shape, so a host script can grep it and a
+          // person can read it. used/inview/tracked are three different counts
+          // and the difference between them is the whole diagnosis: inview from
+          // the almanac, tracked from a non-zero C/N0, used in the solution.
+          const GnssFix& fix = gnss.fix();
+          if (fix.valid) {
+            logSerial.printf(
+                "GNSS_FIX:q=%u used=%u inview=%u tracked=%u bestsnr=%u lat=%.6f lon=%.6f alt=%.1f "
+                "hdop=%.2f speed=%.1f course=%.1f utc=%lu ttff=%lu age=%lu sent=%lu cserr=%lu bytes=%lu\n",
+                static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
+                static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
+                static_cast<unsigned>(gnss.bestSnr()), fix.latitude, fix.longitude, fix.altitudeMeters,
+                fix.hdop, fix.speedKmh, fix.courseDegrees, static_cast<unsigned long>(fix.utc),
+                static_cast<unsigned long>(gnss.timeToFirstFixMs()),
+                static_cast<unsigned long>(gnss.fixAgeMs()),
+                static_cast<unsigned long>(gnss.sentencesParsed()),
+                static_cast<unsigned long>(gnss.checksumErrors()),
+                static_cast<unsigned long>(gnss.bytesRead()));
+          } else {
+            logSerial.printf(
+                "GNSS_NOFIX:q=%u inview=%u tracked=%u bestsnr=%u utc=%lu uptime=%lu sent=%lu cserr=%lu "
+                "bytes=%lu\n",
+                static_cast<unsigned>(fix.quality), static_cast<unsigned>(gnss.satsInView()),
+                static_cast<unsigned>(gnss.satsWithSignal()), static_cast<unsigned>(gnss.bestSnr()),
+                static_cast<unsigned long>(fix.utc), static_cast<unsigned long>(gnss.uptimeMs()),
+                static_cast<unsigned long>(gnss.sentencesParsed()),
+                static_cast<unsigned long>(gnss.checksumErrors()),
+                static_cast<unsigned long>(gnss.bytesRead()));
+          }
         }
 #endif
       }
