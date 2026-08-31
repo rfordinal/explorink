@@ -34,7 +34,7 @@ shown, or labelled open.
 | On any screen | no |
 | Feeding the map | no -- the map still takes its position over BLE from the phone |
 | Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works |
-| Still open | cold-start TTFF, idle current, whether the rail is on by board default, whether SPI contention is real |
+| Still open | idle current, why the rail is on, whether SPI contention is real, a TTFF measured from the receiver's own power-on |
 
 **A working fix indoors**, on a desk, through a ceiling: `q=1`, 8 satellites
 used, 19 in view, 9 tracked, best C/N0 32 dB-Hz, HDOP 2.0. That was not the
@@ -274,19 +274,47 @@ survives a power cycle is open, and the mechanism matters for T-579 -- a latch
 that any reset preserves is a very different power story from a board that holds
 the rail by design.
 
-#### The first honest acquisition figure: 41,751 ms
+#### An acquisition really happened. The 41,751 ms figure still is not it
 
-The same run produced what every earlier run could not. After the power cycle the
-receiver had genuinely lost its fix, and `CMD:GNSS ON` was followed by two
-statuses reporting `q=0` at 14.3 s and 22.7 s of uptime, then a fix at
-**`ttff=41751`**.
+**Corrected before merge, by the author, and it is the same mistake twice.**
 
-Same code, same receiver, same room as the 531 ms and 526 ms readings. When
-acquisition actually happened the number was **eighty times larger**. That is
-independent, physical confirmation of what the review argued from the code: a
-sub-second `ttff` was never an acquisition, only the phase between the UART open
-and the next sentence. The warning now on `timeToFirstFixMs()` is not a
-precaution, it is a measured fact.
+The run reported `ttff=41751` after the power cycle, with two statuses at `q=0`
+first (14.3 s and 22.7 s of `Gnss` uptime). This file's first draft called that
+"the first honest acquisition figure". It is not one.
+
+The receiver never lost power between the USB replug and that command. The board
+was reset twice in between -- once by a port open, once by esptool -- but a board
+reset does not touch the rail, so the receiver had been powered and searching the
+whole time. From the log timestamps and the board's own `millis`:
+
+```
+USB replug, receiver powered:  18:56:44
+CMD:GNSS ON:                   19:02:17   -> 333 s (5.5 min) already powered
+first fix:                     19:02:59   -> 41.8 s after begin()
+```
+
+So the acquisition took about **6.2 minutes** from power-on, and `ttff=41751` is
+its **last 11 %**. `timeToFirstFixMs()` measures from `begin()`, and `begin()`
+arrived five and a half minutes late. Wrong interval attributed to the number --
+exactly what the 531 ms readings did, in the other direction.
+
+**What does survive, and it matters:**
+
+- At `begin()` the receiver was **not** holding a fix, proven by two `q=0`
+  statuses. So this reading reflects an acquisition in progress rather than a
+  phase offset, which is a qualitative difference from every earlier run and does
+  corroborate the review's argument about what a sub-second value means.
+- **The indoor cold TTFF is roughly 6.2 minutes**, and that number comes from
+  wall-clock timestamps rather than from `ttff`. Coarse, and honest. It is the
+  first acquisition figure this project has for this receiver, with the caveat
+  that most of it happened while the USB link was dead and nobody was watching.
+
+The lesson is not about GNSS. `timeToFirstFixMs()` now carries a warning that a
+small value means nothing, and the author then read a large value as if it meant
+something. **A counter that starts when you happen to start looking measures your
+attention, not the world.** A real TTFF needs the measurement to begin when the
+receiver does, which means either the firmware powers it, or the number comes
+from somewhere other than this counter.
 
 ## The serial command
 
