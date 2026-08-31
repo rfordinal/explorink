@@ -80,6 +80,11 @@ class HalGPIO {
   unsigned long lastTouchHeldMs() const;
   bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
   bool wasTouchActivity() const;
+  // GT911 capacitive home key (status 0x10), inert on boards without one —
+  // see freeink-sdk InputManager.h:122-132.
+  bool wasHomeKeyPressed() const;
+  bool wasHomeKeyTapped() const;
+  bool wasHomeKeyLongPressed() const;
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
   // Verify power button was held long enough after wakeup.
