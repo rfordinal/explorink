@@ -174,6 +174,53 @@ to `openMapMenu()` puts Zoom in and Zoom out within reach without inventing an
 input model, because the menu already carries them. Tracked as T-573 in the
 parent repo.
 
+## Two memory pools, not one
+
+The biggest difference from the X4 after the panel. The C3 has internal SRAM and
+nothing else, which is why this firmware's whole memory discipline exists: the
+map screen sits near 50 KB free there and `BlePositionServer` has to be torn
+down on leaving the screen because it costs 57 KB.
+
+The S3 board has both, and they are separate:
+
+| | what it is | how much, measured on this board | what reports it |
+|---|---|---|---|
+| internal DRAM | SRAM on the die | 307,684 B total, 191,512 B free on Home | `ESP.getFreeHeap()` |
+| PSRAM | 8 MB octal, off-die | 6.5 MB free across the whole heap | `esp_get_free_heap_size()` |
+
+Both numbers are off this board's own log, not off a datasheet. The two APIs are
+**not** two views of one number: Arduino's `ESP.getFreeHeap()` is
+`heap_caps_get_free_size(MALLOC_CAP_INTERNAL)`
+(`framework-arduinoespressif32/cores/esp32/Esp.cpp:163`), so it never sees
+PSRAM; `esp_get_free_heap_size()` counts everything the allocator can hand out.
+
+Three consequences, and none of them is "there is 8 MB now, stop worrying":
+
+- **Internal DRAM is still ~300 KB**, and everything that must be reachable
+  from an ISR or by DMA has to live there. PSRAM cannot hold it.
+- **The split is at 4 KB.** The core is built with `CONFIG_SPIRAM=y`,
+  `CONFIG_SPIRAM_USE_MALLOC=y` and `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`
+  (`framework-arduinoespressif32-libs/esp32s3/sdkconfig`): allocations at or
+  below 4 KB are forced internal, larger ones may go to PSRAM. So the big
+  buffers -- the driver's canvas, a window buffer, the menu backdrop -- land in
+  the 8 MB, while every small allocation still competes for the 300 KB.
+- **PSRAM is slower.** It is reached over octal SPI through a cache rather than
+  on the core bus, so random access costs far more than SRAM.
+  `LgfxEpdDriver` keeps its 8-bit grayscale canvas there and expands into it
+  every frame, which is one candidate for the ~2.7 s map redraw alongside the
+  plain fact that 960x540 is 2.7x the X4's pixel count. Neither has been
+  measured apart. `[open]`
+
+**And it makes a class of existing check wrong on this board.** Code written for
+the C3 asks `ESP.getFreeHeap()` and then allocates with `new`. On the C3 those
+are the same pool. Here the question is about internal DRAM and the answer is
+served from PSRAM. `MapActivity::captureMenuBackdrop()` is the clearest case
+(`src/activities/map/MapActivity.cpp:2858-2862`): it compares a
+hundreds-of-kilobytes backdrop against internal free heap and skips the capture
+when it would not fit, although the allocation itself would come out of the 8 MB.
+Not dangerous -- it is stricter than reality, so the menu closes the slow way --
+but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
+
 ## What is wrong or missing
 
 - **The profile declares `NO_SENSORS` although the board has a PCF8563 RTC**
@@ -206,6 +253,68 @@ The board also disappears from the USB bus entirely when it sleeps or is
 powered down -- `/dev/ttyACM*` vanishes and `lsusb` shows no `303a` device. That
 is not a crash. BOOT (GPIO0) is the profile's power button and the deep-sleep
 wake source.
+
+## Open: it reboots on leaving the map
+
+**2026-08-31, not diagnosed.** The maintainer opened, closed and used the map
+menu repeatedly and the device restarted. This is what the card's
+`/crash_report.txt` held afterwards, verbatim -- kept here because that card is
+no longer in the board and the next session will not have it:
+
+```
+TrailInk version: 0.2.0-t5s3pro
+
+Panic reason:
+
+Last logs:
+[869536] [INF] [MAP] freshness: 0 tile(s) out of date
+[869774] [INF] [BLEPOS] conn params: interval 12 units (15 ms), latency 0, timeout 500
+[870011] [INF] [BLEPOS] conn params: interval 24 units (30 ms), latency 0, timeout 500
+[871473] [DBG] [MAP] menu gesture: opening map menu
+[871475] [DBG] [MAP] menu backdrop 11360 bytes (284x306), free heap 122028
+[871482] [DBG] [GFX] Time = 14215 ms from clearScreen to displayBuffer
+[874473] [DBG] [PWR] Going to low-power mode (80 MHz)
+[875801] [DBG] [PWR] Restoring normal CPU frequency
+[881802] [DBG] [PWR] Going to low-power mode (80 MHz)
+[882688] [DBG] [PWR] Restoring normal CPU frequency
+[884824] [DBG] [ACT] Exiting activity: Map
+[884854] [DBG] [MTS] missing tile list saved (2 entries)
+[1] [DBG] [UI] Using Lyra theme
+
+Stack memory:
+```
+
+What that says, and what it does not:
+
+- **No panic reason and no stack.** The reboot-from-panic flag was set --
+  `HalSystem::checkPanic()` only writes this file when it is -- but the message
+  is empty. That does not look like a C++ exception or an `abort()`, both of
+  which carry text. It fits a reset below the firmware: a watchdog, a brownout,
+  or one where the panic wrapper never ran.
+- **The restart lands exactly on leaving the map.** `Exiting activity: Map`,
+  the missing-tile list saved, then the next boot's first line.
+  `MapActivity::onExit()` is also where `BlePositionServer::end()` deinitialises
+  the whole NimBLE stack.
+- **A 14,215 ms display operation**, right after the menu opened, against 2.7 s
+  for a map redraw and 34 ms for Home. Treat it as a lead, not a fact: the line
+  is a delta between `clearScreen` and `displayBuffer`, so a `clearScreen` long
+  beforehand inflates it. Worth reading the timer's own definition before
+  building anything on it.
+- **The menu backdrop is exonerated**: 11,360 bytes with 122 KB internal free.
+  A first guess in that session blamed heap exhaustion using the X4's numbers,
+  on a board with 8 MB of PSRAM. It was wrong twice over.
+
+**The cheapest next step is the ROM's own line.** The first thing printed at
+boot names the reset cause -- `rst:0x15 (USB_UART_CHIP_RESET)` for a host
+opening the serial port, and it would say `TG_WDT_SYS_RST`, `RTCWDT_RTC_RST`,
+`BROWNOUT_RST` or `SW_CPU_RESET` for the ones that matter here. So: hold the
+port open, reproduce, and read that line. It settles watchdog versus brownout
+versus software reset without adding any code.
+
+Possibly related and also undiagnosed: **the board dropped off the USB bus three
+times** during that session, once with auto-sleep switched off, each time
+needing a long BOOT press to come back. Whether that is the same fault has not
+been established.
 
 ## Open, needs measurement
 

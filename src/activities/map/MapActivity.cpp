@@ -2788,6 +2788,27 @@ void MapActivity::handleButtons() {
       openMapMenu();
     }
   }
+
+  // The same menu, by finger. A board can ship without a CONFIRM button at all
+  // -- the LilyGo T5 S3 Pro assigns none of the six logical buttons, only
+  // power on BOOT (`docs/lilygo-t5s3-bringup.md`) -- and CONFIRM is the only
+  // way to the zoom ladder, because Zoom in and Zoom out live in this menu
+  // (`docs/map-menu.md`). Without this a rider on such a board can enter the
+  // map, see it and leave it (Back is a left-edge swipe, Home a bottom-edge
+  // one, both synthesized below this activity) and change nothing about the
+  // view.
+  //
+  // wasMenuGesture() is a downward swipe from the top edge and already existed
+  // for the reader (`MappedInputManager.cpp:283`, `ReaderUtils.h:110`); this is
+  // its second consumer, not a new input model. It cannot collide with the two
+  // gestures that already work here: Back starts inside the left 25% and runs
+  // horizontally, Home starts in the bottom 14% and runs up.
+  //
+  // Guarded on hasTouch() so a button-only device cannot reach it at all.
+  if (mappedInput.hasTouch() && mappedInput.wasMenuGesture()) {
+    LOG_DBG(kLogTag, "menu gesture: opening map menu");
+    openMapMenu();
+  }
 }
 
 void MapActivity::drawMapButtonHints() {
