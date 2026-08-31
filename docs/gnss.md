@@ -13,10 +13,17 @@ line, comma-separated fields, an XOR checksum after a `*`. **TTFF** is time to
 first fix, the wait from power-on to the first usable position.
 
 **Flashed and run on the board 2026-08-31.** Firmware `feat/t5s3-gnss`, env
-`t5s3pro`, on the LilyGo T5 S3 Pro. The receiver works, the parser is verified
-field by field against the wire, and the pass found something nobody was looking
-for: **the receiver is already powered before any firmware asks for it.** Two
-things remain unmeasured and are marked so.
+`t5s3pro`, on the LilyGo T5 S3 Pro. The receiver works and the parser reads it
+correctly for the one fix it was checked against.
+
+**This file was rewritten the same day after an adversarial review broke three
+of its conclusions.** What survived, what did not, and what the review found in
+the code are all below. The short version: the receiver was already powered and
+tracking when the firmware first enabled the rail (that holds); "therefore it is
+powered at every boot by a board default" does **not** follow from the evidence
+collected; the SD-card test could not have failed; and the sentence-loss figure
+was wrong by a factor of three. Numbers here are now either log-derived and
+shown, or labelled open.
 
 ## Status
 
@@ -26,8 +33,8 @@ things remain unmeasured and are marked so.
 | Reached by | `CMD:GNSS` over the USB serial console, `env:t5s3pro` only |
 | On any screen | no |
 | Feeding the map | no -- the map still takes its position over BLE from the phone |
-| Verified on hardware | 3D fix indoors, parser exact against the wire, SD card unaffected |
-| Still open | cold-start TTFF, idle current of the powered pair |
+| Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works |
+| Still open | cold-start TTFF, idle current, whether the rail is on by board default, whether SPI contention is real |
 
 **A working fix indoors**, on a desk, through a ceiling: `q=1`, 8 satellites
 used, 19 in view, 9 tracked, best C/N0 32 dB-Hz, HDOP 2.0. That was not the
@@ -54,8 +61,11 @@ part, GPS + GLONASS + BeiDou, NMEA over UART.
 - **9600 baud, 8N1 is correct**, confirmed on hardware: checksum-clean NMEA
   from the first read, no reframing, `cserr` at 0 across a rail-cycled session.
   The guess held, so the datasheet is no longer needed to unblock anything.
-- **GPS and GLONASS, and only those two.** `GPGSV` and `GLGSV` arrive; no
+- **GPS and GLONASS in this configuration.** `GPGSV` and `GLGSV` arrive; no
   Galileo or BeiDou GSV was seen and `GNGSA` carries system ids 1 and 2 only.
+  That is an observation of what the module emits as shipped, not a statement
+  about what the part can do -- the constellation set is configurable on an L76K
+  and the vendor lists BeiDou.
   An `inview` of 19 was 10 GPS plus 9 GLONASS, which is also what confirms the
   parser's per-talker summing works rather than double-counting.
 - **It sends more than we parse**, all checksum-valid, currently counted and
@@ -123,9 +133,17 @@ sits on the same SPI bus as the SD card (`SCLK 14 / MOSI 13 / MISO 21`,
 `BoardT5S3Pins.h:27-29`), where a second device driving MISO corrupts a tile
 read.
 
-**The defence: hold the SX1262 in reset.** `LORA_RST` (GPIO1) driven low parks
-the part, and its MISO with it. `gnssPowerEnable()` in `src/main.cpp` does that
-before it touches the rail, every time.
+**The intended defence: hold the SX1262 in reset.** `LORA_RST` (GPIO1) driven
+low should park the part and its MISO with it. `gnssPowerEnable()` in
+`src/main.cpp` does that before it touches the rail, every time.
+
+**Whether any of this matters is untested**, and the hardware pass did not test
+it -- see "What the hardware pass found", check 2. Two things are unestablished:
+whether GPIO46 is ever driven *low* during a refresh at all (`Bus_EPD` is seen
+driving it high, and a deasserted chip select is harmless), and whether reset
+parks MISO high-Z on an SX126x. The reset assertion stays because it is free and
+the failure it guards against is a corrupt tile read, not because it has been
+shown to do anything.
 
 ### Why the firmware does that itself instead of trusting the SDK
 
@@ -148,46 +166,83 @@ There is an unmerged branch (`feat/t5s3-board-begin`) that adds the
 `BoardT5S3::begin()` call for the sake of the user button. Nothing here depends
 on it either way, which is the point.
 
-### The rail is already up at boot, before any firmware writes to it
+### The receiver was already powered when the firmware first enabled the rail
 
-**Measured 2026-08-31, and it was not what anyone was looking for.** The
-receiver is powered from the moment the board boots. Nothing in the firmware
-enables it; it simply comes up.
+**That much is measured. What it implies about "every boot" is not**, and the
+first version of this section claimed the larger thing. Review broke it the same
+day; this is the corrected account.
 
-The evidence is a pair of runs, because no single reading proves it:
+**What holds.** At run 1's first `CMD:GNSS ON` the receiver was already powered
+and tracking. Two independent signs, neither of which is the TTFF number:
 
-- **Run 1.** Fresh boot at millis 401, `CMD:GNSS ON` at about millis 45,000, and
-  a full 3D fix **531 ms later** with 8 satellites used. A receiver powered at
-  the moment of that command cannot do that: it needs its own firmware boot
-  first, and then even a hot start is seconds. So it was already tracking.
-- **Run 2.** `CMD:GNSS OFF`, rail down for 45 s, then `ON` again -- and **no fix
-  after 40 s**, `q=0`, tracked climbing 3 to 6. So the rail genuinely does
-  control the module, and there is no backup supply keeping its ephemeris across
-  three quarters of a minute.
-- **A third run, after a reflash**, reproduced the same signature without being
-  asked to: `ttff=526` on the first enable, and again exactly one checksum error
-  at the first read. Two independent boots giving a half-second fix is not a
-  coincidence.
+- The UART opened **mid-sentence**: exactly one framing-class error on the very
+  first read, while a rail-cycled start later the same session logged none. A
+  receiver that had just been powered 100 ms earlier (`GnssConfig::powerSettleMs`)
+  is not in the middle of transmitting a sentence.
+- The first status reported `q=1` with 8 satellites used. A receiver powered at
+  the moment of that command cannot be there half a second later.
 
-Those two together leave one reading: at run 1's first `ON`, the part was
-already powered by the board's own default state. A third, smaller sign agrees
--- the first read of the session logged one checksum error, exactly what opening
-a UART mid-sentence produces, while a rail-cycled start logged none.
+**Why the TTFF number is not evidence.** `ttffMs_` is `lastFixMs_ - beginMs_`
+with `beginMs_` set after the UART opens (`lib/Gnss/src/Gnss.cpp`,
+`begin()`/`parseGga`). On a receiver that is *already fixed* and emitting a 1 Hz
+cycle led by GGA, that measures the phase between our UART open and the next
+GGA -- a uniform draw over roughly 0 to 1000 ms. Any value under about 1.2 s
+says "already tracking" and nothing more. The 531 ms and 526 ms readings landing
+close together is chance, not reproduction, and the earlier claim that "two
+independent boots giving a half-second fix is not a coincidence" was numerology.
 
-**The mechanism is inferred, not proven.** The PCA9535 comes out of reset with
-every pin an input, so the enable line is high-Z and something on the board
-pulls it up. That is consistent with everything observed and it is not measured;
-what is measured is the effect.
+**Why the third run was not independent at all.** `gnss_pass2.py` ends on
+`CMD:GNSS ON` and never sends `OFF`, so run 2 left the rail **firmware-commanded
+on**. The reflash that followed reset the S3 and not the PCA9535, which sits on
+the 3.3 V rail and latches its output and direction registers until it loses
+power. So the confirm run found an already-tracking module because run 2 had
+turned it on and nothing turned it off.
 
-**The consequence is a power leak nobody has costed.** Since this board's
-bring-up, every boot has powered the GNSS receiver *and* the SX1262, all day,
-whether the map was open or the device was sitting on Home. `disableGpsLora()`
-never being called (above) is therefore not merely a missing button hook -- it
-is current. How much is unmeasured and is the open item this file ends on.
+**Why "the board powers it by default" does not follow.** The same latching
+argument applies to run 1. No reset in any of the three runs power-cycles the
+expander: a serial-open reset, a reflash and `ESP.restart()` all reset only the
+S3. The board ran its **factory firmware** earlier the same day, and that
+firmware drives this rail. If the board was not physically unplugged in between,
+run 1's "already powered" is fully explained by a latched write from that
+session -- no pull-up and no board default needed. Run 1's "fresh boot at millis
+401" was itself a warm reset caused by the test script opening the port, which
+is precisely the kind of reset the expander survives.
 
-It also reframes the SD-card result below: previous sessions were unknowingly
-running with the rail up and `LORA_RST` floating, and the map drew and tiles
-loaded then too.
+**Why the "no backup supply" conclusion is withdrawn.** Run 2 dropped the rail
+for 49.7 s (not the 45 s previously written) and got no fix in the following
+40 s, with 3 then 6 satellites tracked and best C/N0 27. A fix needs four usable
+satellites. A backup-powered hot start indoors at 3 to 6 tracked can fail to
+reacquire in 40 s just as easily as a cold one, so that outcome discriminates
+nothing. Receivers in this class can also retain almanac and ephemeris in their
+own flash, which no rail outage clears at all.
+
+**What actually is established by run 2:** the `ON`/`OFF` path really does
+control the module. The re-enable came back `q=0` with `inview` dropped from 20
+to 12 and every counter reset -- a module that had stayed powered and fixed would
+have answered `q=1` on its first GGA after the port reopened.
+
+#### The experiment that settles it
+
+Cheap, and it has not been run. On a **true power cycle** -- USB unplugged, which
+is ordinary use on a bare development board (`docs/hardware-policy.md`) -- and
+**before any `CMD:GNSS`**, read the PCA9535 CONFIG0 register at 0x06;
+`BoardT5S3::readPca9535Pin()` already exists for it.
+
+- Bit 0 reads as **input** while NMEA is streaming: something external holds the
+  rail on, and the board-default reading is right.
+- Bit 0 reads as **output**: it was latched by an earlier session, and the
+  board-default reading is wrong.
+
+Follow it with an immediate `CMD:GNSS ON` on that same cold boot: framing errors
+at zero and a TTFF in tens of seconds would break "every boot" outright.
+LilyGo's schematic for the board would settle the mechanism without any
+measurement at all, and asking for it is free -- the vendor thread is open.
+
+**Until then, the power consequence is a possibility and not a finding.** If the
+rail is up by default, this board has been paying for the receiver and the
+SX1262 on every boot since bring-up, with `LORA_RST` undriven, and nobody has
+measured it. That is worth knowing precisely because it might be true, which is
+what T-579 is for -- not because it has been shown.
 
 ## The serial command
 
@@ -223,11 +278,17 @@ the antenna can actually hear. `used` is what went into the solution. Under a
 ceiling `inview` stays healthy while `tracked` collapses and `bestsnr` sits in
 the teens; that pair, not the absence of a fix, is what says "no sky".
 
-**`cserr` is the wiring check.** Checksum failures at zero with sentences
-climbing means the UART is clean. Sentences climbing *and* `cserr` climbing with
-it means the baud rate is wrong -- the framing is close enough to produce lines
-but not to produce correct ones. Both at zero with `bytes` climbing means
-something is talking and it is not NMEA.
+**`cserr` is the baud-rate check and `ferr` is not.** `cserr` counts sentences
+whose checksum did not match: at zero with `sent` climbing, the UART is clean;
+climbing together with `sent`, the baud rate is wrong -- the framing is close
+enough to produce lines but not correct ones. `ferr` counts input that had no
+usable `*hh` at all, which is a garbage burst on a cold UART or a line lost to
+buffer overflow. They were one counter until review pointed out that mixing them
+makes the first useless: opening the UART on an already-talking receiver logs a
+`ferr`, and reading that as a checksum error is how a clean line looks dirty.
+
+`bytes` climbing with both counters at zero and `sent` flat means something is
+talking and it is not NMEA.
 
 ### Privacy
 
@@ -272,14 +333,29 @@ Three details worth knowing before changing it:
   decimal point rather than assumed, because latitude has two degree digits and
   longitude has three.
 
-### Verified against the wire, field by field
+### Checked against the wire, for one fix
 
 `CMD:GNSS RAW ON` and a status query one second apart, so the same solution can
-be read raw and parsed. Every field matched: the degree-and-minute conversion
-for both latitude and longitude (agreeing to 2e-6 degrees, which is the one
-second of drift between the two samples), the hemisphere signs, HDOP,
-satellites used, altitude, and the UTC assembly from a GGA time plus an RMC date
--- that last one **exact to the second**.
+be read raw and parsed. The degree-and-minute split, the N and E hemisphere
+handling, HDOP, satellites used and altitude all matched.
+
+**Weaker than the first version of this section claimed**, and the review was
+right to say so:
+
+- The status line's timestamp corresponds to a sentence that was **never
+  logged** -- `RAW OFF` cut the stream one second earlier. The "+1 s" was
+  inferred from the 1 Hz cadence, which is reasonable and is not a comparison
+  against the wire.
+- The coordinate agreement to 2e-6 degrees was attributed entirely to one second
+  of drift. That is circular: it also hides any error below roughly 0.2 m. What
+  the check really proves is the gross `ddmm.mmmmm` split and the sign for north
+  and east.
+- **Never exercised:** the S and W negation, a date rollover, a leap second, the
+  two-digit year window, and `quality=6` (dead reckoning) being committed as a
+  fix like any other.
+
+So: verified for **one fix, one hemisphere pair, one date**. Not "field by
+field" in the sense that phrase implies.
 
 Coordinates are deliberately not reproduced here. The board sat at the
 maintainer's address and `CLAUDE.md`'s screenshot rule treats an exact `lat lon`
@@ -300,20 +376,73 @@ firmware's own parser would have agreed with itself no matter what, so the
 verification was done with a separate implementation. The archived binary is
 `docs/firmware-builds/t5s3pro-b8276d9e-gnss-confirmed.bin` in the parent repo.
 
-### A blocking render starves the UART
+### A blocking render starves the UART, and by more than first written
 
-Also out of run 1, and it matters for anything that eventually feeds the map. A
-full map redraw blocks the loop for **4,017 ms**. `poll()` is only called from
-that loop, the driver's RX buffer is 256 bytes, and the receiver sends roughly
-600 bytes a second -- so the buffer overruns in well under half a second and
-stays overrun.
+Real, and the first version of this section under-reported it by a factor of
+three because it used a guessed byte rate and the wrong window. Here it is from
+the log arithmetic.
 
-Measured across that render: about 30 sentences lost and one extra checksum
-error. Harmless for a bring-up console, not harmless for a position source. The
-fix is not "poll more often", because there is nowhere to poll from during a
-blocking render; it is a bigger RX buffer (`setRxBufferSize()`), or the UART on
-its own task, or an event-driven read. That decision belongs to the work that
-puts GNSS behind the map's position source, not here.
+The clean baseline, between two statuses with no screen work in between (millis
+107,341 to 119,809): **816 bytes/s and 14.9 sentences/s**. The earlier text said
+"roughly 600 bytes a second", which its own evidence contradicts by 35 %.
+
+Across the map entry (119,809 to 146,960, 27.15 s): expected about 22,160 bytes
+and 405 sentences at that baseline; observed 17,384 bytes and 320 sentences.
+**Lost: about 4,780 bytes and 85 sentences.**
+
+The blocking window is **6.07 s**, not the 4,017 ms render: the log's
+`New max loop duration: 6074 ms` covers the whole map `onEnter`, which is
+`BlePositionServer::begin()` plus the render. And that closes the arithmetic --
+6.074 s x 816 B/s minus the 256 bytes the buffer does hold is 4,701 bytes, against
+4,780 observed.
+
+The 256 bytes is **read off the pinned framework, not measured**:
+`framework-arduinoespressif32` `HardwareSerial.cpp:148` sets `_rxBufferSize(256)`
+and nothing in this firmware calls `setRxBufferSize()` on `Serial1`.
+
+One extra checksum error across that window is genuinely measured (1 to 2).
+
+Harmless for a bring-up console, not harmless for a position source. The fix is
+not "poll more often", because there is nowhere to poll from during a blocking
+render: it is a bigger RX buffer, the UART on its own task, or an event-driven
+read. That decision belongs to the work that puts GNSS behind the map's position
+source. The header now states the constraint so the next caller meets it before
+being surprised by it.
+
+### Four defects review found in it, all fixed
+
+None of these showed up in the hardware pass, which is the point of reading code
+against a spec rather than only running it.
+
+- **`fix.utc` regressed 24 hours at every UTC midnight.** GGA carried the time
+  and RMC the date, stitched together -- and in this receiver's cycle GGA leads
+  RMC by nine sentences, so a 00:00:0x GGA recomputed the clock against
+  yesterday's date. Every day, guaranteed, for about 0.4 s at 816 B/s, and
+  longer whenever the loop is blocked. Fixed by taking date and time only from
+  sentences that carry both: RMC, and `ZDA` where the receiver sends it. `ZDA`
+  is the better source anyway -- it has a four-digit year, so the two-digit
+  century guess never runs. The GGA time path is gone.
+- **Signed 32-bit overflow on 2038-01-19.** `days * 86400L` in `toUnixSeconds`,
+  where `long` is 32 bits on this target -- verified by compiling a
+  `_Static_assert` with the pinned `xtensa-esp32s3-elf` toolchain rather than
+  assuming. The `days_from_civil` formula itself is correct; only the arithmetic
+  width was wrong, in a function returning `uint32_t`. Cast before the multiply.
+- **GSV counters double-counted after a dropped sentence.** The per-cycle
+  accumulator was cleared only when message 1 arrived, and never after a commit.
+  Lose message 1 to a checksum error and the survivors pile onto the previous
+  sweep's residue, so `satsWithSignal()` could report up to double. Now the
+  accumulator clears on commit and a cycle with a gap is skipped rather than
+  committed.
+- **A failed rail enable could leave the rail on.** `gnssPowerEnable()` is two
+  I2C writes and the first one is the one that powers the pair; if the second
+  failed, the function returned false with the receiver and the SX1262 live.
+  Both it and `begin()` now roll back.
+
+Two contract statements were also wrong rather than the code: `poll()` promised
+to report any change to the fix but only reported position, and the header said
+the library never blocks while `begin()` delays for the power settle. Both
+corrected, and `cserr` no longer counts framing errors -- those have their own
+counter, `ferr`, because mixing them makes the baud-rate diagnosis useless.
 
 Cost, measured off the two builds: flash went from 58.3 % to 58.5 % of the
 6.4 MB app partition, about 13 kB for the library plus the command. Zero
@@ -321,49 +450,60 @@ compiler warnings.
 
 ## What the hardware pass found, in the order it was run
 
-Run 2026-08-31, one serial session per run because every port open can reset an
-S3. The board is a LilyGo T5 S3 Pro on a desk indoors.
+Run 2026-08-31 on a LilyGo T5 S3 Pro, indoors, three serial sessions. Read the
+caveats: two of the six checks did not test what they were written to test.
 
-1. **`CMD:GNSS ON` answers `GNSS_OK:on`.** Yes. The expander responds and the
-   rail write succeeds. `CMD:GNSS OFF` and a re-enable also work.
-2. **The SD card still reads with the rail up.** **Yes, and this was the check
-   that mattered.** `CMD:GOTO_MAP` with the rail powered and the SX1262 held in
-   reset read **1,393,825 bytes** off the card: `4 tiles ok, 0 missing (mask
-   0x0), 2684 ways, 13 places`, `3194 ms in the card`, 8 CRC32 skips, and the
-   frame drawn. No mount failure, no corrupt tile. So the `LORA_CS` collision,
-   real as it is in the code, does **not** break the SD bus in this
-   configuration. It also did not break it in earlier sessions, which ran with
-   the rail up and the reset floating without knowing it.
-3. **`bytes` climbs.** Yes, monotonically across every status: 11,644 to 21,820
-   to 39,204 within one session. The pin direction as written is correct and no
-   swap was needed.
+1. **`CMD:GNSS ON` answers `GNSS_OK:on`.** Yes. The expander responds, the rail
+   write succeeds, and `OFF` plus a re-enable work -- the re-enable came back
+   `q=0` with every counter reset, which is what proves the rail controls the
+   module rather than the command merely returning success.
+2. **The SD card still reads with the rail up.** It read, and **the check could
+   not have failed.** `CMD:GOTO_MAP` read 1,393,825 bytes: `4 tiles ok, 0
+   missing`, `3194 ms in the card`, frame drawn. But the log's own ordering
+   shows card access and panel bus never overlapped -- `renderViewport start` at
+   122,550, `3194 ms in the card` finishing at 126,566, `displayBuffer` at
+   126,568. The hazard is a panel refresh toggling GPIO46 **while an SD
+   transaction is in flight**, and that window never opened. n=1 of the wrong
+   scenario. **The contention question is untested**, and so is the reset's
+   contribution to it.
+3. **`bytes` climbs.** Yes, monotonically: 11,644 to 21,820 to 39,204 in one
+   session. Pin direction as written is correct, no swap needed.
 4. **`cserr` stays at 0 while `sent` climbs.** Yes on a rail-cycled start. The
-   two errors seen in run 1 are both explained and neither is the wiring: one
-   from opening the UART mid-sentence on an already-running receiver, one from
-   the buffer overrun during the 4 s map render.
-5. **Outdoors: tracked and bestsnr rise, then a fix.** Got a **3D fix indoors**,
-   which the pass did not expect, so the outdoor half was never needed to prove
-   the receiver works. **The cold-start TTFF is still not measured**: run 2's
-   45 s outage did not clear enough state for a true cold start, and 40 s
-   indoors was not enough to reacquire. Open.
-6. **The idle cost of the pair.** **Not measured.** Open, and now more
-   interesting than it was: the pair is powered on every boot regardless of
-   what the firmware wants, so this is not a feature's cost, it is the board's
-   floor.
+   two errors in run 1 are both explained and neither is the wiring -- one was
+   the UART opening mid-sentence, which the code now counts as `ferr`, and one
+   was the buffer overrun during the blocked map entry.
+5. **Outdoors: tracked and bestsnr rise, then a fix.** A **3D fix indoors** made
+   the outdoor half unnecessary for proving the receiver works. **Cold-start
+   TTFF is still not measured**, and the number this pass produced does not
+   measure it -- see the rail section on why a sub-second TTFF only says
+   "already tracking".
+6. **The idle cost of the pair.** **Not measured.** Open, and its framing
+   depends on the CONFIG0 experiment above: whether it is the board's floor or a
+   feature's price is exactly what has not been established.
+
+**What a real test of check 2 looks like**, when someone runs it: a task doing
+continuous SD reads with CRC verification while full and partial refreshes loop,
+rail up, run twice -- `LORA_RST` floating, then held low. Anything less repeats
+the non-overlapping path.
 
 ## Open
 
-- **Idle current of the GNSS + LoRa pair**, against the BQ27220, and how much of
-  it the board pays on every boot before anything asks. Name the instrument.
-  This is the one with a consequence for the product.
-- **Cold-start TTFF**, outdoors, from a genuinely cold receiver. Needs a longer
-  power-off than 45 s, or a receiver command to clear the almanac.
-- **Whether holding `LORA_RST` low is what keeps the SX1262 off the SPI bus**, or
-  whether the bus would have been fine anyway. Check 2 passed with the reset
-  asserted, and earlier sessions passed with it floating, so the reset's
-  contribution is **unproven either way**. The SX126x datasheet should say
-  whether reset parks MISO high-Z.
-- **The RX buffer under a blocking render** -- which of the three fixes above,
-  decided by the work that feeds position to the map.
-- Whether the receiver can be left powered during a ride or should be
-  duty-cycled. A power question and, given the shared rail, a LoRa question too.
+- **Is the rail on by board default, or was it latched by an earlier session?**
+  The CONFIG0 read on a true power cycle, above. Everything about this board's
+  power floor hangs off the answer, and it costs one boot.
+- **Idle current of the GNSS + LoRa pair**, against the BQ27220 or a meter in
+  series at the development board's battery connector. Name the instrument.
+  T-579.
+- **Cold-start TTFF**, outdoors, from a genuinely cold receiver -- longer than a
+  49.7 s outage, or a receiver command that clears the almanac.
+- **Is the SPI contention real at all?** Does GPIO46 go low during a refresh,
+  and does an SX126x in reset park MISO high-Z? Datasheet plus the overlapping
+  test above.
+- **The RX buffer under a blocking render** -- bigger buffer, own task, or
+  event-driven, decided by the work that feeds position to the map.
+- **The unexercised parser paths**: southern and western hemispheres, a date
+  rollover, a leap second, the two-digit year window, `quality=6`. Cheap to
+  cover with host tests against recorded sentences, and worth doing before the
+  upstream PR.
+- Whether the receiver can stay powered during a ride or must be duty-cycled. A
+  power question, and given the shared rail a LoRa question too.

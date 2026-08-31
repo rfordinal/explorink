@@ -236,24 +236,30 @@ when it would not fit, although the allocation itself would come out of the 8 MB
 Not dangerous -- it is stricter than reality, so the menu closes the slow way --
 but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
 
-## GNSS works, and the receiver was already powered
+## GNSS works. Whether the receiver is on at every boot is open
 
 `CMD:GNSS` over the USB console, `env:t5s3pro` only, no UI and no map
 integration. **Run on the board 2026-08-31**: a 3D fix indoors (8 satellites
 used, 19 in view, best C/N0 32 dB-Hz), 9600 baud right first time, the pin
-direction as the header implies, and the parser exact against the wire including
-the UTC assembly. [`gnss.md`](gnss.md) has all of it.
+direction as the header implies, and the parser correct for the fix it was
+checked against. [`gnss.md`](gnss.md) has all of it.
 
-**The finding that matters for this board: the GNSS receiver and the SX1262 are
-powered from boot, before any firmware writes to the expander.** A fix 531 ms
-after the first enable, and no fix 40 s after a rail-cycled one, only fit that
-reading. So every boot of this board has been paying for both parts all along,
-and how much is unmeasured -- the board's power floor, not a feature's cost.
+**An adversarial review the same day broke three of that pass's conclusions**,
+and the corrected versions matter for this board:
 
-The SD card was the check that mattered and it passed: 1.39 MB of tiles read off
-the card with the rail up and the map drawn, no mount failure and no corrupt
-tile. The `LORA_CS` collision is real in the code and does not break the bus
-here.
+- **The receiver was already powered and tracking when the firmware first
+  enabled the rail.** That holds. But "therefore the board powers it at every
+  boot" does **not** follow: the PCA9535 sits on the 3.3 V rail and latches its
+  registers across an S3 reset, the factory firmware ran on this board earlier
+  the same day, and no run in the evidence was a true power cycle. One CONFIG0
+  register read on a cold boot settles it and has not been done.
+- **The SD-card check could not have failed.** Tiles read fine with the rail up,
+  but the log shows card access and panel bus never overlapped, and overlap is
+  the whole hazard. So the `LORA_CS` collision remains untested rather than
+  cleared.
+- **A blocked loop costs 85 sentences, not 30.** The blocking window is the
+  whole map `onEnter` at 6.07 s, not the 4,017 ms render, and the receiver sends
+  816 B/s measured against a 256-byte RX buffer.
 
 Two more findings out of that work belong here rather than there, because they
 are about this board and not about GNSS:
@@ -266,13 +272,17 @@ are about this board and not about GNSS:
   user button behind the expander has no hook -- which is the same gap the
   unmerged `feat/t5s3-board-begin` branch was opened for, and part of why the
   map is half-operable here (below).
-- **The `LORA_CS` collision is confirmed, no longer `[open]`.** The parent
-  repo's `docs/lora.md` could not settle whether LovyanGFX actually drives the
-  GPIO handed to it as `pin_oe` / `pin_pwr`, because M5GFX was not checked out.
-  It is now: `Bus_EPD` drives both as real GPIOs and passes one to the i80
-  peripheral as its DC line (`Bus_EPD.cpp:83,85,120,129,143`). Every panel
-  refresh toggles GPIO46. Harmless only while the radio is unpowered or held in
-  reset, and GPIO46 is the SX1262's chip select on the SD card's SPI bus.
+- **LovyanGFX does drive `LORA_CS` as a GPIO.** The parent repo's
+  `docs/lora.md` had this `[open]` because M5GFX was not checked out. It is now:
+  `Bus_EPD` drives the pins handed to it as `pin_oe` and `pin_pwr` as real
+  GPIOs, and passes one to the i80 peripheral as its DC line
+  (`Bus_EPD.cpp:83,85,120,129,143`). On this board both are GPIO46, which is the
+  SX1262's chip select, on the SD card's SPI bus.
+  **That the wiring is shared is settled; that it is a hazard is not.** The
+  cited lines drive the pin *high*, and a deasserted chip select is harmless --
+  whether it is ever driven low during a refresh has not been established, and
+  neither has whether an SX126x in reset parks MISO high-Z. Do not read this
+  bullet as a confirmed fault.
 
 ## What is wrong or missing
 

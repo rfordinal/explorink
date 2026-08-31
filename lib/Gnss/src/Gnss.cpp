@@ -41,6 +41,9 @@ bool parseLatLon(const char* value, char hemisphere, double* out) {
   memcpy(degreeBuffer, value, degreeLength);
   const double degrees = atof(degreeBuffer);
   const double minutes = atof(value + degreeLength);
+  // A corrupt field can still carry a valid checksum (1 in 256), and without
+  // this a value like "9999.9999" commits 100.7 degrees of latitude as a fix.
+  if (minutes >= 60.0) return false;
   double result = degrees + minutes / 60.0;
   if (hemisphere == 'S' || hemisphere == 'W') result = -result;
   *out = result;
@@ -60,8 +63,17 @@ uint32_t toUnixSeconds(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, 
   const unsigned dayOfYear = (153u * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
   const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
   const long days = static_cast<long>(era) * 146097 + static_cast<long>(dayOfEra) - 719468;
-  return static_cast<uint32_t>(days * 86400L + hour * 3600L + minute * 60L + second);
+  // Cast to uint32_t BEFORE multiplying. `long` is 32 bits on this target
+  // (verified against the pinned xtensa-esp32s3-elf toolchain), so
+  // `days * 86400L` is signed 32-bit arithmetic and overflows on 2038-01-19 --
+  // silently, and inside a function whose return type promises 2106 and whose
+  // caller accepts years to 2079. `days` is non-negative for any year >= 1970.
+  return static_cast<uint32_t>(days) * 86400u + hour * 3600u + minute * 60u + second;
 }
+
+// hhmmss[.sss] -> h/m/s. Rejects anything that is not six leading digits in
+// range; the fractional part is ignored, this library has no use for it.
+bool parseNmeaTime(const char* value, uint8_t* hour, uint8_t* minute, uint8_t* second);
 
 // Two digits at a known offset, with no validation beyond "they are digits".
 bool twoDigits(const char* text, size_t offset, uint8_t* out) {
@@ -69,6 +81,20 @@ bool twoDigits(const char* text, size_t offset, uint8_t* out) {
   const char low = text[offset + 1];
   if (high < '0' || high > '9' || low < '0' || low > '9') return false;
   *out = static_cast<uint8_t>((high - '0') * 10 + (low - '0'));
+  return true;
+}
+
+bool parseNmeaTime(const char* value, uint8_t* hour, uint8_t* minute, uint8_t* second) {
+  if (strlen(value) < 6) return false;
+  uint8_t h = 0, m = 0, sec = 0;
+  if (!twoDigits(value, 0, &h) || !twoDigits(value, 2, &m) || !twoDigits(value, 4, &sec)) return false;
+  // second == 60 is a leap second. Accepted rather than rejected: it is a real
+  // value, and toUnixSeconds folds it into the next minute's :00, which is one
+  // second wrong for one second a few years apart.
+  if (h > 23 || m > 59 || sec > 60) return false;
+  *hour = h;
+  *minute = m;
+  *second = sec;
   return true;
 }
 
@@ -81,6 +107,10 @@ bool Gnss::begin(const GnssConfig& config) {
   config_ = config;
 
   if (config_.powerEnable != nullptr && !config_.powerEnable(true)) {
+    // The hook may have failed halfway -- on the LilyGo board it is two I2C
+    // writes and the first one is the one that powers the rail. Ask for off
+    // before giving up, so a failed begin() cannot leave a radio powered.
+    config_.powerEnable(false);
     return false;
   }
   if (config_.powerSettleMs > 0) {
@@ -96,10 +126,10 @@ bool Gnss::begin(const GnssConfig& config) {
   for (uint8_t i = 0; i < kMaxTalkers; ++i) {
     talkers_[i] = TalkerState();
   }
-  haveTime_ = false;
-  haveDate_ = false;
   sentences_ = 0;
   checksumErrors_ = 0;
+  framingErrors_ = 0;
+  fixDirty_ = false;
   bytesRead_ = 0;
   ttffMs_ = 0;
   lastFixMs_ = 0;
@@ -130,7 +160,7 @@ uint32_t Gnss::uptimeMs() const {
 bool Gnss::poll() {
   if (!running_) return false;
 
-  const uint32_t fixMarkBefore = lastFixMs_;
+  fixDirty_ = false;
 
   while (config_.serial->available() > 0) {
     const int byteRead = config_.serial->read();
@@ -161,15 +191,19 @@ bool Gnss::poll() {
     line_[lineLength_++] = c;
   }
 
-  return lastFixMs_ != fixMarkBefore;
+  return fixDirty_;
 }
 
 void Gnss::handleSentence(char* line, size_t length) {
   // The line arrives without its leading '$'. Everything up to '*' is the
   // checksummed payload; the two hex digits after it are the checksum.
+  // No '*', or no room for two hex digits after it. That is a framing problem,
+  // not a checksum problem -- a garbage burst on a cold UART lands here, and
+  // counting it as a checksum error inflates the one number a bring-up uses to
+  // judge the baud rate. Separate counters, separate diagnoses.
   const char* star = strchr(line, '*');
   if (star == nullptr || static_cast<size_t>(star - line) + 3 > length) {
-    ++checksumErrors_;
+    ++framingErrors_;
     return;
   }
 
@@ -208,6 +242,8 @@ void Gnss::handleSentence(char* line, size_t length) {
     parseRmc(line);
   } else if (strncmp(type, "GSV", 3) == 0) {
     parseGsv(line, line);
+  } else if (strncmp(type, "ZDA", 3) == 0) {
+    parseZda(line);
   }
 }
 
@@ -219,19 +255,12 @@ void Gnss::parseGga(const char* body) {
   if (!nmeaField(body, 6, field, sizeof(field))) return;
   const uint8_t quality = static_cast<uint8_t>(atoi(field));
 
-  // Time first: it is valid long before a position is, and the caller wants to
-  // see the clock advancing as evidence the receiver is alive.
-  if (nmeaField(body, 1, field, sizeof(field)) && strlen(field) >= 6) {
-    uint8_t hour = 0, minute = 0, second = 0;
-    if (twoDigits(field, 0, &hour) && twoDigits(field, 2, &minute) && twoDigits(field, 4, &second) &&
-        hour < 24 && minute < 60 && second < 61) {
-      hour_ = hour;
-      minute_ = minute;
-      second_ = second;
-      haveTime_ = true;
-      recomputeUtc();
-    }
-  }
+  // GGA's time field is deliberately NOT used for fix_.utc. It used to be,
+  // stitched against the date from the last RMC -- and that regresses the clock
+  // by 24 hours at every UTC midnight, because GGA leads RMC by nine sentences
+  // in this receiver's cycle, so a 00:00:0x GGA recomputes against yesterday's
+  // date. Time now comes only from sentences that carry date and time together
+  // (RMC, ZDA), so the pair can never be mismatched. Found by review, 2026-08-31.
 
   if (nmeaField(body, 7, field, sizeof(field))) {
     fix_.satsUsed = static_cast<uint8_t>(atoi(field));
@@ -265,6 +294,7 @@ void Gnss::parseGga(const char* body) {
 
   const bool firstFix = !fix_.valid;
   fix_.valid = true;
+  fixDirty_ = true;
   lastFixMs_ = millis();
   if (lastFixMs_ == 0) lastFixMs_ = 1;  // 0 is the "never" sentinel
   if (firstFix) {
@@ -276,21 +306,25 @@ void Gnss::parseGga(const char* body) {
 void Gnss::parseRmc(const char* body) {
   char field[16];
 
-  // Field 2 is A (valid) or V (warning). Speed and course from a V sentence
-  // are not trustworthy, but the date is: the receiver decodes it from the
-  // almanac before it has a position.
-  if (nmeaField(body, 9, field, sizeof(field)) && strlen(field) >= 6) {
+  // Field 2 is A (valid) or V (warning). Speed and course from a V sentence are
+  // not trustworthy, but the clock is: the receiver decodes date and time from
+  // the signal before it has a position. Both are taken from THIS sentence, so
+  // they always describe the same instant.
+  char timeField[16];
+  if (nmeaField(body, 1, timeField, sizeof(timeField)) && nmeaField(body, 9, field, sizeof(field)) &&
+      strlen(field) >= 6) {
+    uint8_t hour = 0, minute = 0, second = 0;
     uint8_t day = 0, month = 0, shortYear = 0;
-    if (twoDigits(field, 0, &day) && twoDigits(field, 2, &month) && twoDigits(field, 4, &shortYear) &&
-        day >= 1 && day <= 31 && month >= 1 && month <= 12) {
-      day_ = day;
-      month_ = month;
-      // NMEA's two-digit year. The receiver has no century, so 00-79 is read
-      // as 2000-2079 and 80-99 as 1980-1999 -- the GPS epoch starts in 1980,
-      // so nothing earlier can legitimately appear here.
-      year_ = static_cast<uint16_t>(shortYear >= 80 ? 1900 + shortYear : 2000 + shortYear);
-      haveDate_ = true;
-      recomputeUtc();
+    if (parseNmeaTime(timeField, &hour, &minute, &second) && twoDigits(field, 0, &day) &&
+        twoDigits(field, 2, &month) && twoDigits(field, 4, &shortYear) && day >= 1 && day <= 31 &&
+        month >= 1 && month <= 12) {
+      // NMEA's two-digit year. The receiver sends no century, so 00-79 reads as
+      // 2000-2079 and 80-99 as 1980-1999 -- the GPS epoch starts in 1980, so
+      // nothing earlier can legitimately appear. ZDA below avoids the guess
+      // entirely and is preferred when the receiver sends it.
+      const uint16_t year = static_cast<uint16_t>(shortYear >= 80 ? 1900 + shortYear : 2000 + shortYear);
+      fix_.utc = toUnixSeconds(year, month, day, hour, minute, second);
+      fixDirty_ = true;
     }
   }
 
@@ -302,6 +336,28 @@ void Gnss::parseRmc(const char* body) {
   if (nmeaField(body, 8, field, sizeof(field)) && field[0] != '\0') {
     fix_.courseDegrees = static_cast<float>(atof(field));
   }
+}
+
+// ZDA carries time, day, month and a FOUR-digit year in one sentence, which
+// makes it strictly better than RMC for the clock: same atomicity, no century
+// guess. Not every receiver sends it; the L76K on the LilyGo T5 S3 Pro does.
+void Gnss::parseZda(const char* body) {
+  char field[16];
+  uint8_t hour = 0, minute = 0, second = 0;
+  if (!nmeaField(body, 1, field, sizeof(field))) return;
+  if (!parseNmeaTime(field, &hour, &minute, &second)) return;
+
+  if (!nmeaField(body, 2, field, sizeof(field))) return;
+  const int day = atoi(field);
+  if (!nmeaField(body, 3, field, sizeof(field))) return;
+  const int month = atoi(field);
+  if (!nmeaField(body, 4, field, sizeof(field))) return;
+  const int year = atoi(field);
+  if (day < 1 || day > 31 || month < 1 || month > 12 || year < 1980 || year > 2105) return;
+
+  fix_.utc = toUnixSeconds(static_cast<uint16_t>(year), static_cast<uint8_t>(month),
+                           static_cast<uint8_t>(day), hour, minute, second);
+  fixDirty_ = true;
 }
 
 void Gnss::parseGsv(const char* talker, const char* body) {
@@ -323,6 +379,17 @@ void Gnss::parseGsv(const char* talker, const char* body) {
   if (messageNumber <= 1) {
     state->pendingCount = 0;
     state->pendingBest = 0;
+    state->expectedNext = 2;
+    state->cycleIntact = true;
+  } else if (messageNumber != state->expectedNext) {
+    // A message of this cycle was lost -- a checksum error on a 9600 baud line
+    // is exactly what checksumErrors_ counts. Without this the survivors
+    // accumulate on top of the previous cycle's residue and satsWithSignal()
+    // reports up to double. Found by review, 2026-08-31.
+    state->cycleIntact = false;
+    state->expectedNext = static_cast<uint8_t>(messageNumber + 1);
+  } else {
+    state->expectedNext = static_cast<uint8_t>(messageNumber + 1);
   }
 
   // Four fields per satellite from field 4: PRN, elevation, azimuth, C/N0.
@@ -339,8 +406,16 @@ void Gnss::parseGsv(const char* talker, const char* body) {
 
   state->inView = inView;
   if (messageCount > 0 && messageNumber >= messageCount) {
-    state->snrCount = state->pendingCount;
-    state->snrBest = state->pendingBest;
+    if (state->cycleIntact) {
+      state->snrCount = state->pendingCount;
+      state->snrBest = state->pendingBest;
+    }
+    // Cleared whether or not the cycle was intact, so a dropped message can
+    // never leak into the next sweep.
+    state->pendingCount = 0;
+    state->pendingBest = 0;
+    state->cycleIntact = true;
+    state->expectedNext = 1;
   }
 }
 
@@ -360,11 +435,6 @@ Gnss::TalkerState* Gnss::talkerFor(const char* id) {
   // More constellations than the table holds. Dropping the extra is better
   // than evicting a talker whose counts are already committed.
   return nullptr;
-}
-
-void Gnss::recomputeUtc() {
-  if (!haveTime_ || !haveDate_) return;
-  fix_.utc = toUnixSeconds(year_, month_, day_, hour_, minute_, second_);
 }
 
 uint8_t Gnss::satsInView() const {

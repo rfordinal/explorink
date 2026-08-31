@@ -14,9 +14,11 @@
 // expander pin shared with the LoRa radio; that is board support and not
 // something this library can know about.
 //
-// The library never logs and never blocks. poll() consumes whatever the UART
-// already has and returns immediately; the caller decides what to print, when
-// to ask, and how to report it. Nothing here allocates after begin().
+// The library never logs, and poll() never blocks -- it consumes whatever the
+// UART already has and returns immediately, so the caller decides what to
+// print, when to ask, and how to report it. begin() is the one exception: it
+// blocks for GnssConfig::powerSettleMs while the receiver's regulator comes up.
+// Nothing here allocates after begin().
 
 // One position solution, as last reported by the receiver.
 struct GnssFix {
@@ -25,7 +27,11 @@ struct GnssFix {
   // caller can tell "never had a fix" from "had one, lost it" by also reading
   // Gnss::fixAgeMs().
   bool valid = false;
-  // GGA field 6: 0 = no fix, 1 = GNSS fix, 2 = differential, 6 = estimated.
+  // GGA field 6: 0 = no fix, 1 = GNSS, 2 = differential, 4/5 = RTK,
+  // 6 = estimated. Note that 6 is dead reckoning, with no satellites behind it,
+  // and `valid` is set for it like any other non-zero quality -- a caller that
+  // must not act on a dead-reckoned position has to check this field. Untested:
+  // this receiver has not been seen to emit 6.
   uint8_t quality = 0;
   // Satellites used in the solution (GGA field 7), not satellites in view.
   uint8_t satsUsed = 0;
@@ -35,14 +41,19 @@ struct GnssFix {
   float hdop = 0.0f;
   float speedKmh = 0.0f;
   float courseDegrees = 0.0f;
-  // Unix seconds. Zero until both a GGA time and an RMC date have arrived --
-  // NMEA splits them across two sentence types.
+  // Unix seconds, zero until known. Taken only from sentences that carry date
+  // and time TOGETHER (RMC, and ZDA where the receiver sends it), never
+  // stitched across two sentences -- see parseGga's comment for the midnight
+  // bug that cost.
   uint32_t utc = 0;
 };
 
 // Raw sentence sink: every checksum-valid sentence, with its "*hh" checksum and
 // without the leading '$' or the trailing CRLF. Used for bring-up passthrough.
 // Called from poll(), on the caller's task.
+//
+// `sentence[length]` is guaranteed to be '\0', so a sink may treat it as a
+// C string and ignore `length`. Stated because a caller already relies on it.
 using GnssRawSink = void (*)(const char* sentence, size_t length);
 
 struct GnssConfig {
@@ -73,8 +84,15 @@ class Gnss {
   void end();
   bool running() const { return running_; }
 
-  // Consume every byte the UART has buffered and parse what completes.
-  // Returns true if this call updated the fix. Cheap to call every loop.
+  // Consume every byte the UART has buffered and parse what completes. Returns
+  // true if this call changed anything in fix() -- position, quality, speed,
+  // course or the clock, not position alone. Cheap to call every loop.
+  //
+  // It must actually BE called every loop: the driver's RX buffer is 256 bytes
+  // by default (framework-arduinoespressif32 HardwareSerial.cpp:148) and this
+  // receiver sends about 816 bytes a second, measured, so anything that blocks
+  // the caller for more than ~0.3 s loses sentences. A 6.07 s blocking screen
+  // render cost 85 of them on real hardware.
   bool poll();
 
   const GnssFix& fix() const { return fix_; }
@@ -94,7 +112,12 @@ class Gnss {
   uint8_t bestSnr() const;
 
   uint32_t sentencesParsed() const { return sentences_; }
+  // Sentences whose checksum did not match: the baud-rate and line-quality
+  // signal. Distinct from framingErrors(), which counts input that had no
+  // usable "*hh" at all -- a garbage burst on a cold UART, or a line lost to
+  // buffer overflow. Mixing the two makes the first useless as a diagnosis.
   uint32_t checksumErrors() const { return checksumErrors_; }
+  uint32_t framingErrors() const { return framingErrors_; }
   uint32_t bytesRead() const { return bytesRead_; }
 
   // Pass nullptr to stop.
@@ -115,14 +138,16 @@ class Gnss {
     uint8_t snrBest = 0;       // committed best snr
     uint8_t pendingCount = 0;  // accumulating over the current GSV cycle
     uint8_t pendingBest = 0;
+    uint8_t expectedNext = 1;  // next message number this cycle should carry
+    bool cycleIntact = true;   // false once a message of this cycle went missing
   };
 
   void handleSentence(char* line, size_t length);
   void parseGga(const char* body);
   void parseRmc(const char* body);
   void parseGsv(const char* talker, const char* body);
+  void parseZda(const char* body);
   TalkerState* talkerFor(const char* id);
-  void recomputeUtc();
 
   GnssConfig config_;
   bool running_ = false;
@@ -134,21 +159,14 @@ class Gnss {
   GnssFix fix_;
   TalkerState talkers_[kMaxTalkers];
 
-  // GGA carries the time, RMC carries the date. Held separately until both are
-  // known, because a receiver emits GGA with a valid time long before it has a
-  // date.
-  bool haveTime_ = false;
-  bool haveDate_ = false;
-  uint8_t hour_ = 0, minute_ = 0, second_ = 0;
-  uint8_t day_ = 0, month_ = 0;
-  uint16_t year_ = 0;
-
   uint32_t beginMs_ = 0;
   uint32_t lastFixMs_ = 0;
   uint32_t ttffMs_ = 0;
 
   uint32_t sentences_ = 0;
   uint32_t checksumErrors_ = 0;
+  uint32_t framingErrors_ = 0;
+  bool fixDirty_ = false;
   uint32_t bytesRead_ = 0;
 
   GnssRawSink rawSink_ = nullptr;

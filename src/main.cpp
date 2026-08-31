@@ -94,7 +94,14 @@ static bool gnssPowerEnable(bool on) {
   // pin to output first would drive whatever the output register happens to
   // hold, which on a cold boot is the PCA9535's power-on default of high.
   if (!BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, on)) return false;
-  return BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
+  if (!BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT)) {
+    // The write above already took effect and the direction may already have
+    // been output from an earlier call, so a failure here can leave the rail
+    // live while this function reports failure. Undo it before returning.
+    if (on) BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, false);
+    return false;
+  }
+  return true;
 }
 
 // CMD:GNSS RAW passthrough. The parser hands over the sentence with its "*hh"
@@ -103,8 +110,7 @@ static bool gnssPowerEnable(bool on) {
 // stripped the checksum too and produced lines that looked like NMEA and were
 // not -- caught on hardware, 2026-08-31.
 static void gnssRawSink(const char* sentence, size_t length) {
-  (void)length;
-  logSerial.printf("GNSS_RAW:$%s\n", sentence);
+  logSerial.printf("GNSS_RAW:$%.*s\n", static_cast<int>(length), sentence);
 }
 #endif
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
@@ -995,7 +1001,8 @@ void loop() {
           if (fix.valid) {
             logSerial.printf(
                 "GNSS_FIX:q=%u used=%u inview=%u tracked=%u bestsnr=%u lat=%.6f lon=%.6f alt=%.1f "
-                "hdop=%.2f speed=%.1f course=%.1f utc=%lu ttff=%lu age=%lu sent=%lu cserr=%lu bytes=%lu\n",
+                "hdop=%.2f speed=%.1f course=%.1f utc=%lu ttff=%lu age=%lu sent=%lu cserr=%lu ferr=%lu "
+                "bytes=%lu\n",
                 static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
                 static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
                 static_cast<unsigned>(gnss.bestSnr()), fix.latitude, fix.longitude, fix.altitudeMeters,
@@ -1004,16 +1011,18 @@ void loop() {
                 static_cast<unsigned long>(gnss.fixAgeMs()),
                 static_cast<unsigned long>(gnss.sentencesParsed()),
                 static_cast<unsigned long>(gnss.checksumErrors()),
+                static_cast<unsigned long>(gnss.framingErrors()),
                 static_cast<unsigned long>(gnss.bytesRead()));
           } else {
             logSerial.printf(
                 "GNSS_NOFIX:q=%u inview=%u tracked=%u bestsnr=%u utc=%lu uptime=%lu sent=%lu cserr=%lu "
-                "bytes=%lu\n",
+                "ferr=%lu bytes=%lu\n",
                 static_cast<unsigned>(fix.quality), static_cast<unsigned>(gnss.satsInView()),
                 static_cast<unsigned>(gnss.satsWithSignal()), static_cast<unsigned>(gnss.bestSnr()),
                 static_cast<unsigned long>(fix.utc), static_cast<unsigned long>(gnss.uptimeMs()),
                 static_cast<unsigned long>(gnss.sentencesParsed()),
                 static_cast<unsigned long>(gnss.checksumErrors()),
+                static_cast<unsigned long>(gnss.framingErrors()),
                 static_cast<unsigned long>(gnss.bytesRead()));
           }
         }
