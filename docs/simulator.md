@@ -111,6 +111,30 @@ Keys: `BACK`, `ENTER`, `LEFT`, `RIGHT`, `UP`, `DOWN`, `POWER`, `SLEEP`, `HOME`,
 `QUIT`. Screenshots are BMP at the host's drawable resolution. Upstream's
 `README.md` has the touch actions, the sleep/wake pair and the heap overrides.
 
+**Headless capture needs a software renderer, not just a dummy video driver.**
+`SDL_VIDEODRIVER=dummy` alone makes `CROSSPOINT_SIM_SCREENSHOTS` silently
+write nothing: `SDL_CreateRenderer(..., SDL_RENDERER_ACCELERATED)`
+(`HalDisplay.cpp:553`) fails under the dummy driver's no-GPU backend,
+`presentIfNeeded()` returns early on the null `sdl_renderer`
+(`HalDisplay.cpp:717-718`), and nothing logs the failure. Add
+`SDL_RENDER_DRIVER=software` alongside `SDL_VIDEODRIVER=dummy` and captures
+work. Confirmed 2026-08-31 on Linux, no X server.
+
+**Building a non-default device profile needs no new `platformio.ini` env.**
+`src/BoardConfig.h` (in the `simulator` lib_dep) picks the simulated device
+from `SIMULATOR_DEVICE_X3` / `_X4_PRO` / `_STICKY` / `_PAPERMONO` (X4 is the
+default with none set), and this repo's `[env:simulator]` only ever builds
+X4. Inject the flag for a one-off build instead of adding an env block:
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-DSIMULATOR_DEVICE_X3" pio run -e simulator
+```
+
+The flag is part of the build signature, so a rebuild after changing it
+recompiles exactly the affected objects, not the whole tree. There is no
+`SIMULATOR_DEVICE_LILYGO_T5S3` or equivalent -- the simulator has no HAL for
+that SoC at all, so the T5S3 cannot be exercised this way.
+
 ## End to end against real tiles
 
 **What the other checks do not cover.** A tilegen test proves the writer's bytes.
