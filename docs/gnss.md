@@ -804,7 +804,8 @@ the non-overlapping path.
   series at the development board's battery connector. Name the instrument.
   T-579.
 - **A cold start cannot be produced today.** `power-management.md`'s G1 row
-  (added on `develop` by another session, 2026-08-31) asks for `CMD:GNSS ON` from
+  (added on `develop` 2026-08-31, from a branch this session did not create) asks
+  for `CMD:GNSS ON` from
   a receiver with a cleared almanac, and **no command in this firmware clears
   one** -- the L76K needs a CASIC restart command that is not implemented. Until
   it is, G1 is not executable and only warm figures are obtainable. T-581.
