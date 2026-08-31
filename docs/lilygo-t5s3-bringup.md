@@ -38,7 +38,7 @@ Three things the SDK's own `platformio.sample.ini` does not tell you:
 
 Sizes, 2026-08-31: flash 58.3 % of the 6.4 MB app partition, DIRAM 45 %, IRAM
 full at 16 KB (same as every other env). Free heap on the Home screen is
-~192 KB against the X4's ~50 KB.
+~192 KB against the X4's ~50 KB `[the X4 figure is read from this repo's docs, not measured: there has been no X4 since 2026-08-22]`.
 
 ## What works, verified on hardware
 
@@ -47,7 +47,9 @@ partition table and app the ordinary way -- no offset trickery, unlike the X4.
 
 - **Boot to Home.** `Boot` then `Home` activity, both drawn.
 - **The panel.** Full frame in 34 ms from `clearScreen` to `displayBuffer`, and
-  6 ms for the boot screen. Much faster than the X4, and fast enough to be
+  6 ms for the boot screen. Much faster than the X4 `[the X4 figures are read
+  from this repo's docs, not measured: there has been no X4 since 2026-08-22]`,
+  and fast enough to be
   surprising -- worth its own measurement rather than a note.
 - **Touch.** GT911 works with no configuration upload; Settings was reached and
   the map opened by finger. `[maintainer, on the board]`
@@ -114,16 +116,26 @@ So connection, both notify channels, MTU negotiation, the `tiles` command, a
 the device stops advertising once connected, which is correct behaviour and not
 a fault.
 
-**MTU settles at 256, not the X4's 517.** That halves the chunk payload, 248 B
-against 509 B. Whether the ceiling is the phone, the NimBLE config or the S3 is
-unmeasured.
+**MTU settles at 256, and that is the normal figure, not a shortfall.** The X4
+with the same Android app logs `MTU now 256` too
+(`../../docs/ble-review-2026-08.md:250`, `303`, `314`, `317`). The 517 in
+`../../docs/ble-bridge.md:28` is not a device at all: it is the firmware built
+as a host binary behind the BLE bridge. A first draft of this file called 256 a
+halving against "the X4's 517" and made a measurement task out of a gap that
+does not exist. **Lesson: a number quoted from another doc carries that doc's
+conditions with it, and "the firmware logged it" is not the same as "the device
+logged it".**
 
 ### Three things the frame shows
 
 - **The chrome is sized for the X4.** Header, scale bar and marker are drawn at
   the same pixel sizes as on 480x800, merely spread over 540x960 on a denser
-  panel (~234 PPI). The profile carries `uiScale 1.2` and the map's chrome does
-  not appear to use it. This is the universal-style defect, not a LilyGo quirk.
+  panel (~234 PPI). The profile carries `uiScale 1.2` (`BoardConfig.h:905`) and
+  **nothing reads it**: outside its declaration at `BoardConfig.h:587` the
+  identifier does not appear in `src/`, in `lib/`, or in any freeink-sdk
+  library. It is a dead field, not a half-wired one, so the chrome cannot scale
+  with the panel on any device. This is the universal-style defect, not a LilyGo
+  quirk.
 - **The scale bar is jammed into the bottom-left corner**, its label sitting
   practically on the frame edge.
 - **A full map redraw costs about 2.7 s** -- `GFX Time = 2691 ms` and `2644 ms`
@@ -240,14 +252,16 @@ but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
   `pos <lat> <lon>` on the map console is the way in from a laptop -- but see the
   serial reset below.
 
-## Serial resets the board, always
+## Serial usually resets the board, and you cannot rely on either outcome
 
-Opening `/dev/ttyACM0` resets the S3, even with DTR and RTS both driven low
-before the port is opened. The USB-JTAG-serial peripheral is on the SoC itself,
-so there is no external auto-reset circuit to defeat. Consequence: **every
-`CMD:` arrives at a device that has just rebooted and is on the Home screen.**
-A command that depends on being inside an activity has to be preceded by the
-command that gets there.
+Opening `/dev/ttyACM0` normally resets the S3, even with DTR and RTS both driven
+low before the port is opened: the USB-JTAG-serial peripheral is on the SoC
+itself, so there is no external auto-reset circuit to defeat. **But not every
+open does it** -- one open in this session landed on a device whose uptime
+counter carried on at `[231152]`, with the map still on screen. So a `CMD:` may
+arrive at a freshly booted device on Home, or at whatever was already running,
+and a script has to handle both: watch for the boot banner, and drive to the
+screen you need rather than assuming.
 
 The board also disappears from the USB bus entirely when it sleeps or is
 powered down -- `/dev/ttyACM*` vanishes and `lsusb` shows no `303a` device. That
