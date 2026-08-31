@@ -177,6 +177,14 @@ X4; **every row below is T5S3**, a different battery pack and a different
 radio pair (GNSS + LoRa share a rail, `docs/gnss.md`, "The power rail is shared
 with the LoRa radio"), so none of the X4 numbers transfer.
 
+**Framing, corrected 2026-08-31 (maintainer):** a design that keeps G2's
+low-duty background fix running whenever the phone is not connected is not
+"the device depends on the phone when connected." Losing BLE only drops the
+update rate back to the G2 baseline (never to zero); the phone is a bonus
+layered on an always-present floor, not a precondition (Téza `V47`: "Optimum
+je nezávislosť od telefónu. Každá závislosť na ňom je stav, ktorý sa
+odstraňuje, nie vlastnosť, ktorou sa produkt vysvetľuje.").
+
 **No flash, no meter** (whatever firmware is on the board, `CMD:GNSS` and
 `tools/blefakephone.py` drive both ends):
 
@@ -214,6 +222,30 @@ by how much position staleness the current use tolerates (moto vs hiking --
 the two personas differ by an order of magnitude in how stale a dot can be
 before it reads as wrong). None of this is measured yet -- table above is
 what closes it, cheapest first.
+
+**Cross-reference, added 2026-08-31 during retrospective**: `docs/device-choice.md`,
+"Would onboard GNSS let us switch BLE off" already tracks the same question one
+level up (X4 Pro architecture, not T5S3-specific), under **T-522**. Two things
+from there apply here unchanged:
+
+- **The redraw-entanglement trap.** Run 3's BLE-connected leg on X4 measured the
+  link *and* ~47-50 marker redraws an hour together, and the two have never been
+  separated -- so its 2.4x figure is not "what BLE costs," it is "what BLE plus
+  the redraws it causes costs." G5 and G6 above need the same separation: a leg
+  with fixes arriving and redraws suppressed, against a matched-voltage
+  advertising leg, or T5S3 repeats the same unusable number.
+- **A vendor number exists for the receiver class, and it was already misused
+  once.** u-blox specifies the M10 platform (same as the LilyGo board's
+  MIA-M10Q) at "less than 25 mW" continuous tracking -- roughly 7.6 mA at 3.3 V,
+  before regulator loss (`u-blox.com/en/product/max-m10s-module`, `[cited,
+  vendor]`). Use it only as a rough cross-check on G2/G3 once measured, never as
+  a substitute for measuring: an earlier version of `device-choice.md` set this
+  same figure against a retracted mA number and concluded GNSS "roughly doubles"
+  the parked draw, and that conclusion was withdrawn the next day.
+
+T-579 above is cited from `firmware/explorink` branch `feat/t5s3-gnss`
+(`docs/gnss.md`), not yet merged to `develop` -- grepping this parent repo's
+`docs/TODO.md` for it finds nothing until that branch lands.
 
 ### Observation mode: why M16 is the run to spend a night on
 
