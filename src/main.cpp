@@ -23,6 +23,7 @@
 #ifdef ENABLE_GNSS_CMD
 #include <BoardT5S3.h>
 #include <Gnss.h>
+#include <Wire.h>
 #endif
 
 #include <cstring>
@@ -101,6 +102,30 @@ static bool gnssPowerEnable(bool on) {
     if (on) BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, false);
     return false;
   }
+  return true;
+}
+
+// Reads the PCA9535's own registers, which BoardT5S3 does not expose: it offers
+// readPca9535Pin(), and that reads the INPUT port, i.e. the pin's level rather
+// than its direction. Direction is the question here.
+//
+// Why direction answers anything: the expander comes out of power-on reset with
+// every pin an input, and this firmware writes only port 1 (the EPD pins, in
+// LilyGoT5S3LgfxConfig.cpp). Port 0 bit 0 is LORA_GPS_EN. So on a genuine power
+// cycle it must still read as an input -- and if the receiver is nonetheless
+// streaming NMEA, something outside this firmware is holding that rail on. If it
+// reads as an output, a previous session latched it and the expander never lost
+// power, which is the alternative this probe exists to exclude.
+static bool gnssReadExpanderRegister(uint8_t reg, uint8_t* value) {
+  BoardT5S3::ScopedI2CLock lock;
+  Wire.beginTransmission(T5S3_PCA9535_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(static_cast<uint8_t>(T5S3_PCA9535_ADDR), static_cast<uint8_t>(1)) != 1) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
+  *value = Wire.read();
   return true;
 }
 
@@ -956,6 +981,7 @@ void loop() {
         //   CMD:GNSS OFF       ->  GNSS_OK:off
         //   CMD:GNSS RAW ON    ->  GNSS_OK:raw=1   (every sentence to the log)
         //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
+        //   CMD:GNSS PROBE     ->  GNSS_PROBE:...  (run first, on a cold boot)
         //
         // Reading the reply: `ttff` is NOT an acquisition time on a receiver
         // that was already running -- Gnss::timeToFirstFixMs() spells out why
@@ -988,6 +1014,49 @@ void loop() {
         } else if (argument == "OFF") {
           gnss.end();
           logSerial.printf("GNSS_OK:off\n");
+        } else if (argument == "PROBE") {
+          // Answers one question and must run BEFORE any CMD:GNSS ON in the
+          // session, on a boot that is a real power-on rather than a reset:
+          // is the receiver's rail held on by the board, or was it left on by an
+          // earlier session? The 2026-08-31 bring-up could not tell those apart
+          // and wrongly published the first one (docs/gnss.md).
+          //
+          // Reads the expander's direction, then opens the UART with NO power
+          // hook at all, so nothing here can write the rail and spoil the
+          // reading. Check the ROM's reset cause in the boot log too: only
+          // POWERON makes the answer mean anything.
+          uint8_t config0 = 0;
+          uint8_t output0 = 0;
+          uint8_t input0 = 0;
+          const bool haveConfig = gnssReadExpanderRegister(0x06, &config0);
+          const bool haveOutput = gnssReadExpanderRegister(0x02, &output0);
+          const bool haveInput = gnssReadExpanderRegister(0x00, &input0);
+          if (!haveConfig || !haveOutput || !haveInput) {
+            logSerial.printf("GNSS_PROBE_ERR:expander read failed\n");
+          } else {
+            const bool isInput = (config0 & 0x01) != 0;
+            GnssConfig probe;
+            probe.serial = &Serial1;
+            probe.rxPin = T5S3_GPS_RXD;
+            probe.txPin = T5S3_GPS_TXD;
+            probe.baud = 9600;
+            probe.powerEnable = nullptr;  // the whole point
+            probe.powerSettleMs = 0;
+            gnss.begin(probe);
+            const unsigned long until = millis() + 2500;
+            while (millis() < until) {
+              gnss.poll();
+            }
+            logSerial.printf(
+                "GNSS_PROBE:cfg0=0x%02X out0=0x%02X in0=0x%02X io00_dir=%s io00_level=%s bytes=%lu "
+                "sent=%lu cserr=%lu ferr=%lu\n",
+                config0, output0, input0, isInput ? "input" : "output",
+                (input0 & 0x01) ? "high" : "low", static_cast<unsigned long>(gnss.bytesRead()),
+                static_cast<unsigned long>(gnss.sentencesParsed()),
+                static_cast<unsigned long>(gnss.checksumErrors()),
+                static_cast<unsigned long>(gnss.framingErrors()));
+            gnss.end();  // powerEnable is null, so this touches no rail
+          }
         } else if (argument == "RAW ON" || argument == "RAW") {
           gnss.setRawSink(gnssRawSink);
           logSerial.printf("GNSS_OK:raw=1\n");
@@ -995,7 +1064,7 @@ void loop() {
           gnss.setRawSink(nullptr);
           logSerial.printf("GNSS_OK:raw=0\n");
         } else if (argument.length() > 0) {
-          logSerial.printf("GNSS_ERR:expected ON, OFF, RAW ON or RAW OFF\n");
+          logSerial.printf("GNSS_ERR:expected ON, OFF, PROBE, RAW ON or RAW OFF\n");
         } else if (!gnss.running()) {
           logSerial.printf("GNSS_OFF\n");
         } else {
