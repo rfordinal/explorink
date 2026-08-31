@@ -122,18 +122,35 @@ work. Confirmed 2026-08-31 on Linux, no X server.
 
 **Building a non-default device profile needs no new `platformio.ini` env.**
 `src/BoardConfig.h` (in the `simulator` lib_dep) picks the simulated device
-from `SIMULATOR_DEVICE_X3` / `_X4_PRO` / `_STICKY` / `_PAPERMONO` (X4 is the
-default with none set), and this repo's `[env:simulator]` only ever builds
-X4. Inject the flag for a one-off build instead of adding an env block:
+from `SIMULATOR_DEVICE_X3` / `_X4_PRO` / `_STICKY` / `_PAPERMONO` /
+`_LILYGO_T5S3` (X4 is the default with none set), and this repo's
+`[env:simulator]` only ever builds X4. Inject the flag for a one-off build
+instead of adding an env block:
 
 ```bash
 PLATFORMIO_BUILD_FLAGS="-DSIMULATOR_DEVICE_X3" pio run -e simulator
 ```
 
 The flag is part of the build signature, so a rebuild after changing it
-recompiles exactly the affected objects, not the whole tree. There is no
-`SIMULATOR_DEVICE_LILYGO_T5S3` or equivalent -- the simulator has no HAL for
-that SoC at all, so the T5S3 cannot be exercised this way.
+recompiles exactly the affected objects, not the whole tree.
+
+**`SIMULATOR_DEVICE_LILYGO_T5S3` exists now (2026-08-31)** and gets the T5S3's
+real panel geometry: a 960x540 raw-parallel ED047TC1 buffer, 540x960 portrait
+-- a real resolution difference from every Xteink profile, not a controller
+swap. It does not emulate the S3 SoC or the board's PCA9535 expander /
+TPS65185 PMIC bring-up (those live in `BoardT5S3.h/.cpp`, board-support code
+this main.cpp does not call on `develop`); it only reports the panel size and
+capabilities BoardConfig tracks, the same way the X4 Pro/Sticky/PaperMono
+profiles do for hardware this firmware has never run on. That is enough to
+preview map style and layout at the real target resolution:
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-DSIMULATOR_DEVICE_LILYGO_T5S3" pio run -e simulator -t run_simulator
+```
+
+Verified 2026-08-31: builds against `develop`, boot screen and an empty map
+viewport both render correctly at 540x960 (`firmware/explorink-simulator`
+commit `47931c3`).
 
 ## End to end against real tiles
 
