@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -80,8 +81,19 @@ struct GnssConfig {
   // RX ring buffer, requested before the UART opens. The Arduino default is 256
   // bytes, which a receiver sending ~800 B/s fills in a third of a second --
   // less than one blocking screen refresh on an e-ink device. 1 KB buys about
-  // 1.2 s of caller inattention. It does not fix a multi-second block; nothing
-  // sized in kilobytes does, and that wants the UART on its own task.
+  // 1.2 s of caller inattention.
+  //
+  // A caller that blocks for seconds has to raise this, and can: measured on a
+  // LilyGo T5 S3 Pro 2026-08-31, the worst blocking window across five driven
+  // scenarios was a cold map entry at 6.14 s, and 8 KB covered it with no
+  // sentence lost. Size it as worst-block x byte-rate and leave margin -- the
+  // firmware's platformio.ini shows the arithmetic. The default stays modest
+  // because a board with 380 KB of RAM cannot spend 8 KB here and does not have
+  // to; only the board that blocks pays.
+  //
+  // A ring cannot cover an UNBOUNDED block, so a caller that cannot state its
+  // worst case wants the UART on its own task instead. Gnss::ringOverflows() is
+  // what says which caller you are.
   uint16_t rxBufferBytes = 1024;
 };
 
@@ -100,11 +112,16 @@ class Gnss {
   // true if this call changed anything in fix() -- position, quality, speed,
   // course or the clock, not position alone. Cheap to call every loop.
   //
-  // It must actually BE called every loop: the driver's RX buffer is 256 bytes
-  // by default (framework-arduinoespressif32 HardwareSerial.cpp:148) and this
-  // receiver sends about 816 bytes a second, measured, so anything that blocks
-  // the caller for more than ~0.3 s loses sentences. A 6.07 s blocking screen
-  // render cost 85 of them on real hardware.
+  // It must actually BE called every loop, and the RX ring is what forgives a
+  // caller that is not. The driver's default is 256 bytes
+  // (framework-arduinoespressif32 3.3.7, HardwareSerial.cpp:148) against a
+  // receiver sending about 800 bytes a second, measured, so at the default
+  // anything that blocks for more than ~0.3 s loses sentences: a 6.07 s
+  // blocking screen render cost 85 of them on real hardware.
+  //
+  // GnssConfig::rxBufferBytes is the dial, and ringOverflows() is the check --
+  // a caller who blocks and does not want to think about the size is choosing
+  // to lose sentences it cannot see.
   bool poll();
 
   const GnssFix& fix() const { return fix_; }
@@ -153,6 +170,42 @@ class Gnss {
   // no longer loses nothing. It reports proximity to loss, and the driver is
   // the only thing that knows about loss itself.
   uint32_t rxNearlyFullEvents() const { return rxNearlyFull_; }
+
+  // The RX ring the driver actually granted, in bytes, or 0 before begin().
+  // Not GnssConfig::rxBufferBytes: setRxBufferSize() returns what it allocated,
+  // which can be less than asked for, and the near-full test above measures
+  // against the granted size. A caller sizing a buffer against a blocking
+  // render is choosing this number, so it has to be able to read it back
+  // instead of trusting that its request landed.
+  size_t rxBufferSize() const { return rxBufferBytes_; }
+
+  // Overflows the UART DRIVER reported, as opposed to rxNearlyFullEvents()
+  // above, which this class infers. Both exist because they answer different
+  // questions and neither answers the other's.
+  //
+  // ringOverflows() counts UART_BUFFER_FULL: the ISR tried to push a batch of
+  // FIFO bytes into the RX ring, the ring refused, and the driver switched the
+  // RX interrupts off until somebody drains (ESP-IDF 5.5.2,
+  // esp_driver_uart/src/uart.c:1302). The refused batch is stashed and
+  // re-delivered, so this on its own is "the ring is full", not yet lost data.
+  //
+  // fifoOverflows() counts UART_FIFO_OVF, which is the loss: with the ring full
+  // and the interrupts off, the hardware FIFO fills next and the bytes past it
+  // are gone.
+  //
+  // Why these are worth their cost: rxNearlyFullEvents() is a proxy that reads
+  // 0 both when nothing was lost and when nothing was measured, so "rxfull=0"
+  // is a check that cannot fail. These two come from the driver, and a caller
+  // sizing a buffer against a blocking render is choosing a number that only
+  // these can prove wrong.
+  //
+  // Both UNDERCOUNT. The driver's event queue is 20 entries deep
+  // (framework-arduinoespressif32 3.3.7, esp32-hal-uart.c:793) and the ISR
+  // drops an event it cannot enqueue, so a long enough stall reports fewer
+  // events than it caused. Non-zero means it happened; zero across a window
+  // that also matched the sentence-rate baseline means it did not.
+  uint32_t ringOverflows() const { return ringOverflows_.load(std::memory_order_relaxed); }
+  uint32_t fifoOverflows() const { return fifoOverflows_.load(std::memory_order_relaxed); }
 
   uint32_t sentencesParsed() const { return sentences_; }
   // Sentences whose checksum did not match: the baud-rate and line-quality
@@ -219,6 +272,12 @@ class Gnss {
   uint32_t checksumErrors_ = 0;
   uint32_t framingErrors_ = 0;
   uint32_t rxNearlyFull_ = 0;
+  // Written by the UART event task, read by the caller's. Atomic rather than a
+  // lock because there is one writer and the only question asked of these is
+  // "did it ever happen", which a reader one increment behind still answers.
+  // Relaxed ordering for the same reason: nothing else is published with them.
+  std::atomic<uint32_t> ringOverflows_{0};
+  std::atomic<uint32_t> fifoOverflows_{0};
   size_t rxBufferBytes_ = 0;
   bool fixDirty_ = false;
   uint32_t bytesRead_ = 0;

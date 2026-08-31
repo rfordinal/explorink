@@ -59,8 +59,7 @@ bool parseLatLon(const char* value, char hemisphere, double* out) {
 // Gregorian date and needs no table. Cheaper and smaller than pulling in
 // <time.h>'s mktime, which would also drag in timezone state this has no use
 // for -- NMEA time is always UTC.
-uint32_t toUnixSeconds(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute,
-                       uint8_t second) {
+uint32_t toUnixSeconds(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute, uint8_t second) {
   int y = static_cast<int>(year);
   y -= month <= 2;
   const int era = (y >= 0 ? y : y - 399) / 400;
@@ -147,11 +146,35 @@ bool Gnss::begin(const GnssConfig& config) {
   checksumErrors_ = 0;
   framingErrors_ = 0;
   rxNearlyFull_ = 0;
+  ringOverflows_.store(0, std::memory_order_relaxed);
+  fifoOverflows_.store(0, std::memory_order_relaxed);
   fixDirty_ = false;
   bytesRead_ = 0;
   ttffMs_ = 0;
   lastFixMs_ = 0;
   beginMs_ = millis();
+
+  // Installed after the counters are zeroed, not before: the callback runs on
+  // the UART event task, so anything it counted between here and the reset
+  // above would be thrown away. Needs the driver and its event queue, so it
+  // also has to come after serial->begin().
+  //
+  // The callback does nothing but add to a counter. Parsing here would put
+  // this library's whole parser on a 2 KB stack at priority
+  // configMAX_PRIORITIES-1, which is a much larger decision than counting an
+  // overflow (framework-arduinoespressif32 3.3.7, HardwareSerial.cpp:177).
+  //
+  // The std::function is the Arduino core's signature, not a choice, and it is
+  // built once per begin() rather than per byte. HardwareSerial::end() clears
+  // the callback before it deletes the event task, so `this` cannot dangle.
+  config_.serial->onReceiveError([this](hardwareSerial_error_t error) {
+    if (error == UART_BUFFER_FULL_ERROR) {
+      ringOverflows_.fetch_add(1, std::memory_order_relaxed);
+    } else if (error == UART_FIFO_OVF_ERROR) {
+      fifoOverflows_.fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+
   running_ = true;
   return true;
 }
@@ -370,9 +393,8 @@ void Gnss::parseRmc(const char* body) {
       strlen(field) >= 6) {
     uint8_t hour = 0, minute = 0, second = 0;
     uint8_t day = 0, month = 0, shortYear = 0;
-    if (parseNmeaTime(timeField, &hour, &minute, &second) && twoDigits(field, 0, &day) &&
-        twoDigits(field, 2, &month) && twoDigits(field, 4, &shortYear) && day >= 1 && day <= 31 &&
-        month >= 1 && month <= 12) {
+    if (parseNmeaTime(timeField, &hour, &minute, &second) && twoDigits(field, 0, &day) && twoDigits(field, 2, &month) &&
+        twoDigits(field, 4, &shortYear) && day >= 1 && day <= 31 && month >= 1 && month <= 12) {
       // NMEA's two-digit year. The receiver sends no century, so 00-79 reads as
       // 2000-2079 and 80-99 as 1980-1999 -- the GPS epoch starts in 1980, so
       // nothing earlier can legitimately appear. ZDA below avoids the guess
@@ -410,8 +432,8 @@ void Gnss::parseZda(const char* body) {
   const int year = atoi(field);
   if (day < 1 || day > 31 || month < 1 || month > 12 || year < 1980 || year > 2105) return;
 
-  fix_.utc = toUnixSeconds(static_cast<uint16_t>(year), static_cast<uint8_t>(month),
-                           static_cast<uint8_t>(day), hour, minute, second);
+  fix_.utc = toUnixSeconds(static_cast<uint16_t>(year), static_cast<uint8_t>(month), static_cast<uint8_t>(day), hour,
+                           minute, second);
   fixDirty_ = true;
 }
 

@@ -137,17 +137,28 @@ static bool gnssReadExpanderRegister(uint8_t reg, uint8_t* value) {
 // precondition travels in the same line as the values it qualifies.
 static const char* gnssResetReasonName() {
   switch (esp_reset_reason()) {
-    case ESP_RST_POWERON: return "POWERON";
-    case ESP_RST_EXT: return "EXT";
-    case ESP_RST_SW: return "SW";
-    case ESP_RST_PANIC: return "PANIC";
-    case ESP_RST_INT_WDT: return "INT_WDT";
-    case ESP_RST_TASK_WDT: return "TASK_WDT";
-    case ESP_RST_WDT: return "WDT";
-    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
-    case ESP_RST_BROWNOUT: return "BROWNOUT";
-    case ESP_RST_SDIO: return "SDIO";
-    default: return "UNKNOWN";
+    case ESP_RST_POWERON:
+      return "POWERON";
+    case ESP_RST_EXT:
+      return "EXT";
+    case ESP_RST_SW:
+      return "SW";
+    case ESP_RST_PANIC:
+      return "PANIC";
+    case ESP_RST_INT_WDT:
+      return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+      return "TASK_WDT";
+    case ESP_RST_WDT:
+      return "WDT";
+    case ESP_RST_DEEPSLEEP:
+      return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+      return "BROWNOUT";
+    case ESP_RST_SDIO:
+      return "SDIO";
+    default:
+      return "UNKNOWN";
   }
 }
 
@@ -481,8 +492,7 @@ void setup() {
   // 5 kHz (BoardConfig.h, LILYGO_T5S3), which is above the vendor's ceiling —
   // freeink-sdk is upstream, so correct it here rather than forking the SDK.
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3 && frontlight.present()) {
-    ledcChangeFrequency(BoardConfig::ACTIVE.frontlight.gpio, 1000,
-                        BoardConfig::ACTIVE.frontlight.pwmResolutionBits);
+    ledcChangeFrequency(BoardConfig::ACTIVE.frontlight.gpio, 1000, BoardConfig::ACTIVE.frontlight.pwmResolutionBits);
   }
 #endif
   halTiltSensor.begin();
@@ -1056,9 +1066,18 @@ void loop() {
         //
         // Reading the reply: `ttff` is NOT an acquisition time on a receiver
         // that was already running -- Gnss::timeToFirstFixMs() spells out why
-        // anything under about 1.2 s means only "already tracking". `rxfull`
-        // non-zero means sentences were lost inside the UART driver, so every
-        // other count in the line is an undercount.
+        // anything under about 1.2 s means only "already tracking".
+        //
+        // Three counters say whether the rest of the line can be believed, and
+        // they are not the same claim. `rxfull` is this firmware's own guess
+        // that the ring came close to full, so it fires on a stall that lost
+        // nothing. `ovf` is the driver saying the ring actually refused bytes,
+        // and `fifoovf` is the driver saying bytes were dropped on the floor.
+        // Non-zero `ovf` or `fifoovf` means every other count in the line is an
+        // undercount; all three zero across a window whose sentence count also
+        // matches the receiver's baseline rate is what "nothing was lost" looks
+        // like. `rxbuf` is the ring the driver actually granted, which is not
+        // always the size that was asked for.
         String argument = cmd.substring(4);
         argument.trim();
         argument.toUpperCase();
@@ -1076,6 +1095,13 @@ void loop() {
           config.txPin = T5S3_GPS_TXD;
           // L76K default per Quectel, still unverified against the datasheet.
           config.baud = 9600;
+#ifdef GNSS_RX_BUFFER_BYTES
+          // The board raises the library's modest default, because this board
+          // blocks its main loop for seconds at a time and the library is meant
+          // to run on ones that do not. platformio.ini carries the measurement
+          // that picked the number.
+          config.rxBufferBytes = GNSS_RX_BUFFER_BYTES;
+#endif
           config.powerEnable = gnssPowerEnable;
           if (gnss.begin(config)) {
             logSerial.printf("GNSS_OK:on\n");
@@ -1132,8 +1158,7 @@ void loop() {
                 "io00_dir=%s io00_level=%s bytes=%lu sent=%lu cserr=%lu ferr=%lu\n",
                 gnssResetReasonName(), config0, config1, output0, input0, isInput ? "input" : "output",
                 (input0 & 0x01) ? "high" : "low", static_cast<unsigned long>(gnss.bytesRead()),
-                static_cast<unsigned long>(gnss.sentencesParsed()),
-                static_cast<unsigned long>(gnss.checksumErrors()),
+                static_cast<unsigned long>(gnss.sentencesParsed()), static_cast<unsigned long>(gnss.checksumErrors()),
                 static_cast<unsigned long>(gnss.framingErrors()));
             gnss.end();  // powerEnable is null, so this touches no rail
           }
@@ -1156,31 +1181,29 @@ void loop() {
           if (fix.valid) {
             logSerial.printf(
                 "GNSS_FIX:q=%u used=%u inview=%u tracked=%u bestsnr=%u lat=%.6f lon=%.6f alt=%.1f "
-                "hdop=%.2f speed=%.1f course=%.1f utc=%lu ttff=%lu age=%lu sent=%lu cserr=%lu ferr=%lu "
-                "rxfull=%lu bytes=%lu\n",
+                "hdop=%.2f speed=%.1f course=%.1f utc=%lu ttff=%lu age=%lu uptime=%lu sent=%lu cserr=%lu "
+                "ferr=%lu rxfull=%lu ovf=%lu fifoovf=%lu rxbuf=%lu bytes=%lu\n",
                 static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
                 static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
-                static_cast<unsigned>(gnss.bestSnr()), fix.latitude, fix.longitude, fix.altitudeMeters,
-                fix.hdop, fix.speedKmh, fix.courseDegrees, static_cast<unsigned long>(fix.utc),
-                static_cast<unsigned long>(gnss.timeToFirstFixMs()),
-                static_cast<unsigned long>(gnss.fixAgeMs()),
-                static_cast<unsigned long>(gnss.sentencesParsed()),
-                static_cast<unsigned long>(gnss.checksumErrors()),
-                static_cast<unsigned long>(gnss.framingErrors()),
-                static_cast<unsigned long>(gnss.rxNearlyFullEvents()),
+                static_cast<unsigned>(gnss.bestSnr()), fix.latitude, fix.longitude, fix.altitudeMeters, fix.hdop,
+                fix.speedKmh, fix.courseDegrees, static_cast<unsigned long>(fix.utc),
+                static_cast<unsigned long>(gnss.timeToFirstFixMs()), static_cast<unsigned long>(gnss.fixAgeMs()),
+                static_cast<unsigned long>(gnss.uptimeMs()), static_cast<unsigned long>(gnss.sentencesParsed()),
+                static_cast<unsigned long>(gnss.checksumErrors()), static_cast<unsigned long>(gnss.framingErrors()),
+                static_cast<unsigned long>(gnss.rxNearlyFullEvents()), static_cast<unsigned long>(gnss.ringOverflows()),
+                static_cast<unsigned long>(gnss.fifoOverflows()), static_cast<unsigned long>(gnss.rxBufferSize()),
                 static_cast<unsigned long>(gnss.bytesRead()));
           } else {
             logSerial.printf(
                 "GNSS_NOFIX:q=%u inview=%u tracked=%u bestsnr=%u utc=%lu uptime=%lu sent=%lu cserr=%lu "
-                "ferr=%lu rxfull=%lu bytes=%lu\n",
+                "ferr=%lu rxfull=%lu ovf=%lu fifoovf=%lu rxbuf=%lu bytes=%lu\n",
                 static_cast<unsigned>(fix.quality), static_cast<unsigned>(gnss.satsInView()),
                 static_cast<unsigned>(gnss.satsWithSignal()), static_cast<unsigned>(gnss.bestSnr()),
                 static_cast<unsigned long>(fix.utc), static_cast<unsigned long>(gnss.uptimeMs()),
-                static_cast<unsigned long>(gnss.sentencesParsed()),
-                static_cast<unsigned long>(gnss.checksumErrors()),
-                static_cast<unsigned long>(gnss.framingErrors()),
-                static_cast<unsigned long>(gnss.rxNearlyFullEvents()),
-                static_cast<unsigned long>(gnss.bytesRead()));
+                static_cast<unsigned long>(gnss.sentencesParsed()), static_cast<unsigned long>(gnss.checksumErrors()),
+                static_cast<unsigned long>(gnss.framingErrors()), static_cast<unsigned long>(gnss.rxNearlyFullEvents()),
+                static_cast<unsigned long>(gnss.ringOverflows()), static_cast<unsigned long>(gnss.fifoOverflows()),
+                static_cast<unsigned long>(gnss.rxBufferSize()), static_cast<unsigned long>(gnss.bytesRead()));
           }
         }
 #endif
