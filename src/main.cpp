@@ -3,6 +3,7 @@
 #include <Epub.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
+#include <FrontlightManager.h>
 #include <GfxRenderer.h>
 #include <GrayscaleFrame.h>
 #include <HalClock.h>
@@ -44,6 +45,9 @@ MappedInputManager mappedInputManager(gpio, renderer);
 ActivityManager activityManager(renderer, mappedInputManager);
 FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
+// Inert on every board whose profile has no frontlight (X4, X3), so it is
+// unconditional here — FrontlightManager::present() is the runtime question.
+FrontlightManager frontlight;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
 
@@ -358,10 +362,29 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+  frontlight.begin();
+#if FREEINK_CAP_FRONTLIGHT && defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  // LilyGo's own answer, 2026-08-25: the PT4103B23F behind BL_EN wants a PWM
+  // frequency "not above approximately 1 kHz". The SDK board profile asks for
+  // 5 kHz (BoardConfig.h, LILYGO_T5S3), which is above the vendor's ceiling —
+  // freeink-sdk is upstream, so correct it here rather than forking the SDK.
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3 && frontlight.present()) {
+    ledcChangeFrequency(BoardConfig::ACTIVE.frontlight.gpio, 1000,
+                        BoardConfig::ACTIVE.frontlight.pwmResolutionBits);
+  }
+#endif
   halTiltSensor.begin();
   halClock.begin();
 
-  LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
+  // The X3/X4 GPIO probe only distinguishes those two; every other board is a
+  // single-device binary whose profile is fixed at compile time. Report the
+  // active profile so a non-Xteink build does not log itself as an X4.
+  LOG_INF("MAIN", "Hardware detect: %s (%ux%u)",
+          (BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4 ||
+           BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3)
+              ? (gpio.deviceIsX3() ? "X3" : "X4")
+              : BoardConfig::ACTIVE.name,
+          BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
@@ -822,6 +845,31 @@ void loop() {
         activityManager.goToTileSync();
         LOG_DBG("MAIN", "goToTileSync() returned");
         logSerial.printf("GOTO_TILESYNC_OK\n");
+#ifdef ENABLE_FRONTLIGHT_CMD
+      } else if (cmd == "LIGHT" || cmd.startsWith("LIGHT ")) {
+        // Bring-up instrument, not a rider feature: the frontlight has no UI on
+        // any screen yet, so this is the only way to find out whether the light
+        // is even wired the way the schematic says. Devel-only on purpose
+        // (-DENABLE_FRONTLIGHT_CMD lives in env:t5s3pro, not in gh_release):
+        // it actuates the device, and CLAUDE.md's security rule defaults a new
+        // command to devel until widening it is a deliberate decision.
+        //
+        //   CMD:LIGHT        ->  LIGHT_OK:<percent>        (query)
+        //   CMD:LIGHT 40     ->  LIGHT_OK:40               (0-100, 0 = off)
+        if (!frontlight.present()) {
+          logSerial.printf("LIGHT_ERR:no frontlight on this board\n");
+        } else {
+          String value = cmd.substring(5);
+          value.trim();
+          if (value.length() > 0) {
+            long pct = value.toInt();
+            if (pct < 0) pct = 0;
+            if (pct > 100) pct = 100;
+            frontlight.setBrightness(static_cast<uint8_t>(pct));
+          }
+          logSerial.printf("LIGHT_OK:%u\n", static_cast<unsigned>(frontlight.brightness()));
+        }
+#endif
       }
     }
   }

@@ -17,6 +17,7 @@ is marked as such.
 | `gh_release_rc` | ESP32-C3 | X4 + X3 | **no** | on, `LOG_LEVEL=1` | release candidate, same gap |
 | `slim` | ESP32-C3 | X4 + X3 | **no** | off | size experiments |
 | `sticky` | ESP32-S3 | Seeed Sticky | **no** | on | a different MCU family, one binary per family |
+| `t5s3pro` | ESP32-S3 | LilyGo T5 S3 Pro | **yes** | on, `LOG_LEVEL=2` | bring-up on the non-Xteink validation board. Adds `CMD:LIGHT`, which is in no other env. See [`lilygo-t5s3-bringup.md`](lilygo-t5s3-bringup.md) |
 
 `TRAILINK_VERSION` is set explicitly in every env except `default`, where
 `scripts/git_branch.py` derives it from the branch and short SHA.

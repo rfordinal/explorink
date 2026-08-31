@@ -189,6 +189,9 @@ That builds `[env:default]`, which is the only environment with the phone link i
 it. **`gh_release` has no BLE**, so a binary built there has no GPS and no tile
 transfer: [`docs/build-environments.md`](./docs/build-environments.md) has the
 table, the flash offsets and what a published build must be.
+[`docs/lilygo-t5s3-bringup.md`](./docs/lilygo-t5s3-bringup.md) is the `t5s3pro`
+env: what the LilyGo T5 S3 Pro build needs, what already runs on the board, and
+what is still wrong.
 
 ### Pre-PR checks
 
