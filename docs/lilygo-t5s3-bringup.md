@@ -254,6 +254,68 @@ powered down -- `/dev/ttyACM*` vanishes and `lsusb` shows no `303a` device. That
 is not a crash. BOOT (GPIO0) is the profile's power button and the deep-sleep
 wake source.
 
+## Open: it reboots on leaving the map
+
+**2026-08-31, not diagnosed.** The maintainer opened, closed and used the map
+menu repeatedly and the device restarted. This is what the card's
+`/crash_report.txt` held afterwards, verbatim -- kept here because that card is
+no longer in the board and the next session will not have it:
+
+```
+TrailInk version: 0.2.0-t5s3pro
+
+Panic reason:
+
+Last logs:
+[869536] [INF] [MAP] freshness: 0 tile(s) out of date
+[869774] [INF] [BLEPOS] conn params: interval 12 units (15 ms), latency 0, timeout 500
+[870011] [INF] [BLEPOS] conn params: interval 24 units (30 ms), latency 0, timeout 500
+[871473] [DBG] [MAP] menu gesture: opening map menu
+[871475] [DBG] [MAP] menu backdrop 11360 bytes (284x306), free heap 122028
+[871482] [DBG] [GFX] Time = 14215 ms from clearScreen to displayBuffer
+[874473] [DBG] [PWR] Going to low-power mode (80 MHz)
+[875801] [DBG] [PWR] Restoring normal CPU frequency
+[881802] [DBG] [PWR] Going to low-power mode (80 MHz)
+[882688] [DBG] [PWR] Restoring normal CPU frequency
+[884824] [DBG] [ACT] Exiting activity: Map
+[884854] [DBG] [MTS] missing tile list saved (2 entries)
+[1] [DBG] [UI] Using Lyra theme
+
+Stack memory:
+```
+
+What that says, and what it does not:
+
+- **No panic reason and no stack.** The reboot-from-panic flag was set --
+  `HalSystem::checkPanic()` only writes this file when it is -- but the message
+  is empty. That does not look like a C++ exception or an `abort()`, both of
+  which carry text. It fits a reset below the firmware: a watchdog, a brownout,
+  or one where the panic wrapper never ran.
+- **The restart lands exactly on leaving the map.** `Exiting activity: Map`,
+  the missing-tile list saved, then the next boot's first line.
+  `MapActivity::onExit()` is also where `BlePositionServer::end()` deinitialises
+  the whole NimBLE stack.
+- **A 14,215 ms display operation**, right after the menu opened, against 2.7 s
+  for a map redraw and 34 ms for Home. Treat it as a lead, not a fact: the line
+  is a delta between `clearScreen` and `displayBuffer`, so a `clearScreen` long
+  beforehand inflates it. Worth reading the timer's own definition before
+  building anything on it.
+- **The menu backdrop is exonerated**: 11,360 bytes with 122 KB internal free.
+  A first guess in that session blamed heap exhaustion using the X4's numbers,
+  on a board with 8 MB of PSRAM. It was wrong twice over.
+
+**The cheapest next step is the ROM's own line.** The first thing printed at
+boot names the reset cause -- `rst:0x15 (USB_UART_CHIP_RESET)` for a host
+opening the serial port, and it would say `TG_WDT_SYS_RST`, `RTCWDT_RTC_RST`,
+`BROWNOUT_RST` or `SW_CPU_RESET` for the ones that matter here. So: hold the
+port open, reproduce, and read that line. It settles watchdog versus brownout
+versus software reset without adding any code.
+
+Possibly related and also undiagnosed: **the board dropped off the USB bus three
+times** during that session, once with auto-sleep switched off, each time
+needing a long BOOT press to come back. Whether that is the same fault has not
+been established.
+
 ## Open, needs measurement
 
 - **Refresh timing.** 6 ms and 34 ms are what the firmware logs around
