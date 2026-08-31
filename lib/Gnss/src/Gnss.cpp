@@ -185,14 +185,18 @@ void Gnss::handleSentence(char* line, size_t length) {
 
   ++sentences_;
 
+  // The raw sink gets the sentence with its checksum still on, before the
+  // terminator below removes it. Verified on hardware 2026-08-31: stripping it
+  // first produced log lines that looked like NMEA and were not, because a
+  // sentence without its "*hh" is not something any NMEA tool will accept.
+  if (rawSink_ != nullptr) {
+    rawSink_(line, length);
+  }
+
   // Terminate at the '*' so every field parser below sees the payload only.
   // The buffer is this object's own line_, which poll() rebuilds per sentence.
   const size_t payloadLength = static_cast<size_t>(star - line);
   line[payloadLength] = '\0';
-
-  if (rawSink_ != nullptr) {
-    rawSink_(line, payloadLength);
-  }
 
   // Talker id is the first two characters, sentence type the next three:
   // GPGGA, GNGGA, GLGSV and so on. A short payload is not ours to interpret.

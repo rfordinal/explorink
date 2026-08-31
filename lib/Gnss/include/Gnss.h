@@ -40,8 +40,9 @@ struct GnssFix {
   uint32_t utc = 0;
 };
 
-// Raw sentence sink: every checksum-valid sentence, without its trailing CRLF.
-// Used for bring-up passthrough. Called from poll(), on the caller's task.
+// Raw sentence sink: every checksum-valid sentence, with its "*hh" checksum and
+// without the leading '$' or the trailing CRLF. Used for bring-up passthrough.
+// Called from poll(), on the caller's task.
 using GnssRawSink = void (*)(const char* sentence, size_t length);
 
 struct GnssConfig {
@@ -63,6 +64,11 @@ struct GnssConfig {
 
 class Gnss {
  public:
+  // Calling begin() while already running is a no-op that returns true, and in
+  // particular does NOT adopt the new config or reset the counters. That is
+  // deliberate -- a second begin() must not drop the rail and throw away a fix
+  // the caller already has -- but it means a caller checking uptimeMs() or
+  // timeToFirstFixMs() after one may be reading the first session's numbers.
   bool begin(const GnssConfig& config);
   void end();
   bool running() const { return running_; }

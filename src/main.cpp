@@ -97,8 +97,11 @@ static bool gnssPowerEnable(bool on) {
   return BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
 }
 
-// CMD:GNSS RAW passthrough. The '$' is stripped by the parser, so put it back:
-// a line pasted out of this log should be feedable to any NMEA tool unchanged.
+// CMD:GNSS RAW passthrough. The parser hands over the sentence with its "*hh"
+// checksum but without the leading '$', so put the '$' back: a line pasted out
+// of this log is then feedable to any NMEA tool unchanged. The first version
+// stripped the checksum too and produced lines that looked like NMEA and were
+// not -- caught on hardware, 2026-08-31.
 static void gnssRawSink(const char* sentence, size_t length) {
   (void)length;
   logSerial.printf("GNSS_RAW:$%s\n", sentence);

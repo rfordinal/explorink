@@ -236,16 +236,27 @@ when it would not fit, although the allocation itself would come out of the 8 MB
 Not dangerous -- it is stricter than reality, so the menu closes the slow way --
 but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
 
-## GNSS: reachable over serial, nothing verified
+## GNSS works, and the receiver was already powered
 
-The board's L76K receiver has a bring-up path as of 2026-08-31: `CMD:GNSS` over
-the USB console, `env:t5s3pro` only, no UI and no map integration.
-[`gnss.md`](gnss.md) is the whole story -- the command surface, the parser, the
-shared power rail, and the six checks a hardware pass has to run in order.
-**Nothing about it has run on the board.**
+`CMD:GNSS` over the USB console, `env:t5s3pro` only, no UI and no map
+integration. **Run on the board 2026-08-31**: a 3D fix indoors (8 satellites
+used, 19 in view, best C/N0 32 dB-Hz), 9600 baud right first time, the pin
+direction as the header implies, and the parser exact against the wire including
+the UTC assembly. [`gnss.md`](gnss.md) has all of it.
 
-Two findings out of that work belong here rather than there, because they are
-about this board and not about GNSS:
+**The finding that matters for this board: the GNSS receiver and the SX1262 are
+powered from boot, before any firmware writes to the expander.** A fix 531 ms
+after the first enable, and no fix 40 s after a rail-cycled one, only fit that
+reading. So every boot of this board has been paying for both parts all along,
+and how much is unmeasured -- the board's power floor, not a feature's cost.
+
+The SD card was the check that mattered and it passed: 1.39 MB of tiles read off
+the card with the rail up and the map drawn, no mount failure and no corrupt
+tile. The `LORA_CS` collision is real in the code and does not break the bus
+here.
+
+Two more findings out of that work belong here rather than there, because they
+are about this board and not about GNSS:
 
 - **`BoardT5S3::begin()` is never called by this firmware.** Not once across
   `src/` and `lib/`. The only code touching the PCA9535 today is
@@ -283,6 +294,12 @@ about this board and not about GNSS:
   serial reset below.
 
 ## Serial usually resets the board, and you cannot rely on either outcome
+
+**A second data point, 2026-08-31: one open did not reset it at all.** The GNSS
+pass opened the port twice in a row; the first open produced a full boot log
+from millis 401, the second continued from millis 150,627 with the map still up.
+So "usually" is the right word and a script must not assume either -- the second
+run's counters were the first run's, which is confusing until you notice why.
 
 Opening `/dev/ttyACM0` normally resets the S3, even with DTR and RTS both driven
 low before the port is opened: the USB-JTAG-serial peripheral is on the SoC
