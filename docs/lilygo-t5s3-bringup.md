@@ -305,6 +305,16 @@ are about this board and not about GNSS:
 
 ## Serial usually resets the board, and you cannot rely on either outcome
 
+**A third data point, and a worse one: after a cold power-on the CDC came up
+transmit-only.** 2026-08-31, USB unplugged 7.7 s with no battery, then replugged.
+The device logged happily for 271 s across three separate port opens -- so
+device-to-host was fine and none of those opens reset it -- while **every command
+sent to it was dropped**. Not one `CMD:` reply, including read-only ones. An
+`esptool ... --after hard-reset` fixed it immediately and the same script then
+worked first try. So a silent board is not necessarily a hung board: check
+whether it is still logging before assuming a crash, and reset the chip before
+assuming a bad build. Possibly the same fault as the three USB dropouts below.
+
 **A second data point, 2026-08-31: one open did not reset it at all.** The GNSS
 pass opened the port twice in a row; the first open produced a full boot log
 from millis 401, the second continued from millis 150,627 with the map still up.

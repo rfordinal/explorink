@@ -221,28 +221,72 @@ control the module. The re-enable came back `q=0` with `inview` dropped from 20
 to 12 and every counter reset -- a module that had stayed powered and fixed would
 have answered `q=1` on its first GGA after the port reopened.
 
-#### The experiment that settles it
+#### The experiment was run, 2026-08-31, and it killed my own explanation
 
-Cheap, and it has not been run. On a **true power cycle** -- USB unplugged, which
-is ordinary use on a bare development board (`docs/hardware-policy.md`) -- and
-**before any `CMD:GNSS`**, read the PCA9535 CONFIG0 register at 0x06;
-`BoardT5S3::readPca9535Pin()` already exists for it.
+USB unplugged for 7.7 s with **no battery attached** (maintainer confirmed), so
+the board genuinely lost power. Then `CMD:GNSS PROBE`, which reads the
+expander's registers and opens the UART with **no power hook at all**, before
+anything can write the rail.
 
-- Bit 0 reads as **input** while NMEA is streaming: something external holds the
-  rail on, and the board-default reading is right.
-- Bit 0 reads as **output**: it was latched by an earlier session, and the
-  board-default reading is wrong.
+```
+GNSS_PROBE:cfg0=0x00 out0=0xFF in0=0xFF io00_dir=output io00_level=high
+           bytes=1767 sent=36 cserr=1 ferr=0
+```
 
-Follow it with an immediate `CMD:GNSS ON` on that same cold boot: framing errors
-at zero and a TTFF in tens of seconds would break "every boot" outright.
-LilyGo's schematic for the board would settle the mechanism without any
-measurement at all, and asking for it is free -- the vendor thread is open.
+**Two results, and they point in different directions.**
 
-**Until then, the power consequence is a possibility and not a finding.** If the
-rail is up by default, this board has been paying for the receiver and the
-SX1262 on every boot since bring-up, with `LORA_RST` undriven, and nobody has
-measured it. That is worth knowing precisely because it might be true, which is
-what T-579 is for -- not because it has been shown.
+**Solid: the receiver is powered without this firmware asking.** 1,767 bytes and
+36 checksum-valid sentences in 2.5 s, with `powerEnable` set to `nullptr` so no
+code path could have touched the rail. That half of the original finding stands.
+
+**Killed: the pull-up explanation, which was mine.** This file previously said
+"the expander comes out of reset with every pin an input and something on the
+board pulls the enable line up". `io00_dir=output` says the opposite. The pin is
+being **driven**, not pulled. A pull-up hypothesis predicts an input, and that
+prediction failed.
+
+**And `cfg0=0x00` is not explained by anything in this firmware.** That is all
+eight pins of port 0 configured as outputs. `gnssPowerEnable()` sets one bit by
+read-modify-write (`BoardT5S3::setPca9535PinMode`), which would leave 0xFE, and
+the EPD code writes only port 1 -- `PCA9535_IO10..IO17` are linear indices 8 to
+15, so `updatePca9535Bit` addresses register 0x07, never 0x06. Nothing here
+writes eight bits of port 0.
+
+Three candidates, and this probe cannot separate them:
+
+1. **The expander did not actually lose power** in those 7.6 s, despite no
+   battery. Then 0x00 is a latch from the factory firmware, which does configure
+   the whole expander, and it has survived every reset since.
+2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
+   configuration registers to 0xFF; a second-source part or a clone may not.
+   Datasheet question, no hardware needed.
+3. **The read is misaddressed** and these are not the registers I think.
+
+**The cheap check that excludes 3, and it has not been run:** read `CONFIG1`
+(0x07) in the same probe. This firmware *does* configure port 1, for the EPD
+pins, so `CONFIG1` should show exactly `IO10`, `IO11`, `IO13`, `IO14`, `IO15` as
+outputs and `IO16`, `IO17` as inputs. If it does, the addressing is right and the
+port-0 reading has to be believed. One line of code.
+
+So the honest state: **the receiver is powered before any firmware asks, by a
+driven expander output that this firmware did not write.** Why that output
+survives a power cycle is open, and the mechanism matters for T-579 -- a latch
+that any reset preserves is a very different power story from a board that holds
+the rail by design.
+
+#### The first honest acquisition figure: 41,751 ms
+
+The same run produced what every earlier run could not. After the power cycle the
+receiver had genuinely lost its fix, and `CMD:GNSS ON` was followed by two
+statuses reporting `q=0` at 14.3 s and 22.7 s of uptime, then a fix at
+**`ttff=41751`**.
+
+Same code, same receiver, same room as the 531 ms and 526 ms readings. When
+acquisition actually happened the number was **eighty times larger**. That is
+independent, physical confirmation of what the review argued from the code: a
+sub-second `ttff` was never an acquisition, only the phase between the UART open
+and the next sentence. The warning now on `timeToFirstFixMs()` is not a
+precaution, it is a measured fact.
 
 ## The serial command
 
@@ -461,6 +505,27 @@ Acted on:
 - Three smaller things a reader named as slowing them down: the empty-field
   contract of `nmeaField()`, why `talkerFor()` drops rather than evicts, and why
   `parseGsv()` gets the same buffer twice.
+
+### The fixes, verified on hardware 2026-08-31
+
+Same run as the probe above, on the build carrying all of them.
+
+- **`rxfull` catches the blocked render.** Three statuses across the session:
+  `rxfull=0`, `rxfull=0`, then **`rxfull=1`** immediately after `CMD:GOTO_MAP`.
+  Silent while nothing blocked, and it fired on the one thing it was built to
+  see. The loss it reports used to be entirely invisible.
+- **The `cserr` / `ferr` split behaves as designed.** The mid-stream UART open now
+  lands in `ferr` (`cserr=0 ferr=1` on the first status), where it used to inflate
+  the checksum counter and make a clean line look dirty.
+- **`utc` from RMC and ZDA atomically.** The reported value matched the ZDA
+  sentence on the wire to within one sentence interval, which is the resolution
+  this check has -- not "exact", and the earlier version of this file made that
+  mistake once already. The run also exercised the intended path for an RMC with
+  status `V`: `$GNRMC,170236.000,V,,,,,,,310826,,,N,V` has no position and its
+  date was still used, while speed and course were correctly ignored.
+- **Not exercised:** the midnight rollover itself, the 2038 arithmetic, the
+  dropped-GSV-message path, and the rail rollback. All four are why T-580 wants
+  host tests rather than another night on the bench.
 
 ### Four defects review found in it, all fixed
 
