@@ -280,6 +280,30 @@ the EPD code writes only port 1 -- `PCA9535_IO10..IO17` are linear indices 8 to
 15, so `updatePca9535Bit` addresses register 0x07, never 0x06. Nothing here
 writes eight bits of port 0.
 
+The part's own datasheets settle what a reset would have produced, and they are
+unanimous across four vendors plus the common clone:
+
+| fact | value | source |
+|---|---|---|
+| Configuration register reset default | **0xFF**, all pins inputs | TI SCPS129K Tables 8-3, 8-7; NXP Rev. 6 Tables 11, 12 |
+| Configuration bit polarity | 1 = input, 0 = output | TI SCPS129K 8.3.2; NXP Rev. 6 6.2.5 |
+| Output register reset default | 0xFF | TI Table 8-5; NXP Tables 7, 8 |
+| Register map | 0x00/01 input, 0x02/03 output, 0x04/05 polarity, 0x06/07 config | TI Table 8-3; NXP Table 4 |
+| Any way for a register to survive losing VCC | **none** -- no backup pin, no non-volatile storage | both, by omission and by 8.2 |
+
+Checked against TI SCPS129K (rev. March 2021), NXP PCA9535/PCA9535C Rev. 6,
+NXP PCA9535A Rev. 1.1, Nexperia Rev. 1.1 and the Xinluda XL9535 clone, which
+agrees on all of it.
+
+**So a genuine reset cannot produce 0x00 here.** But the reset condition is about
+volts, not about the cable: it trips when VCC at the chip falls below VPORF,
+0.77 to 1.14 V (TI Table 10-1), and both vendors say a *guaranteed* power-reset
+cycle needs VCC below 0.2 V. Standby draw is 1 uA max. So an unloaded rail held
+up by bulk decoupling decays slowly, and **whether 21 s at the connector took
+this board's 3.3 V rail below 0.8 V at the expander is a board question no
+datasheet answers.** The ESP32 clearly reset, so the rail fell below its brownout
+of roughly 2.5 V; the remaining 1.7 V is the whole question.
+
 Three candidates, and this probe cannot separate them:
 
 1. **The expander did not actually lose power** in those 21 s, despite no
@@ -291,7 +315,19 @@ Three candidates, and this probe cannot separate them:
 2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
    configuration registers to 0xFF; a second-source part or a clone may not.
    Datasheet question, no hardware needed.
-3. **The read is misaddressed** and these are not the registers I think.
+3. **The read is misaddressed** and these are not the registers I think. Review
+   added a specific mechanism for this that I had not considered: the PCA9535
+   holds a command-byte pointer until it is rewritten, and a read with the
+   pointer at 0x00 returns Input Port 0, whose value is the external pin levels
+   -- all-low inputs read exactly 0x00. Argued against by the data, not
+   excluded by it: the three reads returned 0x00, 0xFF and 0xFF, so at least
+   0x06 is being addressed differently from 0x02 and 0x00, which a stuck pointer
+   would not do.
+
+**What the datasheet makes most likely is candidate 1**, and it also names the
+fix: the experiment needs an outage long enough to take the rail below 0.2 V, so
+**minutes, not 21 seconds**. That single change is worth more than any further
+reasoning here.
 
 **The cheap check that excludes 3, and it has not been run:** read `CONFIG1`
 (0x07) in the same probe. This firmware *does* configure port 1, for the EPD
