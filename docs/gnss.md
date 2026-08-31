@@ -460,14 +460,16 @@ CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
 A status reply is one line of `key=value`, so a host script can grep it:
 
 ```
-GNSS_FIX:q=1 used=9 inview=14 tracked=11 bestsnr=38 lat=48.148000 lon=17.107000
+GNSS_FIX:q=1 used=9 inview=14 tracked=11 bestsnr=38 lat=12.345678 lon=98.765432
   alt=191.0 hdop=1.20 speed=0.0 course=0.0 utc=1788178462 ttff=42313 age=612
   sent=1204 cserr=0 bytes=98304
 GNSS_NOFIX:q=0 inview=11 tracked=4 bestsnr=19 utc=1788178462 uptime=63120
   sent=214 cserr=0 bytes=17408
 ```
 
-(Wrapped here for reading. On the wire it is one line.)
+(Wrapped here for reading. On the wire it is one line. **The coordinates above
+are invented**, not a recorded fix -- this repo is public and a real one would be
+the maintainer's address. See Privacy, below.)
 
 **`used`, `inview` and `tracked` are three different counts, and the gaps
 between them are the diagnosis.** `inview` comes from the almanac -- what the
