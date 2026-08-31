@@ -143,6 +143,43 @@ void HalGPIO::update() {
   const bool connected = isUsbConnected();
   usbStateChanged = (connected != lastUsbConnected);
   lastUsbConnected = connected;
+
+  // Devel-only instrumentation for identifying which inputs are actually wired
+  // on a board (e.g. T5S3's front buttons are unassigned in BoardConfig
+  // today, InputManager.h:415-424). LOG_DBG compiles to nothing outside
+  // env:default (Logging.h, gated on ENABLE_SERIAL_LOG + LOG_LEVEL>=2), so
+  // this never ships in gh_release/gh_release_rc/slim.
+  for (uint8_t i = 0; i <= InputManager::BTN_POWER; ++i) {
+    if (inputMgr.wasPressed(i)) {
+      LOG_DBG("INPUT", "button pressed: %s (%u)", InputManager::getButtonName(i), i);
+    }
+    if (inputMgr.wasReleased(i)) {
+      LOG_DBG("INPUT", "button released: %s (%u)", InputManager::getButtonName(i), i);
+    }
+  }
+  if (inputMgr.wasHomeKeyPressed()) {
+    LOG_DBG("INPUT", "home key pressed");
+  }
+  if (inputMgr.wasHomeKeyTapped()) {
+    LOG_DBG("INPUT", "home key tapped");
+  }
+  if (inputMgr.wasHomeKeyLongPressed()) {
+    LOG_DBG("INPUT", "home key long-pressed");
+  }
+  if (inputMgr.wasTouchPressed()) {
+    LOG_DBG("INPUT", "touch pressed");
+  }
+  if (inputMgr.wasTouchReleased()) {
+    LOG_DBG("INPUT", "touch released");
+  }
+  float tapX = 0, tapY = 0;
+  if (inputMgr.wasTouchTap(tapX, tapY)) {
+    LOG_DBG("INPUT", "touch tap at (%.2f, %.2f)", tapX, tapY);
+  }
+  float swipeSx = 0, swipeSy = 0, swipeEx = 0, swipeEy = 0;
+  if (inputMgr.wasSwipe(swipeSx, swipeSy, swipeEx, swipeEy)) {
+    LOG_DBG("INPUT", "swipe (%.2f, %.2f) -> (%.2f, %.2f)", swipeSx, swipeSy, swipeEx, swipeEy);
+  }
 }
 
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
@@ -180,6 +217,12 @@ bool HalGPIO::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEn
 }
 
 bool HalGPIO::wasTouchActivity() const { return inputMgr.wasTouchActivity(); }
+
+bool HalGPIO::wasHomeKeyPressed() const { return inputMgr.wasHomeKeyPressed(); }
+
+bool HalGPIO::wasHomeKeyTapped() const { return inputMgr.wasHomeKeyTapped(); }
+
+bool HalGPIO::wasHomeKeyLongPressed() const { return inputMgr.wasHomeKeyLongPressed(); }
 
 void HalGPIO::setSharedConfirmPowerShortPressEmitsPower(const bool enabled) {
   InputManager::setSharedConfirmPowerShortPressEmitsPower(enabled);
