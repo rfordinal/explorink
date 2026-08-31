@@ -67,10 +67,22 @@ struct GnssConfig {
   uint32_t baud = 9600;
   // Optional. Called with true from begin() and false from end(). Return false
   // and begin() fails without touching the UART.
+  //
+  // On a board where the receiver shares a power rail with something else, this
+  // hook is where that gets handled, and it can be the most delicate part of
+  // the whole integration -- see the LilyGo T5 S3 Pro case in the firmware's
+  // docs/gnss.md, where the same rail powers a LoRa radio whose chip select the
+  // panel bus drives. The library deliberately knows none of that.
   bool (*powerEnable)(bool on) = nullptr;
   // Settling time between powerEnable(true) and the first UART read. A cold
   // receiver needs its regulator up before it says anything.
   uint16_t powerSettleMs = 100;
+  // RX ring buffer, requested before the UART opens. The Arduino default is 256
+  // bytes, which a receiver sending ~800 B/s fills in a third of a second --
+  // less than one blocking screen refresh on an e-ink device. 1 KB buys about
+  // 1.2 s of caller inattention. It does not fix a multi-second block; nothing
+  // sized in kilobytes does, and that wants the UART on its own task.
+  uint16_t rxBufferBytes = 1024;
 };
 
 class Gnss {
@@ -99,6 +111,24 @@ class Gnss {
   // Milliseconds since the fix last changed, or 0 if there has never been one.
   uint32_t fixAgeMs() const;
   // Milliseconds from begin() to the first valid fix. Zero while there is none.
+  //
+  // READ THE NEXT PARAGRAPH BEFORE USING THIS NUMBER. It is not a
+  // time-to-first-fix in the sense the name suggests, and two independent code
+  // reviewers read it wrongly in the same way (2026-08-31), as did the author.
+  //
+  // The zero point is the UART open, after powerEnable() and the settle delay.
+  // If the receiver was ALREADY POWERED AND TRACKING when begin() ran -- which
+  // is the normal case on a board that powers it from a shared rail, or after
+  // any second begin() -- then the first GGA to arrive already carries a fix,
+  // and this measures nothing but the phase between our UART open and the next
+  // sentence in the receiver's 1 Hz cycle. That is a uniform draw over roughly
+  // 0 to 1000 ms.
+  //
+  // So: any value under about 1.2 s means "the receiver was already tracking"
+  // and NOTHING about acquisition. It is not a cold start, it is not a warm
+  // start, and it does not say the receiver retained ephemeris. A real
+  // acquisition figure needs the receiver verifiably unpowered first, and then
+  // it lands in the tens of seconds.
   uint32_t timeToFirstFixMs() const { return ttffMs_; }
   uint32_t uptimeMs() const;
 
@@ -110,6 +140,15 @@ class Gnss {
   // ceiling": indoors the count collapses and the best value sits in the teens.
   uint8_t satsWithSignal() const;
   uint8_t bestSnr() const;
+
+  // Times poll() found the RX buffer nearly full on entry, meaning the caller
+  // very likely lost bytes before this call. It exists because sentence loss is
+  // otherwise INVISIBLE: whole sentences vanish inside the driver, upstream of
+  // anything this class can see, and none of the counters below move. Measured
+  // on hardware 2026-08-31 -- a 6.07 s blocking render lost 85 sentences and
+  // moved checksumErrors() by exactly one, so 84 disappeared without a trace.
+  // A non-zero value here means the numbers below are an undercount.
+  uint32_t rxNearlyFullEvents() const { return rxNearlyFull_; }
 
   uint32_t sentencesParsed() const { return sentences_; }
   // Sentences whose checksum did not match: the baud-rate and line-quality
@@ -166,6 +205,8 @@ class Gnss {
   uint32_t sentences_ = 0;
   uint32_t checksumErrors_ = 0;
   uint32_t framingErrors_ = 0;
+  uint32_t rxNearlyFull_ = 0;
+  size_t rxBufferBytes_ = 0;
   bool fixDirty_ = false;
   uint32_t bytesRead_ = 0;
 

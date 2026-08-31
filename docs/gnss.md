@@ -409,6 +409,59 @@ read. That decision belongs to the work that puts GNSS behind the map's position
 source. The header now states the constraint so the next caller meets it before
 being surprised by it.
 
+### The comprehension test, and what it changed
+
+Two more reviewers were given the code and **forbidden from reading this file**,
+then asked to explain how it works. The point was not defects: it was whether
+the code explains itself to a stranger, which is what the upstream PR will
+depend on. One capable reader and one weaker one, same ten questions, so the
+difference between them says which explanations are load-bearing and which need
+the reader to be sharp.
+
+Nine of the ten answers came back right and sourced to the code. The tenth is
+the finding.
+
+**Both failed on `ttff`, and the weaker one failed with high confidence.** Asked
+what `ttff=530` permits you to conclude, one answered "a very fast warm or hot
+start, the receiver retained ephemeris"; the other answered "the receiver's
+**cold-start** acquisition took 530 ms" and rated itself high-confidence,
+code-based. A 530 ms cold start is physically impossible. Neither spotted that on
+an already-tracking receiver the number is the phase between our UART open and
+the next sentence.
+
+That is the same mistake this file's own rail section had to withdraw, made
+twice more by readers who had the code in front of them and no way to know
+better. So the warning now lives on `timeToFirstFixMs()` in the header, not only
+here. **A conclusion the code invites is the code's problem.**
+
+**Both also converged on one structural criticism**, from opposite directions:
+the strongest claims in the library are asserted in comments with no way to check
+them from inside the code. The measured 816 B/s and the 0.3 s budget, the GPIO46
+behaviour, the `sizeof(long)` verification -- all of them true, none of them
+observable at runtime. One reviewer's single requested change was to make
+`poll()`'s contract an observable rather than a warning.
+
+Acted on:
+
+- **`rxNearlyFullEvents()`**, reported as `rxfull` in the serial reply. Sentence
+  loss was previously invisible: whole sentences vanish inside the driver, and
+  the 2026-08-31 measurement proves it -- 85 lost, `cserr` moved by exactly one,
+  so **84 disappeared with no counter moving at all**. A non-zero `rxfull` now
+  says every other count in the line is an undercount.
+- **`GnssConfig::rxBufferBytes`**, default 1024, applied before the UART opens.
+  Four times the Arduino default, about 1.2 s of caller inattention. It does not
+  survive a multi-second block and the comment says so.
+- **The 2038 comment now explains that the cast removes the width dependency**
+  rather than citing a verification the reader cannot repeat.
+- **"GGA leads RMC by nine sentences" is scoped to this receiver**, with the
+  point made explicit that the cure does not depend on the ordering at all -- a
+  reader was right to flag it as reading like an NMEA law.
+- **The reason GGA's time is unused moved to the top of `parseGga()`**, as a
+  regression guard, so nobody "fixes" it by adding the field back.
+- Three smaller things a reader named as slowing them down: the empty-field
+  contract of `nmeaField()`, why `talkerFor()` drops rather than evicts, and why
+  `parseGsv()` gets the same buffer twice.
+
 ### Four defects review found in it, all fixed
 
 None of these showed up in the hardware pass, which is the point of reading code

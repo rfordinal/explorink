@@ -6,9 +6,14 @@
 namespace {
 
 // Copy field `index` of a comma-separated NMEA payload into `out`. Index 0 is
-// the sentence type ("GNGGA"), 1 is the first data field. An absent or empty
-// field yields an empty string, which every caller below treats as "unknown" --
-// a receiver with no fix sends GGA with most fields empty rather than zeroed.
+// the sentence type ("GNGGA"), 1 is the first data field.
+//
+// Contract: `out` is always NUL-terminated. An absent or empty field yields an
+// EMPTY STRING, not a zero and not a failure -- so a caller must test
+// `out[0] == '\0'` to mean "unknown", and must not read an empty field as 0.
+// This matters because a receiver with no fix sends GGA with most fields empty
+// rather than zeroed. The bool return distinguishes only "the payload had that
+// many commas" from "it did not"; it says nothing about the field's content.
 bool nmeaField(const char* payload, uint8_t index, char* out, size_t outSize) {
   out[0] = '\0';
   const char* cursor = payload;
@@ -63,11 +68,14 @@ uint32_t toUnixSeconds(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, 
   const unsigned dayOfYear = (153u * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
   const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
   const long days = static_cast<long>(era) * 146097 + static_cast<long>(dayOfEra) - 719468;
-  // Cast to uint32_t BEFORE multiplying. `long` is 32 bits on this target
-  // (verified against the pinned xtensa-esp32s3-elf toolchain), so
-  // `days * 86400L` is signed 32-bit arithmetic and overflows on 2038-01-19 --
-  // silently, and inside a function whose return type promises 2106 and whose
-  // caller accepts years to 2079. `days` is non-negative for any year >= 1970.
+  // Cast to uint32_t BEFORE multiplying, which makes this correct on any target
+  // rather than correct on the one that was checked. The previous version wrote
+  // `days * 86400L`: `long` is 32 bits here (confirmed by compiling a
+  // _Static_assert with the pinned xtensa-esp32s3-elf toolchain), so that was
+  // signed 32-bit arithmetic overflowing on 2038-01-19 -- silently, inside a
+  // function whose return type promises 2106. Unsigned 32-bit arithmetic carries
+  // it to 2106 with no assumption about `long` at all. `days` is non-negative
+  // for any year >= 1970, which is what makes the cast safe.
   return static_cast<uint32_t>(days) * 86400u + hour * 3600u + minute * 60u + second;
 }
 
@@ -117,6 +125,14 @@ bool Gnss::begin(const GnssConfig& config) {
     delay(config_.powerSettleMs);
   }
 
+  // Before begin(), which is the only time it takes effect. The return value is
+  // the size actually granted, so poll()'s near-full test measures against what
+  // the driver really allocated rather than what was asked for.
+  if (config_.rxBufferBytes > 0) {
+    rxBufferBytes_ = config_.serial->setRxBufferSize(config_.rxBufferBytes);
+  }
+  if (rxBufferBytes_ == 0) rxBufferBytes_ = 256;  // the Arduino default
+
   config_.serial->begin(config_.baud, SERIAL_8N1, config_.rxPin, config_.txPin);
 
   line_[0] = '\0';
@@ -129,6 +145,7 @@ bool Gnss::begin(const GnssConfig& config) {
   sentences_ = 0;
   checksumErrors_ = 0;
   framingErrors_ = 0;
+  rxNearlyFull_ = 0;
   fixDirty_ = false;
   bytesRead_ = 0;
   ttffMs_ = 0;
@@ -161,6 +178,17 @@ bool Gnss::poll() {
   if (!running_) return false;
 
   fixDirty_ = false;
+
+  // Sampled before draining. A buffer this close to full on entry means the
+  // caller was away long enough to risk losing bytes -- and a real overflow
+  // discards whole sentences inside the driver, where no counter in this class
+  // can see them. This is the only warning a caller gets.
+  {
+    const int pending = config_.serial->available();
+    if (pending > 0 && static_cast<size_t>(pending) + 32 >= rxBufferBytes_) {
+      ++rxNearlyFull_;
+    }
+  }
 
   while (config_.serial->available() > 0) {
     const int byteRead = config_.serial->read();
@@ -241,12 +269,22 @@ void Gnss::handleSentence(char* line, size_t length) {
   } else if (strncmp(type, "RMC", 3) == 0) {
     parseRmc(line);
   } else if (strncmp(type, "GSV", 3) == 0) {
+    // Same buffer twice on purpose: GSV needs the talker id, which is the first
+    // two characters of the payload, as well as the fields after it. The two
+    // parameters are one string read two ways, not two strings.
     parseGsv(line, line);
   } else if (strncmp(type, "ZDA", 3) == 0) {
     parseZda(line);
   }
 }
 
+// GGA supplies fix quality, satellites used, position, altitude and HDOP.
+//
+// It also carries a time field, and this function deliberately does NOT use it
+// for fix_.utc. Do not "fix" that by adding it back: GGA has no date, so its
+// time can only be paired with a date from some other sentence, and that pairing
+// is what regressed the clock by 24 hours at every UTC midnight. The reasoning
+// is in full below, at the point where the time field is skipped.
 void Gnss::parseGga(const char* body) {
   char field[16];
 
@@ -256,11 +294,17 @@ void Gnss::parseGga(const char* body) {
   const uint8_t quality = static_cast<uint8_t>(atoi(field));
 
   // GGA's time field is deliberately NOT used for fix_.utc. It used to be,
-  // stitched against the date from the last RMC -- and that regresses the clock
-  // by 24 hours at every UTC midnight, because GGA leads RMC by nine sentences
-  // in this receiver's cycle, so a 00:00:0x GGA recomputes against yesterday's
-  // date. Time now comes only from sentences that carry date and time together
-  // (RMC, ZDA), so the pair can never be mismatched. Found by review, 2026-08-31.
+  // stitched against the date from the last RMC, and that regresses the clock by
+  // 24 hours at every UTC midnight: a 00:00:0x GGA recomputes against
+  // yesterday's date until the next RMC arrives. Found by review, 2026-08-31.
+  //
+  // On the L76K observed here, GGA leads RMC by nine sentences, so the window is
+  // about 0.4 s at 9600 baud -- and longer whenever the caller blocks. That
+  // ordering is an observation about one receiver, NOT an NMEA rule, and nothing
+  // here depends on it: the cure is that date and time are now only ever taken
+  // from a single sentence that carries both (RMC, ZDA), so the pair cannot be
+  // mismatched whatever order a receiver emits things in. A receiver that sends
+  // RMC first would merely have had a shorter bad window, not a correct clock.
 
   if (nmeaField(body, 7, field, sizeof(field))) {
     fix_.satsUsed = static_cast<uint8_t>(atoi(field));
@@ -432,8 +476,11 @@ Gnss::TalkerState* Gnss::talkerFor(const char* id) {
       return &talkers_[i];
     }
   }
-  // More constellations than the table holds. Dropping the extra is better
-  // than evicting a talker whose counts are already committed.
+  // More constellations than kMaxTalkers holds. The new one is dropped rather
+  // than given a slot by eviction, because every existing slot holds counts that
+  // are already committed and being reported: evicting one would silently
+  // subtract a whole constellation from satsInView() mid-ride, which reads as
+  // the sky emptying. Undercounting one late constellation is the smaller lie.
   return nullptr;
 }
 

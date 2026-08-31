@@ -956,6 +956,12 @@ void loop() {
         //   CMD:GNSS OFF       ->  GNSS_OK:off
         //   CMD:GNSS RAW ON    ->  GNSS_OK:raw=1   (every sentence to the log)
         //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
+        //
+        // Reading the reply: `ttff` is NOT an acquisition time on a receiver
+        // that was already running -- Gnss::timeToFirstFixMs() spells out why
+        // anything under about 1.2 s means only "already tracking". `rxfull`
+        // non-zero means sentences were lost inside the UART driver, so every
+        // other count in the line is an undercount.
         String argument = cmd.substring(4);
         argument.trim();
         argument.toUpperCase();
@@ -1002,7 +1008,7 @@ void loop() {
             logSerial.printf(
                 "GNSS_FIX:q=%u used=%u inview=%u tracked=%u bestsnr=%u lat=%.6f lon=%.6f alt=%.1f "
                 "hdop=%.2f speed=%.1f course=%.1f utc=%lu ttff=%lu age=%lu sent=%lu cserr=%lu ferr=%lu "
-                "bytes=%lu\n",
+                "rxfull=%lu bytes=%lu\n",
                 static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
                 static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
                 static_cast<unsigned>(gnss.bestSnr()), fix.latitude, fix.longitude, fix.altitudeMeters,
@@ -1012,17 +1018,19 @@ void loop() {
                 static_cast<unsigned long>(gnss.sentencesParsed()),
                 static_cast<unsigned long>(gnss.checksumErrors()),
                 static_cast<unsigned long>(gnss.framingErrors()),
+                static_cast<unsigned long>(gnss.rxNearlyFullEvents()),
                 static_cast<unsigned long>(gnss.bytesRead()));
           } else {
             logSerial.printf(
                 "GNSS_NOFIX:q=%u inview=%u tracked=%u bestsnr=%u utc=%lu uptime=%lu sent=%lu cserr=%lu "
-                "ferr=%lu bytes=%lu\n",
+                "ferr=%lu rxfull=%lu bytes=%lu\n",
                 static_cast<unsigned>(fix.quality), static_cast<unsigned>(gnss.satsInView()),
                 static_cast<unsigned>(gnss.satsWithSignal()), static_cast<unsigned>(gnss.bestSnr()),
                 static_cast<unsigned long>(fix.utc), static_cast<unsigned long>(gnss.uptimeMs()),
                 static_cast<unsigned long>(gnss.sentencesParsed()),
                 static_cast<unsigned long>(gnss.checksumErrors()),
                 static_cast<unsigned long>(gnss.framingErrors()),
+                static_cast<unsigned long>(gnss.rxNearlyFullEvents()),
                 static_cast<unsigned long>(gnss.bytesRead()));
           }
         }
