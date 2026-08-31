@@ -164,6 +164,10 @@ The evidence is a pair of runs, because no single reading proves it:
   after 40 s**, `q=0`, tracked climbing 3 to 6. So the rail genuinely does
   control the module, and there is no backup supply keeping its ephemeris across
   three quarters of a minute.
+- **A third run, after a reflash**, reproduced the same signature without being
+  asked to: `ttff=526` on the first enable, and again exactly one checksum error
+  at the first read. Two independent boots giving a half-second fix is not a
+  coincidence.
 
 Those two together leave one reading: at run 1's first `ON`, the part was
 already powered by the board's own default state. A third, smaller sign agrees
@@ -287,7 +291,14 @@ One thing the check caught: **`CMD:GNSS RAW` was emitting lines that looked
 like NMEA and were not.** The sink was called after the parser had already
 terminated the string at `*`, so every logged sentence was missing its
 checksum -- unusable in any NMEA tool, while looking perfectly fine in a log.
-Fixed by calling the sink first. That fix has **not** been on the board.
+Fixed by calling the sink first.
+
+**Fixed and confirmed on the board**, same day: 85 logged sentences, every
+checksum recomputed by an XOR outside the firmware, **zero mismatches**. Worth
+noting how that was checked -- comparing the firmware's output against the
+firmware's own parser would have agreed with itself no matter what, so the
+verification was done with a separate implementation. The archived binary is
+`docs/firmware-builds/t5s3pro-b8276d9e-gnss-confirmed.bin` in the parent repo.
 
 ### A blocking render starves the UART
 
@@ -354,7 +365,5 @@ S3. The board is a LilyGo T5 S3 Pro on a desk indoors.
   whether reset parks MISO high-Z.
 - **The RX buffer under a blocking render** -- which of the three fixes above,
   decided by the work that feeds position to the map.
-- **`CMD:GNSS RAW` keeping its checksum** is fixed in the tree and has not been
-  flashed.
 - Whether the receiver can be left powered during a ride or should be
   duty-cycled. A power question and, given the shared rail, a LoRa question too.
