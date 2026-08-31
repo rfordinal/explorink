@@ -138,6 +138,7 @@ bool Gnss::begin(const GnssConfig& config) {
   line_[0] = '\0';
   lineLength_ = 0;
   lineOverflowed_ = false;
+  seenStart_ = false;
   fix_ = GnssFix();
   for (uint8_t i = 0; i < kMaxTalkers; ++i) {
     talkers_[i] = TalkerState();
@@ -201,10 +202,20 @@ bool Gnss::poll() {
       // the only sane recovery: NMEA has no length field to resynchronise on.
       lineLength_ = 0;
       lineOverflowed_ = false;
+      seenStart_ = true;
       continue;
     }
     if (c == '\r' || c == '\n') {
-      if (lineLength_ > 0 && !lineOverflowed_) {
+      // Nothing is parsed until the first '$' of the session has been seen. The
+      // very first "line" after begin() is almost always the tail of a sentence
+      // already in flight, and feeding it to the parser was measured on hardware
+      // to land in EITHER error counter depending on where the tear fell: before
+      // the '*' the tail still carries a valid "*hh" and fails the checksum, so
+      // it lands in checksumErrors_ and pollutes the one counter a bring-up uses
+      // to judge the baud rate. Two mid-stream opens on 2026-08-31 landed one in
+      // each counter. Discarding up to the first '$' is what actually fixes
+      // that; splitting the counters alone did not.
+      if (lineLength_ > 0 && !lineOverflowed_ && seenStart_) {
         line_[lineLength_] = '\0';
         handleSentence(line_, lineLength_);
       }

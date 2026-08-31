@@ -729,6 +729,37 @@ void loop() {
     logSerial.read();
   }
 
+  // Say what is blocking the command queue, once per boot. Everything above this
+  // point consumes only whitespace, so a single non-'C' byte at the head wedges
+  // every command for the rest of the session -- and on 2026-08-31 a whole
+  // bring-up run had every command silently dropped, with no way to tell this
+  // apart from a broken USB link. ModemManager probing a freshly enumerated ACM
+  // device with "AT" would produce exactly that, and so would a torn first write.
+  //
+  // Five seconds of the SAME unconsumed byte, not merely a non-'C' byte: the map
+  // screen's own console reads this port too (MapSerialConsole), so a non-'C'
+  // head is perfectly normal while that is running and warning on it would cry
+  // wolf on every map session.
+  {
+    static bool reportedStuckHead = false;
+    static int lastHead = -1;
+    static unsigned long headSince = 0;
+    const int head = logSerial.available() > 0 ? logSerial.peek() : -1;
+    if (head < 0 || head == 'C') {
+      lastHead = -1;
+      headSince = 0;
+    } else if (head != lastHead) {
+      lastHead = head;
+      headSince = millis();
+    } else if (!reportedStuckHead && headSince != 0 && millis() - headSince > 5000) {
+      reportedStuckHead = true;
+      LOG_ERR("MAIN",
+              "serial head byte 0x%02X (%c) unconsumed for 5 s -- every CMD: is being ignored until "
+              "it is drained",
+              head, (head >= 32 && head < 127) ? static_cast<char>(head) : '?');
+    }
+  }
+
   if (logSerial.available() > 0 && logSerial.peek() == 'C') {
     String line = logSerial.readStringUntil('\n');
     if (line.startsWith("CMD:")) {

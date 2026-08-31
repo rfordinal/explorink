@@ -305,15 +305,33 @@ are about this board and not about GNSS:
 
 ## Serial usually resets the board, and you cannot rely on either outcome
 
-**A third data point, and a worse one: after a cold power-on the CDC came up
-transmit-only.** 2026-08-31, USB unplugged 7.7 s with no battery, then replugged.
-The device logged happily for 271 s across three separate port opens -- so
+**A third data point, and a worse one: after a cold power-on, commands stopped
+arriving.** 2026-08-31, USB unplugged 21 s with no battery, then replugged. The
+device logged happily for 271 s across **four** separate port opens -- so
 device-to-host was fine and none of those opens reset it -- while **every command
 sent to it was dropped**. Not one `CMD:` reply, including read-only ones. An
 `esptool ... --after hard-reset` fixed it immediately and the same script then
-worked first try. So a silent board is not necessarily a hung board: check
-whether it is still logging before assuming a crash, and reset the chip before
-assuming a bad build. Possibly the same fault as the three USB dropouts below.
+worked first try.
+
+**What is established is the symptom, not the layer.** The first version of this
+note called it "the CDC came up transmit-only", which places the fault in USB
+without evidence. Review named an alternative this firmware documents against
+itself: the command reader consumes only whitespace before a `'C'`, so **any
+single other byte sitting at the head of the RX buffer blocks every command for
+the rest of the session** (`src/main.cpp`, the peek loop). A torn first write into
+a freshly enumerated endpoint does that, and so does ModemManager probing a new
+ACM device with `AT` -- and a hard reset clears both, so recovery discriminates
+nothing. Reset-on-open is no discriminator either: a healthy session on the same
+day also failed to reset on open.
+
+Two things make the next occurrence diagnosable instead of a coin flip, one of
+them now in the firmware: the peek loop **logs the head byte** it is refusing to
+consume once it has sat there five seconds, and on the host side
+`journalctl -u ModemManager` covers the enumeration window.
+
+Either way: a silent board is not necessarily a hung board. Check whether it is
+still logging before assuming a crash, and reset the chip before blaming the
+build. Possibly the same fault as the three USB dropouts below.
 
 **A second data point, 2026-08-31: one open did not reset it at all.** The GNSS
 pass opened the port twice in a row; the first open produced a full boot log

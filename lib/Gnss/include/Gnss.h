@@ -147,14 +147,24 @@ class Gnss {
   // anything this class can see, and none of the counters below move. Measured
   // on hardware 2026-08-31 -- a 6.07 s blocking render lost 85 sentences and
   // moved checksumErrors() by exactly one, so 84 disappeared without a trace.
-  // A non-zero value here means the numbers below are an undercount.
+  // A non-zero value here means the numbers below are ALMOST CERTAINLY an
+  // undercount -- not certainly. The counter fires when the buffer is nearly
+  // full, which is a proxy: a stall just long enough to reach the threshold and
+  // no longer loses nothing. It reports proximity to loss, and the driver is
+  // the only thing that knows about loss itself.
   uint32_t rxNearlyFullEvents() const { return rxNearlyFull_; }
 
   uint32_t sentencesParsed() const { return sentences_; }
   // Sentences whose checksum did not match: the baud-rate and line-quality
   // signal. Distinct from framingErrors(), which counts input that had no
   // usable "*hh" at all -- a garbage burst on a cold UART, or a line lost to
-  // buffer overflow. Mixing the two makes the first useless as a diagnosis.
+  // buffer overflow.
+  //
+  // Splitting them was necessary and, on its own, was NOT sufficient: the torn
+  // first line after begin() lands in whichever counter the tear position
+  // dictates, which measurement confirmed (2026-08-31, one mid-open in each).
+  // What makes checksumErrors() trustworthy is poll() discarding everything
+  // before the session's first '$'.
   uint32_t checksumErrors() const { return checksumErrors_; }
   uint32_t framingErrors() const { return framingErrors_; }
   uint32_t bytesRead() const { return bytesRead_; }
@@ -194,6 +204,9 @@ class Gnss {
   char line_[kLineMax] = {0};
   size_t lineLength_ = 0;
   bool lineOverflowed_ = false;
+  // False until the first '$' after begin(). Everything before it is discarded
+  // unparsed: see poll(), and the counters' comments below.
+  bool seenStart_ = false;
 
   GnssFix fix_;
   TalkerState talkers_[kMaxTalkers];

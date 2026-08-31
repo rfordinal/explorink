@@ -40,8 +40,12 @@ shown, or labelled open.
 used, 19 in view, 9 tracked, best C/N0 32 dB-Hz, HDOP 2.0. That was not the
 expected outcome -- an indoor attempt on the factory firmware got nothing
 (2026-08-31, earlier the same day) -- so the antenna and its placement are
-better than assumed. The receiver says so itself in words: it emits
-`$GPTXT,01,01,01,ANTENNA OK`.
+better than assumed.
+
+The receiver also emits `$GPTXT,01,01,01,ANTENNA OK`. **That is an open/short
+detection line, not an endorsement of placement**, and the first draft used it as
+one. What it actually asserts should be read out of the L76K or CASIC manual
+before it is quoted again; it is currently uncited.
 
 **Time arrives before a fix.** `utc` is populated while `q=0`, because the date
 and time come off RMC well before a solution does. Verified in the second run,
@@ -92,8 +96,10 @@ here only because this env runs its console over USB CDC
 (`ARDUINO_USB_CDC_ON_BOOT=1`, and `logSerial` is `HWCDC& = Serial` in
 `lib/Logging/Logging.h:35`). One consequence: the ROM bootloader still logs on
 GPIO43 at every reset, so the receiver's RX takes a few lines of unsolicited
-text on each boot. Harmless -- a receiver discards anything that is not a
-command it knows.
+text on each boot. Presumed harmless, on the grounds that a receiver discards anything that is not
+a command it knows -- **inferred, never observed**, and it is 115200-baud output
+arriving at a 9600-baud input, so the receiver sees framing errors rather than
+text.
 
 ## The power rail is shared with the LoRa radio, and that has a sharp edge
 
@@ -175,8 +181,10 @@ day; this is the corrected account.
 **What holds.** At run 1's first `CMD:GNSS ON` the receiver was already powered
 and tracking. Two independent signs, neither of which is the TTFF number:
 
-- The UART opened **mid-sentence**: exactly one framing-class error on the very
-  first read, while a rail-cycled start later the same session logged none. A
+- The UART opened **mid-sentence**: exactly one error of that class in the
+  session, while a rail-cycled start later the same session logged none. (The
+  counter was first *sampled* 14 s and 215 sentences after the open, so
+  "mid-open caused it" is the best explanation rather than a timed observation.) A
   receiver that had just been powered 100 ms earlier (`GnssConfig::powerSettleMs`)
   is not in the middle of transmitting a sentence.
 - The first status reported `q=1` with 8 satellites used. A receiver powered at
@@ -201,8 +209,9 @@ turned it on and nothing turned it off.
 **Why "the board powers it by default" does not follow.** The same latching
 argument applies to run 1. No reset in any of the three runs power-cycles the
 expander: a serial-open reset, a reflash and `ESP.restart()` all reset only the
-S3. The board ran its **factory firmware** earlier the same day, and that
-firmware drives this rail. If the board was not physically unplugged in between,
+S3. The board ran its **factory firmware** earlier the same day, and that firmware
+presumably drives this rail -- **assumed, not established**; nobody has read its
+expander writes. If the board was not physically unplugged in between,
 run 1's "already powered" is fully explained by a latched write from that
 session -- no pull-up and no board default needed. Run 1's "fresh boot at millis
 401" was itself a warm reset caused by the test script opening the port, which
@@ -218,13 +227,21 @@ own flash, which no rail outage clears at all.
 
 **What actually is established by run 2:** the `ON`/`OFF` path really does
 control the module. The re-enable came back `q=0` with `inview` dropped from 20
-to 12 and every counter reset -- a module that had stayed powered and fixed would
-have answered `q=1` on its first GGA after the port reopened.
+to 12 -- a module that had stayed powered and fixed would have answered `q=1` on
+its first GGA after the port reopened.
+
+The first version of this paragraph also cited "every counter reset" as evidence.
+That was vacuous: `begin()` zeroes the counters in software on any successful
+call, powered module or not. Same class of check as the SD-card test below, and
+deleted for the same reason.
 
 #### The experiment was run, 2026-08-31, and it killed my own explanation
 
-USB unplugged for 7.7 s with **no battery attached** (maintainer confirmed), so
-the board genuinely lost power. Then `CMD:GNSS PROBE`, which reads the
+USB unplugged with **no battery attached** (maintainer confirmed), so the board
+genuinely lost power. **The outage was 21.0 s** -- corrected after review: the
+first version of this section said 7.7 s, which was the script's wait for the
+maintainer to pull the plug, not the gap. Reading the wrong one of two adjacent
+timings, for the fourth time in one day. Then `CMD:GNSS PROBE`, which reads the
 expander's registers and opens the UART with **no power hook at all**, before
 anything can write the rail.
 
@@ -238,6 +255,17 @@ GNSS_PROBE:cfg0=0x00 out0=0xFF in0=0xFF io00_dir=output io00_level=high
 **Solid: the receiver is powered without this firmware asking.** 1,767 bytes and
 36 checksum-valid sentences in 2.5 s, with `powerEnable` set to `nullptr` so no
 code path could have touched the rail. That half of the original finding stands.
+
+**With one caveat the first draft hid.** These registers were read **two board
+resets and 5.5 minutes after** the power-on they are being interpreted against.
+The bridge is a code argument -- nothing in this firmware writes port 0, verified
+by grep and by the port arithmetic in `updatePca9535Bit` -- which is read off the
+code, not measured. And `CMD:GNSS PROBE`'s own comment demands a `POWERON` reset
+cause before the answer means anything: **no log in this session contains one.**
+The power-cycle boot's capture started mid-line at millis 944, past the ROM
+banner, and the boot that actually ran the probe was an esptool reset. The rerun
+is cheap now that the dropped-command failure mode is understood: open the port
+*before* the replug.
 
 **Killed: the pull-up explanation, which was mine.** This file previously said
 "the expander comes out of reset with every pin an input and something on the
@@ -254,8 +282,11 @@ writes eight bits of port 0.
 
 Three candidates, and this probe cannot separate them:
 
-1. **The expander did not actually lose power** in those 7.6 s, despite no
-   battery. Then 0x00 is a latch from the factory firmware, which does configure
+1. **The expander did not actually lose power** in those 21 s, despite no
+   battery. Its reset needs VCC at the chip below VPORF, 0.77 to 1.1 V (TI
+   SCPS129K Table 10-1), and a guaranteed reset wants below 0.2 V; standby draw
+   is 1 uA max. Whether this board's rail got there in 21 s is a board question
+   no datasheet answers. Then 0x00 is a latch from the factory firmware, which does configure
    the whole expander, and it has survived every reset since.
 2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
    configuration registers to 0xFF; a second-source part or a clone may not.
@@ -264,9 +295,15 @@ Three candidates, and this probe cannot separate them:
 
 **The cheap check that excludes 3, and it has not been run:** read `CONFIG1`
 (0x07) in the same probe. This firmware *does* configure port 1, for the EPD
-pins, so `CONFIG1` should show exactly `IO10`, `IO11`, `IO13`, `IO14`, `IO15` as
-outputs and `IO16`, `IO17` as inputs. If it does, the addressing is right and the
-port-0 reading has to be believed. One line of code.
+pins, so the expected value is computable rather than a hand-wave.
+`prepareEpdPower()` sets `IO10`, `IO11`, `IO13`, `IO14`, `IO15` as outputs and
+`IO16`, `IO17` as inputs, and **it never touches `IO12`** (the button, linear
+index 10) -- `BoardT5S3::begin()` would set that one as an input and never runs.
+So under the all-inputs default `CONFIG1` should read **0xC4**.
+
+The first version of this prediction enumerated the five outputs and said
+"exactly", omitting `IO12` -- so a correct 0xC4 would have read as a failure to
+whoever ran it. Caught by review before anybody did.
 
 So the honest state: **the receiver is powered before any firmware asks, by a
 driven expander output that this firmware did not write.** Why that output
@@ -304,10 +341,17 @@ exactly what the 531 ms readings did, in the other direction.
   statuses. So this reading reflects an acquisition in progress rather than a
   phase offset, which is a qualitative difference from every earlier run and does
   corroborate the review's argument about what a sub-second value means.
-- **The indoor cold TTFF is roughly 6.2 minutes**, and that number comes from
-  wall-clock timestamps rather than from `ttff`. Coarse, and honest. It is the
-  first acquisition figure this project has for this receiver, with the caveat
-  that most of it happened while the USB link was dead and nobody was watching.
+- **The reacquisition took roughly 6.2 minutes indoors**, from wall-clock
+  timestamps rather than from `ttff`. Coarse, and honest.
+
+  **It is a warm figure, not a cold one**, and calling it cold was another error
+  this file made and review caught. The receiver had been tracking for hours the
+  same day and the outage was 21 s -- which clears nothing, as this file says two
+  sections up: almanac and ephemeris live in the receiver's own flash. A cold
+  start needs a receiver command that wipes them, which is what the Open list
+  asks for. So: **warm reacquisition after a 21 s power interruption, indoors,
+  about 6.2 minutes.** That it took that long warm is itself worth knowing about
+  this antenna under a ceiling.
 
 The lesson is not about GNSS. `timeToFirstFixMs()` now carries a warning that a
 small value means nothing, and the author then read a large value as if it meant
@@ -463,8 +507,12 @@ and 405 sentences at that baseline; observed 17,384 bytes and 320 sentences.
 **Lost: about 4,780 bytes and 85 sentences.**
 
 The blocking window is **6.07 s**, not the 4,017 ms render: the log's
-`New max loop duration: 6074 ms` covers the whole map `onEnter`, which is
-`BlePositionServer::begin()` plus the render. And that closes the arithmetic --
+`New max loop duration: 6074 ms` covers the whole map `onEnter`. Its composition
+was also wrong in the first draft, which blamed `BlePositionServer::begin()` --
+that costs **48 ms**. The real breakdown is the 4,017 ms render, about 1.5 s of
+panel refresh after it, and roughly 0.5 s of setup. That matters for the fix:
+the second-largest blocker is the **refresh**, not BLE, so anything that moves
+the UART off this loop has to survive a refresh too. And that closes the arithmetic --
 6.074 s x 816 B/s minus the 256 bytes the buffer does hold is 4,701 bytes, against
 4,780 observed.
 
@@ -538,19 +586,46 @@ Acted on:
 
 Same run as the probe above, on the build carrying all of them.
 
-- **`rxfull` catches the blocked render.** Three statuses across the session:
-  `rxfull=0`, `rxfull=0`, then **`rxfull=1`** immediately after `CMD:GOTO_MAP`.
-  Silent while nothing blocked, and it fired on the one thing it was built to
-  see. The loss it reports used to be entirely invisible.
-- **The `cserr` / `ferr` split behaves as designed.** The mid-stream UART open now
-  lands in `ferr` (`cserr=0 ferr=1` on the first status), where it used to inflate
-  the checksum counter and make a clean line look dirty.
-- **`utc` from RMC and ZDA atomically.** The reported value matched the ZDA
-  sentence on the wire to within one sentence interval, which is the resolution
-  this check has -- not "exact", and the earlier version of this file made that
-  mistake once already. The run also exercised the intended path for an RMC with
-  status `V`: `$GNRMC,170236.000,V,,,,,,,310826,,,N,V` has no position and its
-  date was still used, while speed and course were correctly ignored.
+- **`rxfull` fired on the blocked render, and it reports proximity, not loss.**
+  Three statuses: `rxfull=0`, `rxfull=0`, then **`rxfull=1`** after
+  `CMD:GOTO_MAP` (19 s after, not "immediately"). Silent while nothing blocked,
+  which is the part that matters -- it is not simply always on.
+
+  Precisely what it means: the buffer was within 32 bytes of full when `poll()`
+  ran. At 816 B/s into 1024 bytes, a stall between about 1.22 s and 1.29 s trips
+  it having lost nothing at all. It is a proxy, and the header now says "almost
+  certainly" rather than "means". Loss itself is knowable only to the driver.
+  n=1 positive against n=2 negative.
+- **The `cserr` / `ferr` split did NOT achieve what it was for**, and the same run
+  proves it. One status showed `cserr=0 ferr=1`, which is what the split was
+  meant to deliver -- and the `PROBE` in the same session, also a mid-stream open,
+  showed `cserr=1 ferr=0`. Two mid-opens, one in each counter.
+
+  The mechanism, found by review: which counter takes the torn first line depends
+  on where the tear falls. Cut before the `*`, which is most of a sentence's
+  length, and the tail still carries a valid `*hh`, fails the checksum, and lands
+  in `cserr` -- exactly the pollution the split was supposed to remove. Only a cut
+  inside the `*hh` lands in `ferr`. So the split alone achieved the goal about one
+  time in ten.
+
+  **Fixed properly rather than re-documented:** `poll()` now discards everything
+  before the session's first `$`. The split stays, because the two failures really
+  are different, but it is the discard that makes `cserr` mean what this file says
+  it means. Unverified on hardware.
+- **`utc` produced a correct value. The check does not reach the path.** The
+  reported number was one second after the last logged ZDA, so the match is again
+  inferred from the 1 Hz cadence rather than read off the wire -- the same
+  weakness this file flags for its own coordinate check and failed to flag here.
+  Worse for attribution: RMC and ZDA both write `fix_.utc` every second, so a
+  correct value cannot say which parser produced it, and neither path is
+  individually verified. `$GNRMC,170236.000,V,,,,,,,310826,,,N,V` did appear, but
+  "its date was used" is not attributable with ZDA in the same stream, and
+  "speed and course correctly ignored" was never observable at all -- `GNSS_NOFIX`
+  prints neither field. That last one was read off the code and written as though
+  the run had shown it.
+
+  What settles it: host tests on recorded streams, one with ZDA stripped, one with
+  RMC stripped, one crossing midnight. T-580.
 - **Not exercised:** the midnight rollover itself, the 2038 arithmetic, the
   dropped-GSV-message path, and the rail rollback. All four are why T-580 wants
   host tests rather than another night on the bench.
