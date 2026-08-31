@@ -4435,7 +4435,8 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     // drawPins() only ever runs inside a full render, and a full render puts the
     // marker on the ladder anchor (renderViewport()). markerDrawnX_ still describes
     // the previous frame at this point.
-    markerRect(MapViewport::kAnchorScreenX, MapViewport::markerYForStep(markerStep()), mx, my, mw, mh);
+    markerRect(MapViewport::anchorScreenX(renderer.getScreenWidth()), MapViewport::markerYForStep(markerStep()), mx,
+               my, mw, mh);
     const bool overlaps = textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my;
     if (overlaps) {
       if (mx - leftLimit >= textWidth + 4) {
@@ -4623,7 +4624,7 @@ void MapActivity::panBy(PanDirection direction) {
   // 2026-08-17). Enough overlap to follow a road across two presses.
   const int16_t stepX = static_cast<int16_t>(renderer.getScreenWidth() * MapViewport::kPanStepPercent / 100);
   const int16_t stepY = static_cast<int16_t>(renderer.getScreenHeight() * MapViewport::kPanStepPercent / 100);
-  int16_t targetX = MapViewport::kAnchorScreenX;
+  int16_t targetX = MapViewport::anchorScreenX(renderer.getScreenWidth());
   int16_t targetY = markerY;
   switch (direction) {
     case PanDirection::Left:
@@ -5513,7 +5514,8 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // re-orient to whatever the rider was doing at that moment, which is the
   // rotating map the frozen frame exists to stop.
   const uint8_t frameHeading = frameHeadingFor(headingStep);
-  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, frameHeading, MapViewport::mppMercFor(zoomStep(), lat));
+  const int16_t markerX = MapViewport::anchorScreenX(renderer.getScreenWidth());
+  proj_.reset(lat, lon, markerX, markerY, frameHeading, MapViewport::mppMercFor(zoomStep(), lat));
 
   const MapViewport::TileRange range =
       MapViewport::tileRangeFor(proj_, tileZ, renderer.getScreenWidth(), renderer.getScreenHeight());
@@ -5531,7 +5533,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
-  view.markerX = MapViewport::kAnchorScreenX;
+  view.markerX = markerX;
   view.markerY = markerY;
   // The same heading proj_ was rotated by. MapRenderer draws direction glyphs
   // in raw screen direction (MapRenderer.cpp's kHeadingDir, not
