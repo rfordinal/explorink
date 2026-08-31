@@ -35,6 +35,7 @@ shown, or labelled open.
 | Feeding the map | no -- the map still takes its position over BLE from the phone |
 | Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works |
 | Still open | idle current, whether the rail is on by design or by an uncleared latch, whether SPI contention is real, a TTFF from the receiver's own power-on |
+| What comes next | [`gnss-to-map-plan.md`](gnss-to-map-plan.md) -- five steps to the map reading this receiver, and the merge gate |
 
 **A working fix indoors**, on a desk, through a ceiling: `q=1`, 8 satellites
 used, 19 in view, 9 tracked, best C/N0 32 dB-Hz, HDOP 2.0. That was not the
