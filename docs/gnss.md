@@ -336,10 +336,18 @@ fix: the experiment needs an outage long enough to take the rail below 0.2 V, so
 **A vanished USB device node does not mean the board lost power.** It means the
 USB peripheral went down, and on this board the ordinary cause is the firmware
 falling asleep. Three probe attempts on 2026-08-31 waited for the node to
-disappear and treated that as an unplug; at least two of them were **deep sleep**,
-with the board alive the whole time. The give-away was in the logs and took far
-too long to read: `millis` continued straight across the gap, which no power loss
-can do.
+disappear and treated that as an unplug. One of them was demonstrably **deep
+sleep**: the board itself said so.
+
+**Retracted the same day: `millis` continuity was not sound evidence for the
+other two.** The first draft here argued that `millis` continued straight across
+the gap, which no power loss can do. But opening the port can deliver
+kernel-buffered bytes from before the unplug, so the first lines' `millis` need
+not belong to the current boot -- a proxy used without checking the proxy, which
+is the same mistake one level up. What stands is `reset=DEEPSLEEP` for the one
+boot that reported it, read from the chip. Whether the two earlier attempts were
+sleep or real power loss is **unknown**, and the probe line is now the only way
+to tell.
 
 `reset=DEEPSLEEP` in the probe reply is what finally settled it. Which is the
 lesson: **the device is the only authority on whether it lost power**, and the
@@ -354,8 +362,16 @@ Two consequences for any repeat, both free:
   three failed attempts each sat silent for minutes and were put to sleep by
   their own patience.
 - **Wait in one long window, not four short ones.** The firmware's stuck-byte
-  drain (below) only fires after 5 s of the same byte, so a reader that gives up
-  after 12 s can never see the recovery it triggered.
+  drain only fires after 5 s of the same byte, so a reader that gives up after
+  12 s can never see the recovery it triggered.
+
+  **And whether that drain clears the wedge is unverified.** In the session where
+  commands finally arrived it never fired -- zero `serial head byte` lines -- so
+  they arrived because the board was awake and its buffer clean, not because
+  anything was cleared. What is verified is that the **diagnostic** names the
+  byte, which is what turned this from a coin flip into a mechanism. What would
+  settle the fix: reproduce the wedge and watch a `CMD:` succeed within seconds
+  of the drain line appearing.
 
 And it explains something the bring-up doc had filed as an open USB fault: at
 least today's dropouts were auto-sleep, not a bus problem.
@@ -787,6 +803,11 @@ the non-overlapping path.
 - **Idle current of the GNSS + LoRa pair**, against the BQ27220 or a meter in
   series at the development board's battery connector. Name the instrument.
   T-579.
+- **A cold start cannot be produced today.** `power-management.md`'s G1 row
+  (added on `develop` by another session, 2026-08-31) asks for `CMD:GNSS ON` from
+  a receiver with a cleared almanac, and **no command in this firmware clears
+  one** -- the L76K needs a CASIC restart command that is not implemented. Until
+  it is, G1 is not executable and only warm figures are obtainable. T-581.
 - **Cold-start TTFF**, outdoors, from a genuinely cold receiver -- longer than a
   49.7 s outage, or a receiver command that clears the almanac.
 - **Is the SPI contention real at all?** Does GPIO46 go low during a refresh,

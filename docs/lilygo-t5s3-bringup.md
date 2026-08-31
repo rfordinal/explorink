@@ -317,8 +317,9 @@ worked first try.
 firmware now logs the head byte it is refusing to consume, and it named it: `0x5B`
 (`[`) with 17 bytes pending -- the first character of this firmware's own log
 lines, arriving on its own RX. So the peek trap really was one of the causes, and
-the loop now drains such a byte after five seconds instead of only complaining
-about it. The other cause was **deep sleep**: `CMD:GNSS PROBE` answered
+the loop now also drains such a byte after five seconds. **That the drain fixes
+it is unverified** -- in the session where commands finally arrived the drain
+never fired at all (`gnss.md`). The other cause was **deep sleep**: `CMD:GNSS PROBE` answered
 `reset=DEEPSLEEP`, so the board had put itself to sleep and the vanished device
 node was that, not an unplug. At least today's dropouts are therefore auto-sleep
 and not a bus fault, which is what this section previously suspected.
@@ -348,6 +349,15 @@ consume once it has sat there five seconds, and on the host side
 Either way: a silent board is not necessarily a hung board. Check whether it is
 still logging before assuming a crash, and reset the chip before blaming the
 build. Possibly the same fault as the three USB dropouts below.
+
+**Data read right after opening the port can be stale, and it cost a whole
+conclusion.** The kernel buffers what the device sent while nothing had the port
+open and hands it over on open, so the first lines can come from a *previous*
+boot, mixed with live output -- and their `millis` do not belong to the current
+one. On 2026-08-31 that produced a confident argument that the board had never
+lost power, built on timestamps from the wrong boot. Read the reset cause from
+the device instead: `CMD:GNSS PROBE` reports it, and the chip is the only
+authority on its own boot.
 
 **A second data point, 2026-08-31: one open did not reset it at all.** The GNSS
 pass opened the port twice in a row; the first open produced a full boot log
