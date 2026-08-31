@@ -235,8 +235,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
 
         // --- Map ---
         // Off by default. On, the map screen asks the phone for a tile as soon
-        // as it hatches one, and shows a globe in the header while the transfer
-        // is in flight (MapActivity::maybeAutoSyncTiles(),
+        // as it hatches one, and shows a transfer icon in the header while the
+        // transfer is in flight (MapActivity::maybeAutoSyncTiles(),
         // docs/missing-tiles.md). It spends the phone's mobile data, so the
         // rider turns it on deliberately or not at all.
         SettingInfo::Toggle(StrId::STR_MAP_AUTOSYNC_TILES, &CrossPointSettings::mapAutoSyncTiles, "mapAutoSyncTiles",

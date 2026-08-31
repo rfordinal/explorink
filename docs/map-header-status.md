@@ -1,9 +1,18 @@
 # The map screen's header status row
 
-Top-right of the map, above the compass: a clock, a globe, a Bluetooth logo,
-four signal bars and the battery block. Drawn by
+Top-right of the map, above the compass: a clock, a transfer icon, a Bluetooth
+logo, four signal bars and the battery block. Drawn by
 `MapActivity::drawHeaderStatus()` and `drawHeaderStatusStrip()`
 (`src/activities/map/MapActivity.cpp`).
+
+The transfer icon was a hand-drawn globe (circle, equator, meridian) until
+2026-08-31, when it was replaced with a baked Lucide glyph (two opposite
+arrows, `arrow-left-right`) -- `scripts/gen_map_header_icons.py`,
+`src/components/icons/map_header_icons.h`. The meaning did not change: it is
+still `autoSyncPending_ > 0`, still about the phone spending mobile data on the
+rider's behalf. Drawn with `GfxRenderer::drawMono1bpp()`, not `drawIcon()` --
+`drawIcon()` bakes in a quarter turn for the forced-Portrait UI themes, and
+this row renders in whatever orientation the device is held in.
 
 No other screen has one. Battery goes through `GUI.drawHeader()`, the same call
 every other activity makes, so its position matches the info-list screens
@@ -18,26 +27,27 @@ has a wireless link worth showing.
 | Signal bars | `resolveBleBars(ble.rssi())` | link quality to the phone |
 | X over the bar slot | `connIntervalMs() == 0` | no central connected |
 | Bluetooth logo | always | what the bars are about |
-| Globe | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data |
+| Transfer icon | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data |
 | Clock | `BlePositionServer::localTimeNow()` | local time, from the phone; blank until it has sent one |
 
-The globe is not an internet indicator in the literal sense -- this device has
-no radio that reaches the internet. It is about the thing the rider cares about:
-the phone is spending mobile data on their behalf right now. See
+The transfer icon is not an internet indicator in the literal sense -- this
+device has no radio that reaches the internet. It is about the thing the rider
+cares about: the phone is spending mobile data on their behalf right now. See
 `missing-tiles.md`, "Autosync".
 
 ## Two rects, one source
 
-`headerStatusRect()` gives the strip: the clock slot, the globe slot, the logo,
-the bars, plus the opaque backing's padding. Deliberately **excludes** the
-battery block, which `GUI.drawHeader()` clears and draws itself.
+`headerStatusRect()` gives the strip: the clock slot, the transfer icon slot,
+the logo, the bars, plus the opaque backing's padding. Deliberately
+**excludes** the battery block, which `GUI.drawHeader()` clears and draws
+itself.
 
 Everything drawn must be inside it, because it is also what the windowed
 repaint refreshes. Three consequences worth stating:
 
-- **The globe's and the clock's slots are in the rect whether or not either is
-  drawn.** A rect that shrank when one went away would leave its pixels on the
-  panel with nothing to erase them.
+- **The transfer icon's and the clock's slots are in the rect whether or not
+  either is drawn.** A rect that shrank when one went away would leave its
+  pixels on the panel with nothing to erase them.
 - **`updateHeaderStatus()` calls `drawHeaderStatusStrip()`, never
   `drawHeaderStatus()`.** The latter also redraws the battery, which is outside
   the window -- that would put a battery in the framebuffer the panel will not
@@ -333,8 +343,8 @@ beside the clock is a small change. Nobody has ridden with this yet.
 hidden on a device with no RTC, so reading it here would obey a setting the
 rider cannot reach.
 
-The slot is reserved whether or not a time is known -- same rule as the globe's
-slot, same reason. The text is right-aligned inside it, so the colon does not
+The slot is reserved whether or not a time is known -- same rule as the
+transfer icon's slot, same reason. The text is right-aligned inside it, so the colon does not
 walk sideways between `9:05` and `10:05`.
 
 Its width comes from `headerClockSlotWidth()`, which measures the **widest
@@ -524,12 +534,13 @@ same offset still reads right.
   screenshot showed the strip repainting "with the map frame underneath
   untouched". One image cannot show that nothing else was repainted. The claim
   that survives is the one above -- no render ran in the window.
-- **Verified on hardware, 2026-08-07**: the globe draws at 14 px, clear of the
-  Bluetooth logo and not clipped by the strip rect. Honest note on the glyph: a
-  circle with a straight equator and a straight meridian reads as a
-  crosshair-in-a-circle about as much as a globe. It is unambiguous against
-  everything else in that row, but curving the meridian would make it a globe
-  rather than a target.
+- **Verified on hardware, 2026-08-07, about the retired globe glyph**: it drew
+  at 14 px, clear of the Bluetooth logo and not clipped by the strip rect.
+  Honest note on that glyph, kept for the record: a circle with a straight
+  equator and a straight meridian read as a crosshair-in-a-circle about as much
+  as a globe. Superseded 2026-08-31 by the baked Lucide arrow glyph (see the top
+  of this doc); not yet separately verified on hardware -- open, needs a
+  hardware pass.
 - **Not verified**: the 30 s bar-repaint floor doing its job on a link whose RSSI
   actually sits on a threshold. Every run here was at close range with a steady
   signal. What would settle it: walk the phone to the edge of range with the map
