@@ -174,6 +174,53 @@ to `openMapMenu()` puts Zoom in and Zoom out within reach without inventing an
 input model, because the menu already carries them. Tracked as T-573 in the
 parent repo.
 
+## Two memory pools, not one
+
+The biggest difference from the X4 after the panel. The C3 has internal SRAM and
+nothing else, which is why this firmware's whole memory discipline exists: the
+map screen sits near 50 KB free there and `BlePositionServer` has to be torn
+down on leaving the screen because it costs 57 KB.
+
+The S3 board has both, and they are separate:
+
+| | what it is | how much, measured on this board | what reports it |
+|---|---|---|---|
+| internal DRAM | SRAM on the die | 307,684 B total, 191,512 B free on Home | `ESP.getFreeHeap()` |
+| PSRAM | 8 MB octal, off-die | 6.5 MB free across the whole heap | `esp_get_free_heap_size()` |
+
+Both numbers are off this board's own log, not off a datasheet. The two APIs are
+**not** two views of one number: Arduino's `ESP.getFreeHeap()` is
+`heap_caps_get_free_size(MALLOC_CAP_INTERNAL)`
+(`framework-arduinoespressif32/cores/esp32/Esp.cpp:163`), so it never sees
+PSRAM; `esp_get_free_heap_size()` counts everything the allocator can hand out.
+
+Three consequences, and none of them is "there is 8 MB now, stop worrying":
+
+- **Internal DRAM is still ~300 KB**, and everything that must be reachable
+  from an ISR or by DMA has to live there. PSRAM cannot hold it.
+- **The split is at 4 KB.** The core is built with `CONFIG_SPIRAM=y`,
+  `CONFIG_SPIRAM_USE_MALLOC=y` and `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`
+  (`framework-arduinoespressif32-libs/esp32s3/sdkconfig`): allocations at or
+  below 4 KB are forced internal, larger ones may go to PSRAM. So the big
+  buffers -- the driver's canvas, a window buffer, the menu backdrop -- land in
+  the 8 MB, while every small allocation still competes for the 300 KB.
+- **PSRAM is slower.** It is reached over octal SPI through a cache rather than
+  on the core bus, so random access costs far more than SRAM.
+  `LgfxEpdDriver` keeps its 8-bit grayscale canvas there and expands into it
+  every frame, which is one candidate for the ~2.7 s map redraw alongside the
+  plain fact that 960x540 is 2.7x the X4's pixel count. Neither has been
+  measured apart. `[open]`
+
+**And it makes a class of existing check wrong on this board.** Code written for
+the C3 asks `ESP.getFreeHeap()` and then allocates with `new`. On the C3 those
+are the same pool. Here the question is about internal DRAM and the answer is
+served from PSRAM. `MapActivity::captureMenuBackdrop()` is the clearest case
+(`src/activities/map/MapActivity.cpp:2858-2862`): it compares a
+hundreds-of-kilobytes backdrop against internal free heap and skips the capture
+when it would not fit, although the allocation itself would come out of the 8 MB.
+Not dangerous -- it is stricter than reality, so the menu closes the slow way --
+but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
+
 ## What is wrong or missing
 
 - **The profile declares `NO_SENSORS` although the board has a PCF8563 RTC**
