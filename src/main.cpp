@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
+#if FREEINK_DEVICE_LILYGO
+#include <BoardT5S3.h>
+#endif
 #include <Epub.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -360,6 +363,24 @@ void setup() {
   silentRebootMagic = 0;
   silentRebootTarget = 0;
 
+#if FREEINK_DEVICE_LILYGO
+  // The LilyGo board layer, and the only call that reaches it. Nothing else
+  // does: our own code never mentions BoardT5S3, and the SDK's LGFX config
+  // touches the PCA9535 directly through prepareEpdPower() rather than going
+  // through begin(). That is why the panel and the touch panel came up on the
+  // first flash while the board's user button did not exist at all.
+  //
+  // begin() brings up the shared I2C bus, pulls BOOT and the expander's INT
+  // high, prepares the SD SPI bus, powers the GNSS+LoRa rail down, and installs
+  // InputManager::setButtonHook(), which is what makes the PCA9535 button
+  // readable. The hook reports that button as BTN_DOWN and nothing else
+  // (BoardT5S3.cpp:71) -- one button, one direction, which on the map's Follow
+  // mode is a zoom-out step.
+  //
+  // Before gpio.begin() so the hook is installed before InputManager first
+  // reads, and before Storage.begin() so the SD bus is prepared first.
+  BoardT5S3::begin();
+#endif
   gpio.begin();
   powerManager.begin();
   frontlight.begin();
