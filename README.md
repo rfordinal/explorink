@@ -192,6 +192,9 @@ table, the flash offsets and what a published build must be.
 [`docs/lilygo-t5s3-bringup.md`](./docs/lilygo-t5s3-bringup.md) is the `t5s3pro`
 env: what the LilyGo T5 S3 Pro build needs, what already runs on the board, and
 what is still wrong.
+[`docs/gnss.md`](./docs/gnss.md) is that board's satellite receiver: the
+`CMD:GNSS` bring-up console, the NMEA parser in `lib/Gnss/`, and the power rail
+it shares with the LoRa radio.
 
 ### Pre-PR checks
 

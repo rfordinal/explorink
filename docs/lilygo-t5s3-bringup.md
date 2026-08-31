@@ -10,8 +10,11 @@ Branching for this device: [`branching.md`](branching.md).
 
 ## The build environment
 
-`[env:t5s3pro]` in `platformio.ini`. No firmware source is board-specific: the
-whole board lives in `freeink-sdk`, so the env is flags and `lib_deps` only.
+`[env:t5s3pro]` in `platformio.ini`. Almost no firmware source is
+board-specific: the board itself lives in `freeink-sdk`, so the env is mostly
+flags and `lib_deps`. Two devel-only commands are scoped to it and appear in no
+release env -- `CMD:LIGHT` (`ENABLE_FRONTLIGHT_CMD`, below) and `CMD:GNSS`
+(`ENABLE_GNSS_CMD`, [`gnss.md`](gnss.md)).
 
 - `BoardT5S3` (`freeink-sdk/libs/hardware/BoardT5S3`) supplies the parallel-bus
   pins, the PCA9535 + TPS65185 EPD power sequence and the user-button hook.
@@ -232,6 +235,33 @@ hundreds-of-kilobytes backdrop against internal free heap and skips the capture
 when it would not fit, although the allocation itself would come out of the 8 MB.
 Not dangerous -- it is stricter than reality, so the menu closes the slow way --
 but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
+
+## GNSS: reachable over serial, nothing verified
+
+The board's L76K receiver has a bring-up path as of 2026-08-31: `CMD:GNSS` over
+the USB console, `env:t5s3pro` only, no UI and no map integration.
+[`gnss.md`](gnss.md) is the whole story -- the command surface, the parser, the
+shared power rail, and the six checks a hardware pass has to run in order.
+**Nothing about it has run on the board.**
+
+Two findings out of that work belong here rather than there, because they are
+about this board and not about GNSS:
+
+- **`BoardT5S3::begin()` is never called by this firmware.** Not once across
+  `src/` and `lib/`. The only code touching the PCA9535 today is
+  `LilyGoT5S3LgfxConfig.cpp`, for the EPD power pins, and the only reason I2C is
+  up at all is GT911 touch init (`InputManager.cpp:839`). So
+  `disableGpsLora()` has never run, `LORA_RST` is undriven at boot, and the
+  user button behind the expander has no hook -- which is the same gap the
+  unmerged `feat/t5s3-board-begin` branch was opened for, and part of why the
+  map is half-operable here (below).
+- **The `LORA_CS` collision is confirmed, no longer `[open]`.** The parent
+  repo's `docs/lora.md` could not settle whether LovyanGFX actually drives the
+  GPIO handed to it as `pin_oe` / `pin_pwr`, because M5GFX was not checked out.
+  It is now: `Bus_EPD` drives both as real GPIOs and passes one to the i80
+  peripheral as its DC line (`Bus_EPD.cpp:83,85,120,129,143`). Every panel
+  refresh toggles GPIO46. Harmless only while the radio is unpowered or held in
+  reset, and GPIO46 is the SX1262's chip select on the SD card's SPI bus.
 
 ## What is wrong or missing
 
