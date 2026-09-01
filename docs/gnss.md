@@ -664,11 +664,15 @@ callers of it.
 
 ### Three decisions inside it, and the reason for each
 
-**Heading is 0 and stays 0.** The receiver reports a course and mapping it
-straight through would be wrong rather than rough: at rest it is noise
-(`speed=1.3 course=211.9` on a stationary desk, measured 2026-08-31), so a parked
-bike would get a compass that spins. The speed gate and the hysteresis that fix
-it are step 4, and they are a product decision before they are code.
+**Heading was 0 and stayed 0, until a ride found it.** Mapping the course
+straight through would be wrong rather than rough -- at rest it is noise
+(`speed=1.3 course=211.9` on a stationary desk, measured 2026-08-31) -- so the
+first cut passed 0 and left step 4 for later. On the first real ride,
+2026-09-01, the marker followed the rider correctly and its arrow pointed north
+the whole way. **A wrong heading and a missing one look identical on the
+panel**, which is why "leave it for later" was the wrong call and not a
+conservative one. `MapGnssHeading` now derives it -- see "Heading, and the gate
+that decides whether to believe the course".
 
 **A sample is identified by when the driver's fix last changed**, computed as
 `millis() - Gnss::fixAgeMs()`. `Gnss::poll()` returns "something changed", but
@@ -681,6 +685,48 @@ reckoning with no satellites behind it (`Gnss.h`), and a map whose whole claim i
 *where am I* must not draw a position nothing measured. `fix.valid` cannot do
 this job: it latches true on the first solution and stays true, so it says "has
 ever had a fix", not "has one now".
+
+### Heading, and the gate that decides whether to believe the course
+
+`src/activities/map/MapGnssHeading.{h,cpp}`, a pure module next to `MapFollow`
+and split out for the same two reasons: the decision is worth testing on the
+host, and a second client (iOS, the simulator, a replay tool) has to reproduce
+it exactly. Eleven host tests in `test/map_gnss_heading/`.
+
+| | |
+|---|---|
+| believe the course above | **3.0 km/h** |
+| stop believing below | **2.0 km/h** |
+| deadband past a step boundary | **6 degrees** |
+| step width | 22.5 degrees, 16 steps (`MapHeading`) |
+
+**Two thresholds, not one.** A rider sitting on a single threshold flips between
+believed and not on every fix, and a flip that changes the step rotates the whole
+frame -- a full e-ink redraw, about a second. What the hysteresis holds between
+the two is the **gate**, not the step: a rider already believed keeps being
+believed, so the course still drives the heading down to 2.0.
+
+**3.0 rather than a motorbike-shaped 5.0, because of Hike mode.** Walking is
+about 4 to 5 km/h, and a gate at 5 would leave a hiker permanently without a
+heading. 3.0 still clears the 1.3 km/h noise floor. **A first cut, chosen on
+those two numbers and not yet judged on the device** -- a per-mode gate is the
+obvious refinement and is deliberately not built.
+
+**Below the gate the last step is held, never decayed to north.** A held heading
+is not a missing one, and north is a claim.
+
+**The deadband is measured against the step on the panel, not the previous
+course.** The question is whether the course has moved far enough to be worth
+rotating the frame, and the frame shows a step. 6 degrees is about a quarter of
+a step: enough to stop the flutter, small enough that a real turn still lands
+within one fix.
+
+Two wrap-around cases have tests because both are easy to get wrong: 350 degrees
+is 10 degrees from north and not 350 (measured the long way it looks like a huge
+turn and rotates the frame for nothing), and a receiver reporting 360.0 must not
+land on step 16 in a four-bit field.
+
+**Not verified on hardware.** Nothing here has been ridden with.
 
 ### The rail comes up with the map and goes down with it
 
