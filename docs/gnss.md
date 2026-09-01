@@ -741,6 +741,23 @@ cold, not the sub-second figure `Gnss::timeToFirstFixMs()` reports for a receive
 that was already tracking. Whether that trade is right is the duty-cycle question
 in step 5 of the plan, and it needs step 2b's numbers first.
 
+**A crash on map exit leaves the rail on, and that is how the latch gets
+stuck.** `onExit()` calls `BlePositionServer::end()` before `gnss.end()`, and
+that first call is a known dice roll: `NimBLEDevice::deinit(true)` can kill the
+NimBLE host task on a NULL event callback ([`ble-deinit-crash.md`](ble-deinit-crash.md),
+root cause confirmed from a real coredump on this branch's own build,
+2026-09-01). When it fires, `gnss.end()` never runs, the expander's
+`LORA_GPS_EN` latch is never cleared, and the receiver and the LoRa part stay
+powered through the reset with nothing managing them.
+
+That is the same mechanism step 2a identified as "an uncleared latch" -- and it
+now has a named cause rather than being a mystery of who left the rail on. It
+also means the rail can be live on a boot where no code asked for it, which is
+exactly the reading `CMD:GNSS PROBE` exists to make. Ordering the two `end()`
+calls the other way round would narrow the window and is **not** done yet: the
+crash is being fixed at its source (T-586) and a reorder here would hide it
+rather than fix it.
+
 **This is also the first code path that powers the rail while the map is reading
 tiles off the SD card**, which is the SPI contention that has never been tested
 (`LORA_CS` is GPIO46, which LovyanGFX also drives as the panel bus's DC line --

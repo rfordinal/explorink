@@ -986,7 +986,7 @@ void loop() {
         // env:gh_release_rc too (platformio.ini) -- only env:slim clears it --
         // so anyone with a USB cable and a shipped device can flip these
         // toggles and persist them. Two of them cost the rider mobile data and
-        // mapDebugInfo puts their exact position on the panel. T-584.
+        // mapDebugInfo puts their exact position on the panel. T-587.
         //
         //   CMD:SETTING mapAutoSyncTiles 1   ->  SETTING_OK:mapAutoSyncTiles=1
         //   CMD:SETTING <unknown> 1          ->  SETTING_ERR:unknown
