@@ -17,20 +17,17 @@ Why watch it: it names our reference board explicitly —
 same board `project_reference_device_x4pro` tracks. It is actively
 maintained (commits as recent as the day this doc was written, 2026-09-01).
 
-What is in it, worth reading before we solve the same problem from scratch:
+**Full findings from the 2026-09-01 research pass are in
+[`fastepd.md`](fastepd.md)**, not duplicated here — this entry is the pointer,
+that doc is where the content lives. Headline items: it surfaced an
+already-merged sunlight-fix setting in our own tree that defaults off
+(`fadingFix`, `src/CrossPointSettings.h:376` — now T-584/T-585 in
+`docs/TODO.md`), a documented ESP32-S3 parallel-bus erratum relevant to T-576,
+and a gray-matrix design worth reading before any tunable-waveform work.
 
-- `partialUpdate(bKeepOn, iStartRow, iEndRow)` — row-ranged partial refresh.
-- `setPasses(iPartialPasses, iFullPasses)` — tunable refresh pass counts.
-- `pGrayMatrix` — a waveform matrix for 16 grayscale levels.
-
-Not found in the README or top-level header: dithering algorithm, LUT/waveform
-file format details. Those are in the project's Wiki (not yet read here) or
-deeper in `src/`.
-
-Not evaluated: whether it fits our HAL, whether its parallel-bus assumptions
-match the T5 S3 Pro's actual wiring, whether it is faster or more correct than
-our own driver. This entry is a pointer to study, not a recommendation to
-adopt.
+Not evaluated: whether FastEPD fits our HAL, whether its parallel-bus
+assumptions match the T5 S3 Pro's actual wiring, whether it is faster or more
+correct than our own driver. This is a library to study, not one to adopt.
 
 **Check for new commits and re-read relevant source before any T5 S3 Pro
 panel-driver, partial-refresh, or grayscale work** — this doc is a pointer,
