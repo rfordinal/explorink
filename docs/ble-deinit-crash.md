@@ -9,7 +9,9 @@ We call `deinit(true)` on **every map exit**
 `src/activities/map/MapActivity.cpp:2338`), so every map exit rolls this dice.
 
 Status: **root cause confirmed from a real coredump**. Fix not chosen yet, see
-T-586.
+T-233. The coredump, the SD report, the decoded backtrace and the build it came
+from are archived in the parent repo at
+`docs/crashes/2026-09-01-nimble-host-null-callback/`.
 
 ## The crash
 
@@ -127,7 +129,7 @@ stopped and the queue is drained by then. The early one in
 
 ## Fix options
 
-Not decided. T-586.
+Not decided. T-233.
 
 1. **Stop calling `deinit(true)` on map exit.** Keep the stack up, pay the RAM.
    Cheapest to test, most expensive in memory, and memory is tight here

@@ -69,7 +69,7 @@ Both watchdogs are armed in `sdkconfig.defaults`: `CONFIG_ESP_INT_WDT_TIMEOUT_MS
 therefore resets the device, writes a **coredump**, and leaves **no SD report
 and no crash screen**. It looks like a spontaneous reboot.
 
-Tracked as T-587. Note also that the task watchdog sets `g_panic_abort = true`
+Tracked as T-234. Note also that the task watchdog sets `g_panic_abort = true`
 directly instead of calling `panic_abort()`, so even if the reset reason were
 accepted, the reason string would still be empty.
 
@@ -83,6 +83,10 @@ partition at `0xFF0000`, and `sdkconfig.defaults` sets
 else.** `docs/firmware-builds/` in the parent repo, next to the `.bin`. Without
 the exact ELF the coredump is a list of numbers. Rebuilding "the same commit"
 is not good enough if the build is not byte-identical.
+
+Where the evidence ends up, and in what order: `docs/crashes/README.md` in the
+parent repo. One directory per crash, and the two steps with a deadline —
+copying the SD files and pulling the coredump — come before any analysis.
 
 Verified recipe, 2026-09-01:
 
