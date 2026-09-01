@@ -194,6 +194,45 @@ if (Storage.openFileForRead("MODULE", "/path/to/file.bin", file)) {
 * Private Members: memberVariable (no prefix)
 * File Names: Match Class names (e.g., EpubReaderActivity.cpp)
 
+### Comments Answer WHY, Not WHAT
+
+**A comment's primary job is to say why the code is the way it is.** What it does
+is already in the code; why it is there usually is not.
+
+Measured in this repo, 2026-08-31: two reviewers read `lib/Gnss/` cold, with its
+topic doc withheld, and answered nine of ten questions about it correctly. Every
+one of those nine landed on a comment saying *why* -- why GGA's time field is
+unused, why GSV accumulates and commits per cycle, why checksum and framing
+errors are separate counters. **The one failure was the one place documented only
+by what**: `timeToFirstFixMs()` said "milliseconds from begin() to the first valid
+fix", which is accurate and complete as a description, and both readers concluded
+a fast acquisition from it. One called a 530 ms reading a "cold-start
+acquisition", which is physically impossible. The author had made the same
+mistake from the same code that morning.
+
+A conclusion the code invites is the code's problem. Three consequences:
+
+* **Put the why where the reader is when they are tempted to break it.** The
+  reasoning for skipping GGA's time sat *after* the skip; a reader arriving to
+  improve the function met the unparsed field first. It is now at the top of
+  `parseGga()`, where it acts as a regression guard.
+* **A why that rests on a measurement names the measurement.** "about 816 B/s,
+  measured 2026-08-31" survives a reader who does not trust you. "fast" does not.
+  Same discipline as Documenting Findings below.
+* **If the why is load-bearing at runtime, a comment is not enough.** `poll()`
+  carried a true, measured warning that a blocked caller loses sentences -- and a
+  real loss happens inside the UART driver, so **84 of 85 lost sentences moved no
+  counter**. The fix was `rxNearlyFullEvents()`, not better prose. Test: if a
+  comment tells the reader to avoid something, ask how they would know they
+  failed. No answer means it is a wish.
+
+WHAT earns its place only where the code cannot be read: a named algorithm whose
+steps mean nothing locally (`days_from_civil`'s era arithmetic), bit layouts,
+register sequences, datasheet formulas. There the comment is a translation.
+
+Full version, including why a rename often beats a comment and what a WHAT
+comment costs: `docs/code-comments.md` in the parent repo.
+
 ### Header Guards
 * Use #pragma once for all header files.
 

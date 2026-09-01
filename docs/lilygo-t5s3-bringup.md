@@ -10,8 +10,11 @@ Branching for this device: [`branching.md`](branching.md).
 
 ## The build environment
 
-`[env:t5s3pro]` in `platformio.ini`. No firmware source is board-specific: the
-whole board lives in `freeink-sdk`, so the env is flags and `lib_deps` only.
+`[env:t5s3pro]` in `platformio.ini`. Almost no firmware source is
+board-specific: the board itself lives in `freeink-sdk`, so the env is mostly
+flags and `lib_deps`. Two devel-only commands are scoped to it and appear in no
+release env -- `CMD:LIGHT` (`ENABLE_FRONTLIGHT_CMD`, below) and `CMD:GNSS`
+(`ENABLE_GNSS_CMD`, [`gnss.md`](gnss.md)).
 
 - `BoardT5S3` (`freeink-sdk/libs/hardware/BoardT5S3`) supplies the parallel-bus
   pins, the PCA9535 + TPS65185 EPD power sequence and the user-button hook.
@@ -233,6 +236,54 @@ when it would not fit, although the allocation itself would come out of the 8 MB
 Not dangerous -- it is stricter than reality, so the menu closes the slow way --
 but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
 
+## GNSS works. Whether the receiver is on at every boot is open
+
+`CMD:GNSS` over the USB console, `env:t5s3pro` only, no UI and no map
+integration. **Run on the board 2026-08-31**: a 3D fix indoors (8 satellites
+used, 19 in view, best C/N0 32 dB-Hz), 9600 baud right first time, the pin
+direction as the header implies, and the parser correct for the fix it was
+checked against. [`gnss.md`](gnss.md) has all of it.
+
+**An adversarial review the same day broke three of that pass's conclusions**,
+and the corrected versions matter for this board:
+
+- **The receiver was already powered and tracking when the firmware first
+  enabled the rail.** That holds. But "therefore the board powers it at every
+  boot" does **not** follow: the PCA9535 sits on the 3.3 V rail and latches its
+  registers across an S3 reset, the factory firmware ran on this board earlier
+  the same day, and no run in the evidence was a true power cycle. One CONFIG0
+  register read on a cold boot settles it and has not been done.
+- **The SD-card check could not have failed.** Tiles read fine with the rail up,
+  but the log shows card access and panel bus never overlapped, and overlap is
+  the whole hazard. So the `LORA_CS` collision remains untested rather than
+  cleared.
+- **A blocked loop costs 85 sentences, not 30.** The blocking window is the
+  whole map `onEnter` at 6.07 s, not the 4,017 ms render, and the receiver sends
+  816 B/s measured against a 256-byte RX buffer.
+
+Two more findings out of that work belong here rather than there, because they
+are about this board and not about GNSS:
+
+- **`BoardT5S3::begin()` is never called by this firmware.** Not once across
+  `src/` and `lib/`. The only code touching the PCA9535 today is
+  `LilyGoT5S3LgfxConfig.cpp`, for the EPD power pins, and the only reason I2C is
+  up at all is GT911 touch init (`InputManager.cpp:839`). So
+  `disableGpsLora()` has never run, `LORA_RST` is undriven at boot, and the
+  user button behind the expander has no hook -- which is the same gap the
+  unmerged `feat/t5s3-board-begin` branch was opened for, and part of why the
+  map is half-operable here (below).
+- **LovyanGFX does drive `LORA_CS` as a GPIO.** The parent repo's
+  `docs/lora.md` had this `[open]` because M5GFX was not checked out. It is now:
+  `Bus_EPD` drives the pins handed to it as `pin_oe` and `pin_pwr` as real
+  GPIOs, and passes one to the i80 peripheral as its DC line
+  (`Bus_EPD.cpp:83,85,120,129,143`). On this board both are GPIO46, which is the
+  SX1262's chip select, on the SD card's SPI bus.
+  **That the wiring is shared is settled; that it is a hazard is not.** The
+  cited lines drive the pin *high*, and a deasserted chip select is harmless --
+  whether it is ever driven low during a refresh has not been established, and
+  neither has whether an SX126x in reset parks MISO high-Z. Do not read this
+  bullet as a confirmed fault.
+
 ## What is wrong or missing
 
 - **The profile declares `NO_SENSORS` although the board has a PCF8563 RTC**
@@ -253,6 +304,69 @@ but wrong, and wrong the same way on the X4 Pro, which is also an S3. T-574.
   serial reset below.
 
 ## Serial usually resets the board, and you cannot rely on either outcome
+
+**A third data point, and a worse one: after a cold power-on, commands stopped
+arriving.** 2026-08-31, USB unplugged 21 s, then replugged. **The board kept
+running throughout** -- the battery is connected (**assumed, from conversation;
+not confirmed on the device**), so removing USB drops nothing
+(corrected 2026-09-01; this note first said no battery was attached). The
+device logged happily for 271 s across **four** separate port opens -- so
+device-to-host was fine and none of those opens reset it -- while **every command
+sent to it was dropped**. Not one `CMD:` reply, including read-only ones. An
+`esptool ... --after hard-reset` fixed it immediately and the same script then
+worked first try.
+
+**Diagnosed 2026-08-31, and it was two faults wearing one symptom.** The
+firmware now logs the head byte it is refusing to consume, and it named it: `0x5B`
+(`[`) with 17 bytes pending -- the first character of this firmware's own log
+lines, arriving on its own RX. So the peek trap really was one of the causes, and
+the loop now also drains such a byte after five seconds. **That the drain fixes
+it is unverified** -- in the session where commands finally arrived the drain
+never fired at all (`gnss.md`). The other cause was **deep sleep**: `CMD:GNSS PROBE` answered
+`reset=DEEPSLEEP`, so the board had put itself to sleep and the vanished device
+node was that, not an unplug. At least today's dropouts are therefore auto-sleep
+and not a bus fault, which is what this section previously suspected.
+
+Where 17 bytes of our own output come from is still unexplained. A loopback in
+the USB Serial/JTAG peripheral would do it; so would something on the host
+writing back what it read. **Open**, and cheap to narrow: the drain now dumps the
+byte, so extend it to dump all of them once and the content will say whether it
+is our own log text.
+
+**What was established before that was the symptom, not the layer.** The first version of this
+note called it "the CDC came up transmit-only", which places the fault in USB
+without evidence. Review named an alternative this firmware documents against
+itself: the command reader consumes only whitespace before a `'C'`, so **any
+single other byte sitting at the head of the RX buffer blocks every command for
+the rest of the session** (`src/main.cpp`, the peek loop). A torn first write into
+a freshly enumerated endpoint does that, and so does ModemManager probing a new
+ACM device with `AT` -- and a hard reset clears both, so recovery discriminates
+nothing. Reset-on-open is no discriminator either: a healthy session on the same
+day also failed to reset on open.
+
+Two things make the next occurrence diagnosable instead of a coin flip, one of
+them now in the firmware: the peek loop **logs the head byte** it is refusing to
+consume once it has sat there five seconds, and on the host side
+`journalctl -u ModemManager` covers the enumeration window.
+
+Either way: a silent board is not necessarily a hung board. Check whether it is
+still logging before assuming a crash, and reset the chip before blaming the
+build. Possibly the same fault as the three USB dropouts below.
+
+**Data read right after opening the port can be stale, and it cost a whole
+conclusion.** The kernel buffers what the device sent while nothing had the port
+open and hands it over on open, so the first lines can come from a *previous*
+boot, mixed with live output -- and their `millis` do not belong to the current
+one. On 2026-08-31 that produced a confident argument that the board had never
+lost power, built on timestamps from the wrong boot. Read the reset cause from
+the device instead: `CMD:GNSS PROBE` reports it, and the chip is the only
+authority on its own boot.
+
+**A second data point, 2026-08-31: one open did not reset it at all.** The GNSS
+pass opened the port twice in a row; the first open produced a full boot log
+from millis 401, the second continued from millis 150,627 with the map still up.
+So "usually" is the right word and a script must not assume either -- the second
+run's counters were the first run's, which is confusing until you notice why.
 
 Opening `/dev/ttyACM0` normally resets the S3, even with DTR and RTS both driven
 low before the port is opened: the USB-JTAG-serial peripheral is on the SoC
