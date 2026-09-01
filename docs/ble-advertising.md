@@ -338,20 +338,27 @@ position packet, which is a legal 21-byte write, and it cannot refuse a 300-byte
 write at MTU 517), and whether the watchdog fires during the map wedge before a
 rider gives up and resets.
 
-## The name is wire-visible
+## The name is wire-visible, and per board since 2026-09-01
 
-`kBleDeviceName` (`lib/BlePositionServer/include/BlePositionServer.h`) is matched
-by the phone app and shown to the rider in Android's companion-device pairing
-dialog. Changing it breaks an installed app's name filter and makes an existing
-pairing look like a different device. Change it only with the app.
+`bleDeviceNameForActiveBoard()` (`lib/BlePositionServer.cpp`) picks the
+advertised name from `BoardConfig::ACTIVE.board`: `XteinkX4Map`, `XteinkX3Map`
+(X3 and the newer Uc8279 panel both read as this -- same device to the phone),
+`XteinkX4ProMap`, `LilyGoT5S3Map`, or `ExplorInkMap` for a board this function
+does not know. Before this it was one hardcoded `kBleDeviceName`
+(`"XteinkX4Map"`) for every board, so an X3 or a T5S3 Pro on the test bench
+advertised as an X4. Every name here is matched by Android's
+`BleLink.KNOWN_DEVICE_NAMES` (`android/`) and shown to the rider in Android's
+companion-device pairing dialog -- adding a board on either side means adding
+its name on the other in the same change.
 
-**Every X4 running this firmware advertises the same name and the same service
-UUID.** Nothing on the air distinguishes one device from another, so the phone
-cannot tell the rider's X4 from another one in range by advertisement alone. The
-app solves this by pinning the MAC address it paired with; the device side has no
-per-device identity to offer yet. Open: an owner-settable device name would fix
-it at the source and would make Android's pairing dialog readable when two X4s
-are present.
+**Every device of the *same* board still advertises the same name and the same
+service UUID.** Nothing on the air distinguishes one X4 from a second X4 in
+range -- the per-board name above answers "what kind of device is this",
+not "which one". The app solves the latter by pinning the MAC address it
+paired with; the device side has no per-unit identity to offer yet. Open: an
+owner-settable device name would fix that at the source and would make
+Android's pairing dialog readable when two devices of the same board are
+present.
 
 ## Verification status
 
@@ -366,3 +373,10 @@ are present.
   the same scan returned the service UUID and `local_name=None`.
 - The name showing in Android's companion pairing dialog: **not measured**. Needs
   a phone. Same scan data underneath, so it is likely, not proven.
+- Per-board naming (`bleDeviceNameForActiveBoard()`): **read off the code and
+  built for the `simulator` env** (device build failed on an unrelated
+  toolchain issue, `esp8266-compat.h`/`base64.h` missing from the whole
+  `framework-arduinoespressif32` package, not from this change). **Not
+  measured on any real board yet** -- needs an X4, an X3, an X4 Pro and a
+  LilyGo T5S3 each scanned and each connecting from the Android app with
+  `KNOWN_DEVICE_NAMES`.
