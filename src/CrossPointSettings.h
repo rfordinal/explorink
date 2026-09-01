@@ -296,6 +296,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // ../docs/gnss-to-map-plan.md needs. The day a shipping device carries a
   // receiver, this gets a row and the row gets a board condition.
   uint8_t mapGnssPosition = 0;
+  // Write one CSV row per accepted GNSS fix to /trailink/gnss.csv (GnssLog.h).
+  // Off by default and it must stay that way: the file is a **track log**, not
+  // a single point, so on a lost or stolen device it is a record of where the
+  // rider went. Turned on for one measurement, deliberately, and turned off
+  // after. Only exists on a build with a receiver.
+  uint8_t mapGnssLog = 0;
   // Edge markers for pins outside the viewport: a direction arrow and the
   // distance, drawn where the bearing ray leaves the screen
   // (MapActivity::drawPins(), ../docs/pins.md). Pins *inside* the viewport are

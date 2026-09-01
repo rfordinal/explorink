@@ -1010,6 +1010,8 @@ void loop() {
         // do anything is worse than answering SETTING_ERR:unknown.
         else if (key == "mapGnssPosition")
           target = &SETTINGS.mapGnssPosition;
+        else if (key == "mapGnssLog")
+          target = &SETTINGS.mapGnssLog;
 #endif
         if (target == nullptr) {
           logSerial.printf("SETTING_ERR:unknown\n");

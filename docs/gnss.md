@@ -728,6 +728,45 @@ land on step 16 in a four-bit field.
 
 **Not verified on hardware.** Nothing here has been ridden with.
 
+### The ride has to write its own numbers down
+
+`GnssLog` (`src/GnssLog.{h,cpp}`), one CSV row per accepted fix to
+`/trailink/gnss.csv`. Same conventions as `PowerLog`: header once per boot as
+the run marker, `build` on every row, appended across boots, a reader skips any
+line starting with `uptime_ms`.
+
+```
+uptime_ms,utc,lat,lon,quality,sats_used,hdop,speed_kmh,course_deg,moving,heading,build
+```
+
+**Why a file.** The measurement that settles the heading gate is a rider
+outdoors, and a rider outdoors has no laptop. The `gnss fix:` log line already
+says everything needed -- it just says it to a console nobody is holding.
+
+**`moving` and `heading` sit next to the `speed` and `course` they came from**,
+on purpose. The question is not what the receiver said, it is whether
+`MapGnssHeading` was right to believe it, and a row that carried only the
+receiver's side could not answer that.
+
+**Off by default, behind `mapGnssLog`, and it stays off.** This file is a
+**track log**, not the single point the device already persists: on a lost or
+stolen device it is a record of where the rider went. Two gates, not one -- it
+is compiled only into a build with a receiver, and inside that build it writes
+nothing until the setting is turned on for one measurement.
+
+Position is in the row rather than left out, and that is the deliberate half of
+the cost: the open question is whether a speed gate can work at all or whether
+heading has to come from displacement between fixes, and the second cannot be
+answered offline without positions. A log that could not settle it would be a
+privacy cost with nothing bought.
+
+About 90 bytes a row at 1 Hz, so roughly 320 KB an hour. Rows buffer and flush
+about every ten seconds, and on map exit -- an open/append/close every second
+would land inside the render loop this branch spent its first step keeping the
+UART alive through.
+
+**Not yet run.** Nothing has written a row on hardware.
+
 ### The gate was chosen on a number that was not a noise floor
 
 **Measured 2026-09-01, device stationary on a desk indoors, no phone.** The

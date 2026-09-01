@@ -21,6 +21,7 @@
 // The on-device receiver, on a build that has one. Inert everywhere else: the
 // header is entirely behind ENABLE_GNSS_CMD (GnssAccess.h).
 #include "GnssAccess.h"
+#include "GnssLog.h"
 #include "HeldTilesStore.h"
 #include "HikeIcons.h"
 #include "MapFollow.h"
@@ -2428,6 +2429,8 @@ void MapActivity::onExit() {
 #ifdef ENABLE_GNSS_CMD
   // Only what this activity started. A CMD:GNSS ON session from the host runs
   // on past the map, which is what a bring-up expects.
+  // Whatever is buffered belongs to the ride that just ended.
+  GnssLog::flush();
   if (gnssStartedHere_) {
     gnss.end();
     gnssStartedHere_ = false;
@@ -5284,6 +5287,10 @@ void MapActivity::pollGnssFix() {
           static_cast<unsigned>(gnssSeq_), static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
           static_cast<double>(fix.hdop), static_cast<double>(fix.speedKmh), static_cast<double>(fix.courseDegrees),
           gnssHeadingState_.moving ? 1 : 0, static_cast<unsigned>(headingStep), static_cast<unsigned long>(gnss.fixAgeMs()));
+  // Before applyFix(), not after: applyFix() can spend seconds rendering, and a
+  // row is worth having even if the frame that fix would have drawn never
+  // finishes.
+  GnssLog::record(fix, gnssHeadingState_.moving, headingStep);
   applyFix(latE7, lonE7, headingStep, gnssSeq_);
   // Same debounced save the BLE fix arms, for the same reason: the card must
   // not be written once per fix, and the map still has to have somewhere to
