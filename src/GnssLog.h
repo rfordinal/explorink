@@ -35,11 +35,18 @@ struct GnssFix;
 //
 // ## Cost
 //
-// About 90 bytes a row at 1 Hz, so roughly 320 KB an hour of riding. Rows are
-// buffered and flushed about every ten seconds rather than written per fix: an
-// open/append/close every second on this card would land inside the map's
-// render loop, which is already the thing this branch spent a week keeping the
-// UART alive through.
+// Measured on hardware 2026-09-01: about 85 bytes a row at roughly 1.7 rows a
+// second, so **about 500 KB an hour of riding**. Not 1 Hz -- Gnss::poll()
+// reports a change when position, speed, course OR the clock moves, and three
+// rows inside 400 ms have been seen. The first estimate here said 1 Hz and
+// 320 KB, from arithmetic rather than from the device.
+//
+// Rows are buffered and flushed about every ten seconds rather than written per
+// fix: an open/append/close per fix on this card would land inside the map's
+// render loop, which is already the thing this branch spent its first step
+// keeping the UART alive through. A full buffer forces the write rather than
+// dropping a row -- dropping is the one outcome that would make the file lie
+// about the ride.
 class GnssLog {
  public:
   // Call with every fix the map accepts, from the same place applyFix() is

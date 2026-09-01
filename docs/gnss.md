@@ -760,12 +760,24 @@ heading has to come from displacement between fixes, and the second cannot be
 answered offline without positions. A log that could not settle it would be a
 privacy cost with nothing bought.
 
-About 90 bytes a row at 1 Hz, so roughly 320 KB an hour. Rows buffer and flush
-about every ten seconds, and on map exit -- an open/append/close every second
-would land inside the render loop this branch spent its first step keeping the
-UART alive through.
+Rows buffer and flush about every ten seconds, and on map exit -- an
+open/append/close per fix would land inside the render loop this branch spent
+its first step keeping the UART alive through.
 
-**Not yet run.** Nothing has written a row on hardware.
+**Verified on hardware 2026-09-01**, and the rate was not what was estimated:
+
+```
+before:  GNSS_LOG:setting=0 bytes=0    buffered=0    disabled=0
+after:   GNSS_LOG:setting=1 bytes=7454 buffered=1500 disabled=0
+```
+
+About **85 bytes a row at roughly 1.7 rows a second**, not the 1 Hz the first
+estimate assumed, so **about 500 KB an hour** rather than 320 KB. The receiver
+does not emit one fix a second: `Gnss::poll()` reports a change when position,
+speed, course **or the clock** moves, and three rows inside 400 ms were seen
+(`seq 104, 105, 106`). Nothing is lost -- a full buffer forces the write rather
+than dropping a row -- but a long ride's file is bigger than the header first
+claimed.
 
 ### The gate was chosen on a number that was not a noise floor
 
