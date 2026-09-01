@@ -1063,6 +1063,7 @@ void loop() {
         //   CMD:GNSS RAW ON    ->  GNSS_OK:raw=1   (every sentence to the log)
         //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
         //   CMD:GNSS PROBE     ->  GNSS_PROBE:...  (run first, on a cold boot)
+        //   CMD:GNSS RELEASE   ->  GNSS_RELEASE:... (writes the rail pin, step 2a)
         //
         // Reading the reply: `ttff` is NOT an acquisition time on a receiver
         // that was already running -- Gnss::timeToFirstFixMs() spells out why
@@ -1162,6 +1163,99 @@ void loop() {
                 static_cast<unsigned long>(gnss.framingErrors()));
             gnss.end();  // powerEnable is null, so this touches no rail
           }
+        } else if (argument == "RELEASE") {
+          // Step 2a of docs/gnss-to-map-plan.md, and it replaces the power-cycle
+          // route rather than adding to it. PROBE answers a proxy -- what
+          // direction the expander pin has -- and four attempts at reading that
+          // proxy on a "cold" boot failed for reasons that had nothing to do with
+          // the rail. The real question is whether anything OTHER than the
+          // expander holds LORA_GPS_EN high. Stop the expander driving it, and
+          // ask the receiver:
+          //
+          //   NMEA keeps flowing -> something on the board holds the rail, so the
+          //                         receiver is powered by design.
+          //   NMEA stops         -> the expander's own latched output was holding
+          //                         it, and no reset has ever cleared that latch.
+          //
+          // Its own subcommand because it writes device state, and named so
+          // nobody reaches for it while looking for a read.
+          //
+          // Three windows, not one. The baseline proves the receiver was
+          // streaming BEFORE the release, so a silent middle window means the
+          // release stopped it rather than that nothing was ever running -- the
+          // failure mode that would otherwise read as a clean answer. The restore
+          // window proves the test left the board as it found it.
+          //
+          // Each window reports the CONFIG0 readback beside its byte count,
+          // because an I2C write that silently did not take would show "NMEA
+          // still flows" and look exactly like the by-design answer.
+          uint8_t cfgBase = 0;
+          if (!gnssReadExpanderRegister(0x06, &cfgBase)) {
+            logSerial.printf("GNSS_RELEASE_ERR:expander read failed\n");
+          } else {
+            // powerEnable stays null for the same reason PROBE leaves it null:
+            // the rail must not be written by the very code that is measuring it.
+            // LORA_RST is deliberately left alone too, so this differs from the
+            // steady state in exactly one bit -- the one under test.
+            GnssConfig probe;
+            probe.serial = &Serial1;
+            probe.rxPin = T5S3_GPS_RXD;
+            probe.txPin = T5S3_GPS_TXD;
+            probe.baud = 9600;
+            probe.powerEnable = nullptr;
+            probe.powerSettleMs = 0;
+            gnss.begin(probe);
+
+            unsigned long bytesBefore = 0;
+            unsigned long sentBefore = 0;
+            const auto sample = [&](unsigned long windowMs, unsigned long* bytesOut, unsigned long* sentOut) {
+              const unsigned long until = millis() + windowMs;
+              while (millis() < until) {
+                gnss.poll();
+              }
+              const unsigned long bytesNow = static_cast<unsigned long>(gnss.bytesRead());
+              const unsigned long sentNow = static_cast<unsigned long>(gnss.sentencesParsed());
+              *bytesOut = bytesNow - bytesBefore;
+              *sentOut = sentNow - sentBefore;
+              bytesBefore = bytesNow;
+              sentBefore = sentNow;
+            };
+
+            unsigned long baseBytes = 0, baseSent = 0;
+            sample(3000, &baseBytes, &baseSent);
+
+            // Direction only. The output register is left holding whatever it
+            // held, so the restore below can put the pin back without guessing.
+            const bool released = BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, INPUT);
+            uint8_t cfgReleased = 0;
+            const bool haveReleased = gnssReadExpanderRegister(0x06, &cfgReleased);
+
+            // 5 s, not 3: the receiver's own supply has bulk capacitance, and a
+            // rail that is coasting down looks like a working receiver for the
+            // first part of the window.
+            unsigned long offBytes = 0, offSent = 0;
+            sample(5000, &offBytes, &offSent);
+
+            // Level before direction, the same order gnssPowerEnable() uses and
+            // for the same reason: switching to output first would drive
+            // whatever the output register happens to hold.
+            const bool wroteLevel = BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, true);
+            const bool restored = BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
+            uint8_t cfgRestored = 0;
+            const bool haveRestored = gnssReadExpanderRegister(0x06, &cfgRestored);
+
+            unsigned long backBytes = 0, backSent = 0;
+            sample(4000, &backBytes, &backSent);
+
+            logSerial.printf(
+                "GNSS_RELEASE:reset=%s cfg0_base=0x%02X cfg0_released=0x%02X cfg0_restored=0x%02X "
+                "wrote=%d released=%d restored=%d "
+                "base_bytes=%lu base_sent=%lu off_bytes=%lu off_sent=%lu back_bytes=%lu back_sent=%lu\n",
+                gnssResetReasonName(), cfgBase, haveReleased ? cfgReleased : 0xEE,
+                haveRestored ? cfgRestored : 0xEE, wroteLevel ? 1 : 0, released ? 1 : 0, restored ? 1 : 0,
+                baseBytes, baseSent, offBytes, offSent, backBytes, backSent);
+            gnss.end();  // powerEnable is null, so this touches no rail
+          }
         } else if (argument == "RAW ON" || argument == "RAW") {
           gnss.setRawSink(gnssRawSink);
           logSerial.printf("GNSS_OK:raw=1\n");
@@ -1169,7 +1263,7 @@ void loop() {
           gnss.setRawSink(nullptr);
           logSerial.printf("GNSS_OK:raw=0\n");
         } else if (argument.length() > 0) {
-          logSerial.printf("GNSS_ERR:expected ON, OFF, PROBE, RAW ON or RAW OFF\n");
+          logSerial.printf("GNSS_ERR:expected ON, OFF, PROBE, RELEASE, RAW ON or RAW OFF\n");
         } else if (!gnss.running()) {
           logSerial.printf("GNSS_OFF\n");
         } else {
