@@ -91,25 +91,48 @@ Caveat, so this is not oversold: upstream issue `#2030` has reports of
 `fadingFix` staying ON and the panel still fading. A partial mitigation at
 best, not a proven fix.
 
-### 1c. An unmerged, more specific theory: under-driven pixels are the vulnerable state
+### 1c. An unmerged, X3-specific theory: under-driven pixels are the vulnerable state
 
 `crosspoint-reader#2399`, "fix(x3): use `_normal` LUTs and settle delay
-for sunlight fading fix" -- **not merged**, `merged_at` is null, a
-proposal only. Its stated mechanism:
+for sunlight fading fix" -- **not merged** (`merged_at` is null, PR closed
+2026-06-22), and the author closed it himself with "Sorry for the noise.
+This wasn't ready yet!" -- abandoned as incomplete, not rejected as wrong.
+
+**Scoped to X3 (UC8253), not X4 or the T5 S3 Pro.** The title says so, and
+so does the PR's own motivating bug, which is a **different** failure
+from BUG-022:
+
+> Enabling the sunlight fading fix on X3 caused the screen to slowly grey
+> (inverse of the original fading bug)
+
+So this PR is not a direct fix for our white-fade problem -- it is
+evidence that `fadingFix`-style mitigations can themselves introduce a
+**new** artifact (progressive greying, not fading) on at least one of our
+panel drivers. Its stated mechanism for that regression:
 
 > `_fast` turbo LUTs have a short 4-frame drive phase -- particles don't
 > reach stable B/W minima before POF cuts the charge pump, and sunlight
 > nudges the shallow-state particles toward grey
 
-Proposed fix: switch to the `_normal` 6-frame LUTs when the fading fix is
-active, plus a 20 ms settle delay before the power-off command.
+Proposed fix, again X3-specific: switch `CMD_X3_POWER_OFF` to the
+`_normal` 6-frame LUTs when the fading fix is active, plus a 20 ms settle
+delay before it.
 
-This ties the sunlight failure to something we actually control (drive
-frame count and power-off timing), rather than only to light exposure
-itself. It is compatible with, not contradictory to, the photoconductive
-a-Si leakage model in `eink-refresh-degradation.md`: a pixel already left
-in a shallow, not-fully-committed state by a short waveform has less
-margin before light-induced leakage tips it back toward white.
+**What transfers to X4/T5S3 and what does not.** The specific LUT names
+(`_fast`/`_normal`) and the `CMD_X3_POWER_OFF` sequencing are UC8253
+terms -- they do not exist in our X4 driver, which uses a different LUT
+table (`Ssd1677Luts.h`, `docs/eink-grayscale.md`) under a different
+controller family, and the T5 S3 Pro's driver is different again. What
+*does* transfer is the mechanism as an idea: a shallow/fast drive
+waveform leaves less margin before a light- or fix-induced pixel drift,
+so a full-drive waveform plus a settle delay before power-off is worth
+checking for on any panel where `fadingFix` gets turned on -- not
+assuming X4's `Ssd1677Luts.h` has the same `_fast`/`_normal` split, or
+needs the same fix, without reading it first. This is compatible with,
+not contradictory to, the photoconductive a-Si leakage model in
+`eink-refresh-degradation.md`: a pixel already left in a shallow,
+not-fully-committed state by a short waveform has less margin before
+light-induced leakage tips it back toward white.
 
 **Independent corroboration inside FastEPD**, arrived at for unrelated
 reasons: every one of its display update paths clocks out a full neutral
