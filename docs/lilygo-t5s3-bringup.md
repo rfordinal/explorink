@@ -382,9 +382,21 @@ powered down -- `/dev/ttyACM*` vanishes and `lsusb` shows no `303a` device. That
 is not a crash. BOOT (GPIO0) is the profile's power button and the deep-sleep
 wake source.
 
-## Open: it reboots on leaving the map
+## Explained: it reboots on leaving the map
 
-**2026-08-31, not diagnosed.** The maintainer opened, closed and used the map
+**Settled 2026-09-01, and it is not the board.** A second restart the next day,
+on the same code path, was traced from a coredump to a NULL event callback in
+NimBLE's own shutdown -- an upstream defect in NimBLE-Arduino that our
+`BlePositionServer::end()` triggers. Cause, evidence and fix options are in
+[`ble-deinit-crash.md`](ble-deinit-crash.md); the mechanics of reading a
+coredump are in [`crash-reporting.md`](crash-reporting.md). It cannot be
+*proven* that the 31 August restart below is the same fault, because our
+coredump overwrote its one before anyone extracted it. Everything else lines
+up: same function, same stop before the `BLEPOS heap:` line, phone connected
+both times. The original write-up stays below, with its two dead hypotheses
+marked.
+
+**2026-08-31, not diagnosed at the time.** The maintainer opened, closed and used the map
 menu repeatedly and the device restarted. This is what the card's
 `/crash_report.txt` held afterwards, verbatim -- kept here because that card is
 no longer in the board and the next session will not have it:
@@ -419,6 +431,15 @@ What that says, and what it does not:
   is empty. That does not look like a C++ exception or an `abort()`, both of
   which carry text. It fits a reset below the firmware: a watchdog, a brownout,
   or one where the panic wrapper never ran.
+
+  **Two of those three are now ruled out, 2026-09-01.** A watchdog and a
+  brownout each set their own reset-reason hint, and
+  `HalSystem::isRebootFromPanic()` (`lib/hal/HalSystem.cpp:149`) accepts only
+  `ESP_RST_PANIC` and `ESP_RST_CPU_LOCKUP` -- so neither would have written this
+  file at all. **The file existing is the proof.** The third guess was the right
+  one: a CPU exception, where the panic wrapper never runs. The empty stack is
+  not a clue either, it is empty on every Xtensa crash by construction
+  ([`crash-reporting.md`](crash-reporting.md), "Gap 1").
 - **The restart lands exactly on leaving the map.** `Exiting activity: Map`,
   the missing-tile list saved, then the next boot's first line.
   `MapActivity::onExit()` is also where `BlePositionServer::end()` deinitialises
@@ -432,12 +453,17 @@ What that says, and what it does not:
   A first guess in that session blamed heap exhaustion using the X4's numbers,
   on a board with 8 MB of PSRAM. It was wrong twice over.
 
-**The cheapest next step is the ROM's own line.** The first thing printed at
-boot names the reset cause -- `rst:0x15 (USB_UART_CHIP_RESET)` for a host
-opening the serial port, and it would say `TG_WDT_SYS_RST`, `RTCWDT_RTC_RST`,
-`BROWNOUT_RST` or `SW_CPU_RESET` for the ones that matter here. So: hold the
-port open, reproduce, and read that line. It settles watchdog versus brownout
-versus software reset without adding any code.
+**The planned next step is no longer needed.** It was to hold the serial port
+open, reproduce, and read the ROM's own `rst:` line to settle watchdog versus
+brownout versus software reset. The reset-reason filter above settles it for
+free, from a file that was already on the card. The ROM line is still the right
+tool when *no* `crash_report.txt` appears -- which, per
+[`crash-reporting.md`](crash-reporting.md), is exactly the watchdog case.
+
+**The lead was already in this section and nobody followed it.** The bullet
+above notes that `MapActivity::onExit()` is where `BlePositionServer::end()`
+deinitialises the whole NimBLE stack. That was the answer, written down a day
+before it was found the expensive way.
 
 Possibly related and also undiagnosed: **the board dropped off the USB bus three
 times** during that session, once with auto-sleep switched off, each time
