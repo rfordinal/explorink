@@ -306,7 +306,9 @@ are about this board and not about GNSS:
 ## Serial usually resets the board, and you cannot rely on either outcome
 
 **A third data point, and a worse one: after a cold power-on, commands stopped
-arriving.** 2026-08-31, USB unplugged 21 s with no battery, then replugged. The
+arriving.** 2026-08-31, USB unplugged 21 s, then replugged. **The board kept
+running throughout** -- the battery is connected, so removing USB drops nothing
+(corrected 2026-09-01; this note first said no battery was attached). The
 device logged happily for 271 s across **four** separate port opens -- so
 device-to-host was fine and none of those opens reset it -- while **every command
 sent to it was dropped**. Not one `CMD:` reply, including read-only ones. An

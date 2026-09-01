@@ -16,8 +16,8 @@ this file is only what comes next.
 | step | what | needs | state |
 |---|---|---|---|
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
-| 2a | Is the rail on by design or by an uncleared latch | device, one real power cycle | open, needs no instrument |
-| 2b | What the pair draws | device, **a battery on the board**, one small firmware change | open (T-579) |
+| 2a | Is the rail on by design or by an uncleared latch | device, **battery disconnected too**, one real power cycle | open, needs no instrument |
+| 2b | What the pair draws | device, battery (it is connected), one small firmware change | **open, unblocked** |
 | 3 | GNSS as a third `applyFix()` caller | device | **open, do this next** |
 | 4 | Heading from course, on-device | device, product decision | blocked on 3 |
 | 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
@@ -151,12 +151,25 @@ not. Four vendor datasheets say the expander's configuration resets to
 all-inputs, but the reset needs the rail below ~0.8 V against 1 uA of standby
 draw, so a 21 s unplug did not necessarily get there.
 
-The test self-certifies now: `CMD:GNSS PROBE` reports the chip's own reset cause
-in the same line as the registers. **No `reset=POWERON`, no conclusion.** Two
-traps that cost three attempts on 2026-08-31, both in [`gnss.md`](gnss.md): a
-vanished USB device node means the USB peripheral went down, **not** that the
-board lost power (twice it was deep sleep), and a silent wait lets the board's own
-sleep timer end the run -- poke it with a harmless command every 15 s.
+**Pulling USB is not enough, and every attempt so far made that mistake.** The
+battery is connected, so removing USB leaves the board running on the cell with
+the 3.3 V rail up -- which is why `cfg0=0x00` has survived every "power cycle" in
+the record. **Disconnect the battery as well.** The battery connector on a bare
+development board is ordinary use (`docs/hardware-policy.md` in the parent).
+
+The test self-certifies: `CMD:GNSS PROBE` reports the chip's own reset cause in
+the same line as the registers. **No `reset=POWERON`, no conclusion.** Three
+traps that cost four attempts across 2026-08-31 and 2026-09-01, all in
+[`gnss.md`](gnss.md):
+
+- a vanished USB device node means the USB peripheral went down, **not** that the
+  board lost power -- twice it was deep sleep, and always the battery;
+- a silent wait lets the board's own sleep timer end the run, so poke it with a
+  harmless command every 15 s;
+- **ask the board what it has rather than remembering.** The BQ27220 reports
+  battery voltage and state of charge, so battery presence is readable from the
+  device. Belief about the hardware voided a measurement twice; the gauge cannot
+  misremember.
 
 **2b. What does the pair draw?** Rail up and rail down, and **name the
 instrument**.
@@ -171,9 +184,13 @@ the number away, using it only to decide the sign of `charging`. The public
 `currentKnown` flag where `0x0C` is already read, then measure. That is a small
 device-free change followed by a run.
 
-**What it does need is a battery on the board.** The gauge measures *battery*
-current, so on USB with no cell attached there is nothing to read. As of
-2026-08-31 no battery was attached. That, not an instrument, is what gates 2b.
+**The battery is connected**, so nothing gates 2b beyond the small change above.
+This plan first said no cell was attached, which was wrong and came from a slip
+in conversation rather than from the board -- see the third trap under 2a.
+
+One thing to get right when measuring: the gauge reports *battery* current, so
+read it with **USB unplugged**, on the cell. On USB the charge path dominates and
+the number is about charging, not about what the pair draws.
 
 A meter in series at the board's battery connector remains allowed and is the
 cross-check, not the primary path (`docs/hardware-policy.md` in the parent -- a

@@ -238,11 +238,24 @@ deleted for the same reason.
 
 #### The experiment was run, 2026-08-31, and it killed my own explanation
 
-USB unplugged with **no battery attached** (maintainer confirmed), so the board
-genuinely lost power. **The outage was 21.0 s** -- corrected after review: the
-first version of this section said 7.7 s, which was the script's wait for the
-maintainer to pull the plug, not the gap. Reading the wrong one of two adjacent
-timings, for the fourth time in one day. Then `CMD:GNSS PROBE`, which reads the
+**The board did not lose power, and this section said it did.** Corrected
+2026-09-01: the maintainer had said no battery was attached, this section rested
+its whole validity on that, and it was a slip -- **the battery is connected.** So
+removing USB leaves the board running on the cell and the 3.3 V rail up. Every
+"power cycle" in this file's evidence removed nothing.
+
+The USB device node still vanished, which is what the test scripts watched, and
+that is only the USB peripheral losing its host. **A vanished node is not a power
+cut** -- written here already for deep sleep, and true for this reason too.
+
+Two things follow immediately: `cfg0=0x00` surviving is expected rather than
+puzzling, and **no test in this file has ever power-cycled the expander.** The
+outage figures below (21.0 s, later 345 s and 381 s) are node-absence, not
+outages, and the wording keeps them only because the logs do.
+
+**The outage figure was also read off the wrong line** -- the first version said
+7.7 s, which was the script's wait for the maintainer to pull the plug, not the
+gap; the node was absent 21.0 s. Then `CMD:GNSS PROBE`, which reads the
 expander's registers and opens the UART with **no power hook at all**, before
 anything can write the rail.
 
@@ -307,12 +320,14 @@ of roughly 2.5 V; the remaining 1.7 V is the whole question.
 
 Three candidates, and this probe cannot separate them:
 
-1. **The expander did not actually lose power** in those 21 s, despite no
-   battery. Its reset needs VCC at the chip below VPORF, 0.77 to 1.1 V (TI
-   SCPS129K Table 10-1), and a guaranteed reset wants below 0.2 V; standby draw
-   is 1 uA max. Whether this board's rail got there in 21 s is a board question
-   no datasheet answers. Then 0x00 is a latch from the factory firmware, which does configure
-   the whole expander, and it has survived every reset since.
+1. **The expander never lost power.** No longer one candidate among three --
+   **this is the reading, as of 2026-09-01.** The battery is connected, so
+   removing USB does not drop the rail at all, and the datasheet's VPORF
+   threshold (0.77 to 1.1 V, TI SCPS129K Table 10-1) never came into it. So
+   `cfg0=0x00` is a latch that has survived every reset since something wrote
+   it -- plausibly the factory firmware, which does configure the whole expander.
+   **Unproven and now cheap to prove:** disconnect the battery as well and read
+   `reset=POWERON`.
 2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
    configuration registers to 0xFF; a second-source part or a clone may not.
    Datasheet question, no hardware needed.
@@ -425,17 +440,21 @@ exactly what the 531 ms readings did, in the other direction.
   statuses. So this reading reflects an acquisition in progress rather than a
   phase offset, which is a qualitative difference from every earlier run and does
   corroborate the review's argument about what a sub-second value means.
-- **The reacquisition took roughly 6.2 minutes indoors**, from wall-clock
-  timestamps rather than from `ttff`. Coarse, and honest.
+- ~~**The reacquisition took roughly 6.2 minutes indoors**~~ -- **void as of
+  2026-09-01.** It was measured from the USB replug on the belief that the
+  receiver had lost power there. With the battery connected it never did, so the
+  interval spans "the receiver was already running" to "a fix", and that measures
+  nothing. **A fifth number attributed to the wrong interval**, and the first one
+  where the wrong endpoint came from a fact about the hardware rather than a
+  misread log. There is still **no acquisition figure** for this receiver.
 
-  **It is a warm figure, not a cold one**, and calling it cold was another error
-  this file made and review caught. The receiver had been tracking for hours the
-  same day and the outage was 21 s -- which clears nothing, as this file says two
-  sections up: almanac and ephemeris live in the receiver's own flash. A cold
-  start needs a receiver command that wipes them, which is what the Open list
-  asks for. So: **warm reacquisition after a 21 s power interruption, indoors,
-  about 6.2 minutes.** That it took that long warm is itself worth knowing about
-  this antenna under a ceiling.
+  Two earlier attempts to salvage this number both failed, and the sequence is
+  the lesson. First it was published as an acquisition figure; review pointed out
+  the counter started 5.5 minutes late. Then it was relabelled a warm
+  reacquisition after a 21 s power interruption. Now there was no power
+  interruption at all. **A number that needs relabelling twice is a number whose
+  endpoints were never established** -- the honest move was to drop it at the
+  first correction, not to find a weaker claim it could still support.
 
 The lesson is not about GNSS. `timeToFirstFixMs()` now carries a warning that a
 small value means nothing, and the author then read a large value as if it meant
