@@ -167,6 +167,86 @@ single run in the whole campaign and the only one on this page that can *fail* i
 an interesting way -- a driver breaking under DFS plus light sleep is the finding
 that ends route B.
 
+### T5S3: GNSS + BLE priority, what the design question needs
+
+Added 2026-08-31. T5S3 is the first device on this line with an onboard GNSS
+receiver (`lib/Gnss/`, `docs/gnss.md`) -- so unlike X4/X3, it can source
+position from its own receiver, from the phone over BLE, or both, and the
+firmware has to pick a duty cycle between them. Everything above this line is
+X4; **every row below is T5S3**, a different battery pack and a different
+radio pair (GNSS + LoRa share a rail, `docs/gnss.md`, "The power rail is shared
+with the LoRa radio"), so none of the X4 numbers transfer.
+
+**Framing, corrected 2026-08-31 (maintainer):** a design that keeps G2's
+low-duty background fix running whenever the phone is not connected is not
+"the device depends on the phone when connected." Losing BLE only drops the
+update rate back to the G2 baseline (never to zero); the phone is a bonus
+layered on an always-present floor, not a precondition (Téza `V47`: "Optimum
+je nezávislosť od telefónu. Každá závislosť na ňom je stav, ktorý sa
+odstraňuje, nie vlastnosť, ktorou sa produkt vysvetľuje.").
+
+**No flash, no meter** (whatever firmware is on the board, `CMD:GNSS` and
+`tools/blefakephone.py` drive both ends):
+
+| # | Measurement | Answers | Method |
+|---|---|---|---|
+| G1 | GNSS cold start, current x duration | the worst case a duty-cycled design pays on every wake, if G5 says warm start is not available | `CMD:GNSS ON` from a receiver with cleared almanac, meter in series (T-579) |
+| G2 | GNSS warm/hot start, current x duration, ephemeris fresh | what a low-duty background fix actually costs -- the number the whole scenario turns on | same rig, receiver left powered between legs |
+| G3 | GNSS continuous tracking, steady state | the standalone-only floor (no phone) | `CMD:GNSS ON`, left running, no BLE |
+| G4 | BLE idle/advertising baseline on S3 | S3's own number -- the C3 rows above do not apply | advertising, no phone, meter in series |
+| G5 | BLE position packet cost | the "phone as bonus" path's real price, not assumed cheap | `blefakephone.py --pos`, one cadence |
+| G6 | BLE tile-fetch burst | the bursty cost, separate from position | one missing-tile fetch driven from the laptop |
+| G7 | Baseline, GNSS off + BLE off | what every mode above is measured against | Home screen, T5S3, meter in series |
+
+**Needs an answer before a design, not a meter** (blocks the scenario, not just
+a number):
+
+- **Does the GNSS chip keep ephemeris across a full power-off (a VBAT/backup
+  domain), or does every rail cycle force a cold start?** This decides whether
+  a low-duty periodic-fix design gets G2's price or G1's on every wake -- the
+  entire point of duty-cycling collapses if it is always G1. `docs/gnss.md`
+  line 346 already flags the survives-a-power-cycle question as open, and
+  T-579 is the same idle-current task this reuses.
+- **Ephemeris validity window** -- how long before a warm start degrades
+  toward a cold one. Sets the maximum interval a "fix every N minutes"
+  scheduler can use before it stops being warm.
+- **T5S3 battery capacity (mAh)**, spec-sheet or measured -- without it none of
+  G1-G7 convert to a runtime number, same caveat as the X4 650 mAh figure
+  above.
+
+**How this maps to the scenario, once G1-G7 exist**: phone-connected mode
+(BLE primary, GNSS low-duty per G2) costs roughly `G4 + G5 + (fixes/hour x
+G2)`; phone-disconnected mode (GNSS primary) costs roughly `G3`; the interval
+between G2 fixes is bounded above by the ephemeris validity window and below
+by how much position staleness the current use tolerates (moto vs hiking --
+the two personas differ by an order of magnitude in how stale a dot can be
+before it reads as wrong). None of this is measured yet -- table above is
+what closes it, cheapest first.
+
+**Cross-reference, added 2026-08-31 during retrospective**: `docs/device-choice.md`,
+"Would onboard GNSS let us switch BLE off" already tracks the same question one
+level up (X4 Pro architecture, not T5S3-specific), under **T-522**. Two things
+from there apply here unchanged:
+
+- **The redraw-entanglement trap.** Run 3's BLE-connected leg on X4 measured the
+  link *and* ~47-50 marker redraws an hour together, and the two have never been
+  separated -- so its 2.4x figure is not "what BLE costs," it is "what BLE plus
+  the redraws it causes costs." G5 and G6 above need the same separation: a leg
+  with fixes arriving and redraws suppressed, against a matched-voltage
+  advertising leg, or T5S3 repeats the same unusable number.
+- **A vendor number exists for the receiver class, and it was already misused
+  once.** u-blox specifies the M10 platform (same as the LilyGo board's
+  MIA-M10Q) at "less than 25 mW" continuous tracking -- roughly 7.6 mA at 3.3 V,
+  before regulator loss (`u-blox.com/en/product/max-m10s-module`, `[cited,
+  vendor]`). Use it only as a rough cross-check on G2/G3 once measured, never as
+  a substitute for measuring: an earlier version of `device-choice.md` set this
+  same figure against a retracted mA number and concluded GNSS "roughly doubles"
+  the parked draw, and that conclusion was withdrawn the next day.
+
+T-579 above is cited from `firmware/explorink` branch `feat/t5s3-gnss`
+(`docs/gnss.md`), not yet merged to `develop` -- grepping this parent repo's
+`docs/TODO.md` for it finds nothing until that branch lands.
+
 ### Observation mode: why M16 is the run to spend a night on
 
 **The mechanism is the previous section** ("Observe with BLE off drops the floor
@@ -1513,6 +1593,14 @@ idle, same cable, same port, and compare. If both fail, the clock is innocent.
 Practical consequence either way: **a host that needs the console should reset the
 device and talk inside the boot window**, or drive the map screen, which holds the
 clock up while BLE is running.
+
+**Reproduced 2026-09-01 on a LilyGo T5S3 Pro (ESP32-S3, not the X4's C3).** Same
+shape but not "straight after a flash" -- `CMD:GOTO_MAP` was ignored across
+several attempts spanning minutes of idle (heap log kept ticking every 10 s, so
+the loop was alive), months after the device's last flash. The same DTR/RTS
+reset + send-inside-the-3s-boot-window recipe worked. So this is not a C3-only
+or fresh-flash-only quirk -- same symptom on a different chip, after arbitrary
+idle time, not just right after upload.
 ## The fix
 
 **Every `CMD:` handler runs at full CPU.** `main.cpp` calls

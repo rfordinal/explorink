@@ -119,10 +119,10 @@
 //
 // Off unless SETTINGS.mapAutoSyncTiles says otherwise. On, a frame that had to
 // hatch anything asks the connected phone for exactly those tiles
-// (maybeAutoSyncTiles()), a globe in the header says data is moving, and the
-// map redraws once the answers are in. Everything it needs was already on this
-// screen: the BLE peripheral, the transfer receiver, the command console the
-// phone answers on, and the store the hatch loop already writes to.
+// (maybeAutoSyncTiles()), a transfer icon in the header says data is moving,
+// and the map redraws once the answers are in. Everything it needs was already
+// on this screen: the BLE peripheral, the transfer receiver, the command
+// console the phone answers on, and the store the hatch loop already writes to.
 //
 // Three rules keep it from being a nuisance, and none of them is optional:
 //
@@ -323,7 +323,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // so this reads the same; the BLE logo and signal bars are this screen's
   // own -- no other activity has a wireless link to show.
   void drawHeaderStatus();
-  // The globe / Bluetooth logo / signal bars alone -- everything inside
+  // The transfer icon / Bluetooth logo / signal bars alone -- everything inside
   // headerStatusRect() and nothing outside it. Split out so the windowed
   // repaint can redraw exactly what it refreshes.
   void drawHeaderStatusStrip();
@@ -407,11 +407,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // publishes a coordinate plus a sequence number and this acts on the change
   // (MapTransferReceiver::Status::lastTile).
   void drainTransferredTiles();
-  // Gives up on an ask nothing has answered, so the globe cannot stay lit
-  // forever after the phone walks away mid-transfer.
+  // Gives up on an ask nothing has answered, so the transfer icon cannot stay
+  // lit forever after the phone walks away mid-transfer.
   void expireAutoSync();
-  // Keeps the header status row honest between full frames: the globe, the
-  // link state and the signal bars. Refreshes only the header strip, and only
+  // Keeps the header status row honest between full frames: the transfer icon,
+  // the link state and the signal bars. Refreshes only the header strip, and only
   // when something actually changed -- same windowed mechanism as the busy
   // badge.
   //
@@ -429,7 +429,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Maps a live rssi() reading to a bar count, holding the last real one
   // across a failed (0) read. See MapActivity.cpp for why.
   int resolveBleBars(int8_t rssi);
-  // The globe's own slot, and the strip drawHeaderStatus() backs and repaints.
+  // The transfer icon's own slot, and the strip drawHeaderStatus() backs and repaints.
   // One source for both, or the repaint clips what the draw put down.
   void headerStatusRect(int& x, int& y, int& w, int& h) const;
   // Height of the header bar on the panel right now: the base single-row bar
@@ -954,7 +954,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // (Ssd1677Driver::displayImpl, SleepActivity's #2471 note).
   bool pendingEntryCleanRefresh_ = false;
   // True whenever the frame on the panel carries a header row (the BLE link
-  // icon, its bars, the transfer globe) -- drawHeaderStatus() drew one.
+  // icon, its bars, the transfer icon) -- drawHeaderStatus() drew one.
   // Separate from viewportDrawn_ on purpose: whether the phone is connected has
   // nothing to do with whether the frame is followable. The persisted-fix frame
   // has a header row and is not followable; the waiting banner has neither.
@@ -1054,7 +1054,7 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // (MapCommandConsole.h, MapTileRangeSnapshot), not a second convention.
   MapTileRangeSnapshot lastTileRange_;
   // Tiles asked for and not yet settled by an arrival or a `skip`. Non-zero is
-  // exactly the condition the globe shows.
+  // exactly the condition the transfer icon shows.
   uint32_t autoSyncPending_ = 0;
   // True once at least one tile of this ask has actually landed, so the map is
   // redrawn when the ask settles -- and is not redrawn when every answer was

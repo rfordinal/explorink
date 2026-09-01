@@ -591,11 +591,14 @@ the padding" is a claim about the compiler, not about the code.
 second while the first is outstanding. A rate cap, not a settle timer: more
 hatching does not push the next ask further out.
 
-### The globe
+### The transfer icon
 
-A circle with an equator and a meridian, left of the Bluetooth logo in the
-header row (`MapActivity::drawHeaderStatus()`). Lit while `autoSyncPending_ > 0`
--- tiles asked for and not yet settled by an arrival or a `skip`.
+Left of the Bluetooth logo in the header row
+(`MapActivity::drawHeaderStatus()`). Lit while `autoSyncPending_ > 0` -- tiles
+asked for and not yet settled by an arrival or a `skip`. A baked Lucide glyph
+(two opposite arrows, `arrow-left-right`) since 2026-08-31; a hand-drawn globe
+(circle, equator, meridian) before that -- see `docs/map-header-status.md` for
+the change.
 
 The device has no radio that reaches the internet; the phone does. The glyph is
 still honest about the thing that matters to the rider: **mobile data is being

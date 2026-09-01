@@ -65,10 +65,19 @@ struct PositionUpdate {
 // Exact size of the packet above. A write of any other length is ignored.
 inline constexpr size_t kPositionPacketBytes = 21;
 
-// The advertised name. The phone matches on it (ScanFilter.setDeviceName) and
-// the CompanionDeviceManager association dialog shows it to the rider, so it is
-// wire-visible and must not change casually.
-inline constexpr const char* kBleDeviceName = "XteinkX4Map";
+// The advertised name identifies which board this is -- see
+// bleDeviceNameForActiveBoard() (BlePositionServer.cpp), which picks it from
+// BoardConfig::ACTIVE.board so an X4, an X3 and a LilyGo T5S3 each advertise
+// their own name instead of all claiming to be an X4. The phone matches on it
+// (ScanFilter.setDeviceName / BleLink.kt's KNOWN_DEVICE_NAMES) and the
+// CompanionDeviceManager association dialog shows it to the rider, so every
+// name this can resolve to is wire-visible and must not change casually.
+//
+// kBleDeviceNameFallback is what a board with no map-specific name assigned
+// gets. Generic, not "XteinkX4Map" -- LilyGo is a hardware partner running
+// this same firmware today, not a footnote, so the fallback must not name one
+// vendor's device.
+inline constexpr const char* kBleDeviceNameFallback = "ExplorInkMap";
 
 class BlePositionServer {
  public:
@@ -79,7 +88,11 @@ class BlePositionServer {
   // channel; keeping the phone-side BLE code to "connect + write" is worth
   // more than pairing security here. Safe to call once; returns false if
   // BLE init failed or the capability is compiled out.
-  bool begin(const char* deviceName = kBleDeviceName);
+  //
+  // Passing no name (the default) advertises bleDeviceNameForActiveBoard()'s
+  // per-board name; a caller passes one explicitly only for a test that wants
+  // a fixed name regardless of the board it runs on.
+  bool begin(const char* deviceName = nullptr);
 
   // Fully tears down the BLE stack so its RAM is returned to the heap --
   // call this in MapActivity::onExit(), not just disconnect(), same reason
