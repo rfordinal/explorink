@@ -210,6 +210,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // that is the whole integration.
   void pollGnssFix();
 #endif
+#ifdef ENABLE_GNSS_CMD
+  // What the header row's GNSS glyph says. Three states, one Lucide glyph each
+  // (locate-off, locate, locate-fixed).
+  enum class GnssHeaderState : uint8_t { Off, Seeking, Fixed };
+  GnssHeaderState gnssHeaderState() const;
+#endif
   // Erases the marker from the frame on the panel (writing back the pixels
   // saved when it was drawn), redraws it at sx/sy, and refreshes only the
   // rectangles involved. Leaves the map, the compass, the readout and the
@@ -955,6 +961,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // one value in 256 -- with both sources live that costs at most one skipped
   // BLE packet, which is the same 5 s the phone's next packet arrives in.
   uint8_t gnssSeq_ = 0;
+  // What the panel was last told, for the same reason transferIconShown_ exists
+  // next to it: the repaint decision compares against what is on the glass, not
+  // against what is true. Starts at Off so the first draw of a running receiver
+  // counts as a change.
+  GnssHeaderState drawnGnssState_ = GnssHeaderState::Off;
 #endif
 
   // ## Follow state: what the frame currently on the panel is

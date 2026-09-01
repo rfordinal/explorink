@@ -284,6 +284,20 @@ constexpr int kHeaderTransferIconSize = kHeaderIconHeight;
 constexpr int kHeaderTransferIconToBtGap = 6;
 constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to bars
 
+#ifdef ENABLE_GNSS_CMD
+// The on-device receiver's state, three Lucide glyphs from one family:
+// locate-off when it is not running, locate while it is looking, locate-fixed
+// once it has a solution (map_header_icons.h). Only on a build that has a
+// receiver -- on the X4 and the X4 Pro there is nothing to report and the slot
+// must not eat a place name's width to say so.
+//
+// Always drawn, unlike the transfer icon next to it: "off" is one of the three
+// states, not the absence of the icon. A rider who cannot tell "no receiver
+// running" from "no icon yet" learns nothing from the row.
+constexpr int kHeaderGnssIconSize = kHeaderIconHeight;
+constexpr int kHeaderGnssIconToBtGap = 6;
+#endif
+
 // The clock sits leftmost in the status row, between the place name and the
 // transfer icon slot. Its width is measured from "00:00" at draw time, not
 // guessed -- same rule the battery percentage's allowance already follows
@@ -1377,7 +1391,14 @@ void MapActivity::updateHeaderStatus() {
   // the row was drawn only by a full frame, so closing the phone's GPS app left
   // the bars on the panel until something else forced a redraw. Reported from a
   // real session, 2026-08-07.
-  const bool structural = transferIconVisible != transferIconShown_ || connected != drawnLinkConnected_;
+  bool structural = transferIconVisible != transferIconShown_ || connected != drawnLinkConnected_;
+#ifdef ENABLE_GNSS_CMD
+  // Structural, not rate-capped: the receiver moves between three states a
+  // handful of times a ride (start, first fix, sky lost), so there is nothing
+  // to cap -- and each of those is exactly the moment the rider wants told.
+  // Unlike the bar count next to it, which flips on an RSSI threshold.
+  structural = structural || gnssHeaderState() != drawnGnssState_;
+#endif
   // A bar count moving while the link holds is the same story told slightly
   // differently, and RSSI sitting on a threshold flips it back and forth.
   // Every flip is a real waveform pass, so it is rate-capped.
@@ -1548,7 +1569,16 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+#ifdef ENABLE_GNSS_CMD
+  // One more link in the right-to-left chain, between the Bluetooth logo and
+  // the transfer icon. Everything left of it (the transfer icon, the clock, and
+  // the place name that truncates against the clock) shifts left by itself,
+  // which is why this is a link and not a hardcoded x.
+  const int gnssIconLeft = logoLeft - kHeaderGnssIconToBtGap - kHeaderGnssIconSize;
+  const int transferIconLeft = gnssIconLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+#else
   const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+#endif
   const int clockLeft = transferIconLeft - kHeaderClockToTransferIconGap - headerClockSlotWidth(renderer);
   // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
   // hands drawBatteryRight() rect.y+5 (BaseTheme.cpp:374), and
@@ -1820,7 +1850,16 @@ void MapActivity::drawHeaderStatusStrip() {
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+#ifdef ENABLE_GNSS_CMD
+  // One more link in the right-to-left chain, between the Bluetooth logo and
+  // the transfer icon. Everything left of it (the transfer icon, the clock, and
+  // the place name that truncates against the clock) shifts left by itself,
+  // which is why this is a link and not a hardcoded x.
+  const int gnssIconLeft = logoLeft - kHeaderGnssIconToBtGap - kHeaderGnssIconSize;
+  const int transferIconLeft = gnssIconLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+#else
   const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+#endif
   const int batteryIconTop = kHeaderMarginTop + 5 + 6;
   const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
   const int iconTop = iconBottom - kHeaderIconHeight;
@@ -1887,6 +1926,19 @@ void MapActivity::drawHeaderStatusStrip() {
                           true);
   }
   transferIconShown_ = autoSyncPending_ > 0;
+
+#ifdef ENABLE_GNSS_CMD
+  // The receiver's state, always drawn -- "off" is a state and not the absence
+  // of an icon. drawMono1bpp() for the same reason as the transfer icon above.
+  {
+    const GnssHeaderState state = gnssHeaderState();
+    const freeink::Icon& glyph = state == GnssHeaderState::Fixed     ? icon_gnssFixed
+                                 : state == GnssHeaderState::Seeking ? icon_gnssSearching
+                                                                     : icon_gnssOff;
+    renderer.drawMono1bpp(glyph.bits, gnssIconLeft, iconTop, glyph.w, glyph.h, true);
+    drawnGnssState_ = state;
+  }
+#endif
 
   // Logo: a small hand-drawn Bluetooth rune -- a vertical spine (the actual
   // Bluetooth glyph's ascender/descender) plus two chevron wings crossing it,
@@ -5162,6 +5214,22 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
 // main.cpp's loop() is what drains the UART (gnss.poll(), every iteration). This
 // only ever reads the parsed result, so it is cheap enough to call every loop
 // and it cannot lose a sentence by being late.
+// What the header row says about the receiver, in three states the rider can
+// tell apart at 14 px: not running, running with no solution, running with one.
+//
+// Deliberately NOT derived from whether a fix has ever been seen. GnssFix::valid
+// latches true on the first solution and stays true (Gnss.h), so a receiver that
+// has lost the sky would keep claiming a fix -- which is the one lie a "where am
+// I" device must not tell. quality is what says the solution is current, and 6
+// (dead reckoning, no satellites) is excluded here for the same reason
+// pollGnssFix() refuses to draw a position from it.
+MapActivity::GnssHeaderState MapActivity::gnssHeaderState() const {
+  if (SETTINGS.mapGnssPosition == 0 || !gnss.running()) return GnssHeaderState::Off;
+  const GnssFix& fix = gnss.fix();
+  if (!fix.valid || fix.quality == 0 || fix.quality == 6) return GnssHeaderState::Seeking;
+  return GnssHeaderState::Fixed;
+}
+
 void MapActivity::pollGnssFix() {
   if (SETTINGS.mapGnssPosition == 0) return;
   if (!gnss.running()) return;
