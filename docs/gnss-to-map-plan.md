@@ -58,26 +58,60 @@ rebuild before flashing**, or the device gets a build that is missing work
 somebody already verified. It happened on 2026-09-02: the release branch was five
 commits ahead and nothing in this block would have said so.
 
-## The merge gate
+## The merge gates -- two of them, and they are different deliveries
 
-`feat/t5s3-gnss` merges into `release/lilygo-t5-s3-pro` when **the GNSS
-implementation itself is known good and mapped with no surprises left** --
-maintainer's wording, 2026-08-31. Concretely, all four:
+The original single gate bundled two claims that finish at different times:
+**the GNSS implementation is known good** (steps 1 and 2a, the driver and the
+rail) and **the map reads from it** (step 3 and T-576). One list made the first
+unshippable until the second landed, which is how a gate becomes unmeetable and
+the session after it routes around it instead. Split, 2026-09-01, on the
+maintainer's call.
+
+### Gate A -- the GNSS implementation itself
+
+`feat/t5s3-gnss` merges into `release/lilygo-t5-s3-pro` on this one. **Met
+2026-09-01.**
 
 - **Step 1 done and verified on hardware.** A blocking map entry loses no
-  sentences.
+  sentences. Done 2026-09-01.
+- **Step 2a done and verified on hardware.** The rail's mechanism is settled with
+  a citation: an expander latch, not board design. Done 2026-09-01.
+- **The stuck-byte drain carried open, with its label attached.** See below. It
+  does not block this gate, and it is not closed by it.
+
+### Gate B -- the map reading from the receiver
+
+A later merge, from step 3's own session.
+
 - **Step 3 done and verified on hardware.** The map draws from the receiver with
   no phone connected.
-- **The stuck-byte drain verified.** It is the one thing in the current tree that
-  the tree's own docs call unverified ([`gnss.md`](gnss.md), "whether that drain
-  clears the wedge"). Reproduce the wedge, watch a `CMD:` succeed within seconds
-  of the drain line.
+- **The stuck-byte drain verified**, or explicitly deferred by the maintainer in
+  writing.
 - **T-576's two open items either closed or explicitly deferred by the
   maintainer**, not silently dropped: the SPI-contention test that has never run,
   and a TTFF measured from the receiver's own power-on.
 
-Steps 4 and 5 are **not** in the gate. They are product decisions and they can
-land after the merge.
+Steps 4 and 5 are in **neither** gate. They are product decisions and they can
+land after either merge.
+
+### The drain ships open, and the label is the point
+
+**The stuck-byte drain is unverified, and the reason matters more than the
+status.** It is not that nobody ran it. It is that **it ran and the diagnostic
+never fired**: in the session where commands finally arrived there were zero
+`serial head byte` lines, so the commands got through because the board was awake
+with a clean buffer, not because anything was drained
+([`gnss.md`](gnss.md), "whether that drain clears the wedge").
+
+That distinction is what stops the next reader closing it on sight. "Never
+exercised" invites one run to settle it. "Exercised, and the instrument stayed
+dark" means a run that looks clean proves nothing, and the wedge has to be
+**reproduced first** -- then a `CMD:` has to succeed within seconds of a drain
+line that actually appears.
+
+**So it enters `release/lilygo-t5-s3-pro` labelled, not quietly.** Anything that
+reports on this branch says the drain is unverified and says which of the two
+kinds of unverified it is.
 
 ## Step 1 -- the UART has to survive a blocking render
 
@@ -121,7 +155,9 @@ Three candidate fixes, and the number picks one:
   fail -- it also reads 0 when nothing was measured. Both, or it is not done.
 - The chosen fix and the number that chose it are written into
   [`gnss.md`](gnss.md), replacing "A blocking render starves the UART".
-- The drain is verified in the same pass (see the merge gate).
+- The drain is verified in the same pass -- **not met**, and it is carried
+  open into the release branch rather than closed (see "The drain ships
+  open").
 
 **Do not**: change the parser, touch `MapActivity`, or raise the library's
 default buffer for every board.
@@ -148,8 +184,10 @@ does not want to read it:
 - The three candidate fixes this plan listed are therefore resolved: candidate 1
   chosen, candidates 2 and 3 rejected with a reason rather than left open.
 
-Not done here, and still in the merge gate: the stuck-byte drain has not been
-verified.
+Not done here: the stuck-byte drain is still unverified, and it is unverified in
+the awkward way -- it ran and the diagnostic never fired, so a clean-looking rerun
+settles nothing. It sits in gate B, carried into the release branch with that
+label rather than closed.
 
 ## Step 2 -- the power floor (T-579)
 
