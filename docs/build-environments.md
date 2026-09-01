@@ -46,6 +46,23 @@ Nobody noticed for months because every build that reached a device was a
 build-flag change plus the `lib_deps` entry, and it cannot be called fixed until
 a `gh_release` binary is on a device with a phone connected to it.
 
+## `platformio.ini` states a range, not a version
+
+A `lib_deps` line is a constraint, not a fact about the build. `h2zero/NimBLE-Arduino @ ^2.3.8` resolved to **2.5.1** on 2026-09-01, two minor
+versions up.
+
+So a claim about what a library does is read from the tree actually on disk,
+`.pio/libdeps/<env>/<lib>/`, and the version confirmed in that directory's
+`.piopm`:
+
+```
+cat .pio/libdeps/t5s3pro/NimBLE-Arduino/.piopm
+```
+
+Reading the ini instead put a wrong version into a bug report before it was
+caught (`ble-deinit-crash.md`). The same applies to anything else pinned with
+`^` or `~`.
+
 ## Flashing: three images, three offsets
 
 Verified against a real X4's own 16 MB flash dump, not read off a datasheet.

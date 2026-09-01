@@ -50,7 +50,8 @@ ELF's NOBITS section, not from the device. Do not quote them as evidence.
 
 ## Two tasks, one moment
 
-`loopTask` was on the sleep path, blocked:
+`loopTask` was on the sleep path, blocked. The call chain, with function
+definitions located on `develop`:
 
 ```
 enterDeepSleep (src/main.cpp:401)
@@ -62,6 +63,12 @@ enterDeepSleep (src/main.cpp:401)
             ble_gap_preempt -> ble_gap_adv_stop_no_lock -> HCI "adv disable"
               waiting on the BT controller semaphore
 ```
+
+Those are definition lines, not the coredump's own frames. The coredump was
+taken on `feat/t5s3-gnss` @ `4e3305e7`, where the same frames carry
+`main.cpp:420`, `MapActivity.cpp:2425` and `BlePositionServer.cpp:457`.
+`backtrace.txt` in the case directory is the verbatim record; this block is the
+readable path through `develop`.
 
 `nimble_host` crashed while `loopTask` sat in that wait. This is why the
 `BLEPOS heap:` line (`lib/BlePositionServer/src/BlePositionServer.cpp:472`) is
@@ -99,6 +106,37 @@ the map is the most common exit, so it is the most likely place to hit it.
 **GNSS is not involved.** It appears nowhere in the chain. A 10 Hz NMEA stream
 does change loop timing, so it may change how often the window is hit — that is
 speculation, not a finding.
+
+## It had already happened once
+
+**2026-08-31, one day earlier**, the same board restarted while the map menu was
+opened and closed repeatedly. That report is quoted verbatim in
+`lilygo-t5s3-bringup.md` on `release/lilygo-t5-s3-pro`, and its tail is:
+
+```
+[884824] [DBG] [ACT] Exiting activity: Map
+[884854] [DBG] [MTS] missing tile list saved (2 entries)
+[1] [DBG] [UI] Using Lyra theme
+```
+
+Ours stops one statement earlier in the same function -- `saveLaddersIfChanged()`
+rather than `MISSING_TILES.flushIfDirty()`. Four things line up:
+
+- Both restarts land inside `MapActivity::onExit()`.
+- Both stop **before** the `BLEPOS heap:` line, so both are inside or before
+  `BlePositionServer::end()`.
+- Both wrote a `crash_report.txt` at all, which **rules out a watchdog and a
+  brownout**: those set their own reset-reason hints and `isRebootFromPanic()`
+  filters them out, so neither would have produced a file
+  ([`crash-reporting.md`](crash-reporting.md), "Gap 3").
+- On 31 August a phone was connected -- the log carries `conn params` lines --
+  so `deinit(true)` ran against a live link, which makes the race more likely,
+  not less.
+
+**Read, strongly corroborated, not proven.** The 31 August coredump was
+overwritten by ours before anyone extracted it: one partition,
+`CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE` off. `docs/crashes/README.md` in the
+parent repo exists to stop that happening again, and it arrived one day late.
 
 ## The offending line is not upstream
 
