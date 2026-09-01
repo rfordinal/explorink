@@ -278,7 +278,9 @@ GNSS_PROBE:cfg0=0x00 out0=0xFF in0=0xFF io00_dir=output io00_level=high
 
 **Two results, and they point in different directions.**
 
-**Solid: the receiver is powered without this firmware asking.** 1,767 bytes and
+**Solid, but narrower than it reads -- the mechanism is a stale latch, not board
+design; see "Settled 2026-09-01" below. The receiver is powered without this
+firmware asking.** 1,767 bytes and
 36 checksum-valid sentences in 2.5 s, with `powerEnable` set to `nullptr` so no
 code path could have touched the rail. That half of the original finding stands.
 
@@ -355,9 +357,60 @@ Three candidates, and this probe cannot separate them:
    0x06 is being addressed differently from 0x02 and 0x00, which a stuck pointer
    would not do.
 
-**What the datasheet makes most likely is candidate 1**, and it also names the
-fix: the experiment needs an outage long enough to take the rail below 0.2 V, so
-**minutes, not 21 seconds**.
+**What the datasheet makes most likely is candidate 1**, and the datasheet was
+right.
+
+#### Settled 2026-09-01: candidate 1, and no power cycle was needed
+
+**`CMD:GNSS RELEASE` answered it on the bench, twice.** The power-cycle route was
+dropped before it was ever run: it needed unplugging connector `P2`, whose part
+number is `[open]` and which nobody here has identified on the board, and it was
+only ever a detour. The direct question is not *what does the expander come up
+as* -- that is a proxy -- but **does anything other than the expander hold
+`LORA_GPS_EN` high**. Stop the expander driving the pin and ask the receiver.
+
+| window | run 1 | run 2 | what it shows |
+|---|---|---|---|
+| `cfg0_base` | `0x00` | `0x00` | bit 0 clear: the pin was already an **output** before anything touched it |
+| baseline, 3 s | 1722 B / 42 sentences | 1606 B / 38 | the receiver really was streaming first |
+| `cfg0_released` | `0x01` | `0x01` | the I2C write took -- bit 0 set, pin now an input |
+| released, 5 s | 308 B / 6 | 467 B / 10 | **NMEA stops** |
+| `cfg0_restored` | `0x00` | `0x00` | back to output |
+| restored, 4 s | 1737 B / 43 | 1743 B / 43 | the receiver returns; the test left the board as it found it |
+
+Measured on the LilyGo T5 S3 Pro, `env:t5s3pro`, firmware built from
+`feat/t5s3-gnss` at the merge of `release/lilygo-t5-s3-pro`. The instrument is
+the receiver itself -- `Gnss::bytesRead()` and `Gnss::sentencesParsed()` deltas
+across three windows -- and no external meter is involved.
+
+**The released window is not zero, and that is the expected shape rather than a
+leak.** 308 B against a 574 B/s baseline is 0.54 s of streaming; 467 B against
+535 B/s is 0.87 s. A rail with bulk decoupling coasts before it collapses, which
+is why that window is 5 s and not 3.
+
+**So the rail was held by the expander's own latched output.** Nothing else on
+the board holds it. `cfg0=0x00` is a latch that no reset has ever cleared,
+because the expander has never lost power -- which is also why every "power
+cycle" in this file's earlier evidence could not have cleared it, battery or no
+battery.
+
+**One earlier claim needs its scope narrowed rather than withdrawn.** "The
+receiver is powered without this firmware asking" stands as written: in the boot
+that ran the probe, no code here wrote the rail. What it never established, and
+what the first draft implied, is *by design* -- the mechanism is a stale latch,
+most plausibly left by the factory firmware, which does configure the whole
+expander.
+
+**Two consequences for step 3.** The receiver cannot be assumed powered on a
+board whose expander has genuinely been cold-started, so `gnssPowerEnable()`
+stays the path that turns it on rather than an optional courtesy. And a rail this
+firmware did not ask for is a rail nobody is accounting for in the power budget,
+which is step 2b's problem.
+
+**Still open here:** `reset=UNKNOWN` came back on both runs, including one
+immediately after an esptool hard reset. The field is worth keeping in the reply,
+but on this board it has not yet named a single reset cause, so nothing should be
+concluded from its absence of `POWERON`.
 
 #### The detection method was wrong, and it cost three attempts
 
@@ -487,7 +540,16 @@ CMD:GNSS ON        ->  GNSS_OK:on          powers the rail, opens the UART
 CMD:GNSS OFF       ->  GNSS_OK:off         closes the UART, drops the rail
 CMD:GNSS RAW ON    ->  GNSS_OK:raw=1       every sentence to the log
 CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
+CMD:GNSS PROBE     ->  GNSS_PROBE:...      reads the expander, writes no rail
+CMD:GNSS RELEASE   ->  GNSS_RELEASE:...    stops the expander driving the rail pin,
+                                           then puts it back (step 2a)
 ```
+
+**`RELEASE` is the one that writes**, which is why it is not folded into `PROBE`.
+It drops the receiver's power for five seconds by design, and a caller who
+expected a read would lose the fix underneath them. It restores the pin before it
+replies, and the reply carries the `CONFIG0` readback at each stage so a restore
+that silently failed cannot be mistaken for a clean run.
 
 A status reply is one line of `key=value`, so a host script can grep it:
 

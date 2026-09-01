@@ -16,8 +16,8 @@ this file is only what comes next.
 | step | what | needs | state |
 |---|---|---|---|
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
-| 2a | Is the rail on by design or by an uncleared latch | device only, one I2C write | open, **no power cycle needed** |
-| 2b | What the pair draws | device, battery (it is connected), one small firmware change | **open, unblocked** |
+| 2a | Is the rail on by design or by an uncleared latch | device only, one I2C write | **done 2026-09-01**, verified on hardware: an uncleared latch |
+| 2b | What the pair draws | device, battery (connected, measured), one small firmware change | **open, unblocked** |
 | 3 | GNSS as a third `applyFix()` caller | device | **open, do this next** |
 | 4 | Heading from course, on-device | device, product decision | blocked on 3 |
 | 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
@@ -153,44 +153,38 @@ verified.
 
 ## Step 2 -- the power floor (T-579)
 
-Independent of the rest, needs the maintainer's hand and a meter. Two halves,
-and the first is nearly free.
+Independent of the rest. Two halves, and **neither needs an external meter** --
+the first is answered by the receiver's own byte count, the second by the gauge
+the board already carries.
 
-**2a. Is the rail on by board design, or by a latch nothing has cleared?** The
-receiver is powered before any firmware asks -- that is measured. The mechanism is
-not. Four vendor datasheets say the expander's configuration resets to
-all-inputs, but the reset needs the rail below ~0.8 V against 1 uA of standby
-draw, so a 21 s unplug did not necessarily get there.
+**2a. Is the rail on by board design, or by a latch nothing has cleared?**
+**Answered 2026-09-01: an uncleared latch.** `CMD:GNSS RELEASE` on the T5 S3 Pro,
+twice. Setting `CONFIG0` bit 0 back to input stops the NMEA; restoring
+output-high brings the receiver back. So nothing on the board holds
+`LORA_GPS_EN` -- the expander's own latched output does, and it has survived every
+reset because the expander has never lost power.
 
-**Do not power-cycle anything. The question does not need it.** Every attempt so
-far tried to reach the answer through a power cycle -- pull USB, then pull USB and
-the battery -- and the second of those needs unplugging connector `P2` on the
-board, whose part number is `[open]` (`docs/devices/lilygo-t5-s3-pro.md`, the
-Battery Interface section) and which nobody here has identified in the flesh.
+```
+cfg0_base=0x00 cfg0_released=0x01 cfg0_restored=0x00 wrote=1 released=1 restored=1
+run 1  base 1722 B / 42 sent (3 s)   released 308 B / 6 (5 s)   restored 1737 B / 43 (4 s)
+run 2  base 1606 B / 38 sent (3 s)   released 467 B / 10 (5 s)  restored 1743 B / 43 (4 s)
+```
 
-**Ask the direct question instead.** What matters is not what the expander comes
-up as, but whether anything other than the expander holds `LORA_GPS_EN` high. One
-I2C write settles it:
+The full reading, the coast-down that makes the released window non-zero, and
+what it narrows in the earlier "powered without this firmware asking" claim are
+in [`gnss.md`](gnss.md), "Settled 2026-09-01".
 
-1. Set `CONFIG0` bit 0 back to **input**, so the expander stops driving that pin
-   and leaves it high-impedance. `BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, INPUT)`
-   already does exactly this.
-2. Read the UART for a few seconds.
+**No power cycle was run, and none is needed for this question.** The route
+through unplugging the battery at connector `P2` was dropped before it was
+tried: that part number is `[open]`, nobody here has identified it on the board,
+and it was only ever a detour to the question above. `reset=POWERON` stays worth
+having in the reply for when a genuine power-on happens by other means -- though
+on this board the field has returned `UNKNOWN` on every run so far, including
+straight after an esptool hard reset, so its absence proves nothing.
 
-- **NMEA still flows** -> something on the board holds the rail high, and the
-  receiver really is powered by design.
-- **NMEA stops** -> the expander's own latched output was holding it, so it was a
-  latch that no reset has ever cleared.
-- Then set it back to output-high and confirm the receiver returns, so the test
-  leaves nothing changed.
-
-The power-cycle route was a detour to this, and a detour through hardware nobody
-could operate. `reset=POWERON` is still worth having in the reply when a genuine
-power-on happens by other means, but it is no longer a precondition for step 2a.
-
-**This writes device state, so it gets its own explicit subcommand** rather than
-riding inside `CMD:GNSS PROBE`. Suggested `CMD:GNSS RELEASE` -- devel-only like
-the rest, and named so nobody triggers it while looking for a read.
+**The subcommand is separate because it writes device state**, and named so
+nobody reaches for it while looking for a read. Devel-only with the rest of
+`CMD:GNSS`, behind `ENABLE_GNSS_CMD`.
 
 **2b. What does the pair draw?** Rail up and rail down, and **name the
 instrument**.
@@ -205,9 +199,14 @@ the number away, using it only to decide the sign of `charging`. The public
 `currentKnown` flag where `0x0C` is already read, then measure. That is a small
 device-free change followed by a run.
 
-**The battery is connected**, so nothing gates 2b beyond the small change above.
-This plan first said no cell was attached, which was wrong and came from a slip
-in conversation rather than from the board -- see the third trap under 2a.
+**The battery is connected -- measured 2026-09-01, not assumed**, so nothing gates
+2b beyond the small change above. The gauge was asked rather than the room:
+`mapcmd.py stats` returned `batt_mv=4102` and `batt_pct=100`, and 4102 mV is a
+charged Li-ion cell, not the 3.3 V rail and not 5 V VBUS. This plan first said no
+cell was attached, which was wrong and came from a slip in conversation rather
+than from the board; the version after it said the opposite and was still only
+conversation. Three documents rested on that claim before anything on the device
+confirmed it.
 
 One thing to get right when measuring: the gauge reports *battery* current, so
 read it with **USB unplugged**, on the cell. On USB the charge path dominates and
