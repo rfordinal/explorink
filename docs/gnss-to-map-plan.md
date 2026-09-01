@@ -16,7 +16,8 @@ this file is only what comes next.
 | step | what | needs | state |
 |---|---|---|---|
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
-| 2 | Power floor of the GNSS + LoRa pair | device, meter, maintainer | open (T-579) |
+| 2a | Is the rail on by design or by an uncleared latch | device, one real power cycle | open, needs no instrument |
+| 2b | What the pair draws | device, **a battery on the board**, one small firmware change | open (T-579) |
 | 3 | GNSS as a third `applyFix()` caller | device | **open, do this next** |
 | 4 | Heading from course, on-device | device, product decision | blocked on 3 |
 | 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
@@ -158,9 +159,25 @@ board lost power (twice it was deep sleep), and a silent wait lets the board's o
 sleep timer end the run -- poke it with a harmless command every 15 s.
 
 **2b. What does the pair draw?** Rail up and rail down, and **name the
-instrument**. The BQ27220 is on board; a meter in series at the development
-board's battery connector is allowed (`docs/hardware-policy.md` in the parent --
-a bare board is not a device).
+instrument**.
+
+**No external meter is needed, and the first version of this plan wrongly implied
+one was.** The BQ27220 already reports average battery current: register `0x0C`,
+signed mA, and this firmware **already reads it** --
+`freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:211`. It throws
+the number away, using it only to decide the sign of `charging`. The public
+`Status` struct carries percentage, millivolts and `charging` and no current
+(`BatteryMonitor.h`, the `Status` fields). So step 2b is: add `currentMa` plus a
+`currentKnown` flag where `0x0C` is already read, then measure. That is a small
+device-free change followed by a run.
+
+**What it does need is a battery on the board.** The gauge measures *battery*
+current, so on USB with no cell attached there is nothing to read. As of
+2026-08-31 no battery was attached. That, not an instrument, is what gates 2b.
+
+A meter in series at the board's battery connector remains allowed and is the
+cross-check, not the primary path (`docs/hardware-policy.md` in the parent -- a
+bare development board is not a device).
 
 **Done when** the mechanism is settled with a citation and both draws are
 recorded. Asking LilyGo for the schematic would settle 2a with no measurement at
