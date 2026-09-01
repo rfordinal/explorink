@@ -23,8 +23,22 @@
 namespace MapGnssHeading {
 
 // The gate for believing the course at all, in km/h, and the hysteresis around
-// it. A receiver at rest reports a course and it is noise: speed 1.3 km/h with
-// course 211.9 degrees, measured on a stationary desk 2026-08-31.
+// it. A receiver at rest reports a course and it is noise.
+//
+// **THE NUMBER BELOW IS KNOWN TO BE TOO LOW. Do not read it as a working
+// threshold.** It was chosen from a single stationary reading of 1.3 km/h
+// (2026-08-31) treated as a noise floor. It is not one. A stationary indoor run
+// on 2026-09-01 reported speeds up to **23.7 km/h** with the course swinging
+// 206 -> 252 -> 21 -> 148 degrees across a minute, all at quality 1, 8
+// satellites and HDOP 1.4 -- so every gate below 24 km/h passes indoor
+// multipath, and no threshold on instantaneous speed alone can separate this
+// from a rider.
+//
+// What is NOT known is how bad this is outdoors with real sky, which is the
+// case the product cares about. Until somebody rides with it, this gate is a
+// placeholder that behaves correctly for a rider and wrongly for a parked
+// device indoors. See docs/gnss.md, "The gate was chosen on a number that was
+// not a noise floor".
 //
 // Two thresholds, not one, because a single one flutters: a rider sitting at
 // exactly the gate would flip between moving and stopped on every fix, and a

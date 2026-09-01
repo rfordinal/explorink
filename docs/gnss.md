@@ -728,6 +728,44 @@ land on step 16 in a four-bit field.
 
 **Not verified on hardware.** Nothing here has been ridden with.
 
+### The gate was chosen on a number that was not a noise floor
+
+**Measured 2026-09-01, device stationary on a desk indoors, no phone.** The
+receiver, at `quality=1` with 8 satellites and HDOP 1.4, reported this over
+about twenty seconds:
+
+```
+speed  9.6 course 206.6   speed 16.3 course 252.6   speed 23.7 course 235.8
+speed  0.0 course 235.8   speed  3.8 course  21.1   speed  2.6 course 148.1
+```
+
+**Up to 23.7 km/h, and the course swung right round the compass, while nothing
+moved.** The 3.0 km/h gate passed for eleven consecutive fixes.
+
+This refutes the number the gate was built on. `speed=1.3 course=211.9`
+(2026-08-31) was **one sample**, and it was written down as if it were the
+noise floor -- in this file, in the plan, and in the constant's own comment.
+One reading is not a floor, and the doc that called it one is what made the
+gate look justified.
+
+Two things follow, and they are different:
+
+- **No threshold on instantaneous speed can separate indoor multipath from a
+  rider.** A gate high enough to reject 23.7 km/h rejects every cyclist and
+  every hiker. So the current gate is not "slightly too low", it is the wrong
+  instrument for this case.
+- **This says nothing yet about outdoors**, which is the case the product cares
+  about. Multipath off walls is what produces this; with real sky the figure is
+  expected to be far lower, and nobody here has measured it. **Do not conclude
+  the gate is wrong for riding from an indoor run** -- that would be the same
+  mistake in the other direction.
+
+So the gate ships as a placeholder that behaves correctly for a moving rider
+and wrongly for a device parked indoors, and the next measurement is a
+stationary one **outdoors, with sky**. Until it exists, a heading held from
+indoor noise is a known way for the arrow to be wrong.
+
+
 ### The rail comes up with the map and goes down with it
 
 `onEnter()` calls `gnssStart()` when `mapGnssPosition` is set; `onExit()` calls
