@@ -24,6 +24,7 @@
 #include "HeldTilesStore.h"
 #include "HikeIcons.h"
 #include "MapFollow.h"
+#include "MapGnssHeading.h"
 #include "MapHatch.h"
 // missingTileAnchorFromLastFix(), for `fake` -- it seeds around the same origin
 // the sync screen's fetch order uses, so the seeded tiles land where that
@@ -5214,6 +5215,14 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
 // main.cpp's loop() is what drains the UART (gnss.poll(), every iteration). This
 // only ever reads the parsed result, so it is cheap enough to call every loop
 // and it cannot lose a sentence by being late.
+// The map's side of the heading decision: hand the fix's speed and course to
+// MapGnssHeading, which owns the arithmetic and the thresholds, and keep the
+// state it carries between fixes. Split out for the same reason MapFollow is --
+// it is testable on the host and a second client has to reproduce it.
+uint8_t MapActivity::gnssHeadingStep(const GnssFix& fix) {
+  return MapGnssHeading::stepFor(fix.speedKmh, fix.courseDegrees, gnssHeadingState_);
+}
+
 // What the header row says about the receiver, in three states the rider can
 // tell apart at 14 px: not running, running with no solution, running with one.
 //
@@ -5258,21 +5267,24 @@ void MapActivity::pollGnssFix() {
   const int32_t latE7 = static_cast<int32_t>(llround(fix.latitude * 1e7));
   const int32_t lonE7 = static_cast<int32_t>(llround(fix.longitude * 1e7));
 
-  // Heading 0 (north), on purpose, and it stays 0 until step 4 of
-  // docs/gnss-to-map-plan.md builds a real one. The receiver does report a
-  // course, and mapping it straight through here would be wrong rather than
-  // rough: at rest it is noise -- speed 1.3 km/h with course 211.9 degrees was
-  // measured on a stationary desk, 2026-08-31 -- so a parked bike would get a
-  // compass that spins. The speed gate and the hysteresis that fix it are a
-  // product decision, not arithmetic.
+  // Heading comes from the receiver's course through gnssHeadingStep(), which
+  // holds the last one while the rider is too slow for a course to mean
+  // anything. It was hardcoded to 0 until 2026-09-01, and the ride that found
+  // that is worth keeping: the marker followed the rider correctly and its
+  // arrow pointed north the whole way, because a wrong heading and a missing
+  // one look identical on the panel.
+  const uint8_t headingStep = gnssHeadingStep(fix);
+
   hasReceivedAny_ = true;
   showingPersistedFix_ = false;
   gnssSeq_++;
-  LOG_DBG(kLogTag, "gnss fix: seq %u, quality %u, sats %u, hdop %.1f, speed %.1f km/h, age %lu ms",
+  // course and moving are logged next to the step they produced: a heading that
+  // looks wrong on the panel is answered by this line and not by a rebuild.
+  LOG_DBG(kLogTag, "gnss fix: seq %u, quality %u, sats %u, hdop %.1f, speed %.1f km/h, course %.1f, moving %d, heading %u, age %lu ms",
           static_cast<unsigned>(gnssSeq_), static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
-          static_cast<double>(fix.hdop), static_cast<double>(fix.speedKmh),
-          static_cast<unsigned long>(gnss.fixAgeMs()));
-  applyFix(latE7, lonE7, 0, gnssSeq_);
+          static_cast<double>(fix.hdop), static_cast<double>(fix.speedKmh), static_cast<double>(fix.courseDegrees),
+          gnssHeadingState_.moving ? 1 : 0, static_cast<unsigned>(headingStep), static_cast<unsigned long>(gnss.fixAgeMs()));
+  applyFix(latE7, lonE7, headingStep, gnssSeq_);
   // Same debounced save the BLE fix arms, for the same reason: the card must
   // not be written once per fix, and the map still has to have somewhere to
   // open next time.
