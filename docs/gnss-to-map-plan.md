@@ -42,10 +42,21 @@ Start of every session in here:
 ```
 cd .worktrees/firmware/t5-gnss
 git status --short                       # expect clean
+git fetch origin
+git log --oneline origin/release/lilygo-t5-s3-pro ^HEAD   # MUST be empty
 git log --oneline -3
 git -C . submodule update --init --recursive   # only if freeink-sdk is missing
 pio run -e t5s3pro                       # expect SUCCESS, zero warnings
 ```
+
+**That fourth line is the one that bites.** This branch forks from
+`release/lilygo-t5-s3-pro`, not from `develop`, so `CLAUDE.md`'s
+"only flash a rebased branch" check has to name the release branch -- comparing
+against `develop` here answers the wrong question. Anything listed means the
+release branch moved (a develop sync, another device fix): **merge it in and
+rebuild before flashing**, or the device gets a build that is missing work
+somebody already verified. It happened on 2026-09-02: the release branch was five
+commits ahead and nothing in this block would have said so.
 
 ## The merge gate
 
