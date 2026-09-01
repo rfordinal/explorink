@@ -610,10 +610,121 @@ One extra checksum error across that window is genuinely measured (1 to 2).
 
 Harmless for a bring-up console, not harmless for a position source. The fix is
 not "poll more often", because there is nowhere to poll from during a blocking
-render: it is a bigger RX buffer, the UART on its own task, or an event-driven
-read. That decision belongs to the work that puts GNSS behind the map's position
-source. The header now states the constraint so the next caller meets it before
-being surprised by it.
+render. It was settled 2026-09-01 -- next section.
+
+### The fix: an 8 KB ring, and why not a task
+
+Settled 2026-09-01, step 1 of [`gnss-to-map-plan.md`](gnss-to-map-plan.md).
+Three candidates were on the table: a bigger RX ring, the UART on its own task,
+or an event-driven read. The ring won, and two findings decided it -- one about
+what the product needs, one about how the measurement was being taken wrong.
+
+**What a position source needs is the newest sentence, not the stream.** That
+sounds obvious and it changes the sizing question completely. The maintainer's
+constraint, 2026-09-01: the phone sends a position **at most once every 7 s**,
+so anything that keeps the fix within about a second of current is more than
+enough.
+
+Follow what a ring too small for a block actually does. The driver does **not**
+evict old bytes to make room -- when the ring is full it refuses the incoming
+batch and switches the RX interrupts off until the app drains (ESP-IDF 5.5.2,
+`components/esp_driver_uart/src/uart.c:1302`). So what survives a block is the
+**oldest** part of it. Walk the clock: before a 15 s block the fix is from t=0,
+the ring holds t=0 to t=1.3, and when the caller returns it parses up to t=1.3
+and then reaches t=15 within a second. **1.3 is newer than 0.** The fix only
+ever moves forward; an undersized ring costs position *age*, never a wrong
+position. An earlier draft of this section claimed the opposite and it was
+wrong.
+
+That is why there is no task. A task removes an age penalty of about a second
+on a rare event, and charges a mutex around `fix()`, a copy instead of a
+reference, and a parser on a 2 KB stack at priority `configMAX_PRIORITIES-1`.
+Nothing in the product asks for that. A caller that logged a track from the
+receiver would ask for it; the ride recorder is in the phone.
+
+**And the measurement had to be redone, because the first three runs measured
+empty ground.** The device sat where its SD card had no tile coverage, so every
+render drew nothing. `CMD:GOTO_MAP` there reported `0 tiles ok, 4 missing` and
+the map console's `tiles` confirmed every tile missing at every zoom rung. The
+mirror was copied onto the card and the same run repeated.
+
+The gap is fourfold, so it is not a detail:
+
+| | no tile coverage | real tiles |
+|---|---|---|
+| redraw | 481 ms | **2,687 ms** |
+| map entry render | 478-712 ms | **2,696 ms** |
+| worst render, whole zoom ladder | 712 ms | **4,072 ms** (1,361 kB, 2,682 ways) |
+| worst main-loop block | 6,143 ms (mostly refresh and setup) | **5,760 ms** |
+
+Any sizing taken from the left column would have been wrong. Coordinates are
+deliberately not recorded here -- the run used the device's own persisted fix.
+
+**The result, `rxBufferBytes` = 8192 on this board, verified on hardware
+2026-09-01.** Baseline **810 B/s, 15.00 sentences/s** over 60 s by the device's
+own clock. Then the whole zoom ladder plus a redraw, each a 33 s window:
+
+| phase | sentences | expected | lost | rxfull | ovf | fifoovf |
+|---|---|---|---|---|---|---|
+| baseline, idle on map | 900 | 900 | 0 | 0 | 0 | 0 |
+| redraw | 496 | 495 | -1 | 0 | 0 | 0 |
+| zoom 0 | 496 | 496 | 0 | 0 | 0 | 0 |
+| zoom 1 | 495 | 496 | 1 | 0 | 0 | 0 |
+| zoom 2 | 495 | 495 | 0 | 0 | 0 | 0 |
+| zoom 3 | 482 | 481 | -1 | 0 | 0 | 0 |
+| zoom 4 | 495 | 495 | 0 | 0 | 0 | 0 |
+
+The noise floor is **+/-1 sentence** here, against +/-37 in an earlier run whose
+receiver rate drifted, so this "zero" is a much stronger statement than a zero
+measured against a noisy baseline. `rxbuf=8192` in the same reply confirms the
+driver granted what was asked -- `setRxBufferSize()` can return less.
+
+**8192 does not cover everything, on purpose.** The maintainer reports redraws
+reaching **15 s** in use, which is about 12.2 kB of arriving bytes. Per the
+paragraph above that costs roughly a second of fix age and nothing else, so
+buying 16 kB for it would spend RAM on something the product does not ask for.
+`Gnss::ringOverflows()` reports it when it happens.
+
+**What this is NOT: a controlled A/B.** The before figure (1024 bytes, 65
+sentences lost on a 6,143 ms map entry) was taken over empty ground and the
+after figure over real tiles. The two blocking windows are close, 6.1 s against
+5.8 s, so the comparison is reasonable -- but 1024 was never run against a
+loaded viewport, and nobody should quote this as one experiment. What is
+directly measured is the after: at 8192, real map work at every rung lost
+nothing.
+
+### Sentence loss is observable now, and by the driver rather than by a guess
+
+`rxNearlyFullEvents()` (`rxfull`) is this firmware's own inference: `poll()`
+finds the ring within 32 bytes of full on entry. It fires on a stall that lost
+nothing, and it reads 0 both when nothing was lost and when nothing was
+measured -- so "rxfull=0" on its own is a check that cannot fail.
+
+Two counters from the driver were added 2026-09-01:
+
+- **`ringOverflows()`** (`ovf`) counts `UART_BUFFER_FULL`: the ISR could not
+  push a batch into the ring and disabled the RX interrupts
+  (`esp_driver_uart/src/uart.c:1302`). The refused batch is stashed and
+  re-delivered, so this alone means "the ring filled", not yet lost data.
+- **`fifoOverflows()`** (`fifoovf`) counts `UART_FIFO_OVF`, which is the loss:
+  ring full, interrupts off, the hardware FIFO fills next and the rest is gone.
+
+Both come through `HardwareSerial::onReceiveError()`
+(`framework-arduinoespressif32` 3.3.7), which runs on the UART event task. The
+callback only increments an atomic -- parsing there would put the whole parser
+on that task's 2 KB stack at priority `configMAX_PRIORITIES-1`
+(`HardwareSerial.cpp:177`), which is a much bigger decision than counting.
+
+**Both undercount.** The driver's event queue is 20 entries deep
+(`esp32-hal-uart.c:793`) and the ISR drops an event it cannot enqueue. Non-zero
+means it happened; zero across a window whose sentence count also matches the
+baseline is what "nothing was lost" looks like.
+
+Two smaller reporting gaps were closed in the same pass, both because this
+measurement needed them and neither existed: **`uptime`** on `GNSS_FIX`, so a
+window is timed by the device's own clock instead of by the timestamps of
+whatever log lines happen to sit near it, and **`rxbuf`**, the ring the driver
+actually granted rather than the one that was requested.
 
 ### The comprehension test, and what it changed
 
@@ -817,8 +928,11 @@ the non-overlapping path.
 - **Is the SPI contention real at all?** Does GPIO46 go low during a refresh,
   and does an SX126x in reset park MISO high-Z? Datasheet plus the overlapping
   test above.
-- **The RX buffer under a blocking render** -- bigger buffer, own task, or
-  event-driven, decided by the work that feeds position to the map.
+- ~~The RX buffer under a blocking render~~ -- **settled 2026-09-01**, an 8 KB
+  ring on this board. See "The fix: an 8 KB ring, and why not a task". Still
+  open inside it: a redraw of the reported 15 s length has never been captured
+  with the counters running, so the age penalty it costs is arithmetic rather
+  than measurement.
 - **The unexercised parser paths**: southern and western hemispheres, a date
   rollover, a leap second, the two-digit year window, `quality=6`. Cheap to
   cover with host tests against recorded sentences, and worth doing before the

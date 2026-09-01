@@ -84,12 +84,16 @@ struct GnssConfig {
   // 1.2 s of caller inattention.
   //
   // A caller that blocks for seconds has to raise this, and can: measured on a
-  // LilyGo T5 S3 Pro 2026-08-31, the worst blocking window across five driven
-  // scenarios was a cold map entry at 6.14 s, and 8 KB covered it with no
-  // sentence lost. Size it as worst-block x byte-rate and leave margin -- the
-  // firmware's platformio.ini shows the arithmetic. The default stays modest
-  // because a board with 380 KB of RAM cannot spend 8 KB here and does not have
-  // to; only the board that blocks pays.
+  // LilyGo T5 S3 Pro 2026-09-01, a map redrawing real data blocked for up to
+  // 5.76 s, and 8 KB covered every zoom rung with no sentence lost. Size it as
+  // worst-block x byte-rate -- the firmware's platformio.ini shows the
+  // arithmetic. The default stays modest because a board with 380 KB of RAM
+  // cannot spend 8 KB here and does not have to; only the board that blocks
+  // pays.
+  //
+  // Measure the worst block against a REAL workload. The same measurement over
+  // a viewport with no data said 481 ms where the loaded one said 2687 ms, and
+  // sizing against the empty number would have been wrong by four times.
   //
   // A ring cannot cover an UNBOUNDED block, so a caller that cannot state its
   // worst case wants the UART on its own task instead. Gnss::ringOverflows() is
@@ -122,6 +126,14 @@ class Gnss {
   // GnssConfig::rxBufferBytes is the dial, and ringOverflows() is the check --
   // a caller who blocks and does not want to think about the size is choosing
   // to lose sentences it cannot see.
+  //
+  // Losing them is not always wrong. A caller that only wants the current
+  // position wants the NEWEST sentence, and the ring holds the oldest: when it
+  // fills, the driver refuses incoming bytes rather than evicting old ones
+  // (ESP-IDF 5.5.2, esp_driver_uart/src/uart.c:1302). So a block longer than
+  // the ring costs roughly one extra second of fix age once the caller returns,
+  // and the fix still only ever moves forward in time. A caller logging a track
+  // is the one that needs every sentence.
   bool poll();
 
   const GnssFix& fix() const { return fix_; }

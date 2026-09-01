@@ -15,9 +15,9 @@ this file is only what comes next.
 
 | step | what | needs | state |
 |---|---|---|---|
-| 1 | UART survives a blocking render | device | **open, do this first** |
+| 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
 | 2 | Power floor of the GNSS + LoRa pair | device, meter, maintainer | open (T-579) |
-| 3 | GNSS as a third `applyFix()` caller | device | blocked on 1 |
+| 3 | GNSS as a third `applyFix()` caller | device | **open, do this next** |
 | 4 | Heading from course, on-device | device, product decision | blocked on 3 |
 | 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
 
@@ -113,6 +113,31 @@ Three candidate fixes, and the number picks one:
 
 **Do not**: change the parser, touch `MapActivity`, or raise the library's
 default buffer for every board.
+
+### Done, 2026-09-01. What was built and what it cost
+
+`rxBufferBytes` = 8192 in `env:t5s3pro`, the library default left at 1024, plus
+two driver-reported loss counters. Full account in [`gnss.md`](gnss.md), "The
+fix: an 8 KB ring, and why not a task". The short version, for a session that
+does not want to read it:
+
+- **The first three measurement runs were void.** The device's SD card had no
+  tile coverage where it stood, so every render drew nothing and every blocking
+  window was about four times too short. Anyone re-measuring anything about map
+  cost must confirm coverage first -- `CMD:GOTO_MAP` prints `N tiles ok, M
+  missing`, and the map console's `tiles` lists them.
+- **Neither the task nor the event-driven read was built**, and the reason is
+  worth keeping: a position source needs the newest sentence, not the stream,
+  and an undersized ring costs position *age* rather than a wrong position,
+  because the driver refuses new bytes instead of evicting old ones.
+- **8192 deliberately does not cover the reported 15 s redraw.** That case costs
+  about a second of fix age, against a phone that sends a position at most once
+  every 7 s.
+- The three candidate fixes this plan listed are therefore resolved: candidate 1
+  chosen, candidates 2 and 3 rejected with a reason rather than left open.
+
+Not done here, and still in the merge gate: the stuck-byte drain has not been
+verified.
 
 ## Step 2 -- the power floor (T-579)
 
