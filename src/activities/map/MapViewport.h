@@ -129,6 +129,23 @@ inline constexpr uint32_t kMaxTiles = 16;
 // marker-height ladder below instead, which the buttons drive.
 inline constexpr int16_t kAnchorScreenX = kDefaultMapStyle.markerXPx;
 
+// kAnchorScreenX above is only correct on a panel that is actually 480 px
+// wide in portrait logical coordinates -- X4, X4 Pro, de-link, Sticky
+// (freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h). X3 is
+// 528 px wide there and the LilyGo T5S3 is 540 px
+// (docs/devices/lilygo-t5-s3-pro.md), both real target devices (root
+// CLAUDE.md, "Target devices: not just X4"). Reading the raw constant on
+// either draws the marker off past one edge instead of near the screen's
+// horizontal middle, because 230 was tuned against a 480 px canvas. Firmware
+// call sites use this instead, scaled to whatever width the active board
+// actually reports (renderer.getScreenWidth()) -- host tools (test/map_preview,
+// test/map_window) keep reading kAnchorScreenX unscaled, because they always
+// render the canonical 480x800 grid this constant is authored against.
+inline constexpr int16_t kStyleGridWidthPx = 480;
+inline int16_t anchorScreenX(int screenWidthPx) {
+  return static_cast<int16_t>(static_cast<int32_t>(kAnchorScreenX) * screenWidthPx / kStyleGridWidthPx);
+}
+
 // How far one pan press moves the frame, as a percentage of the screen. 30 %
 // rather than 50 %: half a screen jumps far enough that the rider loses the
 // place they were looking at, and the cost per press (a tile read and a

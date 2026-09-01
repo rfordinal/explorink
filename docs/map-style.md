@@ -223,6 +223,37 @@ with:
 behind the anchor and the base is half of it wide, so the style's 28 px draws the
 same triangle this renderer drew before the puck existed.
 
+### The marker's screen anchor is scaled to the actual panel width
+
+`marker_x_px` is authored against a 480 px canvas (`data/mapstyle.json:5`,
+`docs/map-render-spec.md`'s render contract). Read raw, it only lands near the
+middle of a panel that is actually 480 px wide in portrait logical
+coordinates -- X4, X4 Pro, de-link, Sticky
+(`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h`). X3 is 528 px
+wide there and the LilyGo T5S3 is 540 px
+(`docs/devices/lilygo-t5-s3-pro.md`), both real target devices (root
+`CLAUDE.md`, "Target devices: not just X4"); on either, the unscaled constant
+drew the marker off past one edge instead of near the horizontal middle
+(found 2026-08-31).
+
+Fixed by `MapViewport::anchorScreenX(screenWidthPx)`
+(`src/activities/map/MapViewport.h`), which rescales `kAnchorScreenX` (=
+`markerXPx`) by `screenWidthPx / 480`. Every firmware call site that draws or
+pans the marker uses this instead of the raw constant
+(`src/activities/map/MapActivity.cpp`, four sites). Host tools
+(`test/map_preview`, `test/map_window`, `test/map_replay`) keep reading
+`kAnchorScreenX` unscaled, because they always render the canonical 480x800
+grid the style is authored against.
+
+**Known gap, not fixed in this pass:** `MapRenderer.cpp`'s place-label offer
+call and `MapLabels::draw()`'s marker knockout box (`MapLabels.cpp:261`) both
+still read the raw, unscaled `style.markerXPx`/`markerYPx` directly, not the
+resolved on-screen anchor. On a non-480-wide panel this makes label placement
+avoid the wrong spot -- a smaller, cosmetic mismatch than the marker itself
+being off-screen, and left alone here because `MapRenderer.cpp` builds for
+the host with no HAL and currently has no path to receive the resolved
+anchor; threading it through needs its own change.
+
 `MapActivity.cpp:419` passes `kDefaultMapStyle`. Nothing overrides it at
 runtime; there is no style file on the card and no setting for any of this.
 

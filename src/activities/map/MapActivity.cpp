@@ -39,6 +39,7 @@
 #include "PinIcons.h"
 #include "PinLabels.h"
 #include "components/UITheme.h"
+#include "components/icons/map_header_icons.h"
 #include "components/icons/poi_icons.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
@@ -269,29 +270,30 @@ constexpr int kHeaderBleBarsWidth =
     kHeaderBleBarCount * kHeaderBleBarWidth + (kHeaderBleBarCount - 1) * kHeaderBleBarGap;
 constexpr int kHeaderBtLogoWidth = 6;
 constexpr int kHeaderBtToBarsGap = 4;
-// The globe, left of the Bluetooth logo: data is moving over the link right
-// now. A circle with an equator and a meridian -- at 14 px an ellipse for the
-// meridian is one pixel wide either side of the centre line and reads as
-// noise, so it is a straight line.
-//
-// The device has no radio that reaches the internet. The globe is honest
-// anyway, and about the thing that matters to the rider: the phone is spending
-// mobile data on their behalf.
-constexpr int kHeaderGlobeDiameter = kHeaderIconHeight;
-constexpr int kHeaderGlobeToBtGap = 6;
+// The transfer icon, left of the Bluetooth logo: data is moving over the link
+// right now. Lucide's two-opposite-arrows glyph (arrow-left-right), baked by
+// scripts/gen_map_header_icons.py -- see src/components/icons/map_header_icons.h.
+// Was a hand-drawn globe (circle, equator, meridian) until 2026-08-31; the
+// meaning is unchanged, the device still has no radio that reaches the
+// internet and this is honest about the thing that matters to the rider: the
+// phone is spending mobile data on their behalf.
+constexpr int kHeaderTransferIconSize = kHeaderIconHeight;
+constexpr int kHeaderTransferIconToBtGap = 6;
 constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to bars
 
 // The clock sits leftmost in the status row, between the place name and the
-// globe slot. Its width is measured from "00:00" at draw time, not guessed --
-// same rule the battery percentage's allowance already follows below.
+// transfer icon slot. Its width is measured from "00:00" at draw time, not
+// guessed -- same rule the battery percentage's allowance already follows
+// below.
 //
 // **The slot is reserved whether or not a time is known**, exactly like the
-// globe's: a rect that shrank when the clock went away would leave the clock's
-// pixels on the panel with nothing to erase them. Before the phone has sent a
-// packet carrying a non-zero utc the device has no clock at all (the X4 has no
-// RTC), and the slot simply stays blank rather than showing a placeholder --
-// "--:--" reads as a fault, blank reads as "not a thing this screen has".
-constexpr int kHeaderClockToGlobeGap = 8;
+// transfer icon's: a rect that shrank when the clock went away would leave the
+// clock's pixels on the panel with nothing to erase them. Before the phone has
+// sent a packet carrying a non-zero utc the device has no clock at all (the X4
+// has no RTC), and the slot simply stays blank rather than showing a
+// placeholder -- "--:--" reads as a fault, blank reads as "not a thing this
+// screen has".
+constexpr int kHeaderClockToTransferIconGap = 8;
 
 // Top y of text in this row, matching the battery percentage exactly.
 // GUI.drawHeader() hands drawBatteryRight() rect.y + 5 and that function draws
@@ -370,7 +372,7 @@ constexpr int kHeaderBackingPad = 2;
 constexpr int kHeaderRowHeight = BaseMetrics::values.batteryHeight + 10;
 
 // Debug readout geometry. Starts below the header status row above (battery,
-// BLE bars, globe), not stuck at the top of the screen sharing its band --
+// BLE bars, transfer icon), not stuck at the top of the screen sharing its band --
 // a debug line starting inside [kHeaderMarginTop, kHeaderMarginTop +
 // kHeaderRowHeight) reads as glued to the status row instead of sitting
 // under it, even though the two never overlap horizontally.
@@ -1359,7 +1361,7 @@ void MapActivity::updateHeaderStatus() {
   nextHeaderPollMs_ = now + kHeaderPollMs;
 
   auto& ble = freeink::BlePositionServer::getInstance();
-  const bool globe = autoSyncPending_ > 0;
+  const bool transferIconVisible = autoSyncPending_ > 0;
   // Same test drawHeaderStatusStrip() uses, and the comment there says why it is
   // the interval rather than the MTU.
   const bool connected = ble.connIntervalMs() != 0;
@@ -1372,7 +1374,7 @@ void MapActivity::updateHeaderStatus() {
   // the row was drawn only by a full frame, so closing the phone's GPS app left
   // the bars on the panel until something else forced a redraw. Reported from a
   // real session, 2026-08-07.
-  const bool structural = globe != transferIconShown_ || connected != drawnLinkConnected_;
+  const bool structural = transferIconVisible != transferIconShown_ || connected != drawnLinkConnected_;
   // A bar count moving while the link holds is the same story told slightly
   // differently, and RSSI sitting on a threshold flips it back and forth.
   // Every flip is a real waveform pass, so it is rate-capped.
@@ -1529,22 +1531,22 @@ void MapActivity::drawCompass(uint8_t headingStep) {
 }
 
 void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
-  // The strip the status row owns: the clock, the globe slot, the Bluetooth
-  // logo and the signal bars, plus the opaque backing's padding. Deliberately
-  // excludes the battery block -- GUI.drawHeader() clears and draws that
-  // itself.
+  // The strip the status row owns: the clock, the transfer icon slot, the
+  // Bluetooth logo and the signal bars, plus the opaque backing's padding.
+  // Deliberately excludes the battery block -- GUI.drawHeader() clears and
+  // draws that itself.
   //
-  // **The globe's and the clock's slots are always part of this rect, whether
-  // or not either is drawn.** A rect that shrank when one went away would
-  // leave its pixels on the panel with nothing to erase them.
+  // **The transfer icon's and the clock's slots are always part of this rect,
+  // whether or not either is drawn.** A rect that shrank when one went away
+  // would leave its pixels on the panel with nothing to erase them.
   const int screenWidth = renderer.getScreenWidth();
   const int batteryX = screenWidth - kHeaderMarginRight - BaseMetrics::values.batteryWidth;
   const int worstCasePercentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
-  const int globeLeft = logoLeft - kHeaderGlobeToBtGap - kHeaderGlobeDiameter;
-  const int clockLeft = globeLeft - kHeaderClockToGlobeGap - headerClockSlotWidth(renderer);
+  const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+  const int clockLeft = transferIconLeft - kHeaderClockToTransferIconGap - headerClockSlotWidth(renderer);
   // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
   // hands drawBatteryRight() rect.y+5 (BaseTheme.cpp:374), and
   // drawBatteryRight() adds another +6 of its own (:99) before drawing the
@@ -1815,7 +1817,7 @@ void MapActivity::drawHeaderStatusStrip() {
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
-  const int globeLeft = logoLeft - kHeaderGlobeToBtGap - kHeaderGlobeDiameter;
+  const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
   const int batteryIconTop = kHeaderMarginTop + 5 + 6;
   const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
   const int iconTop = iconBottom - kHeaderIconHeight;
@@ -1834,7 +1836,7 @@ void MapActivity::drawHeaderStatusStrip() {
   // Right-aligned inside its reserved slot so the colon does not walk
   // sideways between "9:05" and "10:05" -- the slot is sized for the widest
   // string ("00:00"), and a narrower one hangs off its right edge, against
-  // the globe, rather than shifting the whole field.
+  // the transfer icon, rather than shifting the whole field.
   uint32_t localNow = 0;
   const int16_t clockTickNow = clockTick(localNow);
   if (clockTickNow >= 0) {
@@ -1856,7 +1858,7 @@ void MapActivity::drawHeaderStatusStrip() {
       snprintf(clockText, sizeof(clockText), "%u:%02u", static_cast<unsigned>(secondsOfDay / 3600u),
                static_cast<unsigned>((secondsOfDay % 3600u) / 60u));
     }
-    const int slotRight = globeLeft - kHeaderClockToGlobeGap;
+    const int slotRight = transferIconLeft - kHeaderClockToTransferIconGap;
     const int textX = slotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
     // kHeaderTextTopY, not iconTop: this is text standing next to the battery
     // percentage, and the two rows are 4px apart. headerStatusRect() starts at
@@ -1868,23 +1870,18 @@ void MapActivity::drawHeaderStatusStrip() {
     drawnClockMinute_ = -1;
   }
 
-  // The globe, while a transfer this screen asked for is outstanding. Drawn
-  // from autoSyncPending_ rather than from transferIconShown_: this function
-  // paints what is true, and transferIconShown_ only records what the panel
-  // was last told -- which this call is about to make current.
+  // The transfer icon, while a transfer this screen asked for is outstanding.
+  // Drawn from autoSyncPending_ rather than from transferIconShown_: this
+  // function paints what is true, and transferIconShown_ only records what the
+  // panel was last told -- which this call is about to make current.
+  //
+  // drawMono1bpp(), not drawIcon(): drawIcon() bakes in a quarter turn that
+  // assumes the forced-Portrait UI themes (GfxRenderer.cpp, drawIcon()'s own
+  // comment), and this row renders in whatever orientation the device is held
+  // in, same as the compass and the Bluetooth logo it sits next to.
   if (autoSyncPending_ > 0) {
-    const int radius = kHeaderGlobeDiameter / 2;
-    const int cx = globeLeft + radius;
-    const int cy = iconTop + kHeaderIconHeight / 2;
-    // Four quadrants make the closed ring. drawArc() can only start and end on
-    // 90-degree boundaries (see drawCompass()'s note), which is exactly right
-    // here -- a full circle is what is wanted, not an open arc.
-    renderer.drawArc(radius, cx, cy, +1, +1, 1, true);
-    renderer.drawArc(radius, cx, cy, +1, -1, 1, true);
-    renderer.drawArc(radius, cx, cy, -1, +1, 1, true);
-    renderer.drawArc(radius, cx, cy, -1, -1, 1, true);
-    renderer.drawLine(cx - radius, cy, cx + radius, cy, 1, true);  // equator
-    renderer.drawLine(cx, cy - radius, cx, cy + radius, 1, true);  // meridian
+    renderer.drawMono1bpp(icon_transferBle.bits, transferIconLeft, iconTop, icon_transferBle.w, icon_transferBle.h,
+                          true);
   }
   transferIconShown_ = autoSyncPending_ > 0;
 
@@ -2005,7 +2002,7 @@ void MapActivity::drawDebugLine(int y, char* text) {
     text[len - 1] = '\0';
   }
   // White backing sized to this line's own text, not a fixed strip: the
-  // header status row (battery/BLE/globe, top right, drawHeaderStatus())
+  // header status row (battery/BLE/transfer icon, top right, drawHeaderStatus())
   // already drew into this same frame by the time this runs, and a backing
   // wider than the text it is behind would paint white over it. Same idiom
   // as that row's own backing (headerStatusRect()) -- just tight to this
@@ -2564,7 +2561,7 @@ void MapActivity::loop() {
   // Autosync, in the order the state moves: land what arrived, settle what the
   // phone refused (that happens in ble_.poll() above, through onTileSkipped),
   // give up on what neither, then ask for whatever the last frame hatched, and
-  // finally put the globe on or off to match.
+  // finally put the transfer icon on or off to match.
   //
   // All of it is a handful of integer compares per tick when the feature is
   // off or idle -- the same cost class as the redraw and save deadlines below.
@@ -4456,7 +4453,8 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     // drawPins() only ever runs inside a full render, and a full render puts the
     // marker on the ladder anchor (renderViewport()). markerDrawnX_ still describes
     // the previous frame at this point.
-    markerRect(MapViewport::kAnchorScreenX, MapViewport::markerYForStep(markerStep()), mx, my, mw, mh);
+    markerRect(MapViewport::anchorScreenX(renderer.getScreenWidth()), MapViewport::markerYForStep(markerStep()), mx, my,
+               mw, mh);
     const bool overlaps = textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my;
     if (overlaps) {
       if (mx - leftLimit >= textWidth + 4) {
@@ -4644,7 +4642,7 @@ void MapActivity::panBy(PanDirection direction) {
   // 2026-08-17). Enough overlap to follow a road across two presses.
   const int16_t stepX = static_cast<int16_t>(renderer.getScreenWidth() * MapViewport::kPanStepPercent / 100);
   const int16_t stepY = static_cast<int16_t>(renderer.getScreenHeight() * MapViewport::kPanStepPercent / 100);
-  int16_t targetX = MapViewport::kAnchorScreenX;
+  int16_t targetX = MapViewport::anchorScreenX(renderer.getScreenWidth());
   int16_t targetY = markerY;
   switch (direction) {
     case PanDirection::Left:
@@ -5534,7 +5532,8 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // re-orient to whatever the rider was doing at that moment, which is the
   // rotating map the frozen frame exists to stop.
   const uint8_t frameHeading = frameHeadingFor(headingStep);
-  proj_.reset(lat, lon, MapViewport::kAnchorScreenX, markerY, frameHeading, MapViewport::mppMercFor(zoomStep(), lat));
+  const int16_t markerX = MapViewport::anchorScreenX(renderer.getScreenWidth());
+  proj_.reset(lat, lon, markerX, markerY, frameHeading, MapViewport::mppMercFor(zoomStep(), lat));
 
   const MapViewport::TileRange range =
       MapViewport::tileRangeFor(proj_, tileZ, renderer.getScreenWidth(), renderer.getScreenHeight());
@@ -5552,7 +5551,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
 
   MapViewState view;
-  view.markerX = MapViewport::kAnchorScreenX;
+  view.markerX = markerX;
   view.markerY = markerY;
   // The same heading proj_ was rotated by. MapRenderer draws direction glyphs
   // in raw screen direction (MapRenderer.cpp's kHeadingDir, not
@@ -5586,9 +5585,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     // (MapLayerBits.h). Printed high word first, so the string reads as one
     // number.
     LOG_ERR(kLogTag, "%lu corrupt layer(s) drawn (mask 0x%016llx%016llx%016llx%016llx) -- redrawing without them",
-            static_cast<unsigned long>(source_->corruptLayers()),
-            static_cast<unsigned long long>(bad.w[3]), static_cast<unsigned long long>(bad.w[2]),
-            static_cast<unsigned long long>(bad.w[1]), static_cast<unsigned long long>(bad.w[0]));
+            static_cast<unsigned long>(source_->corruptLayers()), static_cast<unsigned long long>(bad.w[3]),
+            static_cast<unsigned long long>(bad.w[2]), static_cast<unsigned long long>(bad.w[1]),
+            static_cast<unsigned long long>(bad.w[0]));
     renderer.clearScreen();
     // The counts describe the finished frame, so they start again; the times do
     // not, because they describe work spent and both passes really were spent.
@@ -5676,13 +5675,13 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
           static_cast<unsigned long>(timing.landuseMs + timing.contoursMs + timing.buildingsMs + timing.waterMs +
                                      timing.roadsMs + timing.routeMs + timing.placesMs + timing.labelsMs),
           static_cast<unsigned long>(timing.landuseMs), static_cast<unsigned long>(timing.contoursMs),
-          static_cast<unsigned long>(timing.buildingsMs),
-          static_cast<unsigned long>(timing.waterMs), static_cast<unsigned long>(timing.roadsMs),
-          static_cast<unsigned long>(timing.routeMs), static_cast<unsigned long>(timing.placesMs),
-          static_cast<unsigned long>(timing.labelsMs), static_cast<unsigned long>(timing.contourLines),
-          static_cast<unsigned long>(timing.contourLabels), static_cast<unsigned long>(source_->pointsProjected()),
-          static_cast<unsigned long>(source_->waysOffScreen()), static_cast<unsigned long>(source_->ioUs() / 1000u),
-          static_cast<unsigned long>(source_->crc32Skipped()), static_cast<unsigned long>(source_->cellsSkipped()),
+          static_cast<unsigned long>(timing.buildingsMs), static_cast<unsigned long>(timing.waterMs),
+          static_cast<unsigned long>(timing.roadsMs), static_cast<unsigned long>(timing.routeMs),
+          static_cast<unsigned long>(timing.placesMs), static_cast<unsigned long>(timing.labelsMs),
+          static_cast<unsigned long>(timing.contourLines), static_cast<unsigned long>(timing.contourLabels),
+          static_cast<unsigned long>(source_->pointsProjected()), static_cast<unsigned long>(source_->waysOffScreen()),
+          static_cast<unsigned long>(source_->ioUs() / 1000u), static_cast<unsigned long>(source_->crc32Skipped()),
+          static_cast<unsigned long>(source_->cellsSkipped()),
           static_cast<unsigned long>(source_->bytesSkippedByIndex() / 1024u));
   LOG_DBG(kLogTag, "heap: %lu before tile load, %lu after, delta %ld; framebuffer ready in %lu ms",
           static_cast<unsigned long>(heapBefore), static_cast<unsigned long>(heapAfter),
