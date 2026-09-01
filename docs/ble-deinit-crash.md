@@ -136,7 +136,12 @@ Not decided. T-586.
    `ble_npl_callout_deinit(&ble_hs_timer)` line, matching esp-nimble and
    mynewt-nimble. Exact fix, but it lives in `.pio/libdeps`, so it needs a
    pinned fork rather than an edit that the next `pio pkg update` eats.
-3. **Report it upstream** and carry option 2 until a release lands.
+3. **Reported upstream 2026-09-01**:
+   [NimBLE-Arduino#1184](https://github.com/h2zero/NimBLE-Arduino/issues/1184),
+   with the coredump evidence, the upstream comparison and an offer of the
+   one-line PR. Tracked as T-235. This does not unblock the two options above:
+   even a fast merge is weeks from a release we pin against, and the device
+   crashes today.
 
 ## Verified and not
 
