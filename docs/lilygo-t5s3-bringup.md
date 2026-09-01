@@ -307,7 +307,8 @@ are about this board and not about GNSS:
 
 **A third data point, and a worse one: after a cold power-on, commands stopped
 arriving.** 2026-08-31, USB unplugged 21 s, then replugged. **The board kept
-running throughout** -- the battery is connected, so removing USB drops nothing
+running throughout** -- the battery is connected (**assumed, from conversation;
+not confirmed on the device**), so removing USB drops nothing
 (corrected 2026-09-01; this note first said no battery was attached). The
 device logged happily for 271 s across **four** separate port opens -- so
 device-to-host was fine and none of those opens reset it -- while **every command

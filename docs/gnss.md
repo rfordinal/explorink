@@ -240,7 +240,19 @@ deleted for the same reason.
 
 **The board did not lose power, and this section said it did.** Corrected
 2026-09-01: the maintainer had said no battery was attached, this section rested
-its whole validity on that, and it was a slip -- **the battery is connected.** So
+its whole validity on that, and it was a slip -- **the battery is connected.**
+
+**Label that claim `assumed`, not measured.** It comes from conversation on
+2026-09-01, and the opposite came from conversation the day before -- the same
+class of evidence that voided the numbers below. Nothing on the device has
+confirmed it. **Two free ways to settle it, neither needing a code change:**
+`CMD:SCREENSHOT` on Home shows the battery percentage the theme draws
+(`src/components/themes/roundedraff/RoundedRaffTheme.cpp:70-74`), and step 2a of
+[`gnss-to-map-plan.md`](gnss-to-map-plan.md) settles it as a by-product -- a
+`reset=POWERON` that appears only once the cell is unplugged *is* the proof the
+cell was holding the board.
+
+So
 removing USB leaves the board running on the cell and the 3.3 V rail up. Every
 "power cycle" in this file's evidence removed nothing.
 

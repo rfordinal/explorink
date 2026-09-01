@@ -166,7 +166,12 @@ traps that cost four attempts across 2026-08-31 and 2026-09-01, all in
   board lost power -- twice it was deep sleep, and always the battery;
 - a silent wait lets the board's own sleep timer end the run, so poke it with a
   harmless command every 15 s;
-- **ask the board what it has rather than remembering.** The BQ27220 reports
+- **ask the board what it has rather than remembering, and there is a free way to
+  ask.** The Home screen draws battery percentage
+  (`src/components/themes/roundedraff/RoundedRaffTheme.cpp:70-74`), so
+  `CMD:SCREENSHOT` answers battery presence with no firmware change. **Do that
+  before 2a, not after** -- if there is no cell, the unplug below is already a
+  valid power cycle and this step's whole premise changes. The BQ27220 reports
   battery voltage and state of charge, so battery presence is readable from the
   device. Belief about the hardware voided a measurement twice; the gauge cannot
   misremember.

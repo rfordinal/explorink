@@ -1534,3 +1534,25 @@ Same rule for any *other* programmatic path that switches activities or talks to
 the radio without a button press behind it (an automation hook, a BLE command
 that switches screens): it needs the same call. This is a class of bug, not a
 one-off.
+
+## The BQ27220 already reads current, and throws it away
+
+`BatteryMonitor.cpp:211` reads register `0x0C` (average current, signed mA) and
+uses it **only** to decide the sign of `charging`. The public `Status` struct
+carries percentage, millivolts, `charging` and `externalPower`, and **no current
+field** (`BatteryMonitor.h`, the `Status` fields). Read off the code 2026-09-01,
+not measured.
+
+So on a board with this gauge the power campaign needs **no external meter**. It
+needs `currentMa` plus a `currentKnown` flag added where `0x0C` is already read.
+That is a small change in `freeink-sdk`, which is upstream, so it is a candidate
+for the same PR queue as the frontlight fix rather than a local fork.
+
+Two caveats, both of which decide whether a number means anything:
+
+- The gauge measures **battery** current. A reading taken with USB attached is
+  about the charge path, not about what the device draws. Unplug USB and read on
+  the cell.
+- It needs a cell attached at all. Whether this board has one is **assumed** as
+  of 2026-09-01, from conversation rather than from the device -- see
+  `gnss.md`, "The experiment was run", for the two free ways to check.
