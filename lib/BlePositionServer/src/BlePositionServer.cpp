@@ -1,5 +1,7 @@
 #include "BlePositionServer.h"
 
+#include <BoardConfig.h>
+
 #ifndef FREEINK_CAP_BLE_PERIPHERAL
 #define FREEINK_CAP_BLE_PERIPHERAL 0
 #endif
@@ -47,6 +49,46 @@ constexpr const char* kCommandCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0003";
 // it is already holding for position updates is the one the file rides on.
 constexpr const char* kTransferCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0004";
 constexpr const char* kTransferStatusCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0005";
+
+// The advertised BLE name for the board this binary is running on right now.
+// BoardConfig::ACTIVE is set once at boot (HalGPIO::begin(), from runtime
+// fingerprinting for the shared X4/X3 binary, or fixed at compile time for a
+// board with its own build like the LilyGo T5S3) -- see BoardConfig.h,
+// "Runtime-active profile". Every name here is wire-visible, matched by
+// BleLink.kt's KNOWN_DEVICE_NAMES (parent xteink repo, android/), so adding a
+// board here means adding its name there in the same change.
+//
+// A `default:` case, not an exhaustive switch, on purpose: this file builds
+// against two different `BoardConfig::Board` enums with different members --
+// the real one (freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h)
+// on device, and the simulator's own reduced one
+// (explorink-simulator/src/BoardConfig.h, see this project's platformio.ini,
+// "BoardConfig and XteinkDetect are deliberately absent") in the simulator
+// build. Only the five map-relevant boards below are named identically in
+// both; everything else (M5Stack/Murphy/DeLink/PaperMono/...) exists in one
+// header and not the other, so listing it out would fail to compile in
+// whichever build doesn't have it.
+const char* bleDeviceNameForActiveBoard() {
+  using BoardConfig::Board;
+  switch (BoardConfig::ACTIVE.board) {
+    case Board::XteinkX4:
+      return "XteinkX4Map";
+    // Same DeviceType::X3 as far as the phone or the rider needs to know --
+    // Uc8279 is a newer X3 production run's panel controller
+    // (BoardConfig.h:307), not a different device.
+    case Board::XteinkX3:
+    case Board::XteinkX3Uc8279:
+      return "XteinkX3Map";
+    case Board::XteinkX4Pro:
+      return "XteinkX4ProMap";
+    case Board::LilyGoT5S3:
+      return "LilyGoT5S3Map";
+    default:
+      // Not an ExplorInk map target today -- falls through to the generic
+      // name below rather than adding one nobody uses.
+      return kBleDeviceNameFallback;
+  }
+}
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -242,6 +284,11 @@ bool BlePositionServer::begin(const char* deviceName) {
   LOG_DBG("BLEPOS", "begin: start, begun_=%d, isInitialized=%d", (int)begun_, (int)NimBLEDevice::isInitialized());
   if (begun_) return true;
 
+  // Resolved once and reused for both init() and setName() below -- the two
+  // must agree, or the GAP Device Name characteristic and the scan-response
+  // name a phone actually filters on would name two different boards.
+  const char* resolvedName = deviceName ? deviceName : bleDeviceNameForActiveBoard();
+
   // The NimBLE host + BT controller are the single biggest heap consumer on the
   // map screen: measured on hardware 2026-08-10, entering the map costs 75 KB of
   // a 124 KB free heap and only 7.7 KB of that is the tile source
@@ -259,7 +306,7 @@ bool BlePositionServer::begin(const char* deviceName) {
   }
 
   LOG_DBG("BLEPOS", "begin: calling NimBLEDevice::init");
-  if (!NimBLEDevice::init(deviceName ? deviceName : kBleDeviceName)) {
+  if (!NimBLEDevice::init(resolvedName)) {
     LOG_DBG("BLEPOS", "begin: NimBLEDevice::init failed");
     return false;
   }
@@ -340,7 +387,7 @@ bool BlePositionServer::begin(const char* deviceName) {
   // opens, and the CompanionDeviceManager association dialog names the device to
   // the rider off this string (../../docs/ble-app-wake.md in the parent repo).
   advertising->enableScanResponse(true);
-  advertising->setName(deviceName ? deviceName : kBleDeviceName);
+  advertising->setName(resolvedName);
   if (!advertising->start()) {
     LOG_ERR("BLEPOS", "advertising failed to start");
     NimBLEDevice::deinit(true);
