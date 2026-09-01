@@ -203,6 +203,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // viewport reset. Every fix channel goes through here -- the decision must not
   // be duplicated per channel.
   void applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq);
+#ifdef ENABLE_GNSS_CMD
+  // Reads the on-device receiver and feeds applyFix() when it has a sample this
+  // activity has not seen. The third caller of applyFix(), next to the BLE
+  // packet and the command console -- see the comment on the definition for why
+  // that is the whole integration.
+  void pollGnssFix();
+#endif
   // Erases the marker from the frame on the panel (writing back the pixels
   // saved when it was drawn), redraws it at sx/sy, and refreshes only the
   // rectangles involved. Leaves the map, the compass, the readout and the
@@ -927,6 +934,28 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // where the rider was last seen" from "showing where they actually are
   // right now", so renderViewport() knows to keep the waiting banner up.
   bool showingPersistedFix_ = false;
+
+#ifdef ENABLE_GNSS_CMD
+  // True only when *this* activity powered the receiver's rail, so onExit()
+  // cannot switch off a session somebody else started -- CMD:GNSS ON from the
+  // host is the case that matters, since a bring-up run must survive a trip
+  // through the map screen.
+  bool gnssStartedHere_ = false;
+  // millis() at which the driver last changed its fix, derived as
+  // millis() - Gnss::fixAgeMs(). The driver has no "changed since you last
+  // asked" flag for a second reader -- Gnss::poll() returns that, and main.cpp
+  // is the one calling poll() -- so the change instant is what identifies a
+  // sample here. haveGnssFixMs_ separates "never seen one" from "seen one at
+  // millis() == 0".
+  uint32_t lastGnssFixMs_ = 0;
+  bool haveGnssFixMs_ = false;
+  // applyFix() wants the phone's rolling packet counter and the receiver has no
+  // such thing, so this stands in for it. It is only ever used for logging and
+  // for the BLE path's already-drawn test, and the two counters can collide on
+  // one value in 256 -- with both sources live that costs at most one skipped
+  // BLE packet, which is the same 5 s the phone's next packet arrives in.
+  uint8_t gnssSeq_ = 0;
+#endif
 
   // ## Follow state: what the frame currently on the panel is
   //

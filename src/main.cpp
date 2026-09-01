@@ -31,6 +31,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "GnssAccess.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "MissingTilesStore.h"
@@ -104,6 +105,34 @@ static bool gnssPowerEnable(bool on) {
     return false;
   }
   return true;
+}
+
+// Opens the receiver: rail up, UART up, with this board's pins and ring size.
+// Declared in GnssAccess.h so the map can call it too -- CMD:GNSS ON was the
+// only caller when this was inline, and a second caller must not carry a second
+// copy of the pin numbers.
+bool gnssStart() {
+  GnssConfig config;
+  config.serial = &Serial1;
+  // Board header names these GPS_RXD / GPS_TXD, which does not say whose
+  // RX it means. Read as MCU-side here: RXD 44 is where the S3 receives,
+  // so it goes to the receiver's TX. Both are UART0's default pins on an
+  // S3, free only because this env runs its console over USB CDC. If a
+  // bring-up sees no bytes at all, swapping these two is the first thing
+  // to try -- the symptom is identical to a dead receiver.
+  config.rxPin = T5S3_GPS_RXD;
+  config.txPin = T5S3_GPS_TXD;
+  // L76K default per Quectel, still unverified against the datasheet.
+  config.baud = 9600;
+#ifdef GNSS_RX_BUFFER_BYTES
+  // The board raises the library's modest default, because this board
+  // blocks its main loop for seconds at a time and the library is meant
+  // to run on ones that do not. platformio.ini carries the measurement
+  // that picked the number.
+  config.rxBufferBytes = GNSS_RX_BUFFER_BYTES;
+#endif
+  config.powerEnable = gnssPowerEnable;
+  return gnss.begin(config);
 }
 
 // Reads the PCA9535's own registers, which BoardT5S3 does not expose: it offers
@@ -950,9 +979,14 @@ void loop() {
         //
         // Deliberately a short allow-list rather than a generic settings poke:
         // this is a serial backdoor into persisted state, so it can reach exactly
-        // the three toggles a test needs and nothing else. ENABLE_SERIAL_LOG is
-        // set only in env:default (platformio.ini), so it is not in any release
-        // build.
+        // the toggles a test needs and nothing else.
+        //
+        // It is NOT devel-only, and the comment here said it was until
+        // 2026-09-01. ENABLE_SERIAL_LOG is set in env:gh_release and
+        // env:gh_release_rc too (platformio.ini) -- only env:slim clears it --
+        // so anyone with a USB cable and a shipped device can flip these
+        // toggles and persist them. Two of them cost the rider mobile data and
+        // mapDebugInfo puts their exact position on the panel. T-583.
         //
         //   CMD:SETTING mapAutoSyncTiles 1   ->  SETTING_OK:mapAutoSyncTiles=1
         //   CMD:SETTING <unknown> 1          ->  SETTING_ERR:unknown
@@ -970,6 +1004,13 @@ void loop() {
           target = &SETTINGS.mapDebugInfo;
         else if (key == "mapPinsOffscreen")
           target = &SETTINGS.mapPinsOffscreen;
+#ifdef ENABLE_GNSS_CMD
+        // Only on a build that has a receiver: elsewhere the field exists but
+        // nothing reads it, and answering SETTING_OK for a toggle that cannot
+        // do anything is worse than answering SETTING_ERR:unknown.
+        else if (key == "mapGnssPosition")
+          target = &SETTINGS.mapGnssPosition;
+#endif
         if (target == nullptr) {
           logSerial.printf("SETTING_ERR:unknown\n");
         } else if (value.length() == 0) {
@@ -1084,27 +1125,7 @@ void loop() {
         argument.toUpperCase();
 
         if (argument == "ON") {
-          GnssConfig config;
-          config.serial = &Serial1;
-          // Board header names these GPS_RXD / GPS_TXD, which does not say whose
-          // RX it means. Read as MCU-side here: RXD 44 is where the S3 receives,
-          // so it goes to the receiver's TX. Both are UART0's default pins on an
-          // S3, free only because this env runs its console over USB CDC. If a
-          // bring-up sees no bytes at all, swapping these two is the first thing
-          // to try -- the symptom is identical to a dead receiver.
-          config.rxPin = T5S3_GPS_RXD;
-          config.txPin = T5S3_GPS_TXD;
-          // L76K default per Quectel, still unverified against the datasheet.
-          config.baud = 9600;
-#ifdef GNSS_RX_BUFFER_BYTES
-          // The board raises the library's modest default, because this board
-          // blocks its main loop for seconds at a time and the library is meant
-          // to run on ones that do not. platformio.ini carries the measurement
-          // that picked the number.
-          config.rxBufferBytes = GNSS_RX_BUFFER_BYTES;
-#endif
-          config.powerEnable = gnssPowerEnable;
-          if (gnss.begin(config)) {
+          if (gnssStart()) {
             logSerial.printf("GNSS_OK:on\n");
           } else {
             logSerial.printf("GNSS_ERR:power rail or expander unavailable\n");

@@ -18,7 +18,7 @@ this file is only what comes next.
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
 | 2a | Is the rail on by design or by an uncleared latch | device only, one I2C write | **done 2026-09-01**, verified on hardware: an uncleared latch |
 | 2b | What the pair draws | device, a cell that is confirmed present (T-583), one small firmware change | open, **gated on T-583** |
-| 3 | GNSS as a third `applyFix()` caller | device | **open, do this next** |
+| 3 | GNSS as a third `applyFix()` caller | device | **built 2026-09-01, NOT run on hardware** -- needs the device pass below |
 | 4 | Heading from course, on-device | device, product decision | blocked on 3 |
 | 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
 
@@ -315,6 +315,34 @@ Two things that come free and should be noted rather than built on:
 
 **Done when** the map draws from the receiver **on hardware** with no phone
 connected, and the same build still draws from the phone with the setting off.
+
+### Built 2026-09-01, and it is unverified
+
+The code is on `feat/t5s3-gnss` and it compiles clean in both envs (`t5s3pro`
+and `default`, zero warnings) with 417/417 host tests passing. **None of that is
+evidence that it works** -- a clean build proves the code does what its author
+thought, and the claim here is about a dot on a panel.
+
+The full account is in [`gnss.md`](gnss.md), "The map reads it": the files
+touched, the three decisions inside `pollGnssFix()` and why each is the way it
+is, the rail's lifecycle, and the both-sources-live question left to step 5.
+
+The short version:
+
+- `src/GnssAccess.h` is the whole seam. `applyFix()` gained a third caller and
+  no abstraction was added, exactly as this plan predicted.
+- `CrossPointSettings::mapGnssPosition`, off by default, reachable with
+  `CMD:SETTING mapGnssPosition 1` and not present in the Settings screen.
+- Heading is passed as 0 and stays 0 until step 4.
+- The receiver's rail comes up in `MapActivity::onEnter()` and goes down in
+  `onExit()`, and only if the map is what started it.
+
+**Step 3's own "done when" is not met and this does not close gate B.** The
+hardware pass has four things to check and `gnss.md` lists them under "What a
+hardware pass has to check". One of them is new and worth naming here: this is
+the first code path that powers the LoRa rail while the map is streaming tiles
+off the SD card, so it exercises T-576's never-run SPI contention test as a side
+effect. A corrupt tile is what failure looks like there, not a crash.
 
 **A quantified bonus, not a goal.** `BlePositionServer::begin()` costs
 **57,080 bytes** measured, and the map builds it on enter and tears it down on
