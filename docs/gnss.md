@@ -720,14 +720,45 @@ in.
 
 Nothing below has been run.
 
-1. `CMD:SETTING mapGnssPosition 1`, then enter the map **with no phone
-   connected**. The waiting banner should clear and the dot should land where the
-   device is.
-2. The same build with `mapGnssPosition 0` still draws from the phone.
-3. Tiles still read correctly with the rail up -- the SPI contention above. A
-   corrupt tile is what failure looks like, not a crash.
-4. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
+1. **`CMD:SETTING mapGnssPosition 1` first.** The setting is 0 by default and 0
+   means the old BLE path: a run that forgets this line tests the code that was
+   already there and looks like a pass. `CMD:SETTING mapGnssPosition` with no
+   value reads it back, so the run can prove it was set rather than assume it.
+2. Enter the map **with no phone connected**. The waiting banner should clear
+   and the dot should land where the device is.
+3. The same build with `mapGnssPosition 0` still draws from the phone.
+4. **The tiles get looked at, with the rail up.** See below -- this is the one
+   check that fails silently.
+5. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
    `CMD:GNSS ON` before entering the map is still running after leaving it.
+
+### The SPI check has to be a look, not a survival
+
+The failure mode of the contention is a **corrupt tile read**, not a crash. So
+"the device did not lock up" is a check that cannot fail: it also passes when
+nothing was tested, when the rail was never up, and when the map drew no data at
+all. Marking T-576 closed or deferred off a run like that leaves it untested and
+makes it look like it passed -- the same shape of mistake as reading `rxfull=0`
+as proof the UART survived when it also reads 0 when nothing was measured.
+
+What settles it is somebody looking at the pixels:
+
+- `CMD:SCREENSHOT` (or `CMD:SCREENSHOT_GRAY`) **with the rail up**, over ground
+  that has real coverage -- `CMD:GOTO_MAP` prints `N tiles ok, M missing`, and a
+  viewport of missing tiles proves nothing about tile reads.
+- **More than one tile, and more than one frame.** Contention is intermittent by
+  nature: it needs a panel refresh asserting `LORA_CS` to coincide with a card
+  read, so a single screenshot that looks right is one sample.
+- What to look for is **torn geometry where map belongs**: a road that stops
+  mid-span, a coastline stepping sideways, an area fill bleeding past its
+  outline, or hatch where a tile should have drawn. A tile that failed its CRC
+  is drawn hatched rather than white on purpose (`MapHatch.h`: "absent,
+  truncated or crc32-mismatched is drawn as hatch, never as white"), so hatch in
+  the middle of covered ground is the loudest form this takes. A corruption that
+  still passes crc32 shows up as the torn geometry above instead, which is why
+  both are worth looking for.
+- The same frames with `mapGnssPosition 0` and the rail down are the control.
+  Without them a rendering artefact that was always there reads as contention.
 
 ## The parser
 

@@ -338,11 +338,21 @@ The short version:
   `onExit()`, and only if the map is what started it.
 
 **Step 3's own "done when" is not met and this does not close gate B.** The
-hardware pass has four things to check and `gnss.md` lists them under "What a
-hardware pass has to check". One of them is new and worth naming here: this is
-the first code path that powers the LoRa rail while the map is streaming tiles
-off the SD card, so it exercises T-576's never-run SPI contention test as a side
-effect. A corrupt tile is what failure looks like there, not a crash.
+hardware pass has five things to check and `gnss.md` lists them under "What a
+hardware pass has to check". Two of them are new and worth naming here.
+
+**The setting is 0 by default**, so a run that forgets `CMD:SETTING
+mapGnssPosition 1` exercises the old BLE path and looks like a pass.
+
+**T-576's SPI contention test is exercised here for the first time**, because
+this is the first code path that powers the LoRa rail while the map streams
+tiles off the SD card. Its failure is a corrupt tile read and not a crash, so
+"the device stayed up" is a check that cannot fail -- it also passes when the
+rail was never on. Closing or deferring T-576 needs somebody to look at the
+pixels: `CMD:SCREENSHOT` with the rail up, over ground with real coverage,
+several frames, hunting hatch or torn geometry where map belongs, against
+control frames with the rail down. `gnss.md`, "The SPI check has to be a look,
+not a survival".
 
 **A quantified bonus, not a goal.** `BlePositionServer::begin()` costs
 **57,080 bytes** measured, and the map builds it on enter and tears it down on
