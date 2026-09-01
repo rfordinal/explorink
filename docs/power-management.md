@@ -1593,6 +1593,14 @@ idle, same cable, same port, and compare. If both fail, the clock is innocent.
 Practical consequence either way: **a host that needs the console should reset the
 device and talk inside the boot window**, or drive the map screen, which holds the
 clock up while BLE is running.
+
+**Reproduced 2026-09-01 on a LilyGo T5S3 Pro (ESP32-S3, not the X4's C3).** Same
+shape but not "straight after a flash" -- `CMD:GOTO_MAP` was ignored across
+several attempts spanning minutes of idle (heap log kept ticking every 10 s, so
+the loop was alive), months after the device's last flash. The same DTR/RTS
+reset + send-inside-the-3s-boot-window recipe worked. So this is not a C3-only
+or fresh-flash-only quirk -- same symptom on a different chip, after arbitrary
+idle time, not just right after upload.
 ## The fix
 
 **Every `CMD:` handler runs at full CPU.** `main.cpp` calls
