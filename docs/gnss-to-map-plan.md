@@ -16,7 +16,7 @@ this file is only what comes next.
 | step | what | needs | state |
 |---|---|---|---|
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
-| 2a | Is the rail on by design or by an uncleared latch | device, **battery disconnected too**, one real power cycle | open, needs no instrument |
+| 2a | Is the rail on by design or by an uncleared latch | device only, one I2C write | open, **no power cycle needed** |
 | 2b | What the pair draws | device, battery (it is connected), one small firmware change | **open, unblocked** |
 | 3 | GNSS as a third `applyFix()` caller | device | **open, do this next** |
 | 4 | Heading from course, on-device | device, product decision | blocked on 3 |
@@ -162,30 +162,35 @@ not. Four vendor datasheets say the expander's configuration resets to
 all-inputs, but the reset needs the rail below ~0.8 V against 1 uA of standby
 draw, so a 21 s unplug did not necessarily get there.
 
-**Pulling USB is not enough, and every attempt so far made that mistake.** The
-battery is connected, so removing USB leaves the board running on the cell with
-the 3.3 V rail up -- which is why `cfg0=0x00` has survived every "power cycle" in
-the record. **Disconnect the battery as well.** The battery connector on a bare
-development board is ordinary use (`docs/hardware-policy.md` in the parent).
+**Do not power-cycle anything. The question does not need it.** Every attempt so
+far tried to reach the answer through a power cycle -- pull USB, then pull USB and
+the battery -- and the second of those needs unplugging connector `P2` on the
+board, whose part number is `[open]` (`docs/devices/lilygo-t5-s3-pro.md`, the
+Battery Interface section) and which nobody here has identified in the flesh.
 
-The test self-certifies: `CMD:GNSS PROBE` reports the chip's own reset cause in
-the same line as the registers. **No `reset=POWERON`, no conclusion.** Three
-traps that cost four attempts across 2026-08-31 and 2026-09-01, all in
-[`gnss.md`](gnss.md):
+**Ask the direct question instead.** What matters is not what the expander comes
+up as, but whether anything other than the expander holds `LORA_GPS_EN` high. One
+I2C write settles it:
 
-- a vanished USB device node means the USB peripheral went down, **not** that the
-  board lost power -- twice it was deep sleep, and always the battery;
-- a silent wait lets the board's own sleep timer end the run, so poke it with a
-  harmless command every 15 s;
-- **ask the board what it has rather than remembering, and there is a free way to
-  ask.** The Home screen draws battery percentage
-  (`src/components/themes/roundedraff/RoundedRaffTheme.cpp:70-74`), so
-  `CMD:SCREENSHOT` answers battery presence with no firmware change. **Do that
-  before 2a, not after** -- if there is no cell, the unplug below is already a
-  valid power cycle and this step's whole premise changes. The BQ27220 reports
-  battery voltage and state of charge, so battery presence is readable from the
-  device. Belief about the hardware voided a measurement twice; the gauge cannot
-  misremember.
+1. Set `CONFIG0` bit 0 back to **input**, so the expander stops driving that pin
+   and leaves it high-impedance. `BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, INPUT)`
+   already does exactly this.
+2. Read the UART for a few seconds.
+
+- **NMEA still flows** -> something on the board holds the rail high, and the
+  receiver really is powered by design.
+- **NMEA stops** -> the expander's own latched output was holding it, so it was a
+  latch that no reset has ever cleared.
+- Then set it back to output-high and confirm the receiver returns, so the test
+  leaves nothing changed.
+
+The power-cycle route was a detour to this, and a detour through hardware nobody
+could operate. `reset=POWERON` is still worth having in the reply when a genuine
+power-on happens by other means, but it is no longer a precondition for step 2a.
+
+**This writes device state, so it gets its own explicit subcommand** rather than
+riding inside `CMD:GNSS PROBE`. Suggested `CMD:GNSS RELEASE` -- devel-only like
+the rest, and named so nobody triggers it while looking for a read.
 
 **2b. What does the pair draw?** Rail up and rail down, and **name the
 instrument**.
