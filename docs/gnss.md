@@ -335,13 +335,19 @@ of roughly 2.5 V; the remaining 1.7 V is the whole question.
 Three candidates, and this probe cannot separate them:
 
 1. **The expander never lost power.** No longer one candidate among three --
-   **this is the reading, as of 2026-09-01.** The battery is connected, so
-   removing USB does not drop the rail at all, and the datasheet's VPORF
-   threshold (0.77 to 1.1 V, TI SCPS129K Table 10-1) never came into it. So
-   `cfg0=0x00` is a latch that has survived every reset since something wrote
-   it -- plausibly the factory firmware, which does configure the whole expander.
-   **Unproven and now cheap to prove:** disconnect the battery as well and read
-   `reset=POWERON`.
+   **this is the reading, as of 2026-09-01, and it is now proven** -- by
+   `CMD:GNSS RELEASE` rather than by any power cycle, see "Settled 2026-09-01"
+   below. `cfg0=0x00` is a latch that has survived every reset since something
+   wrote it, plausibly the factory firmware, which does configure the whole
+   expander.
+
+   **The route this paragraph used to argue is withdrawn, and it was resting on an
+   unconfirmed claim.** It said the battery is connected, so removing USB never
+   dropped the rail and the datasheet's VPORF threshold (0.77 to 1.1 V, TI
+   SCPS129K Table 10-1) never came into it. Whether a cell is fitted at all is
+   **still unconfirmed** -- `batt_mv=4102` is a node voltage the BQ25896 holds near
+   float with or without a cell (T-583). The conclusion no longer needs it: the
+   release test does not care what powers the board.
 2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
    configuration registers to 0xFF; a second-source part or a clone may not.
    Datasheet question, no hardware needed.
@@ -383,10 +389,19 @@ Measured on the LilyGo T5 S3 Pro, `env:t5s3pro`, firmware built from
 the receiver itself -- `Gnss::bytesRead()` and `Gnss::sentencesParsed()` deltas
 across three windows -- and no external meter is involved.
 
-**The released window is not zero, and that is the expected shape rather than a
-leak.** 308 B against a 574 B/s baseline is 0.54 s of streaming; 467 B against
-535 B/s is 0.87 s. A rail with bulk decoupling coasts before it collapses, which
-is why that window is 5 s and not 3.
+**The released window is not zero, and the most likely reason is a rail coasting
+down** -- 308 B against that run's own 574 B/s baseline is 0.54 s, 467 B against
+535 B/s is 0.87 s. That reading is **inferred, not measured**: the alternative is
+the driver's RX ring handing back bytes that arrived before the release. It is
+disfavoured because `sample()` polls in a tight loop, so the ring is near empty,
+but nothing here measured the ring depth at the moment of release. The window is
+5 s and not 3 for the same reason.
+
+**Both baselines run about 30 % under this file's 810 to 816 B/s**, at a matching
+sentence rate (14 and 12.7/s against 14.9). That is 41 to 42 bytes per sentence
+against the established 55, which is what a NOFIX sentence mix on an indoor desk
+looks like, and it is **unconfirmed**. It does not touch the conclusion: the
+arithmetic above uses each run's own baseline, not the file's headline number.
 
 **So the rail was held by the expander's own latched output.** Nothing else on
 the board holds it. `cfg0=0x00` is a latch that no reset has ever cleared,
@@ -407,10 +422,13 @@ stays the path that turns it on rather than an optional courtesy. And a rail thi
 firmware did not ask for is a rail nobody is accounting for in the power budget,
 which is step 2b's problem.
 
-**Still open here:** `reset=UNKNOWN` came back on both runs, including one
-immediately after an esptool hard reset. The field is worth keeping in the reply,
-but on this board it has not yet named a single reset cause, so nothing should be
-concluded from its absence of `POWERON`.
+**Still open here:** `reset=UNKNOWN` came back from this boot, which began with
+an esptool hard reset. That is **one** sample, not two -- both `RELEASE` runs sat
+on the same boot, because nothing between them reset the board
+(`mapcmd.open_port` never toggles DTR/RTS). Reset cause is a per-boot fact, so
+two runs of the command are one observation of it. The field is worth keeping in
+the reply, but on this board it has not yet named a single reset cause, so
+nothing should be concluded from the absence of `POWERON`.
 
 #### The detection method was wrong, and it cost three attempts
 
@@ -435,6 +453,17 @@ lesson: **the device is the only authority on whether it lost power**, and the
 probe now self-certifies -- the register values arrive in the same line as the
 reset cause that qualifies them. No line saying `reset=POWERON`, no conclusion.
 This is why that field was added, and it earned itself on the first run.
+
+**Before any of that, rule out the boring cause.** A `CMD:GNSS` that answers
+nothing may not be compiled in. On 2026-09-01 two probe attempts were spent on
+the RX-starve hypothesis when the board was simply running a build without
+`-DENABLE_GNSS_CMD` -- that flag lives in `env:t5s3pro` and in no release env, so
+the whole handler is absent and an unknown command falls through in silence. The
+tell is cheap and decisive: **another `CMD:` still answers.** `CMD:SCREENSHOT`
+and the map console both replied in the same session, so the handler loop was
+alive and only the GNSS branch was missing. Check that first, because the
+RX-starve trap makes the wrong diagnosis the attractive one and it costs a flash
+to find out otherwise.
 
 Two consequences for any repeat, both free:
 

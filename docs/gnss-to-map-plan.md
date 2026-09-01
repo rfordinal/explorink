@@ -17,7 +17,7 @@ this file is only what comes next.
 |---|---|---|---|
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
 | 2a | Is the rail on by design or by an uncleared latch | device only, one I2C write | **done 2026-09-01**, verified on hardware: an uncleared latch |
-| 2b | What the pair draws | device, battery (connected, measured), one small firmware change | **open, unblocked** |
+| 2b | What the pair draws | device, a cell that is confirmed present (T-583), one small firmware change | open, **gated on T-583** |
 | 3 | GNSS as a third `applyFix()` caller | device | **open, do this next** |
 | 4 | Heading from course, on-device | device, product decision | blocked on 3 |
 | 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
@@ -237,14 +237,28 @@ the number away, using it only to decide the sign of `charging`. The public
 `currentKnown` flag where `0x0C` is already read, then measure. That is a small
 device-free change followed by a run.
 
-**The battery is connected -- measured 2026-09-01, not assumed**, so nothing gates
-2b beyond the small change above. The gauge was asked rather than the room:
-`mapcmd.py stats` returned `batt_mv=4102` and `batt_pct=100`, and 4102 mV is a
-charged Li-ion cell, not the 3.3 V rail and not 5 V VBUS. This plan first said no
-cell was attached, which was wrong and came from a slip in conversation rather
-than from the board; the version after it said the opposite and was still only
-conversation. Three documents rested on that claim before anything on the device
-confirmed it.
+**The battery is probably connected, and this is still not settled.**
+`mapcmd.py stats` returned `batt_mv=4102` and `batt_pct=100` on 2026-09-01. That
+rules out the two things it was quoted to rule out -- it is not the 3.3 V rail and
+not 5 V VBUS -- but **it does not rule out no cell at all.** This board carries a
+BQ25896 charger (`BatteryMonitor.cpp`, `readGaugeCharging`), and a charger with no
+cell on it holds that node near its 4.2 V float voltage. 4102 mV fits a charged
+cell and an empty connector equally well, and the gauge reads a node, not a
+presence. `batt_pct=100` is not a second opinion: it is the same gauge computing
+from the same voltage.
+
+**One free test settles it: unplug USB and see whether the board stays up.** USB
+is a connector and pulling it is ordinary use; the disputed act was ever only the
+cell at `P2`. Until that runs, this claim is **read, not measured**, and 2b --
+which must be read on the cell with USB out -- is gated on it rather than
+unblocked. Tracked as T-583.
+
+The history is why this is spelled out. This plan first said no cell was attached,
+which was wrong and came from a slip in conversation rather than from the board.
+The version after it said the opposite and was still only conversation. The
+version after *that*, on 2026-09-01, called a voltage a measurement of presence.
+Three documents rested on the claim before anything on the device addressed it,
+and the device still has not.
 
 One thing to get right when measuring: the gauge reports *battery* current, so
 read it with **USB unplugged**, on the cell. On USB the charge path dominates and
