@@ -32,7 +32,7 @@ shown, or labelled open.
 | Receiver | Quectel L76K, on-board. GPS + GLONASS, both seen |
 | Reached by | `CMD:GNSS` over the USB serial console, `env:t5s3pro` only |
 | On any screen | no |
-| Feeding the map | no -- the map still takes its position over BLE from the phone |
+| Feeding the map | **built, not yet run on hardware** -- behind `mapGnssPosition`, off by default. See "The map reads it" |
 | Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works |
 | Still open | idle current, whether the rail is on by design or by an uncleared latch, whether SPI contention is real, a TTFF from the receiver's own power-on |
 | What comes next | [`gnss-to-map-plan.md`](gnss-to-map-plan.md) -- five steps to the map reading this receiver, and the merge gate |
@@ -53,10 +53,11 @@ and time come off RMC well before a solution does. Verified in the second run,
 and it matters: the safety budget in the parent repo's `safety-concept.md`
 wants a wall clock, and this supplies one without a fix and without a phone.
 
-The map is deliberately untouched. Position reaching the map is a separate
-piece of work, and it is not "GNSS instead of BLE": it is one abstraction over
-a position source with two implementations, which is what the parent repo's
-`docs/lora.md` already argues for under "What can be built today".
+Position reaching the map is a separate piece of work, written up under "The map
+reads it" below. It turned out **not** to need the abstraction over a position
+source the parent repo's `docs/lora.md` argues for under "What can be built
+today": `MapActivity::applyFix()` already is that seam, and the receiver became
+its third caller.
 
 ## The receiver
 
@@ -335,13 +336,19 @@ of roughly 2.5 V; the remaining 1.7 V is the whole question.
 Three candidates, and this probe cannot separate them:
 
 1. **The expander never lost power.** No longer one candidate among three --
-   **this is the reading, as of 2026-09-01.** The battery is connected, so
-   removing USB does not drop the rail at all, and the datasheet's VPORF
-   threshold (0.77 to 1.1 V, TI SCPS129K Table 10-1) never came into it. So
-   `cfg0=0x00` is a latch that has survived every reset since something wrote
-   it -- plausibly the factory firmware, which does configure the whole expander.
-   **Unproven and now cheap to prove:** disconnect the battery as well and read
-   `reset=POWERON`.
+   **this is the reading, as of 2026-09-01, and it is now proven** -- by
+   `CMD:GNSS RELEASE` rather than by any power cycle, see "Settled 2026-09-01"
+   below. `cfg0=0x00` is a latch that has survived every reset since something
+   wrote it, plausibly the factory firmware, which does configure the whole
+   expander.
+
+   **The route this paragraph used to argue is withdrawn, and it was resting on an
+   unconfirmed claim.** It said the battery is connected, so removing USB never
+   dropped the rail and the datasheet's VPORF threshold (0.77 to 1.1 V, TI
+   SCPS129K Table 10-1) never came into it. Whether a cell is fitted at all is
+   **still unconfirmed** -- `batt_mv=4102` is a node voltage the BQ25896 holds near
+   float with or without a cell (T-583). The conclusion no longer needs it: the
+   release test does not care what powers the board.
 2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
    configuration registers to 0xFF; a second-source part or a clone may not.
    Datasheet question, no hardware needed.
@@ -383,10 +390,19 @@ Measured on the LilyGo T5 S3 Pro, `env:t5s3pro`, firmware built from
 the receiver itself -- `Gnss::bytesRead()` and `Gnss::sentencesParsed()` deltas
 across three windows -- and no external meter is involved.
 
-**The released window is not zero, and that is the expected shape rather than a
-leak.** 308 B against a 574 B/s baseline is 0.54 s of streaming; 467 B against
-535 B/s is 0.87 s. A rail with bulk decoupling coasts before it collapses, which
-is why that window is 5 s and not 3.
+**The released window is not zero, and the most likely reason is a rail coasting
+down** -- 308 B against that run's own 574 B/s baseline is 0.54 s, 467 B against
+535 B/s is 0.87 s. That reading is **inferred, not measured**: the alternative is
+the driver's RX ring handing back bytes that arrived before the release. It is
+disfavoured because `sample()` polls in a tight loop, so the ring is near empty,
+but nothing here measured the ring depth at the moment of release. The window is
+5 s and not 3 for the same reason.
+
+**Both baselines run about 30 % under this file's 810 to 816 B/s**, at a matching
+sentence rate (14 and 12.7/s against 14.9). That is 41 to 42 bytes per sentence
+against the established 55, which is what a NOFIX sentence mix on an indoor desk
+looks like, and it is **unconfirmed**. It does not touch the conclusion: the
+arithmetic above uses each run's own baseline, not the file's headline number.
 
 **So the rail was held by the expander's own latched output.** Nothing else on
 the board holds it. `cfg0=0x00` is a latch that no reset has ever cleared,
@@ -407,10 +423,13 @@ stays the path that turns it on rather than an optional courtesy. And a rail thi
 firmware did not ask for is a rail nobody is accounting for in the power budget,
 which is step 2b's problem.
 
-**Still open here:** `reset=UNKNOWN` came back on both runs, including one
-immediately after an esptool hard reset. The field is worth keeping in the reply,
-but on this board it has not yet named a single reset cause, so nothing should be
-concluded from its absence of `POWERON`.
+**Still open here:** `reset=UNKNOWN` came back from this boot, which began with
+an esptool hard reset. That is **one** sample, not two -- both `RELEASE` runs sat
+on the same boot, because nothing between them reset the board
+(`mapcmd.open_port` never toggles DTR/RTS). Reset cause is a per-boot fact, so
+two runs of the command are one observation of it. The field is worth keeping in
+the reply, but on this board it has not yet named a single reset cause, so
+nothing should be concluded from the absence of `POWERON`.
 
 #### The detection method was wrong, and it cost three attempts
 
@@ -435,6 +454,17 @@ lesson: **the device is the only authority on whether it lost power**, and the
 probe now self-certifies -- the register values arrive in the same line as the
 reset cause that qualifies them. No line saying `reset=POWERON`, no conclusion.
 This is why that field was added, and it earned itself on the first run.
+
+**Before any of that, rule out the boring cause.** A `CMD:GNSS` that answers
+nothing may not be compiled in. On 2026-09-01 two probe attempts were spent on
+the RX-starve hypothesis when the board was simply running a build without
+`-DENABLE_GNSS_CMD` -- that flag lives in `env:t5s3pro` and in no release env, so
+the whole handler is absent and an unknown command falls through in silence. The
+tell is cheap and decisive: **another `CMD:` still answers.** `CMD:SCREENSHOT`
+and the map console both replied in the same session, so the handler loop was
+alive and only the GNSS branch was missing. Check that first, because the
+RX-starve trap makes the wrong diagnosis the attractive one and it costs a flash
+to find out otherwise.
 
 Two consequences for any repeat, both free:
 
@@ -592,6 +622,112 @@ talking and it is not NMEA.
 fix taken at the maintainer's address does not leave the local machine, and a
 debug line printing exact coordinates is the same leak as a rendered map of the
 same place. Redact or discard, do not publish.
+
+## The map reads it
+
+**Written 2026-09-01. NOT yet run on hardware** -- every claim below is read off
+the code, and the one that matters (a dot on the panel from this receiver, with
+no phone) is exactly the one a device pass has to settle. Step 3 of
+[`gnss-to-map-plan.md`](gnss-to-map-plan.md).
+
+### It is three callers of one function, not an abstraction
+
+`MapActivity::applyFix()` is already transport-agnostic: the follow decision, the
+persisted-fix banner, the marker move and the debounced save all sit on its far
+side, so a new position source adds a reader and nothing else.
+
+| caller | source | `MapActivity.cpp` |
+|---|---|---|
+| 1 | the BLE packet from the phone | the `getLatest(update)` block in `loop()` |
+| 2 | the command console, `pos ...` | the `consoleState_.hasPosition()` block in `loop()` |
+| 3 | **the on-device receiver** | `pollGnssFix()`, called from `loop()` |
+
+No interface, no base class, no per-source state machine. One function, three
+callers of it.
+
+### What was added
+
+- `src/GnssAccess.h` -- the whole seam: `extern Gnss gnss` and `gnssStart()`.
+  Entirely behind `ENABLE_GNSS_CMD`, so on any other env the header is empty and
+  `MapActivity` compiles as it did before.
+- `gnssStart()` in `main.cpp`, lifted out of the `CMD:GNSS ON` branch that used
+  to hold it inline. Two callers must not carry two copies of the pin numbers,
+  the baud and the ring size.
+- `CrossPointSettings::mapGnssPosition`, `uint8_t`, **default 0**. In the
+  settings file, deliberately **not** in `SettingsList`: a Settings row would
+  offer every rider a toggle for hardware one development board has.
+- `mapGnssPosition` in the `CMD:SETTING` allow-list, itself behind
+  `ENABLE_GNSS_CMD` -- a build with no receiver answers `SETTING_ERR:unknown`
+  rather than `SETTING_OK` for a toggle that cannot do anything.
+- `MapActivity::pollGnssFix()`, plus the rail's lifecycle in `onEnter()` /
+  `onExit()`.
+
+### Three decisions inside it, and the reason for each
+
+**Heading is 0 and stays 0.** The receiver reports a course and mapping it
+straight through would be wrong rather than rough: at rest it is noise
+(`speed=1.3 course=211.9` on a stationary desk, measured 2026-08-31), so a parked
+bike would get a compass that spins. The speed gate and the hysteresis that fix
+it are step 4, and they are a product decision before they are code.
+
+**A sample is identified by when the driver's fix last changed**, computed as
+`millis() - Gnss::fixAgeMs()`. `Gnss::poll()` returns "something changed", but
+`main.cpp`'s `loop()` is the one calling `poll()` and it consumes that answer, so
+a second reader needs its own way to tell a new sample from the same one. The
+change instant is constant between changes and moves on every one of them.
+
+**`quality == 0` and `quality == 6` are skipped.** 0 is no fix. 6 is dead
+reckoning with no satellites behind it (`Gnss.h`), and a map whose whole claim is
+*where am I* must not draw a position nothing measured. `fix.valid` cannot do
+this job: it latches true on the first solution and stays true, so it says "has
+ever had a fix", not "has one now".
+
+### The rail comes up with the map and goes down with it
+
+`onEnter()` calls `gnssStart()` when `mapGnssPosition` is set; `onExit()` calls
+`gnss.end()` **only if this activity is what started it**, so a `CMD:GNSS ON`
+bring-up session from the host survives a trip through the map screen.
+
+Not at boot, on purpose: that rail also powers the LoRa radio, and leaving it on
+behind a screen that is not using a position is a silent drain. The price is that
+leaving the map and coming back pays acquisition again -- tens of seconds from
+cold, not the sub-second figure `Gnss::timeToFirstFixMs()` reports for a receiver
+that was already tracking. Whether that trade is right is the duty-cycle question
+in step 5 of the plan, and it needs step 2b's numbers first.
+
+**This is also the first code path that powers the rail while the map is reading
+tiles off the SD card**, which is the SPI contention that has never been tested
+(`LORA_CS` is GPIO46, which LovyanGFX also drives as the panel bus's DC line --
+see "The power rail is shared with the LoRa radio"). The defence, holding the
+SX1262 in reset, is already in `gnssPowerEnable()`. A hardware pass of this step
+exercises that combination for the first time.
+
+### Both sources live: not decided here
+
+With a phone connected and the receiver running, `pollGnssFix()` runs after the
+BLE read in the same `loop()` iteration, so the later sample wins. That is the
+smallest thing that is **not** a priority decision -- the real one is step 5, and
+it needs the power numbers and a device-side heading first. The case step 3 is
+built for has no phone connected at all.
+
+One consequence worth knowing: `applyFix()` wants the phone's rolling packet
+counter and the receiver has none, so `pollGnssFix()` passes a counter of its
+own. The two can collide on one value in 256, which with both sources live costs
+at most one skipped BLE packet -- the same 5 s the phone's next packet arrives
+in.
+
+### What a hardware pass has to check
+
+Nothing below has been run.
+
+1. `CMD:SETTING mapGnssPosition 1`, then enter the map **with no phone
+   connected**. The waiting banner should clear and the dot should land where the
+   device is.
+2. The same build with `mapGnssPosition 0` still draws from the phone.
+3. Tiles still read correctly with the rail up -- the SPI contention above. A
+   corrupt tile is what failure looks like, not a crash.
+4. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
+   `CMD:GNSS ON` before entering the map is still running after leaving it.
 
 ## The parser
 

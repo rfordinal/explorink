@@ -18,6 +18,9 @@
 // APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
 #include "CrossPointState.h"
 #include "GfxRendererCanvas.h"
+// The on-device receiver, on a build that has one. Inert everywhere else: the
+// header is entirely behind ENABLE_GNSS_CMD (GnssAccess.h).
+#include "GnssAccess.h"
 #include "HeldTilesStore.h"
 #include "HikeIcons.h"
 #include "MapFollow.h"
@@ -2052,6 +2055,38 @@ void MapActivity::onEnter() {
   // After begin(), so the characteristics exist before anything can be
   // written to them.
   transfer_.attach();
+
+#ifdef ENABLE_GNSS_CMD
+  // The receiver comes up with the map and goes down with it, when the rider
+  // asked for it. Deliberately not at boot: the rail it sits on also powers the
+  // LoRa radio (main.cpp's gnssPowerEnable()), so it is not something to leave
+  // on behind a screen that is not using a position.
+  //
+  // The price is that leaving the map and coming back drops the rail and pays
+  // acquisition again -- tens of seconds from cold, not the sub-second figure
+  // Gnss::timeToFirstFixMs() reports for a receiver that was already tracking.
+  // Whether that is the right trade is the duty-cycle question in step 5 of
+  // docs/gnss-to-map-plan.md, and it needs step 2b's numbers before anyone
+  // decides it. Until then: no silent power drain is the safer default of the
+  // two.
+  gnssStartedHere_ = false;
+  haveGnssFixMs_ = false;
+  if (SETTINGS.mapGnssPosition != 0) {
+    if (gnss.running()) {
+      // Somebody else's session -- CMD:GNSS ON from the host. Read it, but do
+      // not adopt it: onExit() must leave it exactly as it found it.
+      LOG_INF(kLogTag, "gnss: already running, not started here");
+    } else if (gnssStart()) {
+      gnssStartedHere_ = true;
+      LOG_INF(kLogTag, "gnss: started, rx ring %lu bytes", static_cast<unsigned long>(gnss.rxBufferSize()));
+    } else {
+      // Same class of failure as bleStartFailed_ above, and the same
+      // consequence: the waiting banner stays up with no explanation of why.
+      // Logged rather than drawn, because this build is a bring-up build.
+      LOG_ERR(kLogTag, "gnss: start failed, power rail or expander unavailable");
+    }
+  }
+#endif
   hasReceivedAny_ = false;
   lastDrawnSeq_ = 0;
   redrawDueMs_ = 0;
@@ -2337,6 +2372,16 @@ void MapActivity::onExit() {
   transfer_.detach();
   freeink::BlePositionServer::getInstance().end();
 
+#ifdef ENABLE_GNSS_CMD
+  // Only what this activity started. A CMD:GNSS ON session from the host runs
+  // on past the map, which is what a bring-up expects.
+  if (gnssStartedHere_) {
+    gnss.end();
+    gnssStartedHere_ = false;
+    LOG_INF(kLogTag, "gnss: stopped");
+  }
+#endif
+
   // Release order is the reverse of onEnter(): the source holds a reference
   // to the file source, so it goes first. HalFileSource's destructor closes
   // the member HalFile -- DESTRUCTOR_CLOSES_FILE only covers locals.
@@ -2506,6 +2551,17 @@ void MapActivity::loop() {
       armSave();
     }
   }
+
+#ifdef ENABLE_GNSS_CMD
+  // The third position source, after the BLE packet above and the console
+  // below. Deliberately after the BLE read rather than before it: with both
+  // sources live the later one wins the iteration, and choosing between them
+  // properly is step 5 of docs/gnss-to-map-plan.md, which needs the receiver's
+  // power numbers and a device-side heading first. This order is the smallest
+  // thing that is not that decision -- and the case step 3 is built for has no
+  // phone connected at all.
+  pollGnssFix();
+#endif
 
   // The command console, over both channels. Same parser, same state, same
   // replies -- only the transport differs (MapCommandConsole.h). poll()
@@ -5095,6 +5151,66 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
           (unsigned)headingStep, (unsigned)MapFollow::relativeHeadingStep(headingStep, anchorHeading_),
           (unsigned)partialMoves_, (unsigned)partialMoveBudget());
 }
+
+#ifdef ENABLE_GNSS_CMD
+// GNSS as a third applyFix() caller, and that is the whole integration. Position
+// is already transport-agnostic from the moment it enters applyFix(): the follow
+// decision, the persisted-fix banner, the marker move and the save are all on
+// the far side of it, so a new source adds a reader and nothing else. No
+// interface, no base class -- there is one function and now three callers of it.
+//
+// main.cpp's loop() is what drains the UART (gnss.poll(), every iteration). This
+// only ever reads the parsed result, so it is cheap enough to call every loop
+// and it cannot lose a sentence by being late.
+void MapActivity::pollGnssFix() {
+  if (SETTINGS.mapGnssPosition == 0) return;
+  if (!gnss.running()) return;
+
+  const GnssFix& fix = gnss.fix();
+  // valid latches true on the first solution and stays true, so it says "has
+  // ever had a fix" and not "has one now" (Gnss.h). quality is what says the
+  // receiver still has satellites: 0 is no fix, and 6 is dead reckoning with
+  // nothing behind it, which must not move a map that claims to show where the
+  // rider is. Nothing has seen this receiver emit 6.
+  if (!fix.valid) return;
+  if (fix.quality == 0 || fix.quality == 6) return;
+
+  // Which sample this is. The driver's "something changed" answer is poll()'s
+  // return value and main.cpp already consumed it, so the change instant stands
+  // in for a sequence number: it is constant between changes and moves on every
+  // one of them.
+  const uint32_t changedMs = millis() - gnss.fixAgeMs();
+  if (haveGnssFixMs_ && changedMs == lastGnssFixMs_) return;
+  lastGnssFixMs_ = changedMs;
+  haveGnssFixMs_ = true;
+
+  // Decimal degrees as double into 1e-7 degrees as int32. The widest value this
+  // has to carry is a longitude of 180, which is 1.8e9 and inside int32's
+  // 2.147e9 -- so the cast cannot overflow for any position on Earth.
+  const int32_t latE7 = static_cast<int32_t>(llround(fix.latitude * 1e7));
+  const int32_t lonE7 = static_cast<int32_t>(llround(fix.longitude * 1e7));
+
+  // Heading 0 (north), on purpose, and it stays 0 until step 4 of
+  // docs/gnss-to-map-plan.md builds a real one. The receiver does report a
+  // course, and mapping it straight through here would be wrong rather than
+  // rough: at rest it is noise -- speed 1.3 km/h with course 211.9 degrees was
+  // measured on a stationary desk, 2026-08-31 -- so a parked bike would get a
+  // compass that spins. The speed gate and the hysteresis that fix it are a
+  // product decision, not arithmetic.
+  hasReceivedAny_ = true;
+  showingPersistedFix_ = false;
+  gnssSeq_++;
+  LOG_DBG(kLogTag, "gnss fix: seq %u, quality %u, sats %u, hdop %.1f, speed %.1f km/h, age %lu ms",
+          static_cast<unsigned>(gnssSeq_), static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
+          static_cast<double>(fix.hdop), static_cast<double>(fix.speedKmh),
+          static_cast<unsigned long>(gnss.fixAgeMs()));
+  applyFix(latE7, lonE7, 0, gnssSeq_);
+  // Same debounced save the BLE fix arms, for the same reason: the card must
+  // not be written once per fix, and the map still has to have somewhere to
+  // open next time.
+  armSave();
+}
+#endif
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   updateManualHeadingCapture(headingStep);

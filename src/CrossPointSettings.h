@@ -283,6 +283,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // IS a Settings-screen toggle, so the generic toJson/fromJson loop carries
   // it and nothing here has to.
   uint8_t mapAutoSyncTiles = 0;
+  // Take the map's position from a receiver on the device instead of from the
+  // phone, on a board that has one (GnssAccess.h). Off by default, and off is
+  // what every shipping device does today: the X4 and the X4 Pro have no
+  // receiver at all, so on those this field can only ever be 0 and the code
+  // that reads it is not even compiled in.
+  //
+  // In the settings file but **not** in SettingsList, unlike mapAutoSyncTiles
+  // above -- a Settings row would offer every rider a toggle for hardware only
+  // one development board has. It is reached from the host instead
+  // (CMD:SETTING mapGnssPosition 1, main.cpp), which is all step 3 of
+  // ../docs/gnss-to-map-plan.md needs. The day a shipping device carries a
+  // receiver, this gets a row and the row gets a board condition.
+  uint8_t mapGnssPosition = 0;
   // Edge markers for pins outside the viewport: a direction arrow and the
   // distance, drawn where the bearing ray leaves the screen
   // (MapActivity::drawPins(), ../docs/pins.md). Pins *inside* the viewport are
