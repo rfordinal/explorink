@@ -29,11 +29,53 @@ has a wireless link worth showing.
 | Bluetooth logo | always | what the bars are about |
 | Transfer icon | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data |
 | Clock | `BlePositionServer::localTimeNow()` | local time, from the phone; blank until it has sent one |
+| GNSS glyph | `gnssHeaderState()` | the on-device receiver: off, looking, or fixed. Only on a build that has one |
 
 The transfer icon is not an internet indicator in the literal sense -- this
 device has no radio that reaches the internet. It is about the thing the rider
 cares about: the phone is spending mobile data on their behalf right now. See
 `missing-tiles.md`, "Autosync".
+
+## The GNSS glyph, three states (2026-09-01)
+
+**Only on a build with `ENABLE_GNSS_CMD`** -- the LilyGo T5 S3 Pro today. The X4
+and the X4 Pro have no receiver, so the slot is not compiled in at all rather
+than drawn empty: an always-present icon that always says the same thing would
+eat a place name's width to report nothing.
+
+Three Lucide glyphs from one family, so the rider reads the *difference* between
+them rather than each one from scratch (`scripts/gen_map_header_icons.py`):
+
+| glyph | lucide | when |
+|---|---|---|
+| `icon_gnssOff` | `locate-off` | `mapGnssPosition == 0`, or the receiver is not running |
+| `icon_gnssSearching` | `locate` | running, no current solution |
+| `icon_gnssFixed` | `locate-fixed` | running, `quality` says the solution is current |
+
+**Always drawn, unlike the transfer icon next to it.** "Off" is one of the three
+states, not the absence of the icon: a rider who cannot tell "no receiver
+running" from "no icon yet" learns nothing from the row.
+
+**The state comes from `quality`, never from `GnssFix::valid`.** `valid` latches
+true on the first solution and stays true (`Gnss.h`), so a receiver that has lost
+the sky would go on claiming a fix -- the one lie a *where am I* device must not
+tell. `quality == 6` is dead reckoning with no satellites behind it and counts as
+seeking here, the same way `MapActivity::pollGnssFix()` refuses to draw a
+position from it.
+
+**Repainted as structural, not rate-capped.** The state moves a handful of times
+a ride (start, first fix, sky lost) and each move is exactly the moment worth
+telling. That is the opposite of the bar count beside it, which flips on an RSSI
+threshold and is capped for that reason.
+
+Layout is one more link in the row's right-to-left chain, between the Bluetooth
+logo and the transfer icon, so the clock and the place name shift left by
+themselves rather than by a hardcoded x.
+
+**Verified on hardware 2026-09-01**: the receiver starts on map entry and stops
+on exit (`gnss: started` / `gnss: stopped` / `gnss: started` across two entries).
+**Not verified**: nobody has looked at the panel yet, and `locate-fixed` has
+never been shown, because no fix has landed indoors.
 
 ## Two rects, one source
 
