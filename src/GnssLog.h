@@ -52,6 +52,17 @@ class GnssLog {
   // closing the map does not lose its last ten seconds.
   static void flush();
 
+  // Bytes on the card, and whether anything is waiting in RAM. Exists so
+  // "did the ride record?" is a question with an answer that can be WRONG --
+  // the absence of an error line in a log nobody was reading is not evidence,
+  // and a measurement trip is too expensive to find out afterwards.
+  //
+  // Deliberately reports sizes and not content: the rows carry the rider's
+  // track, and a command that printed them would hand a position log to anyone
+  // with a cable (parent CLAUDE.md, "Security"). Devel-only regardless, with
+  // the rest of CMD:GNSS.
+  static void status(uint32_t& bytesOnCard, uint32_t& bytesBuffered, bool& loggingDisabled);
+
   static constexpr uint32_t kFlushIntervalMs = 10000;
   // Under the same on-device root as the tiles; the path still says trailink
   // because the card's directory has not been renamed (parent CLAUDE.md).

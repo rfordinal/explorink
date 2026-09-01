@@ -32,6 +32,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "GnssAccess.h"
+#include "GnssLog.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "MissingTilesStore.h"
@@ -1107,6 +1108,7 @@ void loop() {
         //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
         //   CMD:GNSS PROBE     ->  GNSS_PROBE:...  (run first, on a cold boot)
         //   CMD:GNSS RELEASE   ->  GNSS_RELEASE:... (writes the rail pin, step 2a)
+        //   CMD:GNSS LOG       ->  GNSS_LOG:...    (sizes of the fix log, never its rows)
         //
         // Reading the reply: `ttff` is NOT an acquisition time on a receiver
         // that was already running -- Gnss::timeToFirstFixMs() spells out why
@@ -1132,6 +1134,18 @@ void loop() {
           } else {
             logSerial.printf("GNSS_ERR:power rail or expander unavailable\n");
           }
+        } else if (argument == "LOG") {
+          // "Did the ride record?" -- a question with a wrong answer available,
+          // which is the point. Sizes only, never rows: the file is the rider's
+          // track and printing it would hand a position log to anyone with a
+          // cable.
+          uint32_t onCard = 0;
+          uint32_t buffered = 0;
+          bool loggingDisabled = false;
+          GnssLog::status(onCard, buffered, loggingDisabled);
+          logSerial.printf("GNSS_LOG:setting=%u bytes=%lu buffered=%lu disabled=%d path=%s\n",
+                           static_cast<unsigned>(SETTINGS.mapGnssLog), static_cast<unsigned long>(onCard),
+                           static_cast<unsigned long>(buffered), loggingDisabled ? 1 : 0, GnssLog::kPath);
         } else if (argument == "OFF") {
           gnss.end();
           logSerial.printf("GNSS_OK:off\n");

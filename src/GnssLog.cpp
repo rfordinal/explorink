@@ -113,11 +113,26 @@ void GnssLog::flush() {
   writeOut();
 }
 
+void GnssLog::status(uint32_t& bytesOnCard, uint32_t& bytesBuffered, bool& loggingDisabled) {
+  bytesBuffered = static_cast<uint32_t>(used);
+  loggingDisabled = disabled;
+  bytesOnCard = 0;
+  if (!Storage.ready()) return;
+  HalFile file = Storage.open(kPath, O_RDONLY);
+  if (!file.isOpen()) return;  // no file yet is a real answer: 0 bytes
+  bytesOnCard = static_cast<uint32_t>(file.fileSize());
+}
+
 #else
 
 // No receiver in this build, so no rows and no file. Defined rather than
 // omitted so the call sites need no #ifdef of their own.
 void GnssLog::record(const GnssFix&, bool, uint8_t) {}
 void GnssLog::flush() {}
+void GnssLog::status(uint32_t& bytesOnCard, uint32_t& bytesBuffered, bool& loggingDisabled) {
+  bytesOnCard = 0;
+  bytesBuffered = 0;
+  loggingDisabled = true;
+}
 
 #endif  // ENABLE_GNSS_CMD
