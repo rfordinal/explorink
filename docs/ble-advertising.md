@@ -373,10 +373,15 @@ present.
   the same scan returned the service UUID and `local_name=None`.
 - The name showing in Android's companion pairing dialog: **not measured**. Needs
   a phone. Same scan data underneath, so it is likely, not proven.
-- Per-board naming (`bleDeviceNameForActiveBoard()`): **read off the code and
-  built for the `simulator` env** (device build failed on an unrelated
-  toolchain issue, `esp8266-compat.h`/`base64.h` missing from the whole
-  `framework-arduinoespressif32` package, not from this change). **Not
-  measured on any real board yet** -- needs an X4, an X3, an X4 Pro and a
-  LilyGo T5S3 each scanned and each connecting from the Android app with
-  `KNOWN_DEVICE_NAMES`.
+- Per-board naming (`bleDeviceNameForActiveBoard()`): **measured on a LilyGo
+  T5S3 Pro, 2026-09-01.** Built and flashed `t5s3pro` (cherry-picked onto
+  `release/lilygo-t5-s3-pro`, since the T5S3 build env is not on `develop`
+  yet), reset the device and sent `CMD:GOTO_MAP` inside the ~3 s boot window
+  (docs/power-management.md, "The RX side after idle"). Boot log confirmed
+  `Hardware detect: lilygo_t5s3 (960x540)`; `BlePositionServer::begin()` ran
+  and returned without hanging. Scanned from the laptop with bleak:
+  `7C:2C:67:8A:4C:B5  local_name='LilyGoT5S3Map'  rssi=-44
+  uuids=['5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0001']` -- the exact name
+  `bleDeviceNameForActiveBoard()` picks for `Board::LilyGoT5S3`.
+  **Not yet measured**: the Android app side (`KNOWN_DEVICE_NAMES` actually
+  matching and connecting), and the other three boards (X4, X3, X4 Pro).
