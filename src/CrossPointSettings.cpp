@@ -100,6 +100,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // Not in SettingsList (edited from the map's Pins list), so it is saved here.
   doc["mapPinsOffscreenMask"] = mapPinsOffscreenMask;
   doc["mapGnssPosition"] = mapGnssPosition;
+  doc["frontlightOn"] = frontlightOn;
+  doc["frontlightBrightness"] = frontlightBrightness;
   doc["mapGnssLog"] = mapGnssLog;
   doc["mapHasLastFix"] = mapHasLastFix;
   doc["mapLastLatE7"] = mapLastLatE7;
@@ -222,6 +224,13 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // way it did then, which is "the master decides for all of them".
   mapPinsOffscreenMask = doc["mapPinsOffscreenMask"] | (uint16_t)0xFFFF;
   mapGnssPosition = doc["mapGnssPosition"] | (uint8_t)0;
+  frontlightOn = (doc["frontlightOn"] | (uint8_t)0) ? 1 : 0;
+  // Clamped, not trusted: this reaches the LEDC duty calculation, and the file
+  // is one a user can open in a text editor. 0 would also mean "on at nothing",
+  // so the floor is 1.
+  frontlightBrightness = doc["frontlightBrightness"] | (uint8_t)50;
+  if (frontlightBrightness < 1) frontlightBrightness = 1;
+  if (frontlightBrightness > 100) frontlightBrightness = 100;
   mapGnssLog = doc["mapGnssLog"] | (uint8_t)0;
   mapHasLastFix = doc["mapHasLastFix"] | false;
   mapLastLatE7 = doc["mapLastLatE7"] | 0;

@@ -96,6 +96,9 @@ bool userButtonDown = false;
 bool userButtonLongFired = false;
 unsigned long userButtonDownAt = 0;
 bool userButtonClickPending = false;
+// Set by the hook when a hold changed the light, cleared by loop() once the new
+// state is on the card.
+bool userButtonLightChanged = false;
 uint8_t userButtonClickPolls = 0;
 unsigned long userButtonClickSince = 0;
 
@@ -123,6 +126,9 @@ uint8_t userButtonHook() {
     } else {
       frontlight.on();
     }
+    // The write itself waits for loop(): this runs inside InputManager::update(),
+    // and an SD write on the input path would block every other poll behind it.
+    userButtonLightChanged = true;
     LOG_INF("BTN", "User button hold: frontlight %u%%", static_cast<unsigned>(frontlight.brightness()));
   } else if (!down && userButtonDown) {
     userButtonDown = false;
@@ -661,6 +667,15 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+  // Restore the light the rider left on. Deliberately after loadFromFile() and
+  // not next to frontlight.begin(): the settings file is not read until here.
+  // setBrightness() first in both branches, because that is what seeds the
+  // manager's "last brightness" -- off() alone would leave a later toggle
+  // restoring the SDK's 50 % default instead of the level actually saved.
+  if (frontlight.present()) {
+    frontlight.setBrightness(SETTINGS.frontlightBrightness);
+    if (!SETTINGS.frontlightOn) frontlight.off();
+  }
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
@@ -859,6 +874,17 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   gpio.update();
+#if FREEINK_DEVICE_LILYGO
+  if (userButtonLightChanged) {
+    userButtonLightChanged = false;
+    SETTINGS.frontlightOn = frontlight.brightness() > 0 ? 1 : 0;
+    if (frontlight.brightness() > 0) SETTINGS.frontlightBrightness = frontlight.brightness();
+    // One SD write per deliberate hold, never per poll. Same rule the map's
+    // ladder state follows (CrossPointSettings.h): a rider toggles the light a
+    // handful of times a ride, so this is not an every-interaction write.
+    SETTINGS.saveToFile();
+  }
+#endif
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
@@ -1200,6 +1226,11 @@ void loop() {
             if (pct < 0) pct = 0;
             if (pct > 100) pct = 100;
             frontlight.setBrightness(static_cast<uint8_t>(pct));
+            // Persist what the console set, so the instrument and the button
+            // cannot disagree about what "the light" is after a reboot.
+            SETTINGS.frontlightOn = pct > 0 ? 1 : 0;
+            if (pct > 0) SETTINGS.frontlightBrightness = static_cast<uint8_t>(pct);
+            SETTINGS.saveToFile();
           }
           logSerial.printf("LIGHT_OK:%u\n", static_cast<unsigned>(frontlight.brightness()));
         }

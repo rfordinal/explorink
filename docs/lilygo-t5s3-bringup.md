@@ -138,11 +138,49 @@ used it: the map screen's Down action, and the `POWER` + `DOWN` screenshot combo
 gesture away from leaving the light on in a bag, and deep sleep stops the LEDC
 peripheral without defining what the pin does afterwards.
 
-**A hardware pass has to check:** that a tap really selects (and never
-double-fires, and is never dropped after a slow redraw), that a hold toggles
-once rather than repeatedly, that the light survives leaving and re-entering the
-map, that the I2C read per input poll does not disturb GT911 touch or a panel
-refresh, and that the light is off after a sleep/wake cycle.
+**Confirmed on hardware, 2026-09-02.** A tap on the side switch reaches the app
+as Confirm -- `[INPUT] button released: Confirm (1)` in the serial log -- and a
+hold toggles the frontlight, observed by the maintainer on the device (the
+toggle's own `[BTN]` line fell outside the capture window, so the log carries
+the tap and not the hold).
+
+**The brightness is persisted.** `CrossPointSettings` gained `frontlightOn` and
+`frontlightBrightness`; `setup()` restores them after `loadFromFile()`, and both
+the hold and `CMD:LIGHT` write them. Two fields rather than one, because turning
+the light off must not forget the level it was at. The write happens in `loop()`
+and not in the input hook: an SD write on the input path would block every other
+poll behind it.
+
+**Still to check:** that a tap never double-fires and is never dropped after a
+slow redraw, that the I2C read per input poll does not disturb GT911 touch or a
+panel refresh, and that the light is off after a sleep/wake cycle.
+
+## The board has a second programmable input: the capacitive home key
+
+**Found 2026-09-02, on hardware.** The GT911 reports a capacitive key below the
+panel on this board, and the firmware already sees it:
+
+```
+[112860] [DBG] [INPUT] home key pressed
+[113588] [DBG] [INPUT] home key long-pressed
+```
+
+The SDK reads the key's status bit (`0x10`) unconditionally, so this works even
+though `LILYGO_T5_PRO_GT911` leaves `hasHomeKey` at its default `false`
+(`BoardConfig.h`) -- the flag gates nothing today. `InputManager` already
+separates the two gestures: `wasHomeKeyTapped()` fires on the release of a short
+press, `wasHomeKeyLongPressed()` at 700 ms (`HOME_KEY_LONG_PRESS_MS`), and the
+hold suppresses the tap.
+
+**Nothing in the app reads any of it yet.** `HalGPIO` forwards all three events
+and logs them; no activity asks.
+
+So this board has **two** programmable inputs, not one: the side switch (S3,
+PCA9535 `IO12`) and this key. What each should do is an open product decision --
+the one hard constraint is that gloves defeat the capacitive key and do not
+defeat the switch, so anything a rider needs while riding belongs on the switch.
+
+
 
 ## The map draws, 2026-08-31
 
