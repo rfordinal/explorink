@@ -738,7 +738,7 @@ void loop() {
             logSerial.printf("SHOWIMAGE_OK:%u\n", (unsigned)got);
           }
         }
-#ifdef ENABLE_SERIAL_LOG
+#ifdef ENABLE_SETTING_CMD
       } else if (cmd.startsWith("SETTING ")) {
         // Flip one of the map's opt-in toggles from the host: bench tests cannot
         // press buttons, and the two features worth testing unattended -- tile
@@ -748,9 +748,16 @@ void loop() {
         //
         // Deliberately a short allow-list rather than a generic settings poke:
         // this is a serial backdoor into persisted state, so it can reach exactly
-        // the three toggles a test needs and nothing else. ENABLE_SERIAL_LOG is
-        // set only in env:default (platformio.ini), so it is not in any release
-        // build.
+        // the toggles a test needs and nothing else.
+        //
+        // Gated on ENABLE_SETTING_CMD, its own bench-only flag, NOT on
+        // ENABLE_SERIAL_LOG: that one is set in gh_release and gh_release_rc too
+        // (only slim clears it), so until 2026-09-02 this backdoor shipped in
+        // both release builds while the comment here claimed it did not. Anyone
+        // who picks up a lost device and plugs in USB can reach it: the reply
+        // costs the rider mobile data (mapAutoSyncTiles, mapTileFreshnessMode)
+        // or paints their exact position on the panel (mapDebugInfo), and the
+        // write persists to the card. Do not re-tie it to a logging flag.
         //
         //   CMD:SETTING mapAutoSyncTiles 1   ->  SETTING_OK:mapAutoSyncTiles=1
         //   CMD:SETTING <unknown> 1          ->  SETTING_ERR:unknown
@@ -777,7 +784,7 @@ void loop() {
           SETTINGS.saveToFile();
           logSerial.printf("SETTING_OK:%s=%u\n", key.c_str(), static_cast<unsigned>(*target));
         }
-#endif
+#endif  // ENABLE_SETTING_CMD
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->

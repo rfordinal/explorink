@@ -479,7 +479,8 @@ relative to this whole route" is what that frame is for.
 ### Off-screen markers
 
 `mapPinsOffscreen`, **default off**, in Settings (category Map) and over
-`CMD:SETTING mapPinsOffscreen 1`.
+`CMD:SETTING mapPinsOffscreen 1` -- devel builds only, the command is gated on
+`ENABLE_SETTING_CMD` and no release env sets it (`build-environments.md`).
 
 **The marker is the pin, turned so its point aims at where the pin is.** Three
 iterations on the panel got here (2026-08-17):
