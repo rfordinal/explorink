@@ -252,6 +252,13 @@ nobody reaches for it while looking for a read. Devel-only with the rest of
 **2b. What does the pair draw?** Rail up and rail down, and **name the
 instrument**.
 
+**Half of this step is built, 2026-09-02: `CMD:BATT`.** The gauge's voltage, SoC
+and average current on demand, over the serial console, reading the registers
+from our side rather than editing upstream's SDK --
+[`battery-current-probe.md`](battery-current-probe.md) has the command, the
+sign convention and why the SDK was left alone. Unverified on hardware. What
+remains of 2b is the measurement itself.
+
 **No external meter is needed, and the first version of this plan wrongly implied
 one was.** The BQ27220 already reports average battery current: register `0x0C`,
 signed mA, and this firmware **already reads it** --
