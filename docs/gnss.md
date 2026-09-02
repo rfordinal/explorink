@@ -31,10 +31,10 @@ shown, or labelled open.
 |---|---|
 | Receiver | Quectel L76K, on-board. GPS + GLONASS, both seen |
 | Reached by | `CMD:GNSS` over the USB serial console, `env:t5s3pro` only |
-| On any screen | no |
-| Feeding the map | **built, not yet run on hardware** -- behind `mapGnssPosition`, off by default. See "The map reads it" |
-| Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works |
-| Still open | idle current, whether the rail is on by design or by an uncleared latch, whether SPI contention is real, a TTFF from the receiver's own power-on |
+| On any screen | the map's header row -- a three-state GNSS glyph, see [`map-header-status.md`](map-header-status.md). Nowhere else |
+| Feeding the map | **yes, ridden 2026-09-01** -- behind `mapGnssPosition`, off by default. See "The map reads it" |
+| Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works; the map drawing from the receiver on a ride, with no phone connected |
+| Still open | idle current, whether SPI contention is real, a TTFF from the receiver's own power-on, and the BLE path with `mapGnssPosition 0` |
 | What comes next | [`gnss-to-map-plan.md`](gnss-to-map-plan.md) -- five steps to the map reading this receiver, and the merge gate |
 
 **A working fix indoors**, on a desk, through a ceiling: `q=1`, 8 satellites
@@ -625,10 +625,17 @@ same place. Redact or discard, do not publish.
 
 ## The map reads it
 
-**Written 2026-09-01. NOT yet run on hardware** -- every claim below is read off
-the code, and the one that matters (a dot on the panel from this receiver, with
-no phone) is exactly the one a device pass has to settle. Step 3 of
+**Written 2026-09-01, and ridden the same day.** The claim that mattered -- a
+dot on the panel from this receiver, with no phone connected -- was settled on
+the device: the marker followed the rider. The logged ride, read out 2026-09-02,
+then priced it: 526 s to a first fix, three to five satellites, gaps of up to
+21 s while the map renders. Those numbers are below. Step 3 of
 [`gnss-to-map-plan.md`](gnss-to-map-plan.md).
+
+**Three claims in this section are still read off the code, not observed**: the
+BLE path with `mapGnssPosition 0`, the rail's state after a map-exit crash, and
+the tiles under SPI contention. Each says so where it is written, and the third
+is why T-576 is still open.
 
 ### It is three callers of one function, not an abstraction
 
@@ -913,7 +920,12 @@ is 10 degrees from north and not 350 (measured the long way it looks like a huge
 turn and rotates the frame for nothing), and a receiver reporting 360.0 must not
 land on step 16 in a four-bit field.
 
-**Not verified on hardware.** Nothing here has been ridden with.
+**Ridden once, and not yet judged on the panel.** The logged ride (`gnss.csv`,
+read 2026-09-02) ran this module: 31 stationary rows with `moving` set on none of
+them, and the held headings were 4, 7 and 9 -- see "What the ride did settle: the
+speed gate is fine outdoors". What nobody has done is watch the arrow itself
+while riding, and the two thresholds have not been judged against a walker or
+against a rider parked under open sky.
 
 ### The ride has to write its own numbers down
 
@@ -1060,23 +1072,46 @@ own. The two can collide on one value in 256, which with both sources live costs
 at most one skipped BLE packet -- the same 5 s the phone's next packet arrives
 in.
 
-### What a hardware pass has to check
+### What a hardware pass has to check, and what the ride actually covered
 
-Nothing below has been run.
+**Two of the five are done, one is half done, two were not run.** The ride of
+2026-09-01 covered 1 and 2. Do not read the ride as a pass on the rest.
 
 1. **`CMD:SETTING mapGnssPosition 1` first.** The setting is 0 by default and 0
    means the old BLE path: a run that forgets this line tests the code that was
    already there and looks like a pass. `CMD:SETTING mapGnssPosition` with no
    value reads it back, so the run can prove it was set rather than assume it.
+   **Done** -- the ride drew from the receiver, which a 0 setting cannot do.
 2. Enter the map **with no phone connected**. The waiting banner should clear
-   and the dot should land where the device is.
+   and the dot should land where the device is. **Done** -- the marker followed
+   the rider and `gnss.csv` recorded the fixes behind it. The banner still says
+   "Waiting for BLE position" while the fix comes from the device, which is
+   wrong text rather than a wrong dot (T-589).
 3. The same build with `mapGnssPosition 0` still draws from the phone.
-4. **The tiles get looked at, with the rail up.** See below -- this is the one
-   check that fails silently.
+   **Not run.** Nothing has checked that this branch left the phone path intact,
+   and that is the half of step 3's "done when" that is still open.
+4. **The tiles get looked at, with the rail up.** **Not run.** The ride put the
+   rail up while the map streamed tiles for a whole trip, and nobody looked at
+   the pixels. See below -- this is the one check that fails silently.
 5. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
    `CMD:GNSS ON` before entering the map is still running after leaving it.
+   **Half done.** `gnss: started` / `gnss: stopped` / `gnss: started` was seen
+   across two map entries on 2026-09-01
+   ([`map-header-status.md`](map-header-status.md)), which is the start/stop
+   half. Nobody read `GNSS_OFF` back after an exit, and nobody drove a
+   console-started session through the map screen.
 
 ### The SPI check has to be a look, not a survival
+
+**The 2026-09-01 ride exercised this for the first time and observed nothing.**
+The rail was up while the map rendered for a whole trip and nothing reported a
+failed tile read. That is not a result. No screenshot was taken with the rail
+up, nobody looked for hatch or torn geometry, and `gnss.csv` carries no tile
+counts -- so it is not even known how much tile data the card served during the
+ride, or whether the route had coverage at all. **T-576 is untested, not
+passed**, and the ride must not be cited as a pass on it. The next ride settles
+it cheaply: `CMD:SCREENSHOT` over covered ground with the rail up, and the same
+frames again with the rail down as the control.
 
 The failure mode of the contention is a **corrupt tile read**, not a crash. So
 "the device did not lock up" is a check that cannot fail: it also passes when
@@ -1515,9 +1550,11 @@ the non-overlapping path.
 
 ## Open
 
-- **Is the rail on by board default, or was it latched by an earlier session?**
-  The CONFIG0 read on a true power cycle, above. Everything about this board's
-  power floor hangs off the answer, and it costs one boot.
+- ~~Is the rail on by board default, or was it latched by an earlier session?~~
+  -- **settled 2026-09-01**: an uncleared expander latch, proven by `CMD:GNSS
+  RELEASE` twice. See "Settled 2026-09-01". A crash on map exit is a named way
+  for it to get stuck, see "The rail comes up with the map and goes down with
+  it".
 - **Idle current of the GNSS + LoRa pair**, against the BQ27220 or a meter in
   series at the development board's battery connector. Name the instrument.
   T-579.
