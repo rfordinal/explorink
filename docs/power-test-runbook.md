@@ -475,6 +475,23 @@ unpriced", carries the same note.
 
 ### But the rule stops at a finished product, and a development board is not one
 
+**And the board this section was written for does not qualify. Corrected
+2026-09-02.** Our LilyGo T5 E-Paper S3 Pro **arrived in a closed plastic shell**,
+phone-shaped, no screw visible, and a board in a case is a device again -- so `P2`
+is out of reach on the one unit we have. Everything below was written from the
+vendor schematic on 2026-08-26, a week before the hardware landed, and a
+schematic cannot show an enclosure. **No meter goes in series at the cell here.**
+The scope rule itself is unchanged and still correct for a genuinely bare board;
+we do not own one, and asking LilyGo for one is the only route to it. Parent
+`docs/devices/lilygo-t5-s3-pro.md`, "The bench regime".
+
+**What the campaign runs on instead**, and it is now the maintainer's priority
+(parent T-220): **a USB inline meter on VBUS**, plus the BQ27220 over I2C. A VBUS
+reading is the board *plus the charger*, so it needs the cell at charge
+termination, the gauge's average current subtracted, or state-against-state
+differences where the charge term cancels. The sub-milliamp floors -- deep sleep
+and ship mode -- cannot be reached that way and stay `[open]`.
+
 **Scope clarified in the parent `CLAUDE.md`, 2026-08-26.** The never-open rule covers
 a finished device: a case, and a cell inside that case. It does **not** reach a bare
 development board whose cell arrives on a connector. On such a board a meter in series
@@ -490,8 +507,8 @@ sheet "Battery Interface", in `Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO`, branch
 `H752-01`):
 
 - **`P2` is the battery connector**: pin 1 VBAT, pin 2 NTC, pin 3 GND, plus two
-  grounded pins. A meter or a bench supply goes there, and unplugging a connector is
-  not removing a cover.
+  grounded pins. **Inside the shell on our unit, so this is what a bare board
+  would give us, not what we can do today** (corrected 2026-09-02).
 - **The NTC bias divider is on the board** (`R9` 30.1k from `REGN`, `R20` 5.23k to
   ground), so a supply on VBAT with no pack attached should not trip the charger's
   temperature fault. Read off the schematic, not tested.
@@ -514,9 +531,11 @@ unmeasured by anyone.
 (`power.csv`), what a meter on the **outside** of the USB port can see, and what a
 device with a fuel gauge reports over I2C -- X3 carries a BQ27220 whose
 average-current register the firmware already reads, X4 has none. That is the whole
-instrument set **for the sealed devices**, and no purchase enlarges it. **For the
-development board it is enlarged by exactly one purchase**, an instrument that can sit
-in series at `P2`: parent task T-553.
+instrument set **for the sealed devices**, and no purchase enlarges it. **For a bare
+development board it would be enlarged by exactly one purchase**, an instrument
+that can sit in series at `P2`: parent task T-553. **Our T5 S3 Pro is not that
+board** -- it came enclosed (2026-09-02), so that purchase buys nothing until a
+bare board exists.
 
 **A candidate for the no-teardown route, 2026-08-21: Joy-IT JT-UM120.** Read off
 the manufacturer's page (`https://joy-it.net/en/products/JT-UM120`) **[primary]**:
@@ -553,9 +572,9 @@ per the parent `CLAUDE.md` research-numbers rule.
   option if nothing suitable exists -- on the order of USD 100 **[assumed]**,
   and the price must be read off a distributor page before buying, per the
   repo's research-numbers rule.
-  **Live again since 2026-08-26**, and this is the entry that was struck out
-  hardest: it dies on a sealed device and works on the development board's `P2`
-  connector. The capability the parent repo settled on is sub-10 uA at the floor,
+  **Struck out again 2026-09-02.** It dies on a sealed device, it would work on a
+  bare development board's `P2` connector, and our T5 S3 Pro turned out to be
+  enclosed -- so there is no board on the bench for it to work on. The capability the parent repo settled on is sub-10 uA at the floor,
   ~500 mA of headroom, autoranging, and a **logged waveform rather than an
   average** -- because ship mode, ~873 uA deep sleep, the panel refresh peak and a
   LoRa burst all have to fit one range. A bench DMM is an average and cannot show
