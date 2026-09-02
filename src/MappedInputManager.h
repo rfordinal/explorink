@@ -62,6 +62,10 @@ class MappedInputManager {
 
   SwipeDir wasSwipe() const;
   bool wasHomeGesture() const;
+  // True on the frame the capacitive home key (boards that have one) completed a
+  // short tap. Reported as Confirm by wasPressed()/wasReleased(); exposed so a
+  // caller that needs to tell the two apart still can.
+  bool wasHomeKeyConfirm() const;
   bool wasMenuGesture() const;
   bool wasAnyPressed() const;
   bool wasAnyReleased() const;

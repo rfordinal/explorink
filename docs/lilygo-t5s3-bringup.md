@@ -187,9 +187,32 @@ hold suppresses the tap.
 and logs them; no activity asks.
 
 So this board has **two** programmable inputs, not one: the side switch (S3,
-PCA9535 `IO12`) and this key. What each should do is an open product decision --
-the one hard constraint is that gloves defeat the capacitive key and do not
-defeat the switch, so anything a rider needs while riding belongs on the switch.
+PCA9535 `IO12`) and this key.
+
+**Both carry the same two gestures, 2026-09-02** (maintainer's call: try each in
+real use before splitting them up). Tap is Select, hold toggles the frontlight,
+whichever input the rider reached for.
+
+| | tap | hold |
+|---|---|---|
+| side switch (S3, `IO12`) | Confirm | frontlight (600 ms) |
+| home key (GT911) | Confirm | frontlight (700 ms, the SDK's threshold) |
+
+Two different code paths, because the two inputs arrive differently. The switch
+is synthesised into a `BTN_CONFIRM` click by the board hook in `main.cpp`; the
+key already has tap and hold events in the SDK, so `MappedInputManager` reports
+its tap as `Button::Confirm` (next to the swipe that becomes Back) and `loop()`
+takes its hold. Both holds land in one `toggleFrontlight()`, so the gesture
+cannot come to mean two different things.
+
+**The X4 Pro inherits the home-key half** -- it has a home key too and the
+`MappedInputManager` change is not board-conditional. No env builds that board
+today, so nothing ships with it untested, but a future X4 Pro env starts with
+its home key selecting.
+
+The split is still worth revisiting once both have been used: gloves defeat the
+capacitive key and do not defeat the switch, so anything a rider needs while
+moving belongs on the switch.
 
 
 

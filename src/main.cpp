@@ -63,6 +63,27 @@ SdCardFontSystem sdFontSystem;
 // unconditional here — FrontlightManager::present() is the runtime question.
 FrontlightManager frontlight;
 
+namespace {
+// Set when a gesture changed the light; loop() turns it into the one SD write.
+// Never written from the input hook's own call site for a reason: the hook runs
+// inside InputManager::update(), and a card write there would sit on the input
+// path and block every other poll behind it.
+bool frontlightStateChanged = false;
+
+// Both of this board's programmable inputs land here, so the gesture means the
+// same thing whichever one the rider used (side switch or capacitive home key).
+void toggleFrontlight(const char* source) {
+  if (!frontlight.present()) return;
+  if (frontlight.brightness() > 0) {
+    frontlight.off();
+  } else {
+    frontlight.on();
+  }
+  frontlightStateChanged = true;
+  LOG_INF("BTN", "%s: frontlight %u%%", source, static_cast<unsigned>(frontlight.brightness()));
+}
+}  // namespace
+
 #if FREEINK_DEVICE_LILYGO
 // The T5 S3 Pro's user button (switch S3, silkscreened IO48, wired to PCA9535
 // IO12 -- docs/devices/lilygo-t5-s3-pro.md, "The four physical buttons") is the
@@ -96,9 +117,6 @@ bool userButtonDown = false;
 bool userButtonLongFired = false;
 unsigned long userButtonDownAt = 0;
 bool userButtonClickPending = false;
-// Set by the hook when a hold changed the light, cleared by loop() once the new
-// state is on the card.
-bool userButtonLightChanged = false;
 uint8_t userButtonClickPolls = 0;
 unsigned long userButtonClickSince = 0;
 
@@ -121,15 +139,7 @@ uint8_t userButtonHook() {
     // Fires the moment the hold is long enough, not on release: the light comes
     // on under the thumb, which is the feedback that says "let go now".
     userButtonLongFired = true;
-    if (frontlight.brightness() > 0) {
-      frontlight.off();
-    } else {
-      frontlight.on();
-    }
-    // The write itself waits for loop(): this runs inside InputManager::update(),
-    // and an SD write on the input path would block every other poll behind it.
-    userButtonLightChanged = true;
-    LOG_INF("BTN", "User button hold: frontlight %u%%", static_cast<unsigned>(frontlight.brightness()));
+    toggleFrontlight("User button hold");
   } else if (!down && userButtonDown) {
     userButtonDown = false;
     if (!userButtonLongFired) {
@@ -874,9 +884,16 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   gpio.update();
-#if FREEINK_DEVICE_LILYGO
-  if (userButtonLightChanged) {
-    userButtonLightChanged = false;
+  // The second way to the light: a hold on the capacitive home key below the
+  // panel, on any board that has one. Handled here rather than in an activity so
+  // every screen has it, and before activityManager.loop() so the screen on top
+  // cannot consume it first. The SDK suppresses the key's tap once the hold
+  // fires (InputManager::serviceTouch), so a hold never also selects.
+  if (gpio.wasHomeKeyLongPressed()) {
+    toggleFrontlight("Home key hold");
+  }
+  if (frontlightStateChanged) {
+    frontlightStateChanged = false;
     SETTINGS.frontlightOn = frontlight.brightness() > 0 ? 1 : 0;
     if (frontlight.brightness() > 0) SETTINGS.frontlightBrightness = frontlight.brightness();
     // One SD write per deliberate hold, never per poll. Same rule the map's
@@ -884,7 +901,6 @@ void loop() {
     // handful of times a ride, so this is not an every-interaction write.
     SETTINGS.saveToFile();
   }
-#endif
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
