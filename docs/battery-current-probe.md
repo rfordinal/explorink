@@ -58,17 +58,38 @@ half of it**. The measurement 2b wants is unchanged.
 
 ## What is verified
 
-**Nothing on hardware yet.** Written 2026-09-02; it compiles clean in
-`env:t5s3pro`. What a device pass has to check:
+**Run on the T5 S3 Pro, 2026-09-02**, on USB, cell full and charge terminated:
 
-1. `CMD:BATT` answers at all, with plausible `mv` and `pct` against what
-   `mapcmd.py stats` reports from the same gauge through the SDK's own path.
-2. `curr_ma` moves the right way: negative (out of the cell) on battery, positive
-   while charging, near zero at termination.
-3. `chg` tracks plugging and unplugging USB.
-4. The read does not disturb the SDK's own gauge reads -- the handler calls
-   `Wire.begin()` with the same pins and clock the SDK uses, so it reconfigures
-   the bus to what it already is, but that is read off the code and not observed.
+```
+BATT:mv=4100 pct=100 curr_ma=0 chg=3 gauge=0x55 charger=0x6B
+```
+
+- **It answers, and repeatably** -- three reads two seconds apart gave the
+  identical line, and three more during a map render gave it again.
+- **`mv` and `pct` are plausible and agree with the SDK's own path**: 4101 mV and
+  100 %, against the 100 % the header draws through `BatteryMonitor`.
+- **`chg=3` is the charger reporting charge done**, which is what a full cell on
+  USB should say, so the BQ25896 read at `0x0B` works.
+- **No disturbance seen.** The map screen kept rendering and drawing its own
+  battery figure with this handler re-beginning the bus underneath it. Observed,
+  not proven -- a race would not show up in six reads.
+
+**`curr_ma` is the one that is not verified, and 0 is exactly why.** On USB with
+charge terminated the cell is neither charging nor discharging, so 0 is the right
+answer -- and it is also what a broken read would print. The field says the I2C
+read succeeded (a failure prints `?`) and nothing more. **A reading of 0 here is
+a check that cannot fail.**
+
+Two things still to run, and both need the cell to be doing something:
+
+1. **Discharge, then read while charging.** Unplug USB for long enough to drop
+   the cell off termination, plug back in, and `curr_ma` should go clearly
+   positive (into the cell). That closes the sign convention and the magnitude in
+   one go, and it costs one cable pull.
+2. **Read on battery.** `curr_ma` should be negative and roughly the board's
+   draw. This cannot be done over USB serial -- unplugging the cable ends the
+   session -- so it needs either a BLE-reachable version of this command or a
+   periodic row written to the card, like `GnssLog`. Neither exists.
 
 **And a trap worth naming before the first run**: the serial console wedges until
 a line arrives with a leading newline (`gnss.md`, "The BLE path still works with
