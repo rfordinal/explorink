@@ -141,6 +141,20 @@ class MapTransferReceiver {
     // learns what a transfer is. A route or style push leaves this false.
     bool activeTileValid = false;
     MapTileCoord activeTile;
+    // True from the moment the last chunk is written until the file is renamed
+    // into place: the close, the CRC read-back and the rename. `received`
+    // equals `total` for the whole of it and not one byte moves, so without
+    // this a screen showing byte progress simply stops, and a stop is what a
+    // dead link looks like. On a megabyte tile the read-back is seconds of it
+    // (see "Write to .part, rename at the end" -- the CRC is computed by
+    // reading the card back, not accumulated from the chunks).
+    //
+    // Published on its own rather than derived from `received == total`: the
+    // publish that would carry that equality is the one at the end of the
+    // completing frame, which does not happen until the whole pass is over. So
+    // the activity task's last view during the pause is the *previous* chunk's,
+    // one payload short of the total, and there is nothing in it to read.
+    bool verifying = false;
     // Bumped once per landed tile. The activity task keeps its own copy and
     // acts when the two differ; that is what makes the handoff a signal
     // rather than a repeated instruction.
@@ -240,6 +254,9 @@ class MapTransferReceiver {
   // as a tile, cleared whenever the transfer ends, either way.
   bool activeTileValid_ = false;
   MapTileCoord activeTile_;
+  // Host task's side of Status::verifying. Cleared wherever a transfer ends,
+  // both ways.
+  bool verifying_ = false;
 
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;

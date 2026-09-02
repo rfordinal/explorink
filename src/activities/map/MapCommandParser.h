@@ -29,6 +29,8 @@
 //   have
 //   stale <z> <col> <row>
 //   checked <n>|unknown
+//   push <n>
+//   fake <missing> <held>
 //   info
 //   stats
 //   pin set <key> <lat> <lon> [<utc>]
@@ -49,6 +51,23 @@
 // when it could not reach the index. **`unknown` is not zero.** A phone with no
 // signal cannot tell a current tile from a stale one, and treating its silence
 // as "all current" would bury exactly the bug this exists to find.
+//
+// `push <n>` is the phone announcing a batch it is about to send. Sent once per
+// connection, before that connection's first begin frame: a dropped link takes
+// the run with it, so a phone that comes back and simply resumes pushing lands
+// its bytes on a screen that has gone back to believing there is nothing to do. Everything
+// else on this channel is reactive: the device hatched a square, wrote it down
+// and asks for it back. Ground the rider has never been on is on no list, so a
+// pre-trip push of a whole city arrives with the sync screen believing there is
+// nothing to do -- the bytes land, and every progress element stays dark
+// because the screen sized itself from an empty missing list
+// (`docs/missing-tiles.md`, "A batch the device never asked for"). The count is
+// the only thing the device needs: it does not need to know which tiles, only
+// how many files are coming, so it can draw a bar and finish the run.
+//
+// Write-only, and it answers nothing but `OK`. It reveals no position, no
+// route and no stored data, so it adds no exposure the transfer channel that
+// follows it does not already have.
 //
 // `stats` is the power meter: battery millivolts, CPU clock time, panel
 // refresh counts, loop duty cycle. Same keys as the SD card's power.csv
@@ -101,6 +120,7 @@ enum class MapCommandType : uint8_t {
   Have,
   Stale,
   Checked,
+  Push,
   Info,
   Stats,
   Fake,
@@ -154,6 +174,9 @@ struct MapCommand {
   // and is claiming nothing, which is a different answer from `checked 0`.
   uint16_t checkedCount = 0;
   bool checkedKnown = false;
+  // Push: how many files the phone says it is about to send. uint16 because the
+  // bound below is far inside it -- see kMaxPushCount.
+  uint16_t pushCount = 0;
   // Fake: how many synthetic missing tiles and how many synthetic held tiles to
   // seed around the current viewport. A layout affordance, not a protocol one --
   // it exists so the tile sync screen's grid can be looked at on the panel

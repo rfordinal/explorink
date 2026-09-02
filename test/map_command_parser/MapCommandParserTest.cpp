@@ -1443,3 +1443,100 @@ TEST(StaleTilesList, StaysBoundedAndAllocatesNothing) {
   EXPECT_TRUE(list.contains(13, 0, 0));
   EXPECT_FALSE(list.contains(13, StaleTilesList::kMaxEntries + 5, 0));
 }
+
+// ---------------------------------------------------------------- push
+
+namespace {
+
+struct RecordingPushObserver final : IMapPushObserver {
+  std::vector<uint16_t> announced;
+  void onPushAnnounced(uint16_t count) override {
+    announced.push_back(count);
+    g_events.emplace_back("push:" + std::to_string(count));
+  }
+};
+
+}  // namespace
+
+TEST(MapCommandParser, PushTakesOneCount) {
+  const MapCommand cmd = parseMapCommand("push 55");
+  ASSERT_EQ(cmd.type, MapCommandType::Push);
+  EXPECT_EQ(cmd.pushCount, 55u);
+}
+
+// Zero is a phone-side bug, not a no-op: answering OK to it would leave a
+// screen showing a run that can never move.
+TEST(MapCommandParser, PushRejectsZeroWrongArityAndGarbage) {
+  EXPECT_EQ(errorOf("push 0"), MapCommandError::OutOfRange);
+  EXPECT_EQ(errorOf("push"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("push 12 13"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("push fifty"), MapCommandError::BadNumber);
+  EXPECT_EQ(errorOf("push -3"), MapCommandError::BadNumber);
+}
+
+// The cap is an order of magnitude past any real batch (a 40 km box around
+// Barcelona is 77 tiles), so it exists to keep a garbage number off the panel.
+TEST(MapCommandParser, PushIsBounded) {
+  EXPECT_EQ(parseMapCommand("push 4096").type, MapCommandType::Push);
+  EXPECT_EQ(errorOf("push 4097"), MapCommandError::OutOfRange);
+}
+
+// The observer is called before the terminating OK: the phone sends its first
+// begin frame off the back of that OK, so the screen has to have the batch on
+// its books by then.
+TEST(MapCommandConsole, PushReachesTheObserverBeforeTheOk) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  RecordingPushObserver observer;
+  state.setPushObserver(&observer);
+
+  g_events.clear();
+  feedLine(console, out, "push 55");
+
+  ASSERT_EQ(observer.announced.size(), 1u);
+  EXPECT_EQ(observer.announced[0], 55u);
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");
+  ASSERT_EQ(g_events.size(), 2u);
+  EXPECT_EQ(g_events[0], "push:55");
+  EXPECT_EQ(g_events[1], "reply:OK");
+}
+
+// A screen that cannot count a batch must not answer like one that counted it.
+// The map screen is exactly this case, and the phone is about to spend tens of
+// minutes of radio on the answer.
+TEST(MapCommandConsole, PushSaysUnavailableWithNoObserver) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "push 55");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO push=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+// Which screen is up. Omitted when nothing set it, so a phone reads a missing
+// line as "this firmware cannot say" -- which an older build genuinely is --
+// and never as either screen.
+TEST(MapCommandConsole, InfoReportsTheScreenOnlyWhenSet) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "info");
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO screen=", 0) == 0; }),
+            0);
+
+  out.lines.clear();
+  state.setScreenName("sync");
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO screen=sync"), out.lines.end());
+
+  out.lines.clear();
+  state.setScreenName("map");
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO screen=map"), out.lines.end());
+}

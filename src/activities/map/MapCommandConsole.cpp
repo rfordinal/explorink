@@ -173,6 +173,28 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       out.reply("OK");
       return false;
 
+    case MapCommandType::Push: {
+      if (pushObserver_ == nullptr) {
+        // Same distinction `fake=unavailable` and `pins=unavailable` make: a
+        // screen that cannot count a batch must not answer like one that
+        // counted it. The map screen is exactly this case, and it is the one
+        // the phone must not push a long batch over at all -- `info`'s
+        // `screen=` line is how it finds that out first.
+        out.reply("INFO push=unavailable");
+        out.reply("OK");
+        return false;
+      }
+      // Before the reply, so the screen has the batch on its books by the time
+      // the phone hears `OK` and starts sending. The observer only flags work;
+      // it must not paint here (IMapPushObserver).
+      pushObserver_->onPushAnnounced(cmd.pushCount);
+      out.reply("OK");
+      // No redraw flag: this returns to whichever channel is draining the
+      // console, and the redraw belongs to the screen that took the
+      // announcement, on its own loop().
+      return false;
+    }
+
     case MapCommandType::Fake: {
       if (fakeSink_ == nullptr) {
         // Distinct from seeding zero, and for the same reason
@@ -436,6 +458,16 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
 
   snprintf(line, sizeof(line), "INFO bytes=%lu", static_cast<unsigned long>(bytesRead_));
   out.reply(line);
+
+  // Which screen is up. The phone needs it before a long batch: both screens
+  // run the same BLE server and the same console, and a batch over the map
+  // screen dies -- its post-arrival redraw fires on a settle timer with no
+  // check on whether bytes are moving, and the link does not recover
+  // (../../../docs/ble-map-transfer-protocol.md, "The hard half").
+  if (screenName_ != nullptr) {
+    snprintf(line, sizeof(line), "INFO screen=%s", screenName_);
+    out.reply(line);
+  }
 
   // Which .tib version this build reads. A supplier of tiles needs it before it
   // pushes anything -- a tile built to another version passes CRC and is then

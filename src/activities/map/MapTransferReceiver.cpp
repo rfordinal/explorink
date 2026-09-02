@@ -315,6 +315,7 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   }
 
   active_ = true;
+  verifying_ = false;
   declaredTotal_ = total;
   declaredCrc_ = crc;
   received_ = 0;
@@ -396,6 +397,15 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   if (received_ < declaredTotal_) return;
 
   // --- complete ---
+  // Every byte is on the card and the verdict work starts. Published right
+  // here, not at the end of the frame like everything else: what follows is a
+  // close, a whole-file read-back and a rename, seconds of it on a megabyte
+  // tile, and the frame's own publish() at the bottom of onFrame() only runs
+  // once all of that is over. Without this the activity task sees the previous
+  // chunk's counters for the whole pause and the panel reads as hung.
+  verifying_ = true;
+  publish();
+
   // Closed before the read-back: the same HalFile cannot be open for write
   // and reopened for read (firmware CLAUDE.md, DESTRUCTOR_CLOSES_FILE), and
   // the rename below needs the handle gone too.
@@ -439,6 +449,7 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
 
   const uint32_t bytes = received_;
   active_ = false;
+  verifying_ = false;
   received_ = 0;
   declaredTotal_ = 0;
   activeTileValid_ = false;
@@ -492,6 +503,7 @@ void MapTransferReceiver::abandon(const char* reason) {
   const bool endedElsewhere = !active_;
 
   active_ = false;
+  verifying_ = false;
   received_ = 0;
   declaredTotal_ = 0;
   activeTileValid_ = false;
@@ -615,6 +627,7 @@ void MapTransferReceiver::publish() {
   next.tileSeq = tileSeq_;
   next.activeTileValid = activeTileValid_;
   next.activeTile = activeTile_;
+  next.verifying = verifying_;
 
   portENTER_CRITICAL(&g_mux);
   snapshot_ = next;
