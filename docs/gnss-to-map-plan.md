@@ -366,12 +366,23 @@ The short version:
 - The receiver's rail comes up in `MapActivity::onEnter()` and goes down in
   `onExit()`, and only if the map is what started it.
 
-**Step 3's "done when" is met in its first half and open in its second.** The
-map draws from the receiver on hardware with no phone. Nobody has run the same
-build with `mapGnssPosition 0` to show the phone path still works, and that
-sentence is part of the same "done when". Of the five checks `gnss.md` lists
-under "What a hardware pass has to check", two are done, one is half done and
-two were not run.
+**Step 3's "done when" is met on both halves.** The map draws from the receiver
+on hardware with no phone (the ride, 2026-09-01), and the same build still draws
+from the phone with the setting off (a bench run, 2026-09-02). Of the five checks
+`gnss.md` lists under "What a hardware pass has to check", three are done, one is
+half done and one cannot be run with today's instrumentation.
+
+**Board state, 2026-09-02: `mapGnssPosition` is 0 on the device.** It was set
+during the BLE regression run and never set back. Powering the device off does
+not clear it: `CMD:SETTING` calls `SETTINGS.saveToFile()`
+(`src/main.cpp:1023`), the field is serialised into `settings.json`
+(`src/CrossPointSettings.cpp:102`) and read back at boot with a default of 0
+(`:224`). So the card holds a zero and the next boot will too.
+
+**The first command of every future GNSS run is therefore `CMD:SETTING
+mapGnssPosition 1`.** Without it the map runs off the phone, everything looks
+correct, and the receiver takes no part in what is being judged. That is the
+worst shape a test can have: a pass that measured the wrong code.
 
 **T-576's SPI contention was exercised on that ride, and today's instrumentation
 cannot say what happened.** This is the first code path that powers the LoRa rail
