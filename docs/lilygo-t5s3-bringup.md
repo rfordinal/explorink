@@ -138,11 +138,15 @@ used it: the map screen's Down action, and the `POWER` + `DOWN` screenshot combo
 gesture away from leaving the light on in a bag, and deep sleep stops the LEDC
 peripheral without defining what the pin does afterwards.
 
-**Confirmed on hardware, 2026-09-02.** A tap on the side switch reaches the app
-as Confirm -- `[INPUT] button released: Confirm (1)` in the serial log -- and a
-hold toggles the frontlight, observed by the maintainer on the device (the
-toggle's own `[BTN]` line fell outside the capture window, so the log carries
-the tap and not the hold).
+**Confirmed on hardware, 2026-09-02**, both gestures and the persistence:
+
+```
+[INPUT] button released: Confirm (1)          tap reaches the app as Confirm
+[BTN] User button hold: frontlight 40%        hold toggles, once per hold
+```
+
+The hold logged no `Confirm` line of its own, which is the suppression working:
+a hold never also selects.
 
 **The brightness is persisted.** `CrossPointSettings` gained `frontlightOn` and
 `frontlightBrightness`; `setup()` restores them after `loadFromFile()`, and both
@@ -151,9 +155,16 @@ the light off must not forget the level it was at. The write happens in `loop()`
 and not in the input hook: an SD write on the input path would block every other
 poll behind it.
 
+Verified over three reboots (every serial open resets this board, which made the
+test cheap): `CMD:LIGHT 40` then reboot answered `LIGHT_OK:40`; a hold that
+switched the light off then reboot answered `LIGHT_OK:0`; and the next hold came
+back at **40 %, not the SDK's 50 % default**, which is the part that says the
+level survived the off.
+
 **Still to check:** that a tap never double-fires and is never dropped after a
 slow redraw, that the I2C read per input poll does not disturb GT911 touch or a
-panel refresh, and that the light is off after a sleep/wake cycle.
+panel refresh, and that the light is off after a sleep/wake cycle (deep sleep,
+not the reset a serial open causes).
 
 ## The board has a second programmable input: the capacitive home key
 
