@@ -91,6 +91,140 @@ so `src/main.cpp` corrects it after `frontlight.begin()` with
 was only ever driven at 1 kHz here; 5 kHz was never tried, so nothing is known
 about how it behaves.
 
+## The user button: tap is Select, hold toggles the frontlight
+
+**Written 2026-09-02, not yet run on hardware.**
+
+This board has four switches and only one of them is readable and free of a
+fixed job: switch S3 (silkscreened `IO48`), which is net `BUTTON` on PCA9535
+`IO12` -- the parent repo's `docs/devices/lilygo-t5-s3-pro.md` has the schematic
+trace for all four. So that one button carries two functions:
+
+| gesture | result |
+|---|---|
+| tap (release under 600 ms) | `BTN_CONFIRM` -- Select, on every screen |
+| hold 600 ms | frontlight toggles, immediately, without releasing |
+
+Why the light hangs off a physical hold rather than a touch control: gloves
+defeat the capacitive panel, and the light is what a rider reaches for with
+gloves on.
+
+**It is wired in `src/main.cpp`, not through `BoardT5S3::begin()`.** That
+function installs the SDK's own hook, which reports the button as `BTN_DOWN`,
+and it is still never called here (see the GNSS section above). `setup()`
+configures `IO12` as an input on the expander and installs a local
+`userButtonHook()` instead, right after `frontlight.begin()` -- the hook can
+toggle the light, so it must not be reachable before the LEDC channel exists.
+
+Three things in that hook are load-bearing:
+
+- **Nothing is reported while the button is down.** A `Confirm` press edge at
+  touch-down would let the activity act before the hold could still turn out to
+  mean the frontlight. The tap is synthesised after release instead.
+- **The synthetic press is measured in polls, not milliseconds.**
+  `InputManager` commits a state change only after two `update()` calls at
+  least `DEBOUNCE_DELAY` (5 ms) apart saw the same state. A wall-clock pulse
+  would expire unobserved inside a multi-second panel refresh and the tap would
+  vanish; the pulse therefore waits for 3 polls **and** 20 ms.
+- **The hold fires at the threshold, not on release**, so the light comes on
+  under the thumb.
+
+**What this costs.** `BTN_DOWN` is now unreachable on this board, and two things
+used it: the map screen's Down action, and the `POWER` + `DOWN` screenshot combo
+(`src/main.cpp`). Screenshots on the T5 S3 Pro have to come from
+`CMD:SCREENSHOT` or the touch UI until a second input exists.
+
+`enterDeepSleep()` now drives the frontlight off before sleeping: a hold is one
+gesture away from leaving the light on in a bag, and deep sleep stops the LEDC
+peripheral without defining what the pin does afterwards.
+
+**Confirmed on hardware, 2026-09-02**, both gestures and the persistence:
+
+```
+[INPUT] button released: Confirm (1)          tap reaches the app as Confirm
+[BTN] User button hold: frontlight 40%        hold toggles, once per hold
+```
+
+The hold logged no `Confirm` line of its own, which is the suppression working:
+a hold never also selects.
+
+**The brightness is persisted.** `CrossPointSettings` gained `frontlightOn` and
+`frontlightBrightness`; `setup()` restores them after `loadFromFile()`, and both
+the hold and `CMD:LIGHT` write them. Two fields rather than one, because turning
+the light off must not forget the level it was at. The write happens in `loop()`
+and not in the input hook: an SD write on the input path would block every other
+poll behind it.
+
+Verified over three reboots (every serial open resets this board, which made the
+test cheap): `CMD:LIGHT 40` then reboot answered `LIGHT_OK:40`; a hold that
+switched the light off then reboot answered `LIGHT_OK:0`; and the next hold came
+back at **40 %, not the SDK's 50 % default**, which is the part that says the
+level survived the off.
+
+**Still to check:** that a tap never double-fires and is never dropped after a
+slow redraw, that the I2C read per input poll does not disturb GT911 touch or a
+panel refresh, and that the light is off after a sleep/wake cycle (deep sleep,
+not the reset a serial open causes).
+
+## The board has a second programmable input: the capacitive home key
+
+**Found 2026-09-02, on hardware.** The GT911 reports a capacitive key below the
+panel on this board, and the firmware already sees it:
+
+```
+[112860] [DBG] [INPUT] home key pressed
+[113588] [DBG] [INPUT] home key long-pressed
+```
+
+The SDK reads the key's status bit (`0x10`) unconditionally, so this works even
+though `LILYGO_T5_PRO_GT911` leaves `hasHomeKey` at its default `false`
+(`BoardConfig.h`) -- the flag gates nothing today. `InputManager` already
+separates the two gestures: `wasHomeKeyTapped()` fires on the release of a short
+press, `wasHomeKeyLongPressed()` at 700 ms (`HOME_KEY_LONG_PRESS_MS`), and the
+hold suppresses the tap.
+
+**Nothing in the app reads any of it yet.** `HalGPIO` forwards all three events
+and logs them; no activity asks.
+
+So this board has **two** programmable inputs, not one: the side switch (S3,
+PCA9535 `IO12`) and this key.
+
+**Both carry the same two gestures, 2026-09-02** (maintainer's call: try each in
+real use before splitting them up). Tap is Select, hold toggles the frontlight,
+whichever input the rider reached for. **Verified on hardware the same day**,
+all four combinations -- the maintainer confirmed both taps select on screen,
+and the log carries the rest:
+
+```
+[INPUT] home key tapped
+[BTN] Home key hold: frontlight 40%        then 0% on the next hold
+[INPUT] button pressed: Confirm (1)        side switch, released 34 ms later
+[BTN] User button hold: frontlight 40%     then 0%
+```
+
+| | tap | hold |
+|---|---|---|
+| side switch (S3, `IO12`) | Confirm | frontlight (600 ms) |
+| home key (GT911) | Confirm | frontlight (700 ms, the SDK's threshold) |
+
+Two different code paths, because the two inputs arrive differently. The switch
+is synthesised into a `BTN_CONFIRM` click by the board hook in `main.cpp`; the
+key already has tap and hold events in the SDK, so `MappedInputManager` reports
+its tap as `Button::Confirm` (next to the swipe that becomes Back) and `loop()`
+takes its hold. Both holds land in one `toggleFrontlight()`, so the gesture
+cannot come to mean two different things.
+
+**The X4 Pro inherits the home-key half** -- it has a home key too and the
+`MappedInputManager` change is not board-conditional. No env builds that board
+today, so nothing ships with it untested, but a future X4 Pro env starts with
+its home key selecting.
+
+The split is still worth revisiting once both have been used: gloves defeat the
+capacitive key and do not defeat the switch, so anything a rider needs while
+moving belongs on the switch.
+
+
+
 ## The map draws, 2026-08-31
 
 `CMD:GOTO_MAP`, then `CMD:SCREENSHOT`, which answers `SCREENSHOT_START:64800` --
@@ -269,9 +403,11 @@ are about this board and not about GNSS:
   `LilyGoT5S3LgfxConfig.cpp`, for the EPD power pins, and the only reason I2C is
   up at all is GT911 touch init (`InputManager.cpp:839`). So
   `disableGpsLora()` has never run, `LORA_RST` is undriven at boot, and the
-  user button behind the expander has no hook -- which is the same gap the
+  user button behind the expander had no hook -- which is the same gap the
   unmerged `feat/t5s3-board-begin` branch was opened for, and part of why the
-  map is half-operable here (below).
+  map is half-operable here (below). The button now has one, installed from
+  `src/main.cpp` rather than by calling `BoardT5S3::begin()` (see "The user
+  button" above); everything else in this bullet still holds.
 - **LovyanGFX does drive `LORA_CS` as a GPIO.** The parent repo's
   `docs/lora.md` had this `[open]` because M5GFX was not checked out. It is now:
   `Bus_EPD` drives the pins handed to it as `pin_oe` and `pin_pwr` as real

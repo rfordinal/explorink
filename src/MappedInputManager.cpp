@@ -309,13 +309,27 @@ bool MappedInputManager::wasHomeGesture() const {
   return false;
 }
 
+// A tap on the capacitive home key below the panel is Select, the same as a tap
+// on the board's physical user button. Synthesised here the way a bottom-edge
+// swipe becomes Back below: an activity asks for Confirm and never has to know
+// which piece of hardware produced it.
+//
+// The key reports its tap only on RELEASE, and only when the 700 ms hold
+// threshold was not crossed (InputManager::serviceTouch). That is what lets the
+// same key carry the frontlight hold in main.cpp without ever selecting on the
+// way there. Boards with no home key never see this: the SDK leaves the event
+// false.
+bool MappedInputManager::wasHomeKeyConfirm() const { return gpio.wasHomeKeyTapped(); }
+
 bool MappedInputManager::wasPressed(const Button button) const {
   if (button == Button::Back && wasBackGesture()) return true;
+  if (button == Button::Confirm && wasHomeKeyConfirm()) return true;
   return mapButton(button, &HalGPIO::wasPressed);
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
   if (button == Button::Back && wasBackGesture()) return true;
+  if (button == Button::Confirm && wasHomeKeyConfirm()) return true;
   return mapButton(button, &HalGPIO::wasReleased);
 }
 
