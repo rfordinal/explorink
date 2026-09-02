@@ -376,7 +376,12 @@ stale position now looks current. Nothing else on the header carries fix age
 either, so today the rider has no on-screen signal that the dot is old. If that
 turns out to bite on a real ride, the fix is additive rather than a rewrite --
 the anchor already knows when the last packet landed, so a staleness marker
-beside the clock is a small change. Nobody has ridden with this yet.
+beside the clock is a small change.
+
+**Ridden 2026-09-02, and it bit.** The logged ride had gaps between accepted
+fixes of up to 21 s -- about 500 m at 85 km/h -- with nothing on the panel saying
+the dot was old ([`gnss.md`](gnss.md), "Fixes stop while the map renders"). The
+staleness marker is no longer a hypothetical cost.
 
 ### What is drawn
 
