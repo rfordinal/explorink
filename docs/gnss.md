@@ -686,6 +686,51 @@ reckoning with no satellites behind it (`Gnss.h`), and a map whose whole claim i
 this job: it latches true on the first solution and stays true, so it says "has
 ever had a fix", not "has one now".
 
+### Ten minutes to a first fix outdoors, and the design is the likely cause
+
+**Reported from the first real ride, 2026-09-02: over ten minutes outdoors
+before the receiver had a position.** That is not a bring-up curiosity, it is a
+product problem -- a device whose whole claim is *where am I* answering it a
+quarter of an hour after the rider stops is answering the wrong question.
+
+The estimate this branch wrote down was wrong by an order of magnitude. "Tens of
+seconds from cold" is in the `onEnter()` comment and in the plan's step 5 note,
+and it was arithmetic-free guesswork.
+
+**The likely mechanism, and it is this branch's own design.** The rail comes up
+in `MapActivity::onEnter()` and goes down in `onExit()`, so the receiver loses
+power every time the map is closed. A receiver with no power keeps no ephemeris
+and no almanac, so **every map entry is a cold start**, and a GPS cold start
+with no almanac has to download one from the satellite broadcast before it can
+fix. Ten-plus minutes is the right order for that.
+
+**`[open]` -- the 12.5 minute almanac figure is textbook GPS and not cited from
+a primary source here, and the L76K's own cold/warm/hot TTFF numbers have never
+been read off its datasheet.** Both belong in this file before the mechanism is
+treated as settled. What would confirm it cheaply: a second map entry a minute
+after the first should fix in seconds if the receiver kept anything, and in
+minutes again if it did not.
+
+**And the board may not offer a way out.** The L76K's backup supply is what
+normally keeps ephemeris alive across a power cut, and `BoardT5S3Pins.h` exposes
+exactly three GNSS-related lines -- `T5S3_GPS_RXD` (44), `T5S3_GPS_TXD` (43) and
+the shared `PCA9535_IO00_LORA_GPS_EN`. There is no separate backup rail in the
+header. Whether the module has one wired on the board at all is a schematic
+question for LilyGo, and the vendor thread is open.
+
+So the design choice this branch made deliberately -- no silent power drain,
+rail follows the map -- **bought the wrong thing**. It saves current the rider
+was not asking to save and spends the one resource the product cannot get back,
+which is the seconds between opening the map and knowing where you are. Step 5
+of [`gnss-to-map-plan.md`](gnss-to-map-plan.md) was framed as "can the receiver
+stay powered during a ride"; the real question is now the opposite one: **what
+does it cost to never power it down**, and is there any acceptable middle.
+
+**Needs observing more than once before anything is changed.** One ride is one
+sample, the sky was whatever it was that morning, and the receiver's state
+before the ride is not known with certainty. The next rides should each record
+what the fix cost, which `gnss.csv` now makes possible.
+
 ### Heading, and the gate that decides whether to believe the course
 
 `src/activities/map/MapGnssHeading.{h,cpp}`, a pure module next to `MapFollow`

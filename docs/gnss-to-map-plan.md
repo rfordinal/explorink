@@ -20,7 +20,7 @@ this file is only what comes next.
 | 2b | What the pair draws | device, a cell that is confirmed present (T-583), one small firmware change | open, **gated on T-583** |
 | 3 | GNSS as a third `applyFix()` caller | device | **built 2026-09-01, NOT run on hardware** -- needs the device pass below |
 | 4 | Heading from course, on-device | device | **built 2026-09-01, NOT ridden with** -- host-tested, gate not judged on the device |
-| 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
+| 5 | Priority when both sources are live, **and the duty cycle** | numbers from 2, product decision | **reframed 2026-09-02**: a ride took 10+ min to first fix, so the question is what it costs to never power the receiver down |
 
 ## How sessions share this
 
