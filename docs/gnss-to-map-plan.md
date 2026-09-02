@@ -289,9 +289,17 @@ One thing to get right when measuring: the gauge reports *battery* current, so
 read it with **USB unplugged**, on the cell. On USB the charge path dominates and
 the number is about charging, not about what the pair draws.
 
-A meter in series at the board's battery connector remains allowed and is the
-cross-check, not the primary path (`docs/hardware-policy.md` in the parent -- a
-bare development board is not a device).
+**There is no cross-check at the cell, corrected 2026-09-02.** An earlier version
+of this step said a meter in series at the board's battery connector was allowed
+here. It is not: our T5 S3 Pro **arrived in a closed shell**, which makes it a
+device under `docs/hardware-policy.md` in the parent, and `P2` is inside it. The
+claim came off the vendor schematic before the hardware landed.
+
+So 2b has the gauge and nothing else on the cell side. The one external
+instrument left is a **USB meter on VBUS**, which sees the board plus the charger
+and therefore prices state-against-state differences rather than an absolute
+draw (parent T-220). The gauge stays the primary path for this step, exactly as
+written above.
 
 **Done when** the mechanism is settled with a citation and both draws are
 recorded. Asking LilyGo for the schematic would settle 2a with no measurement at
