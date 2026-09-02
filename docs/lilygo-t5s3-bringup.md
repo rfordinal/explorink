@@ -191,7 +191,16 @@ PCA9535 `IO12`) and this key.
 
 **Both carry the same two gestures, 2026-09-02** (maintainer's call: try each in
 real use before splitting them up). Tap is Select, hold toggles the frontlight,
-whichever input the rider reached for.
+whichever input the rider reached for. **Verified on hardware the same day**,
+all four combinations -- the maintainer confirmed both taps select on screen,
+and the log carries the rest:
+
+```
+[INPUT] home key tapped
+[BTN] Home key hold: frontlight 40%        then 0% on the next hold
+[INPUT] button pressed: Confirm (1)        side switch, released 34 ms later
+[BTN] User button hold: frontlight 40%     then 0%
+```
 
 | | tap | hold |
 |---|---|---|
