@@ -18,7 +18,7 @@ this file is only what comes next.
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
 | 2a | Is the rail on by design or by an uncleared latch | device only, one I2C write | **done 2026-09-01**, verified on hardware: an uncleared latch |
 | 2b | What the pair draws | device, a cell that is confirmed present (T-583), one small firmware change | open, **gated on T-583** |
-| 3 | GNSS as a third `applyFix()` caller | device | **run on hardware 2026-09-01**: the map drew from the receiver, no phone connected. "Done when" half met -- the BLE path with the setting off was never re-checked |
+| 3 | GNSS as a third `applyFix()` caller | device | **done, verified on hardware**: the map drew from the receiver on the ride 2026-09-01, and the BLE path with the setting off was re-checked 2026-09-02 |
 | 4 | Heading from course, on-device | device | **built and ridden once, 2026-09-01** -- the gate held on 31 stationary rows; nobody watched the arrow on the panel |
 | 5 | Priority when both sources are live, **and the duty cycle** | numbers from 2, product decision | **reframed 2026-09-02**: a ride took 10+ min to first fix, so the question is what it costs to never power the receiver down |
 
@@ -81,23 +81,31 @@ maintainer's call.
 
 ### Gate B -- the map reading from the receiver
 
-A later merge, from step 3's own session. **One check away, as of 2026-09-02.**
+A later merge, from step 3's own session. **Met 2026-09-02**: both hardware
+checks run, both remaining items deferred by the maintainer in writing, each with
+its own reason.
 
 - **Step 3 done and verified on hardware.** The map draws from the receiver with
   no phone connected. **Met 2026-09-01**, on the ride.
 - **The BLE regression run.** The other half of step 3's own "done when": the
   same build with `mapGnssPosition 0`, a phone connected, the map drawing from
-  the phone. **Not run.** Five minutes, no ride, and it is the only thing left in
-  this gate.
+  the phone. **Done 2026-09-02**, on the build the ride ran, no reflash. The frame
+  re-anchored on the coordinates the phone sent
+  (`renderViewport start: lat=489250000 lon=174500000`), and the receiver stayed
+  off throughout (`GNSS_OFF`, not one `gnss fix:` line). `gnss.md`, "The BLE path
+  still works with the setting off". It matters most for the boards with no
+  receiver: X4 and X4 Pro have only this path.
 - **The stuck-byte drain** -- **deferred by the maintainer, 2026-09-02.** Reason:
   it cannot break anything. It discards **one byte per pass**, and only a
   non-`'C'` head byte that has sat unconsumed for five seconds
   (`src/main.cpp:817-841`) -- which the map's own console never produces, because
   it consumes within milliseconds. The worst case is one stale byte nothing was
   reading; a wedge it fails to clear leaves the device where it would have been
-  without it. It ships labelled, and the
-  label is the awkward kind of unverified -- it ran and the diagnostic never
-  fired. See "The drain ships open".
+  without it. It ships labelled, and the label is the awkward kind of
+  unverified -- it ran and the diagnostic never fired. **The 2026-09-02 bench run
+  reproduced the wedge and the diagnostic stayed dark there too**, which is one
+  more observation of the same shape, not a verification. See "The drain ships
+  open".
 - **T-576's SPI contention** -- **deferred by the maintainer, 2026-09-02.**
   Reason: the instrumentation to run it does not exist. Corrupt reads and absent
   tiles land on the same counter and draw the same hatch, so no ride and no
