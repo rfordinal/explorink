@@ -827,11 +827,19 @@ needed** to explain this ride:
 - **Still acquiring** -- ruled out. The sat count never climbed across seven
   minutes.
 
-**And weigh the ride accordingly.** A car dashboard is not this product's
-target: the thesis is a rider or a walker outdoors with open sky (`V4`, `V48`),
-and every number from this ride is from the worst realistic environment the
-receiver will ever see. It says what a car dashboard costs. It does not say what
-a handlebar or a rucksack strap gives.
+**And weigh the ride accordingly, but do not dismiss it.** A car dashboard is
+**one of this product's named scenarios** -- `V50` lists a car trip beside the
+motorbike and the walk, and `V24` says the vehicle does not define the target.
+So three to five satellites behind a windscreen is not an edge case to wave
+away: it is what one of the four shapes of the target actually gets, and the
+product has to be honest about it (`V38`). What this ride does **not** say is
+what the other three shapes get. Open sky, a handlebar and a rucksack strap are
+all unmeasured, and every number here is from the most attenuated placement the
+receiver will see.
+
+An earlier draft of this paragraph said a car dashboard is not the target and
+cited `V4` and `V48` for it. Both are about which hardware carries a receiver,
+not about where the device sits, and the claim contradicted `V50` outright.
 
 #### Fixes stop while the map renders, by up to 21 seconds
 
@@ -855,6 +863,9 @@ which made the 3.0 km/h gate look worthless. The ride says otherwise:
 - **31 rows at exactly 0.0 km/h during the ride, and `moving` was set on none of
   them.** The gate held, and the held headings were 4, 7 and 9 -- the direction
   the rider had last been going, which is what it is supposed to do.
+- **One ride, and inside a car.** 31 stationary rows is enough to say the gate
+  did not misfire that morning; it is not enough to say it never will. The
+  parked-outdoors case with open sky has not been seen at all.
 - Indoors the night before, the same code produced 9 false `moving` rows and
   four different wrong headings.
 
@@ -1005,6 +1016,11 @@ leaving the map and coming back pays acquisition again -- tens of seconds from
 cold, not the sub-second figure `Gnss::timeToFirstFixMs()` reports for a receiver
 that was already tracking. Whether that trade is right is the duty-cycle question
 in step 5 of the plan, and it needs step 2b's numbers first.
+
+**Read off the code, not observed.** Nobody has caught the rail latched on after
+a crash on this branch; the sequence below is `onExit()`'s two calls and the
+coredump's confirmed crash point, put together by reasoning. What would settle
+it: `CMD:GNSS PROBE` on the boot straight after a map-exit crash.
 
 **A crash on map exit leaves the rail on, and that is how the latch gets
 stuck.** `onExit()` calls `BlePositionServer::end()` before `gnss.end()`, and
