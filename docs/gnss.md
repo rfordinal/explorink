@@ -1090,9 +1090,9 @@ in.
 3. The same build with `mapGnssPosition 0` still draws from the phone.
    **Not run.** Nothing has checked that this branch left the phone path intact,
    and that is the half of step 3's "done when" that is still open.
-4. **The tiles get looked at, with the rail up.** **Not run.** The ride put the
-   rail up while the map streamed tiles for a whole trip, and nobody looked at
-   the pixels. See below -- this is the one check that fails silently.
+4. **The tile-read counters get read, with the rail up.** **Cannot be run from
+   a ride with today's instrumentation**, and looking at the panel is not the
+   check -- hatch says nothing about the cause. See below.
 5. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
    `CMD:GNSS ON` before entering the map is still running after leaving it.
    **Half done.** `gnss: started` / `gnss: stopped` / `gnss: started` was seen
@@ -1101,43 +1101,73 @@ in.
    half. Nobody read `GNSS_OFF` back after an exit, and nobody drove a
    console-started session through the map screen.
 
-### The SPI check has to be a look, not a survival
+### The SPI check needs a counter the firmware does not carry out of the frame
 
-**The 2026-09-01 ride exercised this for the first time and observed nothing.**
-The rail was up while the map rendered for a whole trip and nothing reported a
-failed tile read. That is not a result. No screenshot was taken with the rail
-up, nobody looked for hatch or torn geometry, and `gnss.csv` carries no tile
-counts -- so it is not even known how much tile data the card served during the
-ride, or whether the route had coverage at all. **T-576 is untested, not
-passed**, and the ride must not be cited as a pass on it. The next ride settles
-it cheaply: `CMD:SCREENSHOT` over covered ground with the rail up, and the same
-frames again with the rail down as the control.
+**Looking at the panel does not answer this, and an earlier version of this
+section said it did.** Hatch is drawn for a tile that is absent, truncated or
+crc32-mismatched alike (`MapHatch.h`: "absent, truncated or crc32-mismatched is
+drawn as hatch, never as white"), and on a ride a hatched tile almost always
+means what it usually means -- the card has no tile there. A rider cannot tell a
+corrupt read from missing coverage by eye, and neither can a screenshot.
 
-The failure mode of the contention is a **corrupt tile read**, not a crash. So
-"the device did not lock up" is a check that cannot fail: it also passes when
-nothing was tested, when the rail was never up, and when the map drew no data at
-all. Marking T-576 closed or deferred off a run like that leaves it untested and
-makes it look like it passed -- the same shape of mistake as reading `rxfull=0`
-as proof the UART survived when it also reads 0 when nothing was measured.
+**The telemetry does not separate them either.** `tilesUnavailable_` is
+incremented by every cause at once: a tile that is absent or will not open
+(`MapTileSource.cpp:123`, `:151`, `:183`), a layer already known bad in this
+frame (`:205`), a `beginLayer()` failure (`:223`) **and** a crc32 verdict of
+`Failed` (`:77`). That single number is what `MapActivity.cpp:5864` prints as
+`N tiles ok, M missing`. `crc32Skipped_` is not a second opinion: it counts
+cache hits, incremented at `MapTileSource.cpp:213` under `if (alreadyValidated)`.
 
-What settles it is somebody looking at the pixels:
+**One counter does separate them, and it cannot survive the trip.**
+`corruptLayers_` is incremented only on `LayerCheck::Failed`
+(`MapTileSource.cpp:76`), so it counts crc32 corruption and nothing else, and
+`MapActivity.cpp:5785-5793` logs `N corrupt layer(s) drawn ... redrawing without
+them` when it fires. Three things stop it answering T-576 off a ride:
 
-- `CMD:SCREENSHOT` (or `CMD:SCREENSHOT_GRAY`) **with the rail up**, over ground
-  that has real coverage -- `CMD:GOTO_MAP` prints `N tiles ok, M missing`, and a
-  viewport of missing tiles proves nothing about tile reads.
-- **More than one tile, and more than one frame.** Contention is intermittent by
-  nature: it needs a panel refresh asserting `LORA_CS` to coincide with a card
-  read, so a single screenshot that looks right is one sample.
-- What to look for is **torn geometry where map belongs**: a road that stops
-  mid-span, a coastline stepping sideways, an area fill bleeding past its
-  outline, or hatch where a tile should have drawn. A tile that failed its CRC
-  is drawn hatched rather than white on purpose (`MapHatch.h`: "absent,
-  truncated or crc32-mismatched is drawn as hatch, never as white"), so hatch in
-  the middle of covered ground is the loudest form this takes. A corruption that
-  still passes crc32 shows up as the torn geometry above instead, which is why
-  both are worth looking for.
-- The same frames with `mapGnssPosition 0` and the rail down are the control.
-  Without them a rendering artefact that was always there reads as contention.
+- **Frame-scoped.** `startPass()` resets it (`MapTileSource.cpp:41`), so it
+  describes the frame being drawn and nothing accumulates across a ride.
+- **Serial only.** Its one surface is that `LOG_ERR`, which needs
+  `ENABLE_SERIAL_LOG` and a cable. `gnss.csv` does not carry it, and neither
+  does anything else written to the card.
+- **The header's own comment oversells it.** `MapTileSource.h:203-204` says the
+  counter exists so a bad card is "visible in `info`". `writeInfo()`
+  (`MapCommandConsole.cpp:368`) prints console state and no tile counters, so
+  `info` does not show it.
+
+**So T-576 cannot be run against a ride today**, and the 2026-09-01 ride does not
+count as a run: the rail was up while the map rendered for a whole trip, but
+nothing that could have told corruption from absence was recorded, and
+`gnss.csv` carries no tile counts at all -- so it is not even known whether the
+route had coverage. **T-576 is untested, and the missing piece is instrumentation
+rather than attention.**
+
+Two ways to get it, and they are different sizes:
+
+**(a) Carry the counter out of the frame.** The branches are already separate in
+the code -- `MapTileSource.cpp:76` is crc32 corruption, `:223` is a
+`beginLayer()` failure, `:123`/`:151`/`:183` are absence -- so this is a
+per-pass total plus a way to read it, not new detection. With it the test is
+cheap and needs no ride: **the same viewport rendered with the rail up and with
+the rail down**, repeatedly. An identical viewport has an identical absent-tile
+count, so any delta is corruption. On a bench with a cable this is already
+half-possible today, because the `LOG_ERR` fires per frame -- what is missing
+there is only the tally.
+
+**(b) Bypass the map.** A dedicated task doing continuous CRC-checked card reads
+while full and partial refreshes loop, run with `LORA_RST` floating and then
+held low. Its own instrument, no dependency on the renderer, and it is the
+version already written down under "What a real test of check 2 looks like".
+
+**A comment that pointed the wrong way, fixed 2026-09-02.**
+`MapTileSource.cpp:214-222` used to say the `beginLayer()` failure there meant
+"present per the directory, but its own crc32 failed". It never did:
+`beginLayer()` (`MapTileReader.cpp:203-206`) checks no checksum -- the sum is
+folded out of the record stream and judged at the end -- and `hasLayer()` at
+`MapTileSource.cpp:156` has already ruled out a missing or empty layer entry, so
+the only way to reach that branch is a failed seek, a card read error. Anyone
+hunting corruption by reading that file would have counted the branch as
+corruption. `CLAUDE.md`, "Code comments answer WHY": a conclusion the code
+invites is the code's problem.
 
 ## The parser
 

@@ -81,23 +81,31 @@ maintainer's call.
 
 ### Gate B -- the map reading from the receiver
 
-A later merge, from step 3's own session. **Not met as of 2026-09-02**: one item
-done, one carried, one open.
+A later merge, from step 3's own session. **One check away, as of 2026-09-02.**
 
 - **Step 3 done and verified on hardware.** The map draws from the receiver with
-  no phone connected. **Met 2026-09-01**, on the ride. The other half of step
-  3's own "done when" -- the same build still drawing from the phone with
-  `mapGnssPosition 0` -- has not been run, and it is a five-minute check.
-- **The stuck-byte drain verified**, or explicitly deferred by the maintainer in
-  writing. **Still open**, and still the awkward kind of unverified: it ran and
-  the diagnostic never fired. See "The drain ships open".
-- **T-576's two open items either closed or explicitly deferred by the
-  maintainer**, not silently dropped: the SPI-contention test that has never run,
-  and a TTFF measured from the receiver's own power-on. **Both still open.** The
-  ride exercised the contention for the first time and nobody looked at the
-  tiles, so it stays untested rather than passed. The ride's 526 s is measured
-  from boot, not from the receiver powering up, so it is an upper bound and not
-  the TTFF this item asks for.
+  no phone connected. **Met 2026-09-01**, on the ride.
+- **The BLE regression run.** The other half of step 3's own "done when": the
+  same build with `mapGnssPosition 0`, a phone connected, the map drawing from
+  the phone. **Not run.** Five minutes, no ride, and it is the only thing left in
+  this gate.
+- **The stuck-byte drain** -- **deferred by the maintainer, 2026-09-02.** Reason:
+  it cannot break anything. It discards **one byte per pass**, and only a
+  non-`'C'` head byte that has sat unconsumed for five seconds
+  (`src/main.cpp:817-841`) -- which the map's own console never produces, because
+  it consumes within milliseconds. The worst case is one stale byte nothing was
+  reading; a wedge it fails to clear leaves the device where it would have been
+  without it. It ships labelled, and the
+  label is the awkward kind of unverified -- it ran and the diagnostic never
+  fired. See "The drain ships open".
+- **T-576's SPI contention** -- **deferred by the maintainer, 2026-09-02.**
+  Reason: the instrumentation to run it does not exist. Corrupt reads and absent
+  tiles land on the same counter and draw the same hatch, so no ride and no
+  screenshot can answer it. Both ways to build the instrument are in `gnss.md`,
+  "The SPI check needs a counter the firmware does not carry out of the frame".
+- **T-576's cold TTFF** -- still open, and unchanged by the ride. The 526 s is
+  measured from boot, not from the receiver powering up, so it is an upper bound
+  and not the figure this item asks for.
 
 Steps 4 and 5 are in **neither** gate. They are product decisions and they can
 land after either merge.
@@ -356,16 +364,20 @@ sentence is part of the same "done when". Of the five checks `gnss.md` lists
 under "What a hardware pass has to check", two are done, one is half done and
 two were not run.
 
-**T-576's SPI contention test was exercised on that ride, and nothing observed
-it.** This is the first code path that powers the LoRa rail while the map streams
-tiles off the SD card, so the ride put the two together for a whole trip. But its
-failure is a corrupt tile read and not a crash, so "the device stayed up" is a
-check that cannot fail -- it also passes when the rail was never on. **Exercised
-and unobserved is not tested.** Closing or deferring T-576 needs somebody to look
-at the pixels: `CMD:SCREENSHOT` with the rail up, over ground with real coverage,
-several frames, hunting hatch or torn geometry where map belongs, against control
-frames with the rail down. `gnss.md`, "The SPI check has to be a look, not a
-survival".
+**T-576's SPI contention was exercised on that ride, and today's instrumentation
+cannot say what happened.** This is the first code path that powers the LoRa rail
+while the map streams tiles off the SD card, so the ride put the two together for
+a whole trip. But the failure is a corrupt tile read, not a crash, and **nothing
+the device records separates a corrupt read from a tile the card simply does not
+have**: hatch is drawn for both, and `tilesUnavailable_` is incremented by both
+(`MapTileSource.cpp:77` for a crc32 failure, `:123`/`:151`/`:183` for absence).
+The one counter that does separate them, `corruptLayers_` (`:76`), is frame-
+scoped and surfaces only as a serial `LOG_ERR`, so a ride carries none of it home.
+**T-576 is untested because the instrument is missing, not because nobody
+looked.** Two ways to get one -- carry that counter out of the frame and compare
+the same viewport rail up against rail down, or bypass the map with a task doing
+continuous CRC-checked card reads under a refresh loop -- are in `gnss.md`, "The
+SPI check needs a counter the firmware does not carry out of the frame".
 
 **A quantified bonus, not a goal.** `BlePositionServer::begin()` costs
 **57,080 bytes** measured, and the map builds it on enter and tears it down on
