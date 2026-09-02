@@ -1074,8 +1074,8 @@ in.
 
 ### What a hardware pass has to check, and what the ride actually covered
 
-**Two of the five are done, one is half done, two were not run.** The ride of
-2026-09-01 covered 1 and 2. Do not read the ride as a pass on the rest.
+**Three of the five are done, one is half done, one cannot be run today.** The
+ride of 2026-09-01 covered 1 and 2; a bench run on 2026-09-02 covered 3.
 
 1. **`CMD:SETTING mapGnssPosition 1` first.** The setting is 0 by default and 0
    means the old BLE path: a run that forgets this line tests the code that was
@@ -1088,8 +1088,8 @@ in.
    "Waiting for BLE position" while the fix comes from the device, which is
    wrong text rather than a wrong dot (T-589).
 3. The same build with `mapGnssPosition 0` still draws from the phone.
-   **Not run.** Nothing has checked that this branch left the phone path intact,
-   and that is the half of step 3's "done when" that is still open.
+   **Done 2026-09-02**, on the T5 S3 Pro, no reflash -- the build the ride ran.
+   See "The BLE path still works with the setting off" below.
 4. **The tile-read counters get read, with the rail up.** **Cannot be run from
    a ride with today's instrumentation**, and looking at the panel is not the
    check -- hatch says nothing about the cause. See below.
@@ -1100,6 +1100,47 @@ in.
    ([`map-header-status.md`](map-header-status.md)), which is the start/stop
    half. Nobody read `GNSS_OFF` back after an exit, and nobody drove a
    console-started session through the map screen.
+
+### The BLE path still works with the setting off
+
+**Verified 2026-09-02**, on the T5 S3 Pro, on the build the ride ran -- no
+reflash. This is the half of step 3's "done when" that the ride did not cover:
+adding a third `applyFix()` caller must not have cost the first one, and X4 and
+X4 Pro have no receiver, so the phone path is the only path they have.
+
+What was run: `CMD:SETTING mapGnssPosition 0`, read back as
+`SETTING_OK:mapGnssPosition=0`; `CMD:GOTO_MAP`; then `tools/blefakephone.py`
+standing in for the phone over BLE, sending a position 60 km from where the
+device sat.
+
+```
+[904489] ble fix: seq 0, heading 2, speed 0 km/h, utc 1788339966, accuracy 255 m
+[904490] fix #0 re-anchors: at 8626,9262, heading 2 vs frame's 12, 0 moves in -- keep-in
+[904490] renderViewport start: lat=489250000 lon=174500000 heading=2 seq=0
+[905016] reset z13 col 4492..4493 row 2815..2816: 0 tiles ok, 4 missing (mask 0xf)
+```
+
+`489250000, 174500000` is exactly the 48.9250, 17.4500 the fake phone sent, so
+the frame is anchored on the phone's position and not on the persisted fix the
+screen opened with. Later fixes at the same coordinates log `skipped: 258,690 is
+under 10 px from the marker`, which is `MapFollow` behaving correctly for a
+stationary sender rather than a fix being ignored -- the marker had already
+moved. The viewport has no tile coverage there, so the frame is hatch with a
+marker on it; that is the card's coverage, not a read failure.
+
+**And the receiver stayed out of it.** No `gnss: started` on map entry, not one
+`gnss fix:` line in the whole session, and `CMD:GNSS` answered `GNSS_OFF` with
+the map still open. The setting gates the rail as written.
+
+**One thing this run cost, and it is a finding of its own.** Every `CMD:` sent
+by `tools/mapcmd.py` went unanswered until a line was sent with a **leading
+newline** (`\nCMD:...\n`), after which the same command answered every time.
+That is the command wedge the stuck-byte drain exists for -- and **no `serial
+head byte` line ever appeared**, across roughly ten minutes with the port open.
+The wedge is real and reproducible; whether the drain would have cleared it
+given longer is not known, since it removes one byte per pass and only warns
+once. `[open]` -- the head byte itself was never read, so the cause is inferred
+from the fix that worked, not observed.
 
 ### The SPI check needs a counter the firmware does not carry out of the frame
 
