@@ -697,12 +697,22 @@ The estimate this branch wrote down was wrong by an order of magnitude. "Tens of
 seconds from cold" is in the `onEnter()` comment and in the plan's step 5 note,
 and it was arithmetic-free guesswork.
 
-**The likely mechanism, and it is this branch's own design.** The rail comes up
-in `MapActivity::onEnter()` and goes down in `onExit()`, so the receiver loses
-power every time the map is closed. A receiver with no power keeps no ephemeris
-and no almanac, so **every map entry is a cold start**, and a GPS cold start
-with no almanac has to download one from the satellite broadcast before it can
-fix. Ten-plus minutes is the right order for that.
+**Two mechanisms, not one, and the first draft of this section named only the
+first.** Corrected 2026-09-02 once the rider said where the device had been.
+
+1. **This branch's own design.** The rail comes up in `MapActivity::onEnter()`
+   and goes down in `onExit()`, so the receiver loses power every time the map
+   is closed. With no power it keeps no ephemeris and no almanac, so **every map
+   entry is a cold start**.
+2. **The device was on a car dashboard**, where the receiver saw three to five
+   satellites all trip (see below). A cold start has to read ephemeris off the
+   satellite broadcast without a single bit error, and marginal signal makes
+   that fail and restart repeatedly. A cold start under open sky and a cold
+   start under a windscreen are not the same event.
+
+So the ten minutes is the product of both, and **neither number is separable
+from this run**. Attributing it to the rail cycling alone -- which this file did
+for an hour -- overstates what one ride can show.
 
 **`[open]` -- the 12.5 minute almanac figure is textbook GPS and not cited from
 a primary source here, and the L76K's own cold/warm/hot TTFF numbers have never
@@ -755,23 +765,36 @@ Not a typo, and it is the finding worth chasing:
 | outdoors, riding, 60 to 85 km/h | **3 to 5** | **3.0 to 4.2** |
 
 The whole ride ran on 5 satellites or fewer and never once matched what a desk
-indoors gave it. That is backwards from every expectation, and no explanation
-here is confirmed. Candidates, cheapest first:
+indoors gave it.
 
-- **The device was inside a vehicle.** Speeds of 60 to 85 km/h with a roof and a
-  windscreen over the antenna is the ordinary explanation, and it may be the
-  whole story. Ask what it was mounted in before looking further.
-- **The map's own rendering.** The panel is at 15% busy and 529 refreshes an
-  hour during the ride against essentially idle indoors, and the parallel EPD
-  bus switches hard right next to the antenna. If this is it, the receiver gets
-  worse exactly when the map works hardest, which would be a nasty coupling to
-  find late.
-- **Still acquiring.** The sat count never climbed through the whole seven
-  minutes, which argues against this rather than for it.
+**Answered by asking the rider: the device sat on a car dashboard, inside the
+car.** That is one of the worst places a GNSS receiver can be. The roof removes
+most of the sky, the windscreen takes the rest at a shallow angle, and modern
+athermic screens carry a metallised coating that attenuates L-band badly. Three
+to five satellites is the ordinary result there, not an anomaly.
 
-**Separating them is cheap**: a stationary outdoor run with the map open, then
-the same spot with the map closed and `CMD:GNSS ON` from the console. Same sky,
-same antenna, and the only difference is whether the panel is working.
+The reason a desk indoors beat it is the same reason: a room has windows on the
+sides and a receiver sitting still can integrate for as long as it likes, while
+a dashboard has one heavily attenuating window in front and everything else is
+steel.
+
+So the first hypothesis was the whole story, and the second one is **not
+needed** to explain this ride:
+
+- **The map's own rendering** -- panel 15% busy, 529 refreshes an hour, an EPD
+  bus switching next to the antenna. Nothing here shows it, and nothing here
+  clears it either. It stays `[open]`, and it is cheap to test whenever
+  somebody wants to: one stationary outdoor spot, once with the map open and
+  once with the map closed and `CMD:GNSS ON` from the console. Same sky, same
+  antenna, and the only difference is whether the panel works.
+- **Still acquiring** -- ruled out. The sat count never climbed across seven
+  minutes.
+
+**And weigh the ride accordingly.** A car dashboard is not this product's
+target: the thesis is a rider or a walker outdoors with open sky (`V4`, `V48`),
+and every number from this ride is from the worst realistic environment the
+receiver will ever see. It says what a car dashboard costs. It does not say what
+a handlebar or a rucksack strap gives.
 
 #### Fixes stop while the map renders, by up to 21 seconds
 
