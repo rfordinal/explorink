@@ -1496,6 +1496,95 @@ void loop() {
           }
         }
 #endif
+#ifdef ENABLE_BATT_CMD
+      } else if (cmd == "BATT") {
+        // The gauge's own numbers, on demand, for a power run whose other half
+        // is a meter on VBUS.
+        //
+        // **Why this exists at all.** A USB meter reads the board *plus* the
+        // charger, so a VBUS number is not board draw while a cell is charging
+        // behind it (parent docs/usb-power-meter.md). Subtracting the gauge's
+        // average current is one of the three ways round that, and it needs the
+        // number at the same instant as the meter reading -- which means on
+        // demand from the host, not once a minute in a log.
+        //
+        // **Why it re-reads the registers instead of asking BatteryMonitor.**
+        // The SDK already reads all three (freeink-sdk BatteryMonitor.cpp:211
+        // reads 0x0C) and throws the current away: its public Status carries
+        // percentage, millivolts and a charging bool, no current. Adding a field
+        // there means editing freeink-sdk, which is upstream's repo and whose
+        // submodule pointer stays on upstream main -- so this reads the same
+        // registers from our side and the SDK stays untouched.
+        //
+        //   CMD:BATT  ->  BATT:mv=4102 pct=100 curr_ma=-38 chg=1 gauge=0x55 charger=0x6b
+        //
+        // A field that could not be read prints `?`. curr_ma is signed: TI's
+        // sign convention is positive into the cell (charging), negative out of
+        // it, which is why a charging board reports the opposite sign to what
+        // "draw" suggests.
+        //
+        // Devel-only like the rest, and today only in env:t5s3pro -- the board
+        // with the gauge that the power campaign is measuring. X3 carries a
+        // BQ27220 too and would answer this on the C3 binary, so the flag is
+        // worth widening when that measurement comes up; until then a C3 build
+        // does not pay for it. It leaks nothing about the rider --
+        // no position, no route, no identity -- so the reason is not secrecy: a
+        // command with no UI behind it and one measurement session's worth of
+        // use does not belong in a build a stranger flashes.
+        const auto& g = BoardConfig::ACTIVE.batteryGauge;
+        if (g.gaugeAddr == 0) {
+          logSerial.printf("BATT_ERR:no gauge on this board\n");
+        } else {
+#if SOC_I2C_NUM > 1
+          TwoWire& w = (g.i2cBus == 1) ? Wire1 : Wire;
+#else
+          TwoWire& w = Wire;
+#endif
+          // Same pins and clock the SDK uses, so re-begin reconfigures the bus
+          // to what it already is rather than fighting it.
+          w.begin(g.i2cSda, g.i2cScl, g.i2cHz);
+
+          // TI command registers, values copied from the SDK's own table
+          // (freeink-sdk BatteryMonitor.cpp, BQ27220_* / BQ25896_REG_STATUS) so
+          // the two cannot drift apart silently.
+          auto read16 = [&w](uint8_t addr, uint8_t reg, uint16_t& out) -> bool {
+            w.beginTransmission(addr);
+            w.write(reg);
+            if (w.endTransmission(false) != 0) return false;
+            if (w.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) < 2) return false;
+            const uint8_t lo = w.read();
+            const uint8_t hi = w.read();
+            out = static_cast<uint16_t>(lo | (hi << 8));
+            return true;
+          };
+          auto read8 = [&w](uint8_t addr, uint8_t reg, uint8_t& out) -> bool {
+            w.beginTransmission(addr);
+            w.write(reg);
+            if (w.endTransmission(false) != 0) return false;
+            if (w.requestFrom(addr, static_cast<uint8_t>(1), static_cast<uint8_t>(true)) < 1) return false;
+            out = w.read();
+            return true;
+          };
+
+          uint16_t mv = 0, pct = 0, rawCurrent = 0;
+          uint8_t chargerStatus = 0;
+          const bool mvOk = read16(g.gaugeAddr, 0x08, mv);
+          const bool pctOk = read16(g.gaugeAddr, 0x2C, pct);
+          const bool currOk = read16(g.gaugeAddr, 0x0C, rawCurrent);
+          const bool chgOk = g.chargerAddr != 0 && read8(g.chargerAddr, 0x0B, chargerStatus);
+
+          char mvText[12] = "?";
+          char pctText[12] = "?";
+          char currText[12] = "?";
+          char chgText[12] = "?";
+          if (mvOk) snprintf(mvText, sizeof(mvText), "%u", static_cast<unsigned>(mv));
+          if (pctOk) snprintf(pctText, sizeof(pctText), "%u", static_cast<unsigned>(pct));
+          if (currOk) snprintf(currText, sizeof(currText), "%d", static_cast<int>(static_cast<int16_t>(rawCurrent)));
+          if (chgOk) snprintf(chgText, sizeof(chgText), "%u", static_cast<unsigned>((chargerStatus >> 3) & 0x03));
+          logSerial.printf("BATT:mv=%s pct=%s curr_ma=%s chg=%s gauge=0x%02X charger=0x%02X\n", mvText, pctText,
+                           currText, chgText, static_cast<unsigned>(g.gaugeAddr), static_cast<unsigned>(g.chargerAddr));
+        }
+#endif
       }
     }
   }
