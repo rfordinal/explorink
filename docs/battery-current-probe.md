@@ -66,8 +66,17 @@ BATT:mv=4100 pct=100 curr_ma=0 chg=3 gauge=0x55 charger=0x6B
 
 - **It answers, and repeatably** -- three reads two seconds apart gave the
   identical line, and three more during a map render gave it again.
-- **`mv` and `pct` are plausible and agree with the SDK's own path**: 4101 mV and
-  100 %, against the 100 % the header draws through `BatteryMonitor`.
+- **`pct` agrees with the SDK's own path, measured against this build.**
+  `CMD:BATT` returned `pct=100` and a `CMD:SCREENSHOT` seconds later shows `100%`
+  in the header, which `GUI.drawHeader()` gets from `BatteryMonitor` -- two
+  readers of one gauge, same firmware, same minute. The agreement is at percent
+  resolution, which is all the header has. **`mv` is not cross-checked**: nothing
+  on screen shows millivolts, so 4100 is plausible for a full cell and unverified
+  against a second reader.
+
+  An earlier version of this section claimed the agreement off a screenshot taken
+  before this build was flashed. Two readings from two firmwares is not a
+  cross-check, and it read like one.
 - **`chg=3` is the charger reporting charge done**, which is what a full cell on
   USB should say, so the BQ25896 read at `0x0B` works.
 - **No disturbance seen.** The map screen kept rendering and drawing its own
