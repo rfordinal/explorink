@@ -731,6 +731,77 @@ sample, the sky was whatever it was that morning, and the receiver's state
 before the ride is not known with certainty. The next rides should each record
 what the fix cost, which `gnss.csv` now makes possible.
 
+#### The log confirms it: 526 s, and the fix landed at 65 km/h
+
+`gnss.csv`, boot 2, downloaded 2026-09-02. **The first row with a solution is at
+`uptime_ms` 526,246 -- 8 minutes 46 seconds after boot -- and it already reads
+65.6 km/h.** So the rider set off without a position and got one nearly nine
+minutes into the trip. The rider's own report of "more than ten minutes" and the
+file agree.
+
+It is an upper bound on time-to-first-fix rather than a measurement of it: the
+zero point is the device booting, not the receiver powering up, and the map has
+to be opened in between. It is still the first honest number this project has
+for a genuine cold start, and every earlier `ttff` reading was the useless kind
+`Gnss::timeToFirstFixMs()` warns about.
+
+#### The receiver did WORSE outdoors moving than indoors sitting
+
+Not a typo, and it is the finding worth chasing:
+
+| | satellites used | HDOP |
+|---|---|---|
+| indoors, stationary, night before | **8 to 9** | **1.4 to 1.8** |
+| outdoors, riding, 60 to 85 km/h | **3 to 5** | **3.0 to 4.2** |
+
+The whole ride ran on 5 satellites or fewer and never once matched what a desk
+indoors gave it. That is backwards from every expectation, and no explanation
+here is confirmed. Candidates, cheapest first:
+
+- **The device was inside a vehicle.** Speeds of 60 to 85 km/h with a roof and a
+  windscreen over the antenna is the ordinary explanation, and it may be the
+  whole story. Ask what it was mounted in before looking further.
+- **The map's own rendering.** The panel is at 15% busy and 529 refreshes an
+  hour during the ride against essentially idle indoors, and the parallel EPD
+  bus switches hard right next to the antenna. If this is it, the receiver gets
+  worse exactly when the map works hardest, which would be a nasty coupling to
+  find late.
+- **Still acquiring.** The sat count never climbed through the whole seven
+  minutes, which argues against this rather than for it.
+
+**Separating them is cheap**: a stationary outdoor run with the map open, then
+the same spot with the map closed and `CMD:GNSS ON` from the console. Same sky,
+same antenna, and the only difference is whether the panel is working.
+
+#### Fixes stop while the map renders, by up to 21 seconds
+
+Gaps between accepted fixes during the ride: six of about 4.2 s, and one of
+**21.0 s**. The RX ring is not the cause -- it holds about 10 s and no overflow
+counter moved -- so this is the map's loop not calling `poll()` while it renders,
+which is the other half of step 1 that a bigger buffer never addressed.
+
+**At 85 km/h a 21 s gap is about 500 m of stale dot**, and the panel has no way
+to say so. The ring fixed sentence *loss*; it does not fix position *age*, and
+this is the first measurement of how large that age gets in real use.
+`[open]` -- the correlation with a render is an inference from the loop's
+structure, not from a log that carries both. A render timestamp in the fix log
+would settle it.
+
+#### What the ride did settle: the speed gate is fine outdoors
+
+Yesterday's indoor run had the receiver reporting up to 23.7 km/h while parked,
+which made the 3.0 km/h gate look worthless. The ride says otherwise:
+
+- **31 rows at exactly 0.0 km/h during the ride, and `moving` was set on none of
+  them.** The gate held, and the held headings were 4, 7 and 9 -- the direction
+  the rider had last been going, which is what it is supposed to do.
+- Indoors the night before, the same code produced 9 false `moving` rows and
+  four different wrong headings.
+
+So the gate is not broken; **it is defeated by indoor multipath specifically**.
+That is worth knowing before anyone "fixes" it into something worse for riding.
+
+
 ### Heading, and the gate that decides whether to believe the course
 
 `src/activities/map/MapGnssHeading.{h,cpp}`, a pure module next to `MapFollow`
