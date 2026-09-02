@@ -431,11 +431,170 @@ are about this board and not about GNSS:
   GPIOs, and passes one to the i80 peripheral as its DC line
   (`Bus_EPD.cpp:83,85,120,129,143`). On this board both are GPIO46, which is the
   SX1262's chip select, on the SD card's SPI bus.
-  **That the wiring is shared is settled; that it is a hazard is not.** The
-  cited lines drive the pin *high*, and a deasserted chip select is harmless --
-  whether it is ever driven low during a refresh has not been established, and
-  neither has whether an SX126x in reset parks MISO high-Z. Do not read this
-  bullet as a confirmed fault.
+  **Answered 2026-09-03, and it is a fault.** This bullet used to end "that it
+  is a hazard is not settled", because the lines cited above drive the pin high
+  and a deasserted chip select is harmless. The hazard is not in those lines: it
+  is that `lgfx::pinMode(pin, output)` sets no level, so the pin is simply left
+  low from display init and never raised. See the SD-card section below, which
+  also retracts the "every refresh" reading of `Bus_EPD`. Whether an SX126x in
+  reset parks MISO high-Z is still unread, and no longer load-bearing.
+
+## The SD card shares its SPI bus with the LoRa radio, and the panel selects it
+
+**Settled 2026-09-03.** The card became unusable on this board: every BLE tile
+`begin` answered `ERR mkdir failed`, `settings.json` would not save, the Wi-Fi
+File Transfer page answered `HTTP 500` to `/mkdir` and listed the volume as
+empty, and roughly one boot in two came up on "SD card error". Three unrelated
+tasks, three vocabularies, one cause, and it is not the card.
+
+**The card is fine. Measured on the laptop 2026-09-02**, in a USB reader: a
+64 KB write, `mkdir base/11/1125` -- the exact path the firmware had just
+refused -- and a copy into it, all `rc=0`, checksums matching after an unmount
+and remount, so the bytes reached flash rather than the page cache. `dmesg` says
+`Write Protect is off`. It also took a **second reader** to see the card at all:
+invisible on the SY-T18 (`14cd:1212`), fine on a Genesys (`05e3:0764`). The
+reader trouble in BUG-037 was never fixed, only worked around.
+
+### The mechanism
+
+- SD and the SX1262 sit on **one SPI bus**: `MISO21 MOSI13 SCLK14`, with
+  `SD_CS12` against `LORA_CS46` (`BoardT5S3Pins.h`).
+- `LORA_CS` is **also** handed to LovyanGFX as the panel bus's `pin_oe` *and*
+  `pin_pwr` (`LilyGoT5S3LgfxConfig.cpp:162,166`).
+- LovyanGFX leaves that pin **driven low**, which on SPI means "radio, talk".
+  `Bus_EPD::init()` calls `lgfx::pinMode(pin_oe, output)` and later the same for
+  `pin_pwr` (`Bus_EPD.cpp:120,143`), and `lgfx::pinMode` does **not** set a
+  level for output mode -- its `gpio_hi()` is guarded to non-output modes
+  (`common.cpp:599-601`). So GPIO46 becomes an output holding whatever the
+  output register had, which is 0, and **nothing ever raises it again**.
+
+So from display init onward the radio is selected, permanently, through exactly
+the time the card is read and written. A selected SX1262 loads the shared MISO
+and the card's transfers come back corrupt.
+
+**It is not per refresh, and the first write-up of this said it was.** That
+version cited `Bus_EPD::powerControl(false)` driving both pins low at the end of
+every refresh (`Bus_EPD.cpp:91,93`). Wrong: `powerControl` is virtual
+(`Bus_EPD.h:95`) and `FreeInkBusEPD::powerControl` overrides it without calling
+the base (`LgfxEpdDriver.cpp:34-45`), so those lines never execute here. Two
+things followed from the error and both are retracted: the pin is not toggled,
+it is left low; and the "reads worked until the first refresh" timing is not
+evidence, because the boundary is display init.
+
+### The rail is not the cause. Measured.
+
+The rail that powers the receiver also powers the radio
+(`PCA9535_IO00_LORA_GPS_EN`, one expander pin for both), so the first theory was
+that a rail left on by an earlier session was what made the selected radio
+dangerous. **That is refuted.** 2026-09-03, the pre-fix binary
+`batt-cmd-7ffe0335` was reflashed with the card **deliberately untouched** and
+the rail confirmed off (`GNSS_PROBE: out0=0xFE io00_level=low bytes=0`), and the
+card read as empty from every path: `/`, `/.crosspoint`, and a tile directory a
+byte-identical download had come out of the day before.
+
+| run | binary | rail | radio selected | card |
+|---|---|---|---|---|
+| 09-02 | fix `57051c5e` | off | no | works |
+| 09-03 | pre-fix `7ffe0335` | off | yes | dead |
+| 09-03 | fix `57051c5e` | off | no | works |
+
+Same card, same slot, never reseated between the last two. **An unpowered
+SX1262 loads MISO when it is selected**, and deselecting it is what fixes this.
+
+**What is still not separated:** the fix does three writes, and only the rail
+has been ruled out. `LORA_RST` low and `LORA_CS` high have never been run
+without each other. Holding an unpowered part in reset should do nothing, so the
+CS is the live candidate, but that is an argument and not a measurement. One
+build changing only the CS settles it.
+
+### It also killed three other explanations
+
+- **Reseat.** The card had not moved when it failed again, and BUG-037's own
+  advice was to test that first. The enclosure and the card slot are cleared.
+- **A reset.** Several had happened, including a deep-sleep wake.
+- **A code change in the 88 commits between `628890e8` and `7ffe0335`.**
+  `freeink-sdk` did not move across them at all, so `SDCardManager`, `BoardT5S3`
+  and `LgfxEpdDriver` were identical the whole time. This is latent from
+  bring-up, not a regression.
+
+**And bisecting archived builds could never have found it**, which is now
+measured rather than argued: the expander's state survived a **reflash**. After
+the fix wrote the rail low and latched it as an output, flashing the old binary
+read back `cfg0=0x00 out0=0xFE`. The state was never in the flash image.
+
+### The fix
+
+`t5s3ParkLoraOffSdBus()` in `src/main.cpp`, before `Storage.begin()` and before
+display init. Both orderings matter: a corrupt bus fails card detection outright,
+and display init is what asserts the pin. It deselects `LORA_CS`, holds
+`LORA_RST` low, then cuts the shared rail, level before direction.
+
+It is largely a revival of `BoardT5S3::prepareSdBus()`, which does the same
+deselect and which nothing calls, because `BoardT5S3::begin()` -- its only
+caller, along with `disableGpsLora()`'s -- is never called in this firmware. The
+SDK's third defence, deselecting the display before probing the card
+(`SDCardManager.cpp`), is gated on `display.cs >= 0` and this board declares
+every display pin `PIN_UNASSIGNED`, so it does not run either. Three defences,
+none of them reached. T-243 is the general form.
+
+**Verified on hardware 2026-09-02 and again 09-03**, all three failing tasks
+plus card detection:
+
+| what | before | after |
+|---|---|---|
+| `Storage.begin()` | "SD card error", about one boot in two | `[421] [SD] SD card detected`, every boot |
+| web server read | `GET /api/files?path=/` -> `[]` | the card's real contents at 332 s uptime |
+| web server write | `POST /mkdir` -> HTTP 500 | 200, `[WEB] Folder created successfully` |
+| activity write | `settings.json` unsaveable, the value reverted | one setting changed, hash changed on the card, survived a silent restart |
+| NimBLE tile push | `ERR mkdir failed` every square | `OK 19855 7bda5027` into `base/11/1126/`, two new directories |
+
+Zero `Failed to open file for writing`, zero `SD card not detected`, zero
+`refused:` in 626 lines of log across two boots. And a fourth confirmation by
+accident: on the fixed build the device connects to its remembered Wi-Fi, while
+on the pre-fix build it asks for the password again, because `wifi.json` reads
+as absent.
+
+### What the boot line can and cannot say
+
+`t5s3ParkLoraOffSdBus()` logs the expander before it writes it. That ordering is
+the only reason any of it is usable, and it is the lesson worth keeping.
+
+- **`cfg0=0x00` is real evidence.** The PCA9535 wakes from power-on reset with
+  `CONFIG=0xFF`, and `setPca9535PinMode()` is a one-bit read-modify-write
+  (`BoardT5S3.cpp:56-69`), so a cold expander could only read `0xFE` here.
+  `0x00` means something that is not this firmware configured all of port 0 as
+  outputs and the expander has not lost power since. `gnss.md` had already
+  recorded the same reading on 08-31, so it confirms rather than adds.
+- **`level` says nothing.** The fix drives that pin and latches it as an output,
+  so every boot after the first reads back its own footprint. The one boot that
+  could have said whether the radio was powered during the failure was the first
+  after the flash, and it was missed: the S3's native USB CDC does **not** reset
+  on port open, so the capture joined at `[5578]`. That measurement is gone.
+
+**A pass that fixes state also erases the evidence of what it inherited.** Read
+and log first, then write. T-243 carries the rule.
+
+### Two measurements that fell out of it
+
+- **`host task stack free 760`** of 4,096, from the first BLE transfer ever to
+  complete on this board. The number behind
+  `CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096` was measured on the **C3**, where
+  the same push left 2,152 free. T-242.
+- **A latched rail survives deep sleep**, measured in both directions: rail up
+  across a wake on 08-31 (`out0=0xFF bytes=1633`), rail down across a wake on
+  09-03 (`out0=0xFE bytes=0`). Nothing on the sleep path cuts it, so a rail left
+  on by a crashed map exit keeps the receiver and the radio powered all night.
+  T-244.
+
+### The worst part is not the bus
+
+The firmware **reported failure and wrote anyway.** Two independent traces of it
+turned up in `fsck.vfat` on the card afterwards: an orphaned long-filename part
+for `crash_report.txt`, left by a rename that returned an error and took effect,
+and 64 KB of a `TIB1` tile in a cluster chain no directory entry pointed at.
+Nothing else was wrong -- no crossed files, no broken chains -- so the volume
+survived, but "the operation failed" was not true and a caller had no way to
+know. Both are archived in `../../docs/crashes/2026-09-02-t5s3-card/`.
 
 ## What is wrong or missing
 
