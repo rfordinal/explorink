@@ -79,6 +79,27 @@ inline constexpr size_t kPositionPacketBytes = 21;
 // vendor's device.
 inline constexpr const char* kBleDeviceNameFallback = "ExplorInkMap";
 
+// Payload bytes one chunk frame can carry at this ATT MTU.
+//
+// **Not `mtu - 8`.** That formula is right only below MTU 515 and it is the
+// BUG-103 shape: at the 517 the Android app negotiates it yields 509, which
+// builds a 514-byte frame -- over the Core spec's 512-byte attribute cap, which
+// `BluetoothGatt.writeCharacteristic()` throws on rather than reporting.
+// `min(mtu - 3, 512) - 5` is what ../../../docs/ble-map-transfer-protocol.md
+// states and what the app's own TransferFrames.maxChunkPayload() computes, so
+// the two sides cannot drift.
+//
+// This is reported by `info` as `chunk_payload`, and since a pre-trip sender
+// reads `info` as its whole briefing (there is no NEED_TILES to carry `fmt`),
+// the number is acted on rather than merely logged. Found by
+// tools/sim_push_test.py, 2026-09-02.
+inline constexpr uint16_t bleMaxChunkPayload(uint16_t mtu) {
+  const int attWrite = static_cast<int>(mtu) - 3;
+  const int capped = attWrite < 512 ? attWrite : 512;
+  const int usable = capped - 5;
+  return usable > 0 ? static_cast<uint16_t>(usable) : 0;
+}
+
 class BlePositionServer {
  public:
   static BlePositionServer& getInstance();

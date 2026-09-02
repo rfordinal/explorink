@@ -1,5 +1,10 @@
 #include "MapCommandConsole.h"
 
+// Header-only and dependency-free (atomic/cstddef/cstdint, no NimBLE), which is
+// why a host-tested translation unit may include it: the chunk-payload formula
+// has to be the same one the radio reports.
+#include "BlePositionServer.h"
+
 #include <cstdio>
 #include <cstring>
 
@@ -484,7 +489,10 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
     if (mtu != 0) {
       snprintf(line, sizeof(line), "INFO mtu=%u", static_cast<unsigned>(mtu));
       out.reply(line);
-      snprintf(line, sizeof(line), "INFO chunk_payload=%u", static_cast<unsigned>(mtu > 8 ? mtu - 8 : 0));
+      // freeink::bleMaxChunkPayload, not `mtu - 8`: a pre-trip sender reads
+      // `info` as its whole briefing, so this number is acted on (BUG-103).
+      snprintf(line, sizeof(line), "INFO chunk_payload=%u",
+               static_cast<unsigned>(freeink::bleMaxChunkPayload(mtu)));
       out.reply(line);
     }
   }

@@ -463,6 +463,24 @@ void TileSyncActivity::trackPhone() {
     // fetch at all.
     if (rowCount_ > 0) {
       askForTiles();
+    } else if (phase_ == Phase::Running) {
+      // An announced batch got here first, and finishing the run now would undo
+      // it. loop() drains pushPending_ before it calls this, so a phone that
+      // subscribes and announces inside one tick arrives with the run already
+      // up -- and the branch below would put the screen straight back on
+      // "nothing missing" for the whole transfer, which is the exact symptom
+      // `push` exists to remove (docs/missing-tiles.md, "A batch the device
+      // never asked for").
+      //
+      // Found by tools/sim_push_test.py in the parent repo, 2026-09-02, before
+      // any of this had run. On hardware the window is wider rather than
+      // narrower: startAnnouncedBatch() repaints inside that same tick, and an
+      // e-ink pass is 500-1700 ms.
+      //
+      // No freshness ask either. The batch is about to stream and `have` would
+      // open a second conversation on a channel that allows exactly one -- the
+      // 2026-08-11 fault this function already carries a comment about.
+      LOG_INF(kLogTag, "phone subscribed with a batch already announced");
     } else {
       askAboutFreshness();
       // Nothing to fetch -- the freshness ask above was the only reason this

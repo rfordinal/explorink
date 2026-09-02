@@ -878,6 +878,37 @@ TEST(MapCommandConsole, InfoReportsTheTileFormatVersionOnlyWhenPushed) {
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO tile_fmt=2"), out.lines.end());
 }
 
+// A pre-trip sender reads `info` as its whole briefing -- there is no
+// NEED_TILES to carry `fmt` when the device is missing nothing -- so
+// chunk_payload stopped being a log curiosity and became a number that gets
+// acted on. `mtu - 8` was right only below MTU 515: at the 517 the Android app
+// negotiates it yields 509, which builds a 514-byte frame, over the Core spec's
+// 512-byte attribute cap (BUG-103). Found by tools/sim_push_test.py, 2026-09-02.
+TEST(MapCommandConsole, InfoReportsTheChunkPayloadTheContractStates) {
+  struct Case {
+    uint16_t mtu;
+    const char* expected;
+  };
+  // 3 bytes of ATT header and 5 of chunk header come off every write, and the
+  // 512-byte attribute cap binds above MTU 515.
+  const Case cases[] = {
+      {23, "INFO chunk_payload=15"},
+      {256, "INFO chunk_payload=248"},
+      {517, "INFO chunk_payload=507"},
+  };
+  for (const Case& c : cases) {
+    MapConsoleState state;
+    MapCommandConsole console(state);
+    CollectingWriter out;
+    static uint16_t mtu;
+    mtu = c.mtu;
+    state.setLinkMtuProvider(+[]() -> uint16_t { return mtu; });
+    feedLine(console, out, "info");
+    EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), c.expected), out.lines.end())
+        << "at MTU " << c.mtu;
+  }
+}
+
 // Nothing behind the command is the normal state on a host test and on any
 // screen that has not wired a provider. The reply says so instead of printing
 // a page of zeroes -- a zeroed battery reads as a flat one, and a power log

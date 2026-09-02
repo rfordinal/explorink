@@ -1337,26 +1337,57 @@ either way. The layout is fixed by the run's total and never reflows.
   `INFO push=unavailable` with no observer.
 - `info` carries `screen=sync` / `screen=map` when set and omits the line when
   not.
-- The whole firmware builds clean for `env:default`, no new warnings; 423 host
-  tests pass.
+- `info`'s `chunk_payload` is the contract's `min(mtu - 3, 512) - 5`, checked at
+  MTU 23 / 256 / 517.
+- The whole firmware builds clean for `env:default` and `env:simulator`, no new
+  warnings; 424 host tests pass.
 
-**Not verified -- needs the device, nothing here has run on one:**
+**Verified on the desktop simulator, 2026-09-02** -- real firmware built native,
+a scripted keypress to this screen, real `.tib` tiles pushed over the simulator's
+BLE socket. `tools/sim_push_test.py` in the parent repo, 43/43 checks:
 
-- A batch actually announced by a phone, entering `Phase::Running` with an empty
-  missing list, and the bar and grid moving as files land.
-- The announced grid on the panel: whether 55 unlabelled squares read as
-  progress or as noise, and whether the 8 px floor is in the right place. This
-  is a layout call and the panel is the only place it can be taken.
-- The two warning lines fitting inside the panel width at UI_10. They were
-  written short for that reason and never measured.
-- `Status::verifying` appearing at all, and for how long on a megabyte file.
-  The CRC read-back's duration has never been measured on this hardware.
+- A batch announced by a client, the screen entering `Phase::Running` with an
+  **empty missing list**, files landing, and the run finishing at
+  `done + skipped >= n`.
+- Every file answered `OK <bytes> <crc32hex>` with the CRC equal to the sender's
+  own `zlib.crc32`, landing byte-identical on the card with no `.part` left.
+- `screen=sync` from this screen and `screen=map` from the map screen, from a
+  running build rather than from a unit test's setter.
+- A `push` arriving in the **same activity tick** as the subscription survives.
+
+**Two defects it found, in code that had never executed.** Both are fixed; they
+are recorded because the class of mistake repeats:
+
+- **`trackPhone()` finished the run it had just been given.** It tested
+  `rowCount_ > 0`, and an announced batch has no rows -- so a client that
+  subscribed and announced inside one tick got `Phase::Finished` and a screen
+  saying "nothing missing" for the whole transfer. The exact symptom `push`
+  exists to remove. On hardware the window is *wider*: `startAnnouncedBatch()`
+  repaints inside that tick and an e-ink pass is 500-1700 ms.
+- **`info` reported `chunk_payload` as `mtu - 8`**, the BUG-103 formula: 509 at
+  MTU 517, which builds a 514-byte frame over the 512-byte attribute cap. It was
+  a log curiosity until `push` made `info` a pre-trip sender's whole briefing,
+  because such a sender never receives a `NEED_TILES` to read `fmt` from.
+
+**Not verified -- needs the device:**
+
+- The **ink**. The simulator draws the real framebuffer at 480x800, so the
+  geometry questions have screenshots to answer them (the announced grid at 4 and
+  at 77 squares, the two warning lines inside the panel width, the per-file
+  line). What it cannot show is how any of it reads on e-ink after a waveform
+  pass, and the per-file line sits close enough to the progress bar that the
+  spacing is worth a look on glass.
+- `Status::verifying` appearing at all, and for how long on a megabyte file. The
+  simulated card is a laptop filesystem, so the whole close, CRC read-back and
+  rename finished inside 75 ms; the stage cannot earn its keep in that rig.
 - Whether a megabyte-class tile survives the link at all. The largest file ever
-  pushed over it is 396,014 B (measured 2026-08-09). Everything above is
-  pointless if that fails, and it is the first thing a hardware pass should do.
+  pushed over a real radio is 396,014 B (measured 2026-08-09). Everything above
+  is pointless if that fails, and it is the first thing a hardware pass should
+  do. The simulator's socket moved 726,423 B in 75 ms, which proves the code
+  path and nothing about the radio.
 - The 30 s stall verdict against a tile that takes 130 s. It re-stamps on byte
   movement, so it should be fine, and that branch has never seen a file this
-  size.
+  size on a real card.
 
 ## Getting the file itself off the device
 
