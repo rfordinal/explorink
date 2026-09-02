@@ -47,6 +47,96 @@ Nobody noticed for months because every build that reached a device was a
 build-flag change plus the `lib_deps` entry, and it cannot be called fixed until
 a `gh_release` binary is on a device with a phone connected to it.
 
+## Bench-only commands get their own flag, never `ENABLE_SERIAL_LOG`
+
+`ENABLE_SERIAL_LOG` is **not** a devel marker. The table above shows why: it is
+set in `default`, `gh_release`, `gh_release_rc` and `sticky`, and only `slim`
+clears it (`platformio.ini`, the `-UENABLE_SERIAL_LOG` line). So a command
+gated `#ifdef ENABLE_SERIAL_LOG` ships in both release builds.
+
+`CMD:SETTING` was gated that way until 2026-09-02, with a comment above it
+claiming `ENABLE_SERIAL_LOG` is "set only in env:default". It was not. The
+command writes persisted settings and `SETTINGS.saveToFile()` puts them on the
+card, so a person holding a lost device with a USB cable could turn on
+`mapAutoSyncTiles` or `mapTileFreshnessMode` (both spend the rider's mobile
+data) or `mapDebugInfo` (paints the rider's exact position on the panel), and
+the flip survives a reboot with nothing on screen to say who made it.
+
+It now has its own flag, `ENABLE_SETTING_CMD=1`, declared in `default`,
+`sticky` and `simulator` and in no release env. Same shape as
+`ENABLE_FRONTLIGHT_CMD` / `ENABLE_GNSS_CMD` on the T5 S3 Pro bring-up branch.
+
+**The gate is checkable without a device**, and the check can fail, which is
+why it is worth running. Build both, then look for the reply strings:
+
+```
+strings -a .pio/build/default/firmware.bin    | grep -c SETTING_OK   # 1
+strings -a .pio/build/gh_release/firmware.bin | grep -c SETTING_OK   # 0
+```
+
+Measured 2026-09-02 in one worktree, one instrument, the branch the only
+difference. `gh_release` at `09eaa466` (before) has `SETTING_OK` 1 and
+`SETTING_ERR` 1 and literally carries `SETTING_OK:%s=%u` and
+`SETTING_ERR:unknown`; at `a2f4bacb` (after) both are 0 and the binary is 336 B
+smaller. `default` at `a2f4bacb` has 1 and 1, so the strings are still emitted
+where they should be.
+
+Both release binaries were built with the `esp_bt.h` include path lent in
+through a throwaway `platformio.local.ini` (see the next section). It adds no
+`-D`, so it cannot change which code is compiled in.
+
+`mapPinsOffscreen` and the other key names stay in both binaries and that is
+correct -- those come from the settings serializer (`CrossPointSettings`), not
+from the command.
+
+`slim` is unaffected. A `slim` binary built before and after the change is
+byte-identical apart from two gzip mtimes in the embedded web assets and the
+image SHA256 that follows from them (67 bytes at offsets 177-208, 1576669,
+1578089 and the trailing 32) -- the block was excluded there before, via
+`-UENABLE_SERIAL_LOG`, and is excluded now, via the absent flag.
+
+## `gh_release` does not compile at all right now
+
+And the other two release envs almost certainly do not either. **Measured** on
+`gh_release`. `gh_release_rc` and `slim` are **read**, not measured: they carry
+identical `lib_deps`, and `slim` only built here once the same include path was
+lent to it as well.
+
+Found while checking the gate above, 2026-09-02, on `develop` at `09eaa466`.
+
+```
+lib/hal/HalPowerManager.cpp:8:10: fatal error: esp_bt.h: No such file or directory
+```
+
+`HalPowerManager.cpp:8` includes `<esp_bt.h>` unconditionally (it asks the BT
+controller for its state, see `lowPowerFloorMhz()`), but the bt include
+directory only reaches the compiler in an env that pulls a BLE library --
+which is `default` alone, for the reason in the section above. `gh_release`,
+`gh_release_rc` and `slim` all fail on that line. It arrived with the power
+work (`c0c8ef09`, `8f44dbc2`), and it is a separate defect from the
+`FREEINK_CAP_BLE_PERIPHERAL` gap: that one makes a release binary useless, this
+one stops it existing. Tracked as T-237 in the parent repo's `docs/TODO.md`.
+
+The gate measurement above was taken with the include path lent to the release
+envs through a throwaway `platformio.local.ini`, nothing committed.
+
+## `platformio.ini` states a range, not a version
+
+A `lib_deps` line is a constraint, not a fact about the build. `h2zero/NimBLE-Arduino @ ^2.3.8` resolved to **2.5.1** on 2026-09-01, two minor
+versions up.
+
+So a claim about what a library does is read from the tree actually on disk,
+`.pio/libdeps/<env>/<lib>/`, and the version confirmed in that directory's
+`.piopm`:
+
+```
+cat .pio/libdeps/t5s3pro/NimBLE-Arduino/.piopm
+```
+
+Reading the ini instead put a wrong version into a bug report before it was
+caught (`ble-deinit-crash.md`). The same applies to anything else pinned with
+`^` or `~`.
+
 ## A fresh worktree cannot build `env:default` offline
 
 `lib_deps` pulls JPEGDEC from a git URL, so the first build in a new worktree

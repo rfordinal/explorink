@@ -298,6 +298,21 @@ the panel on its entry frame and never again (`Ssd1677Driver` has no ghost-clear
 counter), and the one clean it has is deliberately under-driven. All of it
 unmeasured: the X4 was lost on the ride that produced the second report.
 
+[`docs/crash-reporting.md`](./docs/crash-reporting.md) is the two crash records
+the device keeps and how to read them: `crash_report.txt` on the SD card, and
+the ESP coredump in flash. Read it before drawing any conclusion from a crash
+report — on an S3 the stack block is always empty by construction, an empty
+panic reason means a CPU exception, and a watchdog reset writes no report at
+all. It also carries the verified `esp-coredump` recipe, including the gdb that
+the toolchain package does not ship.
+
+[`docs/ble-deinit-crash.md`](./docs/ble-deinit-crash.md) is a live bug:
+`NimBLEDevice::deinit(true)` can crash the NimBLE host task on a NULL event
+callback, and we call it on every map exit. Root cause confirmed from a real
+coredump, 2026-09-01; the offending line is a stale snapshot that both
+esp-nimble and mynewt-nimble have already dropped. No NimBLE-Arduino release
+fixes it yet.
+
 ## Credits
 
 **This project exists because of

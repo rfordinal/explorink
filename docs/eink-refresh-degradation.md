@@ -21,6 +21,19 @@ aggravator, and vibration is out.
 (`docs/mounting.md` in the parent repo), so every hardware check is blocked until
 a replacement arrives.
 
+**Update, 2026-09-01: a firmware mitigation for this already exists in our
+tree and defaults off, unrecorded whether either report ran with it on.**
+`fastepd.md`, section 1, has the full trail — upstream `crosspoint-reader#603`
+(merged), our `fadingFix` setting (`src/CrossPointSettings.h:376`, default 0),
+and an unmerged follow-up theory (`crosspoint-reader#2399`) about turbo-LUT
+under-driven pixels. **That follow-up is scoped to X3 (UC8253), not X4 or the
+T5 S3 Pro** — `fastepd.md` section 1c has the detail; do not port its LUT
+names directly, only the mechanism. Tracked as T-584/T-585 in `docs/TODO.md`
+(parent repo).
+Everything below this note was written before that was found and still holds
+as the underlying mechanism — the new material is about what firmware lever
+we have, not a different cause.
+
 ## The thumb stencil
 
 The thumb picture settles more than any of the timing work could, and the
