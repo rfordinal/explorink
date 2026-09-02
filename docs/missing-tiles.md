@@ -1369,7 +1369,27 @@ are recorded because the class of mistake repeats:
   a log curiosity until `push` made `info` a pre-trip sender's whole briefing,
   because such a sender never receives a `NEED_TILES` to read `fmt` from.
 
-**Not verified -- needs the device:**
+**Verified on a device, 2026-09-02** -- a LilyGo T5 S3 Pro, this branch merged
+onto `release/lilygo-t5-s3-pro` and flashed, an ExplorInk GPS phone over real
+Bluetooth:
+
+- **`push <n>` reaches the screen.** The phone announced 33 squares of pre-trip
+  ground and the panel read `0 / 33`, so the run sized itself to the announcement
+  with an empty missing list behind it. That is the whole point of the command.
+- **`INFO screen=` answers over the C3's own radio.** Implicit but not weak: the
+  app refuses to start a batch unless `info` says `sync`, and the batch started.
+- **The link negotiates MTU 256 on this board**, not the 517 a phone-to-phone or
+  bridged link reaches -- so 248 payload bytes per chunk, which is the regime the
+  7.9 kB/s figure was measured in. A laptop Bluetooth adapter in front of the
+  simulator reaches 517 and flatters the number; do not quote a bridged rate as
+  the device's.
+
+**Still not verified -- the card blocked it.** Both cards in the box refused
+every transfer, the first with `ERR write failed` and the second with
+`ERR mkdir failed`, and no card reader on hand could see either of them
+(`Media removed` from a freshly enumerated reader). So nothing was ever written:
+
+
 
 - The **ink**. The simulator draws the real framebuffer at 480x800, so the
   geometry questions have screenshots to answer them (the announced grid at 4 and
