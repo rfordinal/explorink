@@ -1141,6 +1141,17 @@ nothing that could have told corruption from absence was recorded, and
 route had coverage. **T-576 is untested, and the missing piece is instrumentation
 rather than attention.**
 
+**And one counter is not enough, because the contention has two shapes.**
+Corrupted bytes inside a transaction fail the layer's crc32 and land on
+`corruptLayers_`. A transaction torn apart -- the card losing the bus mid-read --
+lands on a failed seek, which is the `beginLayer()` branch at
+`MapTileSource.cpp:223`, and that one increments `tilesUnavailable_` next to
+plain absence. So **carrying `corruptLayers_` out of the frame measures one shape
+and leaves the other invisible**, and a session that does only that will believe
+T-576 is covered when half of it is not. Whatever is built has to count the seek
+failures separately too -- the branch is already its own, it just shares a
+counter.
+
 Two ways to get it, and they are different sizes:
 
 **(a) Carry the counter out of the frame.** The branches are already separate in
