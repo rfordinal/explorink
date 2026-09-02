@@ -674,9 +674,8 @@ callers of it.
 **Heading was 0 and stayed 0, until a ride found it.** Mapping the course
 straight through would be wrong rather than rough -- at rest it is noise
 (`speed=1.3 course=211.9` on a stationary desk, measured 2026-08-31) -- so the
-first cut passed 0 and left step 4 for later. On the first real ride,
-2026-09-01, the marker followed the rider correctly and its arrow pointed north
-the whole way. **A wrong heading and a missing one look identical on the
+first cut passed 0 and left step 4 for later. On the first ride, 2026-09-01, the
+marker followed the rider correctly and its arrow pointed north the whole way. **A wrong heading and a missing one look identical on the
 panel**, which is why "leave it for later" was the wrong call and not a
 conservative one. `MapGnssHeading` now derives it -- see "Heading, and the gate
 that decides whether to believe the course".
@@ -732,7 +731,7 @@ this does not qualify yet.
 
 ### Ten minutes to a first fix outdoors, and the design is the likely cause
 
-**Reported from the first real ride, 2026-09-02: over ten minutes outdoors
+**Reported from the logged ride, read out 2026-09-02: over ten minutes outdoors
 before the receiver had a position.** That is not a bring-up curiosity, it is a
 product problem -- a device whose whole claim is *where am I* answering it a
 quarter of an hour after the rider stops is answering the wrong question.
@@ -786,6 +785,14 @@ before the ride is not known with certainty. The next rides should each record
 what the fix cost, which `gnss.csv` now makes possible.
 
 #### The log confirms it: 526 s, and the fix landed at 65 km/h
+
+**Two rides, not one, and this is the second.** The first, on 2026-09-01, ran a
+build with no heading module and no fix log -- it is the one that found the arrow
+pointing north. `GnssLog` landed at 23:18 that night and `MapGnssHeading` at
+22:46, so any ride carrying a `gnss.csv` with `moving` and `heading` columns is
+later than both. Derived from commit timestamps on `feat/t5s3-gnss`, not from a
+note anybody wrote at the time; the two were called "the first real ride" in two
+different sections until 2026-09-02.
 
 `gnss.csv`, boot 2, downloaded 2026-09-02. **The first row with a solution is at
 `uptime_ms` 526,246 -- 8 minutes 46 seconds after boot -- and it already reads
