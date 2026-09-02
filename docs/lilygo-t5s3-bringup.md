@@ -91,6 +91,59 @@ so `src/main.cpp` corrects it after `frontlight.begin()` with
 was only ever driven at 1 kHz here; 5 kHz was never tried, so nothing is known
 about how it behaves.
 
+## The user button: tap is Select, hold toggles the frontlight
+
+**Written 2026-09-02, not yet run on hardware.**
+
+This board has four switches and only one of them is readable and free of a
+fixed job: switch S3 (silkscreened `IO48`), which is net `BUTTON` on PCA9535
+`IO12` -- the parent repo's `docs/devices/lilygo-t5-s3-pro.md` has the schematic
+trace for all four. So that one button carries two functions:
+
+| gesture | result |
+|---|---|
+| tap (release under 600 ms) | `BTN_CONFIRM` -- Select, on every screen |
+| hold 600 ms | frontlight toggles, immediately, without releasing |
+
+Why the light hangs off a physical hold rather than a touch control: gloves
+defeat the capacitive panel, and the light is what a rider reaches for with
+gloves on.
+
+**It is wired in `src/main.cpp`, not through `BoardT5S3::begin()`.** That
+function installs the SDK's own hook, which reports the button as `BTN_DOWN`,
+and it is still never called here (see the GNSS section above). `setup()`
+configures `IO12` as an input on the expander and installs a local
+`userButtonHook()` instead, right after `frontlight.begin()` -- the hook can
+toggle the light, so it must not be reachable before the LEDC channel exists.
+
+Three things in that hook are load-bearing:
+
+- **Nothing is reported while the button is down.** A `Confirm` press edge at
+  touch-down would let the activity act before the hold could still turn out to
+  mean the frontlight. The tap is synthesised after release instead.
+- **The synthetic press is measured in polls, not milliseconds.**
+  `InputManager` commits a state change only after two `update()` calls at
+  least `DEBOUNCE_DELAY` (5 ms) apart saw the same state. A wall-clock pulse
+  would expire unobserved inside a multi-second panel refresh and the tap would
+  vanish; the pulse therefore waits for 3 polls **and** 20 ms.
+- **The hold fires at the threshold, not on release**, so the light comes on
+  under the thumb.
+
+**What this costs.** `BTN_DOWN` is now unreachable on this board, and two things
+used it: the map screen's Down action, and the `POWER` + `DOWN` screenshot combo
+(`src/main.cpp`). Screenshots on the T5 S3 Pro have to come from
+`CMD:SCREENSHOT` or the touch UI until a second input exists.
+
+`enterDeepSleep()` now drives the frontlight off before sleeping: a hold is one
+gesture away from leaving the light on in a bag, and deep sleep stops the LEDC
+peripheral without defining what the pin does afterwards.
+
+**A hardware pass has to check:** that a tap really selects (and never
+double-fires, and is never dropped after a slow redraw), that a hold toggles
+once rather than repeatedly, that the light survives leaving and re-entering the
+map, that the I2C read per input poll does not disturb GT911 touch or a panel
+refresh, and that the light is off after a sleep/wake cycle.
+
 ## The map draws, 2026-08-31
 
 `CMD:GOTO_MAP`, then `CMD:SCREENSHOT`, which answers `SCREENSHOT_START:64800` --
@@ -269,9 +322,11 @@ are about this board and not about GNSS:
   `LilyGoT5S3LgfxConfig.cpp`, for the EPD power pins, and the only reason I2C is
   up at all is GT911 touch init (`InputManager.cpp:839`). So
   `disableGpsLora()` has never run, `LORA_RST` is undriven at boot, and the
-  user button behind the expander has no hook -- which is the same gap the
+  user button behind the expander had no hook -- which is the same gap the
   unmerged `feat/t5s3-board-begin` branch was opened for, and part of why the
-  map is half-operable here (below).
+  map is half-operable here (below). The button now has one, installed from
+  `src/main.cpp` rather than by calling `BoardT5S3::begin()` (see "The user
+  button" above); everything else in this bullet still holds.
 - **LovyanGFX does drive `LORA_CS` as a GPIO.** The parent repo's
   `docs/lora.md` had this `[open]` because M5GFX was not checked out. It is now:
   `Bus_EPD` drives the pins handed to it as `pin_oe` and `pin_pwr` as real

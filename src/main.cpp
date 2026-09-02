@@ -20,8 +20,13 @@
 #include <WiFi.h>
 #include <builtinFonts/all.h>
 
-#ifdef ENABLE_GNSS_CMD
+#if FREEINK_DEVICE_LILYGO
+// The board's own support code: the PCA9535 expander behind the user button and
+// the GNSS/LoRa power rail both live here.
 #include <BoardT5S3.h>
+#endif
+
+#ifdef ENABLE_GNSS_CMD
 #include <Gnss.h>
 #include <Wire.h>
 #include <esp_system.h>
@@ -57,6 +62,87 @@ SdCardFontSystem sdFontSystem;
 // Inert on every board whose profile has no frontlight (X4, X3), so it is
 // unconditional here — FrontlightManager::present() is the runtime question.
 FrontlightManager frontlight;
+
+#if FREEINK_DEVICE_LILYGO
+// The T5 S3 Pro's user button (switch S3, silkscreened IO48, wired to PCA9535
+// IO12 -- docs/devices/lilygo-t5-s3-pro.md, "The four physical buttons") is the
+// only button on this board firmware can read at all: BOOT is the power button,
+// RST resets the MCU and PWR sits on the charger. So it carries two jobs.
+//
+//   tap   -> Confirm (Select)
+//   hold  -> toggle the frontlight
+//
+// Why the light hangs off a physical hold and not a touch control: gloves defeat
+// the capacitive panel, and the light is exactly what a rider reaches for with
+// gloves on.
+namespace {
+constexpr unsigned long USER_BUTTON_HOLD_MS = 600;
+
+// The tap is reported as a synthetic Confirm press *after* the button is
+// released, because a press edge at touch-down would let the activity act
+// before the hold could still turn out to mean the frontlight.
+//
+// It has to survive InputManager's debounce, which commits a state change only
+// once two update() calls at least DEBOUNCE_DELAY (5 ms) apart saw the same
+// state (InputManager.cpp, update()). Counting polls rather than wall time is
+// what makes this survive a panel refresh: a millisecond window would expire
+// unobserved while the main loop sits in a multi-second redraw, and the tap
+// would be silently dropped. Both conditions must hold, so the pulse is long
+// enough in time AND seen often enough.
+constexpr uint8_t USER_BUTTON_CLICK_POLLS = 3;
+constexpr unsigned long USER_BUTTON_CLICK_MS = 20;
+
+bool userButtonDown = false;
+bool userButtonLongFired = false;
+unsigned long userButtonDownAt = 0;
+bool userButtonClickPending = false;
+uint8_t userButtonClickPolls = 0;
+unsigned long userButtonClickSince = 0;
+
+// Runs inside InputManager::update() (one call per poll), i.e. in whatever task
+// drives the main loop. Reads one PCA9535 input register over I2C; BoardT5S3
+// takes the bus mutex for us, so this is safe next to the panel's own expander
+// writes.
+uint8_t userButtonHook() {
+  const unsigned long now = millis();
+  const bool down = BoardT5S3::readButton();
+
+  if (down && !userButtonDown) {
+    userButtonDown = true;
+    userButtonLongFired = false;
+    userButtonDownAt = now;
+    // Drop a tap still being reported: a second press starting inside that
+    // window would otherwise be seen as Confirm held down.
+    userButtonClickPending = false;
+  } else if (down && !userButtonLongFired && now - userButtonDownAt >= USER_BUTTON_HOLD_MS) {
+    // Fires the moment the hold is long enough, not on release: the light comes
+    // on under the thumb, which is the feedback that says "let go now".
+    userButtonLongFired = true;
+    if (frontlight.brightness() > 0) {
+      frontlight.off();
+    } else {
+      frontlight.on();
+    }
+    LOG_INF("BTN", "User button hold: frontlight %u%%", static_cast<unsigned>(frontlight.brightness()));
+  } else if (!down && userButtonDown) {
+    userButtonDown = false;
+    if (!userButtonLongFired) {
+      userButtonClickPending = true;
+      userButtonClickPolls = 0;
+      userButtonClickSince = now;
+    }
+  }
+
+  if (!userButtonClickPending) return 0;
+  ++userButtonClickPolls;
+  if (userButtonClickPolls > USER_BUTTON_CLICK_POLLS && now - userButtonClickSince >= USER_BUTTON_CLICK_MS) {
+    userButtonClickPending = false;
+    return 0;
+  }
+  return static_cast<uint8_t>(1U << InputManager::BTN_CONFIRM);
+}
+}  // namespace
+#endif  // FREEINK_DEVICE_LILYGO
 
 #ifdef ENABLE_GNSS_CMD
 // Bring-up instrument for the LilyGo T5 S3 Pro's on-board L76K receiver, driven
@@ -432,6 +518,10 @@ void enterDeepSleep(bool fromTimeout = false) {
   }
 
   halTiltSensor.deepSleep();
+  // Inert on a board without one. The light is a hold away from being left on
+  // in a bag, and deep sleep stops the LEDC peripheral without defining what
+  // the pin does afterwards, so drive it off while the rail is still ours.
+  frontlight.off();
   display.deepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
@@ -523,6 +613,27 @@ void setup() {
   // freeink-sdk is upstream, so correct it here rather than forking the SDK.
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3 && frontlight.present()) {
     ledcChangeFrequency(BoardConfig::ACTIVE.frontlight.gpio, 1000, BoardConfig::ACTIVE.frontlight.pwmResolutionBits);
+  }
+#endif
+#if FREEINK_DEVICE_LILYGO
+  // After frontlight.begin() on purpose: the hook can toggle the light, so it
+  // must not be reachable before the LEDC channel exists.
+  //
+  // BoardT5S3::begin() -- which would configure IO12 and install the SDK's own
+  // hook, the one that reports the button as Down -- is never called in this
+  // firmware (see gnssPowerEnable() above). So this is the whole wiring of the
+  // button, and setting the direction is not redundant: the expander comes out
+  // of power-on reset with every pin an input, but a soft reset leaves it
+  // holding whatever the previous session wrote.
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3) {
+    if (!BoardT5S3::pca9535Present()) BoardT5S3::beginI2C();
+    if (BoardT5S3::pca9535Present()) {
+      BoardT5S3::setPca9535PinMode(PCA9535_IO12_BUTTON, INPUT);
+      InputManager::setButtonHook(userButtonHook);
+      LOG_INF("BTN", "User button: tap = Confirm, hold %lu ms = frontlight", USER_BUTTON_HOLD_MS);
+    } else {
+      LOG_ERR("BTN", "PCA9535 not answering: user button stays dead");
+    }
   }
 #endif
   halTiltSensor.begin();
