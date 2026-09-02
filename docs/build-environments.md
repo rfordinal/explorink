@@ -73,10 +73,20 @@ strings -a .pio/build/default/firmware.bin    | grep -c SETTING_OK   # 1
 strings -a .pio/build/gh_release/firmware.bin | grep -c SETTING_OK   # 0
 ```
 
-Measured 2026-09-02 on `fix/cmd-setting-devel-only`: `default` 1, `gh_release`
-0, same for `SETTING_ERR`. `mapPinsOffscreen` and the other key names stay in
-both binaries and that is correct -- those come from the settings serializer
-(`CrossPointSettings`), not from the command.
+Measured 2026-09-02 in one worktree, one instrument, the branch the only
+difference. `gh_release` at `09eaa466` (before) has `SETTING_OK` 1 and
+`SETTING_ERR` 1 and literally carries `SETTING_OK:%s=%u` and
+`SETTING_ERR:unknown`; at `a2f4bacb` (after) both are 0 and the binary is 336 B
+smaller. `default` at `a2f4bacb` has 1 and 1, so the strings are still emitted
+where they should be.
+
+Both release binaries were built with the `esp_bt.h` include path lent in
+through a throwaway `platformio.local.ini` (see the next section). It adds no
+`-D`, so it cannot change which code is compiled in.
+
+`mapPinsOffscreen` and the other key names stay in both binaries and that is
+correct -- those come from the settings serializer (`CrossPointSettings`), not
+from the command.
 
 `slim` is unaffected. A `slim` binary built before and after the change is
 byte-identical apart from two gzip mtimes in the embedded web assets and the
@@ -85,6 +95,11 @@ image SHA256 that follows from them (67 bytes at offsets 177-208, 1576669,
 `-UENABLE_SERIAL_LOG`, and is excluded now, via the absent flag.
 
 ## `gh_release` does not compile at all right now
+
+And the other two release envs almost certainly do not either. **Measured** on
+`gh_release`. `gh_release_rc` and `slim` are **read**, not measured: they carry
+identical `lib_deps`, and `slim` only built here once the same include path was
+lent to it as well.
 
 Found while checking the gate above, 2026-09-02, on `develop` at `09eaa466`.
 
