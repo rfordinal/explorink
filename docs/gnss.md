@@ -686,6 +686,43 @@ reckoning with no satellites behind it (`Gnss.h`), and a map whose whole claim i
 this job: it latches true on the first solution and stays true, so it says "has
 ever had a fix", not "has one now".
 
+### What to expect from this receiver, by placement
+
+**The lesson from the first ride, and it is not about the receiver.** Nobody had
+written down what a good result looks like, so eight minutes and forty-six
+seconds to a fix read as a failure rather than as the price of a cold start
+behind a windscreen. An expectation nobody recorded cannot be met or missed --
+it can only be a surprise. This table exists so the next run is a **check**
+instead of a reaction.
+
+Almost all of it is `[open]`. That is the point: it says what is not known, and
+one row at a time closes it.
+
+| placement | satellites used | HDOP | cold fix | measured? |
+|---|---|---|---|---|
+| car dashboard, inside | **3 to 5** | **3.0 to 4.2** | **526 s** (upper bound, from boot) | measured 2026-09-02, one ride, T5 S3 Pro |
+| indoors, on a desk, stationary | **8 to 9** | **1.4 to 1.8** | not measured | measured 2026-09-01, two runs, T5 S3 Pro |
+| open sky, stationary outdoors | `[open]` | `[open]` | `[open]` | **never measured** |
+| handlebar, moving, open sky | `[open]` | `[open]` | `[open]` | **never measured** |
+| rucksack strap, walking | `[open]` | `[open]` | `[open]` | **never measured** |
+| the L76K's own datasheet figures | `[open]` | -- | `[open]` cold / warm / hot | **never read** |
+
+Three things to be careful about when filling a row in:
+
+- **Name the device.** One C3 or S3 binary drives more than one board, and a
+  build string does not say which hardware produced a number.
+- **Say whether the receiver was already tracking.** `Gnss::timeToFirstFixMs()`
+  is not a TTFF when the rail was already up, and anything under about 1.2 s
+  means only "already tracking".
+- **One run is one sample.** The 1.3 km/h "noise floor" in this file was one
+  reading treated as a floor, and a stationary desk later reported 23.7 km/h.
+
+**Not for the public site.** These are bring-up numbers from a development
+board in the worst and the second-worst placements it will ever see, and the
+open-sky rows -- the ones the product actually lives in -- are empty. Nothing
+here is a claim about what a rider gets. `docs/site.md` states what works today;
+this does not qualify yet.
+
 ### Ten minutes to a first fix outdoors, and the design is the likely cause
 
 **Reported from the first real ride, 2026-09-02: over ten minutes outdoors
