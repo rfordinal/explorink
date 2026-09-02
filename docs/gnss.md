@@ -1111,7 +1111,9 @@ X4 Pro have no receiver, so the phone path is the only path they have.
 What was run: `CMD:SETTING mapGnssPosition 0`, read back as
 `SETTING_OK:mapGnssPosition=0`; `CMD:GOTO_MAP`; then `tools/blefakephone.py`
 standing in for the phone over BLE, sending a position 60 km from where the
-device sat.
+device sat. **The sender was the laptop stand-in, not the Android app.** It
+speaks the same characteristic and the same packet layout, so it exercises the
+device's side of the contract; it does not prove the app's side of it.
 
 ```
 [904489] ble fix: seq 0, heading 2, speed 0 km/h, utc 1788339966, accuracy 255 m
@@ -1128,9 +1130,18 @@ stationary sender rather than a fix being ignored -- the marker had already
 moved. The viewport has no tile coverage there, so the frame is hatch with a
 marker on it; that is the card's coverage, not a read failure.
 
-**And the receiver stayed out of it.** No `gnss: started` on map entry, not one
-`gnss fix:` line in the whole session, and `CMD:GNSS` answered `GNSS_OFF` with
-the map still open. The setting gates the rail as written.
+**And the firmware never brought the receiver up.** No `gnss: started` on map
+entry, not one `gnss fix:` line in the whole session, and `CMD:GNSS` answered
+`GNSS_OFF` with the map still open.
+
+**That is a software gate, not a measured rail.** `GNSS_OFF` is what the driver
+believes, and step 2a established that `LORA_GPS_EN` is an expander latch which
+can be up with nothing in this firmware asking -- a map-exit crash is a named way
+for exactly that to happen ("The rail comes up with the map and goes down with
+it"). Nobody read `CONFIG0` during this run, so what is proven is that the
+setting decides whether the map starts and reads the receiver. Whether the rail
+was electrically down at the time is `[open]`, and `CMD:GNSS PROBE` is the
+one-line way to close it on the next run.
 
 **One thing this run cost, and it is a finding of its own.** Every `CMD:` sent
 by `tools/mapcmd.py` went unanswered until a line was sent with a **leading

@@ -92,7 +92,8 @@ its own reason.
   the phone. **Done 2026-09-02**, on the build the ride ran, no reflash. The frame
   re-anchored on the coordinates the phone sent
   (`renderViewport start: lat=489250000 lon=174500000`), and the receiver stayed
-  off throughout (`GNSS_OFF`, not one `gnss fix:` line). `gnss.md`, "The BLE path
+  out of it throughout (`GNSS_OFF`, not one `gnss fix:` line -- a software gate,
+  not a rail read). `gnss.md`, "The BLE path
   still works with the setting off". It matters most for the boards with no
   receiver: X4 and X4 Pro have only this path.
 - **The stuck-byte drain** -- **deferred by the maintainer, 2026-09-02.** Reason:
