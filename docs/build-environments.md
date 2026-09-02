@@ -63,8 +63,13 @@ data) or `mapDebugInfo` (paints the rider's exact position on the panel), and
 the flip survives a reboot with nothing on screen to say who made it.
 
 It now has its own flag, `ENABLE_SETTING_CMD=1`, declared in `default`,
-`sticky` and `simulator` and in no release env. Same shape as
-`ENABLE_FRONTLIGHT_CMD` / `ENABLE_GNSS_CMD` on the T5 S3 Pro bring-up branch.
+`sticky`, `simulator` and `t5s3pro`, and in no release env. Same shape as
+`ENABLE_FRONTLIGHT_CMD` / `ENABLE_GNSS_CMD` here.
+
+`t5s3pro` exists only on this branch, so `develop` could not declare the flag
+in it. Merging `develop` here silently drops `CMD:SETTING` off the bench board
+until it is re-declared -- it happened on 2026-09-02 and the strings check below
+is what caught it. Check `t5s3pro` after every merge down from `develop`.
 
 **The gate is checkable without a device**, and the check can fail, which is
 why it is worth running. Build both, then look for the reply strings:
