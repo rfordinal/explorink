@@ -1384,10 +1384,11 @@ Bluetooth:
   simulator reaches 517 and flatters the number; do not quote a bridged rate as
   the device's.
 
-**Still not verified -- the card blocked it.** Both cards in the box refused
-every transfer, the first with `ERR write failed` and the second with
-`ERR mkdir failed`, and no card reader on hand could see either of them
-(`Media removed` from a freshly enumerated reader). So nothing was ever written:
+**Still not verified -- every transfer was refused `ERR mkdir failed`.** Not the
+card: read on the laptop afterwards it is `vfat`, mounted read-write, 2.2 MB used
+of 30 GB, and it already carries `base/12/2242` and `base/13/4485` with tiles in
+them, so this firmware has created directories on this card before. Tracked as
+BUG-037 in the parent repo. So nothing was ever written:
 
 
 
