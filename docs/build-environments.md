@@ -47,6 +47,20 @@ Nobody noticed for months because every build that reached a device was a
 build-flag change plus the `lib_deps` entry, and it cannot be called fixed until
 a `gh_release` binary is on a device with a phone connected to it.
 
+## A fresh worktree cannot build `env:default` offline
+
+`lib_deps` pulls JPEGDEC from a git URL, so the first build in a new worktree
+needs network and fails behind a sandbox with
+`could not read Username for 'https://github.com'`. Copying
+`.pio/libdeps/default/JPEGDEC` from another checkout gets past that and then hits
+a second wall: `lib/hal/HalPowerManager.cpp` includes `<esp_bt.h>`, which the
+isolated core rebuild only ships when something enables the BT controller.
+
+So a board-specific change (say T5S3-only) cannot be regression-built against
+`env:default` in a new worktree without setting that up first. Say that, rather
+than reporting the env as broken by the change -- on 2026-09-02 a session nearly
+did.
+
 ## Flashing: three images, three offsets
 
 Verified against a real X4's own 16 MB flash dump, not read off a datasheet.

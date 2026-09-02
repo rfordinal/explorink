@@ -106,8 +106,13 @@ trace for all four. So that one button carries two functions:
 | hold 600 ms | frontlight toggles, immediately, without releasing |
 
 Why the light hangs off a physical hold rather than a touch control: gloves
-defeat the capacitive panel, and the light is what a rider reaches for with
-gloves on.
+defeat the capacitive panel, and gloves are not a motorcycle detail -- winter
+walking, cold hands and rain produce the same hand. Whatever the person is doing,
+the interface must not require touch (Outline, "Voľba zariadenia", point 3).
+
+**Untested on this hardware.** Nobody has held a gloved finger to this panel; the
+claim is inherited from how capacitive digitizers work, not measured. What would
+settle it: one person, one glove, one tap.
 
 **It is wired in `src/main.cpp`, not through `BoardT5S3::begin()`.** That
 function installs the SDK's own hook, which reports the button as `BTN_DOWN`,
@@ -129,10 +134,16 @@ Three things in that hook are load-bearing:
 - **The hold fires at the threshold, not on release**, so the light comes on
   under the thumb.
 
-**What this costs.** `BTN_DOWN` is now unreachable on this board, and two things
-used it: the map screen's Down action, and the `POWER` + `DOWN` screenshot combo
-(`src/main.cpp`). Screenshots on the T5 S3 Pro have to come from
-`CMD:SCREENSHOT` or the touch UI until a second input exists.
+**What this costs: nothing that worked.** An earlier version of this section
+said the change costs `BTN_DOWN` -- the `POWER` + `DOWN` screenshot combo and the
+map's Down action. That was wrong, and it looked right because `BoardT5S3.cpp`
+really does OR the button into `BTN_DOWN`. But that hook is installed by
+`BoardT5S3::begin()`, which this firmware never calls, and
+`LILYGO_T5S3.input.down` is `PIN_UNASSIGNED` -- so **`BTN_DOWN` had no source on
+this board before this change either**. The button went from doing nothing to
+doing two things. The screenshot combo was never available here; `CMD:SCREENSHOT`
+is and always was the way. Rule: before pricing a change as a loss, check the
+thing being lost was reachable.
 
 `enterDeepSleep()` now drives the frontlight off before sleeping: a hold is one
 gesture away from leaving the light on in a bag, and deep sleep stops the LEDC
@@ -220,8 +231,14 @@ today, so nothing ships with it untested, but a future X4 Pro env starts with
 its home key selecting.
 
 The split is still worth revisiting once both have been used: gloves defeat the
-capacitive key and do not defeat the switch, so anything a rider needs while
-moving belongs on the switch.
+capacitive key and do not defeat the switch, so anything the person needs while
+moving belongs on the switch -- and gloves here mean winter, rain and cold hands
+as much as a motorcycle.
+
+**Identify an input by making it log, not by its name.** This board's two inputs
+are both "the button under the screen" in conversation, and the first
+implementation of this feature went to the wrong one. One capture with `[INPUT]`
+logging and one press settles it in a minute; a build and a flash do not.
 
 
 
@@ -440,6 +457,15 @@ are about this board and not about GNSS:
   serial reset below.
 
 ## Serial usually resets the board, and you cannot rely on either outcome
+
+**Clearing DTR and RTS does not stop the reset on this board.** A plain
+`pyserial` open with `dtr = False` / `rts = False` before `open()` still
+restarted it every time on 2026-09-02 -- the log timestamps went back to `[411]`
+on each of five opens. The port is USB Serial/JTAG, not a UART bridge with real
+modem lines, so there is no line to hold. Consequence for any observation run:
+**one capture per boot.** Open the port once, keep it open, and ask the person to
+press the thing while it is open -- reopening to "check" costs the state you were
+measuring.
 
 **A third data point, and a worse one: after a cold power-on, commands stopped
 arriving.** 2026-08-31, USB unplugged 21 s, then replugged. **The board kept
