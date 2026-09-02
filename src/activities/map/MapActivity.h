@@ -10,6 +10,7 @@
 #include "MapBleConsole.h"
 #include "MapCommandConsole.h"
 #include "MapFollow.h"
+#include "MapGnssHeading.h"
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPins.h"
@@ -24,6 +25,13 @@
 #include "MapViewport.h"
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
+
+#ifdef ENABLE_GNSS_CMD
+// A reference parameter needs no definition, and pulling GnssAccess.h in here
+// would put the driver's whole header into every translation unit that draws a
+// map screen. The definition arrives in MapActivity.cpp, which includes it.
+struct GnssFix;
+#endif
 
 // Draws real OSM map data from the SD card around the position received over
 // BLE or typed into a command console -- P4 of docs/prototype-plan.md, merged
@@ -209,6 +217,16 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // packet and the command console -- see the comment on the definition for why
   // that is the whole integration.
   void pollGnssFix();
+#endif
+#ifdef ENABLE_GNSS_CMD
+  // What the header row's GNSS glyph says. Three states, one Lucide glyph each
+  // (locate-off, locate, locate-fixed).
+  enum class GnssHeaderState : uint8_t { Off, Seeking, Fixed };
+  GnssHeaderState gnssHeaderState() const;
+  // The 16-step heading to draw for a fix: the receiver's course while the
+  // rider is moving, the last one while they are not. Not const -- it carries
+  // the speed gate's hysteresis and the drawn step forward.
+  uint8_t gnssHeadingStep(const GnssFix& fix);
 #endif
   // Erases the marker from the frame on the panel (writing back the pixels
   // saved when it was drawn), redraws it at sx/sy, and refreshes only the
@@ -955,6 +973,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // one value in 256 -- with both sources live that costs at most one skipped
   // BLE packet, which is the same 5 s the phone's next packet arrives in.
   uint8_t gnssSeq_ = 0;
+  // What the panel was last told, for the same reason transferIconShown_ exists
+  // next to it: the repaint decision compares against what is on the glass, not
+  // against what is true. Starts at Off so the first draw of a running receiver
+  // counts as a change.
+  GnssHeaderState drawnGnssState_ = GnssHeaderState::Off;
+  // The heading decision's state between fixes: the speed gate's hysteresis and
+  // the step on the panel. The arithmetic lives in MapGnssHeading.
+  MapGnssHeading::State gnssHeadingState_;
 #endif
 
   // ## Follow state: what the frame currently on the panel is

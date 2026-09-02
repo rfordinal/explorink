@@ -212,10 +212,14 @@ bool MapTileSource::advanceToNextTile() {
     const bool alreadyValidated = crc32Validated_.test(crcBit);
     if (alreadyValidated) ++crc32Skipped_;
     if (!reader_.beginLayer(layer_, alreadyValidated)) {
-      // Present per the directory, but its own crc32 failed. hasLayer()
-      // already ruled out "absent" above, so this is corrupt data, not an
-      // empty layer -- it must count as unavailable and hatch, the same as
-      // a tile that failed to open at all.
+      // Not a checksum failure: beginLayer() verifies nothing, because the sum
+      // is folded out of the record stream and judged at the end
+      // (MapTileReader::LayerCheck, counted at the top of this file). hasLayer()
+      // already ruled out a missing or empty layer entry above, so the only way
+      // to land here is a failed seek -- a card read error. It must count as
+      // unavailable and hatch, the same as a tile that failed to open at all.
+      // Corruption is corruptLayers_, and telling the two apart is what T-576
+      // needs (firmware/explorink/docs/gnss.md, "The SPI check needs a counter").
       ++tilesUnavailable_;
       if (index < 32) unavailableMask_ |= (1u << index);
       bytesRead_ += reader_.takeBytesRead();

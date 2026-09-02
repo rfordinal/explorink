@@ -35,6 +35,11 @@ ROW_SIZE = 14
 # alias -> lucide name.
 LUCIDE_ICONS = [
     ("transferBle", "arrow-left-right", ROW_SIZE),
+    # The GNSS receiver's three states, one glyph each. Same family on purpose:
+    # the rider reads the difference between them, not each one from scratch.
+    ("gnssOff", "locate-off", ROW_SIZE),
+    ("gnssSearching", "locate", ROW_SIZE),
+    ("gnssFixed", "locate-fixed", ROW_SIZE),
 ]
 
 

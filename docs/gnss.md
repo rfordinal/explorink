@@ -31,10 +31,10 @@ shown, or labelled open.
 |---|---|
 | Receiver | Quectel L76K, on-board. GPS + GLONASS, both seen |
 | Reached by | `CMD:GNSS` over the USB serial console, `env:t5s3pro` only |
-| On any screen | no |
-| Feeding the map | **built, not yet run on hardware** -- behind `mapGnssPosition`, off by default. See "The map reads it" |
-| Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works |
-| Still open | idle current, whether the rail is on by design or by an uncleared latch, whether SPI contention is real, a TTFF from the receiver's own power-on |
+| On any screen | the map's header row -- a three-state GNSS glyph, see [`map-header-status.md`](map-header-status.md). Nowhere else |
+| Feeding the map | **yes, ridden 2026-09-01** -- behind `mapGnssPosition`, off by default. See "The map reads it" |
+| Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works; the map drawing from the receiver on a ride, with no phone connected |
+| Still open | idle current, whether SPI contention is real, a TTFF from the receiver's own power-on, and the BLE path with `mapGnssPosition 0` |
 | What comes next | [`gnss-to-map-plan.md`](gnss-to-map-plan.md) -- five steps to the map reading this receiver, and the merge gate |
 
 **A working fix indoors**, on a desk, through a ceiling: `q=1`, 8 satellites
@@ -625,10 +625,17 @@ same place. Redact or discard, do not publish.
 
 ## The map reads it
 
-**Written 2026-09-01. NOT yet run on hardware** -- every claim below is read off
-the code, and the one that matters (a dot on the panel from this receiver, with
-no phone) is exactly the one a device pass has to settle. Step 3 of
+**Written 2026-09-01, and ridden the same day.** The claim that mattered -- a
+dot on the panel from this receiver, with no phone connected -- was settled on
+the device: the marker followed the rider. The logged ride, read out 2026-09-02,
+then priced it: 526 s to a first fix, three to five satellites, gaps of up to
+21 s while the map renders. Those numbers are below. Step 3 of
 [`gnss-to-map-plan.md`](gnss-to-map-plan.md).
+
+**Three claims in this section are still read off the code, not observed**: the
+BLE path with `mapGnssPosition 0`, the rail's state after a map-exit crash, and
+the tiles under SPI contention. Each says so where it is written, and the third
+is why T-576 is still open.
 
 ### It is three callers of one function, not an abstraction
 
@@ -664,11 +671,15 @@ callers of it.
 
 ### Three decisions inside it, and the reason for each
 
-**Heading is 0 and stays 0.** The receiver reports a course and mapping it
-straight through would be wrong rather than rough: at rest it is noise
-(`speed=1.3 course=211.9` on a stationary desk, measured 2026-08-31), so a parked
-bike would get a compass that spins. The speed gate and the hysteresis that fix
-it are step 4, and they are a product decision before they are code.
+**Heading was 0 and stayed 0, until a ride found it.** Mapping the course
+straight through would be wrong rather than rough -- at rest it is noise
+(`speed=1.3 course=211.9` on a stationary desk, measured 2026-08-31) -- so the
+first cut passed 0 and left step 4 for later. On the first real ride,
+2026-09-01, the marker followed the rider correctly and its arrow pointed north
+the whole way. **A wrong heading and a missing one look identical on the
+panel**, which is why "leave it for later" was the wrong call and not a
+conservative one. `MapGnssHeading` now derives it -- see "Heading, and the gate
+that decides whether to believe the course".
 
 **A sample is identified by when the driver's fix last changed**, computed as
 `millis() - Gnss::fixAgeMs()`. `Gnss::poll()` returns "something changed", but
@@ -682,6 +693,329 @@ reckoning with no satellites behind it (`Gnss.h`), and a map whose whole claim i
 this job: it latches true on the first solution and stays true, so it says "has
 ever had a fix", not "has one now".
 
+### What to expect from this receiver, by placement
+
+**The lesson from the first ride, and it is not about the receiver.** Nobody had
+written down what a good result looks like, so eight minutes and forty-six
+seconds to a fix read as a failure rather than as the price of a cold start
+behind a windscreen. An expectation nobody recorded cannot be met or missed --
+it can only be a surprise. This table exists so the next run is a **check**
+instead of a reaction.
+
+Almost all of it is `[open]`. That is the point: it says what is not known, and
+one row at a time closes it.
+
+| placement | satellites used | HDOP | cold fix | measured? |
+|---|---|---|---|---|
+| car dashboard, inside | **3 to 5** | **3.0 to 4.2** | **526 s** (upper bound, from boot) | measured 2026-09-02, one ride, T5 S3 Pro |
+| indoors, on a desk, stationary | **8 to 9** | **1.4 to 1.8** | not measured | measured 2026-09-01, two runs, T5 S3 Pro |
+| open sky, stationary outdoors | `[open]` | `[open]` | `[open]` | **never measured** |
+| handlebar, moving, open sky | `[open]` | `[open]` | `[open]` | **never measured** |
+| rucksack strap, walking | `[open]` | `[open]` | `[open]` | **never measured** |
+| the L76K's own datasheet figures | `[open]` | -- | `[open]` cold / warm / hot | **never read** |
+
+Three things to be careful about when filling a row in:
+
+- **Name the device.** One C3 or S3 binary drives more than one board, and a
+  build string does not say which hardware produced a number.
+- **Say whether the receiver was already tracking.** `Gnss::timeToFirstFixMs()`
+  is not a TTFF when the rail was already up, and anything under about 1.2 s
+  means only "already tracking".
+- **One run is one sample.** The 1.3 km/h "noise floor" in this file was one
+  reading treated as a floor, and a stationary desk later reported 23.7 km/h.
+
+**Not for the public site.** These are bring-up numbers from a development
+board in the worst and the second-worst placements it will ever see, and the
+open-sky rows -- the ones the product actually lives in -- are empty. Nothing
+here is a claim about what a rider gets. `docs/site.md` states what works today;
+this does not qualify yet.
+
+### Ten minutes to a first fix outdoors, and the design is the likely cause
+
+**Reported from the first real ride, 2026-09-02: over ten minutes outdoors
+before the receiver had a position.** That is not a bring-up curiosity, it is a
+product problem -- a device whose whole claim is *where am I* answering it a
+quarter of an hour after the rider stops is answering the wrong question.
+
+The estimate this branch wrote down was wrong by an order of magnitude. "Tens of
+seconds from cold" is in the `onEnter()` comment and in the plan's step 5 note,
+and it was arithmetic-free guesswork.
+
+**Two mechanisms, not one, and the first draft of this section named only the
+first.** Corrected 2026-09-02 once the rider said where the device had been.
+
+1. **This branch's own design.** The rail comes up in `MapActivity::onEnter()`
+   and goes down in `onExit()`, so the receiver loses power every time the map
+   is closed. With no power it keeps no ephemeris and no almanac, so **every map
+   entry is a cold start**.
+2. **The device was on a car dashboard**, where the receiver saw three to five
+   satellites all trip (see below). A cold start has to read ephemeris off the
+   satellite broadcast without a single bit error, and marginal signal makes
+   that fail and restart repeatedly. A cold start under open sky and a cold
+   start under a windscreen are not the same event.
+
+So the ten minutes is the product of both, and **neither number is separable
+from this run**. Attributing it to the rail cycling alone -- which this file did
+for an hour -- overstates what one ride can show.
+
+**`[open]` -- the 12.5 minute almanac figure is textbook GPS and not cited from
+a primary source here, and the L76K's own cold/warm/hot TTFF numbers have never
+been read off its datasheet.** Both belong in this file before the mechanism is
+treated as settled. What would confirm it cheaply: a second map entry a minute
+after the first should fix in seconds if the receiver kept anything, and in
+minutes again if it did not.
+
+**And the board may not offer a way out.** The L76K's backup supply is what
+normally keeps ephemeris alive across a power cut, and `BoardT5S3Pins.h` exposes
+exactly three GNSS-related lines -- `T5S3_GPS_RXD` (44), `T5S3_GPS_TXD` (43) and
+the shared `PCA9535_IO00_LORA_GPS_EN`. There is no separate backup rail in the
+header. Whether the module has one wired on the board at all is a schematic
+question for LilyGo, and the vendor thread is open.
+
+So the design choice this branch made deliberately -- no silent power drain,
+rail follows the map -- **bought the wrong thing**. It saves current the rider
+was not asking to save and spends the one resource the product cannot get back,
+which is the seconds between opening the map and knowing where you are. Step 5
+of [`gnss-to-map-plan.md`](gnss-to-map-plan.md) was framed as "can the receiver
+stay powered during a ride"; the real question is now the opposite one: **what
+does it cost to never power it down**, and is there any acceptable middle.
+
+**Needs observing more than once before anything is changed.** One ride is one
+sample, the sky was whatever it was that morning, and the receiver's state
+before the ride is not known with certainty. The next rides should each record
+what the fix cost, which `gnss.csv` now makes possible.
+
+#### The log confirms it: 526 s, and the fix landed at 65 km/h
+
+`gnss.csv`, boot 2, downloaded 2026-09-02. **The first row with a solution is at
+`uptime_ms` 526,246 -- 8 minutes 46 seconds after boot -- and it already reads
+65.6 km/h.** So the rider set off without a position and got one nearly nine
+minutes into the trip. The rider's own report of "more than ten minutes" and the
+file agree.
+
+It is an upper bound on time-to-first-fix rather than a measurement of it: the
+zero point is the device booting, not the receiver powering up, and the map has
+to be opened in between. It is still the first honest number this project has
+for a genuine cold start, and every earlier `ttff` reading was the useless kind
+`Gnss::timeToFirstFixMs()` warns about.
+
+#### The receiver did WORSE outdoors moving than indoors sitting
+
+Not a typo, and it is the finding worth chasing:
+
+| | satellites used | HDOP |
+|---|---|---|
+| indoors, stationary, night before | **8 to 9** | **1.4 to 1.8** |
+| outdoors, riding, 60 to 85 km/h | **3 to 5** | **3.0 to 4.2** |
+
+The whole ride ran on 5 satellites or fewer and never once matched what a desk
+indoors gave it.
+
+**Answered by asking the rider: the device sat on a car dashboard, inside the
+car.** That is one of the worst places a GNSS receiver can be. The roof removes
+most of the sky, the windscreen takes the rest at a shallow angle, and modern
+athermic screens carry a metallised coating that attenuates L-band badly. Three
+to five satellites is the ordinary result there, not an anomaly.
+
+The reason a desk indoors beat it is the same reason: a room has windows on the
+sides and a receiver sitting still can integrate for as long as it likes, while
+a dashboard has one heavily attenuating window in front and everything else is
+steel.
+
+So the first hypothesis was the whole story, and the second one is **not
+needed** to explain this ride:
+
+- **The map's own rendering** -- panel 15% busy, 529 refreshes an hour, an EPD
+  bus switching next to the antenna. Nothing here shows it, and nothing here
+  clears it either. It stays `[open]`, and it is cheap to test whenever
+  somebody wants to: one stationary outdoor spot, once with the map open and
+  once with the map closed and `CMD:GNSS ON` from the console. Same sky, same
+  antenna, and the only difference is whether the panel works.
+- **Still acquiring** -- ruled out. The sat count never climbed across seven
+  minutes.
+
+**And weigh the ride accordingly, but do not dismiss it.** A car dashboard is
+**one of this product's named scenarios** -- `V50` lists a car trip beside the
+motorbike and the walk, and `V24` says the vehicle does not define the target.
+So three to five satellites behind a windscreen is not an edge case to wave
+away: it is what one of the four shapes of the target actually gets, and the
+product has to be honest about it (`V38`). What this ride does **not** say is
+what the other three shapes get. Open sky, a handlebar and a rucksack strap are
+all unmeasured, and every number here is from the most attenuated placement the
+receiver will see.
+
+An earlier draft of this paragraph said a car dashboard is not the target and
+cited `V4` and `V48` for it. Both are about which hardware carries a receiver,
+not about where the device sits, and the claim contradicted `V50` outright.
+
+#### Fixes stop while the map renders, by up to 21 seconds
+
+Gaps between accepted fixes during the ride: six of about 4.2 s, and one of
+**21.0 s**. The RX ring is not the cause -- it holds about 10 s and no overflow
+counter moved -- so this is the map's loop not calling `poll()` while it renders,
+which is the other half of step 1 that a bigger buffer never addressed.
+
+**At 85 km/h a 21 s gap is about 500 m of stale dot**, and the panel has no way
+to say so. The ring fixed sentence *loss*; it does not fix position *age*, and
+this is the first measurement of how large that age gets in real use.
+`[open]` -- the correlation with a render is an inference from the loop's
+structure, not from a log that carries both. A render timestamp in the fix log
+would settle it.
+
+#### What the ride did settle: the speed gate is fine outdoors
+
+Yesterday's indoor run had the receiver reporting up to 23.7 km/h while parked,
+which made the 3.0 km/h gate look worthless. The ride says otherwise:
+
+- **31 rows at exactly 0.0 km/h during the ride, and `moving` was set on none of
+  them.** The gate held, and the held headings were 4, 7 and 9 -- the direction
+  the rider had last been going, which is what it is supposed to do.
+- **One ride, and inside a car.** 31 stationary rows is enough to say the gate
+  did not misfire that morning; it is not enough to say it never will. The
+  parked-outdoors case with open sky has not been seen at all.
+- Indoors the night before, the same code produced 9 false `moving` rows and
+  four different wrong headings.
+
+So the gate is not broken; **it is defeated by indoor multipath specifically**.
+That is worth knowing before anyone "fixes" it into something worse for riding.
+
+
+### Heading, and the gate that decides whether to believe the course
+
+`src/activities/map/MapGnssHeading.{h,cpp}`, a pure module next to `MapFollow`
+and split out for the same two reasons: the decision is worth testing on the
+host, and a second client (iOS, the simulator, a replay tool) has to reproduce
+it exactly. Eleven host tests in `test/map_gnss_heading/`.
+
+| | |
+|---|---|
+| believe the course above | **3.0 km/h** |
+| stop believing below | **2.0 km/h** |
+| deadband past a step boundary | **6 degrees** |
+| step width | 22.5 degrees, 16 steps (`MapHeading`) |
+
+**Two thresholds, not one.** A rider sitting on a single threshold flips between
+believed and not on every fix, and a flip that changes the step rotates the whole
+frame -- a full e-ink redraw, about a second. What the hysteresis holds between
+the two is the **gate**, not the step: a rider already believed keeps being
+believed, so the course still drives the heading down to 2.0.
+
+**3.0 rather than a motorbike-shaped 5.0, because of Hike mode.** Walking is
+about 4 to 5 km/h, and a gate at 5 would leave a hiker permanently without a
+heading. 3.0 still clears the 1.3 km/h noise floor. **A first cut, chosen on
+those two numbers and not yet judged on the device** -- a per-mode gate is the
+obvious refinement and is deliberately not built.
+
+**Below the gate the last step is held, never decayed to north.** A held heading
+is not a missing one, and north is a claim.
+
+**The deadband is measured against the step on the panel, not the previous
+course.** The question is whether the course has moved far enough to be worth
+rotating the frame, and the frame shows a step. 6 degrees is about a quarter of
+a step: enough to stop the flutter, small enough that a real turn still lands
+within one fix.
+
+Two wrap-around cases have tests because both are easy to get wrong: 350 degrees
+is 10 degrees from north and not 350 (measured the long way it looks like a huge
+turn and rotates the frame for nothing), and a receiver reporting 360.0 must not
+land on step 16 in a four-bit field.
+
+**Ridden once, and not yet judged on the panel.** The logged ride (`gnss.csv`,
+read 2026-09-02) ran this module: 31 stationary rows with `moving` set on none of
+them, and the held headings were 4, 7 and 9 -- see "What the ride did settle: the
+speed gate is fine outdoors". What nobody has done is watch the arrow itself
+while riding, and the two thresholds have not been judged against a walker or
+against a rider parked under open sky.
+
+### The ride has to write its own numbers down
+
+`GnssLog` (`src/GnssLog.{h,cpp}`), one CSV row per accepted fix to
+`/trailink/gnss.csv`. Same conventions as `PowerLog`: header once per boot as
+the run marker, `build` on every row, appended across boots, a reader skips any
+line starting with `uptime_ms`.
+
+```
+uptime_ms,utc,lat,lon,quality,sats_used,hdop,speed_kmh,course_deg,moving,heading,build
+```
+
+**Why a file.** The measurement that settles the heading gate is a rider
+outdoors, and a rider outdoors has no laptop. The `gnss fix:` log line already
+says everything needed -- it just says it to a console nobody is holding.
+
+**`moving` and `heading` sit next to the `speed` and `course` they came from**,
+on purpose. The question is not what the receiver said, it is whether
+`MapGnssHeading` was right to believe it, and a row that carried only the
+receiver's side could not answer that.
+
+**Off by default, behind `mapGnssLog`, and it stays off.** This file is a
+**track log**, not the single point the device already persists: on a lost or
+stolen device it is a record of where the rider went. Two gates, not one -- it
+is compiled only into a build with a receiver, and inside that build it writes
+nothing until the setting is turned on for one measurement.
+
+Position is in the row rather than left out, and that is the deliberate half of
+the cost: the open question is whether a speed gate can work at all or whether
+heading has to come from displacement between fixes, and the second cannot be
+answered offline without positions. A log that could not settle it would be a
+privacy cost with nothing bought.
+
+Rows buffer and flush about every ten seconds, and on map exit -- an
+open/append/close per fix would land inside the render loop this branch spent
+its first step keeping the UART alive through.
+
+**Verified on hardware 2026-09-01**, and the rate was not what was estimated:
+
+```
+before:  GNSS_LOG:setting=0 bytes=0    buffered=0    disabled=0
+after:   GNSS_LOG:setting=1 bytes=7454 buffered=1500 disabled=0
+```
+
+About **85 bytes a row at roughly 1.7 rows a second**, not the 1 Hz the first
+estimate assumed, so **about 500 KB an hour** rather than 320 KB. The receiver
+does not emit one fix a second: `Gnss::poll()` reports a change when position,
+speed, course **or the clock** moves, and three rows inside 400 ms were seen
+(`seq 104, 105, 106`). Nothing is lost -- a full buffer forces the write rather
+than dropping a row -- but a long ride's file is bigger than the header first
+claimed.
+
+### The gate was chosen on a number that was not a noise floor
+
+**Measured 2026-09-01, device stationary on a desk indoors, no phone.** The
+receiver, at `quality=1` with 8 satellites and HDOP 1.4, reported this over
+about twenty seconds:
+
+```
+speed  9.6 course 206.6   speed 16.3 course 252.6   speed 23.7 course 235.8
+speed  0.0 course 235.8   speed  3.8 course  21.1   speed  2.6 course 148.1
+```
+
+**Up to 23.7 km/h, and the course swung right round the compass, while nothing
+moved.** The 3.0 km/h gate passed for eleven consecutive fixes.
+
+This refutes the number the gate was built on. `speed=1.3 course=211.9`
+(2026-08-31) was **one sample**, and it was written down as if it were the
+noise floor -- in this file, in the plan, and in the constant's own comment.
+One reading is not a floor, and the doc that called it one is what made the
+gate look justified.
+
+Two things follow, and they are different:
+
+- **No threshold on instantaneous speed can separate indoor multipath from a
+  rider.** A gate high enough to reject 23.7 km/h rejects every cyclist and
+  every hiker. So the current gate is not "slightly too low", it is the wrong
+  instrument for this case.
+- **This says nothing yet about outdoors**, which is the case the product cares
+  about. Multipath off walls is what produces this; with real sky the figure is
+  expected to be far lower, and nobody here has measured it. **Do not conclude
+  the gate is wrong for riding from an indoor run** -- that would be the same
+  mistake in the other direction.
+
+So the gate ships as a placeholder that behaves correctly for a moving rider
+and wrongly for a device parked indoors, and the next measurement is a
+stationary one **outdoors, with sky**. Until it exists, a heading held from
+indoor noise is a known way for the arrow to be wrong.
+
+
 ### The rail comes up with the map and goes down with it
 
 `onEnter()` calls `gnssStart()` when `mapGnssPosition` is set; `onExit()` calls
@@ -694,6 +1028,28 @@ leaving the map and coming back pays acquisition again -- tens of seconds from
 cold, not the sub-second figure `Gnss::timeToFirstFixMs()` reports for a receiver
 that was already tracking. Whether that trade is right is the duty-cycle question
 in step 5 of the plan, and it needs step 2b's numbers first.
+
+**Read off the code, not observed.** Nobody has caught the rail latched on after
+a crash on this branch; the sequence below is `onExit()`'s two calls and the
+coredump's confirmed crash point, put together by reasoning. What would settle
+it: `CMD:GNSS PROBE` on the boot straight after a map-exit crash.
+
+**A crash on map exit leaves the rail on, and that is how the latch gets
+stuck.** `onExit()` calls `BlePositionServer::end()` before `gnss.end()`, and
+that first call is a known dice roll: `NimBLEDevice::deinit(true)` can kill the
+NimBLE host task on a NULL event callback ([`ble-deinit-crash.md`](ble-deinit-crash.md),
+root cause confirmed from a real coredump on this branch's own build,
+2026-09-01). When it fires, `gnss.end()` never runs, the expander's
+`LORA_GPS_EN` latch is never cleared, and the receiver and the LoRa part stay
+powered through the reset with nothing managing them.
+
+That is the same mechanism step 2a identified as "an uncleared latch" -- and it
+now has a named cause rather than being a mystery of who left the rail on. It
+also means the rail can be live on a boot where no code asked for it, which is
+exactly the reading `CMD:GNSS PROBE` exists to make. Ordering the two `end()`
+calls the other way round would narrow the window and is **not** done yet: the
+crash is being fixed at its source (T-586) and a reorder here would hide it
+rather than fix it.
 
 **This is also the first code path that powers the rail while the map is reading
 tiles off the SD card**, which is the SPI contention that has never been tested
@@ -716,18 +1072,165 @@ own. The two can collide on one value in 256, which with both sources live costs
 at most one skipped BLE packet -- the same 5 s the phone's next packet arrives
 in.
 
-### What a hardware pass has to check
+### What a hardware pass has to check, and what the ride actually covered
 
-Nothing below has been run.
+**Three of the five are done, one is half done, one cannot be run today.** The
+ride of 2026-09-01 covered 1 and 2; a bench run on 2026-09-02 covered 3.
 
-1. `CMD:SETTING mapGnssPosition 1`, then enter the map **with no phone
-   connected**. The waiting banner should clear and the dot should land where the
-   device is.
-2. The same build with `mapGnssPosition 0` still draws from the phone.
-3. Tiles still read correctly with the rail up -- the SPI contention above. A
-   corrupt tile is what failure looks like, not a crash.
-4. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
+1. **`CMD:SETTING mapGnssPosition 1` first.** The setting is 0 by default and 0
+   means the old BLE path: a run that forgets this line tests the code that was
+   already there and looks like a pass. `CMD:SETTING mapGnssPosition` with no
+   value reads it back, so the run can prove it was set rather than assume it.
+   **Done** -- the ride drew from the receiver, which a 0 setting cannot do.
+2. Enter the map **with no phone connected**. The waiting banner should clear
+   and the dot should land where the device is. **Done** -- the marker followed
+   the rider and `gnss.csv` recorded the fixes behind it. The banner still says
+   "Waiting for BLE position" while the fix comes from the device, which is
+   wrong text rather than a wrong dot (T-589).
+3. The same build with `mapGnssPosition 0` still draws from the phone.
+   **Done 2026-09-02**, on the T5 S3 Pro, no reflash -- the build the ride ran.
+   See "The BLE path still works with the setting off" below.
+4. **The tile-read counters get read, with the rail up.** **Cannot be run from
+   a ride with today's instrumentation**, and looking at the panel is not the
+   check -- hatch says nothing about the cause. See below.
+5. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
    `CMD:GNSS ON` before entering the map is still running after leaving it.
+   **Half done.** `gnss: started` / `gnss: stopped` / `gnss: started` was seen
+   across two map entries on 2026-09-01
+   ([`map-header-status.md`](map-header-status.md)), which is the start/stop
+   half. Nobody read `GNSS_OFF` back after an exit, and nobody drove a
+   console-started session through the map screen.
+
+### The BLE path still works with the setting off
+
+**Verified 2026-09-02**, on the T5 S3 Pro, on the build the ride ran -- no
+reflash. This is the half of step 3's "done when" that the ride did not cover:
+adding a third `applyFix()` caller must not have cost the first one, and X4 and
+X4 Pro have no receiver, so the phone path is the only path they have.
+
+What was run: `CMD:SETTING mapGnssPosition 0`, read back as
+`SETTING_OK:mapGnssPosition=0`; `CMD:GOTO_MAP`; then `tools/blefakephone.py`
+standing in for the phone over BLE, sending a position 60 km from where the
+device sat. **The sender was the laptop stand-in, not the Android app.** It
+speaks the same characteristic and the same packet layout, so it exercises the
+device's side of the contract; it does not prove the app's side of it.
+
+```
+[904489] ble fix: seq 0, heading 2, speed 0 km/h, utc 1788339966, accuracy 255 m
+[904490] fix #0 re-anchors: at 8626,9262, heading 2 vs frame's 12, 0 moves in -- keep-in
+[904490] renderViewport start: lat=489250000 lon=174500000 heading=2 seq=0
+[905016] reset z13 col 4492..4493 row 2815..2816: 0 tiles ok, 4 missing (mask 0xf)
+```
+
+`489250000, 174500000` is exactly the 48.9250, 17.4500 the fake phone sent, so
+the frame is anchored on the phone's position and not on the persisted fix the
+screen opened with. Later fixes at the same coordinates log `skipped: 258,690 is
+under 10 px from the marker`, which is `MapFollow` behaving correctly for a
+stationary sender rather than a fix being ignored -- the marker had already
+moved. The viewport has no tile coverage there, so the frame is hatch with a
+marker on it; that is the card's coverage, not a read failure.
+
+**And the firmware never brought the receiver up.** No `gnss: started` on map
+entry, not one `gnss fix:` line in the whole session, and `CMD:GNSS` answered
+`GNSS_OFF` with the map still open.
+
+**That is a software gate, not a measured rail.** `GNSS_OFF` is what the driver
+believes, and step 2a established that `LORA_GPS_EN` is an expander latch which
+can be up with nothing in this firmware asking -- a map-exit crash is a named way
+for exactly that to happen ("The rail comes up with the map and goes down with
+it"). Nobody read `CONFIG0` during this run, so what is proven is that the
+setting decides whether the map starts and reads the receiver. Whether the rail
+was electrically down at the time is `[open]`, and `CMD:GNSS PROBE` is the
+one-line way to close it on the next run.
+
+**One thing this run cost, and it is a finding of its own.** Every `CMD:` sent
+by `tools/mapcmd.py` went unanswered until a line was sent with a **leading
+newline** (`\nCMD:...\n`), after which the same command answered every time.
+That is the command wedge the stuck-byte drain exists for -- and **no `serial
+head byte` line ever appeared**, across roughly ten minutes with the port open.
+The wedge is real and reproducible; whether the drain would have cleared it
+given longer is not known, since it removes one byte per pass and only warns
+once. `[open]` -- the head byte itself was never read, so the cause is inferred
+from the fix that worked, not observed.
+
+### The SPI check needs a counter the firmware does not carry out of the frame
+
+**Looking at the panel does not answer this, and an earlier version of this
+section said it did.** Hatch is drawn for a tile that is absent, truncated or
+crc32-mismatched alike (`MapHatch.h`: "absent, truncated or crc32-mismatched is
+drawn as hatch, never as white"), and on a ride a hatched tile almost always
+means what it usually means -- the card has no tile there. A rider cannot tell a
+corrupt read from missing coverage by eye, and neither can a screenshot.
+
+**The telemetry does not separate them either.** `tilesUnavailable_` is
+incremented by every cause at once: a tile that is absent or will not open
+(`MapTileSource.cpp:123`, `:151`, `:183`), a layer already known bad in this
+frame (`:205`), a `beginLayer()` failure (`:223`) **and** a crc32 verdict of
+`Failed` (`:77`). That single number is what `MapActivity.cpp:5864` prints as
+`N tiles ok, M missing`. `crc32Skipped_` is not a second opinion: it counts
+cache hits, incremented at `MapTileSource.cpp:213` under `if (alreadyValidated)`.
+
+**One counter does separate them, and it cannot survive the trip.**
+`corruptLayers_` is incremented only on `LayerCheck::Failed`
+(`MapTileSource.cpp:76`), so it counts crc32 corruption and nothing else, and
+`MapActivity.cpp:5785-5793` logs `N corrupt layer(s) drawn ... redrawing without
+them` when it fires. Three things stop it answering T-576 off a ride:
+
+- **Frame-scoped.** `startPass()` resets it (`MapTileSource.cpp:41`), so it
+  describes the frame being drawn and nothing accumulates across a ride.
+- **Serial only.** Its one surface is that `LOG_ERR`, which needs
+  `ENABLE_SERIAL_LOG` and a cable. `gnss.csv` does not carry it, and neither
+  does anything else written to the card.
+- **The header's own comment oversells it.** `MapTileSource.h:203-204` says the
+  counter exists so a bad card is "visible in `info`". `writeInfo()`
+  (`MapCommandConsole.cpp:368`) prints console state and no tile counters, so
+  `info` does not show it.
+
+**So T-576 cannot be run against a ride today**, and the 2026-09-01 ride does not
+count as a run: the rail was up while the map rendered for a whole trip, but
+nothing that could have told corruption from absence was recorded, and
+`gnss.csv` carries no tile counts at all -- so it is not even known whether the
+route had coverage. **T-576 is untested, and the missing piece is instrumentation
+rather than attention.**
+
+**And one counter is not enough, because the contention has two shapes.**
+Corrupted bytes inside a transaction fail the layer's crc32 and land on
+`corruptLayers_`. A transaction torn apart -- the card losing the bus mid-read --
+lands on a failed seek, which is the `beginLayer()` branch at
+`MapTileSource.cpp:223`, and that one increments `tilesUnavailable_` next to
+plain absence. So **carrying `corruptLayers_` out of the frame measures one shape
+and leaves the other invisible**, and a session that does only that will believe
+T-576 is covered when half of it is not. Whatever is built has to count the seek
+failures separately too -- the branch is already its own, it just shares a
+counter.
+
+Two ways to get it, and they are different sizes:
+
+**(a) Carry the counter out of the frame.** The branches are already separate in
+the code -- `MapTileSource.cpp:76` is crc32 corruption, `:223` is a
+`beginLayer()` failure, `:123`/`:151`/`:183` are absence -- so this is a
+per-pass total plus a way to read it, not new detection. With it the test is
+cheap and needs no ride: **the same viewport rendered with the rail up and with
+the rail down**, repeatedly. An identical viewport has an identical absent-tile
+count, so any delta is corruption. On a bench with a cable this is already
+half-possible today, because the `LOG_ERR` fires per frame -- what is missing
+there is only the tally.
+
+**(b) Bypass the map.** A dedicated task doing continuous CRC-checked card reads
+while full and partial refreshes loop, run with `LORA_RST` floating and then
+held low. Its own instrument, no dependency on the renderer, and it is the
+version already written down under "What a real test of check 2 looks like".
+
+**A comment that pointed the wrong way, fixed 2026-09-02.**
+`MapTileSource.cpp:214-222` used to say the `beginLayer()` failure there meant
+"present per the directory, but its own crc32 failed". It never did:
+`beginLayer()` (`MapTileReader.cpp:203-206`) checks no checksum -- the sum is
+folded out of the record stream and judged at the end -- and `hasLayer()` at
+`MapTileSource.cpp:156` has already ruled out a missing or empty layer entry, so
+the only way to reach that branch is a failed seek, a card read error. Anyone
+hunting corruption by reading that file would have counted the branch as
+corruption. `CLAUDE.md`, "Code comments answer WHY": a conclusion the code
+invites is the code's problem.
 
 ## The parser
 
@@ -1140,9 +1643,11 @@ the non-overlapping path.
 
 ## Open
 
-- **Is the rail on by board default, or was it latched by an earlier session?**
-  The CONFIG0 read on a true power cycle, above. Everything about this board's
-  power floor hangs off the answer, and it costs one boot.
+- ~~Is the rail on by board default, or was it latched by an earlier session?~~
+  -- **settled 2026-09-01**: an uncleared expander latch, proven by `CMD:GNSS
+  RELEASE` twice. See "Settled 2026-09-01". A crash on map exit is a named way
+  for it to get stuck, see "The rail comes up with the map and goes down with
+  it".
 - **Idle current of the GNSS + LoRa pair**, against the BQ27220 or a meter in
   series at the development board's battery connector. Name the instrument.
   T-579.

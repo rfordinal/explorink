@@ -32,6 +32,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "GnssAccess.h"
+#include "GnssLog.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "MissingTilesStore.h"
@@ -986,7 +987,7 @@ void loop() {
         // env:gh_release_rc too (platformio.ini) -- only env:slim clears it --
         // so anyone with a USB cable and a shipped device can flip these
         // toggles and persist them. Two of them cost the rider mobile data and
-        // mapDebugInfo puts their exact position on the panel. T-583.
+        // mapDebugInfo puts their exact position on the panel. T-587.
         //
         //   CMD:SETTING mapAutoSyncTiles 1   ->  SETTING_OK:mapAutoSyncTiles=1
         //   CMD:SETTING <unknown> 1          ->  SETTING_ERR:unknown
@@ -1010,6 +1011,8 @@ void loop() {
         // do anything is worse than answering SETTING_ERR:unknown.
         else if (key == "mapGnssPosition")
           target = &SETTINGS.mapGnssPosition;
+        else if (key == "mapGnssLog")
+          target = &SETTINGS.mapGnssLog;
 #endif
         if (target == nullptr) {
           logSerial.printf("SETTING_ERR:unknown\n");
@@ -1105,6 +1108,7 @@ void loop() {
         //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
         //   CMD:GNSS PROBE     ->  GNSS_PROBE:...  (run first, on a cold boot)
         //   CMD:GNSS RELEASE   ->  GNSS_RELEASE:... (writes the rail pin, step 2a)
+        //   CMD:GNSS LOG       ->  GNSS_LOG:...    (sizes of the fix log, never its rows)
         //
         // Reading the reply: `ttff` is NOT an acquisition time on a receiver
         // that was already running -- Gnss::timeToFirstFixMs() spells out why
@@ -1130,6 +1134,18 @@ void loop() {
           } else {
             logSerial.printf("GNSS_ERR:power rail or expander unavailable\n");
           }
+        } else if (argument == "LOG") {
+          // "Did the ride record?" -- a question with a wrong answer available,
+          // which is the point. Sizes only, never rows: the file is the rider's
+          // track and printing it would hand a position log to anyone with a
+          // cable.
+          uint32_t onCard = 0;
+          uint32_t buffered = 0;
+          bool loggingDisabled = false;
+          GnssLog::status(onCard, buffered, loggingDisabled);
+          logSerial.printf("GNSS_LOG:setting=%u bytes=%lu buffered=%lu disabled=%d path=%s\n",
+                           static_cast<unsigned>(SETTINGS.mapGnssLog), static_cast<unsigned long>(onCard),
+                           static_cast<unsigned long>(buffered), loggingDisabled ? 1 : 0, GnssLog::kPath);
         } else if (argument == "OFF") {
           gnss.end();
           logSerial.printf("GNSS_OK:off\n");

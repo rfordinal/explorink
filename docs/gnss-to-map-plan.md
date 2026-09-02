@@ -18,9 +18,9 @@ this file is only what comes next.
 | 1 | UART survives a blocking render | device | **done 2026-09-01**, verified on hardware |
 | 2a | Is the rail on by design or by an uncleared latch | device only, one I2C write | **done 2026-09-01**, verified on hardware: an uncleared latch |
 | 2b | What the pair draws | device, a cell that is confirmed present (T-583), one small firmware change | open, **gated on T-583** |
-| 3 | GNSS as a third `applyFix()` caller | device | **built 2026-09-01, NOT run on hardware** -- needs the device pass below |
-| 4 | Heading from course, on-device | device, product decision | blocked on 3 |
-| 5 | Priority when both sources are live | numbers from 2, product decision | blocked on 2 and 4 |
+| 3 | GNSS as a third `applyFix()` caller | device | **done, verified on hardware**: the map drew from the receiver on the ride 2026-09-01, and the BLE path with the setting off was re-checked 2026-09-02 |
+| 4 | Heading from course, on-device | device | **built and ridden once, 2026-09-01** -- the gate held on 31 stationary rows; nobody watched the arrow on the panel |
+| 5 | Priority when both sources are live, **and the duty cycle** | numbers from 2, product decision | **reframed 2026-09-02**: a ride took 10+ min to first fix, so the question is what it costs to never power the receiver down |
 
 ## How sessions share this
 
@@ -81,15 +81,40 @@ maintainer's call.
 
 ### Gate B -- the map reading from the receiver
 
-A later merge, from step 3's own session.
+A later merge, from step 3's own session. **Met 2026-09-02**: both hardware
+checks run, both remaining items deferred by the maintainer in writing, each with
+its own reason.
 
 - **Step 3 done and verified on hardware.** The map draws from the receiver with
-  no phone connected.
-- **The stuck-byte drain verified**, or explicitly deferred by the maintainer in
-  writing.
-- **T-576's two open items either closed or explicitly deferred by the
-  maintainer**, not silently dropped: the SPI-contention test that has never run,
-  and a TTFF measured from the receiver's own power-on.
+  no phone connected. **Met 2026-09-01**, on the ride.
+- **The BLE regression run.** The other half of step 3's own "done when": the
+  same build with `mapGnssPosition 0`, a phone connected, the map drawing from
+  the phone. **Done 2026-09-02**, on the build the ride ran, no reflash. The frame
+  re-anchored on the coordinates the phone sent
+  (`renderViewport start: lat=489250000 lon=174500000`), and the receiver stayed
+  out of it throughout (`GNSS_OFF`, not one `gnss fix:` line -- a software gate,
+  not a rail read). `gnss.md`, "The BLE path
+  still works with the setting off". It matters most for the boards with no
+  receiver: X4 and X4 Pro have only this path.
+- **The stuck-byte drain** -- **deferred by the maintainer, 2026-09-02.** Reason:
+  it cannot break anything. It discards **one byte per pass**, and only a
+  non-`'C'` head byte that has sat unconsumed for five seconds
+  (`src/main.cpp:817-841`) -- which the map's own console never produces, because
+  it consumes within milliseconds. The worst case is one stale byte nothing was
+  reading; a wedge it fails to clear leaves the device where it would have been
+  without it. It ships labelled, and the label is the awkward kind of
+  unverified -- it ran and the diagnostic never fired. **The 2026-09-02 bench run
+  reproduced the wedge and the diagnostic stayed dark there too**, which is one
+  more observation of the same shape, not a verification. See "The drain ships
+  open".
+- **T-576's SPI contention** -- **deferred by the maintainer, 2026-09-02.**
+  Reason: the instrumentation to run it does not exist. Corrupt reads and absent
+  tiles land on the same counter and draw the same hatch, so no ride and no
+  screenshot can answer it. Both ways to build the instrument are in `gnss.md`,
+  "The SPI check needs a counter the firmware does not carry out of the frame".
+- **T-576's cold TTFF** -- still open, and unchanged by the ride. The 526 s is
+  measured from boot, not from the receiver powering up, so it is an upper bound
+  and not the figure this item asks for.
 
 Steps 4 and 5 are in **neither** gate. They are product decisions and they can
 land after either merge.
@@ -316,12 +341,16 @@ Two things that come free and should be noted rather than built on:
 **Done when** the map draws from the receiver **on hardware** with no phone
 connected, and the same build still draws from the phone with the setting off.
 
-### Built 2026-09-01, and it is unverified
+### Built 2026-09-01, ridden 2026-09-01
 
 The code is on `feat/t5s3-gnss` and it compiles clean in both envs (`t5s3pro`
-and `default`, zero warnings) with 417/417 host tests passing. **None of that is
-evidence that it works** -- a clean build proves the code does what its author
-thought, and the claim here is about a dot on a panel.
+and `default`, zero warnings) with 417/417 host tests passing. None of that was
+evidence that it works -- the claim is about a dot on a panel, and **a ride the
+same day settled it: the marker followed the rider, with no phone connected.**
+The ride's own numbers (526 s to a first fix, three to five satellites on a car
+dashboard, 21 s of stale dot across a render) are in
+[`gnss.md`](gnss.md), "Ten minutes to a first fix outdoors" and the sections
+under it.
 
 The full account is in [`gnss.md`](gnss.md), "The map reads it": the files
 touched, the three decisions inside `pollGnssFix()` and why each is the way it
@@ -337,12 +366,38 @@ The short version:
 - The receiver's rail comes up in `MapActivity::onEnter()` and goes down in
   `onExit()`, and only if the map is what started it.
 
-**Step 3's own "done when" is not met and this does not close gate B.** The
-hardware pass has four things to check and `gnss.md` lists them under "What a
-hardware pass has to check". One of them is new and worth naming here: this is
-the first code path that powers the LoRa rail while the map is streaming tiles
-off the SD card, so it exercises T-576's never-run SPI contention test as a side
-effect. A corrupt tile is what failure looks like there, not a crash.
+**Step 3's "done when" is met on both halves.** The map draws from the receiver
+on hardware with no phone (the ride, 2026-09-01), and the same build still draws
+from the phone with the setting off (a bench run, 2026-09-02). Of the five checks
+`gnss.md` lists under "What a hardware pass has to check", three are done, one is
+half done and one cannot be run with today's instrumentation.
+
+**Board state, 2026-09-02: `mapGnssPosition` is 0 on the device.** It was set
+during the BLE regression run and never set back. Powering the device off does
+not clear it: `CMD:SETTING` calls `SETTINGS.saveToFile()`
+(`src/main.cpp:1023`), the field is serialised into `settings.json`
+(`src/CrossPointSettings.cpp:102`) and read back at boot with a default of 0
+(`:224`). So the card holds a zero and the next boot will too.
+
+**The first command of every future GNSS run is therefore `CMD:SETTING
+mapGnssPosition 1`.** Without it the map runs off the phone, everything looks
+correct, and the receiver takes no part in what is being judged. That is the
+worst shape a test can have: a pass that measured the wrong code.
+
+**T-576's SPI contention was exercised on that ride, and today's instrumentation
+cannot say what happened.** This is the first code path that powers the LoRa rail
+while the map streams tiles off the SD card, so the ride put the two together for
+a whole trip. But the failure is a corrupt tile read, not a crash, and **nothing
+the device records separates a corrupt read from a tile the card simply does not
+have**: hatch is drawn for both, and `tilesUnavailable_` is incremented by both
+(`MapTileSource.cpp:77` for a crc32 failure, `:123`/`:151`/`:183` for absence).
+The one counter that does separate them, `corruptLayers_` (`:76`), is frame-
+scoped and surfaces only as a serial `LOG_ERR`, so a ride carries none of it home.
+**T-576 is untested because the instrument is missing, not because nobody
+looked.** Two ways to get one -- carry that counter out of the frame and compare
+the same viewport rail up against rail down, or bypass the map with a task doing
+continuous CRC-checked card reads under a refresh loop -- are in `gnss.md`, "The
+SPI check needs a counter the firmware does not carry out of the frame".
 
 **A quantified bonus, not a goal.** `BlePositionServer::begin()` costs
 **57,080 bytes** measured, and the map builds it on enter and tears it down on
