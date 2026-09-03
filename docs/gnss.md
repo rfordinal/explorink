@@ -103,6 +103,30 @@ a command it knows -- **inferred, never observed**, and it is 115200-baud output
 arriving at a 9600-baud input, so the receiver sees framing errors rather than
 text.
 
+## What a ride with the setting off costs the power log
+
+**The 2026-09-03 ride drew 131 mA for 3.21 h and its GNSS state is unknowable
+from any log it left.** `mapGnssPosition` was 0, carried over from the BLE
+regression run of 2026-09-02, so `MapActivity::onEnter()` never called
+`gnssStart()` and the map drew from the phone the whole way. The cause, how the
+setting persists are in [`gnss-to-map-plan.md`](gnss-to-map-plan.md), "And it
+was reported as a GNSS regression" -- not repeated here. **A Settings row for it
+is written but unmerged** (branch `feat/gnss-settings-row`, 2026-09-03, nothing
+flashed), so as this file stands the setting is still reachable only from the
+host and the symptom is still indistinguishable from dead hardware.
+
+What that leaves open for the power side: **the firmware never opened the UART,
+and that says nothing about whether the receiver was powered.** The rail is an
+expander pin that latches until it loses power, and `disableGpsLora()` has never
+run on this board (next section). So the L76K may well have been powered and
+tracking for the whole ride with nothing reading it -- which would put it in the
+ride's budget while contributing nothing. That is the ~20-25 mA line marked
+`[open]` in [`power-management.md`](power-management.md), "Where the 131 mA is
+not", and T-244 in the parent repo is the latch itself.
+
+**Nothing in the ride's log can settle it**, because `power.csv` has no column
+for the rail and none for current. Pricing it is T-249.
+
 ## The power rail is shared with the LoRa radio, and that has a sharp edge
 
 One expander pin gates both parts:
