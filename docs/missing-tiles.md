@@ -1376,13 +1376,25 @@ Bluetooth:
 - **`push <n>` reaches the screen.** The phone announced 33 squares of pre-trip
   ground and the panel read `0 / 33`, so the run sized itself to the announcement
   with an empty missing list behind it. That is the whole point of the command.
-- **`INFO screen=` answers over the C3's own radio.** Implicit but not weak: the
-  app refuses to start a batch unless `info` says `sync`, and the batch started.
+- **`INFO screen=` answers over the C3's own radio.** Implicit, and corroborated.
+  The app refuses to start a batch unless `info` says `sync`, and the batch
+  started. The corroboration matters because `TileFetcher.pushTiles()` has a
+  second caller -- the freshness check (`android` `BridgeService.kt:1043`) -- and
+  both log the same line. The squares that went out were `z11 1125/695`,
+  `1126/694` and their z12/z13 children, which is the queued zone and nothing the
+  device could have reported as held: its card read empty that run, and the
+  freshness path can only push what the device says it holds.
 - **The link negotiates MTU 256 on this board**, not the 517 a phone-to-phone or
   bridged link reaches -- so 248 payload bytes per chunk, which is the regime the
   7.9 kB/s figure was measured in. A laptop Bluetooth adapter in front of the
   simulator reaches 517 and flatters the number; do not quote a bridged rate as
   the device's.
+
+  Measured from the phone's side: `onConfigureMTU(..., 256, 0)` after the app
+  asked for 517. The firmware's own `MTU now` line was **not** captured that run
+  -- the serial capture was open on the phone's port, not the board's -- so this
+  is the negotiated value on that link, not proof of the board's ceiling. One
+  run.
 
 **Still not verified -- every transfer was refused `ERR mkdir failed`.** Not the
 card: read on the laptop afterwards it is `vfat`, mounted read-write, 2.2 MB used
