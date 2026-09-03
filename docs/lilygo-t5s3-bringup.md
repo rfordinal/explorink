@@ -455,6 +455,36 @@ and remount, so the bytes reached flash rather than the page cache. `dmesg` says
 invisible on the SY-T18 (`14cd:1212`), fine on a Genesys (`05e3:0764`). The
 reader trouble in BUG-037 was never fixed, only worked around.
 
+### Two different things are shared, and confusing them wastes a session
+
+This board shares two unrelated things, and the names are close enough that they
+get merged into one wrong idea. They are not the same sharing and they have
+different consequences.
+
+| shared | between | consequence |
+|---|---|---|
+| **power**, one expander pin `PCA9535_IO00_LORA_GPS_EN` | the GNSS receiver and the LoRa radio | the receiver cannot be powered without powering the radio |
+| **the "you may talk" line**, GPIO46 = `LORA_CS` | the LoRa radio and the **panel** | the panel leaves the radio selected on the card's bus |
+
+**The GNSS receiver is not on the SPI bus at all.** It is a UART on its own two
+pins, `T5S3_GPS_TXD 43` and `T5S3_GPS_RXD 44` (`BoardT5S3Pins.h`), read through
+`Serial1`. It has no chip select, competes with nothing, and cannot touch the
+card. It was never the culprit in BUG-037 -- it is only the switch that happens
+to also power the radio.
+
+**So GNSS needs no muting and the radio needs two kinds of it.** Cutting the
+shared rail is about power, not about the bus: the measurement in the section
+below shows an unpowered radio still loads MISO when it is selected, so the rail
+cut alone fixes nothing. Deselecting is the bus fix; cutting the rail is the
+battery fix (T-244).
+
+**And GPIO46 is why LoRa is hard here, which matters because LoRa is planned.**
+One wire with two owners: selecting the radio means writing a pin the panel
+driver believes it owns, and leaving the panel to own it means the radio is
+selected. Sharing an SPI bus between the card and a radio would be routine if
+the radio had a chip select of its own. It does not. T-246 has the three
+questions that need answering before any LoRa work starts.
+
 ### The mechanism
 
 - SD and the SX1262 sit on **one SPI bus**: `MISO21 MOSI13 SCLK14`, with
