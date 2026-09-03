@@ -625,8 +625,22 @@ class BlePositionServer {
   static constexpr uint16_t kConnParamsIdleTimeoutUnits = 2000;
 
   // Transfer-active set: fast, no latency, while bytes are actually moving.
+  //
+  // **Min and max are the same on purpose, and that is a fix rather than a
+  // tidy-up.** The window used to be 12-24 and the link settled on 24, the slow
+  // end of our own request -- measured 2026-09-03 on a T5 S3 Pro, 3.9 kB/s at
+  // MTU 256 and 30 ms. The central owns the connection parameters and a
+  // peripheral can only ask, so a wide window is an invitation: the phone had
+  // already asked for a fast link of its own (`requestConnectionPriority(HIGH)`,
+  // android BleLink.kt:258) and this request arrived afterwards offering 30 ms
+  // as an acceptable answer. Asking for one value cannot be answered with the
+  // slower one.
+  //
+  // Cost if a peer cannot do exactly 15 ms: it rejects the update and the link
+  // keeps whatever it had, which is what it would have had anyway. Nothing here
+  // depends on the request succeeding.
   static constexpr uint16_t kConnParamsFastMinUnits = 12;  // 12 * 1.25 ms = 15 ms
-  static constexpr uint16_t kConnParamsFastMaxUnits = 24;  // 24 * 1.25 ms = 30 ms
+  static constexpr uint16_t kConnParamsFastMaxUnits = 12;  // 12 * 1.25 ms = 15 ms
   static constexpr uint16_t kConnParamsFastLatency = 0;
   // 2000 * 10 ms = 20 s, same value and reasoning as
   // kConnParamsIdleTimeoutUnits above -- 29 of the 57 measured disconnects
