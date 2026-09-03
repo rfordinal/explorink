@@ -95,36 +95,57 @@ it is the setting that fixes it rather than anything in this code. Deriving a
 zone from longitude was rejected: it is wrong at every land border, and a
 confidently wrong clock is worse than a plainly offset one.
 
-### So the row says "UTC" while it is UTC
+### So the clock says "UTC" while it is UTC
 
-`20:29  UTC  <glyph>  100%`. Added 2026-09-03, on the maintainer's ask, and
+`20:46 UTC  <glyph>  100%`. Added 2026-09-03, on the maintainer's ask, and
 **only while `clockUtcOffsetQ` is still its default of 48**. Once the rider sets
-an offset the clock is their local time, exactly like the BLE path, and the label
-would be false -- labelling every GNSS session unconditionally was considered and
+an offset the clock is their local time, exactly like the BLE path, and the
+suffix would be false -- showing it on every GNSS session was considered and
 rejected on that.
 
-Verified on hardware, positive case. **The negative case -- offset set, label
+**It is a suffix on the clock's own string, not a label of its own.** One
+`drawText`, right-aligned like the bare clock always was. `headerStatusRect()`
+reserves its width unconditionally, on every state including the BLE sessions
+that never draw it, for the same reason the transfer icon's slot is reserved.
+
+Verified on hardware, positive case. **The negative case -- offset set, suffix
 gone -- is read off the code only**, because `clockUtcOffsetQ` is not in
 `CMD:SETTING`'s allow-list and the only way to change it is Settings > Clock
 offset on the device.
 
-**Two width estimates were wrong before one was right, and the fit check is what
-caught both.** The label is 32 px at `SMALL_FONT_ID`, measured on the panel:
+#### It took three tries, and the first two were the same mistake
 
-1. First it squatted in the transfer icon's empty slot, which the constants said
-   was 23 px. `header: UTC label needs 32 px, slot has 23 -- not drawn`.
-2. Then it took its own link in the chain, which made room but pushed the clock
-   past the refresh window. `header: UTC label would push the clock 4 px outside
-   the refresh window -- not drawn`.
-3. The fix was in `headerStatusRect()`, not in the chain: **a link the chain can
-   take that the rect has not reserved is a link that can never be taken.** The
-   label is now reserved there unconditionally, on every state including BLE
-   sessions that never draw it, for the same reason the transfer icon's slot is.
+Worth keeping, because the mistake is the kind that looks like a layout problem
+and is not. "UTC" is 32 px at `SMALL_FONT_ID`, measured on the panel.
 
-Neither failure drew anything wrong on the panel and neither was silent. That is
-the whole argument for a check plus a log line over an estimate from constants
-(`CLAUDE.md`, "Comments Answer WHY, Not WHAT" -- a comment telling the reader to
-avoid something needs a way for them to know they failed).
+1. **Squatting in the transfer icon's empty slot.** The constants said 23 px.
+   `header: UTC label needs 32 px, slot has 23 -- not drawn`.
+2. **Its own link in the chain.** Room appeared, but the clock moved past the
+   refresh window. `header: UTC label would push the clock 4 px outside the
+   refresh window -- not drawn`. Reserving the link in `headerStatusRect()` is
+   what fixed that half: **a link the chain can take that the rect has not
+   reserved is a link that can never be taken.**
+3. It drew -- and on the panel it sat almost equidistant between the clock and
+   the GNSS glyph, so it read as labelling the glyph. Which is what both earlier
+   attempts had been building towards without anyone noticing, because **the
+   question was never how wide the gaps should be.** A separate element next to
+   two things has to be nearer one of them, and a gap ratio is an argument about
+   how much nearer. Making it part of the clock's string removes the argument:
+   the suffix cannot be nearer to anything than to the time it is inside.
+
+Two things carried the first two failures out of guesswork. The fit check
+**refused to draw** rather than overlapping the glyph or writing outside the
+refresh window, and it **logged why** -- so neither failure put a wrong pixel on
+the panel and neither was silent (`CLAUDE.md`, "Comments Answer WHY, Not WHAT":
+a comment telling the reader to avoid something needs a way for them to know
+they failed). The check survives on the suffix path too, since the reserve
+measures `" UTC"` alone while the draw measures one combined string and kerning
+is the difference.
+
+The third failure had no such check, and could not have: "reads as belonging to
+the wrong thing" is not a quantity. **That one needed the panel and a person
+looking at it** -- which is the standing rule about pixel decisions, arriving
+here as a worked example rather than as advice.
 
 The transfer icon is not an internet indicator in the literal sense -- this
 device has no radio that reaches the internet. It is about the thing the rider
