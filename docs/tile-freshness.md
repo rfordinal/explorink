@@ -11,6 +11,16 @@ app, 2026-08-09" near the end for the detail.
 Laptop side lives in the parent repo: `docs/tile-index-spec.md` (the index
 format), `mapbuilder/tilegen/tile_index.py`, `mapbuilder/tilegen/tools/build_index.py`.
 
+## A GNSS session never checks freshness
+
+**Since 2026-09-03**, a map session with `mapGnssPosition` on runs no BLE at all
+(`MapActivity::onEnter()`), and the freshness question is asked over the phone
+link. So `mapTileFreshnessMode` Live has no effect on such a session, whatever it
+is set to. Sync screen mode is unaffected -- that screen still uses BLE.
+
+[`map-header-status.md`](map-header-status.md), "One radio per session, so one
+set of icons", has the decision and the rest of what it costs.
+
 ## The problem
 
 The firmware only ever fetches a tile it is **missing**. `MapTileSource` records

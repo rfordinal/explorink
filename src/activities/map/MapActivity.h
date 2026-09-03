@@ -926,6 +926,33 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // One step per hold: this stays set until the button comes back up.
   bool observeHoldZoomed_ = false;
 
+  // Which source this map session takes its position from, decided once in
+  // onEnter() and constant for the life of the screen. True means the phone
+  // over BLE; false means the receiver on this board.
+  //
+  // **False stops the BLE radio coming up at all**, not merely the position
+  // path: BlePositionServer::begin() is one service with four characteristics
+  // (position, command, transfer, transfer status), so there is no way to have
+  // tiles without also advertising and running the controller. The rider who
+  // turned the receiver on asked for a map that needs no phone, so the map does
+  // not run a radio for one -- maintainer's call, 2026-09-03. What that costs
+  // while the map is open: no autosync of missing tiles, no freshness check, no
+  // BLE command channel. The clock comes from the receiver's own UTC instead
+  // (drawHeaderStatusStrip()), and the tile sync screen still uses BLE
+  // normally.
+  //
+  // Read it rather than SETTINGS.mapGnssPosition at each call site: a setting
+  // toggled from the host mid-screen would otherwise half-apply, with icons
+  // saying one thing and a running radio another.
+  bool bleInUse_ = true;
+
+  // True while the header clock carries its " UTC" suffix: a GNSS session whose
+  // clockUtcOffsetQ was never set, so the time really is UTC. Decided in
+  // drawHeaderStatusStrip() each time the row is laid out, and read by the same
+  // function a few lines later -- a member rather than a local because the
+  // layout chain settles it before the string that uses it is built.
+  bool clockShowsUtc_ = false;
+
   // Set from BlePositionServer::begin()'s return in onEnter(). Without this,
   // a BLE stack that failed to come up (plausible: init costs ~75 KB heap,
   // see docs/map-memory.md) looks identical to a phone that simply has not

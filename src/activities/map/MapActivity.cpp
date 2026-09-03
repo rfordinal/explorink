@@ -298,6 +298,18 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 // running" from "no icon yet" learns nothing from the row.
 constexpr int kHeaderGnssIconSize = kHeaderIconHeight;
 constexpr int kHeaderGnssIconToBtGap = 6;
+// The suffix the clock carries on a GNSS session while it really is UTC, drawn
+// as part of the clock's own string. **Not a separate label with its own gaps.**
+// It was one first, and on the panel it sat almost equidistant between the clock
+// and the GNSS glyph and read as labelling the glyph -- reported off a shot,
+// 2026-09-03. Tuning the two gaps would have hidden that; one string makes it
+// impossible, because the suffix cannot be nearer to anything than to the time
+// it belongs to.
+//
+// Plain literal, not tr(): UTC is an international abbreviation and reads the
+// same in every language this firmware ships, same precedent as the "+"/"--"
+// zoom hints in drawZoomSideHints().
+constexpr const char* kHeaderUtcSuffix = " UTC";
 #endif
 
 // The clock sits leftmost in the status row, between the place name and the
@@ -1348,7 +1360,38 @@ int16_t MapActivity::clockTick(uint32_t& localNowOut) const {
   // One function for both callers, because the repaint decision and the string
   // have to quantise identically. If they disagree, the header either repaints
   // every minute while showing a coarse string, or shows a stale one.
+  //
+  // Two sources, one per radio, because the phone is not there to ask when the
+  // receiver is the position source (bleInUse_, MapActivity.h). Every GNSS
+  // receiver carries UTC, so the row keeps its clock either way.
+#ifdef ENABLE_GNSS_CMD
+  if (!bleInUse_) {
+    if (!gnss.running()) return -1;
+    // Unix seconds, zero until a sentence carrying date AND time has arrived
+    // (Gnss.h). Not gated on a position fix: RMC brings the date well before
+    // the receiver has four satellites, and a clock is useful before a dot is.
+    const uint32_t utc = gnss.fix().utc;
+    if (utc == 0) return -1;
+    // **UTC plus the rider's own offset, because a receiver cannot know the
+    // timezone.** NMEA carries no zone and the device is offline by design, so
+    // there is nothing to derive one from -- the BLE path gets an offset because
+    // the phone sends one (BlePositionServer::localTimeNow()). clockUtcOffsetQ
+    // is quarter hours biased by 48, so 48 is UTC+0
+    // (CrossPointSettings.h:226), and 48 is also the default: a rider who never
+    // visited Settings > Clock offset sees UTC here, which in central Europe is
+    // an hour or two slow. That is a wrong-looking clock rather than a wrong
+    // position, and the alternative -- guessing a zone from longitude -- is
+    // wrong at every land border.
+    const int32_t offsetSeconds = (static_cast<int32_t>(SETTINGS.clockUtcOffsetQ) - 48) * 900;
+    const int64_t local = static_cast<int64_t>(utc) + offsetSeconds;
+    if (local < 0) return -1;
+    localNowOut = static_cast<uint32_t>(local);
+  } else if (!freeink::BlePositionServer::getInstance().localTimeNow(localNowOut)) {
+    return -1;
+  }
+#else
   if (!freeink::BlePositionServer::getInstance().localTimeNow(localNowOut)) return -1;
+#endif
   const uint16_t minuteOfDay = static_cast<uint16_t>((localNowOut % 86400u) / 60u);
   if (!clockIsCoarse()) return static_cast<int16_t>(minuteOfDay);
   return static_cast<int16_t>(minuteOfDay / kClockCoarseMinutes * kClockCoarseMinutes);
@@ -1380,10 +1423,14 @@ void MapActivity::updateHeaderStatus() {
   nextHeaderPollMs_ = now + kHeaderPollMs;
 
   auto& ble = freeink::BlePositionServer::getInstance();
-  const bool transferIconVisible = autoSyncPending_ > 0;
+  // All three gated on bleInUse_, matching what drawHeaderStatusStrip() will
+  // actually paint. Without the gate this asks a radio that was never started
+  // whether a phone is there -- the getters answer safely (0, false) so nothing
+  // breaks, but the row would be deciding repaints from a link it does not draw.
+  const bool transferIconVisible = bleInUse_ && autoSyncPending_ > 0;
   // Same test drawHeaderStatusStrip() uses, and the comment there says why it is
   // the interval rather than the MTU.
-  const bool connected = ble.connIntervalMs() != 0;
+  const bool connected = bleInUse_ && ble.connIntervalMs() != 0;
   const int bars = connected ? resolveBleBars(ble.rssi()) : 0;
 
   // Two classes of change, and they earn different urgency.
@@ -1399,7 +1446,12 @@ void MapActivity::updateHeaderStatus() {
   // handful of times a ride (start, first fix, sky lost), so there is nothing
   // to cap -- and each of those is exactly the moment the rider wants told.
   // Unlike the bar count next to it, which flips on an RSSI threshold.
-  structural = structural || gnssHeaderState() != drawnGnssState_;
+  //
+  // Only while the glyph is on the row. With the phone as the source the glyph
+  // is not drawn, so drawnGnssState_ holds whatever it last painted and would
+  // never agree with a live gnssHeaderState() -- every tick would read as
+  // structural and repaint the header forever.
+  if (!bleInUse_) structural = structural || gnssHeaderState() != drawnGnssState_;
 #endif
   // A bar count moving while the link holds is the same story told slightly
   // differently, and RSSI sitting on a threshold flips it back and forth.
@@ -1581,7 +1633,26 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
 #else
   const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
 #endif
-  const int clockLeft = transferIconLeft - kHeaderClockToTransferIconGap - headerClockSlotWidth(renderer);
+#ifdef ENABLE_GNSS_CMD
+  // The "UTC" label is part of the widest layout too, so it is reserved here
+  // unconditionally -- including on BLE sessions, which never draw it.
+  //
+  // **Measured 2026-09-03: without this the label was 4 px short and refused to
+  // draw at all** (drawHeaderStatusStrip()'s own fit check said so, twice: once
+  // when it tried to squat in the transfer icon's slot, once after it got its
+  // own link). This rect is the hard left edge, and a link the chain can take
+  // that the rect has not reserved is a link that can never be taken.
+  //
+  // Not conditional on clockUtcOffsetQ, unlike the drawing: a rect that shrank
+  // when the rider set an offset would stop refreshing pixels the previous
+  // layout had written, which is the exact failure the comment at the top of
+  // this function warns about.
+  const int utcLabelReserve = renderer.getTextWidth(SMALL_FONT_ID, kHeaderUtcSuffix);
+#else
+  const int utcLabelReserve = 0;
+#endif
+  const int clockLeft =
+      transferIconLeft - utcLabelReserve - kHeaderClockToTransferIconGap - headerClockSlotWidth(renderer);
   // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
   // hands drawBatteryRight() rect.y+5 (BaseTheme.cpp:374), and
   // drawBatteryRight() adds another +6 of its own (:99) before drawing the
@@ -1844,32 +1915,93 @@ void MapActivity::drawHeaderStatusStrip() {
   // turned out too tight for some percentages and let the bars run into the
   // text.
   //
-  // Every horizontal position here is re-derived by headerStatusRect(), which
-  // is what the windowed repaint refreshes. Keep the two in step -- a strip
-  // narrower than what is drawn leaves half a glyph behind.
+  // Every horizontal position here is a link in a right-to-left chain, so a
+  // slot that is not drawn does not leave a hole -- everything left of it moves
+  // right by itself.
+  //
+  // **Which links exist depends on which radio this session runs** (bleInUse_,
+  // MapActivity.h). The row shows the source the map actually has and says
+  // nothing about the other one -- maintainer's call, 2026-09-03. An icon for a
+  // radio that was never started is worse than no icon: it invites the reader to
+  // conclude the link is merely down, which is a different and fixable problem.
+  //
+  // headerStatusRect() deliberately does **not** follow this. It re-derives the
+  // widest chain unconditionally (see its own comment), so the opaque backing
+  // drawn from it clears whatever slots a narrower row leaves empty. That is the
+  // one place the two are allowed to disagree, and it is why they may: the rect
+  // must be a superset of what is drawn, never a match for it.
   const int batteryX = screenWidth - kHeaderMarginRight - BaseMetrics::values.batteryWidth;
   const int worstCasePercentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
-  const int barsLeft = barsRight - kHeaderBleBarsWidth;
-  const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+
+  // The rect the windowed repaint refreshes, taken before the chain rather than
+  // with the backing below: it is the hard left edge, and the UTC label is the
+  // one link whose width comes from a font instead of a constant. Nothing may
+  // be laid out left of backingX -- those pixels are never refreshed, so they
+  // would draw once and then stay.
+  int backingX, backingY, backingW, backingH;
+  headerStatusRect(backingX, backingY, backingW, backingH);
+
+  // Walks leftwards. Each block that draws something consumes its own width
+  // plus the gap to whatever it sits next to.
+  int chainRight = barsRight;
+  int barsLeft = 0;
+  int logoLeft = 0;
+  if (bleInUse_) {
+    barsLeft = chainRight - kHeaderBleBarsWidth;
+    logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+    chainRight = logoLeft;
+  }
 #ifdef ENABLE_GNSS_CMD
-  // One more link in the right-to-left chain, between the Bluetooth logo and
-  // the transfer icon. Everything left of it (the transfer icon, the clock, and
-  // the place name that truncates against the clock) shifts left by itself,
-  // which is why this is a link and not a hardcoded x.
-  const int gnssIconLeft = logoLeft - kHeaderGnssIconToBtGap - kHeaderGnssIconSize;
-  const int transferIconLeft = gnssIconLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
-#else
-  const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+  // The receiver's glyph, only when the receiver is the source. kHeaderGnss-
+  // IconToBtGap is reused as the gap on its left even when no Bluetooth logo
+  // sits there: the constant is the spacing this icon was laid out with, and
+  // giving it a second name for the same number would be two numbers to keep
+  // level.
+  int gnssIconLeft = 0;
+  clockShowsUtc_ = false;
+  if (!bleInUse_) {
+    gnssIconLeft = chainRight - kHeaderGnssIconSize;
+    chainRight = gnssIconLeft - kHeaderGnssIconToBtGap;
+
+    // Whether the clock carries the UTC suffix. **Only while it really is UTC.**
+    // A GNSS session has no timezone to work from (clockTick()), so with
+    // clockUtcOffsetQ at its default of 48 the row shows UTC -- measured
+    // 2026-09-03, it read 19:53 at 21:55 CEST, a clock two hours slow with
+    // nothing on the panel admitting it. The suffix is what admits it.
+    //
+    // Once the rider sets an offset the clock is their local time, exactly like
+    // the BLE path, and the suffix would be false. Showing it on every GNSS
+    // session was considered and rejected on that -- a label that lies about the
+    // number it is attached to is worse than no label (maintainer's call).
+    //
+    // No repaint tracking of its own, and it needs none: the only thing that
+    // makes it appear or vanish is clockUtcOffsetQ, and changing that changes
+    // the clock's own minute, which updateHeaderStatus() already treats as a
+    // repaint reason.
+    clockShowsUtc_ = SETTINGS.clockUtcOffsetQ == 48;
+  }
 #endif
+  // The transfer icon's slot leaves the chain with the icon. Leaving it reserved
+  // on a GNSS session is what put 14 px of nothing between the clock and the
+  // UTC label, so the label read as belonging to the glyph on its other side
+  // (reported off a panel shot, 2026-09-03). A slot nothing can ever draw in is
+  // not a slot, it is a hole.
+  int transferIconLeft = chainRight;
+  if (bleInUse_) {
+    transferIconLeft = chainRight - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+    chainRight = transferIconLeft;
+  }
+  // The clock is right-aligned against whatever the chain has left, which is the
+  // transfer icon on a BLE session and the UTC label (or the GNSS glyph) on a
+  // GNSS one.
+  const int clockSlotRight = chainRight - kHeaderClockToTransferIconGap;
   const int batteryIconTop = kHeaderMarginTop + 5 + 6;
   const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
   const int iconTop = iconBottom - kHeaderIconHeight;
 
   // White backing first, like the compass halo and the busy badge: this can
-  // land on live map lines, not blank margin.
-  int backingX, backingY, backingW, backingH;
-  headerStatusRect(backingX, backingY, backingW, backingH);
+  // land on live map lines, not blank margin. Rect computed above.
   renderer.fillRect(backingX, backingY, backingW, backingH, false);
 
   // The clock, leftmost, when the phone has ever sent a non-zero utc. 24-hour
@@ -1885,7 +2017,8 @@ void MapActivity::drawHeaderStatusStrip() {
   const int16_t clockTickNow = clockTick(localNow);
   if (clockTickNow >= 0) {
     const uint32_t secondsOfDay = localNow % 86400u;
-    char clockText[6];
+    // Sized for "00:00" plus the " UTC" suffix and the terminator.
+    char clockText[12];
     if (clockIsCoarse()) {
       // "12:5*": the tens of minutes, then a mark standing in for the withheld
       // digit. Not "12:50", which would claim a minute it does not have.
@@ -1902,14 +2035,34 @@ void MapActivity::drawHeaderStatusStrip() {
       snprintf(clockText, sizeof(clockText), "%u:%02u", static_cast<unsigned>(secondsOfDay / 3600u),
                static_cast<unsigned>((secondsOfDay % 3600u) / 60u));
     }
-    const int slotRight = transferIconLeft - kHeaderClockToTransferIconGap;
-    const int textX = slotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
+#ifdef ENABLE_GNSS_CMD
+    if (clockShowsUtc_) {
+      std::strncat(clockText, kHeaderUtcSuffix, sizeof(clockText) - std::strlen(clockText) - 1);
+    }
+#endif
+    int textX = clockSlotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
+#ifdef ENABLE_GNSS_CMD
+    // headerStatusRect() reserves the suffix (see there), so this cannot
+    // normally fire -- but the reserve measures " UTC" on its own while this
+    // measures one combined string, and the kerning between the last digit and
+    // the space is the difference between the two. Drop the suffix rather than
+    // draw left of the refresh window, where the pixels are written once and
+    // never cleared.
+    if (clockShowsUtc_ && textX < backingX) {
+      LOG_ERR(kLogTag, "header: clock with '%s' runs %d px outside the refresh window -- suffix dropped",
+              kHeaderUtcSuffix, backingX - textX);
+      clockText[std::strlen(clockText) - std::strlen(kHeaderUtcSuffix)] = '\0';
+      clockShowsUtc_ = false;
+      textX = clockSlotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
+    }
+#endif
     // kHeaderTextTopY, not iconTop: this is text standing next to the battery
     // percentage, and the two rows are 4px apart. headerStatusRect() starts at
     // whichever is higher, so this stays inside the refreshed window.
     renderer.drawText(SMALL_FONT_ID, textX, kHeaderTextTopY, clockText, true);
     // The same quantised value the repaint decision compares against.
     drawnClockMinute_ = clockTickNow;
+
   } else {
     drawnClockMinute_ = -1;
   }
@@ -1923,16 +2076,31 @@ void MapActivity::drawHeaderStatusStrip() {
   // assumes the forced-Portrait UI themes (GfxRenderer.cpp, drawIcon()'s own
   // comment), and this row renders in whatever orientation the device is held
   // in, same as the compass and the Bluetooth logo it sits next to.
-  if (autoSyncPending_ > 0) {
+  //
+  // Guarded on bleInUse_ as well, though autoSyncPending_ cannot rise without a
+  // link: autosync only counts tiles the phone was asked for, and asking goes
+  // through isCommandSubscribed(). The guard is here so the row's rule reads as
+  // one rule -- BLE icons iff BLE -- rather than as an accident of another
+  // counter staying zero.
+  const bool showTransferIcon = bleInUse_ && autoSyncPending_ > 0;
+  if (showTransferIcon) {
     renderer.drawMono1bpp(icon_transferBle.bits, transferIconLeft, iconTop, icon_transferBle.w, icon_transferBle.h,
                           true);
   }
-  transferIconShown_ = autoSyncPending_ > 0;
+  transferIconShown_ = showTransferIcon;
 
 #ifdef ENABLE_GNSS_CMD
-  // The receiver's state, always drawn -- "off" is a state and not the absence
-  // of an icon. drawMono1bpp() for the same reason as the transfer icon above.
-  {
+  // The receiver's state, whenever the receiver is what this session uses.
+  // drawMono1bpp() for the same reason as the transfer icon above.
+  //
+  // **This used to be drawn always, with "off" as one of three states**, so a
+  // rider could tell "no receiver running" from "no icon yet". That reasoning
+  // expired on 2026-09-03, when the map stopped running both radios at once:
+  // the phone path now draws Bluetooth icons and no GNSS icon, so there is no
+  // "no icon yet" case left to be confused with. Off still has a glyph, and it
+  // now means the one thing worth telling -- the rider asked for the receiver
+  // and it is not running (start failed, or `gnss.running()` went false).
+  if (!bleInUse_) {
     const GnssHeaderState state = gnssHeaderState();
     const freeink::Icon& glyph = state == GnssHeaderState::Fixed     ? icon_gnssFixed
                                  : state == GnssHeaderState::Seeking ? icon_gnssSearching
@@ -1941,6 +2109,18 @@ void MapActivity::drawHeaderStatusStrip() {
     drawnGnssState_ = state;
   }
 #endif
+
+  // Everything below is the phone link, and this session may not have one.
+  // Returning rather than nesting: the bars branch below has its own early
+  // return, so a wrapping `if` would put the function's real end in two places.
+  // The drawn-state trackers are cleared first, so updateHeaderStatus() compares
+  // against a row that shows no link rather than against the last one that did.
+  if (!bleInUse_) {
+    drawnLinkConnected_ = false;
+    drawnBleBars_ = 0;
+    lastKnownBleBars_ = 0;
+    return;
+  }
 
   // Logo: a small hand-drawn Bluetooth rune -- a vertical spine (the actual
   // Bluetooth glyph's ascender/descender) plus two chevron wings crossing it,
@@ -2101,14 +2281,30 @@ void MapActivity::onEnter() {
   // does -- so the window before it needs closing here.
   powerManager.setPowerSaving(false);
 
-  bleStartFailed_ = !freeink::BlePositionServer::getInstance().begin();
-  if (bleStartFailed_) {
-    LOG_ERR(kLogTag, "BlePositionServer.begin() failed");
+  // One position source per map session, and the other radio does not run.
+  // See bleInUse_'s comment (MapActivity.h) for what this costs and why the
+  // trade was taken.
+#ifdef ENABLE_GNSS_CMD
+  bleInUse_ = SETTINGS.mapGnssPosition == 0;
+#else
+  bleInUse_ = true;
+#endif
+
+  if (bleInUse_) {
+    bleStartFailed_ = !freeink::BlePositionServer::getInstance().begin();
+    if (bleStartFailed_) {
+      LOG_ERR(kLogTag, "BlePositionServer.begin() failed");
+    }
+    LOG_DBG(kLogTag, "BlePositionServer.begin() returned");
+    // After begin(), so the characteristics exist before anything can be
+    // written to them.
+    transfer_.attach();
+  } else {
+    // Not a failure -- nobody asked for it. bleStartFailed_ drives the waiting
+    // banner's error line, and there is no error to report.
+    bleStartFailed_ = false;
+    LOG_INF(kLogTag, "ble: not started, position comes from the receiver");
   }
-  LOG_DBG(kLogTag, "BlePositionServer.begin() returned");
-  // After begin(), so the characteristics exist before anything can be
-  // written to them.
-  transfer_.attach();
 
 #ifdef ENABLE_GNSS_CMD
   // The receiver comes up with the map and goes down with it, when the rider
@@ -2435,6 +2631,10 @@ void MapActivity::onExit() {
   // activity is about to be deleted (main.cpp's exitActivity). A transfer
   // still in flight loses its .part file here rather than surviving into a
   // screen that has no BLE link.
+  // Both are unconditional even when bleInUse_ is false and begin() never ran:
+  // end() returns immediately on !begun_ (BlePositionServer.cpp:429) and
+  // detach() clears hooks that were never set. A branch here would be a second
+  // place to keep in step with onEnter()'s, for no gain.
   transfer_.detach();
   freeink::BlePositionServer::getInstance().end();
 
@@ -2725,7 +2925,12 @@ void MapActivity::loop() {
   // bleStartFailed_ here except to set it on a fresh begin(): a genuinely
   // failed init must not be retried every tick, only on the transition that
   // asks for the radio again.
-  {
+  //
+  // Skipped whole when this session never started the radio (bleInUse_,
+  // MapActivity.h). Without the guard, needBle is true in Follow and this
+  // block would begin() the very radio onEnter() deliberately left down -- the
+  // rider would get an advertising device the moment they entered Follow.
+  if (bleInUse_) {
     const bool transferActive = transfer_.status().active;
     const bool needBle = screenMode_ == MapScreenMode::Follow || transferActive;
     auto& ble = freeink::BlePositionServer::getInstance();
@@ -2761,7 +2966,9 @@ void MapActivity::loop() {
   // (BlePositionServer.h, sendTransferStatus). A separate call, not folded into
   // serviceAdvertising: that one owns advertising, this is the indication slot.
   // Costs one counter compare per tick when nothing is parked.
-  freeink::BlePositionServer::getInstance().flushTransferStatus();
+  // Same guard, same reason: nothing parks an indication on a link that was
+  // never opened.
+  if (bleInUse_) freeink::BlePositionServer::getInstance().flushTransferStatus();
 
   const uint32_t now = millis();
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
@@ -4956,8 +5163,18 @@ void MapActivity::renderWaiting() {
   // that paired fine looked identical. Same reasoning as renderViewport()'s
   // unconditional call (docs/map-header-status.md).
   drawHeaderStatus();
-  renderer.drawText(UI_10_FONT_ID, 8, mapContentTop() + 8,
-                    bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : tr(STR_MAP_WAITING_BLE), true);
+  // Names the source that is actually being waited on. Before 2026-09-03 this
+  // always said "Waiting for BLE position" -- including on a ride where the fix
+  // was coming from the receiver and no phone was involved, which is wrong text
+  // rather than a wrong dot. Named T-589 by the ride's own write-up
+  // (../../../docs/gnss.md, "What a hardware pass has to check"); that id is not
+  // in the parent repo's TODO.md, so the doc is the citation, not a task file.
+  const char* waitingText = tr(STR_MAP_WAITING_BLE);
+#ifdef ENABLE_GNSS_CMD
+  if (!bleInUse_) waitingText = tr(STR_MAP_WAITING_GNSS);
+#endif
+  renderer.drawText(UI_10_FONT_ID, 8, mapContentTop() + 8, bleStartFailed_ ? tr(STR_MAP_BLE_START_FAILED) : waitingText,
+                    true);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   drawZoomSideHints();
@@ -5295,10 +5512,13 @@ void MapActivity::pollGnssFix() {
   gnssSeq_++;
   // course and moving are logged next to the step they produced: a heading that
   // looks wrong on the panel is answered by this line and not by a rebuild.
-  LOG_DBG(kLogTag, "gnss fix: seq %u, quality %u, sats %u, hdop %.1f, speed %.1f km/h, course %.1f, moving %d, heading %u, age %lu ms",
+  LOG_DBG(kLogTag,
+          "gnss fix: seq %u, quality %u, sats %u, hdop %.1f, speed %.1f km/h, course %.1f, moving %d, heading %u, age "
+          "%lu ms",
           static_cast<unsigned>(gnssSeq_), static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
           static_cast<double>(fix.hdop), static_cast<double>(fix.speedKmh), static_cast<double>(fix.courseDegrees),
-          gnssHeadingState_.moving ? 1 : 0, static_cast<unsigned>(headingStep), static_cast<unsigned long>(gnss.fixAgeMs()));
+          gnssHeadingState_.moving ? 1 : 0, static_cast<unsigned>(headingStep),
+          static_cast<unsigned long>(gnss.fixAgeMs()));
   // Before applyFix(), not after: applyFix() can spend seconds rendering, and a
   // row is worth having even if the frame that fix would have drawn never
   // finishes.

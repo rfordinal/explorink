@@ -20,6 +20,17 @@ device what it is short of and push those tiles back
 > `MapActivity::drainTransferredTiles()`, which the autosync work below needed
 > anyway. Read off the code, not yet run against a real arrival.
 
+## Autosync needs the phone link, so a GNSS session has none
+
+**Since 2026-09-03 the map runs one radio, not two.** With `mapGnssPosition` on,
+`MapActivity::onEnter()` never calls `BlePositionServer::begin()`, so nothing on
+the map screen can ask the phone for a tile: a missing tile stays hatched for the
+whole session. The tile sync screen is unaffected and still fetches over BLE.
+
+Why it is a trade rather than a bug, and what else it costs:
+[`map-header-status.md`](map-header-status.md), "One radio per session, so one
+set of icons".
+
 ## A tile that is out of date is a different list
 
 This store is about tiles the device **does not have**. A tile that opens fine
