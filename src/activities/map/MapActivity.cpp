@@ -5166,7 +5166,9 @@ void MapActivity::renderWaiting() {
   // Names the source that is actually being waited on. Before 2026-09-03 this
   // always said "Waiting for BLE position" -- including on a ride where the fix
   // was coming from the receiver and no phone was involved, which is wrong text
-  // rather than a wrong dot (T-589, ../../../docs/TODO.md).
+  // rather than a wrong dot. Named T-589 by the ride's own write-up
+  // (../../../docs/gnss.md, "What a hardware pass has to check"); that id is not
+  // in the parent repo's TODO.md, so the doc is the citation, not a task file.
   const char* waitingText = tr(STR_MAP_WAITING_BLE);
 #ifdef ENABLE_GNSS_CMD
   if (!bleInUse_) waitingText = tr(STR_MAP_WAITING_GNSS);
