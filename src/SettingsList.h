@@ -233,7 +233,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                             StrId::STR_CAT_DISPLAY),
 
-        // --- Map ---
+    // --- Map ---
 #ifdef ENABLE_GNSS_CMD
         // Where the map's position comes from: off (default) the phone over
         // BLE, on the receiver on this board (MapActivity::onEnter(), which
@@ -253,6 +253,15 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // sitting on needs somewhere a rider can see it
         // (../docs/gnss-to-map-plan.md, "And it was reported as a GNSS
         // regression").
+        // The label says GNSS and not GPS because GPS would be false, not merely
+        // pedantic: the L76K on this board emits `GPGSV` *and* `GLGSV`, and an
+        // `inview` of 19 was measured as 10 GPS plus 9 GLONASS
+        // (../docs/gnss.md, "GPS and GLONASS in this configuration"). The
+        // satellite count this toggle turns on is a sum across constellations
+        // (`Gnss::satsInView()`), so a "GPS" label would misname our own
+        // readout. The only other UI string with "GPS" in it is the phone app's
+        // name, ExplorInk GPS, which is a product name and not a claim about a
+        // receiver.
         SettingInfo::Toggle(StrId::STR_MAP_GNSS_POSITION, &CrossPointSettings::mapGnssPosition, "mapGnssPosition",
                             StrId::STR_CAT_MAP),
 #endif

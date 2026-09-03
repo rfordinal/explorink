@@ -24,12 +24,60 @@ has a wireless link worth showing.
 | Part | Source | Meaning |
 |---|---|---|
 | Battery | `GUI.drawHeader()` | same as every other screen |
-| Signal bars | `resolveBleBars(ble.rssi())` | link quality to the phone |
-| X over the bar slot | `connIntervalMs() == 0` | no central connected |
-| Bluetooth logo | always | what the bars are about |
-| Transfer icon | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data |
-| Clock | `BlePositionServer::localTimeNow()` | local time, from the phone; blank until it has sent one |
-| GNSS glyph | `gnssHeaderState()` | the on-device receiver: off, looking, or fixed. Only on a build that has one |
+| Signal bars | `resolveBleBars(ble.rssi())` | link quality to the phone. BLE sessions only |
+| X over the bar slot | `connIntervalMs() == 0` | no central connected. BLE sessions only |
+| Bluetooth logo | whenever the session uses BLE | what the bars are about |
+| Transfer icon | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data. BLE sessions only |
+| Clock | the phone, or the receiver's own UTC | local time. See "The clock has two sources" |
+| GNSS glyph | `gnssHeaderState()` | the on-device receiver: off, looking, or fixed. GNSS sessions only, on a build that has one |
+
+## One radio per session, so one set of icons (2026-09-03)
+
+**The map runs the phone link or the receiver, never both.** `mapGnssPosition`
+decides it once in `MapActivity::onEnter()`, which records the answer in
+`bleInUse_` and skips `BlePositionServer::begin()` entirely when the receiver is
+the source. Maintainer's call: a rider who turned the receiver on asked for a map
+that needs no phone, so the map does not run a radio for one.
+
+**The row follows that exactly.** BLE icons appear if and only if the session
+uses BLE; the GNSS glyph appears if and only if it uses the receiver. There is
+never one of each.
+
+Reason, and it is the same one twice: **an icon for a radio that was never
+started is worse than no icon.** A Bluetooth logo with an X through it says "your
+phone is not connected", which invites the rider to go fix the phone. On a GNSS
+session nothing is wrong and nothing can be fixed, because no link was ever
+attempted.
+
+Positions are a right-to-left chain of links (`drawHeaderStatusStrip()`), so a
+slot that is not drawn leaves no hole -- everything left of it moves right.
+`headerStatusRect()` deliberately does **not** follow the chain: it re-derives
+the widest layout unconditionally, so the opaque backing clears whatever slots a
+narrower row leaves empty. **The rect must stay a superset of what is drawn,
+never a match for it.**
+
+What a GNSS session gives up while the map is open: no autosync of missing tiles,
+no freshness check, no BLE command channel. That is not a side effect to be
+fixed later -- it is the trade, written down in `bleInUse_`'s own comment. The
+tile sync screen still uses BLE normally.
+
+## The clock has two sources
+
+BLE session: `BlePositionServer::localTimeNow()`, which is the phone's own local
+time -- the phone sends a UTC anchor and its zone offset together.
+
+GNSS session: `gnss.fix().utc` plus `SETTINGS.clockUtcOffsetQ`. Every receiver
+carries UTC (from RMC or ZDA, `Gnss.h`), so the row keeps a clock with no phone.
+Not gated on a position fix: RMC brings the date well before four satellites do,
+and a clock is useful before a dot is.
+
+**A receiver cannot know the timezone**, and this is the one thing that reads
+worse than the BLE path. NMEA carries no zone, the device is offline by design,
+and `clockUtcOffsetQ` defaults to 48, which is UTC+0. So a rider who has never
+opened Settings > Clock offset sees UTC on a GNSS session -- an hour or two slow
+in central Europe. Deriving a zone from longitude was rejected: it is wrong at
+every land border, and a confidently wrong clock is worse than a plainly
+offset one.
 
 The transfer icon is not an internet indicator in the literal sense -- this
 device has no radio that reaches the internet. It is about the thing the rider
@@ -52,9 +100,16 @@ them rather than each one from scratch (`scripts/gen_map_header_icons.py`):
 | `icon_gnssSearching` | `locate` | running, no current solution |
 | `icon_gnssFixed` | `locate-fixed` | running, `quality` says the solution is current |
 
-**Always drawn, unlike the transfer icon next to it.** "Off" is one of the three
-states, not the absence of the icon: a rider who cannot tell "no receiver
-running" from "no icon yet" learns nothing from the row.
+**Drawn whenever the receiver is the session's source, and not otherwise**
+(corrected 2026-09-03 -- see "One radio per session" above). It used to be drawn
+always, with "off" as one of three states, so that a rider could tell "no
+receiver running" from "no icon yet". **That reasoning expired** when the map
+stopped running both radios: a BLE session now draws Bluetooth icons and no GNSS
+glyph, so there is no "no icon yet" case left to confuse it with.
+
+Off still has a glyph, and it now carries the one meaning worth telling: the
+rider asked for the receiver and it is not running -- `gnssStart()` failed, or
+`gnss.running()` went false.
 
 **The state comes from `quality`, never from `GnssFix::valid`.** `valid` latches
 true on the first solution and stays true (`Gnss.h`), so a receiver that has lost

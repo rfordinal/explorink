@@ -405,8 +405,11 @@ shows and no boot log prints reads exactly like broken hardware.** That was the
 cost of the setting being deliberately absent from `SettingsList`.
 
 **So it has a Settings row now, and that absence is over.** Settings > Map >
-**Built-in GPS**, a toggle on the same field, added the same day
-(`src/SettingsList.h`, the Map section). The row is behind `#ifdef
+**Built-in GNSS**, a toggle on the same field, added the same day
+(`src/SettingsList.h`, the Map section). GNSS and not GPS: the L76K here emits
+`GPGSV` and `GLGSV` both, and an `inview` of 19 was measured as 10 GPS plus 9
+GLONASS ([`gnss.md`](gnss.md), "GPS and GLONASS in this configuration"), so
+"GPS" would misname the very count the toggle turns on. The row is behind `#ifdef
 ENABLE_GNSS_CMD`, which is set in `env:t5s3pro` and in no other env and today
 means "this build has a receiver" (`src/GnssAccess.h`) -- so an X4 or X4 Pro
 build does not compile it and no rider gets a toggle for hardware that is not
