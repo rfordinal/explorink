@@ -125,7 +125,7 @@ ride's budget while contributing nothing. That is the ~20-25 mA line marked
 not", and T-244 in the parent repo is the latch itself.
 
 **Nothing in the ride's log can settle it**, because `power.csv` has no column
-for the rail and none for current. Pricing it is T-249.
+for the rail and none for current. Pricing it is T-250.
 
 ## The power rail is shared with the LoRa radio, and that has a sharp edge
 

@@ -747,7 +747,7 @@ gauge-against-voltage disagreement above had to be settled by argument rather
 than by reading.
 
 The fix is small and the gauge is already on the bus: log register `0x0C`. See
-"The BQ27220 already reads current, and throws it away" below. T-249.
+"The BQ27220 already reads current, and throws it away" below. T-250.
 
 **And the GNSS half of the ride has an answer, which the budget above has to
 carry.** `mapGnssPosition` was 0, left over from the BLE regression run of
@@ -869,7 +869,7 @@ scan time"). Our own X4 numbers say the same thing from measurement -- window
 
 So both boards, two drivers, and an upstream library all agree: **the price is
 per refresh, not per pixel.** The lever is the count. 8.2 refreshes a minute to
-move a dot is the thing to attack, and it is T-248 in the parent repo's
+move a dot is the thing to attack, and it is T-249 in the parent repo's
 `docs/TODO.md`.
 
 ## BLE modem sleep cuts the draw a third (measured 2026-08-16)
@@ -1850,7 +1850,7 @@ A logged column was written the same day and dropped unmerged. Two design
 points from it are worth keeping whenever it is written for real: the column has
 to be **empty rather than 0** on a board with no gauge, because 0 is a real
 reading on a rested cell; and `tools/powercsv.py` zips by column name, so a new
-column costs an older reader nothing. T-249.
+column costs an older reader nothing. T-250.
 
 One stale comment to know about, not fixed here: the `CMD:BATT` block explains
 its from-our-side approach with "editing freeink-sdk, which is upstream's repo
