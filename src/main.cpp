@@ -676,7 +676,9 @@ void setup() {
   // LilyGo's own answer, 2026-08-25: the PT4103B23F behind BL_EN wants a PWM
   // frequency "not above approximately 1 kHz". The SDK board profile asks for
   // 5 kHz (BoardConfig.h, LILYGO_T5S3), which is above the vendor's ceiling —
-  // freeink-sdk is upstream, so correct it here rather than forking the SDK.
+  // freeink-sdk was upstream-only when this was written, so the correction had
+  // to live here. It is forked as of 2026-09-03 (docs/freeink-sdk-fork.md), so
+  // this belongs upstream now and the workaround should go. T-247.
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3 && frontlight.present()) {
     ledcChangeFrequency(BoardConfig::ACTIVE.frontlight.gpio, 1000, BoardConfig::ACTIVE.frontlight.pwmResolutionBits);
   }

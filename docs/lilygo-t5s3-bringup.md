@@ -87,7 +87,10 @@ a new command to devel until widening it is a deliberate decision.
 `BL_EN` wants a frequency **not above approximately 1 kHz** (quoted verbatim in
 [Outline: LilyGo](https://wiki.comsultia.com/doc/lilygo-3X4JgoVOpf)). `freeink-sdk` is upstream,
 so `src/main.cpp` corrects it after `frontlight.begin()` with
-`ledcChangeFrequency(gpio, 1000, bits)` rather than forking the SDK. The light
+`ledcChangeFrequency(gpio, 1000, bits)` rather than forking the SDK -- which was
+the only option at the time and is no longer: `freeink-sdk` is forked as of
+2026-09-03 ([`freeink-sdk-fork.md`](freeink-sdk-fork.md)), so this correction
+belongs upstream. T-247 in the parent repo. The light
 was only ever driven at 1 kHz here; 5 kHz was never tried, so nothing is known
 about how it behaves.
 
@@ -613,14 +616,42 @@ design. T-245, and it outlives this bug.
 
 ## Serial usually resets the board, and you cannot rely on either outcome
 
-**Clearing DTR and RTS does not stop the reset on this board.** A plain
-`pyserial` open with `dtr = False` / `rts = False` before `open()` still
-restarted it every time on 2026-09-02 -- the log timestamps went back to `[411]`
-on each of five opens. The port is USB Serial/JTAG, not a UART bridge with real
-modem lines, so there is no line to hold. Consequence for any observation run:
-**one capture per boot.** Open the port once, keep it open, and ask the person to
-press the thing while it is open -- reopening to "check" costs the state you were
-measuring.
+**It resets on some opens and not on others, and what decides it is not known.**
+Both have been measured on this board:
+
+- **2026-09-02, five opens, every one reset it.** A plain `pyserial` open with
+  `dtr = False` / `rts = False` before `open()` still restarted it -- the log
+  timestamps went back to `[411]` each time.
+- **2026-09-03, several opens, none reset it.** A plain `cat /dev/ttyACM0` and a
+  default `serial.Serial(...)` both attached to a **running** board: the first
+  line seen was at `[5578]`, and a later one at `[110393]`. The boot log was
+  gone and could not be retaken.
+
+The port is USB Serial/JTAG, not a UART bridge with real modem lines, so there is
+no line to hold either way. **Do not plan on either outcome.** Two lost boot-log
+measurements on 09-03 came from assuming the 09-02 behaviour, including the one
+reading that would have said whether the LoRa radio was powered during BUG-037.
+
+**So take the boot deliberately: open the port first, then cause the reset
+yourself.** This resets it from the same handle, no second opener fighting for
+the port:
+
+```python
+s = serial.Serial('/dev/ttyACM0', 115200, timeout=0.3)
+s.setDTR(False); s.setRTS(False); time.sleep(0.1)
+s.setDTR(True);  s.setRTS(False); time.sleep(0.1)
+s.setDTR(False); s.setRTS(True);  time.sleep(0.1)
+s.setDTR(False); s.setRTS(False)
+s.reset_input_buffer()      # then read; the boot log starts at [410]
+```
+
+Confirmed 2026-09-03: that sequence produced a boot from
+`[410] [INF] [BTN] User button` onward. `esptool --after hard-reset chip-id`
+also works and is the fallback, but it needs the port to itself, so a capture
+has to be closed and reopened around it -- which is the thing to avoid.
+
+**One capture per boot still holds**, for the other reason: reopening to "check"
+may reset the board and cost the state being measured.
 
 **A third data point, and a worse one: after a cold power-on, commands stopped
 arriving.** 2026-08-31, USB unplugged 21 s, then replugged. **The board kept
