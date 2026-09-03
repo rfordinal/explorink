@@ -163,122 +163,48 @@ uint8_t userButtonHook() {
   }
   return static_cast<uint8_t>(1U << InputManager::BTN_CONFIRM);
 }
-// --- SD bus vs. the LoRa radio -----------------------------------------------
+// --- Deselect the LoRa radio before the card comes up ----------------------
 //
 // The SD card and the SX1262 share one SPI bus on this board: MISO21 MOSI13
-// SCLK14, with SD_CS12 against LORA_CS46 (BoardT5S3Pins.h). LORA_CS is *also*
-// handed to LovyanGFX as the panel bus's pin_oe and pin_pwr
-// (LilyGoT5S3LgfxConfig.cpp:162,166).
+// SCLK14, with SD_CS12 against LORA_CS46 (BoardT5S3Pins.h). GPIO46 runs straight
+// to the radio module's NSS with no pull-up, so nothing holds the radio
+// deselected unless the firmware does.
 //
-// And LovyanGFX leaves that pin driven LOW, which on SPI means "radio, talk".
-// Bus_EPD::init() does lgfx::pinMode(pin_oe, output) and later the same for
-// pin_pwr (Bus_EPD.cpp:120,143), and lgfx::pinMode does NOT set a level for
-// output mode -- its gpio_hi() is guarded to non-output modes
-// (common.cpp:599-601). So GPIO46 becomes an output holding whatever the output
-// register had, which is 0, and nothing ever raises it again. LORA_CS is
-// asserted continuously from display init onward. A selected radio drives the
-// shared MISO and every card transfer after that comes back corrupt: reads
-// answer empty and writes fail, from every task at once and on any card. That
-// is BUG-037.
+// Measured 2026-09-03 with CMD:SDBUS, nine runs, each after a hard reset with a
+// passing baseline read: with the radio deselected the card read correctly in
+// every combination of rail and reset line. With it selected the read failed
+// unless the radio was BOTH powered AND had its reset actively driven. So
+// deselecting is the whole defence, and it is the only one this function needs.
 //
-// Do NOT write that this happens per refresh. It was written that way first and
-// it is wrong: Bus_EPD::powerControl is virtual (Bus_EPD.h:95) and
-// FreeInkBusEPD overrides it without calling the base
-// (LgfxEpdDriver.cpp:34-45), so Bus_EPD.cpp's own gpio_lo() calls never run
-// here. The pin is not toggled, it is simply left low.
+// **Why this exists when freeink-sdk already fixes it.** The SDK's fix lives in
+// prepareEpdPower(), which runs at display init -- and display init happens
+// AFTER Storage.begin(). It covers the rest of the run; it cannot cover card
+// detection. This covers card detection. Two windows, not two belts.
 //
-// Measured 2026-09-03, and it is why this function deselects rather than merely
-// unpowers: the pre-fix binary was reflashed with the card untouched and the
-// shared rail confirmed OFF, and the card still read as empty from every path.
-// So cutting the rail alone does not restore the card.
+// The pin survives display init afterwards because lgfx::pinMode() writes no
+// level for output mode, which is the same property that made the bug possible.
 //
-// Do not read more into that than it carries, and the doc says so at length.
-// GPIO46 has never been probed on the pad, so "the radio was selected" is read
-// off the code above, not measured. LORA_RST low and LORA_CS high have never
-// run without each other. And whether an SX126x with no VDD loads MISO when NSS
-// is low is unread -- no datasheet for it is on disk, and a parasitic path
-// through the MCU's ESD diodes would mean it was never really unpowered.
-//
-// The counterexample that keeps this open: the same pre-fix binary, with this
-// same pin at 0 and the rail ON, read tiles fine for days before 2026-09-02
-// 15:23. A static wiring fault does not switch on by itself, so a second factor
-// is likely and the enclosure is the candidate. This function is worth having
-// either way, because it removes a load that should never have been there.
-//
-// The rail is cut anyway, for two independent reasons: it is shared with the
-// GNSS receiver (PCA9535_IO00_LORA_GPS_EN), so it can be left on by an earlier
-// session -- the expander keeps its registers across a soft reset AND a reflash
-// -- and a rail left up drains the battery through deep sleep (T-244).
-//
-// BoardT5S3::begin() is never called in this firmware, and it is the only
-// caller of disableGpsLora() and prepareSdBus(). prepareSdBus() is exactly this
-// deselect, shipped by the SDK and dead on this board; T-243 is the general
-// form of that problem.
-//
-// Runs before Storage.begin() and before display init. Both matter: the first
-// because a corrupt bus fails card detection outright, the second because
-// display init is what asserts the pin.
-void t5s3ParkLoraOffSdBus() {
+// **What this deliberately does NOT do.** It does not cut the shared GNSS/LoRa
+// rail and it does not drive the radio's reset. An earlier version did both. The
+// rail cut was wrong twice over: it is half of the condition that breaks the
+// card, and it belongs to the battery question (T-244), not to this one. Do not
+// couple them again.
+void t5s3DeselectLoraRadio() {
   if (BoardConfig::ACTIVE.board != BoardConfig::Board::LilyGoT5S3) return;
 
-  // Unconditional and first: these two cost nothing when the radio is already
-  // unpowered, and are the whole fix when it is not.
-  pinMode(T5S3_LORA_RST, OUTPUT);
-  digitalWrite(T5S3_LORA_RST, LOW);
+  // Read before writing. The level here is the pad's reset state, which nothing
+  // on disk documents for GPIO46 -- it is a strapping pin -- so this line is the
+  // only place that number has ever been observed. It also makes a silent
+  // regression loud: if the SDK fix is ever lost, this still saves the card and
+  // the log still says the pin came up asserted.
+  pinMode(T5S3_LORA_CS, INPUT);
+  const int before = digitalRead(T5S3_LORA_CS);
+
   pinMode(T5S3_LORA_CS, OUTPUT);
   digitalWrite(T5S3_LORA_CS, HIGH);
 
-  // Wire is normally already up from GT911 touch init, and gpio.begin() has run
-  // by now. Only re-run the board's own I2C setup if the expander does not
-  // answer, so a working bus is never reinitialised underneath the touch
-  // driver.
-  if (!BoardT5S3::pca9535Present()) {
-    BoardT5S3::beginI2C();
-    if (!BoardT5S3::pca9535Present()) {
-      LOG_ERR("SDBUS", "PCA9535 silent: rail state unknown, radio held in reset only");
-      return;
-    }
-  }
-
-  // Direction, not level, is what says whether an earlier session latched the
-  // rail: the expander comes out of power-on reset with every pin an input, and
-  // this firmware writes port 0 nowhere else. So port 0 bit 0 reading as an
-  // *output* here means a previous run wrote it and the expander never lost
-  // power. Level alone cannot separate that from a board-side pull.
-  //
-  // Register 0x06 is CONFIG0. Read raw because BoardT5S3 exposes only
-  // readPca9535Pin(), which reads the INPUT port.
-  uint8_t cfg0 = 0;
-  bool cfgOk = false;
-  {
-    BoardT5S3::ScopedI2CLock lock;
-    Wire.beginTransmission(T5S3_PCA9535_ADDR);
-    Wire.write(0x06);
-    if (Wire.endTransmission(false) == 0 &&
-        Wire.requestFrom(static_cast<uint8_t>(T5S3_PCA9535_ADDR), static_cast<uint8_t>(1)) == 1) {
-      cfg0 = Wire.read();
-      cfgOk = true;
-    } else {
-      while (Wire.available()) Wire.read();
-    }
-  }
-  bool railHigh = false;
-  const bool levelOk = BoardT5S3::readPca9535Pin(PCA9535_IO00_LORA_GPS_EN, &railHigh);
-
-  // Level before direction, matching disableGpsLora(): switching the pin to
-  // output first would drive whatever the output register happens to hold,
-  // which on a cold boot is the PCA9535's power-on default of high.
-  const bool wroteLevel = BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, false);
-  const bool wroteDir = BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
-
-  // One line, and it carries its own provenance: a claim of "latched" that
-  // rests on a failed I2C read would otherwise read exactly like a measurement.
-  LOG_INF("SDBUS", "LORA/GPS rail at boot: cfg0=%s%02X dir=%s level=%s%s -- cut %s, radio in reset off the SD bus",
-          cfgOk ? "0x" : "READ-FAILED:0x", cfg0,
-          cfgOk ? ((cfg0 & 0x01) ? "input (cold)" : "OUTPUT (latched by an earlier session)") : "unknown",
-          levelOk ? (railHigh ? "high" : "low") : "read-failed",
-          (cfgOk && !(cfg0 & 0x01) && levelOk && railHigh) ? " -- radio WAS powered" : "",
-          (wroteLevel && wroteDir) ? "ok" : "FAILED");
+  LOG_INF("SDBUS", "LORA_CS (GPIO%d) was %s at boot, now deselected", T5S3_LORA_CS,
+          before ? "high" : "LOW -- the radio was selected on the card's bus");
 }
 }  // namespace
 #endif  // FREEINK_DEVICE_LILYGO
@@ -297,7 +223,7 @@ Gnss gnss;
 // That matters more than it looks. LORA_CS (GPIO46) is also handed to LovyanGFX
 // as the panel bus's pin_oe *and* pin_pwr (LilyGoT5S3LgfxConfig.cpp:162,166),
 // and it is left driven LOW from display init onward -- see the long comment on
-// t5s3ParkLoraOffSdBus() above for why, and for why "every panel refresh
+// t5s3DeselectLoraRadio() above for why, and for why "every panel refresh
 // asserts it" (what this comment used to say) is wrong. The radio therefore
 // sits selected on the same SPI bus the SD card is on, where a second device
 // driving MISO corrupts every card transfer.
@@ -790,9 +716,9 @@ void setup() {
           BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 
 #if FREEINK_DEVICE_LILYGO
-  // Before Storage.begin() on purpose: a powered SX1262 corrupts the card's
-  // very first transfer, so this has to win the race with SD detection.
-  t5s3ParkLoraOffSdBus();
+  // Before Storage.begin() on purpose, and this is the window the SDK fix does
+  // not reach: prepareEpdPower() runs at display init, which is later.
+  t5s3DeselectLoraRadio();
 #endif
 
   // SD Card Initialization
@@ -1720,7 +1646,7 @@ void loop() {
 #ifdef ENABLE_SDBUS_CMD
       } else if (cmd == "SDBUS" || cmd.startsWith("SDBUS ")) {
         // Bench instrument for BUG-037: toggle the three things
-        // t5s3ParkLoraOffSdBus() does, one at a time, and read a file back with
+        // t5s3DeselectLoraRadio() does, plus the two it deliberately no longer does,
         // a CRC after each. It exists because the fix writes all three at once
         // and the hardware runs never separated them.
         //
@@ -1824,7 +1750,7 @@ void loop() {
               if (!BoardT5S3::pca9535Present()) {
                 logSerial.printf("SDBUS_ERR:PCA9535 silent\n");
               } else {
-                // Level before direction, the same order t5s3ParkLoraOffSdBus()
+                // Level before direction, the same order disableGpsLora()
                 // and disableGpsLora() use: switching to output first would
                 // drive whatever the output register happens to hold.
                 const bool wroteLevel = BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, high);
