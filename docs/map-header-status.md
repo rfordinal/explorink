@@ -61,6 +61,19 @@ no freshness check, no BLE command channel. That is not a side effect to be
 fixed later -- it is the trade, written down in `bleInUse_`'s own comment. The
 tile sync screen still uses BLE normally.
 
+**What it buys, measured on the T5 S3 Pro, 2026-09-03**: free heap before tile
+load was **175,308 B** on a GNSS session against **120,764 B** on a BLE one, on
+the same build, same map position, one map entry apart. `BlePositionServer`'s own
+log put the cost of `begin()` at 57,112 B on that run. So not starting the radio
+returns about 54 kB to a screen whose memory ceiling is documented as tight
+([`map-memory.md`](map-memory.md)).
+
+**Verified on hardware the same day, both directions.** `mapGnssPosition=1` then
+`CMD:GOTO_MAP` logged `ble: not started, position comes from the receiver` with
+no `BLEPOS begin` line at all; `mapGnssPosition=0` then a second entry logged
+`gnss: stopped` and a normal `begin()`. The header matched on both, and the row
+closed up rather than leaving the empty slots as holes.
+
 ## The clock has two sources
 
 BLE session: `BlePositionServer::localTimeNow()`, which is the phone's own local
@@ -73,11 +86,14 @@ and a clock is useful before a dot is.
 
 **A receiver cannot know the timezone**, and this is the one thing that reads
 worse than the BLE path. NMEA carries no zone, the device is offline by design,
-and `clockUtcOffsetQ` defaults to 48, which is UTC+0. So a rider who has never
-opened Settings > Clock offset sees UTC on a GNSS session -- an hour or two slow
-in central Europe. Deriving a zone from longitude was rejected: it is wrong at
-every land border, and a confidently wrong clock is worse than a plainly
-offset one.
+and `clockUtcOffsetQ` defaults to 48, which is UTC+0.
+
+**Measured on the T5 S3 Pro, 2026-09-03**: with the setting untouched the row
+read `19:53` at 21:55 CEST, which is UTC exactly. So a rider who has never
+opened Settings > Clock offset gets a clock two hours slow in summer here, and
+it is the setting that fixes it rather than anything in this code. Deriving a
+zone from longitude was rejected: it is wrong at every land border, and a
+confidently wrong clock is worse than a plainly offset one.
 
 The transfer icon is not an internet indicator in the literal sense -- this
 device has no radio that reaches the internet. It is about the thing the rider
