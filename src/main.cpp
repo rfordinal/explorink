@@ -34,6 +34,10 @@
 #include <esp_system.h>
 #endif
 
+#ifdef ENABLE_SDBUS_CMD
+#include <esp_rom_crc.h>
+#endif
+
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -1711,6 +1715,130 @@ void loop() {
           if (chgOk) snprintf(chgText, sizeof(chgText), "%u", static_cast<unsigned>((chargerStatus >> 3) & 0x03));
           logSerial.printf("BATT:mv=%s pct=%s curr_ma=%s chg=%s gauge=0x%02X charger=0x%02X\n", mvText, pctText,
                            currText, chgText, static_cast<unsigned>(g.gaugeAddr), static_cast<unsigned>(g.chargerAddr));
+        }
+#endif
+#ifdef ENABLE_SDBUS_CMD
+      } else if (cmd == "SDBUS" || cmd.startsWith("SDBUS ")) {
+        // Bench instrument for BUG-037: toggle the three things
+        // t5s3ParkLoraOffSdBus() does, one at a time, and read a file back with
+        // a CRC after each. It exists because the fix writes all three at once
+        // and the hardware runs never separated them.
+        //
+        //   CMD:SDBUS               ->  SDBUS:cs=1 rst=0 rail=0
+        //   CMD:SDBUS CS 0|1        ->  same reply, after the write
+        //   CMD:SDBUS RST 0|1
+        //   CMD:SDBUS RAIL 0|1
+        //   CMD:SDBUS READ <path>   ->  SDBUS_READ:<path> bytes=<n> crc32=<hex> ms=<n>
+        //
+        // `cs` is the radio's chip select (GPIO46): 1 means deselected, which is
+        // what the fix sets. `rst` is LORA_RST (GPIO1): 0 holds the radio in
+        // reset. `rail` is the expander pin that powers the GNSS receiver and
+        // the radio together. All three are reported as read back from the pin,
+        // not from what we last wrote.
+        //
+        // **Read-only on purpose.** No write, no mkdir, no settings save. With
+        // the bus deliberately broken a write allocates from a misread FAT and
+        // can land anywhere, and that already happened once on this card
+        // (parent docs/BUGS.md, BUG-037, the two fsck fragments). The question
+        // this answers -- does the card come back -- a read answers.
+        //
+        // **What a run cannot rule out:** SdFat caches directory and FAT blocks,
+        // so a read that follows a successful one is not entirely off the card.
+        // Prefer a file big enough to force data blocks, and treat a *failure*
+        // as the strong signal rather than a success.
+        //
+        // Devel-only, and t5s3pro only, for two reasons rather than one:
+        // `RAIL 1` powers a radio, and leaving `CS 0` behind breaks the card
+        // until something puts it back. Neither belongs in a build a stranger
+        // flashes.
+        String rest = cmd.substring(5);
+        rest.trim();
+
+        auto reportState = [&]() {
+          bool railHigh = false;
+          const bool railOk =
+              BoardT5S3::pca9535Present() && BoardT5S3::readPca9535Pin(PCA9535_IO00_LORA_GPS_EN, &railHigh);
+          char railText[4] = "?";
+          if (railOk) snprintf(railText, sizeof(railText), "%d", railHigh ? 1 : 0);
+          logSerial.printf("SDBUS:cs=%d rst=%d rail=%s\n", digitalRead(T5S3_LORA_CS) ? 1 : 0,
+                           digitalRead(T5S3_LORA_RST) ? 1 : 0, railText);
+        };
+
+        if (rest.isEmpty()) {
+          reportState();
+        } else if (rest.startsWith("READ ")) {
+          String path = rest.substring(5);
+          path.trim();
+          if (path.isEmpty()) {
+            logSerial.printf("SDBUS_READ_ERR:no path\n");
+          } else {
+            HalFile f;
+            if (!Storage.openFileForRead("SDBUS", path, f)) {
+              logSerial.printf("SDBUS_READ_ERR:%s open failed\n", path.c_str());
+            } else {
+              // 512 to match the card's own block size, so a chunk boundary
+              // never straddles two blocks and the byte count is what the bus
+              // actually delivered.
+              uint8_t buf[512];
+              uint32_t crc = 0;
+              size_t total = 0;
+              const unsigned long t0 = millis();
+              int n = 0;
+              while ((n = f.read(buf, sizeof(buf))) > 0) {
+                crc = esp_rom_crc32_le(crc, buf, static_cast<uint32_t>(n));
+                total += static_cast<size_t>(n);
+              }
+              const unsigned long ms = millis() - t0;
+              f.close();
+              // A negative read is a bus failure mid-file and must not look like
+              // a short file: the count and the CRC are both meaningless then.
+              if (n < 0) {
+                logSerial.printf("SDBUS_READ_ERR:%s read failed after %u bytes\n", path.c_str(),
+                                 static_cast<unsigned>(total));
+              } else {
+                logSerial.printf("SDBUS_READ:%s bytes=%u crc32=%08lx ms=%lu\n", path.c_str(),
+                                 static_cast<unsigned>(total), static_cast<unsigned long>(crc), ms);
+              }
+            }
+          }
+        } else {
+          const int sp = rest.lastIndexOf(' ');
+          const String what = (sp < 0) ? rest : rest.substring(0, sp);
+          const String valText = (sp < 0) ? String() : rest.substring(sp + 1);
+          if (valText != "0" && valText != "1") {
+            logSerial.printf("SDBUS_ERR:want 0 or 1\n");
+          } else {
+            const bool high = (valText == "1");
+            if (what == "CS") {
+              pinMode(T5S3_LORA_CS, OUTPUT);
+              digitalWrite(T5S3_LORA_CS, high ? HIGH : LOW);
+              reportState();
+            } else if (what == "RST") {
+              pinMode(T5S3_LORA_RST, OUTPUT);
+              digitalWrite(T5S3_LORA_RST, high ? HIGH : LOW);
+              reportState();
+            } else if (what == "RAIL") {
+              if (!BoardT5S3::pca9535Present()) {
+                BoardT5S3::beginI2C();
+              }
+              if (!BoardT5S3::pca9535Present()) {
+                logSerial.printf("SDBUS_ERR:PCA9535 silent\n");
+              } else {
+                // Level before direction, the same order t5s3ParkLoraOffSdBus()
+                // and disableGpsLora() use: switching to output first would
+                // drive whatever the output register happens to hold.
+                const bool wroteLevel = BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, high);
+                const bool wroteDir = BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
+                if (!wroteLevel || !wroteDir) logSerial.printf("SDBUS_ERR:rail write failed\n");
+                // The rail needs a moment before the parts on it settle, and
+                // this is a hand-driven bench command, so it can afford to wait.
+                delay(50);
+                reportState();
+              }
+            } else {
+              logSerial.printf("SDBUS_ERR:want CS, RST, RAIL or READ\n");
+            }
+          }
         }
 #endif
       }

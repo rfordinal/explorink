@@ -568,12 +568,37 @@ display init, so GPIO46 is at its reset state then, and this section says nothin
 about what that state is. GPIO46 is a strapping pin on the S3 and its reset pull
 is not in anything on disk. Do not claim it.
 
-**The one thing to run next** is a build with three bench commands that toggle
-the chip select, the reset line and the rail independently, plus a file read with
-a CRC after each step. Eight combinations, minutes, no reflash between them. It
-separates what is currently fused, tests "unpowered and selected" directly, and
-if a selected radio with the rail on turns out **not** to fail, it proves the
-weeks of working were not luck and sends the search after the second factor.
+**`CMD:SDBUS` is the instrument for exactly this**, built for it and unverified
+on hardware at the time of writing. It toggles the three writes independently and
+reads a file back with a CRC:
+
+```
+CMD:SDBUS               ->  SDBUS:cs=1 rst=0 rail=0
+CMD:SDBUS CS 0|1            the radio's chip select: 1 is deselected
+CMD:SDBUS RST 0|1           LORA_RST: 0 holds the radio in reset
+CMD:SDBUS RAIL 0|1          the shared GNSS + LoRa rail
+CMD:SDBUS READ <path>   ->  SDBUS_READ:<path> bytes=<n> crc32=<hex> ms=<n>
+```
+
+All three are reported read back from the pin, not from what was last written.
+Eight combinations, minutes, no reflash between them. It separates what is
+currently fused, tests "unpowered and selected" directly, and if a selected radio
+with the rail **on** turns out not to fail, it proves the weeks of working were
+not luck and sends the search after the second factor.
+
+**Read-only against the card on purpose.** No write, no mkdir, no settings save.
+With the bus deliberately broken a write allocates from a misread FAT and can
+land anywhere, and that already happened once on this card. What this question
+needs -- does the card come back -- a read answers.
+
+**What a run cannot rule out:** SdFat caches directory and FAT blocks, so a read
+following a successful one is not entirely off the card. Use a file big enough to
+force data blocks, and treat a **failure** as the strong signal rather than a
+success.
+
+**Devel-only, `env:t5s3pro` only, for two reasons rather than one.** `RAIL 1`
+powers a radio, and a `CS 0` left behind breaks the card until something puts it
+back. Neither belongs in a build a stranger flashes.
 
 ### The SDK ships three defences and none of them runs here
 
