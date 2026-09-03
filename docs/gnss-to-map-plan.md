@@ -387,12 +387,24 @@ from the phone with the setting off (a bench run, 2026-09-02). Of the five check
 `gnss.md` lists under "What a hardware pass has to check", three are done, one is
 half done and one cannot be run with today's instrumentation.
 
-**Board state, 2026-09-02: `mapGnssPosition` is 0 on the device.** It was set
-during the BLE regression run and never set back. Powering the device off does
-not clear it: `CMD:SETTING` calls `SETTINGS.saveToFile()`
-(`src/main.cpp:1023`), the field is serialised into `settings.json`
-(`src/CrossPointSettings.cpp:102`) and read back at boot with a default of 0
-(`:224`). So the card holds a zero and the next boot will too.
+**Board state, 2026-09-03: `mapGnssPosition` is 1 on the device again.** It had
+been 0 since the BLE regression run of 2026-09-02, which set it and never set it
+back. Powering the device off does not clear it: `CMD:SETTING` calls
+`SETTINGS.saveToFile()` (`src/main.cpp:1023`), the field is serialised into
+`settings.json` (`src/CrossPointSettings.cpp:102`) and read back at boot with a
+default of 0 (`:224`). So the card held a zero and every boot after it did too.
+
+**And it was reported as a GNSS regression.** 2026-09-03, the maintainer's
+words: the receiver was not recording position. Nothing had regressed. The
+device answered `SETTING_OK:mapGnssPosition=0`, `SETTING_OK:mapGnssLog=0` and
+`GNSS_OFF`; setting the first back to 1 and entering the map logged `gnss:
+started, rx ring 8192 bytes` and `CMD:GNSS` then reported `inview=11 tracked=1
+bestsnr=29 cserr=0 ferr=0 ovf=0 bytes=13899` -- a healthy receiver with no fix,
+which is what indoors on a bench looks like. **A persisted opt-in that no screen
+shows and no boot log prints reads exactly like broken hardware.** That is the
+cost of the setting being deliberately absent from `SettingsList`
+(`src/CrossPointSettings.h`, the `mapGnssPosition` comment), and the reason the
+next line of this plan exists.
 
 **The first command of every future GNSS run is therefore `CMD:SETTING
 mapGnssPosition 1`.** Without it the map runs off the phone, everything looks

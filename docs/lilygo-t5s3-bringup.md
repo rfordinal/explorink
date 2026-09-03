@@ -668,18 +668,64 @@ worked first try.
 firmware now logs the head byte it is refusing to consume, and it named it: `0x5B`
 (`[`) with 17 bytes pending -- the first character of this firmware's own log
 lines, arriving on its own RX. So the peek trap really was one of the causes, and
-the loop now also drains such a byte after five seconds. **That the drain fixes
-it is unverified** -- in the session where commands finally arrived the drain
-never fired at all (`gnss.md`). The other cause was **deep sleep**: `CMD:GNSS PROBE` answered
+the loop now also drains such a byte after five seconds. **The drain does
+recover the console unattended, measured 2026-09-03** -- see "The drain works,
+and it takes about a minute" below. The other cause was **deep sleep**: `CMD:GNSS PROBE` answered
 `reset=DEEPSLEEP`, so the board had put itself to sleep and the vanished device
 node was that, not an unplug. At least today's dropouts are therefore auto-sleep
 and not a bus fault, which is what this section previously suspected.
 
-Where 17 bytes of our own output come from is still unexplained. A loopback in
+Where our own output on our own RX comes from is still unexplained. A loopback in
 the USB Serial/JTAG peripheral would do it; so would something on the host
 writing back what it read. **Open**, and cheap to narrow: the drain now dumps the
 byte, so extend it to dump all of them once and the content will say whether it
-is our own log text.
+is our own log text. Two samples now, both `0x5B` (`[`): 17 bytes pending
+2026-08-31, about 15 bytes 2026-09-03. Small, and the same head byte twice.
+
+### The drain works, and it takes about a minute
+
+**Measured 2026-09-03 on the T5 S3 Pro**, firmware `0.2.0-t5s3pro`, over
+`/dev/ttyACM0` with pyserial. The board had been up 170 s and was logging
+normally. The first command sent produced the drain line:
+
+```
+[169589] [ERR] [MAIN] serial head byte 0x5B ([), 45 pending, unconsumed for 5 s
+                      -- draining it; every CMD: was being ignored
+```
+
+Then **every `CMD:` went unanswered for 69 s**, read-only ones included -- a
+`CMD:LIGHT` query answered nothing. At millis 238642, 238695 and 238748 all
+three queued commands answered, in the order they were sent.
+
+Three facts fall out of that, and the third is the useful one.
+
+**The drain recovers the console on its own.** This is what was `[open]` until
+now. No reset, no reflash, no host action.
+
+**It costs about 5 seconds per foreign byte.** The stuck-head block reads
+**one** byte per trigger (`src/main.cpp`, the `logSerial.read()` after the 5 s
+timeout), and the trigger needs 5 s of the *same* head byte, so each byte
+restarts the clock. Whitespace is free -- the peek loop above it consumes
+`\n`, `\r`, space and tab without limit. The 45 pending bytes included the
+~30 bytes of the command just written, so roughly 15 foreign bytes cleared in
+69 s. That is 5 s per byte, arithmetic agreeing with the code.
+
+**Commands are queued, not lost.** They sit behind the foreign bytes in the
+same RX ring and all run when the head clears. So a host script that "got no
+reply" has not failed -- its commands fire minutes later, at a moment nothing
+on the host is expecting them. A screenshot or a `CMD:SETTING` landing that
+late is the shape of a test that measured the wrong state.
+
+**And a leading newline does not clear this wedge.** Every command in this run
+was framed `\nCMD:...\n`, which is the fix T-113 asks `mapcmd.py` for, and the
+console stayed wedged for the full 69 s. Read off the code: the whitespace loop
+only consumes whitespace **at the head**, and a newline the host writes lands at
+the **tail**, behind the foreign bytes. The newline clears a wedge the host
+itself left -- its own torn partial line -- and nothing else.
+
+Only one drain line is ever logged (`reportedStuckHead` is a `static bool`), so
+the log says a wedge started and never says it ended. **Do not read a single
+drain line as a single drained byte.**
 
 **What was established before that was the symptom, not the layer.** The first version of this
 note called it "the CDC came up transmit-only", which places the fault in USB
