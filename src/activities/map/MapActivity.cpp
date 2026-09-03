@@ -298,9 +298,18 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 // running" from "no icon yet" learns nothing from the row.
 constexpr int kHeaderGnssIconSize = kHeaderIconHeight;
 constexpr int kHeaderGnssIconToBtGap = 6;
-// The "UTC" label's gap to whatever sits left of it, on a GNSS session. Same 6
-// px as every other link in the header chain.
-constexpr int kHeaderUtcLabelGap = 6;
+// The suffix the clock carries on a GNSS session while it really is UTC, drawn
+// as part of the clock's own string. **Not a separate label with its own gaps.**
+// It was one first, and on the panel it sat almost equidistant between the clock
+// and the GNSS glyph and read as labelling the glyph -- reported off a shot,
+// 2026-09-03. Tuning the two gaps would have hidden that; one string makes it
+// impossible, because the suffix cannot be nearer to anything than to the time
+// it belongs to.
+//
+// Plain literal, not tr(): UTC is an international abbreviation and reads the
+// same in every language this firmware ships, same precedent as the "+"/"--"
+// zoom hints in drawZoomSideHints().
+constexpr const char* kHeaderUtcSuffix = " UTC";
 #endif
 
 // The clock sits leftmost in the status row, between the place name and the
@@ -1638,7 +1647,7 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   // when the rider set an offset would stop refreshing pixels the previous
   // layout had written, which is the exact failure the comment at the top of
   // this function warns about.
-  const int utcLabelReserve = renderer.getTextWidth(SMALL_FONT_ID, "UTC") + kHeaderUtcLabelGap;
+  const int utcLabelReserve = renderer.getTextWidth(SMALL_FONT_ID, kHeaderUtcSuffix);
 #else
   const int utcLabelReserve = 0;
 #endif
@@ -1950,46 +1959,43 @@ void MapActivity::drawHeaderStatusStrip() {
   // giving it a second name for the same number would be two numbers to keep
   // level.
   int gnssIconLeft = 0;
-  int utcLabelLeft = 0;
-  int utcLabelWidth = 0;
+  clockShowsUtc_ = false;
   if (!bleInUse_) {
     gnssIconLeft = chainRight - kHeaderGnssIconSize;
     chainRight = gnssIconLeft - kHeaderGnssIconToBtGap;
 
-    // "UTC" gets its own link rather than squatting in the transfer icon's
-    // empty slot. **Measured on the device 2026-09-03: it is 32 px at
-    // SMALL_FONT_ID, against the 23 px that slot offers.** The first version of
-    // this did squat there, the fit check below refused to draw over the glyph,
-    // and the log line said exactly that -- which is the whole argument for
-    // having made the failure observable rather than trusting the estimate the
-    // constants suggested.
+    // Whether the clock carries the UTC suffix. **Only while it really is UTC.**
+    // A GNSS session has no timezone to work from (clockTick()), so with
+    // clockUtcOffsetQ at its default of 48 the row shows UTC -- measured
+    // 2026-09-03, it read 19:53 at 21:55 CEST, a clock two hours slow with
+    // nothing on the panel admitting it. The suffix is what admits it.
     //
-    // Only while the clock really is UTC. clockUtcOffsetQ at its default of 48
-    // means no offset was ever set, so a GNSS session shows UTC and the label
-    // is what admits it; once the rider sets an offset the clock is their local
-    // time, exactly like the BLE path, and the label would be false
-    // (maintainer's call, 2026-09-03).
-    if (SETTINGS.clockUtcOffsetQ == 48) {
-      const int want = renderer.getTextWidth(SMALL_FONT_ID, "UTC");
-      // Taking a link pushes everything left of it further left, the clock
-      // included. Checked against backingX rather than argued from the bar
-      // width, so a font change cannot quietly move the clock outside the
-      // refresh window and leave a ghost of it on the panel.
-      const int clockLeftWithLabel = chainRight - kHeaderUtcLabelGap - want - kHeaderTransferIconToBtGap -
-                                     kHeaderTransferIconSize - kHeaderClockToTransferIconGap -
-                                     headerClockSlotWidth(renderer);
-      if (clockLeftWithLabel >= backingX) {
-        utcLabelWidth = want;
-        utcLabelLeft = chainRight - want;
-        chainRight = utcLabelLeft - kHeaderUtcLabelGap;
-      } else {
-        LOG_ERR(kLogTag, "header: UTC label would push the clock %d px outside the refresh window -- not drawn",
-                backingX - clockLeftWithLabel);
-      }
-    }
+    // Once the rider sets an offset the clock is their local time, exactly like
+    // the BLE path, and the suffix would be false. Showing it on every GNSS
+    // session was considered and rejected on that -- a label that lies about the
+    // number it is attached to is worse than no label (maintainer's call).
+    //
+    // No repaint tracking of its own, and it needs none: the only thing that
+    // makes it appear or vanish is clockUtcOffsetQ, and changing that changes
+    // the clock's own minute, which updateHeaderStatus() already treats as a
+    // repaint reason.
+    clockShowsUtc_ = SETTINGS.clockUtcOffsetQ == 48;
   }
 #endif
-  const int transferIconLeft = chainRight - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+  // The transfer icon's slot leaves the chain with the icon. Leaving it reserved
+  // on a GNSS session is what put 14 px of nothing between the clock and the
+  // UTC label, so the label read as belonging to the glyph on its other side
+  // (reported off a panel shot, 2026-09-03). A slot nothing can ever draw in is
+  // not a slot, it is a hole.
+  int transferIconLeft = chainRight;
+  if (bleInUse_) {
+    transferIconLeft = chainRight - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+    chainRight = transferIconLeft;
+  }
+  // The clock is right-aligned against whatever the chain has left, which is the
+  // transfer icon on a BLE session and the UTC label (or the GNSS glyph) on a
+  // GNSS one.
+  const int clockSlotRight = chainRight - kHeaderClockToTransferIconGap;
   const int batteryIconTop = kHeaderMarginTop + 5 + 6;
   const int iconBottom = batteryIconTop + BaseMetrics::values.batteryHeight;
   const int iconTop = iconBottom - kHeaderIconHeight;
@@ -2011,7 +2017,8 @@ void MapActivity::drawHeaderStatusStrip() {
   const int16_t clockTickNow = clockTick(localNow);
   if (clockTickNow >= 0) {
     const uint32_t secondsOfDay = localNow % 86400u;
-    char clockText[6];
+    // Sized for "00:00" plus the " UTC" suffix and the terminator.
+    char clockText[12];
     if (clockIsCoarse()) {
       // "12:5*": the tens of minutes, then a mark standing in for the withheld
       // digit. Not "12:50", which would claim a minute it does not have.
@@ -2028,8 +2035,27 @@ void MapActivity::drawHeaderStatusStrip() {
       snprintf(clockText, sizeof(clockText), "%u:%02u", static_cast<unsigned>(secondsOfDay / 3600u),
                static_cast<unsigned>((secondsOfDay % 3600u) / 60u));
     }
-    const int slotRight = transferIconLeft - kHeaderClockToTransferIconGap;
-    const int textX = slotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
+#ifdef ENABLE_GNSS_CMD
+    if (clockShowsUtc_) {
+      std::strncat(clockText, kHeaderUtcSuffix, sizeof(clockText) - std::strlen(clockText) - 1);
+    }
+#endif
+    int textX = clockSlotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
+#ifdef ENABLE_GNSS_CMD
+    // headerStatusRect() reserves the suffix (see there), so this cannot
+    // normally fire -- but the reserve measures " UTC" on its own while this
+    // measures one combined string, and the kerning between the last digit and
+    // the space is the difference between the two. Drop the suffix rather than
+    // draw left of the refresh window, where the pixels are written once and
+    // never cleared.
+    if (clockShowsUtc_ && textX < backingX) {
+      LOG_ERR(kLogTag, "header: clock with '%s' runs %d px outside the refresh window -- suffix dropped",
+              kHeaderUtcSuffix, backingX - textX);
+      clockText[std::strlen(clockText) - std::strlen(kHeaderUtcSuffix)] = '\0';
+      clockShowsUtc_ = false;
+      textX = clockSlotRight - renderer.getTextWidth(SMALL_FONT_ID, clockText);
+    }
+#endif
     // kHeaderTextTopY, not iconTop: this is text standing next to the battery
     // percentage, and the two rows are 4px apart. headerStatusRect() starts at
     // whichever is higher, so this stays inside the refreshed window.
@@ -2037,34 +2063,6 @@ void MapActivity::drawHeaderStatusStrip() {
     // The same quantised value the repaint decision compares against.
     drawnClockMinute_ = clockTickNow;
 
-#ifdef ENABLE_GNSS_CMD
-    // "UTC" next to the clock, and **only while the clock really is UTC**.
-    //
-    // A GNSS session has no timezone to work from (clockTick()), so with
-    // clockUtcOffsetQ at its default of 48 the row shows UTC -- measured
-    // 2026-09-03, it read 19:53 at 21:55 CEST, which is a clock two hours slow
-    // with nothing on the panel admitting it. The label is what admits it.
-    //
-    // Not shown once the rider sets an offset: the clock is then their local
-    // time, exactly like the BLE path, and a "UTC" beside it would be false.
-    // Labelling unconditionally was considered and rejected on that -- a label
-    // that lies about the number next to it is worse than no label
-    // (maintainer's call, 2026-09-03).
-    //
-    // No repaint tracking of its own, and it does not need any: the only thing
-    // that makes it appear or vanish is clockUtcOffsetQ, and changing that
-    // changes the clock's own minute, which updateHeaderStatus() already treats
-    // as a repaint reason.
-    //
-    // Plain literal, not tr(): UTC is an international abbreviation and reads
-    // the same in every language this firmware ships, same precedent as the
-    // "+"/"--" zoom hints in drawZoomSideHints().
-    // Position and the decision to draw at all were both settled with the chain
-    // above; utcLabelWidth is zero unless the label earned a link there.
-    if (utcLabelWidth > 0) {
-      renderer.drawText(SMALL_FONT_ID, utcLabelLeft, kHeaderTextTopY, "UTC", true);
-    }
-#endif
   } else {
     drawnClockMinute_ = -1;
   }

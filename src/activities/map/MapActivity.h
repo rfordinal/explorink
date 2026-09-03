@@ -946,6 +946,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // saying one thing and a running radio another.
   bool bleInUse_ = true;
 
+  // True while the header clock carries its " UTC" suffix: a GNSS session whose
+  // clockUtcOffsetQ was never set, so the time really is UTC. Decided in
+  // drawHeaderStatusStrip() each time the row is laid out, and read by the same
+  // function a few lines later -- a member rather than a local because the
+  // layout chain settles it before the string that uses it is built.
+  bool clockShowsUtc_ = false;
+
   // Set from BlePositionServer::begin()'s return in onEnter(). Without this,
   // a BLE stack that failed to come up (plausible: init costs ~75 KB heap,
   // see docs/map-memory.md) looks identical to a phone that simply has not
