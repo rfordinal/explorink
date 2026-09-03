@@ -431,11 +431,166 @@ are about this board and not about GNSS:
   GPIOs, and passes one to the i80 peripheral as its DC line
   (`Bus_EPD.cpp:83,85,120,129,143`). On this board both are GPIO46, which is the
   SX1262's chip select, on the SD card's SPI bus.
-  **That the wiring is shared is settled; that it is a hazard is not.** The
-  cited lines drive the pin *high*, and a deasserted chip select is harmless --
-  whether it is ever driven low during a refresh has not been established, and
-  neither has whether an SX126x in reset parks MISO high-Z. Do not read this
-  bullet as a confirmed fault.
+  **Answered 2026-09-03, and it is a fault.** This bullet used to end "that it
+  is a hazard is not settled", because the lines cited above drive the pin high
+  and a deasserted chip select is harmless. The hazard is not in those lines: it
+  is that `lgfx::pinMode(pin, output)` sets no level, so the pin is simply left
+  low from display init and never raised. See the SD-card section below, which
+  also retracts the "every refresh" reading of `Bus_EPD`. Whether an SX126x in
+  reset parks MISO high-Z is still unread, and no longer load-bearing.
+
+## The EPD config asserted the LoRa radio's chip select, and the SD card died
+
+**Root-caused and fixed 2026-09-03.** This section was wrong three times before
+it was right, so it says which parts are measured and which are read off code.
+The parent repo's BUG-037 has the full history including the dead versions.
+
+The card became unusable: every BLE tile `begin` answered `ERR mkdir failed`,
+`settings.json` would not save, the Wi-Fi File Transfer page answered `HTTP 500`
+to `/mkdir` and listed the volume as empty, and roughly one boot in two came up
+on "SD card error". Three unrelated tasks, three vocabularies.
+
+**The card is fine. Measured on the laptop 2026-09-02**, in a USB reader: a
+64 KB write, `mkdir base/11/1125` -- the exact path the firmware had just
+refused -- and a copy into it, all `rc=0`, checksums matching after an unmount
+and remount. `dmesg` says `Write Protect is off`. It also took a **second
+reader** to see the card at all: invisible on the SY-T18 (`14cd:1212`), fine on
+a Genesys (`05e3:0764`). That reader trouble was never fixed, only worked around.
+
+### The cause is a placeholder pin in our own EPD config
+
+Not the board. The T5 S3 Pro is wired the ordinary way for a device that has both
+a radio and a card. What broke it is `freeink-sdk`'s
+`lilygoT5S3LgfxConfig()`, which passed `T5S3_LORA_CS` (GPIO46, the SX1262's
+`NSS`, on the SD card's SPI bus) as **both** `pinOe` and `pinPwr`.
+
+Both were placeholders and the commit that added the driver says so: `9becf6c`
+(2026-06-05) writes `/*OE dummy*/ T5S3_LORA_CS` and `/*pwr dummy*/
+T5S3_LORA_CS`, and `LgfxEpdConfig.h` documents `pinOe` as "may be a dummy GPIO if
+real OE is via an expander hook". LovyanGFX requires the two fields; this panel
+needs neither, because its real output-enable is `PCA9535_IO10_EP_OE` and its
+power sequence is the TPS65185, both driven by the injected hooks. GPIO46 was
+simply what was to hand.
+
+`Bus_EPD::init()` then calls `lgfx::pinMode(pin, output)` on both
+(`Bus_EPD.cpp:120,143`). That call writes no level -- its `gpio_hi()` is guarded
+to non-output modes (`common.cpp:599-601`) -- and `GPIO_OUT1_REG` resets to 0
+(`gpio_reg.h:77-80`). So the pad becomes an output at 0 and **nothing ever raises
+it**. The `powerControl()` that would have set a level is virtual
+(`Bus_EPD.h:95`) and `FreeInkBusEPD` overrides it without calling the base
+(`LgfxEpdDriver.cpp:34-45`), so it never runs.
+
+**An earlier version of this section said the pin is driven low per refresh. It
+is not.** It is left low, once, and never touched again.
+
+### What the hardware says
+
+Measured 2026-09-03 with `CMD:SDBUS`, which toggles the chip select, the reset
+line and the shared GNSS/LoRa rail independently and reads a 19,855-byte file
+with a CRC32. Nine runs, each after a hard reset with a passing baseline read.
+
+| rail | reset line | radio selected | card |
+|---|---|---|---|
+| off | driven | no | reads, `7bda5027`, 40 ms |
+| off | driven high | no | reads |
+| on | driven high | no | reads |
+| on | driven high | **yes** | reads |
+| on | driven low | **yes** | reads |
+| on | **floating** | **yes** | fails |
+| off | driven low | **yes** | fails, reproduced twice |
+| off | floating | **yes** | fails |
+
+**Deselected, the card read correctly in every combination.** Selected, it failed
+unless the radio was **both** powered **and** had its reset actively driven. No
+exception in either direction. The failure is sticky within a boot: raising the
+chip select again does not bring the card back, only a reset does.
+
+**Why an undefined radio loads the bus is inference, not measurement.** No
+SX126x datasheet is on disk and GPIO46 has never been scoped on the pad. State
+the table, not the theory.
+
+### GPIO46 comes out of reset low, and that is the other half of the symptom
+
+**Measured 2026-09-03**, first boot of the fixed build:
+
+```
+[411] [SDBUS] LORA_CS (GPIO46) was LOW -- the radio was selected on the card's bus at boot, now deselected
+[418] [SD] SD card detected
+```
+
+GPIO46 is a strapping pin and its reset level is in nothing on disk. Now it is
+observed: **low**. So at `Storage.begin()`, before any of our code or the EPD
+driver has touched the pin, the radio is already selected. That is the
+"one boot in two came up on SD card error" half, which no earlier version of this
+section could explain.
+
+### The fix is in two places because there are two windows
+
+- **`freeink-sdk`, `prepareEpdPower()`** deselects GPIO46 before the EPD bus is
+  built, and `pinOe` becomes `-1` so LovyanGFX stops touching it at all. That
+  hook is the last thing to run before `Bus_EPD::init()`, and nothing downstream
+  writes the level back. Upstream PR `Free-Ink/freeink-sdk#73`; we carry it on
+  our fork's `explorink` branch ([`freeink-sdk-fork.md`](freeink-sdk-fork.md)).
+  `pinPwr` has to stay a real GPIO: it reaches the i80 driver as `dc_gpio_num`,
+  which the IDF rejects when negative, and this board has no free pin.
+- **`t5s3DeselectLoraRadio()` in `src/main.cpp`** runs before `Storage.begin()`.
+  The SDK's fix runs at display init, which is ~300 ms later, so it cannot cover
+  card detection. This covers card detection. Two windows, not two belts. It also
+  reads the pin before writing it, which is where the reset-level measurement
+  above comes from, and which makes a lost SDK fix loud instead of silent.
+
+**Neither cuts the rail, and an earlier version did.** The rail cut was wrong
+twice over: it is half of the condition that breaks the card, and it belongs to
+the battery question, not this one. A rail left on keeps the receiver and the
+radio powered through deep sleep, measured in both directions -- rail up across a
+wake on 08-31 (`out0=0xFF bytes=1633`), rail down across a wake on 09-03
+(`out0=0xFE bytes=0`). That is T-244 and it runs on its own schedule. **Do not
+couple them again.**
+
+**Verified on hardware 2026-09-03**, release branch with both halves: the boot
+line above, `SD card detected`, settings and the missing-tile list loaded, a
+19,855-byte read with the right CRC, `POST /mkdir` 200 and the directory listed
+and deleted again. And a control: asserting the chip select by hand still kills
+the read, so the failure mode is intact and merely no longer triggered.
+
+**A build carrying only the SDK half, with `t5s3DeselectLoraRadio()` removed,
+also worked** -- including with the rail cut, which had been the dead state. So
+the SDK fix alone restores the card after boot; the firmware half is for the
+detection window.
+
+### Why it took three days to surface
+
+The bug has been in the config since 2026-06-05. On this board it was masked for
+two days by unrelated work: GNSS bring-up powers the shared rail and drives the
+radio's reset low, which is exactly the combination the card tolerates. A BLE
+regression run on 2026-09-02 at 11:08 set `mapGnssPosition` to 0 and never set it
+back, the setting persists to the card, and from the next boot GNSS never ran --
+so the masking went with it.
+
+**Two things this does not explain, and they stay open.** The first failure was
+at 15:23, four hours after the setting changed, and the archived build at 14:41
+rendered the map from card tiles in between. Nobody read the expander in that
+window, so the rail state then cannot be recovered. And the earlier write-up
+blaming `gnss.end()` on map exit for cutting the rail is **mechanically
+impossible**: `MapActivity` only starts GNSS when `mapGnssPosition != 0` and only
+calls `gnss.end()` if it started it.
+
+### The same class, upstream, the same day
+
+`Free-Ink/freeink-sdk#72` fixed an EPD driver pulsing a pin that also gates the
+SD rail on the OnePage board, merged 2026-09-02. An EPD driver writing a pin it
+does not own, with the SD card as collateral. Ours is the second instance.
+
+### The worst part is not the bus
+
+The firmware **reported failure and the card changed anyway.** `fsck.vfat` found
+an orphaned long-filename part for `crash_report.txt` and 64 KB of a `TIB1` tile
+in a cluster chain no directory entry pointed at. Which call produced each is
+inferred; what is certain is that a rename returned an error and had renamed the
+file, and that tile bytes reached the card with nothing pointing at them. No
+crossed files, no broken chains, so the volume survived -- that is luck, not
+design. T-245, and it outlives this bug.
+`../../docs/crashes/2026-09-02-t5s3-card/` has both.
 
 ## What is wrong or missing
 

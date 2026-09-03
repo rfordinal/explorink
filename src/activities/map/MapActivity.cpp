@@ -2215,6 +2215,18 @@ void MapActivity::onEnter() {
   // Where `fake` lands. Only this screen offers it -- it is the one with the
   // projection and MISSING_TILES.
   consoleState_.setFakeSink(this);
+  // What `info` answers `screen=map` from. The two screens run the same BLE
+  // server and the same console grammar, so without this the phone cannot tell
+  // them apart -- and it has to, because a long batch pushed over this screen
+  // dies: the post-arrival redraw fires on a settle timer with no check on
+  // whether bytes are moving (kArrivalRedrawSettleMs), so any file that takes
+  // longer than the settle has the previous arrival's timer expire mid-flight
+  // (../../../docs/ble-map-transfer-protocol.md, "The hard half").
+  //
+  // No push observer is installed here on purpose: `push` then answers
+  // `INFO push=unavailable`, which is the honest answer for a screen that
+  // cannot show a batch.
+  consoleState_.setScreenName("map");
   // The pins come back off the card before anything can ask for them. A failed
   // replay leaves the set empty *and* refuses every save, rather than appending
   // onto a history it never read (MapPins::pinSet).

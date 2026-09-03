@@ -11,6 +11,7 @@ add_executable(MapCommandParserTest
 
 target_include_directories(MapCommandParserTest PRIVATE
   ${REPO_ROOT}/src/activities/map
+  ${REPO_ROOT}/lib/BlePositionServer/include
 )
 
 target_link_libraries(MapCommandParserTest PRIVATE
