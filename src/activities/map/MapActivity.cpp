@@ -298,6 +298,9 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 // running" from "no icon yet" learns nothing from the row.
 constexpr int kHeaderGnssIconSize = kHeaderIconHeight;
 constexpr int kHeaderGnssIconToBtGap = 6;
+// The "UTC" label's gap to whatever sits left of it, on a GNSS session. Same 6
+// px as every other link in the header chain.
+constexpr int kHeaderUtcLabelGap = 6;
 #endif
 
 // The clock sits leftmost in the status row, between the place name and the
@@ -1621,7 +1624,26 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
 #else
   const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
 #endif
-  const int clockLeft = transferIconLeft - kHeaderClockToTransferIconGap - headerClockSlotWidth(renderer);
+#ifdef ENABLE_GNSS_CMD
+  // The "UTC" label is part of the widest layout too, so it is reserved here
+  // unconditionally -- including on BLE sessions, which never draw it.
+  //
+  // **Measured 2026-09-03: without this the label was 4 px short and refused to
+  // draw at all** (drawHeaderStatusStrip()'s own fit check said so, twice: once
+  // when it tried to squat in the transfer icon's slot, once after it got its
+  // own link). This rect is the hard left edge, and a link the chain can take
+  // that the rect has not reserved is a link that can never be taken.
+  //
+  // Not conditional on clockUtcOffsetQ, unlike the drawing: a rect that shrank
+  // when the rider set an offset would stop refreshing pixels the previous
+  // layout had written, which is the exact failure the comment at the top of
+  // this function warns about.
+  const int utcLabelReserve = renderer.getTextWidth(SMALL_FONT_ID, "UTC") + kHeaderUtcLabelGap;
+#else
+  const int utcLabelReserve = 0;
+#endif
+  const int clockLeft =
+      transferIconLeft - utcLabelReserve - kHeaderClockToTransferIconGap - headerClockSlotWidth(renderer);
   // Battery's real icon top is kHeaderMarginTop + 11, not +5: drawHeader()
   // hands drawBatteryRight() rect.y+5 (BaseTheme.cpp:374), and
   // drawBatteryRight() adds another +6 of its own (:99) before drawing the
@@ -1903,6 +1925,14 @@ void MapActivity::drawHeaderStatusStrip() {
   const int worstCasePercentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
 
+  // The rect the windowed repaint refreshes, taken before the chain rather than
+  // with the backing below: it is the hard left edge, and the UTC label is the
+  // one link whose width comes from a font instead of a constant. Nothing may
+  // be laid out left of backingX -- those pixels are never refreshed, so they
+  // would draw once and then stay.
+  int backingX, backingY, backingW, backingH;
+  headerStatusRect(backingX, backingY, backingW, backingH);
+
   // Walks leftwards. Each block that draws something consumes its own width
   // plus the gap to whatever it sits next to.
   int chainRight = barsRight;
@@ -1920,9 +1950,43 @@ void MapActivity::drawHeaderStatusStrip() {
   // giving it a second name for the same number would be two numbers to keep
   // level.
   int gnssIconLeft = 0;
+  int utcLabelLeft = 0;
+  int utcLabelWidth = 0;
   if (!bleInUse_) {
     gnssIconLeft = chainRight - kHeaderGnssIconSize;
     chainRight = gnssIconLeft - kHeaderGnssIconToBtGap;
+
+    // "UTC" gets its own link rather than squatting in the transfer icon's
+    // empty slot. **Measured on the device 2026-09-03: it is 32 px at
+    // SMALL_FONT_ID, against the 23 px that slot offers.** The first version of
+    // this did squat there, the fit check below refused to draw over the glyph,
+    // and the log line said exactly that -- which is the whole argument for
+    // having made the failure observable rather than trusting the estimate the
+    // constants suggested.
+    //
+    // Only while the clock really is UTC. clockUtcOffsetQ at its default of 48
+    // means no offset was ever set, so a GNSS session shows UTC and the label
+    // is what admits it; once the rider sets an offset the clock is their local
+    // time, exactly like the BLE path, and the label would be false
+    // (maintainer's call, 2026-09-03).
+    if (SETTINGS.clockUtcOffsetQ == 48) {
+      const int want = renderer.getTextWidth(SMALL_FONT_ID, "UTC");
+      // Taking a link pushes everything left of it further left, the clock
+      // included. Checked against backingX rather than argued from the bar
+      // width, so a font change cannot quietly move the clock outside the
+      // refresh window and leave a ghost of it on the panel.
+      const int clockLeftWithLabel = chainRight - kHeaderUtcLabelGap - want - kHeaderTransferIconToBtGap -
+                                     kHeaderTransferIconSize - kHeaderClockToTransferIconGap -
+                                     headerClockSlotWidth(renderer);
+      if (clockLeftWithLabel >= backingX) {
+        utcLabelWidth = want;
+        utcLabelLeft = chainRight - want;
+        chainRight = utcLabelLeft - kHeaderUtcLabelGap;
+      } else {
+        LOG_ERR(kLogTag, "header: UTC label would push the clock %d px outside the refresh window -- not drawn",
+                backingX - clockLeftWithLabel);
+      }
+    }
   }
 #endif
   const int transferIconLeft = chainRight - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
@@ -1931,9 +1995,7 @@ void MapActivity::drawHeaderStatusStrip() {
   const int iconTop = iconBottom - kHeaderIconHeight;
 
   // White backing first, like the compass halo and the busy badge: this can
-  // land on live map lines, not blank margin.
-  int backingX, backingY, backingW, backingH;
-  headerStatusRect(backingX, backingY, backingW, backingH);
+  // land on live map lines, not blank margin. Rect computed above.
   renderer.fillRect(backingX, backingY, backingW, backingH, false);
 
   // The clock, leftmost, when the phone has ever sent a non-zero utc. 24-hour
@@ -1974,6 +2036,35 @@ void MapActivity::drawHeaderStatusStrip() {
     renderer.drawText(SMALL_FONT_ID, textX, kHeaderTextTopY, clockText, true);
     // The same quantised value the repaint decision compares against.
     drawnClockMinute_ = clockTickNow;
+
+#ifdef ENABLE_GNSS_CMD
+    // "UTC" next to the clock, and **only while the clock really is UTC**.
+    //
+    // A GNSS session has no timezone to work from (clockTick()), so with
+    // clockUtcOffsetQ at its default of 48 the row shows UTC -- measured
+    // 2026-09-03, it read 19:53 at 21:55 CEST, which is a clock two hours slow
+    // with nothing on the panel admitting it. The label is what admits it.
+    //
+    // Not shown once the rider sets an offset: the clock is then their local
+    // time, exactly like the BLE path, and a "UTC" beside it would be false.
+    // Labelling unconditionally was considered and rejected on that -- a label
+    // that lies about the number next to it is worse than no label
+    // (maintainer's call, 2026-09-03).
+    //
+    // No repaint tracking of its own, and it does not need any: the only thing
+    // that makes it appear or vanish is clockUtcOffsetQ, and changing that
+    // changes the clock's own minute, which updateHeaderStatus() already treats
+    // as a repaint reason.
+    //
+    // Plain literal, not tr(): UTC is an international abbreviation and reads
+    // the same in every language this firmware ships, same precedent as the
+    // "+"/"--" zoom hints in drawZoomSideHints().
+    // Position and the decision to draw at all were both settled with the chain
+    // above; utcLabelWidth is zero unless the label earned a link there.
+    if (utcLabelWidth > 0) {
+      renderer.drawText(SMALL_FONT_ID, utcLabelLeft, kHeaderTextTopY, "UTC", true);
+    }
+#endif
   } else {
     drawnClockMinute_ = -1;
   }

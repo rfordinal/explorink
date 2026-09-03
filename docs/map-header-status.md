@@ -95,6 +95,37 @@ it is the setting that fixes it rather than anything in this code. Deriving a
 zone from longitude was rejected: it is wrong at every land border, and a
 confidently wrong clock is worse than a plainly offset one.
 
+### So the row says "UTC" while it is UTC
+
+`20:29  UTC  <glyph>  100%`. Added 2026-09-03, on the maintainer's ask, and
+**only while `clockUtcOffsetQ` is still its default of 48**. Once the rider sets
+an offset the clock is their local time, exactly like the BLE path, and the label
+would be false -- labelling every GNSS session unconditionally was considered and
+rejected on that.
+
+Verified on hardware, positive case. **The negative case -- offset set, label
+gone -- is read off the code only**, because `clockUtcOffsetQ` is not in
+`CMD:SETTING`'s allow-list and the only way to change it is Settings > Clock
+offset on the device.
+
+**Two width estimates were wrong before one was right, and the fit check is what
+caught both.** The label is 32 px at `SMALL_FONT_ID`, measured on the panel:
+
+1. First it squatted in the transfer icon's empty slot, which the constants said
+   was 23 px. `header: UTC label needs 32 px, slot has 23 -- not drawn`.
+2. Then it took its own link in the chain, which made room but pushed the clock
+   past the refresh window. `header: UTC label would push the clock 4 px outside
+   the refresh window -- not drawn`.
+3. The fix was in `headerStatusRect()`, not in the chain: **a link the chain can
+   take that the rect has not reserved is a link that can never be taken.** The
+   label is now reserved there unconditionally, on every state including BLE
+   sessions that never draw it, for the same reason the transfer icon's slot is.
+
+Neither failure drew anything wrong on the panel and neither was silent. That is
+the whole argument for a check plus a log line over an estimate from constants
+(`CLAUDE.md`, "Comments Answer WHY, Not WHAT" -- a comment telling the reader to
+avoid something needs a way for them to know they failed).
+
 The transfer icon is not an internet indicator in the literal sense -- this
 device has no radio that reaches the internet. It is about the thing the rider
 cares about: the phone is spending mobile data on their behalf right now. See
