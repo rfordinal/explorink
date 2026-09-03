@@ -97,6 +97,7 @@ not a pull request.
 | Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
 | Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |
 | Nearby: what useful things are around the rider | built 2026-08-21, **unverified on hardware** — drinking water, shelter, huts, lodging, fuel, medical, pharmacy, rescue, SOS phones, transport out, from the GPS fix over 25 km, with a POI mark layer per category and a destination readout in the header. See [`docs/nearby-menu.md`](./docs/nearby-menu.md) |
+| Receiving a batch of tiles the device never asked for | built 2026-09-02, **unverified on hardware** — the phone announces the batch with `push <n>` before it sends, `info` answers `screen=sync|map` so the phone knows which screen is up, and the sync screen shows the file on the wire, its verify stage and a standing "leaving cancels" warning. Picking the area and owning the queue stay on the phone. See [`docs/missing-tiles.md`](./docs/missing-tiles.md), "A batch the device never asked for" |
 | Route following, off-route warning | **not started** |
 | Companion phone app | exists — [ExplorInk GPS](https://github.com/rfordinal/explorink-android), an Android BLE position sender and ride recorder |
 

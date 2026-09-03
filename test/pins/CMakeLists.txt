@@ -12,6 +12,7 @@ add_executable(PinsTest
 
 target_include_directories(PinsTest PRIVATE
   ${REPO_ROOT}/src/activities/map
+  ${REPO_ROOT}/lib/BlePositionServer/include
 )
 
 target_link_libraries(PinsTest PRIVATE

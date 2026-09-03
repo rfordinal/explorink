@@ -121,7 +121,27 @@
 // pages the list with `missing`, pushes tiles over the transfer channel, and
 // sends `skip` for what it cannot supply. Done when arrivals plus skips reach
 // the count. BACK sends `FETCH_CANCEL` and leaves.
-class TileSyncActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver {
+//
+// ## A batch the device never asked for
+//
+// Everything above is reactive: the device hatched a square, wrote it down,
+// and asks for it back. Ground the rider has never been on is on no list, so a
+// phone pushing a whole city before a trip finds a screen that has sized
+// itself from an empty missing list -- `rowCount_ == 0`, `onEnter()` says
+// "nothing missing" and goes to Finished, and every progress element is gated
+// on Running. The bytes land anyway (the receiver is attached before the run
+// is armed) and the rider watches a screen saying there is nothing to do for
+// half an hour.
+//
+// `push <n>` on the command channel is the phone announcing that batch before
+// its first begin frame (MapCommandParser.h). The count is all the device
+// needs: it never learns which tiles, only how many files are coming, which is
+// enough for a bar, an ETA and a finish condition. `announced_` holds it and
+// `runTotal()` is what a run is measured against.
+class TileSyncActivity final : public Activity,
+                               public IMapSkipObserver,
+                               public IMapStaleObserver,
+                               public IMapPushObserver {
  public:
   TileSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
@@ -147,6 +167,12 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // unasked on the transfer channel (docs/tile-freshness.md).
   void onTileStale(uint8_t z, uint32_t col, uint32_t row) override;
   void onCheckFinished(bool known, uint16_t staleCount) override;
+
+  // IMapPushObserver -- the phone announcing a batch it is about to send.
+  // Flags only; the work happens in loop(). This runs inside the console's
+  // dispatch of `push`, before its terminating `OK`, which is the one place a
+  // repaint must not be started (see freshnessRedrawPending_).
+  void onPushAnnounced(uint16_t count) override;
 
  private:
   // Waiting means the device is advertising and nothing has subscribed to the
@@ -179,8 +205,24 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // summary line while the bytes of the tile in flight climb.
   void updateProgress();
   RowState stateOf(int index, uint32_t& received, uint32_t& total) const;
+  // The file on the wire: its tile coordinate and its own byte progress, or the
+  // verify stage when the bytes are all in. False when nothing is in flight.
+  //
+  // Separate from the summary line because they answer different questions. The
+  // summary is about the run -- how many, how fast, how long left -- and on a
+  // batch of city tiles one file is 30 to 130 s of it (258 kB average, 1173 kB
+  // worst, measured off the CDN 2026-09-02). A run line alone holds completely
+  // still for all of that.
+  bool formatActiveFile(char* out, size_t outSize) const;
   void gridRect(int& x, int& y, int& w, int& h) const;
+  // The live block: the run's summary line and the per-file line under it. Two
+  // lines and not one because both change per chunk and both are rate-capped
+  // together -- one windowed repaint, not two (updateProgress).
   void summaryRect(int& x, int& y, int& w, int& h) const;
+  // Where the standing "leaving cancels this" warning sits: the bottom of the
+  // page, above the button hints. Reserved by gridRect() whether or not it is
+  // drawn, so the grid does not jump as the phase changes.
+  void warningRect(int& x, int& y, int& w, int& h) const;
   // The whole grid, cleared and redrawn. Every square that is still missing,
   // nothing for the ones that landed. `top` is the floor to start at, or 0 for
   // the running screen's own -- the finished screen writes more above it.
@@ -188,6 +230,16 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // One z11 parent and everything of it that has not arrived. Returns false
   // when the parent is empty, so the caller can leave its frame off too.
   bool drawParent(int px, int py, int size, uint16_t pc, uint16_t pr);
+  // One square per file this run is still waiting for, laid out plainly.
+  //
+  // **An announced batch has a count and no coordinates.** `push <n>` says how
+  // many files are coming and nothing about where they are, because the phone
+  // is sending ground the device has never drawn and therefore never recorded
+  // -- there is no missing-tile list behind it and nothing to place on a map.
+  // So the squares are the count, drawn in the same mark the real grid uses so
+  // one screen reads the same either way: a square standing means one file
+  // still to come, and it goes out when a file lands.
+  void drawAnnouncedGrid(int gx, int gy, int gw, int gh);
 
   // Clears MissingTilesStore entries for tiles that have landed.
   //
@@ -209,6 +261,13 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // Sends NEED_TILES and moves to Running. Called when the phone subscribes,
   // and again if it leaves and comes back.
   void askForTiles();
+  // Moves to Running and arms every clock a run is measured by. One place, so
+  // a second entry into a run cannot start with one of them left over from the
+  // last one.
+  void beginRunning();
+  // Acts on a `push <n>`. Adds to the run already on screen, or starts a new
+  // one -- see its .cpp for which and why.
+  void startAnnouncedBatch(uint32_t count);
   // Watches the command channel's subscription and moves between Waiting and
   // Running. A phone that walks out of range mid-sync takes the transfer with
   // it, so the screen goes back to waiting rather than pretending.
@@ -316,6 +375,21 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   std::unique_ptr<Row[]> rows_;
   uint32_t rowCount_ = 0;
 
+  // Files the phone has announced with `push <n>` for this run and not yet
+  // delivered a count for. Zeroed by armRun(), because a re-ask is a new run.
+  //
+  // **Not rows.** There is no snapshot behind it and there cannot be: the phone
+  // never says which tiles. So it is a total and nothing else -- the grid it
+  // feeds is drawn from the number (drawAnnouncedGrid).
+  uint32_t announced_ = 0;
+  // Set by onPushAnnounced(), consumed by loop(), for the reason
+  // freshnessAskPending_ exists: the observer runs inside the console's
+  // dispatch of `push`, before the `OK` the phone is waiting for, and a repaint
+  // started there is 500-1700 ms in front of that reply. Accumulates rather
+  // than overwrites, so two announcements between two loop() ticks cannot lose
+  // one.
+  uint32_t pushPending_ = 0;
+
   // The drawn viewport, in z11 parent coordinates: top-left corner and extent.
   // Set by chooseWindow(), read only by the grid. Four scalars rather than a
   // second snapshot -- the tiles themselves are already in rows_.
@@ -345,6 +419,11 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // Gap between a square and its neighbour, so blocks read as separate squares
   // rather than one blot. Drawn as an inset on the fill.
   static constexpr int kTileInset = 2;
+  // Below this an announced batch's squares stop being squares and become
+  // grit. A batch that will not fit legibly simply gets no grid -- the bar is
+  // the indicator, and a smear of dots would be a worse toy and no better
+  // instrument (see the header on the window).
+  static constexpr int kMinAnnouncedCellPx = 8;
 
   // A stale tile is a dot, not an outlined square, and the two are drawn on the
   // same grid on purpose: they answer different questions about the same ground
@@ -398,7 +477,16 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // rowCount_ -- so a visit that replaced 24 stale tiles against 12 missing
   // ones printed "24 / 12", a ratio above one, on the panel 2026-08-13. The
   // earlier fix only covered rowCount_ == 0 and left this.
-  uint32_t transferTotal() const { return rowCount_ + freshnessStale_; }
+  uint32_t transferTotal() const { return runTotal() + freshnessStale_; }
+  // What this run is waiting for: the missing tiles it snapshotted plus any
+  // batch the phone announced. The finish condition, the bar's denominator and
+  // the ETA's remainder are all against this -- **not** transferTotal(), which
+  // adds the freshness half of the visit and is only a display total.
+  uint32_t runTotal() const { return rowCount_ + announced_; }
+  // Files of this run that have not landed yet. Skips are not subtracted: a
+  // tile the supplier does not have is still not on the card, so its square
+  // stays drawn -- the same rule the real grid follows.
+  uint32_t runRemaining() const;
   MapTileCoord interestAt(size_t index) const;
 
   // Tiles the phone has given up on. Counted here as well as in the console's

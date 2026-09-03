@@ -110,6 +110,24 @@ class IMapStaleObserver {
   virtual void onCheckFinished(bool known, uint16_t staleCount) = 0;
 };
 
+// Told when the phone announces a batch with `push <n>`, so the screen that is
+// up can start a run for files it never asked for.
+//
+// Synchronous, same contract as IMapSkipObserver and IMapStaleObserver: the
+// call runs on the activity task that is draining the console, inside the
+// dispatch of `push` and **before** its terminating `OK`. So an implementation
+// must not repaint or start a confirm wait here -- it flags the work and does
+// it after poll() returns (TileSyncActivity's freshnessRedrawPending_ has the
+// full reasoning).
+class IMapPushObserver {
+ public:
+  virtual ~IMapPushObserver() = default;
+  // [count] is files, not tiles: the phone counts what it is about to send, and
+  // a non-tile push (a route, a style) costs the same wire time. Never zero --
+  // the parser rejects `push 0`.
+  virtual void onPushAnnounced(uint16_t count) = 0;
+};
+
 // One entry of the persisted missing-tile list, as the `missing` command
 // prints it. A field-for-field copy of MissingTileHit on purpose:
 // MapConsoleState must not include MissingTilesStore.h, which pulls in
@@ -356,6 +374,28 @@ class MapConsoleState {
   // Non-const because a listing stamps what it listed (beginListing()).
   void setHeldTilesStore(HeldTilesStore* store) { heldTiles_ = store; }
 
+  // Which screen is up, as one short lowercase word for `info`'s `screen=` line
+  // -- "map" or "sync". A string literal owned by the caller, installed by
+  // whichever activity built this state; nothing here copies it.
+  //
+  // **A setter and not a global**, because there is no such thing as "the
+  // current screen" on this side: each screen builds its own MapConsoleState
+  // (TileSyncActivity.h, "It deliberately does not share MapActivity's console
+  // state"), so the state that answers a command is by construction the state
+  // of the screen that is up.
+  //
+  // Left unset the line is omitted, exactly like `tile_fmt`. A phone therefore
+  // reads a missing `screen=` as "this firmware cannot say", which is what an
+  // older build genuinely is, and must not read it as either screen.
+  void setScreenName(const char* name) { screenName_ = name; }
+
+  // Where `push` goes. Not owned; must outlive this state. Left unset (the
+  // default, and the case on every screen that cannot show a batch) `push`
+  // answers `INFO push=unavailable` rather than a bare OK -- the phone is about
+  // to spend tens of minutes of radio on this, and "nothing here is counting
+  // it" is worth one line.
+  void setPushObserver(IMapPushObserver* observer) { pushObserver_ = observer; }
+
   // Where `fake` goes. Not owned; must outlive this state. Left unset (the
   // default, and the case on every screen but the map) `fake` answers
   // `INFO fake=unavailable` rather than silently doing nothing.
@@ -456,6 +496,8 @@ class MapConsoleState {
   const StaleTilesList* staleTiles_ = nullptr;
   IMapStaleObserver* staleObserver_ = nullptr;
   IMapFakeSink* fakeSink_ = nullptr;
+  IMapPushObserver* pushObserver_ = nullptr;
+  const char* screenName_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
   IMapPinsSource* pins_ = nullptr;
   MapSkipTally skips_;
