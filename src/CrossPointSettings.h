@@ -289,12 +289,17 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // receiver at all, so on those this field can only ever be 0 and the code
   // that reads it is not even compiled in.
   //
-  // In the settings file but **not** in SettingsList, unlike mapAutoSyncTiles
-  // above -- a Settings row would offer every rider a toggle for hardware only
-  // one development board has. It is reached from the host instead
-  // (CMD:SETTING mapGnssPosition 1, main.cpp), which is all step 3 of
-  // ../docs/gnss-to-map-plan.md needs. The day a shipping device carries a
-  // receiver, this gets a row and the row gets a board condition.
+  // In SettingsList (category Map) since 2026-09-03, behind ENABLE_GNSS_CMD so
+  // the row is compiled in only where a receiver exists -- the board condition
+  // the earlier version of this comment asked for. It stays reachable from the
+  // host too (CMD:SETTING mapGnssPosition 1, main.cpp).
+  //
+  // **It needs the row because it persists.** Left at 0 by a test, it survives
+  // every power cycle, and with no screen and no boot log naming it the
+  // symptom -- a map that draws no position -- is indistinguishable from dead
+  // hardware. That is not hypothetical: it was reported as a GNSS regression on
+  // 2026-09-03 and cost a device session
+  // (../docs/gnss-to-map-plan.md, "And it was reported as a GNSS regression").
   uint8_t mapGnssPosition = 0;
   // Write one CSV row per accepted GNSS fix to /trailink/gnss.csv (GnssLog.h).
   // Off by default and it must stay that way: the file is a **track log**, not
@@ -398,10 +403,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // it. Two fields rather than one brightness: turning the light off must not
   // forget the level it was at, and a level of 0 would.
   //
-  // Not in SettingsList, for the same reason as mapGnssPosition above -- only
-  // the LilyGo T5 S3 Pro has a frontlight in any env built today, and a
-  // Settings row would offer every rider a control for hardware they do not
-  // have. It is written by the user button's hold (main.cpp) and by CMD:LIGHT.
+  // Not in SettingsList: only the LilyGo T5 S3 Pro has a frontlight in any env
+  // built today, and a Settings row would offer every rider a control for
+  // hardware they do not have. It is written by the user button's hold
+  // (main.cpp) and by CMD:LIGHT.
+  //
+  // mapGnssPosition was the other field with this reasoning and it now has a
+  // row, gated on a build flag -- so absence here is a choice about a control
+  // the rider does not need, not a rule. This one is already reachable by
+  // holding the user button, which is why it did not follow.
   uint8_t frontlightOn = 0;
   uint8_t frontlightBrightness = 50;
   // Power button return from footnotes (1 = enabled, 0 = disabled)

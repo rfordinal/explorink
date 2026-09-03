@@ -401,10 +401,24 @@ device answered `SETTING_OK:mapGnssPosition=0`, `SETTING_OK:mapGnssLog=0` and
 started, rx ring 8192 bytes` and `CMD:GNSS` then reported `inview=11 tracked=1
 bestsnr=29 cserr=0 ferr=0 ovf=0 bytes=13899` -- a healthy receiver with no fix,
 which is what indoors on a bench looks like. **A persisted opt-in that no screen
-shows and no boot log prints reads exactly like broken hardware.** That is the
-cost of the setting being deliberately absent from `SettingsList`
-(`src/CrossPointSettings.h`, the `mapGnssPosition` comment), and the reason the
-next line of this plan exists.
+shows and no boot log prints reads exactly like broken hardware.** That was the
+cost of the setting being deliberately absent from `SettingsList`.
+
+**So it has a Settings row now, and that absence is over.** Settings > Map >
+**Built-in GPS**, a toggle on the same field, added the same day
+(`src/SettingsList.h`, the Map section). The row is behind `#ifdef
+ENABLE_GNSS_CMD`, which is set in `env:t5s3pro` and in no other env and today
+means "this build has a receiver" (`src/GnssAccess.h`) -- so an X4 or X4 Pro
+build does not compile it and no rider gets a toggle for hardware that is not
+there. That is the board condition the field's own comment had been asking for.
+
+**Unverified on hardware.** Both envs compile clean -- `t5s3pro` at 21.7 % RAM
+and 58.7 % flash, `default` at 17.9 % and 61.1 %, no new warnings -- and the
+flag's scope is read off `platformio.ini:309,354`. Nothing has been flashed. A
+hardware pass has to check three things: the row appears under Map on the T5 S3
+Pro and toggling it survives a reboot; the row is absent on an X4 build; and
+`[MEM] Free:` at Home is unchanged, because a `SettingInfo` in a static vector
+is a runtime allocation and the linker's RAM figure does not cover it.
 
 **The first command of every future GNSS run is therefore `CMD:SETTING
 mapGnssPosition 1`.** Without it the map runs off the phone, everything looks

@@ -234,6 +234,28 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_DISPLAY),
 
         // --- Map ---
+#ifdef ENABLE_GNSS_CMD
+        // Where the map's position comes from: off (default) the phone over
+        // BLE, on the receiver on this board (MapActivity::onEnter(), which
+        // only calls gnssStart() when this is set).
+        //
+        // Compiled in only where a receiver exists. ENABLE_GNSS_CMD is set in
+        // env:t5s3pro and nowhere else, and today it means "this build has a
+        // receiver" rather than anything about the console (GnssAccess.h). On an
+        // X4 or X4 Pro build there is no driver to switch to, so a row here
+        // would be a toggle that does nothing.
+        //
+        // It has a row at all because not having one cost a bring-up session.
+        // 2026-09-03 this was reported as a GNSS regression: it had been left at
+        // 0 by the previous day's BLE test, it persists in settings.json, and
+        // with no screen and no boot log naming it the symptom is
+        // indistinguishable from dead hardware. A setting a rider can be left
+        // sitting on needs somewhere a rider can see it
+        // (../docs/gnss-to-map-plan.md, "And it was reported as a GNSS
+        // regression").
+        SettingInfo::Toggle(StrId::STR_MAP_GNSS_POSITION, &CrossPointSettings::mapGnssPosition, "mapGnssPosition",
+                            StrId::STR_CAT_MAP),
+#endif
         // Off by default. On, the map screen asks the phone for a tile as soon
         // as it hatches one, and shows a transfer icon in the header while the
         // transfer is in flight (MapActivity::maybeAutoSyncTiles(),
