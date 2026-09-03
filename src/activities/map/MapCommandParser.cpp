@@ -19,6 +19,14 @@ constexpr uint32_t kMaxZoom = MapViewport::kZoomStepCount - 1;
 constexpr uint32_t kMaxMarker = MapViewport::kMarkerStepCount - 1;
 constexpr uint32_t kMaxSpeedKmh = 65535;
 constexpr uint32_t kMaxMissingOffset = 65535;
+// How large a batch the phone may announce. A 40 km box around a whole city is
+// 77 tiles (Barcelona, measured off the CDN index 2026-09-02 --
+// ../../../docs/send-tiles-plan.md), and the reactive missing list is capped at
+// 200 (MissingTilesStore::kMaxEntries), so this is an order of magnitude past
+// any real batch. It is a bound rather than a size: the count is only ever a
+// denominator on a progress bar, so nothing is allocated from it, and the cap
+// exists so a garbage number cannot put an absurd total on the panel.
+constexpr uint32_t kMaxPushCount = 4096;
 // Dead Sea shore is -430m, Everest is 8849m -- generous margin either side
 // for GPS altitude noise without letting garbage input through.
 constexpr int32_t kMinAltitudeM = -1000;
@@ -306,6 +314,22 @@ MapCommand parseStale(const Tokens& tokens) {
   return cmd;
 }
 
+// `push <n>`. The phone announcing how many files it is about to send, before
+// the first begin frame on the transfer channel.
+MapCommand parsePush(const Tokens& tokens) {
+  if (tokens.n != 2) return fail(MapCommandError::BadArity);
+  uint32_t n = 0;
+  if (!parseUint(tokens.t[1], n)) return fail(MapCommandError::BadNumber);
+  // Zero is rejected rather than accepted as a no-op: a batch of nothing is a
+  // phone-side bug, and silently answering OK to it would leave the screen
+  // showing a run that can never move.
+  if (n == 0 || n > kMaxPushCount) return fail(MapCommandError::OutOfRange);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Push;
+  cmd.pushCount = static_cast<uint16_t>(n);
+  return cmd;
+}
+
 // `checked <n>` or `checked unknown`. The verdict that closes a freshness check.
 MapCommand parseChecked(const Tokens& tokens) {
   if (tokens.n != 2) return fail(MapCommandError::BadArity);
@@ -430,6 +454,7 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "have") return parseBare(tokens, MapCommandType::Have);
   if (name == "stale") return parseStale(tokens);
   if (name == "checked") return parseChecked(tokens);
+  if (name == "push") return parsePush(tokens);
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   if (name == "stats") return parseBare(tokens, MapCommandType::Stats);
   if (name == "fake") return parseFake(tokens);

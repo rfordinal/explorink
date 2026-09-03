@@ -222,9 +222,10 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     self().onMtuChanged(mtu);
     // The second number is the one that matters: 3 bytes of ATT header plus the
     // 5-byte chunk header come off every write, so a 23-byte MTU carries 15
-    // bytes of file per transaction and a 256-byte one carries 248.
+    // bytes of file per transaction and a 256-byte one carries 248. Above MTU
+    // 515 the 512-byte attribute cap binds instead -- see bleMaxChunkPayload().
     LOG_INF("BLEPOS", "MTU now %u, file payload %u bytes per chunk", static_cast<unsigned>(mtu),
-            static_cast<unsigned>(mtu > 8 ? mtu - 8 : 0));
+            static_cast<unsigned>(bleMaxChunkPayload(mtu)));
   }
 
   // NimBLE-Arduino stops advertising once a central connects and does not

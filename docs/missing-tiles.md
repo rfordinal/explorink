@@ -986,14 +986,17 @@ happens there -- `renderViewport()` calls `record()` on every hatched tile --
 so it is record on the trail, fetch at home, and the two are never on screen
 together.
 
-**What this is not: a pre-trip cache.** Both paths fill squares the device
-already recorded as missing, which means the rider has already been there and
-looked at a hatched hole. Nothing here can request ground nobody has ridden: no
-bounding box, no corridor around a loaded route, no "put Slovenia on the card
-before Friday". Saying this screen is "preparation" is true only in the sense of
-preparing for a **repeat** of a ride. The feature that would cover a new trip, and
-the four pieces it needs, is written down in the parent repo's
+**The device still cannot ask for a pre-trip cache.** Both paths above fill
+squares the device already recorded as missing, which means the rider has
+already been there and looked at a hatched hole. Nothing on this side requests
+ground nobody has ridden: no bounding box, no corridor around a loaded route, no
+"put Slovenia on the card before Friday". The feature that would cover a new
+trip, and the four pieces it needs, is written down in the parent repo's
 `docs/roadmap.md`, "Pre-trip caching".
+
+What changed 2026-09-02 is the other half: the device can now be **told** about
+such a batch and show it. The phone picks the area and owns the queue; the
+device is handed a count. See "A batch the device never asked for" below.
 
 The console state is deliberately **not** shared with the map's. Two screens are
 never up at once, and sharing would put this screen's skip tally and the map's
@@ -1129,6 +1132,295 @@ spend the transfer refreshing instead of receiving.
 BACK cancels. The device cannot stop the phone from its end -- the transfer
 protocol's abort opcode (`0x03`) is a frame the *central* writes -- so the
 cancel is `FETCH_CANCEL` on the command channel.
+
+## A batch the device never asked for
+
+**Written 2026-09-02. Compiles clean, host tests pass, nothing here has run on a
+device.** Every claim below is read off the code. What a hardware pass has to
+check is at the end of the section.
+
+The phone is growing a pre-trip push: the rider picks a place, the app queues
+every tile in a box around it and sends them over as many connections as it
+takes (parent repo, `docs/send-tiles-plan.md`). That ground is on no list here,
+so the sync screen has nothing to size itself from, and three gaps open.
+
+### 1. `push <n>` -- the phone announcing a batch
+
+`armRun()` reads `MISSING_TILES`, so for ground never ridden `rowCount_` is 0,
+`onEnter()` takes the "nothing missing" branch and the screen sits in Finished
+(`src/activities/map/TileSyncActivity.cpp`, the `rowCount_ == 0` branch of
+`onEnter()`). Bytes still land -- `transfer_.attach()` runs before the run is
+armed -- but every progress element is gated on `Phase::Running`. The rider
+watches a screen saying there is nothing to do while 55 tiles stream in.
+
+So the phone sends `push <n>` on the command channel **before its first begin
+frame**:
+
+```
+> push 55
+< OK
+```
+
+- Parsed in the shared grammar, so serial and BLE take it identically
+  (`src/activities/map/MapCommandParser.cpp:319`, dispatched at `:457`).
+- `n` is files, not tiles: a route or a style push costs the same wire time.
+  Bounded at `kMaxPushCount` = 4096 (`MapCommandParser.cpp:29`). A 40 km box
+  around Barcelona is 77 tiles (measured off the CDN index 2026-09-02,
+  `docs/send-tiles-plan.md` in the parent repo) and the reactive list caps at
+  200, so the bound is an order of magnitude past any real batch. Nothing is
+  allocated from it -- it is only ever a denominator.
+- `push 0` is rejected (`OutOfRange`). A batch of nothing is a phone-side bug,
+  and answering `OK` to it would leave a run that can never move.
+- **Sent once per connection**, before that connection's first begin frame --
+  not once per batch. A link that drops takes the run with it: the screen goes
+  back to Waiting, and when the phone comes back the sync screen is in Finished
+  with `rowCount_` 0, so bytes arriving without a fresh `push` land dark again.
+  The phone re-announces what it still owes; the device replaces the old total
+  rather than adding to it, so nothing is double counted.
+- The reply is `OK` and nothing else. A screen with no push observer answers
+  `INFO push=unavailable` first (`MapCommandConsole.cpp:183`) -- the same
+  distinction `fake=unavailable` and `pins=unavailable` make. The map screen is
+  that case, deliberately.
+
+**Security.** Write-only, and it reveals nothing: no position, no route, no
+stored data. What it can do is make the sync screen show a run that never
+arrives, which the existing 30 s stall verdict (`kStallVerdictMs`) ends by
+itself. No new exposure over what the transfer channel already has (parent repo
+`docs/TODO.md`, T-222). No extra release gating either: the whole map BLE
+console only exists where `FREEINK_CAP_BLE_PERIPHERAL` is set, which is
+`env:default` and `env:simulator` and neither release env (`platformio.ini`).
+
+What the screen does with it (`TileSyncActivity.cpp:375`,
+`startAnnouncedBatch()`):
+
+- **Not running** -- the announcement *is* the run. Receiver counters and the
+  skip tally are zeroed, the missing snapshot is dropped (`rowCount_ = 0`), and
+  `announced_` becomes the count. Dropped rather than added to, because those
+  squares are ground this batch says nothing about; the entries stay in
+  `MISSING_TILES` and the next visit asks for them again.
+- **Already running** -- `announced_ += n`. One run, one bar, one ETA. Nothing
+  is re-armed, `startedMs_` least of all: the rate and the ETA are built on it.
+- `armRun()` zeroes `announced_`, because a re-ask is a new run and the phone
+  re-announces what it still owes on the next connection.
+
+`runTotal()` = `rowCount_ + announced_` is what a run is measured against: the
+finish condition (`TileSyncActivity.cpp:1342`), the bar's denominator (`:1294`)
+and the ETA's remainder (`:1096`). `transferTotal()` stays the *display* total
+and adds the freshness half of the visit.
+
+**The observer flags, it does not paint.** `onPushAnnounced()`
+(`TileSyncActivity.cpp:366`) runs inside the console's dispatch of `push`,
+before the terminating `OK` -- and the phone sends its first begin frame off the
+back of that `OK`. A repaint there is 500-1700 ms of e-ink in front of the
+reply. Same pattern, same reason as `freshnessRedrawPending_`. `loop()` acts on
+the flag (`:551`).
+
+### 2. `INFO screen=sync|map` -- which screen is up
+
+Both screens run the same `BlePositionServer` and the same `MapConsoleState`, so
+nothing in the protocol told them apart. The phone has to know, because a long
+batch over the **map** screen dies: that screen fires a post-arrival redraw on a
+settle timer with no check on whether bytes are moving, so the timer armed by
+one arrival expires mid-flight of the next (parent repo,
+`docs/ble-map-transfer-protocol.md`, "The hard half"). Every city tile is well
+over the threshold that was measured at.
+
+`info` now carries one more line (`MapCommandConsole.cpp:468`):
+
+```
+INFO screen=sync
+INFO screen=map
+```
+
+A setter, not a global: each screen builds its own `MapConsoleState`, so the
+state that answers a command is by construction the state of the screen that is
+up. `TileSyncActivity.cpp:141` installs `"sync"`, `MapActivity.cpp:2140`
+installs `"map"`.
+
+**Omitted when nothing set it**, exactly like `tile_fmt`. A phone must read a
+missing `screen=` as "this firmware cannot say" -- which an older build
+genuinely is -- and never as either screen.
+
+### 3. What the panel says while a batch runs
+
+A reactive sync moves 6 kB to 75 kB tiles. A city tile is 258 kB on average and
+1173 kB at worst (measured off the CDN 2026-09-02), which is 30 s to 130 s of
+wire time for **one file**. Three things were missing, and two of them help the
+sync that already existed.
+
+**The file on the wire.** `formatActiveFile()` (`TileSyncActivity.cpp:1116`)
+draws the active tile's coordinate and its own byte progress on a second line
+under the run's summary:
+
+```
+12 / 55   3.1 MB  8.9 kB/s  31m 10s left
+z13 4144/3059   512 kB / 966 kB
+```
+
+Nothing new is measured -- `MapTransferReceiver::Status` already carried
+`activeTile` and the in-flight file's `received`/`total`. A non-tile push (a
+route, a style) parses no coordinate and gets the byte counts alone.
+
+**Which stage that file is in.** The CRC is read back off the card after the
+last chunk rather than accumulated from the arriving chunks
+(`MapTransferReceiver.h`, "Write to .part, rename at the end"), so a megabyte
+tile ends with a real pause in which not one byte moves. A panel that says
+`512 kB / 966 kB` and then goes quiet reads exactly like a dead link.
+
+So the receiver publishes one new flag, `Status::verifying`
+(`MapTransferReceiver.h:157`), true from the last chunk being written until the
+rename lands (`MapTransferReceiver.cpp:406`, cleared at `:452` and `:506`).
+The line then reads `z13 4144/3059  966 kB  verifying`.
+
+**It is published on its own, not derived from `received == total`.** The
+publish that would carry that equality is the one at the end of the completing
+frame, and that does not run until the whole verify pass is over. The activity
+task's last view during the pause is the *previous* chunk's, one payload short
+of the total, with nothing in it to read. So the completion path publishes once
+extra, right where the pass starts (`MapTransferReceiver.cpp:406`).
+
+**Leaving cancels.** Back calls `onExit()`, which detaches the receiver and ends
+the BLE server, so the file in flight dies and the phone sees the link drop.
+Nothing on the panel said so. Two standing lines at the bottom of the screen,
+while and only while a run is going (`TileSyncActivity.cpp:1311`):
+
+```
+Leaving cancels this transfer.
+The phone continues next time.
+```
+
+The second line is the half that matters: the queue is on the phone, so a
+cancelled batch resumes at the next pending file on the next connection. Two
+lines because one runs off the right edge at this size -- the same measurement
+the not-built verdict is split for.
+
+**Repaint cost.** The per-file line is drawn in the same rate-capped
+`displayBufferWindow()` block as the summary, not on its own
+(`TileSyncActivity.cpp:1426`): two windows would be two waveform passes for one
+update. `summaryRect()` is two lines tall for exactly this. The
+`activeTileValid` gate on that block was dropped, so a route or style push now
+gets a live line too, instead of a screen that holds still for the whole of one.
+
+`gridRect()` reserves the extra line at the top and the two warning lines at the
+bottom **in every phase**, so the grid does not reflow when a transfer starts or
+a warning appears.
+
+### The grid of an announced batch
+
+`push <n>` gives a count and no coordinates -- the phone is sending ground the
+device never drew and therefore never recorded, so there is no missing-tile list
+behind it and nothing to place on a map.
+
+So `drawAnnouncedGrid()` (`TileSyncActivity.cpp:956`) draws the count: one
+square per file still to come, in the squarest layout that fits, rubbed out from
+the end as files land. Same mark as a missing tile's square, because it means
+the same thing -- not on the card yet -- and one screen should read the same
+either way. The layout is fixed by the run's total and never reflows.
+
+- A skipped file's square stays drawn. The device still does not have it, same
+  rule the real grid follows.
+- Below `kMinAnnouncedCellPx` (8 px) no grid is drawn at all. A smear of grit is
+  a worse toy and no better instrument; the bar is the number anyway.
+- A run that has **both** -- a missing-tile fetch the phone announced more files
+  into -- keeps the true geographic grid, and the announced files are counted by
+  the bar. `drawGrid()` only reaches the announced path when there is no real
+  geography left to show (`TileSyncActivity.cpp:1024`).
+
+### Verified vs assumed (the announced batch)
+
+**Read off the code, compiled, host-tested:**
+
+- The grammar: `push 55` parses, `push 0` / `push 4097` / `push` / `push 12 13`
+  / `push fifty` are rejected with the right reason
+  (`test/map_command_parser/MapCommandParserTest.cpp`).
+- `push` reaches the observer **before** the `OK`, and answers
+  `INFO push=unavailable` with no observer.
+- `info` carries `screen=sync` / `screen=map` when set and omits the line when
+  not.
+- `info`'s `chunk_payload` is the contract's `min(mtu - 3, 512) - 5`, checked at
+  MTU 23 / 256 / 517.
+- The whole firmware builds clean for `env:default` and `env:simulator`, no new
+  warnings; 424 host tests pass.
+
+**Verified on the desktop simulator, 2026-09-02** -- real firmware built native,
+a scripted keypress to this screen, real `.tib` tiles pushed over the simulator's
+BLE socket. `tools/sim_push_test.py` in the parent repo, 43/43 checks:
+
+- A batch announced by a client, the screen entering `Phase::Running` with an
+  **empty missing list**, files landing, and the run finishing at
+  `done + skipped >= n`.
+- Every file answered `OK <bytes> <crc32hex>` with the CRC equal to the sender's
+  own `zlib.crc32`, landing byte-identical on the card with no `.part` left.
+- `screen=sync` from this screen and `screen=map` from the map screen, from a
+  running build rather than from a unit test's setter.
+- A `push` arriving in the **same activity tick** as the subscription survives.
+
+**Two defects it found, in code that had never executed.** Both are fixed; they
+are recorded because the class of mistake repeats:
+
+- **`trackPhone()` finished the run it had just been given.** It tested
+  `rowCount_ > 0`, and an announced batch has no rows -- so a client that
+  subscribed and announced inside one tick got `Phase::Finished` and a screen
+  saying "nothing missing" for the whole transfer. The exact symptom `push`
+  exists to remove. On hardware the window is *wider*: `startAnnouncedBatch()`
+  repaints inside that tick and an e-ink pass is 500-1700 ms.
+- **`info` reported `chunk_payload` as `mtu - 8`**, the BUG-103 formula: 509 at
+  MTU 517, which builds a 514-byte frame over the 512-byte attribute cap. It was
+  a log curiosity until `push` made `info` a pre-trip sender's whole briefing,
+  because such a sender never receives a `NEED_TILES` to read `fmt` from.
+
+**Verified on a device, 2026-09-02** -- a LilyGo T5 S3 Pro, this branch merged
+onto `release/lilygo-t5-s3-pro` and flashed, an ExplorInk GPS phone over real
+Bluetooth:
+
+- **`push <n>` reaches the screen.** The phone announced 33 squares of pre-trip
+  ground and the panel read `0 / 33`, so the run sized itself to the announcement
+  with an empty missing list behind it. That is the whole point of the command.
+- **`INFO screen=` answers over the C3's own radio.** Implicit, and corroborated.
+  The app refuses to start a batch unless `info` says `sync`, and the batch
+  started. The corroboration matters because `TileFetcher.pushTiles()` has a
+  second caller -- the freshness check (`android` `BridgeService.kt:1043`) -- and
+  both log the same line. The squares that went out were `z11 1125/695`,
+  `1126/694` and their z12/z13 children, which is the queued zone and nothing the
+  device could have reported as held: its card read empty that run, and the
+  freshness path can only push what the device says it holds.
+- **The link negotiates MTU 256 on this board**, not the 517 a phone-to-phone or
+  bridged link reaches -- so 248 payload bytes per chunk, which is the regime the
+  7.9 kB/s figure was measured in. A laptop Bluetooth adapter in front of the
+  simulator reaches 517 and flatters the number; do not quote a bridged rate as
+  the device's.
+
+  Measured from the phone's side: `onConfigureMTU(..., 256, 0)` after the app
+  asked for 517. The firmware's own `MTU now` line was **not** captured that run
+  -- the serial capture was open on the phone's port, not the board's -- so this
+  is the negotiated value on that link, not proof of the board's ceiling. One
+  run.
+
+**Still not verified -- every transfer was refused `ERR mkdir failed`.** Not the
+card: read on the laptop afterwards it is `vfat`, mounted read-write, 2.2 MB used
+of 30 GB, and it already carries `base/12/2242` and `base/13/4485` with tiles in
+them, so this firmware has created directories on this card before. Tracked as
+BUG-037 in the parent repo. So nothing was ever written:
+
+
+
+- The **ink**. The simulator draws the real framebuffer at 480x800, so the
+  geometry questions have screenshots to answer them (the announced grid at 4 and
+  at 77 squares, the two warning lines inside the panel width, the per-file
+  line). What it cannot show is how any of it reads on e-ink after a waveform
+  pass, and the per-file line sits close enough to the progress bar that the
+  spacing is worth a look on glass.
+- `Status::verifying` appearing at all, and for how long on a megabyte file. The
+  simulated card is a laptop filesystem, so the whole close, CRC read-back and
+  rename finished inside 75 ms; the stage cannot earn its keep in that rig.
+- Whether a megabyte-class tile survives the link at all. The largest file ever
+  pushed over a real radio is 396,014 B (measured 2026-08-09). Everything above
+  is pointless if that fails, and it is the first thing a hardware pass should
+  do. The simulator's socket moved 726,423 B in 75 ms, which proves the code
+  path and nothing about the radio.
+- The 30 s stall verdict against a tile that takes 130 s. It re-stamps on byte
+  movement, so it should be fine, and that branch has never seen a file this
+  size on a real card.
 
 ## Getting the file itself off the device
 
