@@ -186,10 +186,20 @@ uint8_t userButtonHook() {
 // Measured 2026-09-03, and it is why this function deselects rather than merely
 // unpowers: the pre-fix binary was reflashed with the card untouched and the
 // shared rail confirmed OFF, and the card still read as empty from every path.
-// So a rail cut is NOT sufficient and a powered radio is NOT required -- an
-// unpowered SX1262 loads MISO when it is selected. What has not been separated
-// is this function's first two writes from each other; one build changing only
-// the CS would do it.
+// So cutting the rail alone does not restore the card.
+//
+// Do not read more into that than it carries, and the doc says so at length.
+// GPIO46 has never been probed on the pad, so "the radio was selected" is read
+// off the code above, not measured. LORA_RST low and LORA_CS high have never
+// run without each other. And whether an SX126x with no VDD loads MISO when NSS
+// is low is unread -- no datasheet for it is on disk, and a parasitic path
+// through the MCU's ESD diodes would mean it was never really unpowered.
+//
+// The counterexample that keeps this open: the same pre-fix binary, with this
+// same pin at 0 and the rail ON, read tiles fine for days before 2026-09-02
+// 15:23. A static wiring fault does not switch on by itself, so a second factor
+// is likely and the enclosure is the candidate. This function is worth having
+// either way, because it removes a load that should never have been there.
 //
 // The rail is cut anyway, for two independent reasons: it is shared with the
 // GNSS receiver (PCA9535_IO00_LORA_GPS_EN), so it can be left on by an earlier
