@@ -4,9 +4,12 @@
 NULL function pointer and the chip resets. The bug is in NimBLE-Arduino, not in
 our code, and it is still unfixed upstream as of 2026-09-01.
 
-We call `deinit(true)` on **every map exit**
-(`lib/BlePositionServer/src/BlePositionServer.cpp:457`, reached from
-`src/activities/map/MapActivity.cpp:2338`), so every map exit rolls this dice.
+We call `deinit(true)` from `BlePositionServer::end()`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:457`), and two activities call
+`end()` on their way out: the map
+(`src/activities/map/MapActivity.cpp:2350`) and the sync screen
+(`src/activities/map/TileSyncActivity.cpp:512`). Every exit through either one
+rolls this dice.
 
 Status: **root cause confirmed from a real coredump**. Fix not chosen yet, see
 T-233. The coredump, the SD report, the decoded backtrace and the build it came
@@ -100,16 +103,48 @@ All five steps read off the vendored source in
 step 4 fails to call.
 
 Why it is rare: the host timer must be in flight in the same instant the stop
-begins. The map has been exited hundreds of times without this. Sleeping from
-the map is the most common exit, so it is the most likely place to hit it.
+begins. The map has been exited hundreds of times without this.
+
+**The exit route is not part of it.** This paragraph used to end "sleeping from
+the map is the most common exit, so it is the most likely place to hit it",
+reasoning from the only two crashes known on 2026-09-01, both of which were the
+power button. Two later crashes killed that: 09-03 came out of
+`TileSyncActivity`, a different screen entirely, and 09-04 came out of the map
+by a **swipe**. Three routes, one call site. What has to line up is the timer,
+not the gesture.
 
 **GNSS is not involved.** It appears nowhere in the chain. A 10 Hz NMEA stream
 does change loop timing, so it may change how often the window is hit — that is
 speculation, not a finding.
 
-## It had already happened once
+## Four times now
 
-**2026-08-31, one day earlier**, the same board restarted while the map menu was
+| when | screen | how it was left | coredump |
+| --- | --- | --- | --- |
+| 2026-08-31 | map | menu opened and closed repeatedly | overwritten before anyone pulled it |
+| 2026-09-01 | map | power button, into sleep | decoded, this document |
+| 2026-09-03 | sync screen | leaving `TileSyncActivity` | decoded, `crashes/2026-09-03-t5s3-tilesync/` |
+| 2026-09-04 | map | swipe | pulled, **not** decodable, see below |
+
+The parent repo's `docs/BUGS.md` (BUG-033) is the running incident list; the
+mechanism below is written once and does not change per crash.
+
+**The 2026-09-04 dump could not be symbol-decoded, and that is the reusable
+lesson.** The build was flashed at 22:12 and the worktree that produced it was
+rebuilt an hour later, taking the only matching `firmware.elf` with it.
+`esp-coredump` compares the ELF SHA256 recorded in the dump against the ELF it
+is handed and **refuses a near-miss** rather than decoding into plausible
+nonsense, so the wrong-ELF trap cannot be walked into by accident -- but the
+answer is then simply unavailable. The registers were still readable straight
+out of the dump's own ELF notes, with no symbol table: `nimble_host`,
+`exccause 0x14`, `pc 0x0`, `a7` and `a10` byte-identical to the 09-01 dump and
+`a0` and `a8` offset from it by a constant `0x100`. That is enough to identify
+the fault and not enough to name a line. Full write-up in the parent repo at
+`docs/crashes/2026-09-04-map-exit-restart/`.
+
+## The 2026-08-31 restart, found after the fact
+
+**One day before the 09-01 coredump**, the same board restarted while the map menu was
 opened and closed repeatedly. That report is quoted verbatim in
 `lilygo-t5s3-bringup.md` on `release/lilygo-t5-s3-pro`, and its tail is:
 
@@ -189,8 +224,8 @@ Not decided. T-233.
   One coredump from one real crash, 2026-09-01.
 - **Verified by reading source**: the five-step chain, the upstream comparison,
   `ble_hs_deinit()` doing the deinit anyway.
-- **Open**: how often it actually happens. One crash in an unknown number of
-  map exits. Nobody has tried to reproduce it on purpose.
+- **Open**: how often it actually happens. Four crashes in an unknown number of
+  exits. Nobody has tried to reproduce it on purpose.
 - **Open**: whether any other `deinit(true)` call site
   (`BlePositionServer.cpp:303`, `:327`, `:371`, `:393`, `:460`) has hit it.
   They run on failure paths, so they are rarer, not safer.
