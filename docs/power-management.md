@@ -636,8 +636,9 @@ row to the scoreboard.
 | Duration | 191.3 min (3.21 h), 193 rows |
 | SoC, BQ27220 at `0x55` | 100 % -> 72 %, **-28 %** = **420 mAh** of the 1500 mAh nameplate |
 | Voltage | 4048 -> 3832 mV (-216 mV) |
-| **Average draw** | **131 mA**, about 505 mW at 3.85 V |
-| Full to flat at that rate | **11.4 h** |
+| **Average draw** | **134.8 +/- 1.5 mA**, about 519 mW at 3.85 V. Read 131 until 2026-09-04, when the endpoint counting error was found |
+| Full to flat at that rate | **11.1 h** |
+| Of which the frontlight at 40 % | **~43 mA, 32 %** -- measured 2026-09-04, see "The frontlight is 43 mA, not 8" |
 | BLE | connected 183 of 193 rows (`ble=2`) |
 | Panel busy | 23.8 min = **12.4 %** of the ride |
 | Refreshes | 1574: `ref_full` **0**, `ref_half` 3, `ref_fast` 159, `ref_window` 1412 |
@@ -696,8 +697,11 @@ for at most ~10 %.** That inverts the working assumption for this board.
 probably not learned: it reported 100 % at 4048 mV, where a full LiPo is 4200.
 So the 420 mAh figure carries the nameplate assumption plus an unlearned gauge,
 and the -216 mV of voltage movement is what independently supports "about a
-quarter of the pack". Treat 131 mA as good to maybe 20 %, and the *constancy* as
-the finding rather than the value.
+quarter of the pack". Treat 134.8 mA as good to maybe 20 %, and the *constancy*
+as the finding rather than the value. **The 2026-09-04 walk narrows that:** two
+rides on the same nameplate assumption and the same unlearned gauge differ by
+43 mA, and a difference between two runs of one instrument does not carry the
+instrument's absolute error.
 
 ### Where the 131 mA is not
 
@@ -741,10 +745,13 @@ measurement it has a claim on.
 | | X4 | T5 S3 Pro |
 |---|---|---|
 | Cell | 650 mAh | 1500 mAh (2.3x) |
-| Map connected, measured draw | ~44 mA | **131 mA (3.0x)** |
-| Map open, full to flat | ~14.6 h | **11.4 h** |
+| Map connected, measured draw | ~44 mA | **134.8 mA (3.1x)**, frontlight 40 % |
+| Map connected, frontlight off | n/a, no frontlight | **91.3 mA (2.1x)** |
+| Map open, full to flat | ~14.6 h | **11.1 h** lit, **16.4 h** dark |
 
-**A 2.3x bigger cell and a shorter ride.** The X4 figure is this file's "The
+**A 2.3x bigger cell and a shorter ride** -- and with the light off, a longer
+one, 16.4 h against 14.6. Half the gap this comparison originally showed was the
+frontlight, which the X4 does not have at all. The X4 figure is this file's "The
 state-3 baseline: ~45 mA over 11.5 hours"; it comes from a voltage slope on a
 board with no gauge, so the two columns are not the same instrument and the
 ratio is a ballpark rather than a measurement.
