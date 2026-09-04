@@ -876,11 +876,37 @@ three. T-250 in the parent repo's `docs/TODO.md`.
 rides differed only in the frontlight is **the maintainer's own statement**, made
 2026-09-04, not something this file can check. It is the load-bearing input.
 
-**One confound is not eliminated.** The control boot 77 shares its day with the
-walk but not with the 2026-09-03 ride, and the GNSS/LoRa rail is an expander pin
-that **latches until it loses power** -- across the reboots between the two days
-it could have differed. Nothing in the log says. That is the same gap T-244
-names, and it is the second reason the bench run beats another ride.
+**The two runs are not proven to be the same binary.** This is the strongest
+objection to the whole section. The `build` column is `TRAILINK_VERSION`, a
+version string: both runs read `0.2.0-t5s3pro` and neither records a commit. The
+walk's is known only from a coredump the crash session decoded that evening --
+`gnss-settings-row` @ `6b34fb69`, compiled 09-03 22:12
+(`../../docs/crashes/2026-09-04-map-exit-restart/`). The ride's is unrecorded.
+
+`PowerLog.h` says the `build` column is "the only thing that makes two runs
+comparable". **It is not, and this is the run that proves it.** Make it carry a
+commit. Folded into T-250.
+
+**Two candidate differences were checked, and neither takes the finding down.**
+
+- **The BLE connection interval.** `df62de7b` (09-03 16:08) pins the link at one
+  interval, **15 ms**, where it previously asked for 12-24 units and the central
+  answered 24 (**30 ms**). The walk's build carries it. If the ride's did not,
+  the walk ran the *costlier* link and still drew 43 mA less -- which makes
+  **43 mA a floor for the frontlight, not a ceiling**. Which side of 16:08 the
+  ride fell on is not recorded.
+- **"One radio per session"** (`5c8797ab`, 09-03 21:46) never fired. It skips
+  `BlePositionServer::begin()` when `mapGnssPosition` is on; BLE was connected
+  for the whole walk, so it was off. It does not touch the GNSS/LoRa rail either
+  way.
+
+**And the rail is most likely identical in both runs.** It is an expander pin
+that latches until it **loses power**, not until it reboots. Twenty-one boots
+sit between the two runs in the log and the pack never reached flat -- boot 79
+starts charging at 59 %. Nothing in any of those builds calls
+`disableGpsLora()`. So T-244's rail sat in one state across both, which is the
+confound this section originally worried about most and the one the log can
+actually argue away.
 
 **What is solid:** the gauge is a coulomb counter, both numbers come from it,
 both boots ran the same build on the same device, and boot 78 is 31 whole steps
