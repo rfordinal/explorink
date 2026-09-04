@@ -103,6 +103,14 @@ an offset the clock is their local time, exactly like the BLE path, and the
 suffix would be false -- showing it on every GNSS session was considered and
 rejected on that.
 
+**The track log has a row too, since 2026-09-04**: Settings > Map > **Record
+GNSS track** (`mapGnssLog`), same build gate. It was `CMD:SETTING`-only until
+then, so the only person who could record a walk was whoever had the device on a
+desk -- which is how a walk on 2026-09-04 produced no `gnss.csv` to examine. The
+default stays 0 and the label says "track" rather than "log", because switching
+it on writes where the rider went (`src/CrossPointSettings.h`, the field's
+comment).
+
 **It is a suffix on the clock's own string, not a label of its own.** One
 `drawText`, right-aligned like the bare clock always was. `headerStatusRect()`
 reserves its width unconditionally, on every state including the BLE sessions

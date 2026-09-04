@@ -5140,7 +5140,27 @@ void MapActivity::saveLaddersIfChanged() {
           static_cast<unsigned>(zoomStep()), static_cast<unsigned>(markerStep()));
 }
 
-bool MapActivity::preventAutoSleep() { return freeink::BlePositionServer::getInstance().isRunning(); }
+bool MapActivity::preventAutoSleep() {
+  // Whichever radio this session actually runs, not BLE specifically.
+  //
+  // **This was `return ble.isRunning()` and that became a bug on 2026-09-04.**
+  // It was correct while the map always started BLE: the server was up, so the
+  // screen always inhibited sleep. Then onEnter() stopped starting BLE on a GNSS
+  // session (bleInUse_, MapActivity.h) and this line kept asking about BLE --
+  // so a rider walking with the receiver got a map screen that let the device
+  // deep-sleep out from under them. Deep sleep is a full chip reset, so every
+  // wake cold-started the receiver, and a cold start that never finishes is a
+  // receiver that never fixes. Reported after a 15-minute walk with no position.
+  //
+  // The lesson is not about this line. Skipping `begin()` silently changed every
+  // caller that used `isRunning()` as a stand-in for "the map is live", and this
+  // was one. Anything else keyed on the BLE server as a proxy for the screen
+  // being in use needs the same read.
+#ifdef ENABLE_GNSS_CMD
+  if (!bleInUse_) return gnss.running();
+#endif
+  return freeink::BlePositionServer::getInstance().isRunning();
+}
 
 void MapActivity::kickFullClock() { powerManager.setPowerSaving(false); }
 

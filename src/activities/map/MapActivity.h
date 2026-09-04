@@ -944,6 +944,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Read it rather than SETTINGS.mapGnssPosition at each call site: a setting
   // toggled from the host mid-screen would otherwise half-apply, with icons
   // saying one thing and a running radio another.
+  //
+  // **Not starting the server changed callers that never mentioned it.**
+  // `BlePositionServer::isRunning()` was being used as a stand-in for "the map
+  // is live", and preventAutoSleep() was one of them -- so the first GNSS walk
+  // got a map that let the device deep-sleep, which cold-started the receiver on
+  // every wake (2026-09-04, fixed in preventAutoSleep()). `PowerLog::bleState()`
+  // was another: its 0 no longer means "not the map screen". Before adding a
+  // caller here, grep isRunning() and ask which question it is really asking.
   bool bleInUse_ = true;
 
   // True while the header clock carries its " UTC" suffix: a GNSS session whose
