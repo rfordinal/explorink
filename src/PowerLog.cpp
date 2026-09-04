@@ -7,6 +7,8 @@
 #include <Logging.h>
 #include <PowerTelemetry.h>
 
+#include "GnssAccess.h"
+
 namespace {
 
 constexpr const char* kLogTag = "PWRLOG";
@@ -22,7 +24,28 @@ constexpr const char* kLogTag = "PWRLOG";
 // by build (docs/power-plan.md, run 1).
 constexpr const char* kHeader =
     "uptime_s,batt_mv,batt_pct,cpu_mhz,full_clock_ms,throttled_ms,loops,loop_busy_ms,loop_max_ms,"
-    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build\n";
+    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build"
+#ifdef ENABLE_GNSS_CMD
+    // Appended, not inserted, so `build` keeps the position every earlier script
+    // reads it at. Only on a build that has a receiver: powercsv.py maps fields
+    // to names off the header line and the header is written once per boot
+    // (see below), so a file holding rows from both kinds of build stays
+    // readable.
+    //
+    // **These exist because the walk of 2026-09-04 produced no evidence.**
+    // Fifteen minutes outdoors with the receiver on and no position, and
+    // nothing on the card said why: `gnss.csv` records one row per *accepted*
+    // fix (GnssLog.h), so it is empty exactly when the question is "why is
+    // there no fix", and `power.csv` said nothing about GNSS at all. These five
+    // separate "the receiver saw nothing" from "the receiver saw satellites and
+    // could not solve", which is the whole question and needs no cable.
+    //
+    // `used`, `inview` and `tracked` are three different counts and the gap
+    // between them is the diagnosis: inview off the almanac, tracked from a
+    // non-zero C/N0, used in the solution (main.cpp's CMD:GNSS handler).
+    ",gnss_run,gnss_inview,gnss_tracked,gnss_bestsnr,gnss_q"
+#endif
+    "\n";
 
 // 0 = BLE stack down, 1 = advertising with nobody connected, 2 = a central is
 // connected.
@@ -86,7 +109,7 @@ void PowerLog::tick() {
   // TRAILINK_VERSION goes through %s, never concatenated into the format
   // string: it carries a branch name, and a '%' in one would make printf read
   // an argument that was never passed.
-  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s\n",
+  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s",
               static_cast<unsigned long>(s.uptimeS), static_cast<unsigned>(powerManager.getBatteryMillivolts()),
               static_cast<unsigned>(powerManager.getBatteryPercentage()), static_cast<unsigned>(s.cpuMhz),
               static_cast<unsigned long>(s.fullClockMs), static_cast<unsigned long>(s.throttledMs),
@@ -96,6 +119,17 @@ void PowerLog::tick() {
               static_cast<unsigned long>(s.refreshWindow), static_cast<unsigned long>(s.panelBusyMs),
               static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
               static_cast<unsigned>(bleState()), TRAILINK_VERSION);
+
+#ifdef ENABLE_GNSS_CMD
+  // gnss_run first, because every other column here is meaningless without it:
+  // the accessors answer 0 both when the receiver is stopped and when it is
+  // running and seeing nothing, and those are not the same finding.
+  const GnssFix& gfix = gnss.fix();
+  file.printf(",%u,%u,%u,%u,%u", gnss.running() ? 1u : 0u, static_cast<unsigned>(gnss.satsInView()),
+              static_cast<unsigned>(gnss.satsWithSignal()), static_cast<unsigned>(gnss.bestSnr()),
+              static_cast<unsigned>(gfix.quality));
+#endif
+  file.print('\n');
 
   // Explicit: the row must be on the card before the next one is due, and this
   // file is written to across a whole ride that may end with a flat battery
