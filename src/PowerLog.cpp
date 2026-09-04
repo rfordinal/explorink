@@ -24,8 +24,13 @@ constexpr const char* kHeader =
     "uptime_s,batt_mv,batt_pct,cpu_mhz,full_clock_ms,throttled_ms,loops,loop_busy_ms,loop_max_ms,"
     "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build\n";
 
-// 0 = BLE stack down (any screen but the map), 1 = advertising with nobody
-// connected, 2 = a central is connected. Three states rather than a bool
+// 0 = BLE stack down, 1 = advertising with nobody connected, 2 = a central is
+// connected.
+//
+// 0 used to mean "any screen but the map" and no longer does: since 2026-09-04
+// a map session with the receiver as its position source runs no BLE at all
+// (MapActivity's bleInUse_), so 0 covers that too. A row's screen is not
+// recoverable from this column alone. Three states rather than a bool
 // because they are three different radio duty cycles, and telling them apart is
 // most of what a power log is for.
 uint8_t bleState() {
