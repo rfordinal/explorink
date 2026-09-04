@@ -159,7 +159,7 @@ middle:
 | # | Measurement | Answers | Precondition |
 |---|---|---|---|
 | M10 | Experiment 3, `CONFIG_PM_ENABLE` light sleep | go/no-go for S2, plus the residency number that decides how much of the parked-loop work gets built | `env:powerlab` build with the four PM options (`power-test-runbook.md`) |
-| M11 | Connection interval 15 ms vs 50 ms | what the throughput fix costs when nothing is transferring (the device now asks for 12 units, `docs/PROGRESS.md` 2026-08-20) | one option per build |
+| M11 | Connection interval 15 ms vs 50 ms | what the throughput fix costs when nothing is transferring (the device now asks for 12 units, and since 2026-09-03 asks for exactly 12 with no window) | one option per build |
 | M12 | Experiment 6, `CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW` | the only remaining path to a sub-milliamp parked floor | needs M10's rig; slope near ADC noise, so overnight or a meter |
 | M13 | 10 MHz vs 80 MHz idle floor, radio down | how much the BLE-safe floor costs when the radio is not even up | two builds, or a lab-screen state that forces each |
 
@@ -1493,9 +1493,17 @@ shipped:
 - **Idle set** -- 24-40 units (30-50 ms), latency 9, timeout 600 units (6 s).
   Requested 5 s after connect, or 5 s after a transfer ends, whichever the
   code is timing (`connParamsQuietSinceMs_`).
-- **Fast set** -- 12-24 units (15-30 ms), latency 0, timeout 400 units (4 s).
-  Requested the tick a file transfer begins (`MapTransferReceiver`'s
-  `active_` flag, read via `Status::active`).
+- **Fast set** -- 12 units (15 ms), min and max the same value, latency 0,
+  timeout 400 units (4 s). Requested the tick a file transfer begins
+  (`MapTransferReceiver`'s `active_` flag, read via `Status::active`).
+  **It was 12-24 until 2026-09-03, and the window was the defect.** The central
+  owns the parameters, the phone had already asked for 15 ms with
+  `requestConnectionPriority(HIGH)`, and this request named 30 ms as an
+  acceptable answer -- so the link settled at 30 and the transfer rate halved.
+  Measured 3.9 kB/s before, 13.6 kB/s after (with MTU 517 alongside it):
+  `../../../docs/ble-map-transfer-protocol.md`, "Two levers".
+  **Open -- needs measurement:** what closing the window to a point costs in
+  idle power. The throughput side was measured, the power side was not.
 
 T6.2's own justification for the 4/6 s timeouts was `(1 + latency) *
 maxInterval * 2` -- 60 ms and 1000 ms worst case respectively -- against the

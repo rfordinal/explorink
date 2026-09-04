@@ -2,11 +2,16 @@
 
 `NimBLEDevice::deinit(true)` can kill the device. The NimBLE host task calls a
 NULL function pointer and the chip resets. The bug is in NimBLE-Arduino, not in
-our code, and it is still unfixed upstream as of 2026-09-01.
+our code. Still unfixed upstream as of 2026-09-04: issue #1184 is open with
+no replies and 2.5.1 (2026-07-30) is still the newest release, both checked
+through the GitHub API rather than remembered.
 
-We call `deinit(true)` on **every map exit**
-(`lib/BlePositionServer/src/BlePositionServer.cpp:457`, reached from
-`src/activities/map/MapActivity.cpp:2338`), so every map exit rolls this dice.
+We call `deinit(true)` from `BlePositionServer::end()`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:457`), and two activities call
+`end()` on their way out: the map
+(`src/activities/map/MapActivity.cpp:2350`) and the sync screen
+(`src/activities/map/TileSyncActivity.cpp:512`). Every exit through either one
+rolls this dice.
 
 Status: **root cause confirmed from a real coredump**. Fix not chosen yet, see
 T-233. The coredump, the SD report, the decoded backtrace and the build it came
@@ -100,16 +105,48 @@ All five steps read off the vendored source in
 step 4 fails to call.
 
 Why it is rare: the host timer must be in flight in the same instant the stop
-begins. The map has been exited hundreds of times without this. Sleeping from
-the map is the most common exit, so it is the most likely place to hit it.
+begins. The map has been exited hundreds of times without this.
+
+**The exit route is not part of it.** This paragraph used to end "sleeping from
+the map is the most common exit, so it is the most likely place to hit it",
+reasoning from the only two crashes known on 2026-09-01, both of which were the
+power button. Two later crashes killed that: 09-03 came out of
+`TileSyncActivity`, a different screen entirely, and 09-04 came out of the map
+by a **swipe**. Three routes, one call site. What has to line up is the timer,
+not the gesture.
 
 **GNSS is not involved.** It appears nowhere in the chain. A 10 Hz NMEA stream
 does change loop timing, so it may change how often the window is hit — that is
 speculation, not a finding.
 
-## It had already happened once
+## Four times now
 
-**2026-08-31, one day earlier**, the same board restarted while the map menu was
+| when | screen | how it was left | coredump |
+| --- | --- | --- | --- |
+| 2026-08-31 | map | menu opened and closed repeatedly | overwritten before anyone pulled it |
+| 2026-09-01 | map | power button, into sleep | decoded, this document |
+| 2026-09-03 | sync screen | leaving `TileSyncActivity` | decoded, `crashes/2026-09-03-t5s3-tilesync/` |
+| 2026-09-04 | map | swipe | pulled, **not** decodable, see below |
+
+The parent repo's `docs/BUGS.md` (BUG-033) is the running incident list; the
+mechanism below is written once and does not change per crash.
+
+**The 2026-09-04 dump could not be symbol-decoded, and that is the reusable
+lesson.** The build was flashed at 22:12 and the worktree that produced it was
+rebuilt an hour later, taking the only matching `firmware.elf` with it.
+`esp-coredump` compares the ELF SHA256 recorded in the dump against the ELF it
+is handed and **refuses a near-miss** rather than decoding into plausible
+nonsense, so the wrong-ELF trap cannot be walked into by accident -- but the
+answer is then simply unavailable. The registers were still readable straight
+out of the dump's own ELF notes, with no symbol table: `nimble_host`,
+`exccause 0x14`, `pc 0x0`, `a7` and `a10` byte-identical to the 09-01 dump and
+`a0` and `a8` offset from it by a constant `0x100`. That is enough to identify
+the fault and not enough to name a line. Full write-up in the parent repo at
+`docs/crashes/2026-09-04-map-exit-restart/`.
+
+## The 2026-08-31 restart, found after the fact
+
+**One day before the 09-01 coredump**, the same board restarted while the map menu was
 opened and closed repeatedly. That report is quoted verbatim in
 `lilygo-t5s3-bringup.md` on `release/lilygo-t5-s3-pro`, and its tail is:
 
@@ -165,32 +202,65 @@ against; master still has the line.
 stopped and the queue is drained by then. The early one in
 `ble_hs_timer_reset()` is redundant as well as harmful.
 
-## Fix options
+## The fix: a pinned fork, one line shorter
 
-Not decided. T-233.
+Chosen 2026-09-04. `platformio.ini` no longer asks for
+`h2zero/NimBLE-Arduino @ ^2.3.8`; it pins
+[`rfordinal/NimBLE-Arduino`](https://github.com/rfordinal/NimBLE-Arduino) at
+commit `63d87323`, which is upstream **2.5.1 with exactly one line removed**:
 
-1. **Stop calling `deinit(true)` on map exit.** Keep the stack up, pay the RAM.
-   Cheapest to test, most expensive in memory, and memory is tight here
-   (`map-memory.md`).
-2. **Patch the vendored NimBLE-Arduino** — drop the
-   `ble_npl_callout_deinit(&ble_hs_timer)` line, matching esp-nimble and
-   mynewt-nimble. Exact fix, but it lives in `.pio/libdeps`, so it needs a
-   pinned fork rather than an edit that the next `pio pkg update` eats.
-3. **Reported upstream 2026-09-01**:
-   [NimBLE-Arduino#1184](https://github.com/h2zero/NimBLE-Arduino/issues/1184),
-   with the coredump evidence, the upstream comparison and an offer of the
-   one-line PR. Tracked as T-235. This does not unblock the two options above:
-   even a fast merge is weeks from a release we pin against, and the device
-   crashes today.
+```diff
+     if (!ble_hs_is_enabled()) {
+         ble_npl_callout_stop(&ble_hs_timer);
+-        ble_npl_callout_deinit(&ble_hs_timer);
+     } else {
+```
+
+The fork carries nothing else, deliberately, so the diff a reader has to trust
+is that one line. Branch `explorink-2.5.1`; the pin is the **commit**, not the
+branch, so a moved branch cannot change what a clean build fetches.
+
+**Named once, in `[base]`.** The spec lives in `platformio.ini` as
+`base.nimble_dep` and both environments reference `${base.nimble_dep}`. That is
+not tidiness: `default` is on `develop` and `t5s3pro` is on
+`release/lilygo-t5-s3-pro`, so the two copies are on different branches, and
+spelling the dependency out twice is how one of them keeps the unpatched
+library through a merge without anybody noticing.
+
+**Offered upstream in the same pass**, so the fork has an exit:
+[#1184](https://github.com/h2zero/NimBLE-Arduino/issues/1184) is the report and
+[#1185](https://github.com/h2zero/NimBLE-Arduino/pull/1185) is the one-line PR
+against master, which still carries the line. When that merges and ships, drop
+the fork and go back to a release spec. T-235 watches it.
+
+### The two options not taken
+
+- **Keep the stack up instead of deiniting.** It works and it is the cheapest
+  thing to test, but `end()` returns **58,804 bytes** measured
+  (`map-memory.md`), and BLE is 86 % of the map screen's heap cost. Holding
+  that everywhere outside the map was the wrong trade on a device where the map
+  screen already sits near 49 kB free.
+- **A build-time patch script over `.pio/libdeps`.** No new repo, but the fix
+  becomes invisible to anyone reading the tree, and it has to detect an upstream
+  that changed shape rather than silently doing nothing.
+
+`deinit(false)` is not a third way: `clearAll` only controls whether the objects
+are deleted. `nimble_port_stop()` and `ble_hs_stop()` run either way, so the
+race is identical.
 
 ## Verified and not
 
 - **Verified on hardware**: the fault, the two backtraces, the event identity.
-  One coredump from one real crash, 2026-09-01.
+  Two coredumps from two real crashes, 2026-09-01 and 2026-09-03, plus a third
+  dump on 2026-09-04 that matched on registers alone.
+- **Not verified at all: that the fix works.** The fork builds, and that is the
+  whole of it. Nothing has run on a board, and the failure is a race that needs
+  many exits to show up, so "it did not crash once" will not settle it either.
+  T-233 says what would: a map-exit loop with the cycle count written down.
 - **Verified by reading source**: the five-step chain, the upstream comparison,
   `ble_hs_deinit()` doing the deinit anyway.
-- **Open**: how often it actually happens. One crash in an unknown number of
-  map exits. Nobody has tried to reproduce it on purpose.
+- **Open**: how often it actually happens. Four crashes in an unknown number of
+  exits. Nobody has tried to reproduce it on purpose.
 - **Open**: whether any other `deinit(true)` call site
   (`BlePositionServer.cpp:303`, `:327`, `:371`, `:393`, `:460`) has hit it.
   They run on failure paths, so they are rarer, not safer.
