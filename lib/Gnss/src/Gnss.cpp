@@ -188,6 +188,99 @@ void Gnss::end() {
   running_ = false;
 }
 
+// CASIC AID-INI, class 0x0B id 0x01. Frame: BA CE | len(u16) | cls | id |
+// payload[56] | checksum(u32), every field little-endian. Layout and checksum
+// read off OpenTrailPaper's `sendCasicAidIni()` (a project on this same board),
+// which cites the official CASIC receiver spec.
+//
+// **Why this exists: without it a cold start cannot finish at the signal level
+// this board delivers.** Demodulating the 50 bps navigation message off the air
+// takes roughly 28-31 dB-Hz; merely *tracking* a satellite whose ephemeris the
+// receiver already holds works from roughly 24. A bench read on 2026-09-04 had
+// `bestsnr=26` -- inside that gap, so the receiver could hold a satellite and
+// could never read the ephemeris off it. A 15-minute walk in Barcelona produced
+// no fix at all, and a car ride on 2026-09-01 took 526 s. Seeding takes the
+// demodulation step off the critical path.
+//
+// Those two thresholds come from that project's `investigations/agnss.md`, which
+// **asserts rather than cites** them. They agree with textbook GPS figures and
+// are NOT read off the L76K datasheet, which is not on disk. They are the reason
+// for this function, not a specification to design against.
+//
+// **CASIC only, and that is a known gap on this board.** The T5 S3 Pro ships
+// either an L76K (CASIC, 9600 baud) or a MIA-M10Q (u-blox, 38400), and they
+// cannot be told apart before boot. This firmware opens at 9600 and so only ever
+// talks to the L76K; a u-blox module wants `UBX-MGA-INI` instead. Sending this
+// frame to one is noise it will not parse, not a hazard -- but it is also not
+// aiding, so a board that turns out to carry the other module gets none.
+bool Gnss::injectAidIni(double latitude, double longitude, bool haveTime, uint32_t utcUnixSeconds, float posAccMeters,
+                        float timeAccSeconds) {
+  if (!running_ || config_.serial == nullptr) return false;
+
+  // GPS time is counted from 1980-01-06 and does not skip leap seconds, so a
+  // Unix timestamp needs both corrections. 315964800 is that epoch in Unix
+  // seconds; 18 is the GPS-UTC offset, constant since 2017 and the next change
+  // is a decision nobody has announced.
+  constexpr uint32_t kGpsUnixEpoch = 315964800;
+  constexpr uint32_t kGpsUtcLeapSeconds = 18;
+
+  // Bit 0 position valid, bit 5 position is lat/lon/alt in degrees, bit 6
+  // altitude invalid (a persisted fix carries none worth passing).
+  uint8_t flags = 0x01 | 0x20 | 0x40;
+  double timeOfWeek = 0.0;
+  uint16_t weekNumber = 0;
+  if (haveTime && utcUnixSeconds > kGpsUnixEpoch) {
+    const uint32_t gpsSeconds = (utcUnixSeconds - kGpsUnixEpoch) + kGpsUtcLeapSeconds;
+    weekNumber = static_cast<uint16_t>(gpsSeconds / 604800u);
+    timeOfWeek = static_cast<double>(gpsSeconds % 604800u);
+    flags |= 0x02;  // time valid
+  }
+
+  // memcpy into a byte array rather than a packed struct: this is a wire layout
+  // with 8-byte doubles at odd offsets, and an S3 faults on an unaligned
+  // multi-byte load through a struct member (CLAUDE.md, RISC-V Alignment).
+  uint8_t payload[56] = {0};
+  const double altitude = 0.0;
+  std::memcpy(payload + 0, &latitude, 8);
+  std::memcpy(payload + 8, &longitude, 8);
+  std::memcpy(payload + 16, &altitude, 8);
+  std::memcpy(payload + 24, &timeOfWeek, 8);
+  // +32 is frequency bias and +44 its accuracy, both left zero: we have no
+  // oscillator estimate to offer and a wrong one is worse than none.
+  std::memcpy(payload + 36, &posAccMeters, 4);
+  std::memcpy(payload + 40, &timeAccSeconds, 4);
+  std::memcpy(payload + 52, &weekNumber, 2);
+  payload[54] = 0;  // time source: none stated
+  payload[55] = flags;
+
+  uint8_t frame[66];
+  frame[0] = 0xBA;
+  frame[1] = 0xCE;
+  const uint16_t payloadLen = 56;
+  std::memcpy(frame + 2, &payloadLen, 2);
+  frame[4] = 0x0B;
+  frame[5] = 0x01;
+  std::memcpy(frame + 6, payload, 56);
+
+  // Checksum is a plain 32-bit sum of little-endian words: first the header word
+  // (len in the low half, class and id in the high bytes), then every payload
+  // word. Overflow wraps, which is the definition rather than a bug.
+  uint32_t checksum =
+      static_cast<uint32_t>(payloadLen) | (static_cast<uint32_t>(0x0B) << 16) | (static_cast<uint32_t>(0x01) << 24);
+  for (int i = 0; i < 56; i += 4) {
+    checksum += static_cast<uint32_t>(payload[i]) | (static_cast<uint32_t>(payload[i + 1]) << 8) |
+                (static_cast<uint32_t>(payload[i + 2]) << 16) | (static_cast<uint32_t>(payload[i + 3]) << 24);
+  }
+  std::memcpy(frame + 62, &checksum, 4);
+
+  // The whole frame or nothing: the receiver drops a truncated frame silently on
+  // the checksum, so a short write would look exactly like aiding that did not
+  // help. This library does not log -- it carries no Logging.h and stays
+  // board-agnostic on purpose -- so the caller has to say what happened, and
+  // gnssStart() in src/main.cpp does.
+  return config_.serial->write(frame, sizeof(frame)) == sizeof(frame);
+}
+
 uint32_t Gnss::fixAgeMs() const {
   if (lastFixMs_ == 0) return 0;
   return millis() - lastFixMs_;

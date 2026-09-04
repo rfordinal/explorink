@@ -29,6 +29,7 @@
 #endif
 
 #ifdef ENABLE_GNSS_CMD
+#include <BlePositionServer.h>  // gnssStart() asks it for a clock to seed with
 #include <Gnss.h>
 #include <Wire.h>
 #include <esp_system.h>
@@ -285,7 +286,42 @@ bool gnssStart() {
   config.rxBufferBytes = GNSS_RX_BUFFER_BYTES;
 #endif
   config.powerEnable = gnssPowerEnable;
-  return gnss.begin(config);
+  if (!gnss.begin(config)) return false;
+
+  // Seed the receiver before it starts searching. **Without this a cold start
+  // cannot finish at the signal level this board delivers** -- reading the
+  // ephemeris off the air needs more signal than merely tracking a satellite
+  // does, and this antenna sits between the two (Gnss::injectAidIni has the
+  // numbers and where they come from). A 15-minute walk on 2026-09-04 got no
+  // fix at all; the receiver was tracking one satellite the whole time.
+  //
+  // Position comes from the persisted last fix, which is the same value the map
+  // opens its first frame on, so it is as good as the device has and costs
+  // nothing to pass. 50 km of claimed accuracy is deliberately loose: it is a
+  // fix from some earlier trip, and on 2026-09-04 that meant Bratislava while
+  // the device was in Barcelona. A seed that lies about its accuracy is worse
+  // than a wide one, because the receiver trusts it.
+  //
+  // Time only when something has it. A GNSS map session runs no BLE
+  // (MapActivity's bleInUse_), and this board has no RTC ("RTC not found" at
+  // boot), so utcNow() answers only when a phone set the clock earlier in this
+  // same boot. Position-only aiding is still most of the win.
+  if (SETTINGS.mapHasLastFix) {
+    uint32_t utc = 0;
+    const bool haveTime = freeink::BlePositionServer::getInstance().utcNow(utc);
+    const double lat = static_cast<double>(SETTINGS.mapLastLatE7) / 1e7;
+    const double lon = static_cast<double>(SETTINGS.mapLastLonE7) / 1e7;
+    if (gnss.injectAidIni(lat, lon, haveTime, utc)) {
+      LOG_INF("GNSS", "aiding sent: %.5f,%.5f, time %s", lat, lon, haveTime ? "included" : "not available");
+    } else {
+      LOG_ERR("GNSS", "aiding not sent, the frame was written short");
+    }
+  } else {
+    // Worth a line rather than silence: this is the one case where the receiver
+    // really does start from nothing, and it is the case that takes minutes.
+    LOG_INF("GNSS", "no persisted fix to seed with, this is a cold start");
+  }
+  return true;
 }
 
 // Reads the PCA9535's own registers, which BoardT5S3 does not expose: it offers
@@ -1506,9 +1542,9 @@ void loop() {
                 "GNSS_RELEASE:reset=%s cfg0_base=0x%02X cfg0_released=0x%02X cfg0_restored=0x%02X "
                 "wrote=%d released=%d restored=%d "
                 "base_bytes=%lu base_sent=%lu off_bytes=%lu off_sent=%lu back_bytes=%lu back_sent=%lu\n",
-                gnssResetReasonName(), cfgBase, haveReleased ? cfgReleased : 0xEE,
-                haveRestored ? cfgRestored : 0xEE, wroteLevel ? 1 : 0, released ? 1 : 0, restored ? 1 : 0,
-                baseBytes, baseSent, offBytes, offSent, backBytes, backSent);
+                gnssResetReasonName(), cfgBase, haveReleased ? cfgReleased : 0xEE, haveRestored ? cfgRestored : 0xEE,
+                wroteLevel ? 1 : 0, released ? 1 : 0, restored ? 1 : 0, baseBytes, baseSent, offBytes, offSent,
+                backBytes, backSent);
             gnss.end();  // powerEnable is null, so this touches no rail
           }
         } else if (argument == "RAW ON" || argument == "RAW") {
