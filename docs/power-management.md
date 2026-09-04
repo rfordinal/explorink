@@ -847,9 +847,11 @@ half of it is answered.
 
 ### Why the vendor number may be low -- all [open]
 
-- **Two channels.** The board's frontlight is warm plus cool on separate PWM
-  pins, `GPIO8` and `GPIO9` (`../../docs/device-fit.md`, the frontlight row).
-  ~20 mA may be per channel.
+- **Not two channels** -- ruled out. This board's frontlight is **warm only, one
+  PWM pin, `GPIO11`** into the `PT4103B23F` (`../../docs/devices/lilygo-t5-s3-pro.md`).
+  Warm plus cool on `GPIO8`/`GPIO9` is the **X4 Pro**, a different device
+  (`../../docs/device-fit.md`, the frontlight row). So the vendor's ~20 mA cannot
+  be a per-channel figure being doubled.
 - **"40 %" may not be 40 % duty.** It may be a step index into a table.
 - **The measurement is on the cell, the vendor's is on a rail.** `PT4103B23F` is
   a boost LED driver; what it draws from a 3.9 V cell is its output current plus
