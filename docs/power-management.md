@@ -84,7 +84,7 @@ decides how much of a slope is the discharge curve rather than the load).
 | Home, nothing running | X4 | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
 | **Map in observation mode, radio off** | X4 | **down** | **10** | **12.27 +/- 0.18** | see note | 2026-08-22 | `0b99e70e` | 4151-4047 mV, **6 h 15 min** | **[measured]**, and the only row here taken across a wide enough band to trust: 104 mV of movement, 1.5 % error. **1.76 %/h, 56.8 h on a charge.** |
 | **Map, connected, frontlight 40 %, GNSS on** | **T5 S3 Pro** | connected | **80** | -66.2 | **135** | 2026-09-03 | `0.2.0-t5s3pro` | 4048-3832 mV, **3.21 h** | **[measured]**, and the only row here whose mA is *not* a voltage conversion -- a BQ27220 coulomb count. **27 steps in 3.005 h = 134.8 +/- 1.5 mA, 11.1 h on a charge.** Was printed as 131 until 2026-09-04; that came from first-row-to-last-row, which counts a boot-entry step it did not measure. See "The T5 S3 Pro's first ride" |
-| **Map, connected, frontlight OFF, GNSS on** | **T5 S3 Pro** | connected | **80** | -40.7 | **91** | 2026-09-04 | `0.2.0-t5s3pro` | 4013-3810 mV, **5.26 h** | **[measured]**, same gauge, same build, same screen. **31 steps in 5.092 h = 91.3 +/- 0.6 mA, 16.4 h on a charge.** The longest and tightest ride row in this file. See "The frontlight is 43 mA, not 8" |
+| **Map, connected, frontlight OFF, GNSS on** | **T5 S3 Pro** | connected | **80** | -40.7 | **91** | 2026-09-04 | `0.2.0-t5s3pro` | 4013-3810 mV, **5.26 h** | **[measured]**, same gauge, same build, same screen. **31 steps in 5.092 h = 91.3 +/- 0.6 mA, 16.4 h on a charge.** The longest and tightest ride row in this file. See "The frontlight is tens of milliamps, not 8" |
 | Tile sync, transfer running | X4 | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
 | Light sleep, radio up | X4 | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
 | Deep sleep, latch held | X4 | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
@@ -617,9 +617,10 @@ meter (the plan's step 1) is still the number to trust over either of these.
 
 > **Corrected 2026-09-04, twice.** The ride drew **134.8 mA**, not 131 -- the
 > older figure counted a gauge step the boot did not measure. And the frontlight
-> was **~43 mA of it, not ~8**: a frontlight-off ride the next day measured the
-> difference. The title keeps its number because five docs cite this section by
-> name. See "The frontlight is 43 mA, not 8".
+> was **~18 to ~43 mA of it, not ~8**: a frontlight-off ride the next day
+> measured a 43 mA difference, and how much of that is the light rather than a
+> GNSS rail that may have changed state between the runs is unresolved. The title keeps its number because five docs cite this section by
+> name. See "The frontlight is tens of milliamps, not 8".
 
 **Measured on hardware 2026-09-03**, one ride, map screen up, phone connected,
 frontlight at 40 %, GNSS enabled by the rider. Build `0.2.0-t5s3pro`. The log is
@@ -638,7 +639,7 @@ row to the scoreboard.
 | Voltage | 4048 -> 3832 mV (-216 mV) |
 | **Average draw** | **134.8 +/- 1.5 mA**, about 519 mW at 3.85 V. Read 131 until 2026-09-04, when the endpoint counting error was found |
 | Full to flat at that rate | **11.1 h** |
-| Of which the frontlight at 40 % | **~43 mA, 32 %** -- measured 2026-09-04, see "The frontlight is 43 mA, not 8" |
+| Of which the frontlight at 40 % | **~18-43 mA, 13-32 %** -- measured by difference 2026-09-04; the range is an unresolved GNSS rail, see "The frontlight is tens of milliamps, not 8" |
 | BLE | connected 183 of 193 rows (`ble=2`) |
 | Panel busy | 23.8 min = **12.4 %** of the ride |
 | Refreshes | 1574: `ref_full` **0**, `ref_half` 3, `ref_fast` 159, `ref_window` 1412 |
@@ -701,13 +702,14 @@ quarter of the pack". Treat 134.8 mA as good to maybe 20 %, and the *constancy*
 as the finding rather than the value. **The 2026-09-04 walk narrows that:** two
 rides on the same nameplate assumption and the same unlearned gauge differ by
 43 mA, and a difference between two runs of one instrument does not carry the
-instrument's absolute error.
+instrument's absolute error. What that difference is *made of* is a separate
+question, and it is the open one.
 
 ### Where the 131 mA is not
 
 | Item | mA | Confidence |
 |---|---|---|
-| Frontlight at 40 % | **~43** | **[measured]** 2026-09-04, by difference against a frontlight-off ride. Was `~8`, an `[arithmetic]` guess that assumed duty is linear in current. It is not. See "The frontlight is 43 mA, not 8" |
+| Frontlight at 40 % | **~18-43** | **[measured by difference]** 2026-09-04 -- two runs of one instrument, with the frontlight state attested by the maintainer rather than logged. Not the same confidence as a single direct reading. The range is the unresolved GNSS rail. Was `~8`, an `[arithmetic]` guess that assumed duty is linear in current. It is not. See "The frontlight is tens of milliamps, not 8" |
 | ESP32-S3 at 80 MHz, no light sleep | ~22-25 | **[open]**, datasheet not read |
 | BLE connected, 30 ms interval | ~10-20 | **[open]** |
 | L76K tracking, if the rail was up | ~20-25 | **[open]** -- the 7.6 mA figure in this file is the MIA-M10Q's, not the L76K's |
@@ -722,10 +724,10 @@ Two things that fall out of that table.
 **The frontlight is 32 % of the ride's draw** (corrected 2026-09-04; this
 paragraph read "6 %" and said the vendor number was confirmed). The 6 % came
 from the `[arithmetic]` row above, not from a measurement, and a frontlight-off
-ride the next day put the real cost at ~43 mA. The board doc's "a night ride is
-affordable on this board" rests on the same vendor number and has to be
+ride the next day put the real cost at ~18 to ~43 mA. The board doc's "a night
+ride is affordable on this board" rests on the same vendor number and has to be
 reweighed (`../../docs/devices/lilygo-t5-s3-pro.md`, "The frontlight costs about
-20 mA"). See "The frontlight is 43 mA, not 8".
+20 mA"). See "The frontlight is tens of milliamps, not 8".
 
 **The panel PMIC is not a constant load.** `epdPowerOn()` and `epdPowerOff()`
 cycle the TPS65185 rails around each refresh and do not leave them up
@@ -777,14 +779,22 @@ calls `disableGpsLora()`, so the receiver may have been powered and tracking the
 whole ride with nothing reading it. Powered-but-unread is the most expensive
 state it has, and no column in this log can tell it from powered-off.
 
-## The frontlight is 43 mA, not 8
+## The frontlight is tens of milliamps, not 8
 
 **Measured on hardware 2026-09-04.** A 5.26 h walk around Barcelona, map up,
 phone connected, **frontlight off all day**, same build `0.2.0-t5s3pro` as the
-2026-09-03 ride. **91.3 +/- 0.6 mA.** The ride the day before, same device, same
+2026-09-03 ride. **91.3 +/- 0.6 mA.**
+
+That `+/- 0.6` is **precision, not accuracy**: it is gauge-step timing only. The
+absolute figure still carries the nameplate-capacity assumption and an unlearned
+gauge, which this file elsewhere calls good to maybe 20 %. A **difference**
+between two runs of one instrument does not carry that error; a single value
+does. The ride the day before, same device, same
 screen, same build, **frontlight at 40 %**, drew **134.8 +/- 1.5 mA**.
 
-**The difference is ~43 mA.** The table above priced the frontlight at ~8 mA
+**The difference between the two runs is ~43 mA**, and the frontlight's own
+share of it is **~18 to ~43 mA** -- see "The rail is not provably identical"
+below for what takes the rest. The table above priced the frontlight at ~8 mA
 from LilyGo's "~20 mA at full current" scaled linearly to 40 %. That estimate
 was marked `[arithmetic]` and it was wrong by 5x. The measured cost is also more
 than **twice the vendor's full-current figure, at less than half brightness**.
@@ -807,9 +817,13 @@ off, and it carries **the same panel load as the 2026-09-03 ride** -- 11.07 %
 against 12.35 % panel busy, 7.1 against 8.2 refreshes a minute. It drew
 **92.2 mA against that ride's 134.8**.
 
-And boots 77 and 78 bracket the panel from the other side: **2.3x the panel work
-for 0.9 mA**. So the panel cannot carry a 43 mA difference, which is what leaves
-the frontlight holding it.
+And boots 77 and 78 bracket the panel from the other side -- but **not to
+0.9 mA**, which is what this paragraph claimed until 2026-09-04. Boot 77 is
+92.2 mA **+/- 4.5**, because 4 gauge steps in 0.65 h is all it has. So the pair
+does not show that 2.3x the panel work costs 0.9 mA; it shows it costs **less
+than the measurement can resolve, and the bound is about 5 mA**, roughly 5 % of
+the draw. Still small, and not zero. What it does rule out is the panel carrying
+a 40 mA difference.
 
 That is the same conclusion the 2026-09-03 ride reached from one ride's internal
 variation, now with a between-ride control instead of an argument.
@@ -892,21 +906,41 @@ commit. Folded into T-250.
 - **The BLE connection interval.** `df62de7b` (09-03 16:08) pins the link at one
   interval, **15 ms**, where it previously asked for 12-24 units and the central
   answered 24 (**30 ms**). The walk's build carries it. If the ride's did not,
-  the walk ran the *costlier* link and still drew 43 mA less -- which makes
-  **43 mA a floor for the frontlight, not a ceiling**. Which side of 16:08 the
-  ride fell on is not recorded.
+  the walk ran the *costlier* link and still came out 43 mA lower -- which makes
+  **43 mA a floor for the difference between the two runs**, not a ceiling.
+  (It says nothing about how that difference splits between the frontlight and
+  the GNSS rail; that is the section below.) Which side of 16:08 the ride fell
+  on is not recorded.
 - **"One radio per session"** (`5c8797ab`, 09-03 21:46) never fired. It skips
   `BlePositionServer::begin()` when `mapGnssPosition` is on; BLE was connected
   for the whole walk, so it was off. It does not touch the GNSS/LoRa rail either
   way.
 
-**And the rail is most likely identical in both runs.** It is an expander pin
-that latches until it **loses power**, not until it reboots. Twenty-one boots
-sit between the two runs in the log and the pack never reached flat -- boot 79
-starts charging at 59 %. Nothing in any of those builds calls
-`disableGpsLora()`. So T-244's rail sat in one state across both, which is the
-confound this section originally worried about most and the one the log can
-actually argue away.
+**The rail is not provably identical in both runs, and this was argued wrongly
+here on 2026-09-04.** The first version of this section said nothing calls
+`disableGpsLora()`. That is true and it is irrelevant: `disableGpsLora()` is not
+the function that controls the rail. The rail is raised by `Gnss::start()` ->
+`config_.powerEnable(true)` and lowered by `Gnss::stop()` ->
+`config_.powerEnable(false)` (`lib/Gnss/src/Gnss.cpp:116`, `:185-186`), wired to
+`main.cpp`'s `gnssPowerEnable()` at `src/main.cpp:287`. And
+`MapActivity.cpp:2309` states the policy outright: *the receiver comes up with
+the map and goes down with it*.
+
+So **any session that opened the map with `mapGnssPosition` on and then left it
+dropped the rail.** Twenty-one boots sit between the two measured runs in the
+log, and that evening was GNSS work -- the Settings row, one-radio-per-session,
+the UTC clock suffix. It is the **most** likely thing to have moved that rail,
+not the least.
+
+**What that does to the number.** If the rail was up for the 2026-09-03 ride
+(latched from earlier, which is what this file already argues) and down for the
+walk (dropped by a clean `stop()` during the evening's work), then the L76K --
+`[open]` at 20-25 mA in the budget above -- takes part of the 43.
+
+**So the frontlight costs somewhere between ~18 and ~43 mA.** The uncertainty is
+the GNSS rail and nothing else. **Every value in that range is more than double
+the ~8 mA this file carried**, so the correction to that figure stands on its
+own; the single number 43 does not.
 
 **What is solid:** the gauge is a coulomb counter, both numbers come from it,
 both boots ran the same build on the same device, and boot 78 is 31 whole steps
