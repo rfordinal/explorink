@@ -100,6 +100,20 @@ Response:
 | `uptime` | number | Seconds since boot |
 | `device` | string | `"X3"` or `"X4"` hardware detection |
 
+## Every response is gzipped, so `curl` needs `--compressed`
+
+Without the flag `curl` writes the raw deflate stream to the terminal, which
+prints as binary noise and reads exactly like a broken server or a wrong port.
+It is neither. **Every example on this page assumes the flag**, and it is left
+off below only to keep the lines short:
+
+```bash
+curl -s --compressed "http://<device-ip>/api/files?path=/"
+```
+
+Cost one wasted call on 2026-09-04 pulling a power log off a T5 S3 Pro. A
+browser sends `Accept-Encoding` on its own, so this only ever bites a script.
+
 ## File Management
 
 ### `GET /api/files`
