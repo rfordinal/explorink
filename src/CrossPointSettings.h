@@ -304,8 +304,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Write one CSV row per accepted GNSS fix to /trailink/gnss.csv (GnssLog.h).
   // Off by default and it must stay that way: the file is a **track log**, not
   // a single point, so on a lost or stolen device it is a record of where the
-  // rider went. Turned on for one measurement, deliberately, and turned off
-  // after. Only exists on a build with a receiver.
+  // rider went. Only exists on a build with a receiver.
+  //
+  // In SettingsList (category Map) since 2026-09-04, behind ENABLE_GNSS_CMD,
+  // beside mapGnssPosition. Until then it needed a USB cable and CMD:SETTING,
+  // so a rider could not record a walk without one -- which is what the row
+  // fixes. **Reachable is not the same as on**: the default stays 0, and the
+  // row's label says "track" rather than "log" so that switching it on tells
+  // the rider what it writes.
   uint8_t mapGnssLog = 0;
   // Edge markers for pins outside the viewport: a direction arrow and the
   // distance, drawn where the bearing ray leaves the screen

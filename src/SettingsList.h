@@ -264,6 +264,20 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // receiver.
         SettingInfo::Toggle(StrId::STR_MAP_GNSS_POSITION, &CrossPointSettings::mapGnssPosition, "mapGnssPosition",
                             StrId::STR_CAT_MAP),
+        // One CSV row per accepted fix to /trailink/gnss.csv (GnssLog.h). Same
+        // build gate and the same reason as the row above.
+        //
+        // **The label says "track" on purpose.** This writes where the rider
+        // went, not a single point, so on a lost or stolen device the file is a
+        // record of their movements (the field's own comment,
+        // CrossPointSettings.h). A rider switching it on has to be told that by
+        // the row itself -- "GNSS log" would read as diagnostics.
+        //
+        // Off by default and the default does not move. A row makes it
+        // reachable, which is the point: before this it needed a USB cable and
+        // CMD:SETTING, so the one person who could turn it on was whoever had
+        // the device on a desk. Reaching it is not the same as defaulting it on.
+        SettingInfo::Toggle(StrId::STR_MAP_GNSS_LOG, &CrossPointSettings::mapGnssLog, "mapGnssLog", StrId::STR_CAT_MAP),
 #endif
         // Off by default. On, the map screen asks the phone for a tile as soon
         // as it hatches one, and shows a transfer icon in the header while the
