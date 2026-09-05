@@ -20,8 +20,9 @@ two call sites that drew it. Three problems, all of them structural:
 - **The top was a compile-time constant.** `kTextTopY = kHeaderMarginTop +
   kHeaderRowHeight + kTextGapBelowHeader` = 42, in every mode. Hike mode's
   header bar ends at 58 (`MapActivity::headerBarHeight()`), so line one's
-  backing started 19 px inside the elevation/lat-lon row and painted over it.
-  A constant cannot see `mode_`.
+  backing top sat at 39, 3 px inside that row, and the backing overlapped the
+  row by 19 px (the row spans [36, 58), the backing [39, 69)). A constant
+  cannot see `mode_`.
 - **Lines ran under the compass.** The trim was against `getScreenWidth() -
   2*kTextX` = 464 px. The compass halo's left edge is at 385
   (`kCompassCenterMarginRight` 56, `kCompassGlyphRadius` 36,
@@ -62,19 +63,36 @@ An empty slot takes no row. Rows below it move up and the box gets shorter.
 
 | bound | value | why |
 |---|---|---|
-| top | `mapContentTop() + kDebugGapBelowHeader` (5) | `mapContentTop()` is mode-aware, so Hike's second header row pushes the window down instead of being covered by it |
+| top | `mapContentTop() + kDebugGapBelowHeader` (2) | `mapContentTop()` is mode-aware, so Hike's second header row pushes the window down instead of being covered by it |
 | text left | `kTextX` (8) | unchanged from the old readout |
 | right limit | compass halo left `- kDebugGapBeforeCompass` (6) | the compass is drawn earlier in the frame; past this the box erases halo and glyph |
 | bottom limit | `getScreenHeight() - kScaleMarginBottom` (50) | the same clearance line the scale bar and busy badge bottom out on |
 
-5 reproduces the old spacing exactly in Ride and Cycle: the bar ends at 36, the
-old constant put the box's top edge at 39. Nothing changes on the modes where
-the look was tuned. In Hike the box top moves from 39 to 64.
+2 reproduces the old position exactly in Ride and Cycle. `mapContentTop()` is
+`headerBarHeight() + 1` = 37, so the box's top edge lands at 39 and its text at
+42 -- the two numbers the old readout was tuned to on 2026-08-08. In Hike the
+box top moves from 39 to 61.
+
+This shipped as 5 for one commit and put the box 3 px low. The 5 was derived
+from `kHeaderBarHeight` (36) and forgot that `mapContentTop()` already adds the
+separator row. Neither simulator capture could catch it by eye: 3 px against a
+map reads as nothing without the old frame beside it. It took scanning the same
+column of both captures for the first dark pixel below the header separator --
+42 before, 39 after, at x=60 where the map behind is blank. **Derive a spacing
+constant from the function that will actually be called, not from the constant
+that function is built out of** -- and settle a few-pixel claim by reading
+pixels, not by looking at the frame.
 
 The right limit applies in every mode, with no condition. The halo spans y
-48..126 and the window starts at 42 (Ride) or 64 (Hike), so the box always
+48..126 and the window starts at 39 (Ride) or 61 (Hike), so the box always
 overlaps the halo's band. There is no mode in which it could safely run to the
 screen edge.
+
+**The bottom limit does not know about the marker.** It guards the scale bar and
+the button hints only. With today's six slots the box cannot reach the marker
+(six rows end near y 204; the marker sits near mid-screen), so this has never
+mattered -- but a future slot count is not bounded by anything that has looked
+at the marker. Read off the code, never observed.
 
 ## Staying inside the box
 
@@ -159,6 +177,19 @@ depends on which frame drew last.
 1.1 kB, a fixed member of `MapActivity`. No allocation on a screen that already
 fights for heap during a viewport reset (`docs/map-memory.md`).
 
+## Why this is exempt from the ink budget
+
+The window is a white box with a border drawn over the map, and it fails the
+project's own test for what may be on the map -- Outline Téza `V33`, "a feature
+has to help someone find their way; what fails that test is not on the map",
+and `V31`, "ink is a budget". It passes only because `SETTINGS.mapDebugInfo` is
+off by default and a rider never sees it.
+
+That is the whole exemption. Anything that moves this window toward being
+useful to a rider -- on by default, a nicer frame, a line a rider would want --
+puts it under `V33`, and then it is a map feature that has to earn its ink.
+Keep it a developer tool.
+
 ## Status
 
 **Verified on the desktop simulator, 2026-09-05.** Not on hardware. Built
@@ -174,9 +205,16 @@ the mode switched with `tools/mapcmd.py --sim`. Two 480x800 captures, 1:1:
 - **Ride.** Same box one row higher, below the single header row, place name
   (`Kráľová, Modra`) and compass both intact.
 
-Before the change the Hike frame would have put line one's backing 19px inside
-that second header row. That comparison is arithmetic, not a before-grab --
-nobody captured the broken frame.
+**What those captures did not exercise.** Both are full-frame draws. Nothing
+changed a slot between frames during either run, so `updateDebugOverlay()`, the
+`dirty()` comparison, `highWaterRows_` and the slot-drop path never executed --
+the sim log carries no `MAPDBG` line at all, which only confirms nothing was
+dropped. Both lines were short, so the trim loop never fired either. **What is
+verified is the geometry of a full-frame draw in two modes, and nothing else.**
+
+Before the change the Hike frame would have overlapped that second header row
+by 19px. That comparison is arithmetic, not a before-grab -- nobody captured the
+broken frame.
 
 **Open -- still needs a hardware pass.** The simulator says nothing about
 waveform cost or ghosting. What would settle it: `CMD:GOTO_MAP` on a device,
