@@ -9,6 +9,7 @@
 #include "HalFileSource.h"
 #include "MapBleConsole.h"
 #include "MapCommandConsole.h"
+#include "MapDebugOverlay.h"
 #include "MapFollow.h"
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
@@ -276,12 +277,18 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // marker, which is the point -- zooming out must show more of the road
   // ahead, not more of wherever the marker has drifted to.
   void renderCurrent();
-  // Draws one line of the debug readout, trimmed to the screen width, with a
-  // white backing sized to its own text -- same reason the compass halo and
-  // the header status row get one (MapActivity.cpp:765): the readout sits
-  // over live map lines, not blank margin, and text drawn straight onto a
-  // hatch or a road is unreadable. Mutates `text` in place (the trim).
-  void drawDebugLine(int y, char* text);
+  // Hands the debug window its boundaries for the frame about to be drawn:
+  // below the header bar (mapContentTop(), so Hike's second row pushes it
+  // down instead of being covered by it), left of the compass halo, above
+  // the scale bar's clearance line. Called before every draw and every
+  // polled repaint -- none of it is cached, because mode_ can change under
+  // both.
+  void layoutDebugOverlay();
+  // Keeps the debug window honest between full frames, the same polled,
+  // windowed shape as updateHeaderStatus(): a slot written from some
+  // feature's own loop reaches the panel here, and only when its text
+  // actually changed.
+  void updateDebugOverlay();
   // Top-right north indicator. The map is drawn track-up, so this rotates: the
   // whole glyph turns about its own centre by the frame's heading, which is
   // what makes it point at true north instead of up the screen. Not static
@@ -1160,6 +1167,38 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // hiking pace otherwise repaints every poll).
   uint32_t nextHikeLinePollMs_ = 0;
   uint32_t nextHikeLineRepaintMs_ = 0;
+
+  // ## The debug window (SETTINGS.mapDebugInfo)
+  //
+  // One managed box below the header, with one row per feature that reserved
+  // one. Reservation happens once, in onEnter(), and the ids below are how a
+  // feature finds its own row afterwards -- see MapDebugOverlay.h for why
+  // this replaced a `line1Y`/`line2Y`/... ladder duplicated across two frame
+  // paths.
+  //
+  // The order of the reserve() calls in onEnter() is the order on the panel,
+  // which is why they all sit together there rather than next to the code
+  // that writes them.
+  MapDebugOverlay debug_;
+  // Follow frames: the raw values driving the marker, and what the viewport
+  // reset cost.
+  uint8_t debugFixSlot_ = MapDebugOverlay::kInvalidSlot;
+  uint8_t debugRenderSlot_ = MapDebugOverlay::kInvalidSlot;
+  // Route overview frames: the route's name and how the ladder fitted it.
+  // Their own slots rather than a reuse of the two above, so neither path has
+  // to know what the other put in a shared row -- each fills its own and
+  // clears the other's.
+  uint8_t debugRouteNameSlot_ = MapDebugOverlay::kInvalidSlot;
+  uint8_t debugRouteFitSlot_ = MapDebugOverlay::kInvalidSlot;
+  // The rider picked a route and there is none on screen.
+  uint8_t debugRouteRefusedSlot_ = MapDebugOverlay::kInvalidSlot;
+  // A file push happened; did it land (MapTransferReceiver::formatStatus()).
+  uint8_t debugTransferSlot_ = MapDebugOverlay::kInvalidSlot;
+  // millis() deadlines, same shape as the header row's above: the poll
+  // interval bounds how often the window is even compared, the repaint
+  // interval is the floor between two panel refreshes it may cause.
+  uint32_t nextDebugPollMs_ = 0;
+  uint32_t nextDebugRepaintMs_ = 0;
 
   // One state, two channels. A `zoom 3` over USB and a `zoom 3` over BLE
   // land on the same number because they share this object, not because two
