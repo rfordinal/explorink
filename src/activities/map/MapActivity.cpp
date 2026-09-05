@@ -390,14 +390,19 @@ constexpr int kTextX = 8;
 //
 // It used to be a compile-time `kTextTopY = kHeaderMarginTop +
 // kHeaderRowHeight + 14`, which is 42 whatever the mode is. Hike mode's header
-// bar ends at 58 (headerBarHeight()), so the first debug line's backing
-// started 19px *inside* the elevation/lat-lon row and painted over it. A
-// constant cannot know that; mapContentTop() does.
+// bar ends at 58 (headerBarHeight()), so the first debug line's backing top sat
+// at 39, 3px inside the elevation/lat-lon row, and overlapped that row by 19px
+// (the row spans [36, 58), the backing [39, 69)). A constant cannot know that;
+// mapContentTop() does.
 //
-// 5 reproduces the old spacing in Ride and Cycle exactly -- the bar ends at
-// kHeaderBarHeight (36), the old constant put the box's top edge at 39 -- so
-// nothing about the tuned look changes on the modes where it was tuned.
-constexpr int kDebugGapBelowHeader = 5;
+// 2, not a rounder number: mapContentTop() is headerBarHeight() + 1 (37 in
+// Ride/Cycle), and the old readout put the box's top edge at 39 with its text
+// at 42. 2 lands on exactly those two numbers, so the position tuned on
+// hardware on 2026-08-08 is preserved rather than approximated. A 5 here --
+// what this shipped with for one commit -- pushed the whole box 3px down,
+// because it was derived from kHeaderBarHeight (36) and forgot mapContentTop()
+// already adds the separator row.
+constexpr int kDebugGapBelowHeader = 2;
 // Clearance between the window's right edge and the compass's white halo,
 // same number drawHeaderPlaceName() already keeps against the icon cluster.
 // The window's rows always overlap the halo's vertical band (the halo spans
