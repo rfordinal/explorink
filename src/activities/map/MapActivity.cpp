@@ -310,6 +310,33 @@ constexpr int kHeaderGnssIconToBtGap = 6;
 // same in every language this firmware ships, same precedent as the "+"/"--"
 // zoom hints in drawZoomSideHints().
 constexpr const char* kHeaderUtcSuffix = " UTC";
+
+// GNSS bars: **how many** bars are filled says how many satellites are being
+// tracked, and **how tall** they all are says how strong the best one is. Two
+// numbers in one block, because they answer two different questions and a rider
+// needs both: four weak satellites and two strong ones are both "no fix", and
+// they need opposite things done about them.
+//
+// Deliberately not the BLE staircase next to it. Those bars step up in height by
+// design, so a glance tells the two blocks apart without reading either.
+//
+// Four is the count that matters: a position needs four satellites, so a full
+// block means a fix is due and a half-full one means it is not coming yet.
+constexpr int kHeaderGnssBarCount = kHeaderBleBarCount;
+
+// SNR here is C/N0 in dB-Hz, the satellite signal against the noise floor. The
+// steps are the two thresholds this whole problem turns on, measured elsewhere
+// and written down in Gnss::injectAidIni(): below about 24 a satellite is not
+// usable, from 24 it can be tracked when the receiver already holds the
+// ephemeris, and from about 31 the receiver can read the ephemeris off the air
+// by itself. So the top step is "this can fix unaided" and the middle is "this
+// needs aiding", which is exactly the distinction the panel should carry.
+int resolveGnssBarHeight(uint8_t bestSnr) {
+  if (bestSnr == 0) return 0;
+  if (bestSnr < 24) return kHeaderIconHeight / 4;
+  if (bestSnr < 31) return kHeaderIconHeight / 2;
+  return kHeaderIconHeight;
+}
 #endif
 
 // The clock sits leftmost in the status row, between the place name and the
@@ -1452,11 +1479,21 @@ void MapActivity::updateHeaderStatus() {
   // never agree with a live gnssHeaderState() -- every tick would read as
   // structural and repaint the header forever.
   if (!bleInUse_) structural = structural || gnssHeaderState() != drawnGnssState_;
+  // The bars move far more often than the glyph does -- a satellite drops in or
+  // out every few seconds -- so they are rate-capped with the BLE bars rather
+  // than treated as structural. barsMoved below carries them.
 #endif
   // A bar count moving while the link holds is the same story told slightly
   // differently, and RSSI sitting on a threshold flips it back and forth.
   // Every flip is a real waveform pass, so it is rate-capped.
-  const bool barsMoved = connected && bars != drawnBleBars_;
+  bool barsMoved = connected && bars != drawnBleBars_;
+#ifdef ENABLE_GNSS_CMD
+  if (!bleInUse_) {
+    const uint8_t tracked = gnss.satsWithSignal();
+    const int gnssBars = tracked > kHeaderGnssBarCount ? kHeaderGnssBarCount : static_cast<int>(tracked);
+    barsMoved = gnssBars != drawnGnssBars_ || resolveGnssBarHeight(gnss.bestSnr()) != drawnGnssBarHeight_;
+  }
+#endif
 
   // The minute rolling over. No rate cap of its own -- a minute *is* the cap,
   // and it is 30x slower than the bars' floor. This is the one condition that
@@ -1539,6 +1576,12 @@ void MapActivity::updateHeaderStatus() {
   if (!renderer.displayBufferWindow(x, y, w, h)) {
     LOG_ERR(kLogTag, "header status window rejected: %d,%d %dx%d", x, y, w, h);
   }
+
+#ifdef ENABLE_GNSS_CMD
+  // Rides this poll rather than a timer of its own, so the debug readout can
+  // never refresh the panel more often than the header already does.
+  if (SETTINGS.mapDebugInfo && !bleInUse_ && headerRowDrawn_) drawGnssDebugLine();
+#endif
 }
 
 void MapActivity::drawCompass(uint8_t headingStep) {
@@ -1959,9 +2002,15 @@ void MapActivity::drawHeaderStatusStrip() {
   // giving it a second name for the same number would be two numbers to keep
   // level.
   int gnssIconLeft = 0;
+  int gnssBarsLeft = 0;
   clockShowsUtc_ = false;
   if (!bleInUse_) {
-    gnssIconLeft = chainRight - kHeaderGnssIconSize;
+    // Same slot the BLE bars use on the other kind of session, and the same
+    // order: the glyph sits left of its bars exactly as the Bluetooth logo sits
+    // left of its own. One row, one grammar.
+    gnssBarsLeft = chainRight - kHeaderBleBarsWidth;
+    chainRight = gnssBarsLeft - kHeaderBtToBarsGap - kHeaderGnssIconSize;
+    gnssIconLeft = chainRight;
     chainRight = gnssIconLeft - kHeaderGnssIconToBtGap;
 
     // Whether the clock carries the UTC suffix. **Only while it really is UTC.**
@@ -2107,6 +2156,30 @@ void MapActivity::drawHeaderStatusStrip() {
                                                                      : icon_gnssOff;
     renderer.drawMono1bpp(glyph.bits, gnssIconLeft, iconTop, glyph.w, glyph.h, true);
     drawnGnssState_ = state;
+
+    // Bars: count = satellites tracked, height = the best one's signal.
+    //
+    // An empty block is the useful case, not a missing one. On 2026-09-04 the
+    // receiver saw nothing at all for fifteen minutes outdoors and the panel
+    // said only "searching" -- a state it also shows when a fix is two seconds
+    // away. Four empty slots say "it hears nothing", which is a different
+    // problem with a different answer, and it needs no cable to read.
+    const uint8_t tracked = gnss.satsWithSignal();
+    const int filled = tracked > kHeaderGnssBarCount ? kHeaderGnssBarCount : static_cast<int>(tracked);
+    const int barHeight = resolveGnssBarHeight(gnss.bestSnr());
+    for (int i = 0; i < kHeaderGnssBarCount; ++i) {
+      const int x = gnssBarsLeft + i * (kHeaderBleBarWidth + kHeaderBleBarGap);
+      if (i < filled && barHeight > 0) {
+        renderer.fillRect(x, iconBottom - barHeight, kHeaderBleBarWidth, barHeight, true);
+      } else {
+        // A baseline tick, not an outlined bar: an outline at this size reads as
+        // a filled one from arm's length, and "not tracked" has to be legible at
+        // a glance or the block says nothing.
+        renderer.fillRect(x, iconBottom - 1, kHeaderBleBarWidth, 1, true);
+      }
+    }
+    drawnGnssBars_ = filled;
+    drawnGnssBarHeight_ = barHeight;
   }
 #endif
 
@@ -2254,6 +2327,59 @@ void MapActivity::drawDebugLine(int y, char* text) {
   renderer.fillRect(kTextX - kDebugPad, y - kDebugPad, textWidth + kDebugPad * 2, textHeight + kDebugPad * 2, false);
   renderer.drawText(UI_10_FONT_ID, kTextX, y, text, true);
 }
+
+#ifdef ENABLE_GNSS_CMD
+// Where the GNSS debug line lives: the sixth debug row, under the transfer
+// status. A fixed full-width rect rather than one sized to the text, because
+// this is the one debug line with a windowed repaint of its own -- a rect that
+// shrank with a shorter string would leave the tail of the longer one behind.
+void MapActivity::gnssDebugRect(int& x, int& y, int& w, int& h) const {
+  const int linePitch = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
+  x = kTextX - kDebugPad;
+  y = kTextTopY + linePitch * 4 - kDebugPad;
+  w = renderer.getScreenWidth() - x - kTextX;
+  h = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
+}
+
+// The receiver's own numbers, and **the one debug line that refreshes itself**.
+//
+// Every other line here rides whatever redraw the map was going to do anyway,
+// because an e-ink refresh costs the better part of two seconds. That rule
+// fails for exactly this line: on a GNSS session with no fix **the map never
+// redraws at all**, so the numbers a rider most wants would freeze at the
+// instant they entered the map. Fifteen minutes outdoors on 2026-09-04
+// produced one stale row and no way to see the receiver was hearing nothing.
+//
+// So it repaints on its own, and pays for it with two limits. It only redraws
+// when the text actually changed -- satellite counts sit still for seconds at a
+// time -- and it rides updateHeaderStatus()'s existing poll and rate cap rather
+// than adding a timer, so it can never refresh more often than the header does.
+//
+// `run` is first because everything after it is meaningless without it: the
+// accessors answer 0 both for a stopped receiver and for a running one hearing
+// nothing, and those are not the same finding. `used`, `inview` and `tracked`
+// are three different counts and the gaps between them are the diagnosis:
+// inview off the almanac, tracked from a non-zero C/N0, used in the solution.
+void MapActivity::drawGnssDebugLine() {
+  const GnssFix& fix = gnss.fix();
+  char line[64];
+  snprintf(line, sizeof(line), "gnss %s q%u u%u v%u t%u s%u", gnss.running() ? "on" : "off",
+           static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
+           static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
+           static_cast<unsigned>(gnss.bestSnr()));
+  if (strcmp(line, drawnGnssDebug_) == 0) return;
+  strncpy(drawnGnssDebug_, line, sizeof(drawnGnssDebug_) - 1);
+  drawnGnssDebug_[sizeof(drawnGnssDebug_) - 1] = '\0';
+
+  int x, y, w, h;
+  gnssDebugRect(x, y, w, h);
+  renderer.fillRect(x, y, w, h, false);
+  renderer.drawText(UI_10_FONT_ID, kTextX, y + kDebugPad, line, true);
+  if (!renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "gnss debug window rejected: %d,%d %dx%d", x, y, w, h);
+  }
+}
+#endif
 
 MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath,
                          bool resumedFromSleep)
@@ -6110,6 +6236,16 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
     // of two seconds and a byte counter is not worth one.
     transfer_.formatStatus(line, sizeof(line));
     if (line[0] != '\0') drawDebugLine(line4Y, line);
+
+#ifdef ENABLE_GNSS_CMD
+    // Drawn with the frame too, not only from the poll: otherwise the row is
+    // blank until the first value changes, which on a stationary receiver can
+    // be a while. Cleared first so the poll's own change check does not skip it.
+    if (!bleInUse_) {
+      drawnGnssDebug_[0] = '\0';
+      drawGnssDebugLine();
+    }
+#endif
   }
 
   LOG_DBG(kLogTag,

@@ -29,6 +29,7 @@
 #endif
 
 #ifdef ENABLE_GNSS_CMD
+#include <BlePositionServer.h>  // gnssStart() asks it for a clock to seed with
 #include <Gnss.h>
 #include <Wire.h>
 #include <esp_system.h>
@@ -285,7 +286,64 @@ bool gnssStart() {
   config.rxBufferBytes = GNSS_RX_BUFFER_BYTES;
 #endif
   config.powerEnable = gnssPowerEnable;
-  return gnss.begin(config);
+  if (!gnss.begin(config)) return false;
+
+  // Ask for all three constellations before anything else. The module was
+  // running GPS+GLONASS (mode 5): a raw capture on 2026-09-04 carried 45 GPGSV
+  // and 45 GLGSV sentences and not one GBGSV, and `gnss.md` had already noted
+  // the set is configurable and that the vendor lists BeiDou.
+  //
+  // **Why it matters here and not as a nicety: this antenna's problem is
+  // satellites in view, and BeiDou is about 45 more of them.** A weak signal
+  // does not need a better satellite, it needs more chances at four usable
+  // ones. Modes are from the official CASIC spec, 1.6.5 CAS04:
+  //   1 GPS, 2 BDS, 3 GPS+BDS, 4 GLONASS, 5 GPS+GLONASS, 6 BDS+GLONASS,
+  //   7 GPS+BDS+GLONASS.
+  //
+  // Sent on every start rather than saved to the module's flash: it costs one
+  // 16-byte sentence, it cannot drift out of step with this code, and it wears
+  // nothing out. **Unverified that this module accepts mode 7** -- the spec says
+  // the supported subset is per product model and does not list the L76K's.
+  // The check is cheap and needs no sky: a `$GBGSV` in `CMD:GNSS RAW ON` means
+  // it took.
+  if (!gnss.sendNmeaSentence("PCAS04,7")) {
+    LOG_ERR("GNSS", "constellation request not sent");
+  }
+
+  // Seed the receiver before it starts searching. **Without this a cold start
+  // cannot finish at the signal level this board delivers** -- reading the
+  // ephemeris off the air needs more signal than merely tracking a satellite
+  // does, and this antenna sits between the two (Gnss::injectAidIni has the
+  // numbers and where they come from). A 15-minute walk on 2026-09-04 got no
+  // fix at all; the receiver was tracking one satellite the whole time.
+  //
+  // Position comes from the persisted last fix, which is the same value the map
+  // opens its first frame on, so it is as good as the device has and costs
+  // nothing to pass. 50 km of claimed accuracy is deliberately loose: it is a
+  // fix from some earlier trip, and on 2026-09-04 that meant Bratislava while
+  // the device was in Barcelona. A seed that lies about its accuracy is worse
+  // than a wide one, because the receiver trusts it.
+  //
+  // Time only when something has it. A GNSS map session runs no BLE
+  // (MapActivity's bleInUse_), and this board has no RTC ("RTC not found" at
+  // boot), so utcNow() answers only when a phone set the clock earlier in this
+  // same boot. Position-only aiding is still most of the win.
+  if (SETTINGS.mapHasLastFix) {
+    uint32_t utc = 0;
+    const bool haveTime = freeink::BlePositionServer::getInstance().utcNow(utc);
+    const double lat = static_cast<double>(SETTINGS.mapLastLatE7) / 1e7;
+    const double lon = static_cast<double>(SETTINGS.mapLastLonE7) / 1e7;
+    if (gnss.injectAidIni(lat, lon, haveTime, utc)) {
+      LOG_INF("GNSS", "aiding sent: %.5f,%.5f, time %s", lat, lon, haveTime ? "included" : "not available");
+    } else {
+      LOG_ERR("GNSS", "aiding not sent, the frame was written short");
+    }
+  } else {
+    // Worth a line rather than silence: this is the one case where the receiver
+    // really does start from nothing, and it is the case that takes minutes.
+    LOG_INF("GNSS", "no persisted fix to seed with, this is a cold start");
+  }
+  return true;
 }
 
 // Reads the PCA9535's own registers, which BoardT5S3 does not expose: it offers
@@ -1324,6 +1382,7 @@ void loop() {
         //   CMD:GNSS OFF       ->  GNSS_OK:off
         //   CMD:GNSS RAW ON    ->  GNSS_OK:raw=1   (every sentence to the log)
         //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
+        //   CMD:GNSS EPH       ->  asks how many ephemerides are held (RAW ON first)
         //   CMD:GNSS PROBE     ->  GNSS_PROBE:...  (run first, on a cold boot)
         //   CMD:GNSS RELEASE   ->  GNSS_RELEASE:... (writes the rail pin, step 2a)
         //   CMD:GNSS LOG       ->  GNSS_LOG:...    (sizes of the fix log, never its rows)
@@ -1506,9 +1565,9 @@ void loop() {
                 "GNSS_RELEASE:reset=%s cfg0_base=0x%02X cfg0_released=0x%02X cfg0_restored=0x%02X "
                 "wrote=%d released=%d restored=%d "
                 "base_bytes=%lu base_sent=%lu off_bytes=%lu off_sent=%lu back_bytes=%lu back_sent=%lu\n",
-                gnssResetReasonName(), cfgBase, haveReleased ? cfgReleased : 0xEE,
-                haveRestored ? cfgRestored : 0xEE, wroteLevel ? 1 : 0, released ? 1 : 0, restored ? 1 : 0,
-                baseBytes, baseSent, offBytes, offSent, backBytes, backSent);
+                gnssResetReasonName(), cfgBase, haveReleased ? cfgReleased : 0xEE, haveRestored ? cfgRestored : 0xEE,
+                wroteLevel ? 1 : 0, released ? 1 : 0, restored ? 1 : 0, baseBytes, baseSent, offBytes, offSent,
+                backBytes, backSent);
             gnss.end();  // powerEnable is null, so this touches no rail
           }
         } else if (argument == "RAW ON" || argument == "RAW") {
@@ -1517,8 +1576,34 @@ void loop() {
         } else if (argument == "RAW OFF") {
           gnss.setRawSink(nullptr);
           logSerial.printf("GNSS_OK:raw=0\n");
+        } else if (argument == "EPH") {
+          // Ask a CASIC receiver how many valid ephemerides it is holding. The
+          // answer comes back as an ordinary sentence carrying `LT=<n>`, so it
+          // reaches the raw sink and nothing else -- CMD:GNSS RAW ON first.
+          //
+          // **This is the instrument for the one question that has been open
+          // since 2026-09-02: does a rail cycle cost the receiver its
+          // ephemeris?** Ask, `CMD:GNSS OFF`, wait, `CMD:GNSS ON`, ask again. A
+          // count that survives means the module has a backup domain and every
+          // doc calling a map entry a cold start is wrong; a count that drops to
+          // zero means the map screen throws away the one thing the receiver
+          // cannot quickly get back. **It needs no sky and no fix**, which is
+          // why it is worth having: the same question outdoors costs ten minutes
+          // per attempt and answers ambiguously.
+          //
+          // Reading it rather than injecting it is the whole point. Ephemeris
+          // *injection* on this module is a known unsolved problem -- CASIC's
+          // own spec lists MSG-GPSEPH as an output, and OpenTrailPaper measured
+          // 4 ACKs out of 33 attempts with the count staying at zero
+          // (investigations/agnss.md). The module decodes its own ephemeris
+          // perfectly given signal, so retention is the lever, not injection.
+          if (gnss.sendNmeaSentence("PCAS06,L")) {
+            logSerial.printf("GNSS_OK:eph-query sent, read the reply's LT= with RAW ON\n");
+          } else {
+            logSerial.printf("GNSS_ERR:eph query not sent, receiver not running\n");
+          }
         } else if (argument.length() > 0) {
-          logSerial.printf("GNSS_ERR:expected ON, OFF, PROBE, RELEASE, RAW ON or RAW OFF\n");
+          logSerial.printf("GNSS_ERR:expected ON, OFF, PROBE, RELEASE, EPH, RAW ON or RAW OFF\n");
         } else if (!gnss.running()) {
           logSerial.printf("GNSS_OFF\n");
         } else {

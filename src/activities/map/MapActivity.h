@@ -307,6 +307,11 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // over live map lines, not blank margin, and text drawn straight onto a
   // hatch or a road is unreadable. Mutates `text` in place (the trim).
   void drawDebugLine(int y, char* text);
+
+  // The receiver's own numbers, under the other debug lines, and **the one
+  // debug line that repaints itself**. See drawGnssDebugLine().
+  void drawGnssDebugLine();
+  void gnssDebugRect(int& x, int& y, int& w, int& h) const;
   // Top-right north indicator. The map is drawn track-up, so this rotates: the
   // whole glyph turns about its own centre by the frame's heading, which is
   // what makes it point at true north instead of up the screen. Not static
@@ -960,6 +965,15 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // function a few lines later -- a member rather than a local because the
   // layout chain settles it before the string that uses it is built.
   bool clockShowsUtc_ = false;
+
+  // What the GNSS bar block last painted: how many bars were filled and how tall
+  // they were. Two fields because the block carries two numbers, and either one
+  // moving is a repaint (drawHeaderStatusStrip()).
+  int drawnGnssBars_ = -1;
+  // What the GNSS debug line last put on the panel, so a repaint only happens
+  // when the text actually changed. Sized like the line it holds.
+  char drawnGnssDebug_[64] = {0};
+  int drawnGnssBarHeight_ = -1;
 
   // Set from BlePositionServer::begin()'s return in onEnter(). Without this,
   // a BLE stack that failed to come up (plausible: init costs ~75 KB heap,

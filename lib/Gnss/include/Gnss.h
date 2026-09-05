@@ -112,6 +112,36 @@ class Gnss {
   void end();
   bool running() const { return running_; }
 
+  // Seed the receiver with where it is, and when, so it does not have to read
+  // that off the sky. Call right after begin(); returns false if not running.
+  //
+  // `haveTime` false seeds position only, which is the normal case on this
+  // firmware: a GNSS map session runs no BLE (MapActivity's bleInUse_), so
+  // there is often no clock to pass. Position alone is still most of the win --
+  // it tells the receiver which satellites should be overhead instead of making
+  // it search all of them.
+  //
+  // Accuracies are hints, not promises: the defaults say "within 50 km" and
+  // "within 30 s", which is what a persisted last fix and a phone clock are
+  // actually worth. Claiming better than the truth makes the receiver reject
+  // measurements that would have helped.
+  bool injectAidIni(double latitude, double longitude, bool haveTime = false, uint32_t utcUnixSeconds = 0,
+                    float posAccMeters = 50000.0f, float timeAccSeconds = 30.0f);
+
+  // Send one NMEA sentence to the receiver. `body` is everything between the
+  // '$' and the '*', e.g. "PCAS06,L"; the checksum and the CRLF are added here.
+  // Returns false if not running or the write was short.
+  //
+  // Deliberately generic: framing a sentence is NMEA, which this library owns,
+  // while knowing that `PCAS06,L` asks a CASIC receiver how many ephemerides it
+  // holds is board and vendor knowledge, which it does not. The caller supplies
+  // the meaning.
+  //
+  // Replies arrive as ordinary sentences. This parser ignores talkers it does
+  // not know, so a `$PCAS...` answer reaches the raw sink (setRawSink) and
+  // nowhere else -- turn that on before asking, or the answer goes nowhere.
+  bool sendNmeaSentence(const char* body);
+
   // Consume every byte the UART has buffered and parse what completes. Returns
   // true if this call changed anything in fix() -- position, quality, speed,
   // course or the clock, not position alone. Cheap to call every loop.
