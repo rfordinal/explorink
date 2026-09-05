@@ -233,32 +233,41 @@ repaint refreshes. Three consequences worth stating:
 The row needs an opaque white backing for the same reason the compass halo and
 the busy badge do: it lands on live map lines, not on blank margin.
 
-## The debug readout sits below this row, not inside it
+## The debug window sits below the whole header bar, not inside it
 
 `MapActivity::drawHeaderStatus()` calls `GUI.drawHeader(renderer, Rect{0,
 kHeaderMarginTop, screenWidth, kHeaderRowHeight}, ...)` -- a **full-width**
 clear, not just the right-hand icon strip `headerStatusRect()` covers above.
 `kHeaderRowHeight` (`MapActivity.cpp`, `BaseMetrics::values.batteryHeight +
-10` = 22) is that rect's height, named so the debug readout's own top offset
-(`kTextTopY = kHeaderMarginTop + kHeaderRowHeight + kTextGapBelowHeader`) can
-be derived from it instead of guessed.
+10` = 22) is that rect's height.
+
+**The debug window's top is no longer derived from that row at all.**
+`MapActivity::layoutDebugOverlay()` computes it as `mapContentTop() +
+kDebugGapBelowHeader`, and `mapContentTop()` is mode-aware -- see
+`docs/map-debug-window.md`. The old compile-time `kTextTopY` was 42 in every
+mode, which is 19px *inside* Hike's second header row; that is the bug the
+"Open" note at the end of this file used to describe, and it is fixed.
 
 Two bugs this fixed, both found on hardware 2026-08-08, in the same session
 the readout got a toggle and a white backing:
 
 - **Backing box wider than the text erased the header icons.** The first cut
-  sized the readout's backing to nearly the full screen width. `drawHeaderStatus()`
-  runs before the readout, so a wide white box painted straight over the
-  battery/BLE icons it had just drawn, on the same frame. Fixed by sizing each
-  line's own backing to that line's own `getTextWidth()`, in `drawDebugLine()` --
-  never wider than the glyphs it is behind.
+  sized the readout's backing to nearly the full screen width.
+  `drawHeaderStatus()` runs before the readout, so a wide white box painted
+  straight over the battery/BLE icons it had just drawn, on the same frame.
+  Fixed at the time by sizing each line's own backing to that line's own
+  `getTextWidth()`. **The window is a single fixed-width box again today**
+  (`MapDebugOverlay::paint()`), and that is safe only because the box now
+  starts below `mapContentTop()` and stops at the compass halo -- it has no
+  header pixels left to erase. Do not widen it past `rightLimit` without
+  re-reading that.
 - **A fixed 18px line gap was shorter than the font's own line height,** so
   each line's backing (drawn after the line above it) erased the bottom few
   pixels of that line's text. `ubuntu_10_regular`/`bold`'s `EpdFontData`:
   `advanceY` 24, `ascender` 20, `descender` -4 (`lib/EpdFont/builtinFonts/
-  ubuntu_10_regular.h`) -- so line spacing is now `renderer.getLineHeight(
-  UI_10_FONT_ID) + 2*kDebugPad` (30px), derived from the font instead of a
-  guessed constant.
+  ubuntu_10_regular.h`) -- so row pitch is `renderer.getLineHeight(
+  UI_10_FONT_ID) + kPad` (`MapDebugOverlay::rowStride()`), derived from the
+  font instead of a guessed constant.
 
 Before either fix, `kTextTopY` was a guessed `16` with no relation to this
 row at all -- close enough to its own `[6, 28)` band that the readout read as
@@ -678,7 +687,7 @@ kMaxTiles`, 3x3 worst case) -- there is no wider, dedicated query for the
 coarse tier, so a rider zoomed in tight in open country between towns will
 often see the fine name alone, or nothing.
 
-Truncated to fit with the same loop `drawDebugLine()` uses, against
+Truncated to fit with the same loop `MapDebugOverlay::paint()` uses, against
 `headerStatusRect()`'s own left edge minus a small gap -- so it stops before
 the icon cluster rather than running under it.
 
@@ -1092,15 +1101,12 @@ session) rather than to "no reading right now" (had one, lost it) -- there is
 no code path that distinguishes those two today, and no report yet of
 whether that matters in practice.
 
-**Open:** the debug readout (`SETTINGS.mapDebugInfo`, drawn by
-`drawDebugLine()`) starts at `kTextTopY`, a fixed offset unrelated to
-`headerBarHeight()`. Its first line already sits inside row one on both
-Ride/Cycle and Hike (pre-existing, not something this change touches); its
-second line, at one line-pitch below that, lands inside Hike's second line's
-band. Nobody has looked at the panel with both `mapDebugInfo` on and Hike
-mode active to see what that overlap actually looks like -- flagged here
-rather than fixed, since the debug readout is a developer tool, not
-something a rider sees.
+**Closed 2026-09-05.** The debug readout used to start at a compile-time
+`kTextTopY` unrelated to `headerBarHeight()`, so in Hike mode its lines landed
+inside this second row. It is now a managed window whose top is
+`mapContentTop() + kDebugGapBelowHeader` -- `docs/map-debug-window.md`. Read
+off the code, not yet looked at on the panel with `mapDebugInfo` on and Hike
+mode active.
 
 ### Verified on the desktop simulator, 2026-08-26
 

@@ -174,6 +174,15 @@ constexpr uint32_t kHeaderBarsRepaintMs = 30 * 1000;
 // of the time.
 constexpr uint32_t kHikeLineRepaintMs = 10 * 1000;
 
+// The debug window's own poll and repaint floors (updateDebugOverlay()). The
+// poll is faster than the header's because the whole point of the window is
+// watching something change; the repaint floor is what stops a per-second
+// counter -- a GNSS fix, a byte count -- from spending a waveform pass every
+// second. Diagnostic text, off by default, so it never gets to outbid the map
+// for panel time.
+constexpr uint32_t kDebugPollMs = 1000;
+constexpr uint32_t kDebugRepaintMs = 5 * 1000;
+
 // Observe mode's clock granularity, in minutes. The minute tick is the only
 // thing that repaints the header while nothing else on the device is happening,
 // and run 5 priced it: 60 windowed refreshes an hour, 9.4 s/h of panel time, in
@@ -429,21 +438,31 @@ constexpr int kHeaderBackingPad = 2;
 // Rect{0, kHeaderMarginTop, screenWidth, ...} in drawHeaderStatus()).
 constexpr int kHeaderRowHeight = BaseMetrics::values.batteryHeight + 10;
 
-// Debug readout geometry. Starts below the header status row above (battery,
-// BLE bars, transfer icon), not stuck at the top of the screen sharing its band --
-// a debug line starting inside [kHeaderMarginTop, kHeaderMarginTop +
-// kHeaderRowHeight) reads as glued to the status row instead of sitting
-// under it, even though the two never overlap horizontally.
+// Left margin shared by the debug window and, two pixels further in, the
+// header's place name.
 constexpr int kTextX = 8;
-constexpr int kTextGapBelowHeader = 14;
-constexpr int kTextTopY = kHeaderMarginTop + kHeaderRowHeight + kTextGapBelowHeader;
-// Line-to-line spacing is derived from the font's own line height at each
-// call site (renderer.getLineHeight(), not a hardcoded pixel count) --
-// ubuntu_10_regular/bold's advanceY is 24 (EpdFontData: advanceY, ascender,
-// descender = 24, 20, -4), so a fixed 18px gap left each line's backing box
-// (drawDebugLine's own line height + 2*kDebugPad tall) overlapping the box
-// above it, erasing the bottom few pixels of that line's text.
-constexpr int kDebugPad = 3;
+
+// Debug window geometry. Everything about where it lands is now computed per
+// frame in layoutDebugOverlay() from mapContentTop() and the compass halo --
+// these two are the only tuned numbers left.
+//
+// It used to be a compile-time `kTextTopY = kHeaderMarginTop +
+// kHeaderRowHeight + 14`, which is 42 whatever the mode is. Hike mode's header
+// bar ends at 58 (headerBarHeight()), so the first debug line's backing
+// started 19px *inside* the elevation/lat-lon row and painted over it. A
+// constant cannot know that; mapContentTop() does.
+//
+// 5 reproduces the old spacing in Ride and Cycle exactly -- the bar ends at
+// kHeaderBarHeight (36), the old constant put the box's top edge at 39 -- so
+// nothing about the tuned look changes on the modes where it was tuned.
+constexpr int kDebugGapBelowHeader = 5;
+// Clearance between the window's right edge and the compass's white halo,
+// same number drawHeaderPlaceName() already keeps against the icon cluster.
+// The window's rows always overlap the halo's vertical band (the halo spans
+// y 48..126 and the window starts at 42 in Ride, 64 in Hike), so this bound
+// applies unconditionally -- there is no mode in which the box could safely
+// run to the screen edge.
+constexpr int kDebugGapBeforeCompass = 6;
 
 // Extra clearance below the whole header row (battery box and BLE strip
 // alike): both of those clear-rects end right at the icon's own edge, so a
@@ -1576,12 +1595,6 @@ void MapActivity::updateHeaderStatus() {
   if (!renderer.displayBufferWindow(x, y, w, h)) {
     LOG_ERR(kLogTag, "header status window rejected: %d,%d %dx%d", x, y, w, h);
   }
-
-#ifdef ENABLE_GNSS_CMD
-  // Rides this poll rather than a timer of its own, so the debug readout can
-  // never refresh the panel more often than the header already does.
-  if (SETTINGS.mapDebugInfo && !bleInUse_ && headerRowDrawn_) drawGnssDebugLine();
-#endif
 }
 
 void MapActivity::drawCompass(uint8_t headingStep) {
@@ -1800,10 +1813,10 @@ void MapActivity::drawHeaderPlaceName() {
   const int maxWidth = stripX - kHeaderPlaceNameLeftX - kHeaderPlaceNameRightGap;
   if (maxWidth <= 0) return;
 
-  // Same truncate-until-fits loop drawDebugLine() uses just below --
-  // GfxRenderer::drawText does not clip and drawPixel logs every off-panel
-  // pixel, so an untruncated name running into the icon cluster would flood
-  // the log as well as overlap it.
+  // Same truncate-until-fits loop the debug window uses (MapDebugOverlay::
+  // paint()) -- GfxRenderer::drawText does not clip and drawPixel logs every
+  // off-panel pixel, so an untruncated name running into the icon cluster
+  // would flood the log as well as overlap it.
   for (size_t len = strlen(text); len > 0 && renderer.getTextWidth(UI_10_FONT_ID, text) > maxWidth; --len) {
     text[len - 1] = '\0';
   }
@@ -2303,83 +2316,57 @@ void MapActivity::drawPanSideHints() {
   GUI.drawSideButtonHints(renderer, "→", "←", UI_10_FONT_ID);
 }
 
-void MapActivity::drawDebugLine(int y, char* text) {
-  // GfxRenderer::drawText does not clip, and GfxRenderer::drawPixel answers
-  // every off-panel pixel with a LOG_ERR -- one overlong readout line is
-  // several hundred error lines over USB CDC. Trim to what fits instead.
-  const int maxWidth = renderer.getScreenWidth() - kTextX * 2;
-  for (size_t len = strlen(text); len > 0 && renderer.getTextWidth(UI_10_FONT_ID, text) > maxWidth; --len) {
-    text[len - 1] = '\0';
-  }
-  // White backing sized to this line's own text, not a fixed strip: the
-  // header status row (battery/BLE/transfer icon, top right, drawHeaderStatus())
-  // already drew into this same frame by the time this runs, and a backing
-  // wider than the text it is behind would paint white over it. Same idiom
-  // as that row's own backing (headerStatusRect()) -- just tight to this
-  // line instead of a shared rect for a whole icon group.
-  //
-  // Height is getLineHeight() (the font's full advanceY), not
-  // getTextHeight() (ascender only) -- ascender alone stops short of
-  // descenders ("g", "y", the "j" in a route name), leaving their bottom
-  // few pixels sitting on whatever the map drew, not the backing.
-  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text);
-  const int textHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  renderer.fillRect(kTextX - kDebugPad, y - kDebugPad, textWidth + kDebugPad * 2, textHeight + kDebugPad * 2, false);
-  renderer.drawText(UI_10_FONT_ID, kTextX, y, text, true);
+void MapActivity::layoutDebugOverlay() {
+  // mapContentTop(), never the file-scope kHeaderBarHeight: in Hike mode the
+  // header carries a second row and the window has to start below it. This is
+  // the bug the old compile-time kTextTopY could not express -- see
+  // kDebugGapBelowHeader.
+  const int top = mapContentTop() + kDebugGapBelowHeader;
+  // The compass's halo left edge, computed the same way drawHikeElevationLine()
+  // computes its own right bound. The compass is drawn earlier in the frame,
+  // so a box running past this would erase halo and glyph alike.
+  const int compassHaloLeft =
+      (renderer.getScreenWidth() - kCompassCenterMarginRight) - (kCompassGlyphRadius + kCompassHaloMargin);
+  // kScaleMarginBottom is the same clearance line the scale bar and the busy
+  // badge already bottom out on, so a window that grew that far would be
+  // arguing with them for the same pixels. Nothing reserves that many rows
+  // today; this is the guarantee, not the expectation.
+  const int bottomLimit = renderer.getScreenHeight() - kScaleMarginBottom;
+  debug_.setLayout(UI_10_FONT_ID, kTextX, top, compassHaloLeft - kDebugGapBeforeCompass, bottomLimit);
 }
 
-#ifdef ENABLE_GNSS_CMD
-// Where the GNSS debug line lives: the sixth debug row, under the transfer
-// status. A fixed full-width rect rather than one sized to the text, because
-// this is the one debug line with a windowed repaint of its own -- a rect that
-// shrank with a shorter string would leave the tail of the longer one behind.
-void MapActivity::gnssDebugRect(int& x, int& y, int& w, int& h) const {
-  const int linePitch = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
-  x = kTextX - kDebugPad;
-  y = kTextTopY + linePitch * 4 - kDebugPad;
-  w = renderer.getScreenWidth() - x - kTextX;
-  h = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
-}
+// Keeps the debug window current between full frames. Same polled, windowed
+// shape as updateHeaderStatus() and updateHikeElevationLine(): the panel is
+// only spent when a slot's text actually differs from what is on it.
+//
+// This is what makes reserve()/set() worth having. A feature writing its slot
+// once a second from its own loop -- a GNSS fix count, a transfer byte
+// counter -- reaches the panel through here without triggering a frame and
+// without knowing anything about waveform cost.
+void MapActivity::updateDebugOverlay() {
+  // Same gate as the header row's: nothing to keep honest before a full frame
+  // has put the window on the panel in the first place.
+  if (!SETTINGS.mapDebugInfo || !headerRowDrawn_) return;
 
-// The receiver's own numbers, and **the one debug line that refreshes itself**.
-//
-// Every other line here rides whatever redraw the map was going to do anyway,
-// because an e-ink refresh costs the better part of two seconds. That rule
-// fails for exactly this line: on a GNSS session with no fix **the map never
-// redraws at all**, so the numbers a rider most wants would freeze at the
-// instant they entered the map. Fifteen minutes outdoors on 2026-09-04
-// produced one stale row and no way to see the receiver was hearing nothing.
-//
-// So it repaints on its own, and pays for it with two limits. It only redraws
-// when the text actually changed -- satellite counts sit still for seconds at a
-// time -- and it rides updateHeaderStatus()'s existing poll and rate cap rather
-// than adding a timer, so it can never refresh more often than the header does.
-//
-// `run` is first because everything after it is meaningless without it: the
-// accessors answer 0 both for a stopped receiver and for a running one hearing
-// nothing, and those are not the same finding. `used`, `inview` and `tracked`
-// are three different counts and the gaps between them are the diagnosis:
-// inview off the almanac, tracked from a non-zero C/N0, used in the solution.
-void MapActivity::drawGnssDebugLine() {
-  const GnssFix& fix = gnss.fix();
-  char line[64];
-  snprintf(line, sizeof(line), "gnss %s q%u u%u v%u t%u s%u", gnss.running() ? "on" : "off",
-           static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
-           static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
-           static_cast<unsigned>(gnss.bestSnr()));
-  if (strcmp(line, drawnGnssDebug_) == 0) return;
-  strncpy(drawnGnssDebug_, line, sizeof(drawnGnssDebug_) - 1);
-  drawnGnssDebug_[sizeof(drawnGnssDebug_) - 1] = '\0';
+  const uint32_t now = millis();
+  if (nextDebugPollMs_ != 0 && now < nextDebugPollMs_) return;
+  nextDebugPollMs_ = now + kDebugPollMs;
 
-  int x, y, w, h;
-  gnssDebugRect(x, y, w, h);
-  renderer.fillRect(x, y, w, h, false);
-  renderer.drawText(UI_10_FONT_ID, kTextX, y + kDebugPad, line, true);
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
-    LOG_ERR(kLogTag, "gnss debug window rejected: %d,%d %dx%d", x, y, w, h);
+  if (!debug_.dirty()) return;
+  if (now < nextDebugRepaintMs_) return;
+
+  layoutDebugOverlay();
+  int x = 0, y = 0, w = 0, h = 0;
+  if (!debug_.repaint(renderer, x, y, w, h)) return;
+  nextDebugRepaintMs_ = now + kDebugRepaintMs;
+
+  // windowRefreshAffordable() first, same as the busy badge and the follow
+  // frame's union window: displayBufferWindow() allocates a buffer per call
+  // and a refused allocation aborts the device rather than failing.
+  if (!windowRefreshAffordable(w, h) || !renderer.displayBufferWindow(x, y, w, h)) {
+    LOG_ERR(kLogTag, "debug window rejected: %d,%d %dx%d", x, y, w, h);
   }
 }
-#endif
 
 MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath,
                          bool resumedFromSleep)
@@ -2394,6 +2381,29 @@ MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
       LOG_ERR(kLogTag, "route path too long, ignored: %s", routePath);
     }
   }
+
+  // ## The debug window's rows, reserved once, here
+  //
+  // In the constructor and not in onEnter(), because onEnter() runs again on
+  // every return to the map and reserving twice would burn the table
+  // (MapDebugOverlay::kMaxSlots) for no new rows.
+  //
+  // **The order of these calls is the order on the panel.** That is the whole
+  // reason they sit together in one block instead of next to the code that
+  // writes each of them: reading this list is how anyone finds out what the
+  // window can show and in what order, without grepping for set() calls.
+  //
+  // A feature that wants a line of its own adds a reserve() here and a set()
+  // in its own loop. It does not pick a y, does not know the font, and cannot
+  // collide with a neighbour -- which is what the old `line1Y`/`line2Y`
+  // ladder could not promise once more than one path was writing into it.
+  debugFixSlot_ = debug_.reserve("fix");
+  debugGnssSlot_ = debug_.reserve("gnss");
+  debugRenderSlot_ = debug_.reserve("render");
+  debugRouteNameSlot_ = debug_.reserve("route");
+  debugRouteFitSlot_ = debug_.reserve("routefit");
+  debugRouteRefusedSlot_ = debug_.reserve("routeerr");
+  debugTransferSlot_ = debug_.reserve("transfer");
 }
 
 void MapActivity::onEnter() {
@@ -2955,6 +2965,33 @@ void MapActivity::loop() {
   // thing that is not that decision -- and the case step 3 is built for has no
   // phone connected at all.
   pollGnssFix();
+
+  // The receiver's own numbers, written every loop. set() is a vsnprintf into
+  // the slot's buffer -- no drawing, no panel, no allocation -- and
+  // updateDebugOverlay() only repaints when the text actually changed, so
+  // writing the same string a hundred times a second costs nothing.
+  //
+  // **`run` comes first because every number after it is ambiguous without
+  // it**: the accessors answer 0 both for a stopped receiver and for a running
+  // one hearing nothing, and those are opposite findings. `used`, `inview` and
+  // `tracked` are three different counts and the gaps between them are the
+  // diagnosis -- inview off the almanac, tracked from a non-zero C/N0, used in
+  // the solution.
+  //
+  // Worth its slot: on 2026-09-05 this row read `q0 u0 v10 t10 s30` for a long
+  // stretch at the start of a walk. Ten satellites tracked at 30 dB-Hz and no
+  // fix is not a weak-signal story, it is the receiver failing to decode the
+  // ephemeris off the air -- which needs about 31 dB-Hz. Nothing else on the
+  // panel could have said that.
+  if (bleInUse_) {
+    debug_.clear(debugGnssSlot_);
+  } else {
+    const GnssFix& debugFix = gnss.fix();
+    debug_.set(debugGnssSlot_, "gnss %s q%u u%u v%u t%u s%u", gnss.running() ? "on" : "off",
+               static_cast<unsigned>(debugFix.quality), static_cast<unsigned>(debugFix.satsUsed),
+               static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
+               static_cast<unsigned>(gnss.bestSnr()));
+  }
 #endif
 
   // The command console, over both channels. Same parser, same state, same
@@ -3025,6 +3062,9 @@ void MapActivity::loop() {
   // Hike mode's elevation/lat-lon line, kept current the same way: a no-op in
   // Ride/Cycle (mode_ gate inside).
   updateHikeElevationLine();
+  // And the debug window, same shape again: a no-op with mapDebugInfo off,
+  // which is its default.
+  updateDebugOverlay();
 
   // Advertising state and connection parameter requests, once per tick. A
   // restart that failed inside the NimBLE disconnect callback cannot be
@@ -5869,24 +5909,26 @@ void MapActivity::renderRouteOverview() {
   drawMapScale();
 
   if (SETTINGS.mapDebugInfo) {
-    const int linePitch = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
-    const int line1Y = kTextTopY;
-    const int line2Y = line1Y + linePitch;
-    char line[80];
-    snprintf(line, sizeof(line), "%s", route_->name());
-    drawDebugLine(line1Y, line);
+    // This frame owns two of the window's rows and none of the follow
+    // frame's, so it clears those rather than leaving the last fix's numbers
+    // standing under a picture that has no marker in it at all.
+    debug_.clear(debugFixSlot_);
+    debug_.clear(debugRenderSlot_);
+    debug_.clear(debugRouteRefusedSlot_);
+    debug_.set(debugRouteNameSlot_, "%s", route_->name());
     // Says out loud when the ladder could not hold the whole route, because a
     // frame showing the middle of a route looks exactly like one showing all
     // of a shorter route.
     if (fit.fits) {
-      snprintf(line, sizeof(line), "%lu pts  z%u %.0fm/px  h%u", static_cast<unsigned long>(route_->pointCount()),
-               static_cast<unsigned>(fit.zoomStep), MapViewport::kZoomLadder[fit.zoomStep].mpp,
-               static_cast<unsigned>(fit.heading));
+      debug_.set(debugRouteFitSlot_, "%lu pts  z%u %.0fm/px  h%u", static_cast<unsigned long>(route_->pointCount()),
+                 static_cast<unsigned>(fit.zoomStep), MapViewport::kZoomLadder[fit.zoomStep].mpp,
+                 static_cast<unsigned>(fit.heading));
     } else {
-      snprintf(line, sizeof(line), "%lu pts  z%u  %s", static_cast<unsigned long>(route_->pointCount()),
-               static_cast<unsigned>(fit.zoomStep), tr(STR_MAP_ROUTE_PARTIAL));
+      debug_.set(debugRouteFitSlot_, "%lu pts  z%u  %s", static_cast<unsigned long>(route_->pointCount()),
+                 static_cast<unsigned>(fit.zoomStep), tr(STR_MAP_ROUTE_PARTIAL));
     }
-    drawDebugLine(line2Y, line);
+    layoutDebugOverlay();
+    debug_.draw(renderer);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), tr(STR_MAP_OPTIONS), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
@@ -6207,45 +6249,39 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // marker, plus what the viewport reset actually cost. Off by default
   // (SETTINGS.mapDebugInfo) -- diagnostic text, not something a rider needs.
   if (SETTINGS.mapDebugInfo) {
-    const int linePitch = renderer.getLineHeight(UI_10_FONT_ID) + kDebugPad * 2;
-    const int line1Y = kTextTopY;
-    const int line2Y = line1Y + linePitch;
-    const int line3Y = line2Y + linePitch;
-    const int line4Y = line3Y + linePitch;
-    char line[80];
-    snprintf(line, sizeof(line), "%.5f %.5f h%u #%u", lat, lon, headingStep, seq);
-    drawDebugLine(line1Y, line);
-    snprintf(line, sizeof(line), "%s z%u m%u %lut %luw %lums", mapRideModeName(mode_), zoomStep(), markerStep(),
-             static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->waysEmitted()),
-             static_cast<unsigned long>(elapsedMs));
-    drawDebugLine(line2Y, line);
+    // The overview frame's two rows are not ours -- clear them, same reason
+    // it clears these.
+    debug_.clear(debugRouteNameSlot_);
+    debug_.clear(debugRouteFitSlot_);
+    debug_.set(debugFixSlot_, "%.5f %.5f h%u #%u", lat, lon, headingStep, seq);
+    debug_.set(debugRenderSlot_, "%s z%u m%u %lut %luw %lums", mapRideModeName(mode_), zoomStep(), markerStep(),
+               static_cast<unsigned long>(source_->tilesOpened()), static_cast<unsigned long>(source_->waysEmitted()),
+               static_cast<unsigned long>(elapsedMs));
     if (routePath_[0] != '\0' && !route_) {
       // The rider picked a route and there is none on screen. The picker only
       // checks each file's header, so a route whose point array fails its own
       // crc gets this far -- and an empty map with no explanation reads as a
-      // bug in the route feature rather than as a broken file. Shares line 3
-      // with the notice above, which is about a different session state and
-      // cannot be up at the same time.
-      snprintf(line, sizeof(line), "%s", tr(STR_MAP_ROUTE_REFUSED));
-      drawDebugLine(line3Y, line);
+      // bug in the route feature rather than as a broken file.
+      debug_.set(debugRouteRefusedSlot_, "%s", tr(STR_MAP_ROUTE_REFUSED));
+    } else {
+      debug_.clear(debugRouteRefusedSlot_);
     }
 
     // Enough to see that a file push happened and whether it landed. No new
-    // screen and no refresh of its own: this rides whatever redraw the map
-    // was going to do anyway, because an e-ink refresh costs the better part
-    // of two seconds and a byte counter is not worth one.
+    // screen and no refresh of its own here: this rides the redraw the map was
+    // going to do anyway, because an e-ink refresh costs the better part of
+    // two seconds and a byte counter is not worth one. Between frames it is
+    // updateDebugOverlay() that decides whether the counter earned a window.
+    char line[MapDebugOverlay::kMaxTextLen];
     transfer_.formatStatus(line, sizeof(line));
-    if (line[0] != '\0') drawDebugLine(line4Y, line);
-
-#ifdef ENABLE_GNSS_CMD
-    // Drawn with the frame too, not only from the poll: otherwise the row is
-    // blank until the first value changes, which on a stationary receiver can
-    // be a while. Cleared first so the poll's own change check does not skip it.
-    if (!bleInUse_) {
-      drawnGnssDebug_[0] = '\0';
-      drawGnssDebugLine();
+    if (line[0] != '\0') {
+      debug_.set(debugTransferSlot_, "%s", line);
+    } else {
+      debug_.clear(debugTransferSlot_);
     }
-#endif
+
+    layoutDebugOverlay();
+    debug_.draw(renderer);
   }
 
   LOG_DBG(kLogTag,
@@ -6315,10 +6351,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   sendViewportDiagonalIfChanged();
 
   // Composited last, over the map's own bottom-edge pixels rather than into
-  // reserved space -- same idea as the debug readout at the top of the
-  // screen (drawDebugLine() above): the map fills the whole viewport, there
-  // is no margin set aside for chrome, so UI text overlays whatever tiles
-  // were there.
+  // reserved space -- same idea as the debug window at the top of the screen
+  // (MapDebugOverlay): the map fills the whole viewport, there is no margin
+  // set aside for chrome, so UI text overlays whatever tiles were there.
   drawMapButtonHints();
 
   // The marker goes on **last**, and its patch is taken immediately before it.

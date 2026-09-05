@@ -22,6 +22,39 @@ is marked as such.
 `TRAILINK_VERSION` is set explicitly in every env except `default`, where
 `scripts/git_branch.py` derives it from the branch and short SHA.
 
+## Where `custom_sdkconfig` actually lands
+
+`[base]`'s `custom_sdkconfig` (`platformio.ini:88`) is not a set of compiler
+defines. It **rebuilds the Arduino core libs from source**, and the result is
+written into `~/.platformio/packages/framework-arduinoespressif32-libs/<chip>/`,
+replacing what the package shipped.
+
+Two consequences.
+
+**Options that only the core carries are real only if that rebuild ran.** The
+~32-37 kB heap reclamation is in that class (`map-memory.md`), and so is
+`CONFIG_PM_ENABLE` if it is ever set. Whether every environment triggers a
+rebuild is open -- parent `docs/TODO.md`, T-256 -- and it is answered from a
+build log.
+
+**That directory is shared, unversioned, mutable state.** One copy serves every
+worktree, branch and session on this machine, and it has **no version suffix in
+its name**, so a modified copy keeps reporting the stock version forever. A
+build for one chip leaves the other chip's subtree alone until something
+rewrites it. Observed 2026-09-05: the `esp32c3` and `esp32s3` subtrees swapped
+which one looked freshly built inside one hour, because a parallel session
+built. So **never cite it as evidence about a particular build** (a claim off it
+names the date and the environment), and **never repair it in place** -- delete
+the whole directory and let PlatformIO fetch it again.
+
+A library compiled **per environment** out of `.pio/libdeps/<env>/` does not
+need the core rebuild at all: it picks the config up from the generated
+`sdkconfig.defaults` when it compiles. NimBLE-Arduino is the one that matters
+here, which is why `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517` is measured working
+on the T5 S3 Pro -- 13.6 kB/s against 3.9 kB/s at MTU 256, same board, same day
+(parent `docs/ble-map-transfer-protocol.md`, "Measured 2026-09-03") --
+regardless of any of this.
+
 ## `gh_release` has no Bluetooth, and that is not a regression
 
 `FREEINK_CAP_BLE_PERIPHERAL=1` and the `h2zero/NimBLE-Arduino` dependency are
