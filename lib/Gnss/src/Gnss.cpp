@@ -1,5 +1,6 @@
 #include <Gnss.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -279,6 +280,25 @@ bool Gnss::injectAidIni(double latitude, double longitude, bool haveTime, uint32
   // board-agnostic on purpose -- so the caller has to say what happened, and
   // gnssStart() in src/main.cpp does.
   return config_.serial->write(frame, sizeof(frame)) == sizeof(frame);
+}
+
+bool Gnss::sendNmeaSentence(const char* body) {
+  if (!running_ || config_.serial == nullptr || body == nullptr) return false;
+  const size_t bodyLen = std::strlen(body);
+  // 1 for '$', 1 for '*', 2 checksum digits, CRLF, terminator.
+  if (bodyLen == 0 || bodyLen > 82) return false;
+
+  // NMEA 0183 checksum: XOR of every byte between '$' and '*', printed as two
+  // uppercase hex digits. Same rule this file already validates on the way in.
+  uint8_t checksum = 0;
+  for (size_t i = 0; i < bodyLen; ++i) {
+    checksum ^= static_cast<uint8_t>(body[i]);
+  }
+
+  char out[90];
+  const int written = snprintf(out, sizeof(out), "$%s*%02X\r\n", body, checksum);
+  if (written <= 0 || static_cast<size_t>(written) >= sizeof(out)) return false;
+  return config_.serial->write(reinterpret_cast<const uint8_t*>(out), written) == static_cast<size_t>(written);
 }
 
 uint32_t Gnss::fixAgeMs() const {

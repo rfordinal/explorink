@@ -288,6 +288,28 @@ bool gnssStart() {
   config.powerEnable = gnssPowerEnable;
   if (!gnss.begin(config)) return false;
 
+  // Ask for all three constellations before anything else. The module was
+  // running GPS+GLONASS (mode 5): a raw capture on 2026-09-04 carried 45 GPGSV
+  // and 45 GLGSV sentences and not one GBGSV, and `gnss.md` had already noted
+  // the set is configurable and that the vendor lists BeiDou.
+  //
+  // **Why it matters here and not as a nicety: this antenna's problem is
+  // satellites in view, and BeiDou is about 45 more of them.** A weak signal
+  // does not need a better satellite, it needs more chances at four usable
+  // ones. Modes are from the official CASIC spec, 1.6.5 CAS04:
+  //   1 GPS, 2 BDS, 3 GPS+BDS, 4 GLONASS, 5 GPS+GLONASS, 6 BDS+GLONASS,
+  //   7 GPS+BDS+GLONASS.
+  //
+  // Sent on every start rather than saved to the module's flash: it costs one
+  // 16-byte sentence, it cannot drift out of step with this code, and it wears
+  // nothing out. **Unverified that this module accepts mode 7** -- the spec says
+  // the supported subset is per product model and does not list the L76K's.
+  // The check is cheap and needs no sky: a `$GBGSV` in `CMD:GNSS RAW ON` means
+  // it took.
+  if (!gnss.sendNmeaSentence("PCAS04,7")) {
+    LOG_ERR("GNSS", "constellation request not sent");
+  }
+
   // Seed the receiver before it starts searching. **Without this a cold start
   // cannot finish at the signal level this board delivers** -- reading the
   // ephemeris off the air needs more signal than merely tracking a satellite
@@ -1360,6 +1382,7 @@ void loop() {
         //   CMD:GNSS OFF       ->  GNSS_OK:off
         //   CMD:GNSS RAW ON    ->  GNSS_OK:raw=1   (every sentence to the log)
         //   CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
+        //   CMD:GNSS EPH       ->  asks how many ephemerides are held (RAW ON first)
         //   CMD:GNSS PROBE     ->  GNSS_PROBE:...  (run first, on a cold boot)
         //   CMD:GNSS RELEASE   ->  GNSS_RELEASE:... (writes the rail pin, step 2a)
         //   CMD:GNSS LOG       ->  GNSS_LOG:...    (sizes of the fix log, never its rows)
@@ -1553,8 +1576,34 @@ void loop() {
         } else if (argument == "RAW OFF") {
           gnss.setRawSink(nullptr);
           logSerial.printf("GNSS_OK:raw=0\n");
+        } else if (argument == "EPH") {
+          // Ask a CASIC receiver how many valid ephemerides it is holding. The
+          // answer comes back as an ordinary sentence carrying `LT=<n>`, so it
+          // reaches the raw sink and nothing else -- CMD:GNSS RAW ON first.
+          //
+          // **This is the instrument for the one question that has been open
+          // since 2026-09-02: does a rail cycle cost the receiver its
+          // ephemeris?** Ask, `CMD:GNSS OFF`, wait, `CMD:GNSS ON`, ask again. A
+          // count that survives means the module has a backup domain and every
+          // doc calling a map entry a cold start is wrong; a count that drops to
+          // zero means the map screen throws away the one thing the receiver
+          // cannot quickly get back. **It needs no sky and no fix**, which is
+          // why it is worth having: the same question outdoors costs ten minutes
+          // per attempt and answers ambiguously.
+          //
+          // Reading it rather than injecting it is the whole point. Ephemeris
+          // *injection* on this module is a known unsolved problem -- CASIC's
+          // own spec lists MSG-GPSEPH as an output, and OpenTrailPaper measured
+          // 4 ACKs out of 33 attempts with the count staying at zero
+          // (investigations/agnss.md). The module decodes its own ephemeris
+          // perfectly given signal, so retention is the lever, not injection.
+          if (gnss.sendNmeaSentence("PCAS06,L")) {
+            logSerial.printf("GNSS_OK:eph-query sent, read the reply's LT= with RAW ON\n");
+          } else {
+            logSerial.printf("GNSS_ERR:eph query not sent, receiver not running\n");
+          }
         } else if (argument.length() > 0) {
-          logSerial.printf("GNSS_ERR:expected ON, OFF, PROBE, RELEASE, RAW ON or RAW OFF\n");
+          logSerial.printf("GNSS_ERR:expected ON, OFF, PROBE, RELEASE, EPH, RAW ON or RAW OFF\n");
         } else if (!gnss.running()) {
           logSerial.printf("GNSS_OFF\n");
         } else {
