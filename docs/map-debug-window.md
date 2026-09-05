@@ -177,6 +177,19 @@ depends on which frame drew last.
 1.1 kB, a fixed member of `MapActivity`. No allocation on a screen that already
 fights for heap during a viewport reset (`docs/map-memory.md`).
 
+## Why this is exempt from the ink budget
+
+The window is a white box with a border drawn over the map, and it fails the
+project's own test for what may be on the map -- Outline Téza `V33`, "a feature
+has to help someone find their way; what fails that test is not on the map",
+and `V31`, "ink is a budget". It passes only because `SETTINGS.mapDebugInfo` is
+off by default and a rider never sees it.
+
+That is the whole exemption. Anything that moves this window toward being
+useful to a rider -- on by default, a nicer frame, a line a rider would want --
+puts it under `V33`, and then it is a map feature that has to earn its ink.
+Keep it a developer tool.
+
 ## Status
 
 **Verified on the desktop simulator, 2026-09-05.** Not on hardware. Built
