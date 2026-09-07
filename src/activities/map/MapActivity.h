@@ -590,6 +590,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // popup's, and refreshes just that window. False when there is nothing saved
   // or the write did not fit -- caller then does a full redraw.
   bool restoreMenuBackdrop();
+  // The map pixels back into the framebuffer and nothing else: no button hints,
+  // no window refresh, and the backdrop is kept for whoever finally closes the
+  // chain. For a popup opening over a *smaller* rect than the one already on the
+  // panel -- a Confirm box inside a Menu box -- where the new popup draws only
+  // its own rect and would otherwise leave the previous dialog's frame and title
+  // as a ring around itself (seen on the T5 S3 Pro 2026-09-07, "Delete Base?"
+  // inside a still-visible "Pins" dialog).
+  bool paintMenuBackdrop();
   void dropMenuBackdrop();
   // The map's own four button hints for the current screen mode. Shared by the
   // full render and the menu-close restore, so the two cannot disagree about

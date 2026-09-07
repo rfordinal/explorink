@@ -3630,6 +3630,18 @@ void MapActivity::dropMenuBackdrop() {
   menuBackdropRect_ = Rect{0, 0, 0, 0};
 }
 
+bool MapActivity::paintMenuBackdrop() {
+  if (!menuBackdrop_) return false;
+  const Rect rect = menuBackdropRect_;
+  if (!renderer.copyBufferToRegion(rect.x, rect.y, rect.width, rect.height, menuBackdrop_.get(), menuBackdropSize_)) {
+    LOG_ERR(kLogTag, "menu backdrop paint rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+    return false;
+  }
+  // No displayBufferWindow() here on purpose: every popup open ends in
+  // OptionPopup::processRender(), which refreshes the whole panel anyway.
+  return true;
+}
+
 bool MapActivity::restoreMenuBackdrop() {
   if (!menuBackdrop_) return false;
   const Rect rect = menuBackdropRect_;
@@ -4019,6 +4031,12 @@ void MapActivity::pinDistanceText(const PinEntry& entry, char* buf, size_t bufLe
 }
 
 void MapActivity::servicePendingPinPopup() {
+  // The panel still holds the popup this one is replacing, and the new one draws
+  // only its own rect. Put the map back into the buffer first, so a smaller box
+  // lands on the map instead of inside the previous dialog's frame. Free when
+  // the two rects match (the pixels are overdrawn immediately); the backdrop is
+  // kept either way -- see paintMenuBackdrop().
+  paintMenuBackdrop();
   const PinPopup which = pendingPinPopup_;
   const size_t arg = pendingPinArg_;
   pendingPinPopup_ = PinPopup::None;
@@ -4129,6 +4147,9 @@ void MapActivity::openPinsOffscreenList() {
 // implements.
 
 void MapActivity::servicePendingNearbyPopup() {
+  // Same reason as servicePendingPinPopup(): the previous popup's pixels are on
+  // the panel and the next one may be smaller.
+  paintMenuBackdrop();
   const NearbyPopup which = pendingNearbyPopup_;
   const uint8_t arg = pendingNearbyArg_;
   pendingNearbyPopup_ = NearbyPopup::None;
