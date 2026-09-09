@@ -894,7 +894,17 @@ Two goals, and section 3b says they do not share a fix: **speed** comes from
 T-271 and T-272, **battery** comes from T-273 and T-274. T-269 and T-275 are the
 instruments.
 
-**Revised 2026-09-09: build T-269 first.** The earlier advice was to reach for
+**Revised again 2026-09-09, after T-269 ran: T-273 is the lever, and it is now
+backed by measurement.** A pass costs 34 ms and 85 % of it is one PSRAM sweep
+that reads the whole step framebuffer regardless of what changed, so pass count
+is very nearly the whole bill: a marker move is 11 x 34 ms, a clean frame
+37 x 34 ms = 1.25 s, measured. Un-aliasing `epd_fastest` to take `epd_fast`
+from 11 passes to 8 is a straight ~100 ms off every marker move, and giving
+`lutText` a tuned table is worth far more on every clean frame. Neither needs
+new code. The deeper fix is to stop re-reading 1,036.8 kB per pass at all,
+which is a `Panel_EPD` change and so an upstream or fork question.
+
+**Superseded, kept for the reasoning: build T-269 first.** The earlier advice was to reach for
 T-271 if only one thing gets built. Section 4 removes its premise -- the project
 running this panel at ~100 ms does it with a **whole-panel** push and a short
 train, so scoping the rectangle is not what separates us from them, and section
@@ -921,9 +931,12 @@ unchanged-frame subtraction says how much of the 1,030 ms is not passes at all
 -- section 1b's fit predicts **~455 ms** of it, which would be the larger of the
 two problems.
 
-**Done when** the pass count is confirmed as 11 and 37, a per-pass time and a
-PSRAM sweep time exist next to their 7-13.3 ms, and section 3's estimate is
-replaced by numbers. Blocks T-271 and T-273. Needs the board.
+**Done, 2026-09-09, measured on hardware.** Pass counts confirmed as 1, 11 and
+37; per-pass 33.8 ms; `blit_dmabuf` 82-89 % of it; the scan linear with a zero
+intercept; prep measured separately at 234-574 ms. Section 3 carries the table
+and the instrument. What it hands the next step: **the fix is `blit_dmabuf`,
+not the bus and not the rectangle**, and what stays open is the scan-side half
+of the 2x.
 
 **T-270. Collect the asynchrony that already exists.** Implement
 `supportsAsyncDisplay()`, `displayStart()` and `displayFinish()` on
@@ -1078,9 +1091,16 @@ data cache) are read off the pinned ESP-IDF 5.5.2 on disk; the TRM sentence that
 would state the shared cache directly is **not** on disk and is inferred from
 the register map.
 
-Section 3's bus arithmetic is **derived and checked**; its PSRAM bandwidth range,
-the per-row ISR overhead and therefore the 210-500 ms floor are **estimates with
-no measurement behind them anywhere in this tree**. Section 3b's panel-duty table
+Section 3's bus arithmetic is **derived and checked**. Its PSRAM bandwidth
+range, per-row ISR overhead and 210-500 ms floor were estimates with nothing
+behind them; **they are now superseded by measurement** -- 34.16 ms per pass,
+zero fixed cost inside the scan, `blit_dmabuf` at 82-89 % of it, 23 frames on a
+named T5 S3 Pro on 2026-09-09, instrument and archived binary named in that
+section. The prep/scan split is **measured**, pairing the pass timer against
+`PowerTelemetry`'s wall clock on the same refresh. The CPU-clock explanation
+for the prep half is **consistent with the counters but not isolated**, and the
+scan half of the 2x is **`[open]`**: `blit_dmabuf` barely moves between the
+fast and slow populations, so a core-clock story does not fit it. Section 3b's panel-duty table
 is **measured** off `docs/power-runs/run6-2026-09-04.csv`, seven boots of build
 `0.2.0-t5s3pro`; the failed drain fit in the same section is **measured and
 negative**, which is why no per-refresh energy figure appears anywhere here; the
