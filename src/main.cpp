@@ -41,6 +41,9 @@
 
 #include <cstring>
 
+#ifdef ENABLE_EPDLUT_CMD
+#include <driver/LgfxEpdDriver.h>  // setLgfxFastLut, the CMD:EPDLUT bench hook
+#endif
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DebugInput.h"
@@ -1529,6 +1532,39 @@ void loop() {
           logSerial.printf("BUTTON_OK:%s:%ld\n", DebugInput::kButtonNames[button], holdMs);
         }
 #endif  // ENABLE_BUTTON_CMD
+#ifdef ENABLE_EPDLUT_CMD
+      } else if (cmd == "EPDLUT" || cmd.startsWith("EPDLUT ")) {
+        // Pick the waveform table the non-clean refresh path uses, so the two
+        // can be compared on the glass without a reflash.
+        //
+        //   CMD:EPDLUT        ->  EPDLUT_OK:0        (report)
+        //   CMD:EPDLUT 1      ->  EPDLUT_OK:1        (7-pass 1-bit probe)
+        //   CMD:EPDLUT 2      ->  EPDLUT_ERR:range:0,1
+        //
+        // Why it exists: T-269 measured a pass at 34 ms and the marker-move
+        // table at 11 passes, and Panel_EPD's fast branch thresholds every
+        // pixel to pure black or white, so the table can be written for 1 bit
+        // and made shorter. What that costs is dose -- whether four drive
+        // passes still land a solid black without residue -- and dose does not
+        // show up in CMD:SCREENSHOT, which reads the framebuffer rather than
+        // the glass. It needs an eye on the device, so it needs a switch.
+        //
+        // Devel builds only. It is a bench instrument and it degrades the image
+        // by design; same gate shape as CMD:BUTTON above.
+        //
+        // Note: switching re-arms every pixel (Panel_EPD stores the LUT offset
+        // per pixel), so the frame straight after a switch flashes and is not a
+        // valid timing sample. Move the marker twice before believing a number.
+        String rest = cmd.length() > 6 ? cmd.substring(7) : String("");
+        rest.trim();
+        if (rest.isEmpty()) {
+          logSerial.printf("EPDLUT_OK:%d\n", freeink::getLgfxFastLut());
+        } else if (freeink::setLgfxFastLut(rest.toInt())) {
+          logSerial.printf("EPDLUT_OK:%d\n", freeink::getLgfxFastLut());
+        } else {
+          logSerial.println("EPDLUT_ERR:range:0,1");
+        }
+#endif  // ENABLE_EPDLUT_CMD
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->
