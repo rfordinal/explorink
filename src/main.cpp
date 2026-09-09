@@ -43,6 +43,14 @@
 
 #ifdef ENABLE_EPDLUT_CMD
 #include <driver/LgfxEpdDriver.h>  // setLgfxFastLut, the CMD:EPDLUT bench hook
+// Lives in a scratch edit of .pio/libdeps' Panel_EPD.cpp, which is a third-party
+// file and not tracked, so it is absent from a clean checkout. **Weak on
+// purpose**: an undefined weak symbol links as null instead of failing the
+// build, so the tracked tree still compiles and CMD:EPDIDLE simply reports that
+// this build has no instrument. Removing it outright once cost the measurement
+// exactly when the question got harder; a landmine in the build would cost
+// more. docs/t5s3-partial-refresh.md carries the patch to re-apply.
+extern "C" int explorink_set_text_idle(int idle) __attribute__((weak));
 #endif
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -1563,6 +1571,31 @@ void loop() {
           logSerial.printf("EPDLUT_OK:%d\n", freeink::getLgfxFastLut());
         } else {
           logSerial.println("EPDLUT_ERR:range:0,1");
+        }
+      } else if (cmd == "EPDIDLE" || cmd.startsWith("EPDIDLE ")) {
+        // Set how many idle passes trail the clean frame's drive rows, 0-19.
+        //
+        //   CMD:EPDIDLE 8   ->  EPDIDLE_OK:8
+        //   CMD:EPDIDLE     ->  EPDIDLE_ERR:need a number 0-19
+        //
+        // An idle pass drives no pixel -- it is settle time -- but costs a full
+        // 34 ms here (measured), so LovyanGFX's 19 is ~646 ms of the 1,249 ms
+        // clean frame. Whether the glass needs all of it is a question only an
+        // eye answers, and a rebuild per trial costs five minutes, so this
+        // makes it a serial command.
+        //
+        // Two results worth knowing before turning it: 4 fails outright (Home
+        // carries the map through a clean) and 6 fails on Home into tilesync.
+        // The number that has passed every path so far is the stock 19.
+        String rest = cmd.length() > 7 ? cmd.substring(8) : String("");
+        rest.trim();
+        if (explorink_set_text_idle == nullptr) {
+          logSerial.println("EPDIDLE_ERR:no instrument in this build");
+        } else if (rest.isEmpty()) {
+          logSerial.println("EPDIDLE_ERR:need a number 0-19");
+        } else {
+          const int applied = explorink_set_text_idle(rest.toInt());
+          logSerial.printf(applied < 0 ? "EPDIDLE_ERR:range\n" : "EPDIDLE_OK:%d\n", applied);
         }
 #endif  // ENABLE_EPDLUT_CMD
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
