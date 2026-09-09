@@ -654,10 +654,41 @@ over-dosed every level by 15 %. Their pass clocks **every row**
 (`for (int row = 0; row < _config.height; row++)`, `EPD_Painter.cpp:1419`),
 exactly as `Panel_EPD` and FastEPD do (2c), so it is comparable to ours.
 
-A fast frame there is therefore roughly **7 x 7-13.3 ms = 49-93 ms**
-`[derived by us from their measured row loop]`, which is what the "probably
-100 ms" is. Their 16-grey NORMAL is 13 slots at a padded 15 ms, **195 ms**,
-stated in the same comment.
+**But OpenTrailPaper does not run the fast path, and there is a measured frame
+number for the path it does run.** The preset default is
+`.quality = EPD_Painter::Quality::QUALITY_NORMAL`
+(`EPD_Painter_presets.h:201`), nothing in OpenTrailPaper's `src/` ever calls
+`setQuality`, and its pixel mapping goes to four levels ("4bpp nibble
+(0 black .. 15 white) -> EPD_Painter level (0 white .. 3 black)",
+`epd_compat.cpp:500`). So it paints **4-level NORMAL**: 13 passes.
+
+4-level does not pad to a constant period. It holds a fixed
+**inter-pass gap** instead, and that gap is where their frame number comes
+from -- `EPD_Painter.h:170-178`, verbatim: *"at NORMAL it is 13 x 4 ms = 52 ms
+of a ~125 ms cycle, measured with setPaintProfile()"*.
+
+**So their whole-panel frame is ~125 ms, measured by them with their own
+profiler.** That is the figure the maintainer's "probably 100 ms" is an eyeball
+of, and it is a far better anchor than anything derived from the fast path.
+Back out the settling and ~73 ms remains for 13 passes of row sending, about
+**5.6 ms per pass** `[our arithmetic on their measured numbers]`, consistent
+with the 7-8 ms match-card row loop for content as light as a dashboard.
+
+| their path | passes | cost | source |
+|---|---|---|---|
+| **4-level NORMAL -- what they ship** | 13 | **~125 ms** | measured, `setPaintProfile()` |
+| of which inter-pass settling | 13 x 4 ms | 52 ms | stated |
+| implied row sending | 13 | ~73 ms, ~5.6 ms/pass | our arithmetic |
+| 16-grey NORMAL | 13 | 195 ms | stated, padded 15 ms |
+| a GL16 clean they **deleted** | -- | **~950 ms** | their comment |
+| 4-level FAST | 7 | unpadded, no delay | **not used by them** |
+
+The last two rows matter as much as the first. Their 16-grey clean cost
+**~950 ms** and they removed it: *"The driver DC-balances its own output, so
+there is nothing left to clean up after -- and the ~950 ms hitch that clean
+cost is gone"* (`OpenTrailPaper/src/ui_dashboard.cpp:2521`). **That is our
+number.** We pay roughly what their deleted 16-grey clean cost, on every marker
+move.
 
 **Two of their own numbers do not survive being checked.** The comment at
 `EPD_Painter.h:158-167` says HIGH is "20 slots against 13" for "~300 ms", but
@@ -686,18 +717,20 @@ own `ref_window` and `ref_fast` are already the same whole-panel operation.
 **Where ours goes.** Section 1b's two-mode fit gives **455 ms fixed plus
 ~52 ms per pass** over 11 passes. Set against their measured 7-13.3 ms:
 
-| | theirs (measured) | ours (fitted, `[derived]`) |
+| | theirs | ours (fitted, `[derived]`) |
 |---|---|---|
-| per pass | 7-13.3 ms | ~52 ms |
-| passes in the fast path | 7 | 11 |
-| fixed cost before any pass | no counterpart in FAST | **~455 ms** |
-| frame | 49-93 ms | ~1,030 ms |
+| per pass, row sending | 5.6 ms implied, 7-13.3 ms measured range | ~52 ms |
+| passes in the shipped path | 13 | 11 |
+| fixed cost before any pass | 52 ms of inter-pass settling | **~455 ms** |
+| whole-panel frame | **~125 ms, measured** | ~1,030 ms |
 
-So it is **two independent problems**, not one 6x. Roughly 44 % of our frame is
-prep and rail before a single pass runs, and the passes themselves are still
-4-7x dearer than the same work measured next door. A per-pass reading of
-"~94 ms" (1,030 / 11) assumes the whole frame is passes, which the fit says it
-is not.
+So it is **two independent problems, and the ratio is 8x rather than 6x**:
+~1,030 ms against a measured ~125 ms, at a comparable pass count. Roughly 44 %
+of our frame is prep and rail before a single pass runs, where their equivalent
+term is 52 ms of deliberate settling that the panel actually needs. And our
+passes are still **4-9x** dearer than the same work measured next door. A
+per-pass reading of "~94 ms" (1,030 / 11) assumes the whole frame is passes,
+which the fit says it is not.
 
 **The structural suspect for the per-pass half is already in section 3**:
 `blit_dmabuf` re-reads the **whole 1,036.8 kB step framebuffer on every pass**,
@@ -772,10 +805,12 @@ section 3: the unchanged-frame subtraction, which needs no code change and
 isolates the cost of ten passes, and a scratch-copy pass counter and timer
 inside `task_update`.
 
-**It has a target now.** EPD_Painter measures **7-13.3 ms** for one whole-panel
-pass on this panel (section 4), so the pass counter's output gets reported
-against that figure and not against the 15 ms padded period, which is a ceiling
-of theirs rather than a cost. Two numbers come out and they answer different
+**It has a target now.** OpenTrailPaper on EPD_Painter measures a whole-panel
+4-level frame at **~125 ms** with their own profiler, 13 passes with 52 ms of
+inter-pass settling inside it, so about **5.6 ms of row sending per pass**
+(section 4). Report the pass counter's output against those, and **not** against
+their 15 ms constant period, which is a padded ceiling for their 16-grey
+qualities and does not apply to the path they ship. Two numbers come out and they answer different
 questions: the per-pass time says whether our passes are 4-7x dear, and the
 unchanged-frame subtraction says how much of the 1,030 ms is not passes at all
 -- section 1b's fit predicts **~455 ms** of it, which would be the larger of the
@@ -968,7 +1003,11 @@ Section 4's EPD_Painter subsections are **read off upstream source** at
 EPD_Painter `6335a14` and OpenTrailPaper `981ef4a` on 2026-09-09, cloned and
 read here. Their 7-slot fast train, its 4-level-only constraint, its absent
 inter-pass delay and the 7-13.3 ms row loop are **theirs, measured or stated by
-them**; the 49-93 ms fast frame is **ours, derived from their row loop**; and
+them**; their ~125 ms whole-panel frame and the 52 ms settling term inside it are
+**measured by them with `setPaintProfile()`**, and that is the path they ship
+(preset default `QUALITY_NORMAL`, never overridden, four levels); the implied
+5.6 ms per pass is **ours, derived from those two**; their deleted 16-grey
+clean at ~950 ms is **their comment**; and
 two of their own figures are **contradicted by their own code** (HIGH at 20
 slots against a `[3][13]` declaration, and a 475 ms clear obtained by dividing
 a comment's 1.9 s by four). The comparison table in that section pairs their
