@@ -54,6 +54,26 @@ phone's BLE packet and ignores `SETTINGS.clockFormat` outright
 and `OpdsServerListActivity` are all still compiled and still constructible.
 Only the rows that started them are gone.
 
+## Frontlight: a row added, on the boards that have one
+
+**Added 2026-09-07.** Display gained a **Frontlight** row, compiled in only where
+the board has one (`#if FREEINK_CAP_FRONTLIGHT` in `SettingsList.h`). It is a
+`SettingType::VALUE`, 10 to 100 % in tens, rendered with a `%` suffix (the
+`STR_FRONTLIGHT` case in `SettingsActivity.cpp`).
+
+Two things make it unusual and both are deliberate:
+
+- **It carries no JSON key.** `frontlightOn` and `frontlightBrightness` are
+  serialised by hand (`CrossPointSettings.cpp:109-110`, `:238-244`), so a list
+  entry with a key would write the same field a second time.
+- **Off is not one of its values.** Off is a state the buttons produce -- the
+  home key's hold toggles, the user button's hold walks the rungs -- and storing
+  it would lose the level the rider chose.
+
+`loop()` applies a change while the light is on and never turns it on: choosing a
+level is not a request for light. The gestures that share this number are in
+`docs/lilygo-t5s3-bringup.md`, "The remap, 2026-09-07".
+
 ## Rows hidden, and the consumer that proves them reader-only
 
 Each of these was hidden because its only consumer is a reader activity. The
@@ -83,8 +103,9 @@ reader's pagination cache).
 under a new label, `STR_SCREEN_ORIENTATION` ("Screen Orientation"), and is
 drawn **disabled**.
 
-It is not hidden because a handlebar mount will want a real screen
-orientation, and this is the field that will carry it. It is not active
+It is not hidden because a device carried in landscape — on a mount or in a
+hand — will want a real screen orientation, and this is the field that will
+carry it. It is not active
 because today the field rotates the reader only — `EpubReaderActivity`,
 `TxtReaderActivity` and `SleepActivity` read it, the map and the rest of the UI
 do not. Offering it would rotate nothing the rider is looking at.
@@ -108,7 +129,10 @@ Three mechanics behind `disabled` (`SettingsActivity.h:59`):
   that flag (`BaseTheme.cpp:394`), and `frontHintBox()` refuses to return a
   rect for an inactive slot. So in BUTTONS touch mode the stub is drawn and
   dead, which is the behaviour wanted — but it was arrived at by accident, not
-  designed.
+  designed. **Read, not measured.** The hardware pass ran with Touch Screen on
+  Buttons only, where no list row is tappable at all, so the tap path was never
+  exercised — only the Confirm button was. Setting touch to Anywhere and
+  tapping the row would settle it.
 - `toggleCurrentSetting()` returns early, so both the button path and the
   touch-tap path are inert.
 

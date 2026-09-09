@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "CrossPointSettings.h"
+#include "DebugInput.h"
 #include "TouchPolicy.h"
 #include "components/UITheme.h"
 
@@ -252,9 +253,9 @@ bool MappedInputManager::hintBoxAt(const int px, const int py, uint8_t& hwButton
   // Front box index is the hardware button index: both are Back, Confirm, Left,
   // Right in that order, which is also the order the labels are handed to
   // drawButtonHints() by mapFrontLabels().
-  static_assert(HalGPIO::BTN_BACK == 0 && HalGPIO::BTN_CONFIRM == 1 && HalGPIO::BTN_LEFT == 2 &&
-                    HalGPIO::BTN_RIGHT == 3,
-                "hint box order must match the front button indices");
+  static_assert(
+      HalGPIO::BTN_BACK == 0 && HalGPIO::BTN_CONFIRM == 1 && HalGPIO::BTN_LEFT == 2 && HalGPIO::BTN_RIGHT == 3,
+      "hint box order must match the front button indices");
   for (int i = 0; i < 4; i++) {
     if (theme.frontHintBox(i, portraitWidth, portraitHeight, box) && inside(box)) {
       hwButton = static_cast<uint8_t>(i);
@@ -340,9 +341,23 @@ bool MappedInputManager::hintButton(const uint8_t index, bool (HalGPIO::*fn)(uin
   return false;
 }
 
+namespace {
+
+// The same fn-pointer dispatch hintButton() does, for the serial console's
+// injected presses (DebugInput.h). Both synthetic sources sit in front of the
+// real read, so an activity cannot tell them from a thumb.
+bool injectedButton(const uint8_t index, bool (HalGPIO::*fn)(uint8_t) const) {
+  if (fn == &HalGPIO::wasPressed) return DebugInput::button(index, DebugInput::Query::Pressed);
+  if (fn == &HalGPIO::wasReleased) return DebugInput::button(index, DebugInput::Query::Released);
+  if (fn == &HalGPIO::isPressed) return DebugInput::button(index, DebugInput::Query::Down);
+  return false;
+}
+
+}  // namespace
+
 bool MappedInputManager::rawButton(const uint8_t index, bool (HalGPIO::*fn)(uint8_t) const) const {
   ensureHintTouchPumped();
-  return hintButton(index, fn) || (gpio.*fn)(index);
+  return hintButton(index, fn) || injectedButton(index, fn) || (gpio.*fn)(index);
 }
 
 void MappedInputManager::rememberTouchHeldTime() const {
@@ -580,19 +595,23 @@ bool MappedInputManager::isPressed(const Button button) const { return mapButton
 // A hint-box tap is a button press as far as anything asking "did the rider do
 // something" is concerned. Without this a screen driven only by the boxes looked
 // idle: the map's own "the rider is looking at the screen" test and the remap
-// capture below both went through here and saw nothing.
+// capture below both went through here and saw nothing. An injected press
+// (DebugInput.h) is the same kind of synthetic input and counts for the same
+// reason.
 //
 // main.cpp's sleep timer deliberately does NOT come through here -- it reads
 // HalGPIO plus wasTouchActivity(), which already counts the touch that made this
-// press, and counting it twice would say nothing new.
+// press, and counting it twice would say nothing new. It reads DebugInput
+// itself, because nothing else there can see an injected press.
 bool MappedInputManager::wasAnyPressed() const {
   ensureHintTouchPumped();
-  return gpio.wasAnyPressed() || hintPressedButton != kNoHintButton;
+  return gpio.wasAnyPressed() || hintPressedButton != kNoHintButton || DebugInput::anyEdge(DebugInput::Query::Pressed);
 }
 
 bool MappedInputManager::wasAnyReleased() const {
   ensureHintTouchPumped();
-  return gpio.wasAnyReleased() || hintReleasedButton != kNoHintButton;
+  return gpio.wasAnyReleased() || hintReleasedButton != kNoHintButton ||
+         DebugInput::anyEdge(DebugInput::Query::Released);
 }
 
 unsigned long MappedInputManager::getHeldTime() const {
@@ -601,6 +620,10 @@ unsigned long MappedInputManager::getHeldTime() const {
   // thing that can answer for itself: HalGPIO tracks hardware presses only.
   // Without this a tap reads as however long the last hardware press lasted.
   if (hintDownButton != kNoHintButton) return millis() - hintDownAtMs;
+  // Same for an injected press, release frame included: every long-press path in
+  // the UI is `isPressed(X) && getHeldTime() >= N`, and the real hardware time
+  // under it is a stale zero.
+  if (DebugInput::active()) return DebugInput::heldMs();
   if (!gpio.wasAnyPressed() && !gpio.wasAnyReleased() && touchHeldOverrideValid &&
       millis() - touchHeldOverrideAt <= TOUCH_HELD_OVERRIDE_WINDOW_MS) {
     return touchHeldOverrideMs;

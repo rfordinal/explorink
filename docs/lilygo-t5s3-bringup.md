@@ -96,7 +96,9 @@ about how it behaves.
 
 ## The user button: tap is Select, hold toggles the frontlight
 
-**Written 2026-09-02, not yet run on hardware.**
+**Written 2026-09-02, not yet run on hardware.** **Superseded 2026-09-07**: the
+hold now steps through frontlight rungs instead of toggling, and BOOT taps Back
+-- see "The remap, 2026-09-07" below. The mechanism described here is unchanged.
 
 This board has four switches and only one of them is readable and free of a
 fixed job: switch S3 (silkscreened `IO48`), which is net `BUTTON` on PCA9535
@@ -121,7 +123,8 @@ settle it: one person, one glove, one tap.
 function installs the SDK's own hook, which reports the button as `BTN_DOWN`,
 and it is still never called here (see the GNSS section above). `setup()`
 configures `IO12` as an input on the expander and installs a local
-`userButtonHook()` instead, right after `frontlight.begin()` -- the hook can
+`boardButtonHook()` instead (named `userButtonHook()` until the 2026-09-07
+remap), right after `frontlight.begin()` -- the hook can
 toggle the light, so it must not be reachable before the LEDC channel exists.
 
 Three things in that hook are load-bearing:
@@ -225,7 +228,7 @@ Two different code paths, because the two inputs arrive differently. The switch
 is synthesised into a `BTN_CONFIRM` click by the board hook in `main.cpp`; the
 key already has tap and hold events in the SDK, so `MappedInputManager` reports
 its tap as `Button::Confirm` (next to the swipe that becomes Back) and `loop()`
-takes its hold. Both holds land in one `toggleFrontlight()`, so the gesture
+takes its hold. Both holds land in one function (`cycleFrontlight()` since 2026-09-07), so the gesture
 cannot come to mean two different things.
 
 **The X4 Pro inherits the home-key half** -- it has a home key too and the
@@ -242,6 +245,116 @@ as much as a motorcycle.
 are both "the button under the screen" in conversation, and the first
 implementation of this feature went to the wrong one. One capture with `[INPUT]`
 logging and one press settles it in a minute; a build and a flash do not.
+
+## The remap, 2026-09-07: BOOT taps Back, the hold cycles the light
+
+**Written and confirmed on hardware 2026-09-07.** Maintainer's call, and the
+maintainer used it on the panel afterwards: "funguje". Three
+changes, all in `src/main.cpp`:
+
+| input | gesture | before | now |
+|---|---|---|---|
+| BOOT (GPIO0, the power button) | tap | nothing (`shortPwrBtn` = `IGNORE`) | **`BTN_BACK`** |
+| BOOT | hold | sleep at 400 ms | sleep at **1500 ms** |
+| user button (S3, `IO12`) | tap | Confirm | Confirm, unchanged |
+| user button | hold 600 ms | frontlight on/off | **next frontlight rung, and another every 500 ms while held** |
+| home key (GT911) | hold 700 ms | frontlight on/off | on/off at the Settings level |
+
+**Why Back at all.** Until now this board could go forward and never back
+without touch: the only synthesised key was Confirm. A rider in gloves could
+open a screen and not leave it. BOOT is the only other switch the MCU can read,
+and its short press was doing nothing on this board -- `shortPwrBtn` defaults to
+`IGNORE`.
+
+**Why the sleep threshold moved to 1500 ms.** Sleep and Back are now the same
+press told apart by how long it is held, so the split has to be a duration a
+gloved thumb can aim at. `CrossPointSettings::getPowerButtonDuration()` answers
+400 ms, which is short enough that a deliberate tap sleeps the device instead of
+stepping back. `powerHoldDurationMs()` in `main.cpp` returns 1500 on this board
+and defers to the setting everywhere else, and wake is handed the same
+number -- but **wake does not enforce 1500 ms**. `verifyPowerButtonWakeup()`
+subtracts the boot time already elapsed (`lib/hal/HalGPIO.cpp:212-213`), so the
+requirement collapses to *the button is still down when `setup()` reaches that
+check*, down to 1 ms once boot exceeds the threshold. Sleep is the only side
+this number gates. `[read]` -- **open:** how long boot takes to that point on
+this board is unmeasured, and one timestamped log line at the call site would
+settle whether a wake press has to be held at all.
+
+**The Back tap is emitted on release, and only if the press was short.** A hold
+long enough to sleep never reaches the release branch at all -- `loop()` calls
+`enterDeepSleep()` at the threshold, with the button still down. The duration
+check covers the cases where it cannot: the two-second post-boot sleep guard
+(`allowSleepAt`) and the screenshot combo.
+
+**The first poll adopts the BOOT level instead of reading an edge.** The hook is
+installed in `setup()` while the button that woke the device may still be held,
+so a naive edge detector would end every wake with a Back nobody pressed.
+
+**`FORCE_REFRESH` is ignored on this board.** `shortPwrBtn` can ask a short power
+press to force a full refresh; here that press is Back, and one press must not
+do two things. The setting keeps working on every other board.
+
+**The frontlight is a cycle, not a toggle**: `0, 10, 30, 60, 100` %, wrapping to
+off. One number was never enough -- dusk and full dark want very different
+amounts of light, and this board has no frontlight row in Settings and no touch
+control a glove can reach. The step is computed against the live brightness, not
+a stored index, so a value on no rung (an older `settings.json`, or a `CMD:LIGHT`
+during bring-up) steps to the next rung above it instead of stalling. 10 % is the
+rung a rider can leave on for hours; 100 % costs real current (43 mA off the cell
+at 40 %, `../../docs/devices/lilygo-t5-s3-pro.md`).
+
+**A held user button keeps stepping**, one rung per 500 ms after the first at
+600 ms, so the whole cycle is 2.6 s end to end and the rider stops by letting
+go. The light is its own readout, which is what makes a repeat safe here: there
+is nothing to read on the panel and nothing to undo. The card write waits for
+the release (`frontlightHoldActive`), or a hold would be one SD write per step,
+on the input path, for a level still being chosen.
+
+**One number, three ways to set it.** `SETTINGS.frontlightBrightness` is the
+level, 10 to 100 %, and **off is never stored in it** -- off is a state the
+buttons produce, and storing it would lose the level the rider chose. The
+Settings row (Display -> Frontlight, `SettingType::VALUE`, 10..100 step 10)
+sets it, the user button's hold walks it across the rungs, and the home key's
+hold switches the light off and back on at whatever it says. `loop()` applies a
+level changed in Settings immediately, but only while the light is on: choosing
+a level must not turn the light on.
+
+The row carries **no JSON key**. `frontlightOn` and `frontlightBrightness` are
+serialised by hand in `CrossPointSettings.cpp`, and a list entry with a key
+would write the same field a second time.
+
+**The home key keeps its plain on/off** (`toggleFrontlight()`), and the two
+inputs stop meaning the same thing. That was the 2026-09-02 rule -- try each in
+real use before splitting them up -- and real use split them: the key is the one
+a glove cannot reach, so "give me light, now" belongs there, while walking the
+rungs is a deliberate act with a bare thumb. The SDK also reports one long-press
+event per press, so a repeat on that key would need a second hold recogniser
+next to the one that already exists.
+
+**The hook is `boardButtonHook()` now, not `userButtonHook()`** -- it recognises
+both switches, so the old name was a lie. Same install site, same synthetic-click
+machinery, now shared by the two gestures through `beginSyntheticClick()`.
+
+**Confirmed by use on the panel, 2026-09-07**: the buttons do what this section
+says. The maintainer flashed the build, used the four gestures and answered
+"funguje". That is a use report, not an instrumented run.
+
+**Still not separately measured**, and worth a capture when one is cheap:
+
+- That a wake press leaves no stray Back behind it. The guard is written (the
+  hook adopts the BOOT level on its first poll) and nothing odd was seen, but
+  nobody watched a log across a wake.
+- That one long hold produces exactly one card write rather than five. The
+  deferral is written (`frontlightHoldActive`); the evidence would be one
+  `[SET]` line per hold in a serial capture.
+- That the extra `digitalRead` per input poll disturbs neither touch nor a
+  refresh. Nothing misbehaved in use; no timing was taken.
+
+**A wrong claim this section carried for one build.** The first version said a
+hold cycles the light and it did not: it stepped once. The repeat had been
+written, built and never flashed, and the report of "it does not work" matched
+the firmware that was actually on the board. Rule: after any "it does not work",
+check which binary is running before reading the code.
 
 
 

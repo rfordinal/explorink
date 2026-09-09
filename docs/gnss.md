@@ -127,6 +127,103 @@ not", and T-244 in the parent repo is the latch itself.
 **Nothing in the ride's log can settle it**, because `power.csv` has no column
 for the rail and none for current. Pricing it is T-250.
 
+## Low power: the L76K has no slower gear, and its two low gears are pins
+
+Asked 2026-09-08: the rider on a hike wants a fix once a minute, not once a
+second. Can the receiver be told to work less? **No.** Everything below is read
+off the two vendor PDFs, not measured.
+
+**Tracking costs the same as searching.** Quectel L76K Hardware Design V1.0,
+Table 2: acquisition 29 mA, tracking 29 mA, standby 20 uA, backup 8 uA. Having
+the satellites already saves nothing.
+
+| Lever | What the spec says | Saving |
+|---|---|---|
+| `$PCAS02` fix interval | 1000 / 500 / 200 ms only (Protocol Spec V1.1, 2.3.2) | none, 1 Hz is already the floor |
+| CASIC `CFG-RATE` | same three values (Table 13) | none |
+| `$PCAS04` constellations | GPS, BDS, GLONASS combinations (2.3.4) | none, Table 2 gives 29 mA for GPS+BDS and for GPS+GLONASS alike |
+| `$PCAS03` sentence rates | which NMEA sentences are emitted (2.3.3) | UART and CPU only, not the RF |
+
+**The two real modes are entered by pins, not by commands** (HW Design 3.3):
+
+- **Standby, 20 uA.** Pull `WAKEUP` (pin 5) low. Release it and the module
+  returns to continuous mode.
+- **Backup, 8 uA.** Cut `VCC` while `V_BCKP` keeps the RTC domain alive. The
+  RTC domain holds the SRAM with time and ephemeris, so the restart is a hot
+  start. **With no backup supply the module cold starts every time**
+  (HW Design 3.2.2).
+
+### Neither pin reaches the ESP32 on this board
+
+The whole GNSS section of the T5 S3 Pro schematic is `U0TXD`/`U0RXD` through
+two 0R resistors and a 5 pin header:
+
+```
+T5 E-paper S3 Pro V1.0 24-12-24, page 2, box "GPSMODE"
+  U0TXD -R11(0R)-> GPS_RX
+  U0RXD <-R12(0R)- GPS_TX
+  J3 HDR1X5: GPS_TX, GPS_RX, VCC3V3, GND
+```
+
+`GPSMODE` is the caption of that box, **not a net** -- checked by rendering the
+page, because the text layer makes it look like a floating signal name.
+LilyGo's `docs/pinmap.md` agrees: GPS has three entries, `PIN_GPS_TX` 43,
+`PIN_GPS_RX` 44, and `PIN_GPS_EN` = `PCA9535 IO0_0`, which is the same pin as
+`LORA_EN`.
+
+**No module symbol appears anywhere in the published schematic.** So the
+receiver sits on a plug-in board behind that header, or the sheet is
+incomplete. Either way `WAKEUP`, `RESET_N` and `V_BCKP` are not on it.
+
+That leaves exactly one lever: **switch the shared rail**, which also kills the
+SX1262.
+
+### Whether duty cycling pays depends on one unmeasured thing
+
+Cost of a power cycle is the TTFF. Datasheet: hot start 2 s, cold start 30 s
+(Table 2). **Measured on this board: 526 s** (car, one ride, 2026-09-02, see
+"What the hardware pass found"). OpenTrailPaper measured a 716 s pathology on
+the same part.
+
+One fix a minute, arithmetic on the datasheet:
+
+| If a rail cycle gives | Duty | Average |
+|---|---|---|
+| hot start, 2 to 4 s | ~5 % | ~1.5 to 2 mA |
+| cold start, 30 s | ~50 % | ~15 mA |
+| our measured 526 s | never finishes | worse than leaving it on |
+
+So the question that decides the feature is: **does the module keep its RTC
+domain when `LORA_GPS_EN` goes low?** Unmeasured. T-284 in the parent repo
+specifies it: drop the rail for 60 s, raise it, time the first `q=1`. No device
+is opened for this, the rail is switched in firmware.
+
+### The MIA-M10Q variant answers this in software
+
+The board ships with either receiver and they cannot be told apart by looking
+(LilyGo mail 2026-08-26). For power they are not close. MIA-M10Q data sheet
+UBX-22015849 R04, Tables 16 and 18, 3.0 V, default GPS+Galileo+BDS B1I,
+`VCC` plus `V_IO`:
+
+| | L76K | MIA-M10Q |
+|---|---|---|
+| Acquisition | 29 mA | ~14.9 mA |
+| Tracking, continuous | 29 mA | ~12.9 mA |
+| Tracking, power save mode | not available | ~7.6 mA |
+| Software standby | not available | ~46 uA |
+| Hardware backup | 8 uA, needs `V_BCKP` | 28 uA, needs `V_BCKP` |
+
+**The row that matters is software standby.** u-blox M10 sleeps and wakes on a
+UART message, and its power save modes (on/off, cyclic tracking) take the fix
+period from configuration. That is the hike case with no pin, no rail switch
+and no LoRa side effect. It also has documented AssistNow aiding, where CASIC
+ephemeris injection is a dead end -- 4 ACK against 30 NAK, tried and shelved by
+OpenTrailPaper (parent repo `docs/prior-art-opentrailpaper.md`).
+
+**This unit is an L76K**, its boot log says so. Our driver is fixed at 9600 and
+plain NMEA (`lib/Gnss/include/Gnss.h:68`), so an M10Q board would not come up
+at all today. Module detection is promise 4 to LilyGo, T-549.
+
 ## The power rail is shared with the LoRa radio, and that has a sharp edge
 
 One expander pin gates both parts:
@@ -1735,8 +1832,11 @@ with `q` 0, which agrees.
   (added on `develop` 2026-08-31, from a branch this session did not create) asks
   for `CMD:GNSS ON` from
   a receiver with a cleared almanac, and **no command in this firmware clears
-  one** -- the L76K needs a CASIC restart command that is not implemented. Until
-  it is, G1 is not executable and only warm figures are obtainable. T-581.
+  one**. Corrected 2026-09-08: the command is not a CASIC binary message and is
+  not exotic. `$PCAS10,2` is a plain NMEA cold start and `$PCAS10,3` also
+  restores factory settings (Protocol Spec V1.1, 2.3.5), so what is missing is
+  our sending it, not the module's support. Until we do, G1 is not executable
+  and only warm figures are obtainable. T-581.
 - **Cold-start TTFF**, outdoors, from a genuinely cold receiver -- longer than a
   49.7 s outage, or a receiver command that clears the almanac.
 - **Is the SPI contention real at all?** Does GPIO46 go low during a refresh,
@@ -1753,3 +1853,10 @@ with `q` 0, which agrees.
   upstream PR.
 - Whether the receiver can stay powered during a ride or must be duty-cycled. A
   power question, and given the shared rail a LoRa question too.
+- **Does the module keep its RTC domain when the rail drops?** The whole
+  duty-cycling case turns on it: hot start makes a hike mode cost ~2 mA, cold
+  start makes it pointless. T-284, and see "Low power" above.
+- **What LilyGo says about the module's control pins.** Whether `WAKEUP`,
+  `RESET_N` and `V_BCKP` are routed on the plug-in board, and whether the
+  published schematic is simply missing the GNSS sheet. Four questions written
+  up for the next partner mail, T-590.

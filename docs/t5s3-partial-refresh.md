@@ -49,10 +49,10 @@ over `ref_window` 2,608 window refreshes plus 29 whole-panel ones. **Two
 different numbers get quoted off that walk and they are not the same number**:
 the flat quotient is 2,944,634 / 2,637 = **1,117 ms**, while the widely-quoted
 **1,081 ms** is the mean of seven per-segment figures which held between 1,049
-and 1,101 ms. Both are recorded on `develop` in
-[`refresh-modes.md`](refresh-modes.md) under "The T5 S3 Pro is not the X4"; this
-branch carries only the short pointer. Section 3b shows the spread is far wider
-on other sessions.
+and 1,101 ms. The 1,081 ms and its seven-segment spread are in
+[`refresh-modes.md`](refresh-modes.md) under "The T5 S3 Pro is not the X4", on
+this branch as well as on `develop`; the 1,117 ms quotient was first written down
+here. Section 3b shows the spread is far wider on other sessions.
 
 `PowerTelemetry::Refresh::Window` is incremented at the call site in
 `lib/hal/HalDisplay.cpp:118-124`, before the driver sees anything, so it counts
@@ -305,8 +305,12 @@ S3 LCD path clocks every row with no-op rows (`render_lcd.c:99-103`), and
 `Panel_EPD` clocks every row. But **epdiy's older ESP32 I2S path skips rows
 outside the band with a bare CKV pulse and no data** (`render_i2s.c:72-86`,
 `pulse_ckv_ticks(45, 5, false)`, with a note about the panel's 200 kHz CKV
-limit). So the gate scan *can* be shortened in principle -- it is a property of
-the frame-DMA approach these three share, not of the panel. **Settled for our
+limit). **Verified against epdiy `main` on 2026-09-07**, and the detail matters:
+the first two consecutive skipped rows are still clocked with a zeroed buffer,
+and only the third onward takes the bare pulse (`render_i2s.c:72-87`). The LCD
+path memsets every out-of-area row instead and clocks it
+(`render_lcd.c:99-103`). So the gate scan *can* be shortened in principle -- it
+is a property of the frame-DMA approach these three share, not of the panel. **Settled for our
 stack, not for the panel**, and worth remembering if the scan ever turns out to
 be the wall.
 

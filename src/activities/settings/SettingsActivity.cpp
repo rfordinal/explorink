@@ -537,6 +537,8 @@ void SettingsActivity::render(RenderLock&&) {
                        static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
               valueText = valueBuffer;
             }
+          } else if (setting.nameId == StrId::STR_FRONTLIGHT) {
+            valueText = std::to_string(SETTINGS.*(setting.valuePtr)) + " %";
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
           }

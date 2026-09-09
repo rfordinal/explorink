@@ -20,7 +20,7 @@ so one recogniser's *output* is another recogniser's *level input*:
 | `freeink-sdk/.../InputManager.cpp`, `applyStateChange` and the debounce | GPIO/ADC key edges, one global hold timer for the whole bitmask |
 | the same file, `updateConfirmBackHold` / `updateConfirmPowerHold` | board-style long presses, emitted as a **fake key level** |
 | the same file, `pollGt911` | the GT911 home key's tap and hold |
-| `src/main.cpp`, `userButtonHook()` | the T5 S3 Pro user button: edges, a 600 ms hold, tap-on-release |
+| `src/main.cpp`, `boardButtonHook()` | the T5 S3 Pro user button and BOOT: edges, a 600 ms hold that repeats every 500 ms, taps-on-release |
 | `src/MappedInputManager.cpp`, `pumpHomeKey` / `pumpHintTouch` | a second home-key recogniser, plus synthetic key levels for the hint boxes |
 | per activity, and `src/util/ButtonNavigator.cpp` | long press by polling a held time, and auto-repeat |
 
@@ -31,11 +31,11 @@ happen".
 
 ### The stacking, concretely
 
-`[read]` `userButtonHook()` (`src/main.cpp`) is a full recogniser that runs
-**inside** `InputManager::update()`. It calls `toggleFrontlight()` from there — a
-side effect inside the sampler — and it publishes its tap as a **synthetic
-CONFIRM level** held for at least three polls and 20 ms, purely so the SDK's own
-debounce will accept it. So the chain is: recogniser, fake level, debouncer,
+`[read]` `boardButtonHook()` (`src/main.cpp`) is a full recogniser that runs
+**inside** `InputManager::update()`. It calls `cycleFrontlight()` from there — a
+side effect inside the sampler — and it publishes its taps as a **synthetic
+CONFIRM or BACK level** held for at least three polls and 20 ms, purely so the
+SDK's own debounce will accept it. So the chain is: recogniser, fake level, debouncer,
 edge, app recogniser. Four layers to express one tap.
 
 ### `getHeldTime()` describes the wrong input, three different ways

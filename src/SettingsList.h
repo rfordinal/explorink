@@ -236,6 +236,16 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           "uiTheme", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                             StrId::STR_CAT_DISPLAY),
+#if FREEINK_CAP_FRONTLIGHT
+        // The frontlight level, 10 to 100 % in tens. Off is deliberately not a
+        // value here: it is a state the two buttons produce (the home key's hold
+        // toggles, the user button's hold walks the rungs), and storing it would
+        // lose the level the rider chose. That is also why the row carries no
+        // JSON key -- frontlightOn and frontlightBrightness are serialised by
+        // hand in CrossPointSettings.cpp, and a second writer would fight it.
+        SettingInfo::Value(StrId::STR_FRONTLIGHT, &CrossPointSettings::frontlightBrightness, {10, 100, 10}, nullptr,
+                           StrId::STR_CAT_DISPLAY),
+#endif
 
     // --- Map ---
 #ifdef ENABLE_GNSS_CMD
@@ -368,8 +378,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // placeholder. Today the field rotates the *reader* only
         // (EpubReaderActivity, TxtReaderActivity, SleepActivity read it; the
         // map and the rest of the UI do not), so offering it here would rotate
-        // nothing the rider is looking at. It stays visible because a
-        // handlebar mount wants a real screen orientation and this is the
+        // nothing the rider is looking at. It stays visible because a device
+        // carried in landscape wants a real screen orientation and this is the
         // field that will carry it — see docs/settings-menu.md.
         SettingInfo::Enum(
             StrId::STR_SCREEN_ORIENTATION, &CrossPointSettings::orientation,
