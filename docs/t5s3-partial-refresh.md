@@ -1063,6 +1063,57 @@ with it. `cleanupGrayscaleBuffers` refills the canvas without pushing
 rethinking with the sprite gone. The grey path needs a scratch band of its own.
 Feeds the planned firmware memory audit. Depends on T-271.
 
+**T-273 is a 1-bit problem on the fast path, and that removes the usual
+constraint.** Read off the code 2026-09-09, and it sharpens this item from "try
+a shorter table" into something with a known shape.
+
+`Panel_EPD`'s fast branch Bayer-thresholds every value to pure black or white --
+`readbuf[i] = (sum + (b << 4)) < 248 ? 0 : 0xF;` (`Panel_EPD.cpp:492-497`) --
+so **14 of `kFastLut`'s 16 columns are unreachable on the marker-move path.**
+Only columns 0 and 15 are ever selected. Reading our own table down those two
+columns (`LilyGoT5S3LgfxConfig.cpp:26-37`):
+
+| column | across the 8 drive passes |
+|---|---|
+| 0, black | `2,2,1,1,1,1,1,1` -- drive white twice, then black six times |
+| 15, white | `1,1,2,2,2,2,2,2` -- drive black twice, then white six times |
+| 1-14, grey | two passes of anything, then `3` (do nothing) x6 |
+
+So a pixel heading for white is **driven the wrong way for two passes first**.
+That is the flash a marker move produces, and section 6 already noted our table
+does not prevent it. Six of the eight rows are pure `3` for every grey column,
+i.e. dead weight for levels that cannot be selected.
+
+**Therefore the grey-level cost of a shorter table does not apply here.** The
+only remaining constraint on the fast path is **dose**: how many passes a pixel
+needs to actually land on black without residue. That is a panel question, not
+a configuration question, and it is cheap because the table is data.
+
+Estimated against the measured 34 ms per pass, `[derived]`:
+
+| table | passes | scan |
+|---|---|---|
+| `kFastLut` today | 11 | 366 ms |
+| library `lut_fastest`, un-aliased | 8 | ~272 ms |
+| a hand-written 1-bit table, 4 drive passes, no opposite pre-drive | 7 | ~238 ms |
+| the same plus band-scoped blit, 100 rows of 540 | 7 | **~90 ms** |
+
+The two levers multiply: pass count scales the whole frame, band-scoped blit
+scales with area.
+
+**The clean path is NOT 1-bit, so do not carry this over to it.** `Full` and
+`Half` map to `epd_text`, where the Bayer threshold does not run, and our own
+grayscale overlay writes `0x55` and `0xAA` for anti-aliased text
+(`overlayCanvasGray`, `LgfxEpdDriver.cpp`). Those four levels are real. What
+does carry over is that its 37 passes are the **library default** -- a 12-row
+eraser prefix plus 19 idle rows that nobody chose -- and that is where the
+measured 1,253 ms sits.
+
+Calibration reference: EPD_Painter drives full black with 7 continuous passes
+and calls its extreme levels "well into saturation" (section 4), so 7 is
+generous rather than marginal there. Its pass is a padded 15 ms against our
+34 ms, so dose per pass is not directly comparable and ours may need fewer.
+
 **T-273. Tune the pass count.** Un-alias `epd_fastest` from `kFastLut` and use it
 for marker-only moves: 8 passes instead of 11. Give `lutText` a tuned table so a
 clean frame is not 37 default passes. Both are data, not code. FastEPD's
