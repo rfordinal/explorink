@@ -1114,6 +1114,43 @@ and calls its extreme levels "well into saturation" (section 4), so 7 is
 generous rather than marginal there. Its pass is a padded 15 ms against our
 34 ms, so dose per pass is not directly comparable and ours may need fewer.
 
+**T-273 fast half: DONE 2026-09-09, measured and confirmed on the panel.**
+`kFast1bitLut` -- four passes of pure drive, no opposite pre-drive, greys inert
+-- is the default for the marker-move path. Seven passes against eleven.
+
+Measured on a T5 S3 Pro over a **real Bratislava render** (`tiles_ok=4`, 2,465
+ways drawn, 1.2 MB of tile data -- not an empty viewport, which would arm far
+fewer pixels and prove nothing):
+
+| table | passes | wall clock | scan | prep |
+|---|---|---|---|---|
+| `kFastLut` | 11 | 1,046 ms | 474 ms | 572 ms |
+| `kFast1bitLut` | **7** | **875 ms** | **302 ms** | 573 ms |
+
+**171 ms off every marker move, 36.3 % off the scan.** The pass count predicts
+4/11 = 36.4 %, so the linear model from T-269 holds to a tenth of a percent.
+And **prep did not move** -- 572 against 573 ms -- which is the control that
+says a waveform table touches the scan and nothing else.
+
+**The half no instrument here can answer was answered by eye.** Dose does not
+appear in `CMD:SCREENSHOT`, which reads the framebuffer rather than the glass,
+so whether four drive passes still land a solid black without residue needed
+the maintainer to look at the device. Confirmed after eight consecutive marker
+moves on 2026-09-09.
+
+`CMD:EPDLUT 0` rolls back to the old table without a rebuild, and that is worth
+keeping: residue accumulates over a ride, this table is shorter than the one it
+replaces, and **nothing on the map path promotes a fast refresh back to a clean
+one** (`refresh-modes.md`, "The map never asks for a clean after entry"). A long
+ride is the test this has not had. That is T-274's problem and it is now
+slightly more urgent.
+
+**Still open on this item: the clean frame.** `epd_text` remains 37 passes and a
+measured 1,253 ms, which is the single largest number in this doc. It cannot
+take the same treatment: `epd_text` does not run the Bayer threshold, and our
+own grayscale overlay writes `0x55` and `0xAA` for anti-aliased text, so those
+levels are real and a table for it has to be designed rather than shortened.
+
 **T-273. Tune the pass count.** Un-alias `epd_fastest` from `kFastLut` and use it
 for marker-only moves: 8 passes instead of 11. Give `lutText` a tuned table so a
 clean frame is not 37 default passes. Both are data, not code. FastEPD's
