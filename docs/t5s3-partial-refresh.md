@@ -868,12 +868,29 @@ cost is gone"* (`OpenTrailPaper/src/ui_dashboard.cpp:2521`). **That is our
 number.** We pay roughly what their deleted 16-grey clean cost, on every marker
 move.
 
-**Two of their own numbers do not survive being checked.** The comment at
-`EPD_Painter.h:158-167` says HIGH is "20 slots against 13" for "~300 ms", but
-`high_lighter` is declared `[3][13]` (`:86`), the board's tables carry 13
-entries each (`LilyGo_T5S3_GPS_Trains.h:48-53`), and the dispatch sets
-`wf_len = 13` for HIGH (`EPD_Painter.cpp:1259`). **HIGH is 13 slots on this
-board and the 300 ms is not reachable from this code.** Separately,
+**One of their own numbers does not survive, and our first correction of it was
+also wrong.** The comment at `EPD_Painter.h:158-167` says HIGH is "20 slots
+against 13" for "~300 ms". We first answered 13, off `high_lighter[3][13]`
+(`:86`) and `wf_len = 13` (`EPD_Painter.cpp:1259`). **That is the 4-level train
+length, not the 16-grey step count**, and 15 ms is a 16-grey period, so the two
+never meet -- the same category error as the "7 x 15 ms" above, made in the
+other direction. Corrected by the commissioning session, 2026-09-09, and
+re-checked here.
+
+The 16-grey step counts are enforced by the field types themselves:
+`g16_apply` is `const uint8_t (*)[13]` and `g16_apply_high` is
+`const uint8_t (*)[32]` (`EPD_Painter.h:115-118`), and this board supplies
+`TUNED16_LILYGO_T5S3_NORMAL[16][13]` and `TUNED16_LILYGO_T5S3_HIGH[16][32]`
+(`LilyGo_T5S3_GPS_Trains.h:72`, `:144`). **So 16-grey NORMAL is 13 steps and
+HIGH is 32**, giving 195 ms and **480 ms** at this board's 15 ms period. The
+comment's 20 matches neither; the nearest thing to it in the tree is the
+`apply[16][20]` array in the tuning struct at `EPD_Painter_tuned.h:132-133`.
+
+**And 15 ms is genuinely per-board, as its own comment claims**: another preset
+carries `g16_pass_us_normal = 20000` (`EPD_Painter_presets.h:56-57`), so
+nothing about 15 travels to a different panel.
+
+Separately,
 OpenTrailPaper's "~475 ms" whole-panel figure is **derived by dividing a stated
 1.9 s by four** in a comment about a boot clear
 (`OpenTrailPaper/src/epd_compat.cpp:712-713`), with no instrument named, and it
