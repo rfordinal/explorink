@@ -77,6 +77,158 @@ One doc in the parent repo needed fixing and has been fixed:
 `docs/prior-art-opentrailpaper.md` said "we already have ... an explicit
 `displayWindow(x, y, w, h)`". True of the X4, false of this board.
 
+## 1b. The 2x survived every check, and nothing in the source explains it
+
+Written 2026-09-09, off `power.csv` and the source, **no hardware involved**.
+Three things were tested and the answers are not the ones the plan expected.
+
+### The comparison is sound, and the gap is not a population artefact
+
+The doubt was that the 1,030 / 545 ms pair mixed populations: the whole-panel
+figure had **n=1** inside the one walk that produced the window figure, the
+other 34 samples coming from 20 short boots that were mostly menu and home. So
+the arithmetic was redone by hand, and then again over more data.
+
+Method, unchanged from the one `develop` used and now independently reproduced:
+`panel_busy_ms` is a single bucket for all four counters, so keep only the
+one-minute rows in which **exactly one** refresh counter grew, and divide that
+row's panel time by that counter's increment. Any mixed row charges its whole
+panel time to whichever counter the reader divides by.
+
+`docs/power-runs/run8-2026-09-08.csv` in the parent repo turns out to be the
+card's whole history and a **superset of run7** -- its boots 13 and 27 are
+run7's, byte for byte the same counters. So it is the file to read, and it more
+than doubles both populations:
+
+| file | `ref_window` | `ref_fast` |
+|---|---|---|
+| run7, isolated rows | n=374, median **1,029.7 ms** | n=35, median **545.2 ms** |
+| run8, isolated rows | n=998, median **1,030.0 ms** | n=73, median **517.0 ms** |
+
+**The gap survives.** It is not an averaging artefact and it is not a small
+sample. Two further things say so:
+
+- The window distribution is **tight and unimodal**: p5 1,013, p50 1,030, p95
+  1,063, with 953 of 998 samples between 1,000 and 1,100 ms.
+- The two distributions **do not overlap at all**. No whole-panel sample in
+  1,071 reaches 700 ms; no window sample above the 3 % low tail falls below
+  1,000. A mixture of one operation doing cheap and expensive work would
+  overlap. This does not.
+
+### Both counters bracket byte-identical work
+
+`LgfxEpdDriver::display()` opens `(void)prev;` and then does exactly
+`fillCanvasBW(fb)` plus `pushCanvas(epdModeFor(mode))`
+(`freeink-sdk/.../driver/LgfxEpdDriver.cpp`, `display`). The base
+`PanelDriver::displayWindow` calls `display(..., RefreshMode::Fast, ...)`. A
+whole-panel `FAST` calls the same function with the same mode. So the two
+buckets time **the same function with the same argument**, and the rectangle
+never reaches the driver at all.
+
+Worse for the comparison, the surrounding facade code makes the whole-panel
+bracket the **larger** one: `FreeInkDisplay::displayBuffer` additionally runs
+`resolveReleasedMode`, `consumePrevFrameFor` and `swapBuffers`, none of which
+`displayWindow` runs. Every source-level difference found points the wrong way
+-- the path with more work in it is the one measuring half the time.
+
+One thing does differ, and it is a reason the two buckets are not comparable by
+construction rather than an explanation of the 2x: `GfxRenderer::displayBuffer`
+runs `takeCleanRefreshMode()`, which promotes a pending clean `FAST` to `HALF`
+(`lib/GfxRenderer/GfxRenderer.cpp`, `takeCleanRefreshMode`). `HalDisplay` then
+counts that as `ref_half`, not `ref_fast`. `displayBufferWindow` skips the
+promotion entirely -- a window cannot spend a clean request (section 6). So the
+cheap bucket has had its expensive members moved out of it, into a third
+counter, and the expensive bucket has not.
+
+**So the 2x is `[open]`, and it is open in a stronger sense than before**: not
+"we have not looked", but "the source permits no mechanism of the right sign".
+
+### The one mechanism the source does permit, as arithmetic only
+
+Section 2b: an unchanged frame arms nothing, so the task runs one empty pass
+instead of eleven. That is the only lever in the code that changes a refresh's
+cost by a large factor without changing the code. Fitting the two observed modes
+to `cost = fixed + passes * per_pass` with 1 and 11 passes gives:
+
+- **per pass ~52 ms**, **fixed ~455 ms**
+- and it predicts a 37-pass `epd_text` clean frame at **~2,390 ms**
+
+`[derived, unverified]`. It replaces nothing. It is written down because it is
+falsifiable in one afternoon by the unchanged-frame subtraction in section 3,
+and because it is the first per-pass figure in this doc that does not rest on a
+PSRAM bandwidth number that exists nowhere in the tree. It also has a known
+weakness: the lowest whole-panel sample observed is 274 ms, below the fitted
+455 ms floor, which a refresh straddling a one-minute row boundary would explain
+and which the fit does not.
+
+### Lead A is dead: `syncPendingAsync()` is free on this board
+
+The suspicion was that a window refresh waits out a previous async refresh
+inside its own timing bracket. It cannot.
+
+`LgfxEpdDriver` overrides **neither** `displayWindow` **nor**
+`supportsAsyncDisplay` -- zero occurrences of either in its header or its
+implementation -- so `PanelDriver::supportsAsyncDisplay()`'s `return false`
+stands. `FreeInkDisplay::displayAsyncImpl` then hits
+`if (!_driver->supportsAsyncDisplay()) { displayBuffer(...); return; }`
+**before** it reaches `syncPendingAsync()` and before `_refreshPending` can be
+assigned. Nothing else on this board sets that flag. So
+`syncPendingAsync()` returns at its own first line and costs nothing.
+
+### But that same gate was hiding real panel time, and now it is counted
+
+The accounting caveat section 1 marked `[unverified]` is **verified, and it was
+a defect.** `HalDisplay::displayBufferAsync` billed the refresh at 0 ms on the
+theory that the time would arrive later from `waitRefreshComplete()`. On a
+driver that never defers, the whole refresh completes **inside** that
+0-ms-billed call and the later wait returns immediately, so the time left the
+log entirely -- it was not misattributed, it was lost.
+
+It does not contaminate run7 or run8: the async path has exactly one caller
+tree, the EPUB reader (`src/activities/reader/ReaderUtils.h`), and those files
+are map and BLE boots. It is fixed anyway, and an `async_inline` counter now
+makes the assumption observable instead of assumed -- expected 0 on a deferring
+driver, equal to the async call count on every `LgfxEpdDriver` board.
+
+### A second instrument defect, not previously written down
+
+**The entire grayscale panel path is untimed and uncounted.**
+`HalDisplay::displayGrayscaleBase`, `displayGrayBuffer`,
+`preconditionGrayscale`, `writeGrayscalePlaneStrip` and
+`cleanupGrayscaleBuffers` forward straight to the facade with **no
+`POWER_TELEMETRY` call at all** (`lib/hal/HalDisplay.cpp`). On this board
+`displayGray` runs a real `pushCanvas`, i.e. a whole-panel refresh.
+
+So `panel_busy_ms` under-reports total panel time, and it under-reports a map
+session -- which uses grey overlays for anti-aliased text -- by more than a
+menu. That matters for section 3b's 5 % to 21 % duty table, which is therefore
+a **floor**, not a measurement of the panel path's share.
+
+### What was built for this
+
+`t5s3-refresh-instr`, off `fix/popup-confirm-ring` (which contains
+`release/lilygo-t5-s3-pro` entirely: 146 ahead, 0 behind). Unflashed, untested
+on hardware.
+
+- `micros()` instead of `millis()` around every refresh, and a **per-waveform**
+  busy total, so no future reader has to throw away 90 % of the rows to
+  separate two waveforms. New columns `busy_full_ms`, `busy_half_ms`,
+  `busy_fast_ms`, `busy_win_ms`.
+- **Window requests split by call site** (T-277), which is what makes
+  `ref_window` readable: `win_marker`, `win_overlay`, `win_status`,
+  `win_chrome`, `win_other`. All twelve `displayBufferWindow` callers in
+  `MapActivity` are tagged.
+- `async_inline`, above.
+- The false comment at `HalDisplay::displayWindow` fixed: a window on this
+  board is not "neither a full frame nor free", it **is** a full frame.
+
+Not built, and deliberately: the intra-refresh phase brackets around
+`fillCanvasBW`, `pushSprite` and `waitDisplay`. All three live inside
+`freeink-sdk`, which CLAUDE.md keeps as a mirror of `Free-Ink/freeink-sdk`
+carrying almost nothing of ours, so they need that fork's own branch and PR
+rather than a local edit. Sections 3 steps 2 and 3 are the measurements that
+matter more anyway, and neither needs an SDK change.
+
 ## 2. What `Panel_EPD` already gives us
 
 The board runs LovyanGFX's `Panel_EPD`, bundled inside **M5GFX 0.2.28**, pinned
@@ -679,6 +831,22 @@ negative**, which is why no per-refresh energy figure appears anywhere here; the
 rail-cycle cost is an **estimate**. The 1,081 / 1,117 ms pair is **measured on
 the T5 S3 Pro** (one 4 h 36 min walk, 2,608 window requests, both averagings
 named in section 1).
+
+Section 1b is **read off the source and recomputed off `power.csv`**, on
+2026-09-09, with **no hardware involved**. Its two population tables are
+measured (run8, the card's whole history, n=998 and n=73 isolated rows, and the
+method reproduces `develop`'s earlier run7 figures exactly). Its three source
+findings are **verified off the code**: `LgfxEpdDriver` overrides neither
+`displayWindow` nor `supportsAsyncDisplay`; the async path billed 0 ms for a
+refresh that completed inline; the grayscale panel path is uncounted entirely.
+Its per-pass arithmetic (52 ms per pass, 455 ms fixed, 2,390 ms predicted for a
+37-pass frame) is **derived from two observed modes and nothing else** -- it is
+a hypothesis the section 3 measurements settle, and one low sample already sits
+below its floor. **The 2x itself remains `[open]`**, now for the stronger reason
+that no mechanism of the right sign exists in the source.
+
+Nothing added in section 1b has run on a device. The instrument branch
+`t5s3-refresh-instr` builds clean for `t5s3pro` and is **unflashed**.
 
 Section 4 is **read off upstream source and upstream docs** at FastEPD `9113bdd`
 and OpenTrailPaper `19ea78c`, observed 2026-09-07. Nothing in it is measured by

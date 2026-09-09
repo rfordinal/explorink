@@ -13,9 +13,9 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
-#include "TouchPolicy.h"
 #include "MapPointMarks.h"
 #include "MapPointShards.h"
+#include "TouchPolicy.h"
 // APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
 #include "CrossPointState.h"
 #include "GfxRendererCanvas.h"
@@ -953,7 +953,7 @@ void MapActivity::showBusy() {
   // Windowed: the rest of the panel keeps the map that is already on it. A
   // full refresh here would cost the same waveform time and throw the picture
   // away twice.
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "busy badge window rejected: %d,%d %dx%d", x, y, w, h);
     return;
   }
@@ -1673,7 +1673,7 @@ void MapActivity::updateHeaderStatus() {
 
   // Windowed, like the busy badge: the map on the rest of the panel is
   // untouched and a full refresh would cost a second and throw it away twice.
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Status)) {
     LOG_ERR(kLogTag, "header status window rejected: %d,%d %dx%d", x, y, w, h);
   }
 }
@@ -2037,7 +2037,8 @@ void MapActivity::updateHikeElevationLine() {
   // Windowed, like the row above: the map on the rest of the panel is
   // untouched and a full refresh would cost a second to redraw something a
   // few characters wide.
-  if (!renderer.displayBufferWindow(0, kHeaderBarHeight, renderer.getScreenWidth(), kHikeElevationLineHeight)) {
+  if (!renderer.displayBufferWindow(0, kHeaderBarHeight, renderer.getScreenWidth(), kHikeElevationLineHeight,
+                                    PowerTelemetry::WindowSite::Status)) {
     LOG_ERR(kLogTag, "hike elevation line window rejected");
   }
 }
@@ -2444,7 +2445,8 @@ void MapActivity::updateDebugOverlay() {
   // windowRefreshAffordable() first, same as the busy badge and the follow
   // frame's union window: displayBufferWindow() allocates a buffer per call
   // and a refused allocation aborts the device rather than failing.
-  if (!windowRefreshAffordable(w, h) || !renderer.displayBufferWindow(x, y, w, h)) {
+  if (!windowRefreshAffordable(w, h) ||
+      !renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Overlay)) {
     LOG_ERR(kLogTag, "debug window rejected: %d,%d %dx%d", x, y, w, h);
   }
 }
@@ -3582,7 +3584,8 @@ bool MapActivity::swapChrome() {
     LOG_DBG(kLogTag, "chrome swap union %dx%d unaffordable -- full render instead", window.width, window.height);
     return false;
   }
-  if (!renderer.displayBufferWindow(window.x, window.y, window.width, window.height)) {
+  if (!renderer.displayBufferWindow(window.x, window.y, window.width, window.height,
+                                    PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "chrome swap window rejected: %d,%d %dx%d", window.x, window.y, window.width, window.height);
     return false;
   }
@@ -3668,7 +3671,7 @@ bool MapActivity::restoreMenuBackdrop() {
   // and nothing in between them was touched.
   const Rect hints = GUI.buttonHintsRect(renderer);
   if (!windowRefreshAffordable(rect.width, rect.height) ||
-      !renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height)) {
+      !renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "menu close window rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
     return false;
   }
@@ -3676,7 +3679,8 @@ bool MapActivity::restoreMenuBackdrop() {
   // instead -- drawMapButtonHints() drew that, and it lives in the same rect,
   // so an empty rect here means there is genuinely nothing to refresh.
   if (hints.width > 0 && hints.height > 0) {
-    if (!renderer.displayBufferWindow(hints.x, hints.y, hints.width, hints.height)) {
+    if (!renderer.displayBufferWindow(hints.x, hints.y, hints.width, hints.height,
+                                      PowerTelemetry::WindowSite::Chrome)) {
       LOG_ERR(kLogTag, "menu close hint window rejected: %d,%d %dx%d", hints.x, hints.y, hints.width, hints.height);
     }
   }
@@ -3697,7 +3701,7 @@ bool MapActivity::restoreMenuBackdrop() {
     // No `y` test any more: the dialog window above covers only the dialog, so
     // the side strip needs its own refresh wherever it sits.
     if (side.width > 0 && side.height > 0) {
-      if (!renderer.displayBufferWindow(side.x, side.y, side.width, side.height)) {
+      if (!renderer.displayBufferWindow(side.x, side.y, side.width, side.height, PowerTelemetry::WindowSite::Chrome)) {
         LOG_ERR(kLogTag, "side hint window rejected: %d,%d %dx%d", side.x, side.y, side.width, side.height);
       }
     }
@@ -5336,7 +5340,7 @@ void MapActivity::showPinNotice(const char* text) {
   const int textY = y + (h - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
   renderer.drawText(UI_12_FONT_ID, textX > x ? textX : x + 4, textY, text, true);
 
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "pin notice window rejected: %d,%d %dx%d", x, y, w, h);
   }
   pinNoticeUntilMs_ = millis() + kPinNoticeMs;
@@ -5354,7 +5358,7 @@ void MapActivity::clearPinNotice() {
     LOG_ERR(kLogTag, "pin notice restore rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
     return;
   }
-  if (!renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height)) {
+  if (!renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "pin notice clear window rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
   }
 }
@@ -5778,7 +5782,7 @@ void MapActivity::drawSleepMarker() {
   // (MapMarkerMetrics.h) -- and the sleep screen's moon is a second one, so the
   // way into sleep is two windowed refreshes rather than the whole-panel HALF it
   // used to be.
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Marker)) {
     LOG_ERR(kLogTag, "sleep marker window refused at %d,%d %dx%d", x, y, w, h);
   }
   // The patch describes the background under a marker that is no longer there.
@@ -5885,8 +5889,8 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
   // corner to corner after a re-anchor, which `Nearby -> View on map` does on
   // purpose. Unbounded, that is a 48,000-byte allocation inside the driver and
   // an abort() on this build (see windowRefreshAffordable()).
-  const bool shown =
-      windowRefreshAffordable(unionW, unionH) && renderer.displayBufferWindow(unionX, unionY, unionW, unionH);
+  const bool shown = windowRefreshAffordable(unionW, unionH) &&
+                     renderer.displayBufferWindow(unionX, unionY, unionW, unionH, PowerTelemetry::WindowSite::Marker);
   if (!shown) {
     // The framebuffer is already correct, so a full refresh shows the right
     // picture; only the cheap path was unavailable.
@@ -6730,8 +6734,7 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // strip, so a snapshot sized for the padlock would leave a sliver of stale box
   // pixels above it, and e-ink holds that indefinitely.
   const int chromeBand = UITheme::getInstance().chromeBandHeight();
-  captureRegion(chromeFront_,
-                Rect{0, renderer.getScreenHeight() - chromeBand, renderer.getScreenWidth(), chromeBand});
+  captureRegion(chromeFront_, Rect{0, renderer.getScreenHeight() - chromeBand, renderer.getScreenWidth(), chromeBand});
   captureRegion(chromeSide_, GUI.sideButtonHintsRect(renderer));
 
   // Composited last, over the map's own bottom-edge pixels rather than into

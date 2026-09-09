@@ -80,9 +80,9 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
     einkDisplay.requestResync(1);
   }
 
-  const uint32_t startedMs = millis();
+  const uint32_t startedUs = micros();
   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
-  POWER_TELEMETRY.onRefresh(convertTelemetryKind(mode), millis() - startedMs);
+  POWER_TELEMETRY.onRefreshUs(convertTelemetryKind(mode), micros() - startedUs);
 }
 
 void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
@@ -90,17 +90,30 @@ void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
     einkDisplay.requestResync(1);
   }
 
-  // Counted here, timed in waitRefreshComplete(): the panel is drawing either
-  // way, but the *caller* only blocks in the wait. Counting the refresh twice
-  // would double every async frame.
+  // Counted here, timed in waitRefreshComplete() -- but only when the driver
+  // actually defers. A driver with no supportsAsyncDisplay() override (every
+  // LgfxEpdDriver board, so the whole T5 S3 Pro line) makes the facade take the
+  // blocking path inside this call, the later wait returns instantly, and
+  // billing 0 here dropped a whole refresh out of panel_busy_ms. Verified off
+  // source 2026-09-09: LgfxEpdDriver overrides neither displayWindow nor
+  // supportsAsyncDisplay, so PanelDriver's `return false` stands.
+  //
+  // So ask first, and when nothing will defer, bill what this call really cost.
+  const bool defers = einkDisplay.supportsAsyncRefresh();
+  const uint32_t startedUs = micros();
   einkDisplay.displayBufferAsyncNoShadow(convertRefreshMode(mode));
-  POWER_TELEMETRY.onRefresh(convertTelemetryKind(mode), 0);
+  const uint32_t elapsedUs = micros() - startedUs;
+  if (defers) {
+    POWER_TELEMETRY.onRefreshUs(convertTelemetryKind(mode), 0);
+  } else {
+    POWER_TELEMETRY.onAsyncCompletedInline(elapsedUs);
+  }
 }
 
 void HalDisplay::waitRefreshComplete() {
-  const uint32_t startedMs = millis();
+  const uint32_t startedUs = micros();
   einkDisplay.waitRefreshComplete();
-  POWER_TELEMETRY.onPanelWait(millis() - startedMs);
+  POWER_TELEMETRY.onPanelWaitUs(micros() - startedUs);
 }
 
 bool HalDisplay::supportsAsyncRefresh() const { return einkDisplay.supportsAsyncRefresh(); }
@@ -110,18 +123,27 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
     einkDisplay.requestResync(1);
   }
 
-  const uint32_t startedMs = millis();
+  const uint32_t startedUs = micros();
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
-  POWER_TELEMETRY.onRefresh(convertTelemetryKind(mode), millis() - startedMs);
+  POWER_TELEMETRY.onRefreshUs(convertTelemetryKind(mode), micros() - startedUs);
 }
 
-void HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
-  const uint32_t startedMs = millis();
+void HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen,
+                               PowerTelemetry::WindowSite site) {
+  const uint32_t startedUs = micros();
   einkDisplay.displayWindow(x, y, w, h, turnOffScreen);
-  // Its own bucket, not folded into the three waveforms: a window addresses
-  // only a rectangle, so it is neither a full frame nor free, and a marker-move
-  // ride is mostly these (MapFollow).
-  POWER_TELEMETRY.onRefresh(PowerTelemetry::Refresh::Window, millis() - startedMs);
+  // Its own bucket, not folded into the three waveforms, because a marker-move
+  // ride is mostly these (MapFollow) and they have to stay countable.
+  //
+  // This comment used to say a window "addresses only a rectangle, so it is
+  // neither a full frame nor free". That is true of Ssd1677Driver, which
+  // overrides displayWindow and drives the rectangle. It is false of
+  // LgfxEpdDriver, which overrides nothing, so PanelDriver's base
+  // implementation drops the rectangle and pushes a whole Fast frame -- on the
+  // T5 S3 Pro this bucket and ref_fast are the *same operation*, and the
+  // measured 2x between them is unexplained rather than a cost of scoping
+  // (docs/t5s3-partial-refresh.md, section 1).
+  POWER_TELEMETRY.onRefreshUs(PowerTelemetry::Refresh::Window, micros() - startedUs, site);
 }
 
 void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }

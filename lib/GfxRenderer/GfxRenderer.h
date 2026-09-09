@@ -212,7 +212,13 @@ class GfxRenderer {
   // The driver promotes a window in that state to a full-frame HALF refresh
   // (~1720 ms) which wipes every grey on the panel — always let
   // GrayscaleFrame finish its cleanup first. See docs/eink-grayscale.md.
-  bool displayBufferWindow(int x, int y, int width, int height) const;
+  //
+  // `site` names the caller for the refresh log, so a marker move stays
+  // separable from the debug overlay's timer, a status strip and closing
+  // chrome. One merged counter is why the 2026-09-07 walk's 2,608 window
+  // requests could not be read (T-277).
+  bool displayBufferWindow(int x, int y, int width, int height,
+                           PowerTelemetry::WindowSite site = PowerTelemetry::WindowSite::Other) const;
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;
@@ -343,8 +349,8 @@ class GfxRenderer {
   // reused buffer carries no ghosts of the previous string. Advance widths only:
   // no kerning, no ligatures, no combining marks, which is why the only caller
   // passes digits.
-  bool renderTextMask(int fontId, const char* text, EpdFontFamily::Style style, uint8_t* bits, int strideBits,
-                      int maxW, int maxH, int& outW, int& outH) const;
+  bool renderTextMask(int fontId, const char* text, EpdFontFamily::Style style, uint8_t* bits, int strideBits, int maxW,
+                      int maxH, int& outW, int& outH) const;
   int getTextHeight(int fontId) const;
 
   // Grayscale functions

@@ -1,5 +1,4 @@
 #include "GfxRenderer.h"
-#include <cstring>
 
 #include <BidiUtils.h>
 #include <BuildScratch.h>
@@ -10,6 +9,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "FontCacheManager.h"
 
@@ -1581,11 +1581,11 @@ void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) 
   display.displayBufferAsync(mode);
 }
 
-bool GfxRenderer::displayBufferWindow(int x, int y, int w, int h) const {
+bool GfxRenderer::displayBufferWindow(int x, int y, int w, int h, PowerTelemetry::WindowSite site) const {
   if (w <= 0 || h <= 0) return false;
   const AlignedMemRect mem = screenRectToAlignedMemRect(orientation, x, y, w, h, panelWidth, panelHeight);
   if (!mem.valid) return false;
-  display.displayWindow(mem.x, mem.y, mem.w, mem.h, fadingFix);
+  display.displayWindow(mem.x, mem.y, mem.w, mem.h, fadingFix, site);
   return true;
 }
 
@@ -2080,9 +2080,8 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   }
 }
 
-bool GfxRenderer::renderTextMask(const int fontId, const char* text, const EpdFontFamily::Style style,
-                                uint8_t* bits, const int strideBits, const int maxW, const int maxH, int& outW,
-                                int& outH) const {
+bool GfxRenderer::renderTextMask(const int fontId, const char* text, const EpdFontFamily::Style style, uint8_t* bits,
+                                 const int strideBits, const int maxW, const int maxH, int& outW, int& outH) const {
   outW = 0;
   outH = 0;
   if (text == nullptr || *text == '\0' || bits == nullptr) return false;
