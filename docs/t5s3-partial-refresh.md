@@ -536,6 +536,79 @@ pair, with the field's own caveat in view -- the 2026-09-07 walk had `ble=2` in
 246 of 249 rows, so it should have been at full clock and still measured
 1,030 ms.
 
+### What a real partial refresh would actually save, now that the scan is measured
+
+**Correcting this doc's own framing.** Section 2c said the rectangle "scopes the
+CPU work, never the scan", and section 3b concluded scoping is "mostly a speed
+fix" that "does not shorten rail-on time by one microsecond". Both are still
+true as written, but they left the impression that a windowed refresh cannot
+touch the scan. **It can, and after the 2026-09-09 measurement it is the second
+biggest lever we have.**
+
+Three facts, the first two verified in upstream source on 2026-09-09 (epdiy at
+`42c1612`, cloned and read here), the third read off `Panel_EPD` in our own
+`.pio/libdeps`:
+
+- **The glass can be advanced without data.** epdiy's older ESP32 I2S path
+  skips a row with a bare CKV pulse and no transmission at all --
+  `pulse_ckv_ticks(45, 5, false)` (`src/output_i2s/render_i2s.c:79-86`), with a
+  comment citing the OC4 spec's 200 kHz CKV ceiling. So a short scan is not
+  forbidden by the panel.
+- **On the S3 it is forbidden by the peripheral, not the panel.** epdiy's S3 LCD
+  path sends every row and only zeroes the data outside the band -- its own
+  comment is `// Output no-op outside of drawn area`, then
+  `memset(buf, 0, ctx->display_width / 4)`
+  (`src/output_lcd/render_lcd.c:98-104`). The LCD peripheral generates its own
+  frame timing and is fed line by line, so the row count is fixed by its
+  configuration. `Panel_EPD` and FastEPD do the same (2c).
+- **`Panel_EPD` already scopes the arming and does not scope the scan.** The
+  arming loop works off `new_data.x/y/w/h` (`Panel_EPD.cpp:924-945`), but the
+  scan loop runs `for (y = 0; y < mh; y++)` where
+  `mh = (memory_height + magni_h - 1) / magni_h` (`:907`) -- the whole panel,
+  unconditionally.
+
+**And the row send is not the expensive part.** Measured: `blit_dmabuf` is
+82-89 % of a pass and the bus is the rest. `blit_dmabuf` is called **per row**,
+with that row's slice of the step framebuffer
+(`&me->_step_framebuf[(y * memory_w >> 1) * 2]`). So the megabyte is read a row
+at a time, and a row outside the band does not need reading at all -- it needs a
+`memset`, exactly as epdiy does it.
+
+So the shape of a real partial refresh here is: **keep clocking all 540 rows,
+because the peripheral requires it, and skip the step-framebuffer read for rows
+outside `_range_mod`.** Rough arithmetic on the measured numbers, for a
+100-row marker band out of 540:
+
+| | today | band-scoped blit |
+|---|---|---|
+| blit per frame (11 passes) | 286 ms | ~53 ms |
+| bus per frame | ~46-188 ms | unchanged |
+| **scan per frame** | **366 ms** | **~130-240 ms** |
+
+`[derived from the measured per-row blit share, not yet built or measured]`.
+
+**Two independent levers, and they compose.** Pass count (T-273) scales the
+whole frame and costs image quality, because a shorter table delivers less dose
+-- EPD_Painter measured that directly and its 7-pass fast train cannot express
+16 greys at all (section 4). Band-scoped blit scales with area and costs no
+image quality whatsoever, because it changes which bytes are read and not what
+reaches the glass.
+
+**What it does not do.** It does not reduce the pass count. Pass count is
+independent of area: each pixel carries its own cursor into the LUT and a frame
+runs as many passes as the longest remaining table among armed pixels, plus the
+trailing empty one (2d). A one-pixel change still runs the full 11. So "it is
+only a small update, send fewer passes" does not follow, and nothing in the
+driver could make it follow.
+
+**Consequence for T-271.** Its premise was wrong in the way section 1b and
+section 4 describe -- the rectangle never reaches the driver, and the project
+hitting ~125 ms on this panel does not scope at all. But the *work* T-271 stands
+for is worth more than this doc previously said, because the win is inside
+`Panel_EPD`'s scan loop rather than in `LgfxEpdDriver`'s override. That makes it
+an upstream or fork change to M5GFX, not a change to our driver, which is a
+different and larger piece of work. **Written down rather than started.**
+
 ### The two measurements that settle it
 
 The obvious instrument -- `micros()` around `fillCanvasBW`, `pushSprite` and
