@@ -571,7 +571,11 @@ That is T-275.
 
 Read off upstream source and upstream docs, **nothing in this section is
 measured by us**. Observed 2026-09-07: FastEPD `main` at `9113bdd`,
-OpenTrailPaper `main` at `19ea78c`.
+OpenTrailPaper `main` at `19ea78c`. Added 2026-09-09: EPD_Painter `6335a14`
+(2026-08-01) and OpenTrailPaper `981ef4a` (2026-09-08), both cloned and read
+directly. **EPD_Painter is the one that matters most**, because it is what
+OpenTrailPaper ships and it is the only project on this panel that publishes a
+measured per-pass time.
 
 **Neither project has anything on the sunlight refresh failure** (BUG-022, and
 [`eink-refresh-degradation.md`](eink-refresh-degradation.md)). Everything below
@@ -611,6 +615,99 @@ two `#ifndef __LINUX__` lines near `FastEPD.inl:2541`. **Every citation in
   M5GFX's `Bus_EPD` drives the same peripheral the same way.** A suspect if
   scoped updates show a corrupted band at the start of scan lines, not a
   diagnosis.
+
+### EPD_Painter, which is what OpenTrailPaper actually ships
+
+Read 2026-09-09 at `tonywestonuk/EPD_Painter` `6335a14` (2026-08-01) and
+`RaemondBW/OpenTrailPaper` `981ef4a` (2026-09-08), both cloned and read here,
+not taken secondhand. **Nothing in this subsection is measured by us**; the
+numbers marked measured are theirs.
+
+**Their shipping build is EPD_Painter, not epdiy.** `default_envs =
+t5s3-painter` (`OpenTrailPaper/platformio.ini:13`), whose block at `:98` is
+commented "THE SHIPPING BUILD... Proven on hardware: boots, renders the
+dashboard, BLE/GPS/SD all up", with `[env:t5s3-pro]` on epdiy kept only "as the
+epdiy fallback if the port needs backing out". So the maintainer's reported
+partial refresh, "probably 100 ms", runs through EPD_Painter.
+
+**What their fast path actually is.** `QUALITY_FAST` uses a **7-slot** waveform
+train -- `wf_len = 7`, explicit in the dispatch at `EPD_Painter.cpp:1253`, and
+the arrays are declared `uint8_t fast_lighter[3][7]` (`EPD_Painter.h:82`). It is
+a **4-level** mode and cannot be anything else: `EPD_Painter.cpp:216-217`
+refuses `QUALITY_FAST` with 16 greys and tells the caller to
+`setGreyLevels(4)` first. And 4-level FAST pads nothing between passes --
+`EPD_Painter.cpp:1505`, verbatim, `// QUALITY_FAST = No delay.`
+
+**So the 15 ms constant pass period does not apply to their fast path**, and a
+"7 x 15 ms = 105 ms" reading of it is wrong. The 15 ms is
+`g16_pass_us_normal` / `g16_pass_us_high` (`EPD_Painter.h:187-188`), it exists
+only for the **16-grey** qualities, and there is no `g16_pass_us_fast`. Its
+purpose is stated: the pass loop **pads** every pass to it "so retention dose
+depends only on the trains, and the trains are calibrated AT this period". It
+is a deliberate ceiling, not a cost.
+
+**The number worth comparing against is their row loop, and it is measured.**
+`EPD_Painter.h:256-259`: **7-8 ms** on a match card, **13.3 ms** on a
+photograph, against the 15 ms period with a 4 ms settle floor -- the note exists
+because a photograph's 13.3 ms plus settle "stretched the pass to 17.3 ms" and
+over-dosed every level by 15 %. Their pass clocks **every row**
+(`for (int row = 0; row < _config.height; row++)`, `EPD_Painter.cpp:1419`),
+exactly as `Panel_EPD` and FastEPD do (2c), so it is comparable to ours.
+
+A fast frame there is therefore roughly **7 x 7-13.3 ms = 49-93 ms**
+`[derived by us from their measured row loop]`, which is what the "probably
+100 ms" is. Their 16-grey NORMAL is 13 slots at a padded 15 ms, **195 ms**,
+stated in the same comment.
+
+**Two of their own numbers do not survive being checked.** The comment at
+`EPD_Painter.h:158-167` says HIGH is "20 slots against 13" for "~300 ms", but
+`high_lighter` is declared `[3][13]` (`:86`), the board's tables carry 13
+entries each (`LilyGo_T5S3_GPS_Trains.h:48-53`), and the dispatch sets
+`wf_len = 13` for HIGH (`EPD_Painter.cpp:1259`). **HIGH is 13 slots on this
+board and the 300 ms is not reachable from this code.** Separately,
+OpenTrailPaper's "~475 ms" whole-panel figure is **derived by dividing a stated
+1.9 s by four** in a comment about a boot clear
+(`OpenTrailPaper/src/epd_compat.cpp:712-713`), with no instrument named, and it
+describes a *clear* rather than the fast path.
+
+### What their number does to ours, and it is not about windowing
+
+**The bus and the glass are exonerated, now by someone else's measurement.**
+Section 3 derives 8.37 ms of pure clocking per pass and 11-14 ms realistic with
+row overhead. EPD_Painter **measures** 7-13.3 ms for the same job on the same
+panel. Those are the same range. So none of our excess is the panel, and that
+was previously only our own arithmetic.
+
+**The gap is not windowing, and T-271 will not explain it.** Their ~100 ms is a
+whole-panel push with a short train and a delta engine, the same shape as our
+whole-panel `FAST`. This agrees with section 1b from the other direction: our
+own `ref_window` and `ref_fast` are already the same whole-panel operation.
+
+**Where ours goes.** Section 1b's two-mode fit gives **455 ms fixed plus
+~52 ms per pass** over 11 passes. Set against their measured 7-13.3 ms:
+
+| | theirs (measured) | ours (fitted, `[derived]`) |
+|---|---|---|
+| per pass | 7-13.3 ms | ~52 ms |
+| passes in the fast path | 7 | 11 |
+| fixed cost before any pass | no counterpart in FAST | **~455 ms** |
+| frame | 49-93 ms | ~1,030 ms |
+
+So it is **two independent problems**, not one 6x. Roughly 44 % of our frame is
+prep and rail before a single pass runs, and the passes themselves are still
+4-7x dearer than the same work measured next door. A per-pass reading of
+"~94 ms" (1,030 / 11) assumes the whole frame is passes, which the fit says it
+is not.
+
+**The structural suspect for the per-pass half is already in section 3**:
+`blit_dmabuf` re-reads the **whole 1,036.8 kB step framebuffer on every pass**,
+where EPD_Painter streams a packed 4bpp buffer into a per-row DMA buffer. Ours
+scales with nothing and is paid eleven times.
+
+**And Lead A is not a suspect.** Section 1b killed it off the source:
+`LgfxEpdDriver` overrides neither `displayWindow` nor `supportsAsyncDisplay`, so
+`displayAsyncImpl` takes the blocking path before `syncPendingAsync()` is
+reached and `_refreshPending` is never set here.
 
 ### OpenTrailPaper (same board, bike head unit)
 
@@ -657,17 +754,36 @@ system we are chasing.
 
 Two goals, and section 3b says they do not share a fix: **speed** comes from
 T-271 and T-272, **battery** comes from T-273 and T-274. T-269 and T-275 are the
-instruments. If only one thing gets built, T-271 is the one the rider feels; if
-the battery is the reason, build T-273 first -- it is data, not code, and it is
-the only item that shortens rail-on time.
+instruments.
 
-**T-269. Measure the frame properly.** Not just `micros()` around the three
-phases in `pushCanvas` -- that cannot see inside the scan. Run both measurements
-in section 3: the unchanged-frame subtraction, which needs no code change and
+**Revised 2026-09-09: build T-269 first.** The earlier advice was to reach for
+T-271 if only one thing gets built. Section 4 removes its premise -- the project
+running this panel at ~100 ms does it with a **whole-panel** push and a short
+train, so scoping the rectangle is not what separates us from them, and section
+1b shows our own window and whole-panel counters are already the same
+operation. T-271 is still worth having for the CPU work it removes, but it is no
+longer the item that explains the number. T-269 is, and it needs no SDK change
+and, for half of it, no code change at all.
+
+**T-269. Measure the frame properly. This is now the first thing to build, not
+the instrument for the others.** Not just `micros()` around the three phases in
+`pushCanvas` -- that cannot see inside the scan. Run both measurements in
+section 3: the unchanged-frame subtraction, which needs no code change and
 isolates the cost of ten passes, and a scratch-copy pass counter and timer
-inside `task_update`. **Done when** the pass count is confirmed as 11 and 37, a
-per-pass time and a PSRAM sweep time exist, and section 3's estimate is replaced
-by numbers. Blocks T-271 and T-273. Needs the board.
+inside `task_update`.
+
+**It has a target now.** EPD_Painter measures **7-13.3 ms** for one whole-panel
+pass on this panel (section 4), so the pass counter's output gets reported
+against that figure and not against the 15 ms padded period, which is a ceiling
+of theirs rather than a cost. Two numbers come out and they answer different
+questions: the per-pass time says whether our passes are 4-7x dear, and the
+unchanged-frame subtraction says how much of the 1,030 ms is not passes at all
+-- section 1b's fit predicts **~455 ms** of it, which would be the larger of the
+two problems.
+
+**Done when** the pass count is confirmed as 11 and 37, a per-pass time and a
+PSRAM sweep time exist next to their 7-13.3 ms, and section 3's estimate is
+replaced by numbers. Blocks T-271 and T-273. Needs the board.
 
 **T-270. Collect the asynchrony that already exists.** Implement
 `supportsAsyncDisplay()`, `displayStart()` and `displayFinish()` on
@@ -848,8 +964,18 @@ that no mechanism of the right sign exists in the source.
 Nothing added in section 1b has run on a device. The instrument branch
 `t5s3-refresh-instr` builds clean for `t5s3pro` and is **unflashed**.
 
-Section 4 is **read off upstream source and upstream docs** at FastEPD `9113bdd`
-and OpenTrailPaper `19ea78c`, observed 2026-09-07. Nothing in it is measured by
+Section 4's EPD_Painter subsections are **read off upstream source** at
+EPD_Painter `6335a14` and OpenTrailPaper `981ef4a` on 2026-09-09, cloned and
+read here. Their 7-slot fast train, its 4-level-only constraint, its absent
+inter-pass delay and the 7-13.3 ms row loop are **theirs, measured or stated by
+them**; the 49-93 ms fast frame is **ours, derived from their row loop**; and
+two of their own figures are **contradicted by their own code** (HIGH at 20
+slots against a `[3][13]` declaration, and a 475 ms clear obtained by dividing
+a comment's 1.9 s by four). The comparison table in that section pairs their
+measured per-pass against **our fitted** one, which is `[derived]` on our side.
+
+The rest of section 4 is **read off upstream source and upstream docs** at
+FastEPD `9113bdd` and OpenTrailPaper `19ea78c`, observed 2026-09-07. Nothing in it is measured by
 us, its two numbers (32 ms, 518,400) are a source comment and an argument
 respectively, and the OpenTrailPaper items marked epidy-era are **history, not
 their shipping behaviour**.
