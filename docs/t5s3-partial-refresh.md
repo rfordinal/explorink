@@ -435,6 +435,107 @@ measured 1,081-1,117 ms. **A 2x to 5x win, and the spread is set by PSRAM
 bandwidth, not by the panel.** Steps 1-3 are what scoping removes; steps 4 and 5
 are what remains no matter how small the rectangle.
 
+### Measured on hardware, 2026-09-09. The scan is 34 ms a pass and 85 % of it is `blit_dmabuf`
+
+**This replaces the estimates above.** Instrument: a pass counter and two
+`micros()` brackets inside `Panel_EPD::task_update` -- one round the whole pass,
+one round `blit_dmabuf` alone -- in a **scratch copy** of
+`.pio/libdeps/t5s3pro/M5GFX/.../Panel_EPD.cpp`, printing one `[EPDPASS]` line
+per frame when `remain` clears. Branch `t5s3-refresh-instr` at `09c19901`,
+flashed to the **LilyGo T5 S3 Pro** (ESP32-S3 QFN56 rev v0.2, 8 MB PSRAM, MAC
+`7c:2c:67:8a:4c:b4`, confirmed by `esptool chip-id` before the flash). 23 frames
+over four runs, driven from the host with `CMD:GOTO_MAP`, `pos` and `redraw`.
+Binary and ELF archived as
+`docs/firmware-builds/t5s3-refresh-instr-09c19901-passcounter-measured.*`.
+
+| passes | n | frame | per pass | `blit_dmabuf` | blit share |
+|---|---|---|---|---|---|
+| **1** | 1 | **23.3 ms** | 23.3 ms | 19.2 ms | 82 % |
+| **11** | 19 | **366 ms** | 33.3 ms | 287 ms | 84 % |
+| **37** | 3 | **1,253 ms** | 33.9 ms | 1,118 ms | 89 % |
+
+Medians. Every figure is time inside `task_update`, i.e. the scan only.
+
+**Section 2d's pass-count table is confirmed exactly.** 11 for `epd_fast`, 37
+for `epd_text`, and a 1-pass frame exists where nothing arms -- all three
+predicted values observed, including the two structural passes 2d argued for
+from the arrays. The frames are also deterministic to the microsecond: the same
+37-pass boot frame measured 1,253,195 and 1,253,196 us on two separate runs.
+
+**The scan is purely linear in pass count and has no fixed cost of its own.** A
+straight line through the 1-pass and 37-pass medians gives **34.16 ms per pass
+and an intercept of -10.8 ms**, i.e. zero. So there is no arming sweep or rail
+cycle worth naming inside the scan; a frame's scan time *is* its pass count
+times 34 ms.
+
+**`blit_dmabuf` is 82-89 % of that.** The structural suspect this doc named
+before anyone measured it is the answer: every pass re-reads the whole
+1,036.8 kB step framebuffer, and that read is where the refresh goes. It is also
+the term section 3b predicted scales with nothing, so it is paid 11 times on a
+marker move and 37 times on a clean frame.
+
+**Against the reference (section 4): 33.8 ms against EPD_Painter's ~5.6 ms of
+row sending per pass, a factor of 6.0.** Same panel, same every-row scan. Their
+whole 13-pass 4-level frame, measured with their own profiler, is ~125 ms; our
+11-pass scan alone is 366 ms.
+
+**What this refutes.** The estimate above -- 17-26 ms per pass at 40-60 MB/s of
+PSRAM, 190-450 ms for a fast frame -- lands close on the frame total (366 ms
+measured against 190-450 estimated) but for the wrong reason: the real per-pass
+cost is 34 ms, above the top of the estimated range, and the 210-500 ms "floor
+centred near 300 ms" was never a floor at all, because the intercept is zero.
+Section 1b's two-mode fit off `power.csv` is refuted in its details too: it read
+455 ms of fixed cost and 52.3 ms per pass, where the truth is **zero fixed cost
+inside the scan, 34 ms per pass, and the 455 ms it saw was prep sitting outside
+`task_update` entirely** (see below).
+
+### Prep is outside the scan, and it is the other half `[measured]`
+
+Pairing each frame's `[EPDPASS]` scan time against the same refresh's wall clock
+from `PowerTelemetry` (`stats` over the serial console, `panel_busy_ms` delta):
+
+| what | counter | wall clock | scan | **prep** |
+|---|---|---|---|---|
+| `redraw`, whole-panel `FAST` | `ref_fast` +1 | **488 ms** | 254 ms | **234 ms** |
+| `pos`, one marker move | `ref_window` +1 | **1,048 ms** | 474 ms | **574 ms** |
+
+Prep is `fillCanvasBW` plus `pushSprite`, which run before the panel task is
+handed anything. So a marker move on this board is roughly **half prep, half
+scan**, and neither half is the panel.
+
+**And this reproduces the field 2x on the bench: 1,048 ms against 488 ms, where
+`power.csv` gave 1,030 against 517.** Both bench frames were **11 passes**,
+which settles what section 1b could only argue from the source: the window and
+whole-panel counters do time the same operation, and the 2x is not windowing.
+
+**What the 2x actually is, `[open]` but narrowed.** Both halves roughly doubled,
+and prep is a pair of fixed-size loops over 518,400 pixels that cannot vary with
+content -- so the only thing that can double it is the CPU clock. The device
+reports `cpu_mhz=80`, the low-power floor, with `throttled_ms` at 226 s against
+`full_clock_ms` at 10 s, and the log shows the clock going up and down around
+commands:
+
+```
+[134394] [DBG] [PWR] Restoring normal CPU frequency
+[135051] [DBG] [PWR] Going to low-power mode (80 MHz)
+```
+
+The cheap `redraw` fell inside such a window: `full_clock_ms` grew by 658 ms
+across the snapshot that contained it, and by **0 ms** across the one containing
+the dear `pos`. That is consistent and it is the leading explanation for the
+prep half.
+
+**It does not explain the scan half, and that part stays open.** The two scan
+populations are 474 ms at 60 % blit and ~314 ms at 85 % blit, with
+`blit_dmabuf` itself almost unchanged between them (286 ms against 268 ms) --
+so the variable is the **non-blit** part of the pass, 188 ms against 46 ms, and
+a slower core would have moved the blit too. Bus contention or scheduling, not
+clock. **What would settle both:** pin the clock (the map already claims to do
+this while BLE is up, `PowerTelemetry.h`) and re-run the same `redraw` / `pos`
+pair, with the field's own caveat in view -- the 2026-09-07 walk had `ble=2` in
+246 of 249 rows, so it should have been at full clock and still measured
+1,030 ms.
+
 ### The two measurements that settle it
 
 The obvious instrument -- `micros()` around `fillCanvasBW`, `pushSprite` and
