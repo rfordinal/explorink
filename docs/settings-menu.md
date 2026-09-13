@@ -129,6 +129,18 @@ left at whatever the finger last touched. The result handler puts it back to
 the value captured before the picker opened, and the same poll relights the
 original color a frame later.
 
+**Confirmed on X4 Pro hardware, 2026-09-13**: both sliders react while
+dragging, not only on Confirm. That the poll fires during
+`IntervalSelectionActivity` and not only `SettingsActivity` was read off
+`main.cpp`'s `loop()` structure beforehand (the poll block sits flat in the
+top-level loop, not gated on which activity is current); this hardware pass is
+what actually watched it happen. One edge case stays unverified: dragging the
+brightness slider while the light is off still writes into
+`SETTINGS.frontlightBrightness` the same as always, but the existing
+`frontlight.brightness() > 0` gate on that poll means nothing lights up until
+the light is turned back on -- consistent with "choosing a level is not a
+request for light" above, but nobody has watched it happen with the light off.
+
 ## Rows hidden, and the consumer that proves them reader-only
 
 Each of these was hidden because its only consumer is a reader activity. The
