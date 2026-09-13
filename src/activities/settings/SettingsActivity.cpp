@@ -327,6 +327,11 @@ void SettingsActivity::toggleCurrentSetting() {
     return;
   }
 
+  if (setting.nameId == StrId::STR_FRONTLIGHT_COLOR_TEMP) {
+    openFrontlightColorTemperaturePicker();
+    return;
+  }
+
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     // Toggle the boolean value using the member pointer
     const bool currentValue = SETTINGS.*(setting.valuePtr);
@@ -475,6 +480,20 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::openFrontlightColorTemperaturePicker() {
+  startActivityForResult(
+      std::make_unique<IntervalSelectionActivity>(renderer, mappedInput, "FrontlightColorTemperatureInterval",
+                                                  StrId::STR_FRONTLIGHT_COLOR_TEMP, SETTINGS.frontlightColorTemperature,
+                                                  0, 100, 5, 20, StrId::STR_COLOR_TEMP_VALUE_FORMAT, false, true),
+      [this](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          SETTINGS.frontlightColorTemperature = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+          SETTINGS.saveToFile();
+        }
+        requestUpdate();
+      });
+}
+
 void SettingsActivity::render(RenderLock&&) {
   if (optionPopup.processRender(renderer, mappedInput)) return;
 
@@ -539,6 +558,11 @@ void SettingsActivity::render(RenderLock&&) {
             }
           } else if (setting.nameId == StrId::STR_FRONTLIGHT) {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr)) + " %";
+          } else if (setting.nameId == StrId::STR_FRONTLIGHT_COLOR_TEMP) {
+            char valueBuffer[32];
+            snprintf(valueBuffer, sizeof(valueBuffer), tr(STR_COLOR_TEMP_VALUE_FORMAT),
+                     static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
+            valueText = valueBuffer;
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
           }

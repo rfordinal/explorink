@@ -74,6 +74,36 @@ Two things make it unusual and both are deliberate:
 level is not a request for light. The gestures that share this number are in
 `docs/lilygo-t5s3-bringup.md`, "The remap, 2026-09-07".
 
+## Frontlight color: a slider, only on the two-channel boards
+
+**Added 2026-09-13.** A second row, **Light Color**, appears only where the
+board's frontlight has a second (warm) PWM channel -- `#if FREEINK_CAP_WARMLIGHT`
+in `SettingsList.h`, true today for X4 Pro (`docs/xteink-x4-pro-bringup.md`) and
+compiled out everywhere else, including plain-Frontlight boards like the T5 S3
+Pro that only have one channel. `FrontlightManager::hasColorTemperature()` is
+the runtime version of the same gate.
+
+Unlike the plain Frontlight row (cycles in place on Confirm), this one opens
+`IntervalSelectionActivity` -- the same touch-drag/tap/button slider dialog the
+sleep-timeout row already uses (`openSleepTimeoutPicker()`) -- because a mix
+between two extremes reads better as a slider than as a stepped list.
+`0` is fully cool, `100` fully warm, `50` (the default) neutral; the row and the
+picker both format it with `STR_COLOR_TEMP_VALUE_FORMAT` ("%u%% warm").
+
+Persistence follows the Frontlight row's pattern exactly: `frontlightColorTemperature`
+is hand-serialised in `CrossPointSettings.cpp` (clamped 0-100 on load, since the
+settings file is user-editable and the value reaches the LEDC duty split), and
+the row carries no JSON key of its own.
+
+Applying it to the LED is a poll, not a push: the picker only writes
+`SETTINGS.frontlightColorTemperature` on Confirm, and `main.cpp`'s `loop()`
+compares it against a static `appliedFrontlightColorTemperature` each frame the
+same way it already does for `frontlightBrightness`, calling
+`frontlight.setColorTemperature()` when it changes. Unlike brightness, this
+applies whether the light is on or off -- picking a color while the light is
+off should not be silently discarded, since there is no "off" value hidden in
+this field the way there is for `frontlightOn`.
+
 ## Rows hidden, and the consumer that proves them reader-only
 
 Each of these was hidden because its only consumer is a reader activity. The

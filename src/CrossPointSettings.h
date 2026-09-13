@@ -455,6 +455,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // one field would fight.
   uint8_t frontlightOn = 0;
   uint8_t frontlightBrightness = 50;
+  // Warm/cool mix for boards with a two-channel frontlight (FREEINK_CAP_WARMLIGHT,
+  // e.g. X4 Pro): 0 = fully cool, 100 = fully warm, 50 = neutral. Meaningless and
+  // unused on single-channel boards -- FrontlightManager::setColorTemperature()
+  // is a no-op there, so the row is gated out at SettingsList.h rather than kept
+  // in sync with a fact this field can't hold on that hardware.
+  //
+  // Serialised by hand alongside frontlightOn/frontlightBrightness for the same
+  // reason: it has no JSON key of its own in SettingsList.h.
+  uint8_t frontlightColorTemperature = 50;
   // Power button return from footnotes (1 = enabled, 0 = disabled)
   uint8_t pwrBtnFootnoteBack = 1;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)

@@ -1167,6 +1167,10 @@ void setup() {
   if (frontlight.present()) {
     frontlight.setBrightness(SETTINGS.frontlightBrightness);
     if (!SETTINGS.frontlightOn) frontlight.off();
+    // No-op on a single-channel board (FrontlightManager.h) -- calling it
+    // unconditionally still requires present() so it never runs on a board with
+    // no light at all.
+    if (frontlight.hasColorTemperature()) frontlight.setColorTemperature(SETTINGS.frontlightColorTemperature);
   }
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
@@ -1401,6 +1405,19 @@ void loop() {
     appliedFrontlightBrightness = SETTINGS.frontlightBrightness;
     if (frontlight.present() && frontlight.brightness() > 0) {
       frontlight.setBrightness(appliedFrontlightBrightness);
+    }
+  }
+  // Same reasoning as frontlightBrightness above: the color-temperature picker
+  // (SettingsActivity::openFrontlightColorTemperaturePicker()) writes straight
+  // into SETTINGS on Confirm, so the light has to be told here too. Applied
+  // regardless of on/off state -- unlike brightness, changing the warm/cool mix
+  // while the light is off is harmless and should still take effect once it's
+  // switched back on.
+  static uint8_t appliedFrontlightColorTemperature = SETTINGS.frontlightColorTemperature;
+  if (SETTINGS.frontlightColorTemperature != appliedFrontlightColorTemperature) {
+    appliedFrontlightColorTemperature = SETTINGS.frontlightColorTemperature;
+    if (frontlight.hasColorTemperature()) {
+      frontlight.setColorTemperature(appliedFrontlightColorTemperature);
     }
   }
   if (frontlightStateChanged && !frontlightHoldActive) {
