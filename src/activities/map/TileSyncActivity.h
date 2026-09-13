@@ -292,6 +292,14 @@ class TileSyncActivity final : public Activity,
   // "did the tiles I lack arrive" and "are the tiles I have still right" -- and
   // a rider who cannot tell them apart reads a check as a download.
   bool formatFreshness(char* out, size_t size) const;
+  // Sends NEED_POINTS once per visit, the same settle-point askAboutFreshness()
+  // fires at (docs/point-layer-lifecycle.md, decision 2: "SyncScreen ... syncs
+  // there, after that visit's tile fetch has settled"). This screen has no
+  // viewport, so the shard range is centred on SETTINGS.mapLastLatE7/LonE7 --
+  // the persisted fix, same source MapMissingAnchor.h reads for the same
+  // reason. Only the ask; what happens to the reply (push/skip/gone) is T-561's
+  // next step.
+  void askAboutPoints();
 
   // Snapshots the missing list and zeroes everything one run reports, so a second
   // run on the same visit starts where a fresh entry would. False means the
@@ -313,6 +321,12 @@ class TileSyncActivity final : public Activity,
   // True once CHECK_TILES has gone out this visit. One check per visit: this
   // screen draws no map, so nothing adds to the held-tile store while it is up.
   bool freshnessAsked_ = false;
+  // True once NEED_POINTS has gone out this visit, or once askAboutPoints()
+  // decided there was nothing to ask about (no last fix). Same one-shot shape
+  // as freshnessAsked_, and for the same reason: this screen draws no map, so
+  // there is nothing that would make a second ask this visit answer
+  // differently.
+  bool pointsAsked_ = false;
 
   // What the screen says about the check, so a rider can tell a freshness pass
   // from a plain fetch. It could not before: the check ran, tiles moved over

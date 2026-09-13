@@ -11,6 +11,8 @@
 #include "HeldTilesStore.h"
 #include "MapByteFormat.h"
 #include "MapMissingAnchor.h"
+#include "MapPointReader.h"
+#include "MapPointShards.h"
 #include "MapPowerStatsProvider.h"
 #include "MapTileReader.h"
 #include "MappedInputManager.h"
@@ -184,6 +186,7 @@ void TileSyncActivity::onEnter() {
     hadPhone_ = drawnPhoneListening_;
     if (drawnPhoneListening_) {
       askAboutFreshness();
+      askAboutPoints();
       enterPhase(Phase::Finished);
     } else {
       // A phone connecting synchronously with begin() above never happens on
@@ -249,6 +252,46 @@ void TileSyncActivity::askAboutFreshness() {
   // painted: every other caller already repaints immediately after this
   // returns, so painting here made it two e-ink refreshes per ask.
   freshnessRedrawPending_ = true;
+}
+
+void TileSyncActivity::askAboutPoints() {
+  if (pointsAsked_) return;
+  // Both halves of the mode ladder decision 2 reuses: "whether" the device
+  // deals in points at all, and "when" it may spend a phone's data on them.
+  // Off means never, on either count.
+  if (SETTINGS.mapPointsEnabled == 0) return;
+  if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return;
+
+  if (!SETTINGS.mapHasLastFix) {
+    // Never seen a fix, this session or any other -- there is nothing to
+    // centre a shard range on. Marked asked anyway: nothing between here and
+    // the next visit changes this screen's own state, so re-checking every
+    // loop() would just repeat the same log line.
+    LOG_INF(kLogTag, "points: no last fix, nothing to centre a shard range on");
+    pointsAsked_ = true;
+    return;
+  }
+
+  // Seeds this screen's own console state from the persisted fix -- the same
+  // one MapMissingAnchor.h reads for the missing-tile sort, and for the same
+  // reason: this screen has no viewport and may never have seen a live fix
+  // this session (docs/point-layer-lifecycle.md, "This screen has no
+  // viewport"). Without this, `points` itself would answer `no_position` the
+  // moment the phone replied to the NEED_POINTS this triggers.
+  consoleState_.setLastKnownPosition(SETTINGS.mapLastLatE7, SETTINGS.mapLastLonE7);
+
+  MapPointShards::Range range;
+  if (!consoleState_.pointShardRange(range)) return;  // cannot happen right after setLastKnownPosition; stay honest
+
+  char line[48];
+  snprintf(line, sizeof(line), "NEED_POINTS %lu fmt %u", static_cast<unsigned long>(range.count()),
+           static_cast<unsigned>(MapPointReader::kFormatVersion));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "NEED_POINTS not delivered");
+    return;
+  }
+  pointsAsked_ = true;
+  LOG_INF(kLogTag, "points: asked about %lu shard(s) around the last fix", static_cast<unsigned long>(range.count()));
 }
 
 bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
@@ -447,6 +490,7 @@ void TileSyncActivity::trackPhone() {
       askForTiles();
     } else {
       askAboutFreshness();
+      askAboutPoints();
       verdict_ = StrId::STR_MAP_FETCH_NOTHING;
       renderScreen();
     }
@@ -494,6 +538,7 @@ void TileSyncActivity::trackPhone() {
       LOG_INF(kLogTag, "phone subscribed with a batch already announced");
     } else {
       askAboutFreshness();
+      askAboutPoints();
       // Nothing to fetch -- the freshness ask above was the only reason this
       // screen was still waiting. Same verdict onEnter() would have shown had
       // the phone been there from t=0.
@@ -592,6 +637,7 @@ void TileSyncActivity::loop() {
     freshnessAskPending_ = false;
     freshnessAsked_ = false;
     askAboutFreshness();
+    askAboutPoints();
   }
   if (freshnessRedrawPending_) {
     freshnessRedrawPending_ = false;
@@ -1448,6 +1494,7 @@ void TileSyncActivity::updateProgress() {
       // The queue's second half. Held until now on purpose: two conversations on
       // one command channel cross each other's replies (see trackPhone).
       askAboutFreshness();
+      askAboutPoints();
     }
     renderScreen();
     return;
@@ -1468,6 +1515,7 @@ void TileSyncActivity::updateProgress() {
     LOG_INF(kLogTag, "no answer for %lu ms, %lu landed, %lu skipped", static_cast<unsigned long>(kStallVerdictMs),
             static_cast<unsigned long>(done), static_cast<unsigned long>(skipped_));
     askAboutFreshness();
+    askAboutPoints();
     renderScreen();
     return;
   }
@@ -1497,6 +1545,7 @@ void TileSyncActivity::updateProgress() {
               static_cast<unsigned long>(kStallVerdictMs), static_cast<unsigned long>(done),
               static_cast<unsigned long>(skipped_));
       askAboutFreshness();
+      askAboutPoints();
       renderScreen();
       return;
     }

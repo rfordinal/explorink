@@ -6,6 +6,7 @@
 
 #include "HeldTilesStore.h"
 #include "MapCommandParser.h"
+#include "MapPointShards.h"
 #include "PinRecord.h"
 #include "PinStore.h"
 #include "StaleTilesList.h"
@@ -301,6 +302,23 @@ class MapConsoleState {
   bool hasPosition() const { return hasPosition_; }
   int32_t latE7() const { return latE7_; }
   int32_t lonE7() const { return lonE7_; }
+
+  // Seeds the position from a persisted fix rather than a live `pos` line --
+  // for a screen that has no viewport and may never see one this session
+  // (TileSyncActivity asking about points at home, same reasoning
+  // MapMissingAnchor.h's missingTileAnchorFromLastFix() already applies to the
+  // missing-tile sort). A live screen never needs this: MapActivity's own
+  // fixes already reach hasPosition_ through execute()'s Pos case.
+  void setLastKnownPosition(int32_t latE7, int32_t lonE7) {
+    hasPosition_ = true;
+    latE7_ = latE7;
+    lonE7_ = lonE7;
+  }
+
+  // The z10 shard range `points` would list right now -- what NEED_POINTS's
+  // <count> should quote, computed the same way writePoints() does, so the
+  // two can never disagree. False (range left untouched) with no position.
+  bool pointShardRange(MapPointShards::Range& outRange) const;
   uint8_t heading() const { return heading_; }  // 0-15, see MapHeading.h
   uint16_t speedKmh() const { return speedKmh_; }
   // Metres above sea level, valid only if hasAltitude() -- feeds Hike mode's

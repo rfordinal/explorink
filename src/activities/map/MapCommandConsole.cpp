@@ -645,6 +645,15 @@ void MapConsoleState::writeTiles(IMapReplyWriter& out) const {
   }
 }
 
+bool MapConsoleState::pointShardRange(MapPointShards::Range& outRange) const {
+  if (!hasPosition_) return false;
+  double mercX = 0.0;
+  double mercY = 0.0;
+  MapProjection::lonLatToMerc(latE7_ / 1e7, lonE7_ / 1e7, mercX, mercY);
+  outRange = MapPointShards::rangeForRadius(mercX, mercY, MapPointShards::kSearchRadiusM);
+  return true;
+}
+
 void MapConsoleState::writePoints(IMapReplyWriter& out) const {
   if (pointShards_ == nullptr) {
     // Not wired -- same distinction `missing=unavailable` makes: a build that
@@ -652,7 +661,8 @@ void MapConsoleState::writePoints(IMapReplyWriter& out) const {
     out.reply("INFO points=unavailable");
     return;
   }
-  if (!hasPosition_) {
+  MapPointShards::Range range;
+  if (!pointShardRange(range)) {
     // The shard range is centred on the rider; with no fix there is nothing
     // to centre it on, the same refusal the Nearby menu gives
     // (nearby-menu.md, "With no clever reordering"). Distinct from
@@ -661,11 +671,6 @@ void MapConsoleState::writePoints(IMapReplyWriter& out) const {
     out.reply("INFO points=no_position");
     return;
   }
-
-  double mercX = 0.0;
-  double mercY = 0.0;
-  MapProjection::lonLatToMerc(latE7_ / 1e7, lonE7_ / 1e7, mercX, mercY);
-  const MapPointShards::Range range = MapPointShards::rangeForRadius(mercX, mercY, MapPointShards::kSearchRadiusM);
 
   char line[kReplyBuf];
   snprintf(line, sizeof(line), "INFO point_total=%lu", static_cast<unsigned long>(range.count()));

@@ -432,6 +432,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // does have are still current. Different setting, different cooldown,
   // different question.
   void maybeCheckTileFreshness();
+  // The Live rung's half of decision 2 (docs/point-layer-lifecycle.md): sends
+  // NEED_POINTS at most once per power cycle, never on the tile autosync's
+  // hatch-triggered ask -- a hatched tile says nothing about whether a spring
+  // moved, so the two conversations share only the mode setting, not the
+  // trigger. Riding onto new ground without a reboot is not covered yet; see
+  // pointsAskedThisPowerCycle_.
+  void maybeSyncPointsLive();
   // `NEED_TILES <count> fmt <version> view` -- the `view` word is what tells
   // the phone to answer from `tiles` (this screen) rather than page `missing`
   // (the tile sync screen). docs/ble-map-transfer-protocol.md.
@@ -1295,6 +1302,14 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // runs every tick, and without this a blocked gate (no phone subscribed, no
   // tiles held) would print on every loop() instead of at a readable rate.
   uint32_t freshnessLastGateLogMs_ = 0;
+  // True once NEED_POINTS has gone out this power cycle. Decision 2's `Live`
+  // cooldown for points has no measured number yet
+  // (docs/point-layer-lifecycle.md, "The `Live` cooldown for points has no
+  // number") -- the doc's own placeholder is "at most once per power cycle",
+  // so that is exactly what this implements, not an invented interval. Never
+  // cleared: a re-ask on the same boot would need the number this doc says
+  // does not exist yet.
+  bool pointsAskedThisPowerCycle_ = false;
   // ## What the header status row currently has on it
   //
   // Not the state itself -- autoSyncPending_ and the BLE server are. These are

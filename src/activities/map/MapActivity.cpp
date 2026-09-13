@@ -14,6 +14,7 @@
 
 #include "CrossPointSettings.h"
 #include "MapPointMarks.h"
+#include "MapPointReader.h"
 #include "MapPointShards.h"
 #include "TouchPolicy.h"
 // APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
@@ -1388,6 +1389,31 @@ void MapActivity::maybeCheckTileFreshness() {
   freshnessNextAskMs_ = now + kFreshnessIntervalMs;
   LOG_INF(kLogTag, "freshness: asked about %lu of %lu pending, %lu held", round, pending,
           static_cast<unsigned long>(g_heldTiles.size()));
+}
+
+void MapActivity::maybeSyncPointsLive() {
+  if (pointsAskedThisPowerCycle_) return;
+  if (SETTINGS.mapPointsEnabled == 0) return;
+  if (SETTINGS.mapTileFreshnessMode != CrossPointSettings::MAP_TILE_FRESHNESS_LIVE) return;
+  // No fix this session yet -- consoleState_ only gains one through a real
+  // `pos` (applyFix()'s own path), so this is "never fixed since boot", not
+  // "fixed a while ago".
+  if (!consoleState_.hasPosition()) return;
+  if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) return;
+
+  MapPointShards::Range range;
+  if (!consoleState_.pointShardRange(range)) return;  // cannot happen right after hasPosition(); stay honest anyway
+
+  char line[48];
+  snprintf(line, sizeof(line), "NEED_POINTS %lu fmt %u", static_cast<unsigned long>(range.count()),
+           static_cast<unsigned>(MapPointReader::kFormatVersion));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "points: NEED_POINTS not delivered");
+    return;
+  }
+  pointsAskedThisPowerCycle_ = true;
+  LOG_INF(kLogTag, "points: asked about %lu shard(s) around the fix, once this power cycle",
+          static_cast<unsigned long>(range.count()));
 }
 
 void MapActivity::expireAutoSync() {
@@ -3230,6 +3256,7 @@ void MapActivity::loop() {
   expireAutoSync();
   maybeAutoSyncTiles();
   maybeCheckTileFreshness();
+  maybeSyncPointsLive();
   // Also the link state and the signal bars, which have nothing to do with
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
