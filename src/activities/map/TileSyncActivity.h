@@ -149,7 +149,8 @@ class TileSyncActivity final : public Activity,
                                public IMapStaleObserver,
                                public IMapPushObserver,
                                public IMapPointShardsSource,
-                               public IMapGoneObserver {
+                               public IMapGoneObserver,
+                               public IMapPointSkipObserver {
  public:
   TileSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
@@ -190,6 +191,11 @@ class TileSyncActivity final : public Activity,
   // IMapGoneObserver -- the phone says the CDN has no such shard, so delete
   // the card's copy if it has one.
   void onPointShardGone(uint32_t col, uint32_t row) override;
+
+  // IMapPointSkipObserver -- the phone cannot supply this shard right now.
+  // Logged only; no store to update (see the interface's own doc for why
+  // this must not reach the tile skip path).
+  void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override;
 
  private:
   // Waiting means the device is advertising and nothing has subscribed to the
@@ -296,7 +302,13 @@ class TileSyncActivity final : public Activity,
   // (SETTINGS.mapTileFreshnessMode). Preparation at home is exactly where
   // spending the phone's data belongs, which is why this mode exists separately
   // from the map screen's live one.
-  void askAboutFreshness();
+  //
+  // Returns true exactly when a CHECK_TILES just went out this call -- a new
+  // conversation opened on the command channel. Every caller uses this to
+  // hold askAboutPoints() back for the same tick: firing both indications
+  // together reproduces the 2026-08-11 collision (see askAboutPoints()'s own
+  // doc), found in code review 2026-09-13 before it ever reached a device.
+  bool askAboutFreshness();
   // Writes the one line that says what the freshness check is doing, or
   // returns false when there is nothing to say (Freshness::Idle). Separate from
   // the fetch's own status line because the two answer different questions --
@@ -310,6 +322,14 @@ class TileSyncActivity final : public Activity,
   // the persisted fix, same source MapMissingAnchor.h reads for the same
   // reason. Only the ask; what happens to the reply (push/skip/gone) is T-561's
   // next step.
+  //
+  // **Never call this in the same tick as a CHECK_TILES that just went out**
+  // -- every call site does `if (!askAboutFreshness()) askAboutPoints();` and
+  // onCheckFinished() calls this again once that conversation closes. Two
+  // conversations opened together is the exact fault measured on hardware
+  // 2026-08-11 (see askAboutFreshness()): the phone reads one listing as
+  // empty because the other's `OK` lands first. Found reproduced for
+  // NEED_POINTS in code review, 2026-09-13, before it ever reached a device.
   void askAboutPoints();
 
   // Snapshots the missing list and zeroes everything one run reports, so a second
@@ -374,6 +394,16 @@ class TileSyncActivity final : public Activity,
   // screen needs after a check settles.
   bool freshnessAskPending_ = false;
   bool freshnessRedrawPending_ = false;
+  // Set by onCheckFinished() the moment the freshness conversation closes for
+  // good (no further round coming, `known` or not), consumed by loop() after
+  // poll() returns -- same reason as freshnessAskPending_: onCheckFinished()
+  // runs inside the console's dispatch of `checked`, before its terminating
+  // `OK`, and askAboutPoints() sends its own indication (NEED_POINTS), which
+  // must not start there. This is what gives askAboutPoints() its one chance
+  // to run when the visit opened with something pending -- without it,
+  // nothing ever called askAboutPoints() again after the first
+  // askAboutFreshness() took the tick for itself (code review, 2026-09-13).
+  bool pointsAskPending_ = false;
 
   // When something last landed or was skipped, for the stall verdict below.
   // Armed by askForTiles(), so a screen that never asked cannot time out.

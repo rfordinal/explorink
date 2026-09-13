@@ -753,6 +753,17 @@ TEST(MapCommandParser, GoneRejectsJunk) {
   EXPECT_EQ(errorOf("gone x 354"), MapCommandError::BadNumber);
 }
 
+// Found missing in code review, 2026-09-13: every other coordinate-carrying
+// command bounds its numbers (skip's z <= 255, missing's offset, push's
+// count); gone had no bound at all. z10's grid is 1024x1024, so 1023 is the
+// highest legal coordinate.
+TEST(MapCommandParser, GoneRejectsOutOfRangeCoordinates) {
+  EXPECT_EQ(parseMapCommand("gone 1023 1023").type, MapCommandType::Gone);
+  EXPECT_EQ(errorOf("gone 1024 0"), MapCommandError::OutOfRange);
+  EXPECT_EQ(errorOf("gone 0 1024"), MapCommandError::OutOfRange);
+  EXPECT_EQ(errorOf("gone 4294967295 4294967295"), MapCommandError::OutOfRange);
+}
+
 // A point shard the phone cannot supply reuses `skip` with z10
 // (MapPointShards::kShardZoom) rather than a second word -- see
 // MapCommandParser.h, "A shard the phone cannot supply reuses `skip`". This
@@ -1544,7 +1555,57 @@ class FakeGoneObserver final : public IMapGoneObserver {
   uint32_t lastRow = 0;
 };
 
+class FakePointSkipObserver final : public IMapPointSkipObserver {
+ public:
+  void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override {
+    ++calls;
+    lastCol = col;
+    lastRow = row;
+    lastReason = reason;
+  }
+  int calls = 0;
+  uint32_t lastCol = 0;
+  uint32_t lastRow = 0;
+  std::string lastReason;
+};
+
 }  // namespace
+
+// Regression for the code review finding, 2026-09-13: a z10 skip (the point
+// layer's reused wire word) must never reach the tile tally or
+// skipObserver_ -- TileSyncActivity's/MapActivity's tile-skip handlers do
+// not check z, so it would have been counted as a skipped z10 *tile* and
+// corrupted MissingTilesStore/autoSyncPending_ on a real device.
+TEST(MapCommandConsole, PointShardSkipNeverReachesTheTileTally) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakePointSkipObserver pointSkip;
+  state.setPointSkipObserver(&pointSkip);
+
+  EXPECT_FALSE(feedLine(console, out, "skip 10 561 353 nosource"));
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");  // write-only, same shape as `gone`/`push`
+
+  // The tile tally and the tile observer must be completely untouched.
+  EXPECT_EQ(state.skips().count, 0u);
+
+  EXPECT_EQ(pointSkip.calls, 1);
+  EXPECT_EQ(pointSkip.lastCol, 561u);
+  EXPECT_EQ(pointSkip.lastRow, 353u);
+  EXPECT_EQ(pointSkip.lastReason, "nosource");
+}
+
+TEST(MapCommandConsole, PointShardSkipWithNoObserverStillAnswersOk) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "skip 10 561 353 nosource");
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");
+  EXPECT_EQ(state.skips().count, 0u);
+}
 
 // T-561, decision 3: `gone` reaches the observer, same distinction
 // `missing=unavailable` makes when no source is wired.
@@ -1789,4 +1850,42 @@ TEST(MapCommandConsole, InfoReportsTheScreenOnlyWhenSet) {
   state.setScreenName("map");
   feedLine(console, out, "info");
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO screen=map"), out.lines.end());
+}
+
+// Regression for the code review finding, 2026-09-13: setLastKnownPosition()
+// (TileSyncActivity's askAboutPoints(), seeding from the rider's persisted
+// fix) must not make `info` hand out that coordinate over an unauthenticated
+// channel on a screen meant for preparing at home. `pos=1` still says a
+// position is set -- that is what pointShardRange() needs believed -- but
+// lat/lon themselves are withheld.
+TEST(MapCommandConsole, InfoWithholdsLatLonForAPersistedFixSeed) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  state.setLastKnownPosition(483770000, 175880000);
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO pos=1")), out.lines.end());
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO lat=", 0) == 0; }),
+            0);
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO lon=", 0) == 0; }),
+            0);
+}
+
+// A live `pos` line is not a leak -- it is the rider's own screen reporting
+// itself -- and it must keep working exactly as before, including after a
+// persisted seed: a real fix landing later must un-withhold lat/lon.
+TEST(MapCommandConsole, InfoReportsLatLonForALivePosCommand) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  state.setLastKnownPosition(483770000, 175880000);
+  feedLine(console, out, "pos 48.4372 17.0186");
+  out.lines.clear();
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO lat=48.4372000")), out.lines.end());
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO lon=17.0186000")), out.lines.end());
 }

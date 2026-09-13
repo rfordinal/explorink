@@ -12,6 +12,7 @@
 #include "MapByteFormat.h"
 #include "MapMissingAnchor.h"
 #include "MapPointReader.h"
+#include "MapPointShardStorage.h"
 #include "MapPointShards.h"
 #include "MapPointSource.h"
 #include "MapPowerStatsProvider.h"
@@ -95,6 +96,7 @@ bool TileSyncActivity::armRun() {
   // armRun() is also the re-entry path when a phone comes back after a
   // finished run (trackPhone).
   freshnessAskPending_ = false;
+  pointsAskPending_ = false;
   freshnessRedrawPending_ = false;
   lastSettleMs_ = 0;
   // After staleTiles_.clear(), so the window is placed over what this run will
@@ -175,12 +177,20 @@ void TileSyncActivity::onEnter() {
   // management does not depend on there being anything missing to fetch.
   pins_.begin();
   consoleState_.setPinsSource(&pins_);
-  // `points`/`gone` -- decision 2/3's exchange. Wired unconditionally, same as
-  // the pins source above: whether the device deals in points at all is
-  // SETTINGS.mapPointsEnabled's question (askAboutPoints() reads it before
-  // ever sending NEED_POINTS), not a reason to leave the reply side unwired.
-  consoleState_.setPointShardsSource(this);
-  consoleState_.setGoneObserver(this);
+  // `points`/`gone`/point-shard `skip` -- decision 2/3's exchange, wired only
+  // when the rider has turned the point layer on. Revised from "wired
+  // unconditionally" (code review, 2026-09-13): `gone` is a write -- an
+  // unauthenticated delete of a card file -- and this repo's own security
+  // rule defaults a new command to devel-only unless it is read-only and
+  // reveals nothing sensitive (CLAUDE.md, "Security"). Leaving it wired while
+  // the setting says the device does not deal in points at all widens that
+  // for no reason; with nothing wired, `points`/`gone` simply answer
+  // `unavailable`.
+  if (SETTINGS.mapPointsEnabled != 0) {
+    consoleState_.setPointShardsSource(this);
+    consoleState_.setGoneObserver(this);
+    consoleState_.setPointSkipObserver(this);
+  }
 
   if (rowCount_ == 0) {
     // Worth a screen rather than a silent bounce back to the menu: the rider
@@ -192,8 +202,7 @@ void TileSyncActivity::onEnter() {
     drawnPhoneListening_ = phoneListening();
     hadPhone_ = drawnPhoneListening_;
     if (drawnPhoneListening_) {
-      askAboutFreshness();
-      askAboutPoints();
+      if (!askAboutFreshness()) askAboutPoints();
       enterPhase(Phase::Finished);
     } else {
       // A phone connecting synchronously with begin() above never happens on
@@ -216,9 +225,9 @@ void TileSyncActivity::onEnter() {
   if (drawnPhoneListening_) askForTiles();
 }
 
-void TileSyncActivity::askAboutFreshness() {
-  if (freshnessAsked_) return;
-  if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return;
+bool TileSyncActivity::askAboutFreshness() {
+  if (freshnessAsked_) return false;
+  if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return false;
   // Nothing drawn since boot means no content_id to offer, and `have` would
   // answer `have=none` anyway. Saying nothing is the honest version of that.
   //
@@ -229,7 +238,7 @@ void TileSyncActivity::askAboutFreshness() {
   if (!g_heldTiles.valid() || pending == 0) {
     LOG_INF(kLogTag, "freshness: nothing pending of %lu held, nothing to check",
             static_cast<unsigned long>(g_heldTiles.size()));
-    return;
+    return false;
   }
   // One round's worth, not the whole store. A listing runs its blocks back to
   // back on the activity task and each waits on the peer's confirm, so an
@@ -247,7 +256,7 @@ void TileSyncActivity::askAboutFreshness() {
            static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "CHECK_TILES not delivered");
-    return;
+    return false;
   }
   freshnessAsked_ = true;
   freshnessRound_ = round;
@@ -259,6 +268,7 @@ void TileSyncActivity::askAboutFreshness() {
   // painted: every other caller already repaints immediately after this
   // returns, so painting here made it two e-ink refreshes per ask.
   freshnessRedrawPending_ = true;
+  return true;
 }
 
 void TileSyncActivity::askAboutPoints() {
@@ -302,24 +312,16 @@ void TileSyncActivity::askAboutPoints() {
 }
 
 bool TileSyncActivity::hasPointShard(uint32_t col, uint32_t row) const {
-  char path[MapPointSource::kMaxPathLen];
-  if (!MapPointShards::buildPath(path, sizeof(path), kTileRoot, col, row)) return false;
-  return Storage.exists(path);
+  return MapPointShardStorage::exists(kTileRoot, col, row);
 }
 
 void TileSyncActivity::onPointShardGone(uint32_t col, uint32_t row) {
-  char path[MapPointSource::kMaxPathLen];
-  if (!MapPointShards::buildPath(path, sizeof(path), kTileRoot, col, row)) return;
-  // Nothing to delete is not a failure -- `gone` can arrive for a shard this
-  // card never had (the phone's own 404-twice guard races the device's own
-  // last request), and that is the same outcome as a delete that worked.
-  if (!Storage.exists(path)) return;
-  if (!Storage.remove(path)) {
-    LOG_ERR(kLogTag, "gone: could not delete %s", path);
-    return;
-  }
-  LOG_INF(kLogTag, "gone: deleted point shard %lu/%lu", static_cast<unsigned long>(col),
-          static_cast<unsigned long>(row));
+  MapPointShardStorage::deleteIfPresent(kLogTag, kTileRoot, col, row);
+}
+
+void TileSyncActivity::onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) {
+  LOG_INF(kLogTag, "points: phone could not supply %lu/%lu (%s)", static_cast<unsigned long>(col),
+          static_cast<unsigned long>(row), reason);
 }
 
 bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
@@ -379,6 +381,10 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
     LOG_INF(kLogTag, "freshness: phone could not check (no index)");
     freshnessState_ = Freshness::Unknown;
     freshnessRedrawPending_ = true;
+    // The conversation is over -- `unknown` retries nothing -- so this is
+    // askAboutPoints()'s chance, same reasoning as the pendingCount() == 0
+    // branch below.
+    pointsAskPending_ = true;
     return;
   }
   // Cumulative over the visit, not per round: the rider is told how much of
@@ -407,7 +413,14 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
   // reaches zero. Only on a `known` answer -- `checked unknown` settles
   // nothing, so re-asking on it would loop forever against a phone that cannot
   // read the index.
-  if (g_heldTiles.pendingCount() > 0) freshnessAskPending_ = true;
+  if (g_heldTiles.pendingCount() > 0) {
+    freshnessAskPending_ = true;
+  } else {
+    // No more rounds -- the whole check just closed for good. First safe
+    // moment for askAboutPoints() to run without opening a second
+    // conversation alongside this one.
+    pointsAskPending_ = true;
+  }
 }
 
 bool TileSyncActivity::phoneListening() const {
@@ -517,8 +530,7 @@ void TileSyncActivity::trackPhone() {
     if (rowCount_ > 0) {
       askForTiles();
     } else {
-      askAboutFreshness();
-      askAboutPoints();
+      if (!askAboutFreshness()) askAboutPoints();
       verdict_ = StrId::STR_MAP_FETCH_NOTHING;
       renderScreen();
     }
@@ -565,8 +577,7 @@ void TileSyncActivity::trackPhone() {
       // 2026-08-11 fault this function already carries a comment about.
       LOG_INF(kLogTag, "phone subscribed with a batch already announced");
     } else {
-      askAboutFreshness();
-      askAboutPoints();
+      if (!askAboutFreshness()) askAboutPoints();
       // Nothing to fetch -- the freshness ask above was the only reason this
       // screen was still waiting. Same verdict onEnter() would have shown had
       // the phone been there from t=0.
@@ -596,6 +607,7 @@ void TileSyncActivity::onExit() {
   consoleState_.setPinsSource(nullptr);
   consoleState_.setPointShardsSource(nullptr);
   consoleState_.setGoneObserver(nullptr);
+  consoleState_.setPointSkipObserver(nullptr);
   freeink::BlePositionServer::getInstance().end();
   // Leaving is the checkpoint: whatever this sync cleared has to reach the card,
   // or the phone sends the same tiles again after a restart. A no-op when
@@ -666,7 +678,10 @@ void TileSyncActivity::loop() {
   if (freshnessAskPending_) {
     freshnessAskPending_ = false;
     freshnessAsked_ = false;
-    askAboutFreshness();
+    if (!askAboutFreshness()) askAboutPoints();
+  }
+  if (pointsAskPending_) {
+    pointsAskPending_ = false;
     askAboutPoints();
   }
   if (freshnessRedrawPending_) {
@@ -1523,8 +1538,7 @@ void TileSyncActivity::updateProgress() {
               static_cast<unsigned long>(skipped_));
       // The queue's second half. Held until now on purpose: two conversations on
       // one command channel cross each other's replies (see trackPhone).
-      askAboutFreshness();
-      askAboutPoints();
+      if (!askAboutFreshness()) askAboutPoints();
     }
     renderScreen();
     return;
@@ -1544,8 +1558,7 @@ void TileSyncActivity::updateProgress() {
     verdict_ = StrId::STR_TILE_SYNC_NO_ANSWER;
     LOG_INF(kLogTag, "no answer for %lu ms, %lu landed, %lu skipped", static_cast<unsigned long>(kStallVerdictMs),
             static_cast<unsigned long>(done), static_cast<unsigned long>(skipped_));
-    askAboutFreshness();
-    askAboutPoints();
+    if (!askAboutFreshness()) askAboutPoints();
     renderScreen();
     return;
   }
@@ -1574,8 +1587,7 @@ void TileSyncActivity::updateProgress() {
       LOG_INF(kLogTag, "stalled mid-transfer for %lu ms, %lu landed, %lu skipped",
               static_cast<unsigned long>(kStallVerdictMs), static_cast<unsigned long>(done),
               static_cast<unsigned long>(skipped_));
-      askAboutFreshness();
-      askAboutPoints();
+      if (!askAboutFreshness()) askAboutPoints();
       renderScreen();
       return;
     }

@@ -157,7 +157,8 @@ class MapActivity final : public Activity,
                           public IMapStaleObserver,
                           public IMapFakeSink,
                           public IMapPointShardsSource,
-                          public IMapGoneObserver {
+                          public IMapGoneObserver,
+                          public IMapPointSkipObserver {
  public:
   // `routePath` is an absolute card path to a .tir route, or nullptr for none.
   // RouteSelectActivity passes what the rider picked; every other caller --
@@ -221,6 +222,9 @@ class MapActivity final : public Activity,
 
   // IMapGoneObserver -- the phone says the CDN has no such shard.
   void onPointShardGone(uint32_t col, uint32_t row) override;
+
+  // IMapPointSkipObserver -- the phone cannot supply this shard right now.
+  void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override;
 
  private:
   void renderWaiting();
@@ -448,8 +452,15 @@ class MapActivity final : public Activity,
   // NEED_POINTS at most once per power cycle, never on the tile autosync's
   // hatch-triggered ask -- a hatched tile says nothing about whether a spring
   // moved, so the two conversations share only the mode setting, not the
-  // trigger. Riding onto new ground without a reboot is not covered yet; see
-  // pointsAskedThisPowerCycle_.
+  // trigger. Riding onto new ground without a reboot is not covered yet.
+  //
+  // "Once per power cycle" is a real boot-lifetime static in the .cpp, not a
+  // member of this class: MapActivity is deleted and reconstructed by
+  // ActivityManager::replaceActivity() on every map <-> menu round trip
+  // (ActivityManager.cpp), so a plain member reset to false on each entry --
+  // asking again every time the rider glances at the menu and back (found in
+  // code review, 2026-09-13, before a member version of this flag ever
+  // shipped).
   void maybeSyncPointsLive();
   // `NEED_TILES <count> fmt <version> view` -- the `view` word is what tells
   // the phone to answer from `tiles` (this screen) rather than page `missing`
@@ -1314,14 +1325,6 @@ class MapActivity final : public Activity,
   // runs every tick, and without this a blocked gate (no phone subscribed, no
   // tiles held) would print on every loop() instead of at a readable rate.
   uint32_t freshnessLastGateLogMs_ = 0;
-  // True once NEED_POINTS has gone out this power cycle. Decision 2's `Live`
-  // cooldown for points has no measured number yet
-  // (docs/point-layer-lifecycle.md, "The `Live` cooldown for points has no
-  // number") -- the doc's own placeholder is "at most once per power cycle",
-  // so that is exactly what this implements, not an invented interval. Never
-  // cleared: a re-ask on the same boot would need the number this doc says
-  // does not exist yet.
-  bool pointsAskedThisPowerCycle_ = false;
   // ## What the header status row currently has on it
   //
   // Not the state itself -- autoSyncPending_ and the BLE server are. These are

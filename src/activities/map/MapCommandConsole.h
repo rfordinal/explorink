@@ -232,6 +232,21 @@ class IMapSkipObserver {
   virtual void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) = 0;
 };
 
+// Told when the phone gives up on a point shard via the reused `skip` word
+// (`skipZ == MapPointShards::kShardZoom`). Deliberately **not** routed
+// through IMapSkipObserver::onTileSkipped, even though the wire command is
+// the same one: `TileSyncActivity`/`MapActivity`'s tile-skip handlers never
+// check `z` at all, so a z10 skip landing there is counted into
+// `MissingTilesStore`/`autoSyncPending_` as though a z10 *tile* had been
+// skipped -- found in code review, 2026-09-13, before this ever reached a
+// device. There is no such thing as a z10 tile today, but nothing enforces
+// that, and `MapViewport.h` already discusses z10 as a future LOD candidate.
+class IMapPointSkipObserver {
+ public:
+  virtual ~IMapPointSkipObserver() = default;
+  virtual void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) = 0;
+};
+
 // Told when the phone reports a point shard the CDN no longer has
 // (`gone <col> <row>`), so the device can delete its own copy
 // (../../docs/point-layer-lifecycle.md, decision 3). Synchronous, same
@@ -320,10 +335,20 @@ class MapConsoleState {
   // MapMissingAnchor.h's missingTileAnchorFromLastFix() already applies to the
   // missing-tile sort). A live screen never needs this: MapActivity's own
   // fixes already reach hasPosition_ through execute()'s Pos case.
+  //
+  // Marks the position as not for `info` to reveal (see
+  // positionIsFromPersistedFix_): the sync screen exists for a rider
+  // preparing at home, and printing their exact persisted fix over an
+  // unauthenticated channel there is a home-address leak this call
+  // introduced with nothing to gate it (code review, 2026-09-13) -- the
+  // range this feeds `points`/NEED_POINTS is still exposed, same coarse
+  // 39 km granularity `have`/`tiles` already accept, but the raw coordinate
+  // is not.
   void setLastKnownPosition(int32_t latE7, int32_t lonE7) {
     hasPosition_ = true;
     latE7_ = latE7;
     lonE7_ = lonE7;
+    positionIsFromPersistedFix_ = true;
   }
 
   // The z10 shard range `points` would list right now -- what NEED_POINTS's
@@ -486,6 +511,12 @@ class MapConsoleState {
   // outlive this state. Left unset, only the tally above is kept.
   void setSkipObserver(IMapSkipObserver* observer) { skipObserver_ = observer; }
 
+  // Where a point-shard `skip` (skipZ == MapPointShards::kShardZoom) goes.
+  // Not owned; must outlive this state. Left unset, a point-shard skip is
+  // simply not reported anywhere -- it never touches skips_ or
+  // skipObserver_, which are the tile tally.
+  void setPointSkipObserver(IMapPointSkipObserver* observer) { pointSkipObserver_ = observer; }
+
   // Where the `pin` commands go. Not owned; must outlive this state. Left unset
   // (the default, and the case on every screen but the map) every `pin` command
   // answers `INFO pins=unavailable` rather than silently doing nothing.
@@ -535,6 +566,11 @@ class MapConsoleState {
   bool hasPosition_ = false;
   int32_t latE7_ = 0;
   int32_t lonE7_ = 0;
+  // True while latE7_/lonE7_ came from setLastKnownPosition() rather than a
+  // live `pos` line. writeInfo() withholds lat/lon while this is set --
+  // see setLastKnownPosition()'s doc for why. Cleared by execute()'s Pos
+  // case, the same place a live fix would overwrite it anyway.
+  bool positionIsFromPersistedFix_ = false;
   uint8_t heading_ = 0;
   uint16_t speedKmh_ = 0;
   bool hasAltitude_ = false;
@@ -572,6 +608,7 @@ class MapConsoleState {
   IMapGoneObserver* goneObserver_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;
+  IMapPointSkipObserver* pointSkipObserver_ = nullptr;
   // 0 until MapActivity pushes the real one -- `info` then omits the line
   // rather than claiming version 0, which is not a version that ever existed.
   uint16_t tileFormatVersion_ = 0;
