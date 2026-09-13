@@ -731,6 +731,39 @@ TEST(MapCommandParser, SkipRejectsJunk) {
   EXPECT_EQ(errorOf("skip 256 1 1"), MapCommandError::OutOfRange);
 }
 
+TEST(MapCommandParser, PointsIsBare) {
+  EXPECT_EQ(parseMapCommand("points").type, MapCommandType::Points);
+  EXPECT_EQ(errorOf("points 1"), MapCommandError::BadArity);
+}
+
+TEST(MapCommandParser, GoneTakesAShardCoordinate) {
+  const MapCommand cmd = parseMapCommand("gone 562 354");
+  ASSERT_EQ(cmd.type, MapCommandType::Gone);
+  EXPECT_EQ(cmd.skipCol, 562u);
+  EXPECT_EQ(cmd.skipRow, 354u);
+}
+
+TEST(MapCommandParser, GoneRejectsJunk) {
+  EXPECT_EQ(errorOf("gone"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("gone 562"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("gone 562 354 extra"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("gone x 354"), MapCommandError::BadNumber);
+}
+
+// A point shard the phone cannot supply reuses `skip` with z10
+// (MapPointShards::kShardZoom) rather than a second word -- see
+// MapCommandParser.h, "A shard the phone cannot supply reuses `skip`". This
+// confirms the parser accepts z10 like any other zoom; MapActivity is what
+// tells the two conversations apart.
+TEST(MapCommandParser, SkipAtShardZoomParsesLikeAnyOtherZoom) {
+  const MapCommand cmd = parseMapCommand("skip 10 562 354 nosource");
+  ASSERT_EQ(cmd.type, MapCommandType::Skip);
+  EXPECT_EQ(cmd.skipZ, 10);
+  EXPECT_EQ(cmd.skipCol, 562u);
+  EXPECT_EQ(cmd.skipRow, 354u);
+  EXPECT_STREQ(cmd.skipReason, "nosource");
+}
+
 TEST(MapCommandConsole, SkipCountsAndNeverRedraws) {
   MapConsoleState state;
   MapCommandConsole console(state);
@@ -1403,6 +1436,26 @@ TEST(MapCommandConsole, FakeSaysUnavailableWithNoSink) {
   feedLine(console, out, "fake 6 20");
   ASSERT_EQ(out.lines.size(), 2u);
   EXPECT_EQ(out.lines[0], "INFO fake=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+// T-561, decision 2/3 not wired yet: `points` and `gone` parse but have no
+// source behind them. Same "unavailable, not a bare OK" shape as
+// missing/fake/push above, so a phone cannot read silence as "zero shards".
+TEST(MapCommandConsole, PointsAndGoneAreUnavailableUntilWired) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "points");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO points=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+
+  out.lines.clear();
+  feedLine(console, out, "gone 562 354");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO gone=unavailable");
   EXPECT_EQ(out.lines[1], "OK");
 }
 

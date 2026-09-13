@@ -233,6 +233,22 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
     }
 
+    case MapCommandType::Points:
+      // Grammar only for now (T-561, decision 2 not yet wired): no source is
+      // hung off this state yet, so every build answers the same
+      // "not wired" line rather than a bare OK a phone could mistake for
+      // "this device has zero shards".
+      out.reply("INFO points=unavailable");
+      out.reply("OK");
+      return false;
+
+    case MapCommandType::Gone:
+      // Same placeholder as Points -- decision 3's delete path lands with the
+      // rest of the sync exchange, not before it.
+      out.reply("INFO gone=unavailable");
+      out.reply("OK");
+      return false;
+
     case MapCommandType::Pin:
       return executePin(cmd, out);
 

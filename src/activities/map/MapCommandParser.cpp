@@ -372,6 +372,26 @@ MapCommand parseChecked(const Tokens& tokens) {
   return cmd;
 }
 
+// `gone <col> <row>`. The phone saying the CDN has no such point shard, so the
+// device deletes its own copy. No zoom token -- point shards are always
+// MapPointShards::kShardZoom, and the handler that owns that constant applies
+// it; the parser stays free of the point layer's headers, same reason it
+// stays free of the tile layer's.
+MapCommand parseGone(const Tokens& tokens) {
+  if (tokens.n != 3) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Gone;
+
+  uint32_t col = 0;
+  uint32_t row = 0;
+  if (!parseUint(tokens.t[1], col) || !parseUint(tokens.t[2], row)) {
+    return fail(MapCommandError::BadNumber);
+  }
+  cmd.skipCol = col;
+  cmd.skipRow = row;
+  return cmd;
+}
+
 // `pin set <key> <lat> <lon> [<utc>]` | `pin del <key>` | `pin list` |
 // `pin log [<offset>]`.
 //
@@ -485,6 +505,8 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   if (name == "stats") return parseBare(tokens, MapCommandType::Stats);
   if (name == "fake") return parseFake(tokens);
+  if (name == "points") return parseBare(tokens, MapCommandType::Points);
+  if (name == "gone") return parseGone(tokens);
   if (name == "pin") return parsePin(tokens);
   return fail(MapCommandError::UnknownCommand);
 }
