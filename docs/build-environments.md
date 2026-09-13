@@ -401,6 +401,28 @@ the same commit, say -- give each its own worktree.
 
 Measured 2026-09-07, `settings-facade` on `develop`, `default` and `simulator`.
 
+## `pio run -t upload` can flash a binary older than what `pio run` just built
+
+**2026-09-13.** A rebuild reported `SUCCESS` with the right new size in its own
+output, then a separate `pio run -t upload --upload-port <port>` a few minutes
+later -- with no `pio run` in between -- wrote a `firmware.bin` whose mtime
+predated the source file's own last edit and whose size matched the *previous*
+build. `esptool` reported success; the device ran the old code.
+
+Cause: nothing pinned the two commands to the same build. Anything that
+touches `.pio/build/<env>/` between the build you trust and the upload --
+another environment's build in the same worktree (see "Building a second
+environment ... wipes the first one's build" above), a build in a different
+session, a stale link -- can leave `-t upload` shipping whatever sits in that
+directory, not what the last `pio run` you watched succeed produced.
+
+**Rule: `pio run -t upload` alone is not evidence of what got flashed.** Before
+trusting an upload, `rm -rf .pio/build/<env>` and `pio run -e <env>`
+immediately before `-t upload`, with nothing else touching that directory in
+between. If a serial command's behaviour does not match what was just fixed,
+check the binary's build time and size against the source's own mtime before
+assuming the fix is wrong.
+
 ## Both device branches had `env:simulator` broken, and `develop` did not
 
 Found 2026-09-12, promoting `release/lilygo-t5-s3-pro` and
