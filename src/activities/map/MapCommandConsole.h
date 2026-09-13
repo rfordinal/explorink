@@ -6,6 +6,7 @@
 
 #include "HeldTilesStore.h"
 #include "MapCommandParser.h"
+#include "MapPointShards.h"
 #include "PinRecord.h"
 #include "PinStore.h"
 #include "StaleTilesList.h"
@@ -231,6 +232,32 @@ class IMapSkipObserver {
   virtual void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) = 0;
 };
 
+// Told when the phone gives up on a point shard via the reused `skip` word
+// (`skipZ == MapPointShards::kShardZoom`). Deliberately **not** routed
+// through IMapSkipObserver::onTileSkipped, even though the wire command is
+// the same one: `TileSyncActivity`/`MapActivity`'s tile-skip handlers never
+// check `z` at all, so a z10 skip landing there is counted into
+// `MissingTilesStore`/`autoSyncPending_` as though a z10 *tile* had been
+// skipped -- found in code review, 2026-09-13, before this ever reached a
+// device. There is no such thing as a z10 tile today, but nothing enforces
+// that, and `MapViewport.h` already discusses z10 as a future LOD candidate.
+class IMapPointSkipObserver {
+ public:
+  virtual ~IMapPointSkipObserver() = default;
+  virtual void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) = 0;
+};
+
+// Told when the phone reports a point shard the CDN no longer has
+// (`gone <col> <row>`), so the device can delete its own copy
+// (../../docs/point-layer-lifecycle.md, decision 3). Synchronous, same
+// contract as IMapSkipObserver: the call runs on the activity task draining
+// this console and cannot miss one.
+class IMapGoneObserver {
+ public:
+  virtual ~IMapGoneObserver() = default;
+  virtual void onPointShardGone(uint32_t col, uint32_t row) = 0;
+};
+
 // Where the `pin` commands land. Implemented by MapActivity over a PinStore and
 // PinLog; the native tests implement it over a PinStore and an in-memory log.
 //
@@ -262,6 +289,22 @@ class IMapPinsSource {
   virtual uint32_t pinLogPage(uint32_t offset, uint32_t maxCount, IPinLogVisitor& visitor) = 0;
 };
 
+// Told which z10 point shards the device holds, for the `points` sync
+// exchange (../../docs/point-layer-lifecycle.md, decision 2). Implemented by
+// MapActivity over the card; the native tests implement it over a fixed set.
+//
+// **Existence only.** Whether a shard has changed since it was last fetched is
+// decision 1's `.pidx` question, which this exchange does not ask -- a device
+// that has a shard reports `have` whether or not it is current, same as
+// `tiles` reporting `ok` for a tile that opens fine but might be stale
+// (StaleTilesList is the freshness answer for that layer, and points get no
+// content-id list yet).
+class IMapPointShardsSource {
+ public:
+  virtual ~IMapPointShardsSource() = default;
+  virtual bool hasPointShard(uint32_t col, uint32_t row) const = 0;
+};
+
 // What the commands actually do, and the only thing that knows it. Holds no
 // channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
@@ -285,6 +328,33 @@ class MapConsoleState {
   bool hasPosition() const { return hasPosition_; }
   int32_t latE7() const { return latE7_; }
   int32_t lonE7() const { return lonE7_; }
+
+  // Seeds the position from a persisted fix rather than a live `pos` line --
+  // for a screen that has no viewport and may never see one this session
+  // (TileSyncActivity asking about points at home, same reasoning
+  // MapMissingAnchor.h's missingTileAnchorFromLastFix() already applies to the
+  // missing-tile sort). A live screen never needs this: MapActivity's own
+  // fixes already reach hasPosition_ through execute()'s Pos case.
+  //
+  // Marks the position as not for `info` to reveal (see
+  // positionIsFromPersistedFix_): the sync screen exists for a rider
+  // preparing at home, and printing their exact persisted fix over an
+  // unauthenticated channel there is a home-address leak this call
+  // introduced with nothing to gate it (code review, 2026-09-13) -- the
+  // range this feeds `points`/NEED_POINTS is still exposed, same coarse
+  // 39 km granularity `have`/`tiles` already accept, but the raw coordinate
+  // is not.
+  void setLastKnownPosition(int32_t latE7, int32_t lonE7) {
+    hasPosition_ = true;
+    latE7_ = latE7;
+    lonE7_ = lonE7;
+    positionIsFromPersistedFix_ = true;
+  }
+
+  // The z10 shard range `points` would list right now -- what NEED_POINTS's
+  // <count> should quote, computed the same way writePoints() does, so the
+  // two can never disagree. False (range left untouched) with no position.
+  bool pointShardRange(MapPointShards::Range& outRange) const;
   uint8_t heading() const { return heading_; }  // 0-15, see MapHeading.h
   uint16_t speedKmh() const { return speedKmh_; }
   // Metres above sea level, valid only if hasAltitude() -- feeds Hike mode's
@@ -441,10 +511,27 @@ class MapConsoleState {
   // outlive this state. Left unset, only the tally above is kept.
   void setSkipObserver(IMapSkipObserver* observer) { skipObserver_ = observer; }
 
+  // Where a point-shard `skip` (skipZ == MapPointShards::kShardZoom) goes.
+  // Not owned; must outlive this state. Left unset, a point-shard skip is
+  // simply not reported anywhere -- it never touches skips_ or
+  // skipObserver_, which are the tile tally.
+  void setPointSkipObserver(IMapPointSkipObserver* observer) { pointSkipObserver_ = observer; }
+
   // Where the `pin` commands go. Not owned; must outlive this state. Left unset
   // (the default, and the case on every screen but the map) every `pin` command
   // answers `INFO pins=unavailable` rather than silently doing nothing.
   void setPinsSource(IMapPinsSource* source) { pins_ = source; }
+
+  // Where `points` asks whether a z10 shard is on the card. Not owned; must
+  // outlive this state. Left unset (the default) `points` answers
+  // `INFO points=unavailable`, matching `missing=unavailable`'s reasoning: a
+  // build that never wired this must not read as a device with zero shards.
+  void setPointShardsSource(IMapPointShardsSource* source) { pointShards_ = source; }
+
+  // Where `gone` goes. Not owned; must outlive this state. Left unset (the
+  // default) `gone` answers `INFO gone=unavailable` rather than silently
+  // doing nothing, same reasoning as every other observer seam here.
+  void setGoneObserver(IMapGoneObserver* observer) { goneObserver_ = observer; }
 
   // Records one `pin log` command will print. Smaller than the missing page for
   // the same reason it is bounded at all -- every line is one BLE indication and
@@ -470,6 +557,7 @@ class MapConsoleState {
   void writeHave(IMapReplyWriter& out);
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
   void writePinList(IMapReplyWriter& out) const;
+  void writePoints(IMapReplyWriter& out) const;
   // Non-const: paging the log is what streams the card, and the source is not
   // ours to be const about (same shape as writeHave()).
   void writePinLog(uint16_t offset, IMapReplyWriter& out);
@@ -478,6 +566,11 @@ class MapConsoleState {
   bool hasPosition_ = false;
   int32_t latE7_ = 0;
   int32_t lonE7_ = 0;
+  // True while latE7_/lonE7_ came from setLastKnownPosition() rather than a
+  // live `pos` line. writeInfo() withholds lat/lon while this is set --
+  // see setLastKnownPosition()'s doc for why. Cleared by execute()'s Pos
+  // case, the same place a live fix would overwrite it anyway.
+  bool positionIsFromPersistedFix_ = false;
   uint8_t heading_ = 0;
   uint16_t speedKmh_ = 0;
   bool hasAltitude_ = false;
@@ -511,8 +604,11 @@ class MapConsoleState {
   const char* screenName_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
   IMapPinsSource* pins_ = nullptr;
+  IMapPointShardsSource* pointShards_ = nullptr;
+  IMapGoneObserver* goneObserver_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;
+  IMapPointSkipObserver* pointSkipObserver_ = nullptr;
   // 0 until MapActivity pushes the real one -- `info` then omits the line
   // rather than claiming version 0, which is not a version that ever existed.
   uint16_t tileFormatVersion_ = 0;

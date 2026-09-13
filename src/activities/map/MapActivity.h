@@ -152,7 +152,13 @@ struct GnssFix;
 //   (../../../docs/tile-autobuild.md) -- rather than "nobody will ever have it".
 // - **One ask per kAutoSyncIntervalMs.** A rate cap, not a settle timer: the
 //   next ask is not pushed further out by more hatching.
-class MapActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver, public IMapFakeSink {
+class MapActivity final : public Activity,
+                          public IMapSkipObserver,
+                          public IMapStaleObserver,
+                          public IMapFakeSink,
+                          public IMapPointShardsSource,
+                          public IMapGoneObserver,
+                          public IMapPointSkipObserver {
  public:
   // `routePath` is an absolute card path to a .tir route, or nullptr for none.
   // RouteSelectActivity passes what the rider picked; every other caller --
@@ -209,6 +215,16 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // is the one that has the projection and MISSING_TILES, which is why the sink
   // lives here rather than on the screen that shows the result.
   void seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) override;
+
+  // IMapPointShardsSource -- does the card hold this z10 point shard. Same
+  // existence-only check TileSyncActivity answers `points` with.
+  bool hasPointShard(uint32_t col, uint32_t row) const override;
+
+  // IMapGoneObserver -- the phone says the CDN has no such shard.
+  void onPointShardGone(uint32_t col, uint32_t row) override;
+
+  // IMapPointSkipObserver -- the phone cannot supply this shard right now.
+  void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override;
 
  private:
   void renderWaiting();
@@ -432,6 +448,20 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // does have are still current. Different setting, different cooldown,
   // different question.
   void maybeCheckTileFreshness();
+  // The Live rung's half of decision 2 (docs/point-layer-lifecycle.md): sends
+  // NEED_POINTS at most once per power cycle, never on the tile autosync's
+  // hatch-triggered ask -- a hatched tile says nothing about whether a spring
+  // moved, so the two conversations share only the mode setting, not the
+  // trigger. Riding onto new ground without a reboot is not covered yet.
+  //
+  // "Once per power cycle" is a real boot-lifetime static in the .cpp, not a
+  // member of this class: MapActivity is deleted and reconstructed by
+  // ActivityManager::replaceActivity() on every map <-> menu round trip
+  // (ActivityManager.cpp), so a plain member reset to false on each entry --
+  // asking again every time the rider glances at the menu and back (found in
+  // code review, 2026-09-13, before a member version of this flag ever
+  // shipped).
+  void maybeSyncPointsLive();
   // `NEED_TILES <count> fmt <version> view` -- the `view` word is what tells
   // the phone to answer from `tiles` (this screen) rather than page `missing`
   // (the tile sync screen). docs/ble-map-transfer-protocol.md.

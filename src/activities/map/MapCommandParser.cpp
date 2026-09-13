@@ -1,5 +1,6 @@
 #include "MapCommandParser.h"
 
+#include "MapPointShards.h"
 #include "MapViewport.h"
 
 namespace {
@@ -25,6 +26,11 @@ constexpr uint32_t kMaxAccuracyM = 255;
 // The heading-quality code, same 0-3 range as the packet's flags bits 2-3.
 constexpr uint32_t kMaxDirQuality = 3;
 constexpr uint32_t kMaxMissingOffset = 65535;
+// The highest legal z10 shard coordinate: 2^10 - 1. `gone` is the only
+// point-shard command with no zoom token to bound col/row against (skip and
+// tiles all carry z and check it), so it needs its own bound -- found
+// missing in code review, 2026-09-13.
+constexpr uint32_t kMaxPointGridCoord = (1u << MapPointShards::kShardZoom) - 1;
 // How large a batch the phone may announce. A 40 km box around a whole city is
 // 77 tiles (Barcelona, measured off the CDN index 2026-09-02 --
 // ../../../docs/send-tiles-plan.md), and the reactive missing list is capped at
@@ -372,6 +378,27 @@ MapCommand parseChecked(const Tokens& tokens) {
   return cmd;
 }
 
+// `gone <col> <row>`. The phone saying the CDN has no such point shard, so the
+// device deletes its own copy. No zoom token -- point shards are always
+// MapPointShards::kShardZoom, and the handler that owns that constant applies
+// it; the parser stays free of the point layer's headers, same reason it
+// stays free of the tile layer's.
+MapCommand parseGone(const Tokens& tokens) {
+  if (tokens.n != 3) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Gone;
+
+  uint32_t col = 0;
+  uint32_t row = 0;
+  if (!parseUint(tokens.t[1], col) || !parseUint(tokens.t[2], row)) {
+    return fail(MapCommandError::BadNumber);
+  }
+  if (col > kMaxPointGridCoord || row > kMaxPointGridCoord) return fail(MapCommandError::OutOfRange);
+  cmd.skipCol = col;
+  cmd.skipRow = row;
+  return cmd;
+}
+
 // `pin set <key> <lat> <lon> [<utc>]` | `pin del <key>` | `pin list` |
 // `pin log [<offset>]`.
 //
@@ -485,6 +512,8 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   if (name == "stats") return parseBare(tokens, MapCommandType::Stats);
   if (name == "fake") return parseFake(tokens);
+  if (name == "points") return parseBare(tokens, MapCommandType::Points);
+  if (name == "gone") return parseGone(tokens);
   if (name == "pin") return parsePin(tokens);
   return fail(MapCommandError::UnknownCommand);
 }

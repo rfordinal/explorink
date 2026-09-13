@@ -2,6 +2,7 @@
 
 #include <BlePositionServer.h>
 #include <HalPowerManager.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -14,7 +15,10 @@
 
 #include "CrossPointSettings.h"
 #include "MapPointMarks.h"
+#include "MapPointReader.h"
+#include "MapPointShardStorage.h"
 #include "MapPointShards.h"
+#include "MapPointSource.h"
 #include "TouchPolicy.h"
 // APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
 #include "CrossPointState.h"
@@ -124,6 +128,16 @@ constexpr uint32_t kFreshnessIntervalMs = 10 * 60 * 1000;
 // A check is one `have` reply and a handful of kB of HTTP; a phone that has not
 // finished in this long is not going to.
 constexpr uint32_t kFreshnessQuietMs = 40 * 1000;
+
+// True once NEED_POINTS has gone out this power cycle. A file-scope static,
+// not a MapActivity member: the activity is deleted and reconstructed on
+// every map <-> menu round trip (ActivityManager::replaceActivity()), and a
+// member would reset with it -- asking again on every glance at the menu,
+// not once per power cycle as decision 2's placeholder intends
+// (docs/point-layer-lifecycle.md, "The `Live` cooldown for points has no
+// number"; found in code review, 2026-09-13). Never cleared: a re-ask on the
+// same boot would need the cooldown number that doc says does not exist yet.
+bool g_pointsAskedThisPowerCycle = false;
 
 // Rate cap on maybeCheckTileFreshness()'s own gate-reason logging -- that
 // function runs every tick, so without this a blocked gate prints on every
@@ -1388,6 +1402,52 @@ void MapActivity::maybeCheckTileFreshness() {
   freshnessNextAskMs_ = now + kFreshnessIntervalMs;
   LOG_INF(kLogTag, "freshness: asked about %lu of %lu pending, %lu held", round, pending,
           static_cast<unsigned long>(g_heldTiles.size()));
+}
+
+void MapActivity::maybeSyncPointsLive() {
+  if (g_pointsAskedThisPowerCycle) return;
+  if (SETTINGS.mapPointsEnabled == 0) return;
+  if (SETTINGS.mapTileFreshnessMode != CrossPointSettings::MAP_TILE_FRESHNESS_LIVE) return;
+  // No fix this session yet -- consoleState_ only gains one through a real
+  // `pos` (applyFix()'s own path), so this is "never fixed since boot", not
+  // "fixed a while ago".
+  if (!consoleState_.hasPosition()) return;
+  // Same two gates maybeCheckTileFreshness() enforces, missing here in the
+  // first cut (code review, 2026-09-13): a transfer already owns the link
+  // (autoSyncPending_), or a freshness check has a listing open
+  // (freshnessPending_) -- asking now would interleave NEED_POINTS's own
+  // `points` conversation into either one, the same collision class
+  // `TileSyncActivity`'s hardware-measured 2026-08-11 comment describes.
+  if (autoSyncPending_ > 0) return;
+  if (freshnessPending_) return;
+  if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) return;
+
+  MapPointShards::Range range;
+  if (!consoleState_.pointShardRange(range)) return;  // cannot happen right after hasPosition(); stay honest anyway
+
+  char line[48];
+  snprintf(line, sizeof(line), "NEED_POINTS %lu fmt %u", static_cast<unsigned long>(range.count()),
+           static_cast<unsigned>(MapPointReader::kFormatVersion));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "points: NEED_POINTS not delivered");
+    return;
+  }
+  g_pointsAskedThisPowerCycle = true;
+  LOG_INF(kLogTag, "points: asked about %lu shard(s) around the fix, once this power cycle",
+          static_cast<unsigned long>(range.count()));
+}
+
+bool MapActivity::hasPointShard(uint32_t col, uint32_t row) const {
+  return MapPointShardStorage::exists(kTileRoot, col, row);
+}
+
+void MapActivity::onPointShardGone(uint32_t col, uint32_t row) {
+  MapPointShardStorage::deleteIfPresent(kLogTag, kTileRoot, col, row);
+}
+
+void MapActivity::onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) {
+  LOG_INF(kLogTag, "points: phone could not supply %lu/%lu (%s)", static_cast<unsigned long>(col),
+          static_cast<unsigned long>(row), reason);
 }
 
 void MapActivity::expireAutoSync() {
@@ -2679,6 +2739,17 @@ void MapActivity::onEnter() {
   // onto a history it never read (MapPins::pinSet).
   pins_.begin();
   consoleState_.setPinsSource(&pins_);
+  // `points`/`gone`/point-shard `skip` -- wired only when the rider has
+  // turned the point layer on. Same revision as TileSyncActivity's, and the
+  // same reason: `gone` is an unauthenticated delete, and this repo's
+  // security rule defaults a new write command to devel-only unless it is
+  // read-only (CLAUDE.md, "Security"). With nothing wired, `points`/`gone`
+  // simply answer `unavailable`.
+  if (SETTINGS.mapPointsEnabled != 0) {
+    consoleState_.setPointShardsSource(this);
+    consoleState_.setGoneObserver(this);
+    consoleState_.setPointSkipObserver(this);
+  }
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -2864,6 +2935,9 @@ void MapActivity::onExit() {
   // The pins source is a member of this activity, which main.cpp deletes right
   // after this returns -- the console must not be left pointing into it.
   consoleState_.setPinsSource(nullptr);
+  consoleState_.setPointShardsSource(nullptr);
+  consoleState_.setGoneObserver(nullptr);
+  consoleState_.setPointSkipObserver(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this
@@ -3230,6 +3304,7 @@ void MapActivity::loop() {
   expireAutoSync();
   maybeAutoSyncTiles();
   maybeCheckTileFreshness();
+  maybeSyncPointsLive();
   // Also the link state and the signal bars, which have nothing to do with
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
