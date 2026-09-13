@@ -241,9 +241,16 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
 
     case MapCommandType::Gone:
-      // Same placeholder as Points -- decision 3's delete path lands with the
-      // rest of the sync exchange, not before it.
-      out.reply("INFO gone=unavailable");
+      if (goneObserver_ == nullptr) {
+        out.reply("INFO gone=unavailable");
+        out.reply("OK");
+        return false;
+      }
+      // Before the reply, same rule pushObserver_/skipObserver_ follow: the
+      // phone must not hear OK before the delete is at least underway.
+      goneObserver_->onPointShardGone(cmd.skipCol, cmd.skipRow);
+      // Write-only, same shape as `push`: it reveals no position, route or
+      // stored data, so it answers nothing but OK.
       out.reply("OK");
       return false;
 

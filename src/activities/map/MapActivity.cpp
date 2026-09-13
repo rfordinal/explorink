@@ -2,6 +2,7 @@
 
 #include <BlePositionServer.h>
 #include <HalPowerManager.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -16,6 +17,7 @@
 #include "MapPointMarks.h"
 #include "MapPointReader.h"
 #include "MapPointShards.h"
+#include "MapPointSource.h"
 #include "TouchPolicy.h"
 // APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
 #include "CrossPointState.h"
@@ -1416,6 +1418,26 @@ void MapActivity::maybeSyncPointsLive() {
           static_cast<unsigned long>(range.count()));
 }
 
+bool MapActivity::hasPointShard(uint32_t col, uint32_t row) const {
+  char path[MapPointSource::kMaxPathLen];
+  if (!MapPointShards::buildPath(path, sizeof(path), kTileRoot, col, row)) return false;
+  return Storage.exists(path);
+}
+
+void MapActivity::onPointShardGone(uint32_t col, uint32_t row) {
+  char path[MapPointSource::kMaxPathLen];
+  if (!MapPointShards::buildPath(path, sizeof(path), kTileRoot, col, row)) return;
+  // Nothing to delete is not a failure -- see TileSyncActivity's own version
+  // of this method for why.
+  if (!Storage.exists(path)) return;
+  if (!Storage.remove(path)) {
+    LOG_ERR(kLogTag, "gone: could not delete %s", path);
+    return;
+  }
+  LOG_INF(kLogTag, "gone: deleted point shard %lu/%lu", static_cast<unsigned long>(col),
+          static_cast<unsigned long>(row));
+}
+
 void MapActivity::expireAutoSync() {
   if (autoSyncPending_ == 0 || autoSyncDeadlineMs_ == 0) return;
 
@@ -2705,6 +2727,12 @@ void MapActivity::onEnter() {
   // onto a history it never read (MapPins::pinSet).
   pins_.begin();
   consoleState_.setPinsSource(&pins_);
+  // `points`/`gone` -- same reasoning as the pins source above: whether the
+  // rider spends data on this is SETTINGS.mapPointsEnabled's question
+  // (maybeSyncPointsLive() reads it before ever sending NEED_POINTS), not a
+  // reason to leave the reply side unwired.
+  consoleState_.setPointShardsSource(this);
+  consoleState_.setGoneObserver(this);
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -2890,6 +2918,8 @@ void MapActivity::onExit() {
   // The pins source is a member of this activity, which main.cpp deletes right
   // after this returns -- the console must not be left pointing into it.
   consoleState_.setPinsSource(nullptr);
+  consoleState_.setPointShardsSource(nullptr);
+  consoleState_.setGoneObserver(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this

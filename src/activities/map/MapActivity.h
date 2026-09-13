@@ -152,7 +152,12 @@ struct GnssFix;
 //   (../../../docs/tile-autobuild.md) -- rather than "nobody will ever have it".
 // - **One ask per kAutoSyncIntervalMs.** A rate cap, not a settle timer: the
 //   next ask is not pushed further out by more hatching.
-class MapActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver, public IMapFakeSink {
+class MapActivity final : public Activity,
+                          public IMapSkipObserver,
+                          public IMapStaleObserver,
+                          public IMapFakeSink,
+                          public IMapPointShardsSource,
+                          public IMapGoneObserver {
  public:
   // `routePath` is an absolute card path to a .tir route, or nullptr for none.
   // RouteSelectActivity passes what the rider picked; every other caller --
@@ -209,6 +214,13 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // is the one that has the projection and MISSING_TILES, which is why the sink
   // lives here rather than on the screen that shows the result.
   void seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) override;
+
+  // IMapPointShardsSource -- does the card hold this z10 point shard. Same
+  // existence-only check TileSyncActivity answers `points` with.
+  bool hasPointShard(uint32_t col, uint32_t row) const override;
+
+  // IMapGoneObserver -- the phone says the CDN has no such shard.
+  void onPointShardGone(uint32_t col, uint32_t row) override;
 
  private:
   void renderWaiting();

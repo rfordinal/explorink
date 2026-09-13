@@ -1530,9 +1530,25 @@ TEST(MapCommandConsole, PointsListsTheShardRangeAroundTheFix) {
   EXPECT_EQ(out.lines[index], "OK");
 }
 
-// T-561, decision 3 not wired yet: `gone` parses but nothing acts on it.
-// Same "unavailable, not a bare OK" shape as points/missing/fake/push above.
-TEST(MapCommandConsole, GoneSaysUnavailableUntilWired) {
+namespace {
+
+class FakeGoneObserver final : public IMapGoneObserver {
+ public:
+  void onPointShardGone(uint32_t col, uint32_t row) override {
+    ++calls;
+    lastCol = col;
+    lastRow = row;
+  }
+  int calls = 0;
+  uint32_t lastCol = 0;
+  uint32_t lastRow = 0;
+};
+
+}  // namespace
+
+// T-561, decision 3: `gone` reaches the observer, same distinction
+// `missing=unavailable` makes when no source is wired.
+TEST(MapCommandConsole, GoneSaysUnavailableWithNoObserver) {
   MapConsoleState state;
   MapCommandConsole console(state);
   CollectingWriter out;
@@ -1541,6 +1557,22 @@ TEST(MapCommandConsole, GoneSaysUnavailableUntilWired) {
   ASSERT_EQ(out.lines.size(), 2u);
   EXPECT_EQ(out.lines[0], "INFO gone=unavailable");
   EXPECT_EQ(out.lines[1], "OK");
+}
+
+TEST(MapCommandConsole, GoneReachesTheObserverBeforeTheOk) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeGoneObserver observer;
+  state.setGoneObserver(&observer);
+
+  feedLine(console, out, "gone 562 354");
+  EXPECT_EQ(observer.calls, 1);
+  EXPECT_EQ(observer.lastCol, 562u);
+  EXPECT_EQ(observer.lastRow, 354u);
+  // Write-only, same shape as `push`: no INFO line, just the OK.
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");
 }
 
 TEST(MapCommandConsole, StaleAndCheckedReachTheObserver) {

@@ -232,6 +232,17 @@ class IMapSkipObserver {
   virtual void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) = 0;
 };
 
+// Told when the phone reports a point shard the CDN no longer has
+// (`gone <col> <row>`), so the device can delete its own copy
+// (../../docs/point-layer-lifecycle.md, decision 3). Synchronous, same
+// contract as IMapSkipObserver: the call runs on the activity task draining
+// this console and cannot miss one.
+class IMapGoneObserver {
+ public:
+  virtual ~IMapGoneObserver() = default;
+  virtual void onPointShardGone(uint32_t col, uint32_t row) = 0;
+};
+
 // Where the `pin` commands land. Implemented by MapActivity over a PinStore and
 // PinLog; the native tests implement it over a PinStore and an in-memory log.
 //
@@ -486,6 +497,11 @@ class MapConsoleState {
   // build that never wired this must not read as a device with zero shards.
   void setPointShardsSource(IMapPointShardsSource* source) { pointShards_ = source; }
 
+  // Where `gone` goes. Not owned; must outlive this state. Left unset (the
+  // default) `gone` answers `INFO gone=unavailable` rather than silently
+  // doing nothing, same reasoning as every other observer seam here.
+  void setGoneObserver(IMapGoneObserver* observer) { goneObserver_ = observer; }
+
   // Records one `pin log` command will print. Smaller than the missing page for
   // the same reason it is bounded at all -- every line is one BLE indication and
   // each waits for the peer's ATT confirm -- and a history line is longer than a
@@ -553,6 +569,7 @@ class MapConsoleState {
   IMissingTilesSource* missingTiles_ = nullptr;
   IMapPinsSource* pins_ = nullptr;
   IMapPointShardsSource* pointShards_ = nullptr;
+  IMapGoneObserver* goneObserver_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;
   // 0 until MapActivity pushes the real one -- `info` then omits the line

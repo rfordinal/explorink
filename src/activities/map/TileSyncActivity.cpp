@@ -13,6 +13,7 @@
 #include "MapMissingAnchor.h"
 #include "MapPointReader.h"
 #include "MapPointShards.h"
+#include "MapPointSource.h"
 #include "MapPowerStatsProvider.h"
 #include "MapTileReader.h"
 #include "MappedInputManager.h"
@@ -174,6 +175,12 @@ void TileSyncActivity::onEnter() {
   // management does not depend on there being anything missing to fetch.
   pins_.begin();
   consoleState_.setPinsSource(&pins_);
+  // `points`/`gone` -- decision 2/3's exchange. Wired unconditionally, same as
+  // the pins source above: whether the device deals in points at all is
+  // SETTINGS.mapPointsEnabled's question (askAboutPoints() reads it before
+  // ever sending NEED_POINTS), not a reason to leave the reply side unwired.
+  consoleState_.setPointShardsSource(this);
+  consoleState_.setGoneObserver(this);
 
   if (rowCount_ == 0) {
     // Worth a screen rather than a silent bounce back to the menu: the rider
@@ -292,6 +299,27 @@ void TileSyncActivity::askAboutPoints() {
   }
   pointsAsked_ = true;
   LOG_INF(kLogTag, "points: asked about %lu shard(s) around the last fix", static_cast<unsigned long>(range.count()));
+}
+
+bool TileSyncActivity::hasPointShard(uint32_t col, uint32_t row) const {
+  char path[MapPointSource::kMaxPathLen];
+  if (!MapPointShards::buildPath(path, sizeof(path), kTileRoot, col, row)) return false;
+  return Storage.exists(path);
+}
+
+void TileSyncActivity::onPointShardGone(uint32_t col, uint32_t row) {
+  char path[MapPointSource::kMaxPathLen];
+  if (!MapPointShards::buildPath(path, sizeof(path), kTileRoot, col, row)) return;
+  // Nothing to delete is not a failure -- `gone` can arrive for a shard this
+  // card never had (the phone's own 404-twice guard races the device's own
+  // last request), and that is the same outcome as a delete that worked.
+  if (!Storage.exists(path)) return;
+  if (!Storage.remove(path)) {
+    LOG_ERR(kLogTag, "gone: could not delete %s", path);
+    return;
+  }
+  LOG_INF(kLogTag, "gone: deleted point shard %lu/%lu", static_cast<unsigned long>(col),
+          static_cast<unsigned long>(row));
 }
 
 bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
@@ -566,6 +594,8 @@ void TileSyncActivity::onExit() {
   consoleState_.setStaleObserver(nullptr);
   consoleState_.setStaleTiles(nullptr);
   consoleState_.setPinsSource(nullptr);
+  consoleState_.setPointShardsSource(nullptr);
+  consoleState_.setGoneObserver(nullptr);
   freeink::BlePositionServer::getInstance().end();
   // Leaving is the checkpoint: whatever this sync cleared has to reach the card,
   // or the phone sends the same tiles again after a restart. A no-op when

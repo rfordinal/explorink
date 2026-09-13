@@ -147,7 +147,9 @@
 class TileSyncActivity final : public Activity,
                                public IMapSkipObserver,
                                public IMapStaleObserver,
-                               public IMapPushObserver {
+                               public IMapPushObserver,
+                               public IMapPointShardsSource,
+                               public IMapGoneObserver {
  public:
   TileSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
@@ -179,6 +181,15 @@ class TileSyncActivity final : public Activity,
   // dispatch of `push`, before its terminating `OK`, which is the one place a
   // repaint must not be started (see freshnessRedrawPending_).
   void onPushAnnounced(uint16_t count) override;
+
+  // IMapPointShardsSource -- does the card hold this z10 point shard. A plain
+  // existence check, same rootDir the tile/point sources already use
+  // (kTileRoot); no header parse, since `points` only asks have-or-absent.
+  bool hasPointShard(uint32_t col, uint32_t row) const override;
+
+  // IMapGoneObserver -- the phone says the CDN has no such shard, so delete
+  // the card's copy if it has one.
+  void onPointShardGone(uint32_t col, uint32_t row) override;
 
  private:
   // Waiting means the device is advertising and nothing has subscribed to the
