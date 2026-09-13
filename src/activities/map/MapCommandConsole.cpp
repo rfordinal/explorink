@@ -7,6 +7,8 @@
 #include <cstring>
 
 #include "BlePositionServer.h"
+#include "MapPointShards.h"
+#include "MapProjection.h"
 
 namespace {
 
@@ -234,11 +236,7 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
     }
 
     case MapCommandType::Points:
-      // Grammar only for now (T-561, decision 2 not yet wired): no source is
-      // hung off this state yet, so every build answers the same
-      // "not wired" line rather than a bare OK a phone could mistake for
-      // "this device has zero shards".
-      out.reply("INFO points=unavailable");
+      writePoints(out);
       out.reply("OK");
       return false;
 
@@ -644,6 +642,45 @@ void MapConsoleState::writeTiles(IMapReplyWriter& out) const {
     snprintf(line, sizeof(line), "INFO tile_%u_%u_%u=%s", static_cast<unsigned>(tileRange_.z),
              static_cast<unsigned>(col), static_cast<unsigned>(row), state);
     out.reply(line);
+  }
+}
+
+void MapConsoleState::writePoints(IMapReplyWriter& out) const {
+  if (pointShards_ == nullptr) {
+    // Not wired -- same distinction `missing=unavailable` makes: a build that
+    // never connected a source must not read as a device with zero shards.
+    out.reply("INFO points=unavailable");
+    return;
+  }
+  if (!hasPosition_) {
+    // The shard range is centred on the rider; with no fix there is nothing
+    // to centre it on, the same refusal the Nearby menu gives
+    // (nearby-menu.md, "With no clever reordering"). Distinct from
+    // `point_total=0` on purpose -- zero shards in range is a real answer
+    // about a real place, this is "no place yet".
+    out.reply("INFO points=no_position");
+    return;
+  }
+
+  double mercX = 0.0;
+  double mercY = 0.0;
+  MapProjection::lonLatToMerc(latE7_ / 1e7, lonE7_ / 1e7, mercX, mercY);
+  const MapPointShards::Range range = MapPointShards::rangeForRadius(mercX, mercY, MapPointShards::kSearchRadiusM);
+
+  char line[kReplyBuf];
+  snprintf(line, sizeof(line), "INFO point_total=%lu", static_cast<unsigned long>(range.count()));
+  out.reply(line);
+
+  // Same col-outer, row-inner order MapPointQuery::walk() opens shards in --
+  // no protocol reason to match it, but a log line from either side then reads
+  // in the same sequence.
+  for (uint32_t col = range.col0; col <= range.col1; ++col) {
+    for (uint32_t row = range.row0; row <= range.row1; ++row) {
+      const bool have = pointShards_->hasPointShard(col, row);
+      snprintf(line, sizeof(line), "INFO point_%lu_%lu=%s", static_cast<unsigned long>(col),
+               static_cast<unsigned long>(row), have ? "have" : "absent");
+      out.reply(line);
+    }
   }
 }
 

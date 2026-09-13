@@ -262,6 +262,22 @@ class IMapPinsSource {
   virtual uint32_t pinLogPage(uint32_t offset, uint32_t maxCount, IPinLogVisitor& visitor) = 0;
 };
 
+// Told which z10 point shards the device holds, for the `points` sync
+// exchange (../../docs/point-layer-lifecycle.md, decision 2). Implemented by
+// MapActivity over the card; the native tests implement it over a fixed set.
+//
+// **Existence only.** Whether a shard has changed since it was last fetched is
+// decision 1's `.pidx` question, which this exchange does not ask -- a device
+// that has a shard reports `have` whether or not it is current, same as
+// `tiles` reporting `ok` for a tile that opens fine but might be stale
+// (StaleTilesList is the freshness answer for that layer, and points get no
+// content-id list yet).
+class IMapPointShardsSource {
+ public:
+  virtual ~IMapPointShardsSource() = default;
+  virtual bool hasPointShard(uint32_t col, uint32_t row) const = 0;
+};
+
 // What the commands actually do, and the only thing that knows it. Holds no
 // channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
@@ -446,6 +462,12 @@ class MapConsoleState {
   // answers `INFO pins=unavailable` rather than silently doing nothing.
   void setPinsSource(IMapPinsSource* source) { pins_ = source; }
 
+  // Where `points` asks whether a z10 shard is on the card. Not owned; must
+  // outlive this state. Left unset (the default) `points` answers
+  // `INFO points=unavailable`, matching `missing=unavailable`'s reasoning: a
+  // build that never wired this must not read as a device with zero shards.
+  void setPointShardsSource(IMapPointShardsSource* source) { pointShards_ = source; }
+
   // Records one `pin log` command will print. Smaller than the missing page for
   // the same reason it is bounded at all -- every line is one BLE indication and
   // each waits for the peer's ATT confirm -- and a history line is longer than a
@@ -470,6 +492,7 @@ class MapConsoleState {
   void writeHave(IMapReplyWriter& out);
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
   void writePinList(IMapReplyWriter& out) const;
+  void writePoints(IMapReplyWriter& out) const;
   // Non-const: paging the log is what streams the card, and the source is not
   // ours to be const about (same shape as writeHave()).
   void writePinLog(uint16_t offset, IMapReplyWriter& out);
@@ -511,6 +534,7 @@ class MapConsoleState {
   const char* screenName_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
   IMapPinsSource* pins_ = nullptr;
+  IMapPointShardsSource* pointShards_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;
   // 0 until MapActivity pushes the real one -- `info` then omits the line

@@ -5,10 +5,13 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MapCommandConsole.h"
 #include "MapCommandParser.h"
+#include "MapPointShards.h"
+#include "MapProjection.h"
 
 namespace {
 
@@ -1439,20 +1442,101 @@ TEST(MapCommandConsole, FakeSaysUnavailableWithNoSink) {
   EXPECT_EQ(out.lines[1], "OK");
 }
 
-// T-561, decision 2/3 not wired yet: `points` and `gone` parse but have no
-// source behind them. Same "unavailable, not a bare OK" shape as
-// missing/fake/push above, so a phone cannot read silence as "zero shards".
-TEST(MapCommandConsole, PointsAndGoneAreUnavailableUntilWired) {
+namespace {
+
+// held is whichever (col, row) pairs the fake card has a shard for. A linear
+// scan is fine: writePoints() never asks about more than 9 shards in one
+// command (MapPointShards::Range::count()).
+class FakePointShards final : public IMapPointShardsSource {
+ public:
+  bool hasPointShard(uint32_t col, uint32_t row) const override {
+    return std::find(held.begin(), held.end(), std::make_pair(col, row)) != held.end();
+  }
+  std::vector<std::pair<uint32_t, uint32_t>> held;
+};
+
+}  // namespace
+
+TEST(MapCommandConsole, PointsSaysUnavailableWithNoSource) {
   MapConsoleState state;
   MapCommandConsole console(state);
   CollectingWriter out;
 
+  // Same distinction `missing=unavailable` makes: a build that never wired
+  // this must not read as a device with zero shards.
   feedLine(console, out, "points");
   ASSERT_EQ(out.lines.size(), 2u);
   EXPECT_EQ(out.lines[0], "INFO points=unavailable");
   EXPECT_EQ(out.lines[1], "OK");
+}
 
+TEST(MapCommandConsole, PointsRefusesWithNoPosition) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakePointShards shards;
+  state.setPointShardsSource(&shards);
+
+  // No `pos` and no BLE fix landed yet -- there is nothing to centre a shard
+  // range on, the same refusal the Nearby menu gives with no fix.
+  feedLine(console, out, "points");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO points=no_position");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+TEST(MapCommandConsole, PointsListsTheShardRangeAroundTheFix) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakePointShards shards;
+  state.setPointShardsSource(&shards);
+
+  // Trnava, roughly -- the same fix a `pos` command or a BLE position report
+  // would carry.
+  const double lat = 48.377;
+  const double lon = 17.588;
+  double mercX = 0.0;
+  double mercY = 0.0;
+  MapProjection::lonLatToMerc(lat, lon, mercX, mercY);
+  const MapPointShards::Range range = MapPointShards::rangeForRadius(mercX, mercY, MapPointShards::kSearchRadiusM);
+  ASSERT_LE(range.count(), 9u);  // the whole point of z10 (MapPointShards.h)
+
+  // The card holds the north-west shard of the range and nothing else.
+  shards.held.push_back({range.col0, range.row0});
+
+  char posLine[64];
+  snprintf(posLine, sizeof(posLine), "pos %f %f", lat, lon);
+  feedLine(console, out, posLine);
   out.lines.clear();
+
+  feedLine(console, out, "points");
+  ASSERT_EQ(out.lines.size(), range.count() + 2);  // point_total, one line per shard, OK
+  char totalLine[32];
+  snprintf(totalLine, sizeof(totalLine), "INFO point_total=%lu", static_cast<unsigned long>(range.count()));
+  EXPECT_EQ(out.lines[0], totalLine);
+
+  size_t index = 1;
+  for (uint32_t col = range.col0; col <= range.col1; ++col) {
+    for (uint32_t row = range.row0; row <= range.row1; ++row) {
+      char line[64];
+      const bool isHeld = (col == range.col0 && row == range.row0);
+      snprintf(line, sizeof(line), "INFO point_%lu_%lu=%s", static_cast<unsigned long>(col),
+               static_cast<unsigned long>(row), isHeld ? "have" : "absent");
+      EXPECT_EQ(out.lines[index], line);
+      ++index;
+    }
+  }
+  EXPECT_EQ(out.lines[index], "OK");
+}
+
+// T-561, decision 3 not wired yet: `gone` parses but nothing acts on it.
+// Same "unavailable, not a bare OK" shape as points/missing/fake/push above.
+TEST(MapCommandConsole, GoneSaysUnavailableUntilWired) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
   feedLine(console, out, "gone 562 354");
   ASSERT_EQ(out.lines.size(), 2u);
   EXPECT_EQ(out.lines[0], "INFO gone=unavailable");
