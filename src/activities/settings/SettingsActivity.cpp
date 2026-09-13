@@ -327,6 +327,11 @@ void SettingsActivity::toggleCurrentSetting() {
     return;
   }
 
+  if (setting.nameId == StrId::STR_FRONTLIGHT) {
+    openFrontlightBrightnessPicker();
+    return;
+  }
+
   if (setting.nameId == StrId::STR_FRONTLIGHT_COLOR_TEMP) {
     openFrontlightColorTemperaturePicker();
     return;
@@ -480,18 +485,51 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::openFrontlightBrightnessPicker() {
+  const uint8_t originalValue = SETTINGS.frontlightBrightness;
+  auto picker = std::make_unique<IntervalSelectionActivity>(renderer, mappedInput, "FrontlightBrightnessInterval",
+                                                             StrId::STR_FRONTLIGHT, originalValue, 10, 100, 5, 20,
+                                                             StrId::STR_BRIGHTNESS_VALUE_FORMAT, false, true);
+  // Same live-preview wiring as the color-temperature picker below: an in-memory
+  // SETTINGS write per drag step, no saveToFile() until Confirm. main.cpp's
+  // loop() already polls frontlightBrightness against the light every frame
+  // (pre-dates this picker -- it originally existed for the in-place cycling
+  // row), so it needs no change to pick up the picker's live writes too.
+  picker->onValueChanged = [](int v) { SETTINGS.frontlightBrightness = static_cast<uint8_t>(v); };
+  startActivityForResult(std::move(picker), [this, originalValue](const ActivityResult& result) {
+    if (result.isCancelled) {
+      SETTINGS.frontlightBrightness = originalValue;
+    } else {
+      SETTINGS.frontlightBrightness = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+      SETTINGS.saveToFile();
+    }
+    requestUpdate();
+  });
+}
+
 void SettingsActivity::openFrontlightColorTemperaturePicker() {
-  startActivityForResult(
-      std::make_unique<IntervalSelectionActivity>(renderer, mappedInput, "FrontlightColorTemperatureInterval",
-                                                  StrId::STR_FRONTLIGHT_COLOR_TEMP, SETTINGS.frontlightColorTemperature,
-                                                  0, 100, 5, 20, StrId::STR_COLOR_TEMP_VALUE_FORMAT, false, true),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled) {
-          SETTINGS.frontlightColorTemperature = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
-          SETTINGS.saveToFile();
-        }
-        requestUpdate();
-      });
+  const uint8_t originalValue = SETTINGS.frontlightColorTemperature;
+  auto picker = std::make_unique<IntervalSelectionActivity>(
+      renderer, mappedInput, "FrontlightColorTemperatureInterval", StrId::STR_FRONTLIGHT_COLOR_TEMP, originalValue, 0,
+      100, 5, 20, StrId::STR_COLOR_TEMP_VALUE_FORMAT, false, true);
+  // Live preview while dragging: writes straight into SETTINGS (never saveToFile()
+  // here -- rule 8 is no SD write per interaction) so main.cpp's loop() poll, which
+  // already applies a frontlightColorTemperature change to the LED every frame
+  // regardless of which activity is on screen, picks it up and lights the mix the
+  // rider is currently looking at instead of only after Confirm.
+  picker->onValueChanged = [](int v) { SETTINGS.frontlightColorTemperature = static_cast<uint8_t>(v); };
+  startActivityForResult(std::move(picker), [this, originalValue](const ActivityResult& result) {
+    if (result.isCancelled) {
+      // The drag above already wrote interim values into SETTINGS for the live
+      // preview; undo that in memory (the file on disk was never touched) so
+      // Back truly means no change, and the same poll puts the light back too.
+      SETTINGS.frontlightColorTemperature = originalValue;
+    } else {
+      SETTINGS.frontlightColorTemperature = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+      SETTINGS.saveToFile();
+    }
+    requestUpdate();
+  });
 }
 
 void SettingsActivity::render(RenderLock&&) {
