@@ -23,6 +23,7 @@ void IntervalSelectionActivity::onEnter() {
 
 void IntervalSelectionActivity::adjustValue(const int delta) {
   value = clampedValue(value + delta);
+  if (onValueChanged) onValueChanged(value);
   requestUpdate();
 }
 
@@ -69,6 +70,7 @@ void IntervalSelectionActivity::loop() {
           clampedValue(minValue + std::clamp(tx - barX, 0, barWidth - 1) * range / std::max(1, barWidth - 1));
       if (dragged != value) {
         value = dragged;
+        if (onValueChanged) onValueChanged(value);
         requestUpdate();
       }
       return;
@@ -97,6 +99,7 @@ void IntervalSelectionActivity::loop() {
     if (ty >= barY - 20 && ty < barY + barHeight + 20 && tx >= barX && tx < barX + barWidth) {
       const int range = std::max(1, maxValue - minValue);
       value = clampedValue(minValue + (tx - barX) * range / std::max(1, barWidth - 1));
+      if (onValueChanged) onValueChanged(value);
       requestUpdate();
       return;
     }
