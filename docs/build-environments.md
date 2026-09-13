@@ -519,3 +519,20 @@ esptool.py --chip esp32c3 --port <port> write_flash 0x10000 <firmware.bin>
 ```
 
 That writes the app partition and depends on no pio state at all.
+
+**A different symptom, same race, same day.** `pio run -e x4pro -t upload`
+failed later the same session with
+
+```
+Error: Invalid value for '<address> <filename>...': [Errno 2] No such file or
+directory: '.../.pio/build/x4pro/bootloader.bin'
+```
+
+right after `pio run -e x4pro` alone had reported `SUCCESS` moments earlier,
+with a background `pio run` for `default` then `t5s3pro` started in between.
+Waiting for both to exit (`pgrep -f "pio run"` empty) and re-running the exact
+same upload command, unchanged, succeeded first try -- same fix as above, so
+this is read as the same race, not isolated to a specific file the way the
+`managed_components` case was. Every build log that session also printed
+`*** Original Arduino "idf_component.yml" restored ***`, a candidate for what
+a concurrent build clobbers, but that was not confirmed further.
