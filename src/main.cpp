@@ -1769,9 +1769,11 @@ void loop() {
         //
         //   CMD:TOUCHLOG                      ->  3000 ms at 5 ms, clearing
         //   CMD:TOUCHLOG 6000 5000 noclear    ->  6 s at 5 ms, never clearing
+        //   CMD:TOUCHLOG 8000 5000 delay2000  ->  hold the frame 2 s, ack once, watch
         long durationMs = 3000;
         long intervalUs = 5000;
         bool clearAfterRead = true;
+        long clearDelayMs = 0;
         String rest = cmd.length() > 8 ? cmd.substring(9) : String("");
         rest.trim();
         if (rest.length() > 0) {
@@ -1782,14 +1784,25 @@ void loop() {
             tail.trim();
             const int secondGap = tail.indexOf(' ');
             const String intervalToken = secondGap < 0 ? tail : tail.substring(0, secondGap);
-            if (intervalToken == "clear" || intervalToken == "noclear") {
-              clearAfterRead = intervalToken == "clear";
+            // A mode token may sit in either slot, so the interval is optional.
+            // `delay<N>` is the third mode: hold the frame N ms, acknowledge it
+            // once, then watch (src/DebugTouchLog.h, open question 5).
+            auto applyMode = [&](const String& mode) {
+              if (mode.startsWith("delay")) {
+                clearDelayMs = mode.substring(5).toInt();
+                clearAfterRead = false;
+              } else {
+                clearAfterRead = mode != "noclear";
+              }
+            };
+            if (intervalToken == "clear" || intervalToken == "noclear" || intervalToken.startsWith("delay")) {
+              applyMode(intervalToken);
             } else {
               intervalUs = intervalToken.toInt();
               if (secondGap >= 0) {
                 String mode = tail.substring(secondGap + 1);
                 mode.trim();
-                clearAfterRead = mode != "noclear";
+                applyMode(mode);
               }
             }
           }
@@ -1798,7 +1811,7 @@ void loop() {
           logSerial.printf("TOUCHLOG_ERR:args:<ms> <us> clear|noclear\n");
         } else {
           DebugTouchLog::capture(logSerial, static_cast<uint32_t>(durationMs), static_cast<uint32_t>(intervalUs),
-                                 clearAfterRead);
+                                 clearAfterRead, static_cast<uint32_t>(clearDelayMs < 0 ? 0 : clearDelayMs));
         }
       } else if (cmd == "LOOPGAP") {
         // How long the input sampler goes unread. Read it, do the thing being

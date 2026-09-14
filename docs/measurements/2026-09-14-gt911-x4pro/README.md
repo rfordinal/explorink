@@ -29,6 +29,8 @@ controller, which is the exact false negative these captures exist to rule out.
 | `cap8-keyhold-coords.txt` | key hold, 8 s, with coordinates | complete, and **empty** -- a held key produced no frame at all |
 | `cap9-glass-coords.txt` | glass tapping, 8 s, with coordinates | complete, 1601/1601 |
 | `cap10-key-noclear.txt` | `noclear`, key tapped throughout | complete, 1601/1601 |
+| `cap11-delayclear.txt` | first `delay2000` attempt | complete, and **empty** -- the tap happened before the capture started. Kept because it is why the arm phase exists |
+| `cap12-delayclear-armed.txt` | `delay2000` with the arm phase: key press latched, held 2 s, acknowledged once, then watched | **complete, 1601/1601 -- answers open question 5** |
 | `loopgap-home-idle.txt` | `CMD:LOOPGAP`, Home, idle | -- |
 | `loopgap-map-open.txt` | `CMD:LOOPGAP` across `CMD:GOTO_MAP` | -- |
 | `loopgap-map-redraw.txt` | `CMD:LOOPGAP` across one map `redraw` | -- |
@@ -36,6 +38,13 @@ controller, which is the exact false negative these captures exist to rule out.
 `cap6` and `cap7` are kept rather than deleted because they are why the
 instrument grew flow control and a loss check, and because a later reader who
 finds them quoted somewhere needs to see the verdict next to them.
+
+**`cap12` is the one that closes the mechanism.** It is the first capture in
+which the latched frame is a *gesture's own edge*: `0x90`, the key press, held
+unchanged for 402 samples (2.01 s) after the finger was long gone. The single
+acknowledgment at 2,005,001 us is followed 10 ms later by a fresh `0x80` -- so
+the controller **does** re-report current state after a late clear, within one
+frame period.
 
 **What `cap10` does and does not show.** It shows the controller holding one
 frame for 7.99 s of an 8.00 s capture with nothing else getting through. It does
