@@ -52,6 +52,20 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DebugInput.h"
+#include "DebugTouchLog.h"
+
+// Every input sample in loop() goes through here so the gap between two of them
+// can be measured. The gap IS the bug being chased: a GT911 holds exactly one
+// unacknowledged frame and discards everything after it, so a wide gap turns a
+// double tap into a single one (src/DebugTouchLog.h). Hooking the six call sites
+// rather than HalGPIO::update() keeps the recorder in src/, which lib/hal cannot
+// include and which the simulator replaces wholesale.
+static inline void sampleInput() {
+#ifdef ENABLE_TOUCHLOG_CMD
+  DebugTouchLog::noteUpdate();
+#endif
+  gpio.update();
+}
 #include "GnssAccess.h"
 #include "GnssFakeSky.h"
 #include "GnssLog.h"
@@ -943,10 +957,10 @@ static void screenshotPlaneSink(void*, bool, const uint8_t* rows, int, int numRo
 }
 
 void waitForPowerRelease() {
-  gpio.update();
+  sampleInput();
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
     delay(50);
-    gpio.update();
+    sampleInput();
   }
 }
 
@@ -1218,7 +1232,7 @@ void setup() {
     // settle window even if the loop body takes longer than expected on slow boots.
     const unsigned long settleStart = millis();
     while (millis() - settleStart < 500) {
-      gpio.update();
+      sampleInput();
       delay(10);
     }
     if (gpio.isPressed(HalGPIO::BTN_UP)) {
@@ -1353,9 +1367,9 @@ void setup() {
     // transition the held bit through lastDebounceTime into currentState
     // without setting pressedEvents, so the first loop()'s own gpio.update()
     // sees state == currentState and emits nothing.
-    gpio.update();
+    sampleInput();
     delay(10);
-    gpio.update();
+    sampleInput();
   }
 
   // Ensure we're not still holding the power button before leaving setup
@@ -1369,7 +1383,7 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
-  gpio.update();
+  sampleInput();
   // One step of any injected button press, in the same frame the real buttons
   // were read (DebugInput.h). Before the CMD: parser below, so a press queued
   // this iteration starts on the next one and never lands mid-frame with the
@@ -1745,6 +1759,53 @@ void loop() {
           logSerial.printf("BUTTON_OK:%s:%ld\n", DebugInput::kButtonNames[button], holdMs);
         }
 #endif  // ENABLE_BUTTON_CMD
+#ifdef ENABLE_TOUCHLOG_CMD
+      } else if (cmd == "TOUCHLOG" || cmd.startsWith("TOUCHLOG ")) {
+        // Raw GT911 status register, timestamped, with the loop deliberately
+        // blocked for the whole capture. The five open questions in
+        // firmware/explorink docs/input-gestures.md are all questions about when
+        // a byte changes, and nothing else in this firmware can see that --
+        // src/DebugTouchLog.h has the reasoning and the two modes.
+        //
+        //   CMD:TOUCHLOG                      ->  3000 ms at 5 ms, clearing
+        //   CMD:TOUCHLOG 6000 5000 noclear    ->  6 s at 5 ms, never clearing
+        long durationMs = 3000;
+        long intervalUs = 5000;
+        bool clearAfterRead = true;
+        String rest = cmd.length() > 8 ? cmd.substring(9) : String("");
+        rest.trim();
+        if (rest.length() > 0) {
+          const int firstGap = rest.indexOf(' ');
+          durationMs = (firstGap < 0 ? rest : rest.substring(0, firstGap)).toInt();
+          if (firstGap >= 0) {
+            String tail = rest.substring(firstGap + 1);
+            tail.trim();
+            const int secondGap = tail.indexOf(' ');
+            const String intervalToken = secondGap < 0 ? tail : tail.substring(0, secondGap);
+            if (intervalToken == "clear" || intervalToken == "noclear") {
+              clearAfterRead = intervalToken == "clear";
+            } else {
+              intervalUs = intervalToken.toInt();
+              if (secondGap >= 0) {
+                String mode = tail.substring(secondGap + 1);
+                mode.trim();
+                clearAfterRead = mode != "noclear";
+              }
+            }
+          }
+        }
+        if (durationMs <= 0 || intervalUs <= 0) {
+          logSerial.printf("TOUCHLOG_ERR:args:<ms> <us> clear|noclear\n");
+        } else {
+          DebugTouchLog::capture(logSerial, static_cast<uint32_t>(durationMs), static_cast<uint32_t>(intervalUs),
+                                 clearAfterRead);
+        }
+      } else if (cmd == "LOOPGAP") {
+        // How long the input sampler goes unread. Read it, do the thing being
+        // measured, read it again -- the report resets on read, so the second
+        // answer covers only the interval between them.
+        DebugTouchLog::reportGaps(logSerial);
+#endif  // ENABLE_TOUCHLOG_CMD
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->

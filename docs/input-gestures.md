@@ -67,17 +67,30 @@ the comment says why: a motionless hold stops producing new-data frames, so a
 gated timer would never cross `HOME_KEY_LONG_PRESS_MS`
 (`InputManager.h:263`, 700 ms).
 
+`[measured]` 2026-09-14, X4 Pro. **That claim is true for the key and false for a
+contact**, and the split matters. A held key produces **no frame at all** -- seven
+presses, one `0x90` frame each, then silence for the whole 55-90 ms hold. A held
+contact produces a new frame **every 10 ms** without pause. So the hold timer
+above the gate is not caution, it is the only way the key's hold can be timed;
+and any design that assumes "held means frames keep coming" is right about the
+glass and wrong about the key.
+
 `[read]` The cost is that `touchHomeKeyDown` (`:957`) is only ever re-synced from
 a fresh frame. A **missed release edge** therefore leaves the key latched down,
 and the hold fires later from a press that another layer already turned into a
 tap. There is no staleness notion at all — unlike the CHSC6x path in the same
 file, which self-heals with a release-by-timeout.
 
-`[read]` **The controller holds a frame until it is cleared.** M5GFX's GT911
-driver (`Touch_GT911.cpp`, in the M5GFX library the T5 S3 Pro build pulls in)
-discards the frame and re-reads after a gap, on the stated grounds that the GT911
-keeps the same frame until zero is written to `0x814E`. So a frame read after the
-main loop was blocked describes the past, and our code trusts it.
+`[measured]` **The controller holds a frame until it is cleared, and while it
+holds one it produces no other.** M5GFX's GT911 driver (`Touch_GT911.cpp`, in the
+M5GFX library the T5 S3 Pro build pulls in) discards the frame and re-reads after
+a gap, on the stated grounds that the GT911 keeps the same frame until zero is
+written to `0x814E`. Measured on the X4 Pro 2026-09-14 and it is worse than that
+wording suggests: in `noclear` mode the status byte sat on **one** frame for
+**7.99 s of a 8.00 s capture** -- 1,599 of 1,601 samples -- while the key was
+tapped over and over, and **not one of those taps reached the register**. The
+frame is not merely stale. It is a lock, and everything that happens behind it is
+discarded.
 
 `[measured]` On the T5 S3 Pro a single loop iteration blocks for **seconds**
 during a map render, and a windowed panel refresh alone costs ~1,081 ms
@@ -112,6 +125,85 @@ pending single tap expire into a Select, and leaves the latched hold to fire
 later) and more tap events than gestures. **Whether the extra events are contact
 bounce or stale frames is open**, and it decides the fix: bounce wants a minimum
 press width, stale frames want the frame discarded. Nobody has logged the events.
+
+## What the controller and the loop actually do, X4 Pro, 2026-09-14
+
+`[measured]` All of this is `CMD:TOUCHLOG` and `CMD:LOOPGAP` on one X4 Pro,
+serial `b8:1f:3f:d4:89:bc`, sampling at 5 ms. Every capture quoted below carries
+zero dropped rows; a lossy one is named as lossy and nothing is concluded from
+it.
+
+### The controller
+
+| what | what it sends |
+|---|---|
+| nothing touching | no frames at all. Longest observed silence 880 ms, status `0x00`, INT high |
+| a contact on the glass | a new frame every **10 ms**, median exactly 10,000 us over 146 intervals, and it does not stop while the finger rests |
+| **the capacitive home key, held** | **one frame at the press, then nothing** until the release |
+| any release | exactly **three** `0x80` frames about 10 ms apart, key and glass alike |
+
+`[measured]` **The key is a separate pad, not a screen region.** Its frames are
+`0x90` -- ready plus the key bit, contact count **zero**. Contacts near the bottom
+edge of the glass report `y` between 773 and 791 of 799 with no key bit, so the
+pad sits below the digitizer and is easy to miss: two captures made while the
+maintainer believed a finger was on the key contain contacts and no key bit at
+all.
+
+`[measured]` **INT is exact.** Across two complete captures, every one of 868
+frames with bit 7 set had the INT line asserted, and no frame with bit 7 set ever
+appeared with INT high. While a frame is pending and unacknowledged, INT stays
+asserted with a single 5 ms release every 345 ms (28 of them in 8 s, unexplained).
+
+### The loop
+
+`[measured]` `CMD:LOOPGAP` records the interval between successive
+`gpio.update()` calls -- the sampler, not `loop()`.
+
+| screen | typical gap | worst single gap |
+|---|---|---|
+| Home, idle | ~15 ms (265 of 284 in the 10-20 ms bucket) | 78 ms |
+| map, steady state | **~53 ms** (547 of 548 in the 50-100 ms bucket) | -- |
+| map, plain `redraw` | ~53 ms | **2.80 s** |
+| map, opening it (tiles + render + panel) | ~53 ms | **4.34 s** |
+
+The firmware's own log agrees on the last one: `New max loop duration: 4292 ms`,
+of which render 2,171 ms and panel wait 1,341 ms.
+
+### The mechanism, end to end
+
+Put the two together and the reported failure follows with nothing left over.
+
+1. The loop's last poll cleared `0x814E`, so the controller is free.
+2. The map render blocks the sampler for 2.8 to 4.3 s.
+3. The first edge in that window -- say the first tap's `0x90` -- latches.
+4. Its release, the second tap and *its* release all happen behind the lock and
+   are **discarded**.
+5. The loop returns, reads `0x90`, clears. The controller then latches whatever
+   is true now, a finger-off `0x80`.
+6. The firmware saw a press and a release. **One tap.**
+
+So a double tap made during a render does not arrive late and does not arrive
+twice: it **collapses to a single tap**, and which edge survives depends on where
+the window boundary fell, which is why it takes many attempts.
+
+`[measured]` **It is marginal even when nothing is rendering.** The map's steady
+sampler gap is 53 ms and the key's press-to-release is 55-90 ms. The margin is
+one or two tens of milliseconds, so the key is unreliable on the map screen
+whether or not a refresh is in flight. Home, at 15 ms, has four times the margin
+and that is where the gesture is reported to work.
+
+### What this rules out
+
+**Not clearing the status and draining later is dead.** It is the obvious
+workaround and the measurement kills it: an unacknowledged frame stops the
+controller reporting anything at all, so the device would go from losing a
+gesture to losing every gesture until something cleared the register.
+
+That leaves one class of fix, and it is the one the redesign already proposes:
+**read promptly**, from a task or from the INT line, so no window of that width
+ever exists. Every implementation surveyed in "How other systems do it" does
+exactly that, and mainline Linux drives this same chip from the interrupt that is
+wired to GPIO10 on this board and read by nothing.
 
 ## What is in place today, and why it is a patch
 
@@ -309,32 +401,106 @@ unless marked otherwise.
 10. **Only touch point 1 is decoded**, so a second contact makes the reported
     point jump past the slop and a release can decode as a swipe. `[inferred]`
 
+## The instrument: `CMD:TOUCHLOG`
+
+`[read]` Built 2026-09-14 for step 1 of T-266. Every open question below is a
+question about **when a byte changes**, and nothing in this firmware could see
+that: what gets recorded today is the recogniser's opinion after the fact, and
+that opinion is stamped when the loop got round to reading it.
+
+`src/DebugTouchLog.h` has the reasoning; the shape in one place:
+
+```
+CMD:TOUCHLOG                     3000 ms at 5 ms, clearing after each ready frame
+CMD:TOUCHLOG 6000 5000 noclear   6 s at 5 ms, never acknowledging a frame
+```
+
+Per sample it records `micros()` at the read, the status byte at `0x814E`
+(bit 7 buffer-ready, bit 4 the capacitive home key, bits 3..0 the contact
+count), and **the level on the GT911's INT line**, which mainline Linux treats
+as the event and this firmware does not read at all. Output is run-length
+encoded on the (status, INT) pair, so a state that holds shows as one line with
+a repeat count rather than as 600 identical lines.
+
+Three deliberate choices, each of which is the answer to a question the log
+would otherwise beg:
+
+- **The capture blocks `loop()` and never calls `gpio.update()`.** The failure
+  only happens while the loop is blocked, so an instrument that keeps polling
+  measures a state the bug does not live in.
+- **`clear` versus `noclear` is open question 2 made runnable.** `clear` writes
+  0 back to `0x814E` after every ready frame, the way `goodix_ts_irq_handler()`
+  does; `noclear` never writes, so a frame left unacknowledged stays visible for
+  as long as the controller holds it.
+- **A failed read is recorded as `0xFF`, not dropped.** A silent gap in a log
+  reads as a quiet controller, and telling those two apart is half the point.
+
+This is the ordinary instrument rather than an invention: Linux has `evtest`,
+Android has `getevent`, and both print raw timestamped events before any gesture
+layer interprets them. Neither reaches here, because both sit above a driver we
+do not have -- this is the same idea pushed down to the one register that driver
+would read.
+
+Devel builds only, gated on its own `ENABLE_TOUCHLOG_CMD`, set on `x4pro` and
+`t5s3pro` (the two boards with a GT911) and on no release env. Serial only,
+never on the BLE grammar: the reply says nothing about the rider, but a command
+that freezes the screen for eight seconds is a denial of service for whoever
+picks up a lost device, and BLE advertises with no pairing and no bonding.
+
+### `CMD:LOOPGAP`, the other half
+
+The capture says what the controller does; `CMD:LOOPGAP` says whether anyone is
+listening. It records the interval between successive `gpio.update()` calls --
+the sampler itself, hooked at the six call sites in `loop()` rather than in
+`HalGPIO::update()`, because `lib/hal` cannot include `src/` and the simulator
+replaces that directory wholesale. Kept as a histogram plus the ten worst gaps,
+since the interesting number is the tail: a render is rare against thousands of
+fast iterations.
+
+**It resets on read**, so a render can be isolated -- read, do the thing, read
+again.
+
+A first attempt hooked `MappedInputManager::update()` and reported zero samples
+forever: in this firmware only two activities call it, and `loop()` calls
+`gpio.update()` directly.
+
+Both commands are gated on the same `ENABLE_TOUCHLOG_CMD`.
+
+**Results are in "What the controller and the loop actually do".**
+
 ## Open, with the measurement that settles each
 
-1. **Does the GT911 raise the buffer-ready flag periodically while a finger sits
-   motionless, or only on change?** The SDK comment asserts "only on change" with
-   no source; M5GFX's retry-after-clear implies a fresh frame does arrive while
-   touched. Hold the key three seconds and log `0x814E` every 5 ms, once clearing
-   after each read and once not. Goodix's *GT911 Programming Guide* register
-   table (`0x8056` refresh rate, `0x814E` status, `0x8093` key value) and the INT
-   description in the datasheet are the paper sources. **The whole L1 policy
-   depends on this.**
-2. **Does an uncleared frame hold or get overwritten on this panel?** Block the
-   loop two seconds, tap during it, dump the first status after. Decides whether a
-   straddling tap appears as a stale down or vanishes.
-3. **Are the extra tap events bounce or stale frames?** Only a timestamped edge
-   log answers it. Decides `minPressMs`.
-4. **Who holds the T5 S3 Pro's I2C mutex during a panel refresh?** If the panel
-   driver holds it for the whole refresh, a poll task stalls with it and the
-   design degrades to cancel-after-gap; the GT911 would then need its own bus or
-   an interrupt-driven read. `[read]` **The interrupt is available**: the INT
-   line is in the board profile on both boards and confirmed on hardware for the
-   X4 Pro (`BoardConfig.h`, *"CONFIRMED ON HARDWARE: INT=GPIO10, RST=GPIO4"*;
-   T5 S3 Pro names `INT3`), and nothing in the SDK attaches to it. Mainline
-   Linux drives this same chip that way -- see "How other systems do it". So the
-   fallback in this question is a design choice, not a hardware limit.
-5. **The natural double-tap interval on this key**, with true timestamps. Sets the
-   window; today's 500 ms is a guess on top of poll latency.
+**Three of the five are answered.** 2026-09-14, X4 Pro, `CMD:TOUCHLOG` and
+`CMD:LOOPGAP`; the numbers are in "What the controller and the loop actually do".
+
+1. ~~Does the GT911 raise the buffer-ready flag periodically while a finger sits
+   motionless, or only on change?~~ **Answered, and it is both.** A held
+   *contact* produces a frame every 10 ms; a held *key* produces none at all.
+   The SDK comment was right about the key and wrong about the glass, and the L1
+   policy has to treat them as two sources rather than one.
+2. ~~Does an uncleared frame hold or get overwritten on this panel?~~
+   **Answered: it holds, and it blocks.** One frame sat in `0x814E` for 7.99 s
+   while the key was tapped repeatedly and nothing else got through. A straddling
+   tap does not appear as a stale down and does not vanish -- it becomes the
+   *only* thing the controller will report until someone clears the register.
+   This kills the drain-it-later workaround outright.
+3. ~~Are the extra tap events bounce or stale frames?~~ **Answered as far as the
+   key is concerned: neither.** A press is exactly one frame and a release is
+   exactly three, every time, on the glass and on the key alike -- that burst is
+   what this controller does, not contact bounce, so `minPressMs` buys nothing
+   here. The 2026-09-05 "three gestures from one double tap" is explained by the
+   latch plus the stale `touchHomeKeyDown`, with no bounce needed.
+4. **Who holds the T5 S3 Pro's I2C mutex during a panel refresh?** Still open,
+   and still decides whether a poll task is enough or the read has to be
+   interrupt-driven. What is no longer open is whether the interrupt is
+   available: the INT line is in the board profile on both boards, confirmed on
+   hardware for the X4 Pro (`BoardConfig.h`, *"CONFIRMED ON HARDWARE: INT=GPIO10,
+   RST=GPIO4"*), nothing in the SDK attaches to it, and every frame with bit 7
+   set was seen with it asserted -- 868 for 868, no exceptions.
+5. **The natural double-tap interval on this key**, with true timestamps. Partly
+   filled in: free tapping gave key-press intervals of 885, 980, 595, 570, 240
+   and 385 ms, and press-to-release is 55-90 ms. A *deliberate* double tap has
+   still not been captured, and that is the number the window should be set from.
 
 ## Load-bearing behaviour a redesign must not break
 
