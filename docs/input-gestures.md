@@ -581,6 +581,39 @@ assumption turned out to be right. 2026-09-14, X4 Pro, `CMD:TOUCHLOG` and
    and 385 ms, and press-to-release is 60-90 ms over seven presses. A *deliberate* double tap has
    still not been captured, and that is the number the window should be set from.
 
+## Considered and rejected: a double tap on the glass
+
+**Decided 2026-09-14.** Written down because it is cheap to propose and expensive
+to re-cost, and the next person to want it should start from the number rather
+than from the idea.
+
+A double tap on the glass cannot exist unless **every single tap waits** to find
+out whether a second one is coming. Otherwise the first tap of a double tap also
+fires as a single tap. That is the same trade the T5 S3 Pro's home key already
+pays, and this file says so under "Whether the capacitive home key carries a
+double tap" -- but on the glass it is not one key, it is the whole screen.
+
+The cost, counted: **29 call sites** consume `wasScreenTapped()` or
+`wasScreenTouchDown()` across the activities, and the **hint boxes** go through
+`gpio.wasTouchTap()` in `MappedInputManager::pumpHintTouch()`. The hint boxes
+stand in for hardware buttons, so making them wait would put a delay on what the
+rider reads as a physical key. At Android's 300 ms that is 300 ms added to every
+tap on the device.
+
+Not worth it for a gesture nothing currently needs.
+
+**What stays true anyway.** The recogniser is parameterised
+`{longMs, doubleWindowMs, minInterTapMs}` and `doubleWindowMs = 0` means "fire
+the tap on release, immediately", which is what the glass gets and what boards
+without a key double tap already need. So the capability is one parameter away.
+If a real use ever turns up, the work is not implementing it -- it is deciding
+where the latency is acceptable, and that decision is the whole cost.
+
+**What upstream thinks is unknown.** Neither `freeink-sdk` nor CrossPoint
+implements a glass double tap. The latency argument above is ours, measured
+against our own call sites; **no statement from either project has been read
+saying they considered it**. Do not repeat this section as "upstream rejected it".
+
 ## Load-bearing behaviour a redesign must not break
 
 - The ADC-ladder debounce, and the boot-time trick that absorbs a held button as
