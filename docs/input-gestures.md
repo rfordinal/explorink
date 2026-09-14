@@ -69,7 +69,7 @@ gated timer would never cross `HOME_KEY_LONG_PRESS_MS`
 
 `[measured]` 2026-09-14, X4 Pro. **That claim is true for the key and false for a
 contact**, and the split matters. A held key produces **no frame at all** -- seven
-presses, one `0x90` frame each, then silence for the whole 55-90 ms hold. A held
+presses, one `0x90` frame each, then silence for the whole 60-90 ms hold. A held
 contact produces a new frame **every 10 ms** without pause. So the hold timer
 above the gate is not caution, it is the only way the key's hold can be timed;
 and any design that assumes "held means frames keep coming" is right about the
@@ -133,13 +133,17 @@ serial `b8:1f:3f:d4:89:bc`, sampling at 5 ms. Every capture quoted below carries
 zero dropped rows; a lossy one is named as lossy and nothing is concluded from
 it.
 
+**The raw files are kept**, with a verdict per capture, in
+[`measurements/2026-09-14-gt911-x4pro/`](measurements/2026-09-14-gt911-x4pro/).
+Prose that quotes a number nobody can re-derive is folklore with a citation.
+
 ### The controller
 
 | what | what it sends |
 |---|---|
 | nothing touching | no frames at all. Longest observed silence 880 ms, status `0x00`, INT high |
 | a contact on the glass | a new frame every **10 ms**, median exactly 10,000 us over 146 intervals, and it does not stop while the finger rests |
-| **the capacitive home key, held** | **one frame at the press, then nothing** until the release |
+| **the capacitive home key, held** | **one frame at the press, then nothing** until the release. Press to first release frame: 60, 65, 65, 65, 75, 85, 90 ms over seven presses |
 | any release | exactly **three** `0x80` frames about 10 ms apart, key and glass alike |
 
 `[measured]` **The key is a separate pad, not a screen region.** Its frames are
@@ -149,10 +153,16 @@ pad sits below the digitizer and is easy to miss: two captures made while the
 maintainer believed a finger was on the key contain contacts and no key bit at
 all.
 
-`[measured]` **INT is exact.** Across two complete captures, every one of 868
-frames with bit 7 set had the INT line asserted, and no frame with bit 7 set ever
-appeared with INT high. While a frame is pending and unacknowledged, INT stays
-asserted with a single 5 ms release every 345 ms (28 of them in 8 s, unexplained).
+`[measured]` **INT is reliable per frame.** Across the two complete captures --
+`cap5` and `cap9`, **384 frames** with bit 7 set -- not one appeared with INT
+high. It is not exact per *sample*: INT also stays asserted between the frames of
+a release burst and while a frame is pending, so 415 samples show INT low with no
+ready bit. While a frame is pending and unacknowledged, INT holds low with a
+single 5 ms release every 345 ms (28 of them in 8 s, unexplained).
+
+**Corrected 2026-09-14, same day.** This first said "every one of 868 frames",
+which counted `cap7` -- a capture this file's own rule marks lossy and forbids
+concluding from. 384 is the honest number.
 
 ### The loop
 
@@ -169,28 +179,59 @@ asserted with a single 5 ms release every 345 ms (28 of them in 8 s, unexplained
 The firmware's own log agrees on the last one: `New max loop duration: 4292 ms`,
 of which render 2,171 ms and panel wait 1,341 ms.
 
-### The mechanism, end to end
+### The mechanism, end to end, and where it stops being measured
 
-Put the two together and the reported failure follows with nothing left over.
+**Corrected 2026-09-14, same day, after the first version claimed more than the
+data carries.** Steps 1-4 are measured. Step 5 was an assumption stated as fact,
+and it is the step that decides the outcome.
 
-1. The loop's last poll cleared `0x814E`, so the controller is free.
-2. The map render blocks the sampler for 2.8 to 4.3 s.
-3. The first edge in that window -- say the first tap's `0x90` -- latches.
-4. Its release, the second tap and *its* release all happen behind the lock and
-   are **discarded**.
-5. The loop returns, reads `0x90`, clears. The controller then latches whatever
-   is true now, a finger-off `0x80`.
-6. The firmware saw a press and a release. **One tap.**
+1. `[measured]` The loop's last poll cleared `0x814E`, so the controller is free.
+2. `[measured]` The map render blocks the sampler for 2.8 to 4.3 s.
+3. `[inferred]` The first edge in that window -- say the first tap's `0x90` --
+   latches. `cap10` shows a frame latching and blocking; the frame it caught was
+   a contactless `0x80` that arrived before any tap, so **no capture yet shows a
+   gesture's own edge being the one that sticks**.
+4. `[measured]` Everything behind the lock -- the release, the second tap, its
+   release -- is **destroyed**. This is the hard finding: 7.99 s of an 8.00 s
+   capture on one frame with repeated taps reaching nothing.
+5. `[open]` The loop returns, reads the surviving frame and clears it. **Does the
+   controller then emit a fresh frame reflecting the current state?** Nobody has
+   measured it, and the answer decides everything after it.
 
-So a double tap made during a render does not arrive late and does not arrive
-twice: it **collapses to a single tap**, and which edge survives depends on where
-the window boundary fell, which is why it takes many attempts.
+So the honest statement is: **a gesture made during a render is destroyed**, and
+what the firmware makes of the one surviving frame is one of three things.
 
-`[measured]` **It is marginal even when nothing is rendering.** The map's steady
-sampler gap is 53 ms and the key's press-to-release is 55-90 ms. The margin is
-one or two tens of milliseconds, so the key is unreliable on the map screen
-whether or not a refresh is in flight. Home, at 15 ms, has four times the margin
-and that is where the gesture is reported to work.
+| if the controller re-reports after a late clear | outcome |
+|---|---|
+| yes | press edge then release edge: **one tap** |
+| no | press edge with no release: `touchHomeKeyDown` stays latched and the hold timer above the gate fires **a phantom long press** 700 ms later |
+| the latch was already occupied by a stale frame | the gesture reaches nothing at all: **zero taps** |
+
+The middle row is not hypothetical. The 2026-09-05 incident recorded further up
+this file -- a double tap that locked the panel, opened the map and then lit the
+frontlight once the render finished -- is exactly what "no re-report" predicts.
+
+**The experiment that settles it:** leave a frame unacknowledged for a known
+interval, clear it, and keep reading to see whether a new frame follows. That is
+a mode the instrument does not have yet.
+
+`[measured]` **At rest the key is safe, and the margin is 3 ms.** An earlier
+version of this section said the key was unreliable on the map screen with or
+without a refresh, comparing a 53 ms sampler against a 60-90 ms press. That
+comparison is the wrong one and the conclusion was wrong: **a latching controller
+cannot lose a press edge**, however slowly it is polled, because the frame waits
+in the register.
+
+What can be lost is the **release**, and only when no poll happens between the
+press frame and the release: the release is then generated while the press still
+occupies the latch, and is discarded. So the criterion is *sampler gap versus
+press duration*, not versus anything else. Measured: the map's steady gap tops out
+at **56.99 ms** (`measurements/2026-09-14-gt911-x4pro/loopgap-map-open.txt`, the
+worst-ten list) against a shortest observed press of **60 ms**. It holds, by
+about 3 ms. A slower loop, or a shorter press, breaks it -- and the failure is
+not a lost tap but a **phantom long press**, because a missed release leaves
+`touchHomeKeyDown` latched and the wall-clock hold timer above the gate fires
+`HOME_KEY_LONG_PRESS_MS` later.
 
 ### What this rules out
 
@@ -470,7 +511,8 @@ Both commands are gated on the same `ENABLE_TOUCHLOG_CMD`.
 
 ## Open, with the measurement that settles each
 
-**Three of the five are answered.** 2026-09-14, X4 Pro, `CMD:TOUCHLOG` and
+**Three of the six are answered**, and question 5 is new -- it was opened by
+noticing that the mechanism above rested on an assumption. 2026-09-14, X4 Pro, `CMD:TOUCHLOG` and
 `CMD:LOOPGAP`; the numbers are in "What the controller and the loop actually do".
 
 1. ~~Does the GT911 raise the buffer-ready flag periodically while a finger sits
@@ -496,10 +538,17 @@ Both commands are gated on the same `ENABLE_TOUCHLOG_CMD`.
    available: the INT line is in the board profile on both boards, confirmed on
    hardware for the X4 Pro (`BoardConfig.h`, *"CONFIRMED ON HARDWARE: INT=GPIO10,
    RST=GPIO4"*), nothing in the SDK attaches to it, and every frame with bit 7
-   set was seen with it asserted -- 868 for 868, no exceptions.
-5. **The natural double-tap interval on this key**, with true timestamps. Partly
+   set was seen with it asserted -- 384 for 384 across the two complete
+   captures, no exceptions.
+5. **Does the controller re-report after a late acknowledgment?** Opened
+   2026-09-14 and it is now the one that matters most: it decides whether a
+   gesture made during a render becomes one tap, a phantom 700 ms long press, or
+   nothing (see "The mechanism, end to end"). **Measurement:** leave a frame
+   unacknowledged for a known interval, clear it, keep reading, and see whether a
+   frame follows. The instrument needs a delayed-clear mode for it.
+6. **The natural double-tap interval on this key**, with true timestamps. Partly
    filled in: free tapping gave key-press intervals of 885, 980, 595, 570, 240
-   and 385 ms, and press-to-release is 55-90 ms. A *deliberate* double tap has
+   and 385 ms, and press-to-release is 60-90 ms over seven presses. A *deliberate* double tap has
    still not been captured, and that is the number the window should be set from.
 
 ## Load-bearing behaviour a redesign must not break

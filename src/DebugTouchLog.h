@@ -32,8 +32,8 @@
 //     treats as the event and this firmware does not read at all
 //   - the first contact's raw coordinates, or -1 when the frame had none. Added
 //     after the first captures: the status byte cannot tell a finger on the
-//     capacitive home key from a finger on the glass, and on the X4 Pro a held
-//     key reports as an ordinary contact with the key bit clear
+//     capacitive home key from a finger on the glass, and a finger believed to
+//     be on the pad often lands on the glass beside it instead
 //
 // Two modes, and the difference between them is open question 2:
 //

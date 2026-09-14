@@ -32,9 +32,16 @@ struct __attribute__((packed)) Sample {
   uint8_t intLevel;
   // First contact's coordinates, 0xFFFF when the frame reported none. Added
   // 2026-09-14: the status byte alone cannot tell a finger on the capacitive
-  // home key from a finger on the glass, and on the X4 Pro a held key reports
-  // as an ordinary contact with the key bit clear -- so without the position
-  // there is no way to say which one a capture is looking at.
+  // home key from a finger on the glass, and a finger believed to be on the key
+  // often reports as an ordinary glass contact instead -- the pad is small and
+  // easy to miss. Without the position there is no way to say which one a
+  // capture is looking at.
+  //
+  // Corrected the same day: this said "a held key reports as an ordinary
+  // contact with the key bit clear", which the captures refute -- a held key
+  // reports NOTHING (docs/measurements/2026-09-14-gt911-x4pro, cap8: eight
+  // seconds of hold, not one frame). The contacts came from a finger on the
+  // glass beside the pad.
   uint16_t x;
   uint16_t y;
 };
