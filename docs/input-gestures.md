@@ -1,7 +1,9 @@
 # Input: how a tap, a double tap and a hold are recognised
 
 Written 2026-09-06 after three sessions in a row produced gesture bugs on the
-LilyGo T5 S3 Pro's capacitive home key. It is a **design analysis, not a
+LilyGo T5 S3 Pro's capacitive home key. **Confirmed on the X4 Pro 2026-09-14**,
+so it is not one board's problem; the same pass added "How other systems do it",
+which reads five foreign implementations against the design proposed here. It is a **design analysis, not a
 description of a finished system**: the layering described under "What is wrong"
 is what the code does today, and the layering under "The proposed shape" is not
 built. Every claim carries how it is known.
@@ -91,6 +93,20 @@ map had finished rendering. Three gestures from one.
 `[measured]` A deliberate double tap regularly read as two separate single taps
 against a 300 ms window.
 
+`[measured]` 2026-09-14, maintainer, on the **X4 Pro**: a double tap made while
+the map is rendering is regularly read as a single tap, and has to be repeated
+many times before it takes. The same double tap on a static screen -- Home,
+Settings, anywhere the loop is not blocked -- lands first time. That moves the
+fault off one board. It was measured on the T5 S3 Pro first, and the X4 Pro is
+the reference device.
+
+`[read]` Two ways a blocked loop eats that tap, and the report matches both.
+Either the gap between polls is longer than `HOME_KEY_DOUBLE_TAP_WINDOW_MS`, so
+the first tap has already expired into a Select before the second one is read;
+or both edges of one tap fall inside a single gap, and the GT911 reports only
+the state at the next read, so that tap never existed. Neither needs a second
+mechanism to explain the symptom.
+
 `[inferred]` The explanation is a mixture of a missed release edge (which lets a
 pending single tap expire into a Select, and leaves the latched hold to fire
 later) and more tap events than gestures. **Whether the extra events are contact
@@ -105,6 +121,121 @@ while no tap has been made of the current press. It works against the symptoms
 and it is the wrong shape: it filters a noisy stream instead of making the stream
 trustworthy, and its window measures *poll latency* rather than finger timing,
 because the events it times are stamped when they are read.
+
+## How other systems do it
+
+`[read]` 2026-09-14, five implementations, each opened in its own source. Short
+version: **the shape proposed below is the ordinary one, and today's code is the
+unusual part.** Foreign files are cited at the commit that last touched them,
+because a line number in an unpinned repo rots.
+
+### Android
+
+`GestureDetector.java` (`aosp-mirror/platform_frameworks_base`, `2091e8f3e2f2`),
+`isConsideredDoubleTap()` decides from the **event timestamps**, not from when
+the app read them:
+
+```java
+final long deltaTime = secondDown.getEventTime() - firstUp.getEventTime();
+if (deltaTime > DOUBLE_TAP_TIMEOUT || deltaTime < DOUBLE_TAP_MIN_TIME) return false;
+```
+
+`ViewConfiguration.java` (`8b948e548b78`) holds the numbers: `TAP_TIMEOUT = 100`,
+`DOUBLE_TAP_TIMEOUT = 300`, `DOUBLE_TAP_MIN_TIME = 40`, `TOUCH_SLOP = 8`,
+`DOUBLE_TAP_SLOP = 100`. `onTouchEvent()` handles `ACTION_CANCEL`.
+
+Two things follow for this file.
+
+- **The 500 ms window here is not evidence that fingers are slow.** 300 ms is the
+  number when the interval is measured at the sample. Ours measures poll latency
+  instead. Stamping the sample puts 300 ms back in play.
+- **`DOUBLE_TAP_MIN_TIME = 40` is what open question 3 is asking for**, and it is
+  a lower bound on the interval rather than a refractory period after a resolved
+  gesture. A lower bound drops a bounce and keeps a fast third tap.
+  `HOME_KEY_REFRACTORY_MS` drops both.
+
+### The web platform
+
+W3C Pointer Events Level 3, section 4.2.7, "The pointercancel event": the user
+agent MUST fire `pointercancel` when it detects a scenario to suppress a pointer
+event stream. A standard event type whose only job is "this stream can no longer
+be trusted, do not make a gesture of it". The `Cancel` edge below is that idea.
+
+### Linux, on this exact chip
+
+Mainline `drivers/input/touchscreen/goodix.c` (`torvalds/linux`, `5ed62a96e06b`)
+is interrupt driven: `devm_request_threaded_irq()` with `IRQF_ONESHOT`, and
+`goodix_ts_irq_handler()` reads the report then writes 0 back to the coord
+register to clear it.
+
+It gates on the same bit this firmware does -- `GOODIX_BUFFER_STATUS_READY`,
+which is `BIT(7)`, our `status & 0x80` -- but there the bit is a **validity check
+after an interrupt**, never the event itself. The comment in
+`goodix_ts_read_input_report()` says why:
+
+> The 'buffer status' bit, which indicates that the data is valid, is not set as
+> soon as the interrupt is raised, but slightly after. This takes around 10 ms to
+> happen, so we poll for 20 ms.
+
+**The INT line is wired on our boards and nothing uses it.** SDK `BoardConfig.h`,
+X4 Pro profile: *"CONFIRMED ON HARDWARE: INT=GPIO10, RST=GPIO4"*. The T5 S3 Pro
+profile names `INT3`. The only `attachInterrupt` in the whole SDK is the EPD busy
+line, in `FreeInkDisplay/src/bus/EpdBus.cpp`.
+
+### Espressif, twice, and both are the three-layer shape
+
+ESP-IDF `components/touch_element`, read from the pinned `5.5.2.260206` on disk.
+An ISR pushes into `intr_msg_queue` with `xQueueSendFromISR`; a periodic
+`esp_timer` turns that into Press / Release / LongPress; the app drains a second
+queue, `event_msg_queue`. Two queues, and the recogniser never runs in the app's
+loop.
+
+`esp-iot-solution` `components/button/iot_button.c` (`69fbec42dcae`) is the usual
+answer to double click on an ESP32. One `esp_timer` at
+`CONFIG_BUTTON_PERIOD_TIME_MS` (default 5 ms) drives a state machine per button,
+counted in ticks of that period rather than in `millis()`. Its `Kconfig`
+defaults: debounce 2 ticks, short press 180 ms, long press 1500 ms.
+`BUTTON_DOUBLE_CLICK` and `BUTTON_MULTIPLE_CLICK` are counted in `button_handler()`.
+
+This one also answers the upstream question: a layer built the way Espressif's
+own components are built is easier to argue in a `freeink-sdk` PR than something
+invented here.
+
+### LVGL, the one that also polls
+
+LVGL polls and still keeps the timing. `lv_indev.c` (`lvgl/lvgl`, `991e067db3af`),
+in `indev_read_core()`, lets the driver stamp its own sample and only falls back
+to read time when it did not:
+
+```c
+/*Set the time stamp to the current time is it was not set in the read_cb*/
+if(data->timestamp == 0) data->timestamp = lv_tick_get();
+```
+
+Long press is then `lv_tick_diff(i->timestamp, i->pr_timestamp)` -- against the
+sample's stamp, not the current tick. Reading runs on its own `lv_timer` created
+in `lv_indev_create()`, not on the app's frame loop. `LV_EVENT_PRESS_LOST` is its
+cancel.
+
+### Three rules all five share
+
+1. The sampler and the recogniser run off the thread that draws.
+2. Gesture timing is measured from when the sample was taken.
+3. There is a way to say "do not make a gesture of this stream".
+
+`pumpHomeKey()` does none of the three. The proposed shape below is a return to
+the ordinary one, not a rewrite for elegance.
+
+### What is ours, and not borrowed
+
+**Rejecting a frame read after a sampling gap, and emitting `Cancel` for a key
+seen down before the gap and up after it, appears in none of the five.** None of
+them needs it: their sampler never stalls. Ours stalls for seconds during a map
+render. The rule stands on that ground alone, and it gets labelled as ours rather
+than as prior art.
+
+None of this section is measured on our hardware. It is five foreign sources
+read.
 
 ## The proposed shape
 
@@ -196,7 +327,12 @@ unless marked otherwise.
 4. **Who holds the T5 S3 Pro's I2C mutex during a panel refresh?** If the panel
    driver holds it for the whole refresh, a poll task stalls with it and the
    design degrades to cancel-after-gap; the GT911 would then need its own bus or
-   an interrupt-driven read.
+   an interrupt-driven read. `[read]` **The interrupt is available**: the INT
+   line is in the board profile on both boards and confirmed on hardware for the
+   X4 Pro (`BoardConfig.h`, *"CONFIRMED ON HARDWARE: INT=GPIO10, RST=GPIO4"*;
+   T5 S3 Pro names `INT3`), and nothing in the SDK attaches to it. Mainline
+   Linux drives this same chip that way -- see "How other systems do it". So the
+   fallback in this question is a design choice, not a hardware limit.
 5. **The natural double-tap interval on this key**, with true timestamps. Sets the
    window; today's 500 ms is a guess on top of poll latency.
 
