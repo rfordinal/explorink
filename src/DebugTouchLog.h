@@ -30,6 +30,10 @@
 //     key, bits 3..0 the contact count
 //   - the level on the GT911's INT line, which mainline Linux's `goodix.c`
 //     treats as the event and this firmware does not read at all
+//   - the first contact's raw coordinates, or -1 when the frame had none. Added
+//     after the first captures: the status byte cannot tell a finger on the
+//     capacitive home key from a finger on the glass, and on the X4 Pro a held
+//     key reports as an ordinary contact with the key bit clear
 //
 // Two modes, and the difference between them is open question 2:
 //
@@ -63,11 +67,41 @@ namespace DebugTouchLog {
 // Output is run-length encoded on the (status, INT) pair: one line per change
 // plus how many identical samples followed it, which keeps a six-second capture
 // to a few dozen lines while still answering "did the ready flag come back on
-// its own".
+// its own". Coordinates are the run's FIRST sample: the question they answer is
+// which zone a contact is in, and a run is one zone.
+//
+// Rows are written behind `availableForWrite()` rather than straight to printf.
+// Without that the dump loses lines -- measured, twice -- and a dropped block
+// reads as a silent controller. `TOUCHLOG_END` carries the row count so the host
+// can tell it lost some.
 //
 // Returns false when the controller could not be addressed at all; the caller
 // prints the error, this prints the data.
 bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, bool clearAfterRead);
+
+// How long the input sampler actually goes unread (`CMD:LOOPGAP`).
+//
+// The capture above says what the controller does; this says whether anyone is
+// listening. They are the two halves of the same question, because a GT911 holds
+// exactly one unacknowledged frame and discards everything after it (measured
+// 2026-09-14, `noclear`: the status sat on one frame for 7.99 s while the key was
+// tapped repeatedly, and not one of those taps reached the register). So the gap
+// between two `gpio.update()` calls is the width of the window in which a whole
+// gesture collapses into one edge.
+//
+// `noteUpdate()` is called from `MappedInputManager::update()`, which is the
+// exact call whose spacing decides it -- not `loop()`, which can iterate without
+// sampling. Cost is one micros() read and one branch.
+//
+// Kept as a histogram plus the ten worst gaps rather than a trace: the interesting
+// number is the tail, a map render is rare against thousands of fast iterations,
+// and a trace of every gap would need the same flow control the capture needed.
+void noteUpdate();
+
+// Print the histogram and the worst gaps, then start over. Resetting on read is
+// deliberate: a measurement is "since I last asked", so a render can be isolated
+// by reading, doing the thing, and reading again.
+void reportGaps(Print& out);
 
 #endif  // ENABLE_TOUCHLOG_CMD
 
