@@ -52,6 +52,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DebugInput.h"
+#include "DebugTouchLog.h"
 #include "GnssAccess.h"
 #include "GnssFakeSky.h"
 #include "GnssLog.h"
@@ -1745,6 +1746,48 @@ void loop() {
           logSerial.printf("BUTTON_OK:%s:%ld\n", DebugInput::kButtonNames[button], holdMs);
         }
 #endif  // ENABLE_BUTTON_CMD
+#ifdef ENABLE_TOUCHLOG_CMD
+      } else if (cmd == "TOUCHLOG" || cmd.startsWith("TOUCHLOG ")) {
+        // Raw GT911 status register, timestamped, with the loop deliberately
+        // blocked for the whole capture. The five open questions in
+        // firmware/explorink docs/input-gestures.md are all questions about when
+        // a byte changes, and nothing else in this firmware can see that --
+        // src/DebugTouchLog.h has the reasoning and the two modes.
+        //
+        //   CMD:TOUCHLOG                      ->  3000 ms at 5 ms, clearing
+        //   CMD:TOUCHLOG 6000 5000 noclear    ->  6 s at 5 ms, never clearing
+        long durationMs = 3000;
+        long intervalUs = 5000;
+        bool clearAfterRead = true;
+        String rest = cmd.length() > 8 ? cmd.substring(9) : String("");
+        rest.trim();
+        if (rest.length() > 0) {
+          const int firstGap = rest.indexOf(' ');
+          durationMs = (firstGap < 0 ? rest : rest.substring(0, firstGap)).toInt();
+          if (firstGap >= 0) {
+            String tail = rest.substring(firstGap + 1);
+            tail.trim();
+            const int secondGap = tail.indexOf(' ');
+            const String intervalToken = secondGap < 0 ? tail : tail.substring(0, secondGap);
+            if (intervalToken == "clear" || intervalToken == "noclear") {
+              clearAfterRead = intervalToken == "clear";
+            } else {
+              intervalUs = intervalToken.toInt();
+              if (secondGap >= 0) {
+                String mode = tail.substring(secondGap + 1);
+                mode.trim();
+                clearAfterRead = mode != "noclear";
+              }
+            }
+          }
+        }
+        if (durationMs <= 0 || intervalUs <= 0) {
+          logSerial.printf("TOUCHLOG_ERR:args:<ms> <us> clear|noclear\n");
+        } else {
+          DebugTouchLog::capture(logSerial, static_cast<uint32_t>(durationMs), static_cast<uint32_t>(intervalUs),
+                                 clearAfterRead);
+        }
+#endif  // ENABLE_TOUCHLOG_CMD
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->

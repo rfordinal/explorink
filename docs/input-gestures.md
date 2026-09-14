@@ -309,6 +309,54 @@ unless marked otherwise.
 10. **Only touch point 1 is decoded**, so a second contact makes the reported
     point jump past the slop and a release can decode as a swipe. `[inferred]`
 
+## The instrument: `CMD:TOUCHLOG`
+
+`[read]` Built 2026-09-14 for step 1 of T-266. Every open question below is a
+question about **when a byte changes**, and nothing in this firmware could see
+that: what gets recorded today is the recogniser's opinion after the fact, and
+that opinion is stamped when the loop got round to reading it.
+
+`src/DebugTouchLog.h` has the reasoning; the shape in one place:
+
+```
+CMD:TOUCHLOG                     3000 ms at 5 ms, clearing after each ready frame
+CMD:TOUCHLOG 6000 5000 noclear   6 s at 5 ms, never acknowledging a frame
+```
+
+Per sample it records `micros()` at the read, the status byte at `0x814E`
+(bit 7 buffer-ready, bit 4 the capacitive home key, bits 3..0 the contact
+count), and **the level on the GT911's INT line**, which mainline Linux treats
+as the event and this firmware does not read at all. Output is run-length
+encoded on the (status, INT) pair, so a state that holds shows as one line with
+a repeat count rather than as 600 identical lines.
+
+Three deliberate choices, each of which is the answer to a question the log
+would otherwise beg:
+
+- **The capture blocks `loop()` and never calls `gpio.update()`.** The failure
+  only happens while the loop is blocked, so an instrument that keeps polling
+  measures a state the bug does not live in.
+- **`clear` versus `noclear` is open question 2 made runnable.** `clear` writes
+  0 back to `0x814E` after every ready frame, the way `goodix_ts_irq_handler()`
+  does; `noclear` never writes, so a frame left unacknowledged stays visible for
+  as long as the controller holds it.
+- **A failed read is recorded as `0xFF`, not dropped.** A silent gap in a log
+  reads as a quiet controller, and telling those two apart is half the point.
+
+This is the ordinary instrument rather than an invention: Linux has `evtest`,
+Android has `getevent`, and both print raw timestamped events before any gesture
+layer interprets them. Neither reaches here, because both sit above a driver we
+do not have -- this is the same idea pushed down to the one register that driver
+would read.
+
+Devel builds only, gated on its own `ENABLE_TOUCHLOG_CMD`, set on `x4pro` and
+`t5s3pro` (the two boards with a GT911) and on no release env. Serial only,
+never on the BLE grammar: the reply says nothing about the rider, but a command
+that freezes the screen for eight seconds is a denial of service for whoever
+picks up a lost device, and BLE advertises with no pairing and no bonding.
+
+**No results yet.** The command is written and built; nothing has been captured.
+
 ## Open, with the measurement that settles each
 
 1. **Does the GT911 raise the buffer-ready flag periodically while a finger sits
