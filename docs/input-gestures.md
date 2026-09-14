@@ -187,33 +187,40 @@ and it is the step that decides the outcome.
 
 1. `[measured]` The loop's last poll cleared `0x814E`, so the controller is free.
 2. `[measured]` The map render blocks the sampler for 2.8 to 4.3 s.
-3. `[inferred]` The first edge in that window -- say the first tap's `0x90` --
-   latches. `cap10` shows a frame latching and blocking; the frame it caught was
-   a contactless `0x80` that arrived before any tap, so **no capture yet shows a
-   gesture's own edge being the one that sticks**.
+3. `[measured]` The first edge in that window -- the first tap's `0x90` --
+   latches. `cap12` is that capture: the key-press frame sat in the register
+   unchanged for 402 samples, 2.01 s, with the finger long gone.
 4. `[measured]` Everything behind the lock -- the release, the second tap, its
    release -- is **destroyed**. This is the hard finding: 7.99 s of an 8.00 s
    capture on one frame with repeated taps reaching nothing.
-5. `[open]` The loop returns, reads the surviving frame and clears it. **Does the
-   controller then emit a fresh frame reflecting the current state?** Nobody has
-   measured it, and the answer decides everything after it.
+5. `[measured]` The loop returns, reads the surviving frame and clears it, and
+   **the controller emits a fresh frame reflecting the current state 10 ms
+   later** -- one frame period. `cap12`: cleared at 2,005,001 us, one sample of
+   `0x00`, then `0x80` from 2,015,001 us onward.
 
-So the honest statement is: **a gesture made during a render is destroyed**, and
-what the firmware makes of the one surviving frame is one of three things.
+So: **a gesture made during a render is destroyed down to one edge**, and that
+edge is then completed by the controller's re-report. The firmware sees a press
+and a release. **One tap** -- which is the reported bug.
 
-| if the controller re-reports after a late clear | outcome |
+**But the controller is not what decides the outcome. The gap after the resume
+is.** The press edge sets `touchHomeKeyDownAt` and the hold timer runs above the
+ready gate, so what happens next depends on when the next poll lands:
+
+| the poll after the resume | outcome |
 |---|---|
-| yes | press edge then release edge: **one tap** |
-| no | press edge with no release: `touchHomeKeyDown` stays latched and the hold timer above the gate fires **a phantom long press** 700 ms later |
-| the latch was already occupied by a stale frame | the gesture reaches nothing at all: **zero taps** |
+| within 700 ms -- the normal 15-53 ms case | the `0x80` is read as a release: **one tap** |
+| after 700 ms, because the loop went straight into another render | the hold fires first: **a phantom long press**, and `touchHomeKeyLongFired` then eats the real release |
 
-The middle row is not hypothetical. The 2026-09-05 incident recorded further up
-this file -- a double tap that locked the panel, opened the map and then lit the
-frontlight once the render finished -- is exactly what "no re-report" predicts.
+The second row is not hypothetical. The 2026-09-05 incident recorded further up
+this file -- a double tap that locked the panel, opened the map, and lit the
+frontlight *once the render had finished* -- is that row, with the 700 ms elapsed
+inside the second render.
 
-**The experiment that settles it:** leave a frame unacknowledged for a known
-interval, clear it, and keep reading to see whether a new frame follows. That is
-a mode the instrument does not have yet.
+**Corrected twice in one day, and worth keeping as a lesson.** The first version
+asserted step 5 as fact without measuring it. The second retracted it as unknown
+and offered three outcomes. The measurement then confirmed the original answer
+and showed that both remaining outcomes are real but selected by something else
+entirely -- the sampler gap after the resume, not the controller.
 
 `[measured]` **At rest the key is safe, and the margin is 3 ms.** An earlier
 version of this section said the key was unreliable on the map screen with or
@@ -505,14 +512,37 @@ A first attempt hooked `MappedInputManager::update()` and reported zero samples
 forever: in this firmware only two activities call it, and `loop()` calls
 `gpio.update()` directly.
 
+### `delay<N>`, and why the capture arms itself
+
+A third mode, added for open question 5: never acknowledge, until the frame has
+sat unacknowledged for N ms, then acknowledge **exactly once and never again**.
+What follows that single write is the whole measurement, so clearing a second
+time would destroy it. `TOUCHLOG_CLEARED:<us>` marks the instant.
+
+**And the capture waits for the finger, not the other way round.** The first
+three attempts came back empty because the operator was being asked to tap inside
+a window opened by a chat round trip, and that round trip is unpredictable -- 
+sometimes tens of seconds. Being told to time a 5 ms-resolution experiment by
+hand is not an instruction, it is a design defect. So a delay-mode capture arms
+first: it reads without clearing and without recording until a frame appears, up
+to 20 s, and only then starts the window and the delay clock. `TOUCHLOG_ARMED`
+reports how long it waited and whether it timed out, so an empty capture can
+never be mistaken for a quiet controller.
+
+The arm phase polls with `delay(2)` rather than the recording loop's busy-wait:
+20 s of spinning would starve the idle task and trip the watchdog, and cadence
+does not matter while nothing is being recorded. The wait is also, conveniently,
+the exact state under study -- a register left unacknowledged while nobody polls.
+
 Both commands are gated on the same `ENABLE_TOUCHLOG_CMD`.
 
 **Results are in "What the controller and the loop actually do".**
 
 ## Open, with the measurement that settles each
 
-**Three of the six are answered**, and question 5 is new -- it was opened by
-noticing that the mechanism above rested on an assumption. 2026-09-14, X4 Pro, `CMD:TOUCHLOG` and
+**Four of the six are answered.** Question 5 was opened and closed the same
+day: it existed because the mechanism above rested on an assumption, and the
+assumption turned out to be right. 2026-09-14, X4 Pro, `CMD:TOUCHLOG` and
 `CMD:LOOPGAP`; the numbers are in "What the controller and the loop actually do".
 
 1. ~~Does the GT911 raise the buffer-ready flag periodically while a finger sits
@@ -540,12 +570,12 @@ noticing that the mechanism above rested on an assumption. 2026-09-14, X4 Pro, `
    RST=GPIO4"*), nothing in the SDK attaches to it, and every frame with bit 7
    set was seen with it asserted -- 384 for 384 across the two complete
    captures, no exceptions.
-5. **Does the controller re-report after a late acknowledgment?** Opened
-   2026-09-14 and it is now the one that matters most: it decides whether a
-   gesture made during a render becomes one tap, a phantom 700 ms long press, or
-   nothing (see "The mechanism, end to end"). **Measurement:** leave a frame
-   unacknowledged for a known interval, clear it, keep reading, and see whether a
-   frame follows. The instrument needs a delayed-clear mode for it.
+5. ~~Does the controller re-report after a late acknowledgment?~~ **Answered
+   the same day it was opened: yes, within one frame period.** `cap12`, the
+   `delay2000` capture -- a key-press frame held 2.01 s, acknowledged once, and a
+   fresh `0x80` 10 ms later. So a render-straddling gesture reaches the firmware
+   as one tap, unless the poll after the resume is itself more than 700 ms away,
+   in which case the hold timer fires first.
 6. **The natural double-tap interval on this key**, with true timestamps. Partly
    filled in: free tapping gave key-press intervals of 885, 980, 595, 570, 240
    and 385 ms, and press-to-release is 60-90 ms over seven presses. A *deliberate* double tap has

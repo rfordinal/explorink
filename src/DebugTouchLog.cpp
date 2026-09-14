@@ -53,6 +53,11 @@ struct __attribute__((packed)) Sample {
 // exact false negative this instrument exists to avoid.
 constexpr uint32_t kMaxSamples = 2000;
 
+// How long a delay-mode capture waits for a frame before giving up. 20 s is long
+// enough for a human to reach the device after reading an instruction and short
+// enough that a forgotten command is over before anyone reaches for the cable.
+constexpr uint32_t kArmTimeoutMs = 20000;
+
 constexpr uint16_t kPointReg = 0x8150;
 constexpr uint16_t kNoCoord = 0xFFFF;
 
@@ -120,7 +125,8 @@ void waitForRoom(Print& out, const size_t need) {
 
 }  // namespace
 
-bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, const bool clearAfterRead) {
+bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, const bool clearAfterRead,
+             const uint32_t clearDelayMs) {
   if (durationMs == 0 || durationMs > kMaxDurationMs) durationMs = 3000;
   if (intervalUs < kMinIntervalUs) intervalUs = kMinIntervalUs;
 
@@ -153,17 +159,62 @@ bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, const bool cl
     return false;
   }
 
+  char modeName[24];
+  if (clearDelayMs > 0) {
+    snprintf(modeName, sizeof(modeName), "delay%u", static_cast<unsigned>(clearDelayMs));
+  } else {
+    snprintf(modeName, sizeof(modeName), "%s", clearAfterRead ? "clear" : "noclear");
+  }
   out.printf("TOUCHLOG_BEGIN:%ums,%uus,%s,addr=0x%02X,irq=%d\n", static_cast<unsigned>(durationMs),
-             static_cast<unsigned>(intervalUs), clearAfterRead ? "clear" : "noclear", addr, static_cast<int>(irqPin));
+             static_cast<unsigned>(intervalUs), modeName, addr, static_cast<int>(irqPin));
   // Flushed before the capture starts: the host must see the marker even if the
   // capture then wedges on the bus, and the write itself must not land inside
   // the timed section.
   out.flush();
 
+  // Arm before recording, in delay mode only.
+  //
+  // The human cannot be in the timing loop. Coordinating "tap now" through a
+  // chat round trip failed three times on 2026-09-14 -- the round trip is
+  // unpredictable and sometimes tens of seconds, so the finger kept landing
+  // outside the window and the captures came back empty. So the device waits for
+  // the event instead of the operator waiting for the device.
+  //
+  // The wait reads without clearing and without recording, which is exactly the
+  // state being studied: a register left unacknowledged while nobody polls. When
+  // a frame appears it is already latched, and the recording window plus the
+  // delay clock start on it.
+  //
+  // delay(2) rather than a busy-wait here, unlike the recording loop: this phase
+  // can last 20 s and a spin that long would starve the idle task and trip the
+  // watchdog. Cadence does not matter while nothing is being recorded.
+  uint32_t armWaitedMs = 0;
+  if (clearDelayMs > 0) {
+    const unsigned long armDeadline = millis() + kArmTimeoutMs;
+    const unsigned long armStart = millis();
+    for (;;) {
+      uint8_t probe = 0;
+      if (readReg(addr, kStatusReg, &probe, 1) && (probe & 0x80) != 0) break;
+      if (static_cast<long>(millis() - armDeadline) >= 0) break;
+      delay(2);
+    }
+    armWaitedMs = millis() - armStart;
+    out.printf("TOUCHLOG_ARMED:%ums,timeout=%u\n", static_cast<unsigned>(armWaitedMs),
+               static_cast<unsigned>(armWaitedMs >= kArmTimeoutMs ? 1 : 0));
+    out.flush();
+  }
+
   const uint32_t startUs = micros();
   uint32_t taken = 0;
   uint32_t failed = 0;
   uint32_t nextDue = startUs;
+  // Delayed-clear state. `firstReadyUs` is when a frame first appeared, which is
+  // what the delay is counted from -- counting from the start of the capture
+  // would measure how long the finger took to arrive, not how long the frame sat
+  // unacknowledged.
+  uint32_t firstReadyUs = 0;
+  uint32_t clearedAtUs = 0;
+  bool delayedClearDone = false;
 
   while (taken < wanted) {
     // Busy-wait rather than delayMicroseconds(): the loop is blocked for the
@@ -202,7 +253,27 @@ bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, const bool cl
     // Cleared after the point read, never before: clearing the status is what
     // releases the frame, and the coordinates belong to the frame being
     // acknowledged.
-    if (clearAfterRead && status != 0xFF && (status & 0x80) != 0) clearStatus(addr);
+    const bool ready = status != 0xFF && (status & 0x80) != 0;
+    if (clearDelayMs > 0) {
+      // Open question 5: does the controller emit a fresh frame after a LATE
+      // acknowledgment, or does the register simply go quiet? The answer decides
+      // whether a gesture made during a map render reaches the firmware as one
+      // tap, as a phantom long press, or as nothing at all.
+      //
+      // So: never clear, until the frame has sat unacknowledged for the whole
+      // delay, then clear exactly ONCE and never again. What follows that single
+      // write is the measurement -- 0x00 forever means no re-report, a fresh
+      // frame means there is one. Clearing again afterwards would destroy the
+      // very thing being watched.
+      if (ready && firstReadyUs == 0) firstReadyUs = sampleUs;
+      if (ready && !delayedClearDone && firstReadyUs != 0 && sampleUs - firstReadyUs >= clearDelayMs * 1000UL) {
+        clearStatus(addr);
+        clearedAtUs = sampleUs - startUs;
+        delayedClearDone = true;
+      }
+    } else if (clearAfterRead && ready) {
+      clearStatus(addr);
+    }
 
     samples[taken].us = sampleUs - startUs;
     samples[taken].status = status;
@@ -218,6 +289,11 @@ bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, const bool cl
   // send 2,000 lines for a three-second capture and drown the one transition
   // that matters; printing only changes would hide how long each state held.
   // Both, then: the state, when it started, and how many samples it survived.
+  if (clearDelayMs > 0) {
+    // Printed as its own line rather than folded into a row, because the reader's
+    // whole question is "what happened AFTER this instant".
+    out.printf("TOUCHLOG_CLEARED:%d\n", delayedClearDone ? static_cast<int>(clearedAtUs) : -1);
+  }
   out.printf("TOUCHLOG_DATA:us,status,int,repeats,x,y\n");
   uint32_t runStart = 0;
   uint32_t runCount = 1;

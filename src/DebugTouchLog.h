@@ -41,6 +41,11 @@
 //            way `goodix_ts_irq_handler()` does after processing a report
 //   noclear  never write, so a frame left unacknowledged is visible for as long
 //            as the controller holds it
+//   delay<N> never write until the frame has sat unacknowledged for N ms, then
+//            write exactly once and never again -- open question 5, whether the
+//            controller re-reports after a late acknowledgment. What follows the
+//            single write is the whole measurement, so clearing again would
+//            destroy it. `TOUCHLOG_CLEARED:<us>` marks the instant.
 //
 // The capture blocks `loop()` for its whole duration and never calls
 // `gpio.update()`. That is the point, not a side effect: the failure being
@@ -77,7 +82,8 @@ namespace DebugTouchLog {
 //
 // Returns false when the controller could not be addressed at all; the caller
 // prints the error, this prints the data.
-bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, bool clearAfterRead);
+bool capture(Print& out, uint32_t durationMs, uint32_t intervalUs, bool clearAfterRead,
+             uint32_t clearDelayMs = 0);
 
 // How long the input sampler actually goes unread (`CMD:LOOPGAP`).
 //
