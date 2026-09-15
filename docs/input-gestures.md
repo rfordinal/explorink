@@ -501,6 +501,54 @@ try many times" -- so the test is statistical and adversarial:
    success: it means a gesture was dropped rather than mistimed.
 6. **X4 or X3 boot**: no task, no RAM delta, touch paths compiled out.
 
+### What the hardware run showed, 2026-09-15
+
+`[measured]` X4 Pro, serial `b8:1f:3f:d4:89:bc`. Renders were driven from the
+host, one map `redraw` every 6 s, with the maintainer gesturing during each.
+
+**The control holds and so does the claim.** Across the runs the loop stalled
+exactly as before -- 20 gaps over 2 s in the first series, worst **6.50 s** in
+the second -- while the sampling task's own worst interval was **11.0 ms**
+against a 10 ms target, with `gaps_over_limit=0` in every run. The task is doing
+what the loop could not.
+
+| what | result |
+|---|---|
+| double tap during a render | **20 of 20** (before: "I have to try many times") |
+| long press | works |
+| false lock from two separate taps | **0** -- the 300 ms window is not too wide |
+| phantom long press | **0** |
+| `cancels` (gap rule fired) | **0** -- the fix worked directly, not via its safety net |
+| `produced` vs `delivered` | **equal in every run**, `queue_drops=0` |
+
+`produced == delivered` is the one that closes the original worry: **nothing is
+lost between the recogniser and the app.** A run of 42 gestures (21 taps)
+delivered 42, of which 7 were refused by the staleness rule -- so the taps that
+"did not register" are a rule with a number, not a hole.
+
+**Two things the run taught that were not on the list.**
+
+`[measured]` The USB CDC link dropped and re-enumerated on a different
+`/dev/ttyACM*` node mid-series, while the host was writing during a render. The
+firmware did **not** reboot -- the counters kept accumulating across it, which is
+how it was told apart from a crash. A host script must therefore not assume its
+port survives a long run, and a vanished port is not evidence of a device fault.
+
+`[open]` **A correct drop is indistinguishable from a broken key.** The
+maintainer's verdict on using it was that it felt good, and that not knowing
+whether the device heard you is the weak part -- there is no busy indicator at
+all. Tracked as T-2018 in the parent repo. The staleness rule is right and
+invisible, and on a panel that holds a stale image for a second while it works,
+invisible is a design problem.
+
+### Still unverified
+
+Three of the six checks have not been run: the phantom long press through a
+settings save (flash writes suspend non-IRAM tasks, which is the case the gap
+rule exists for), the glass regression set (a slider drag mid-render, the hint
+boxes), and a boot on an X4 or X3 confirming no task is created and no RAM is
+spent. Nothing here should be read as covering them.
+
 ### What it does not fix
 
 `getHeldTime()` still reports the first key of a chord, `ButtonNavigator` still
