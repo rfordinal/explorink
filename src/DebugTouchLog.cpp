@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <HalGPIO.h>
 #include <Wire.h>
 
 #include <cstdlib>
@@ -396,6 +397,16 @@ void reportGaps(Print& out) {
     if (worstUs[i] == 0) break;
     out.printf("%u,%u\n", static_cast<unsigned>(worstUs[i]), static_cast<unsigned>(worstAtMs[i]));
   }
+  // The sampler's own cadence, beside the loop's. Without it a passing double
+  // tap during a render proves nothing: the loop is SUPPOSED to stall, so the
+  // claim being tested is that the task did not. `cancels` is the honest
+  // failure count -- the gap rule firing means a gesture was dropped rather than
+  // mistimed, which is the intended degradation and not a success.
+  const auto task = gpio.gt911TaskStats(true);
+  out.printf("TASKGAP:ticks=%u,max_gap_us=%u,gaps_over_limit=%u,cancels=%u,frame_overflows=%u\n",
+             static_cast<unsigned>(task.ticks), static_cast<unsigned>(task.maxGapUs),
+             static_cast<unsigned>(task.gapsOverLimit), static_cast<unsigned>(task.cancels),
+             static_cast<unsigned>(task.frameOverflows));
   out.printf("LOOPGAP_END\n");
 
   for (uint8_t i = 0; i < kGapBuckets; ++i) gapCount[i] = 0;
