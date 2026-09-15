@@ -246,6 +246,14 @@ bool HalGPIO::wasHomeKeyPressed() const { return inputMgr.wasHomeKeyPressed(); }
 bool HalGPIO::wasHomeKeyTapped() const { return inputMgr.wasHomeKeyTapped(); }
 
 bool HalGPIO::wasHomeKeyLongPressed() const { return inputMgr.wasHomeKeyLongPressed(); }
+bool HalGPIO::wasHomeKeyDoubleTapped() const { return inputMgr.wasHomeKeyDoubleTapped(); }
+void HalGPIO::beginGt911Task() { inputMgr.beginGt911Task(); }
+
+void HalGPIO::setHomeKeyDoubleTapWindow(const uint16_t windowMs) {
+  InputManager::HomeKeyGestureSpec spec;
+  spec.doubleWindowMs = windowMs;
+  inputMgr.setHomeKeyGestureSpec(spec);
+}
 
 void HalGPIO::setSharedConfirmPowerShortPressEmitsPower(const bool enabled) {
   InputManager::setSharedConfirmPowerShortPressEmitsPower(enabled);

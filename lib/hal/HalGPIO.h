@@ -92,6 +92,15 @@ class HalGPIO {
   bool wasHomeKeyPressed() const;
   bool wasHomeKeyTapped() const;
   bool wasHomeKeyLongPressed() const;
+  // Only ever true on a board whose key carries a double tap, i.e. one whose
+  // gesture spec was given a non-zero window. See InputManager::HomeKeyGestureSpec.
+  bool wasHomeKeyDoubleTapped() const;
+  // Start the GT911's own sampling task, so the controller is read on a
+  // schedule a panel refresh cannot stall. No-op without a GT911.
+  void beginGt911Task();
+  // Tell the key's recogniser what to look for. Re-applied when touch policy
+  // flips, which it does once during boot as the controller comes up.
+  void setHomeKeyDoubleTapWindow(uint16_t windowMs);
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
   // Verify power button was held long enough after wakeup.

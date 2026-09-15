@@ -1107,6 +1107,12 @@ void setup() {
   silentRebootTarget = 0;
 
   gpio.begin();
+  // The GT911 gets its own sampler. The app's loop stops for 2.80 s on a map
+  // redraw and 4.34 s opening the map, and the controller discards every frame
+  // behind an unacknowledged one, so a gesture made in that window used to
+  // arrive as a single tap or not at all (firmware docs/input-gestures.md).
+  // No-op on a board without the chip.
+  gpio.beginGt911Task();
   powerManager.begin();
   frontlight.begin();
 #if FREEINK_CAP_FRONTLIGHT && defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3

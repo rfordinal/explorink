@@ -151,20 +151,13 @@ class MappedInputManager {
   //
   // Only on a board whose home key carries the double tap at all -- elsewhere
   // the tap is Confirm the instant it arrives, with no window and no latency.
-  mutable unsigned long homeTapPendingSince = 0;  // 0 = no tap waiting
-  mutable bool homeConfirmResolved = false;       // this frame: the single tap won
-  mutable bool homeDoubleTapResolved = false;     // this frame: the second tap won
-  mutable bool homeLongResolved = false;          // this frame: a hold this layer believes in
-  // Ignore further taps until this time. Measured: one physical double tap
-  // produced a lock, a Select and a frontlight toggle. That extra tap events
-  // caused it is inferred, not observed -- see pumpHomeKey() and
-  // docs/input-gestures.md.
-  mutable unsigned long homeRefractoryUntil = 0;
-  // Whether a tap has already been made of the press the key is currently
-  // holding. The SDK fires its hold from a latched down-state that survives a
-  // missed release edge, so a hold can arrive seconds after the gesture it
-  // belongs to was already spent -- see pumpHomeKey().
-  mutable bool homeTapConsumedSinceDown = false;
+  mutable bool homeConfirmResolved = false;    // this frame: the single tap won
+  mutable bool homeDoubleTapResolved = false;  // this frame: the second tap won
+  mutable bool homeLongResolved = false;       // this frame: a hold
+  // The window last pushed down to the recogniser. Kept so the push happens on
+  // change rather than every frame, and so the boot-time flip of
+  // TouchPolicy::homeKeyDoubleTapLocksTouch() is not missed.
+  mutable uint16_t appliedDoubleTapWindowMs = 0xFFFF;
   mutable uint8_t hintDownButton = kNoHintButton;
   mutable uint8_t hintPressedButton = kNoHintButton;
   mutable uint8_t hintReleasedButton = kNoHintButton;
