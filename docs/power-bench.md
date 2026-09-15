@@ -175,23 +175,81 @@ Each state 25 s of samples at ~66/s.
 
 Controls: 93.85, 93.43, 93.58 mA, taken at the start, the middle and the end.
 
-**The frontlight scales with the percentage.** 40 % costs 41 % of what 100 %
-costs, so the UI's number behaves like a duty and the `PT4103B23F` boost
-driver's draw follows it. That is half of what T-250 asks about the light.
+**The frontlight's current is linear in PWM duty, and the UI percent is not the
+duty.** Measured across all ten rungs on 2026-09-15 (below). The reading of this
+25 s pair as "40 % costs 41 % of 100 %, so the UI number behaves like a duty"
+was right about this build and wrong as a general claim: `t251-charge-off` pins
+`freeink-sdk` at `55a49587`, which has **no gamma correction in
+`FrontlightManager`** at all, so `CMD:LIGHT 40` really was 40 % duty there. The
+gamma table landed in the SDK on 2026-08-18 (`a4976be`, gamma 1.6554) and
+`955b2530` -- what `develop` and `release/lilygo-t5-s3-pro` carry -- has it. On
+that pin `CMD:LIGHT 40` is **22 %** duty and costs 23 % of what 100 % costs.
 
-**And it lands near the ride figure, from one binary.** Two rides put the light
-at 40 % at "~43 mA at the cell" (`power-management.md`, "The frontlight is 43 mA,
-not 8"), but they could not be proven to be the same build. This bench is one
-binary and one screen: 155 mW at VBUS is about 142 mW at the board at the 91.5 %
-efficiency measured the same day, which is **34 mA at the 4.15 V system rail**,
-or **37 mA drawn from a 3.85 V cell**. Lower than 43 mA and far from the ~8 mA
-this project assumed before 2026-09-04. The remaining gap is what a ride adds:
-the map, the radio and a refresh every minute.
+Both runs measure the same law from different points, which is what makes it a
+law rather than a fit: 0.400 duty gave 0.41 of full, 0.219 duty gave 0.231 of
+full.
 
 **BLE advertising at 11.7 mA is the first measurement of that radio on this
 board at all.** T-250 guessed 10-20 mA for BLE *connected* at a 30 ms interval;
-advertising is the cheaper half of that range's floor. Connected is not measured
-yet and needs a phone in the loop.
+advertising is the cheaper half of that range's floor. **This figure did not
+reproduce on 2026-09-15** -- see the sweep below.
+
+## The full sweep, 2026-09-15
+
+**T5 S3 Pro, `power-spectrum` at `a2853ee1`, `env:t5s3pro`, JT-UM120 inline on
+VBUS, charging disabled the whole run, home screen unless the row says
+otherwise.** Driven by `tools/power_campaign.py --block 300 --trim 30` in the
+parent repo: five minutes a state, ~17,500 samples a block, controls between
+groups. Run directory and its caveats:
+`../../docs/power-runs/2026-09-15-t5s3pro-spectrum/`.
+
+### The frontlight, every rung
+
+Baseline 91.5 mA at 5.25 V, and the two controls bracketing this group agreed to
+**0.00 mA**.
+
+| UI % | PWM duty | duty fraction | +mA at VBUS | +mW at VBUS |
+|---|---|---|---|---|
+| 10 | 6 | 0.024 | +2.55 | +10.6 |
+| 20 | 18 | 0.071 | +5.79 | +28.1 |
+| 30 | 35 | 0.137 | +10.62 | +53.9 |
+| 40 | 56 | 0.220 | +16.54 | +85.5 |
+| 50 | 81 | 0.318 | +23.37 | +122.1 |
+| 60 | 109 | 0.427 | +31.24 | +163.1 |
+| 70 | 141 | 0.553 | +40.12 | +209.2 |
+| 80 | 176 | 0.690 | +49.85 | +261.4 |
+| 90 | 214 | 0.839 | +60.45 | +317.1 |
+| 100 | 255 | 1.000 | +71.59 | +375.2 |
+
+**The duty column is read off the device, not derived.** `FrontlightManager`
+logs `apply: brightness=<pct> level=<n> totalDuty=<d>` on every change, and the
+campaign's `serial.log` carries one line per rung. It also settles the PWM
+width: `totalDuty=255` at 100 % means **8 bits** on this board. (The `level`
+field in that line is `_brightnessLevel`, which is set but unused here --
+`_useLevel` is false, so the duty comes from `perceptualDuty()`.)
+
+One straight line fits all ten points:
+
+```
++mA at VBUS = 0.90 + 70.85 x duty      worst residual 0.16 mA
++mW at VBUS = 2.60 + 374.0 x duty      worst residual 1.4 mW
+```
+
+**The intercept is the finding, not the slope.** 0.90 mA is what the
+`PT4103B23F` boost driver costs for being switched on at all, before it lights
+anything: a third of the whole cost of the light at 10 %, one per cent of it at
+100 %. It is why the naive "mA per per cent" column falls from 108 to 72 across
+the table -- that is the fixed term being divided by a growing duty, not the LED
+string behaving differently.
+
+So the cost of any rung is `0.90 + 70.85 x GAMMA_TABLE[pct] / 65535` mA at VBUS,
+and the gamma table is
+`freeink-sdk/libs/hardware/FrontlightManager/src/FrontlightManager.cpp`.
+
+**This answers the half of T-250 that was still open.** That task asked whether
+the UI's "40 %" is a PWM duty or a step index, and how the boost driver's draw
+scales with duty. It is a duty, reached through a perceptual curve; the draw is
+linear in it with a fixed offset.
 
 ## What this bench cannot do
 
