@@ -9,6 +9,10 @@
 #include "HalFileSource.h"
 #include "MapBleConsole.h"
 #include "MapChrome.h"
+
+// One baked rotation of the pin shape. Forward-declared rather than included:
+// pins_shape.h carries every rotation's bitmap and only the .cpp draws from it.
+struct PinShapeFrame;
 #include "MapCommandConsole.h"
 #include "MapDebugOverlay.h"
 #include "MapFixTrust.h"
@@ -898,7 +902,12 @@ class MapActivity final : public Activity,
     uint8_t catalogIndex = 0;  // which pin, so the marker can carry its glyph
     uint8_t count = 0;         // 0 means merged into another mark
   };
-  void drawPinEdgeMark(const PinEdgeMark& mark);
+  // False when the mark could not be placed anywhere clear, and then nothing is
+  // drawn -- the caller counts it rather than letting it vanish quietly.
+  bool drawPinEdgeMark(const PinEdgeMark& mark);
+  // Moves a mark's head until the balloon's box clears both `area` and the
+  // chrome register. False when nothing within kPinEdgeSlideMaxPx does.
+  bool slideEdgeMarkClear(const PinShapeFrame& frame, const Rect& area, int& headX, int& headY) const;
   // Where an edge marker and its label may land: the panel minus everything this
   // screen already draws over the map -- the button bar, the side-hint boxes and the
   // compass. Empty (zero width or height) when there is nothing left, which is a
@@ -913,6 +922,15 @@ class MapActivity final : public Activity,
   // Two markers closer than this merge into one with a count: two arrows on top
   // of each other read as one broken arrow.
   static constexpr int kPinEdgeMergePx = 52;  // a whole pin wide, since a marker is one now
+  // How far an edge marker may slide to get off the screen's furniture, and in
+  // what steps. pinEdgeArea() clears both button bands and the compass by
+  // shrinking one rectangle, which cannot express the scale bar, the debug
+  // window or the header -- they are corners and bands, not full edges. The
+  // register can, so the mark is slid until it clears (slideEdgeMarkClear()).
+  // 80 is a little under two pin widths: far enough to get past the scale bar,
+  // short enough that the marker still reads as being on the side the pin is.
+  static constexpr int kPinEdgeSlideStepPx = 8;
+  static constexpr int kPinEdgeSlideMaxPx = 80;
   // Which store slot the nth row of the open Pins list stands for. Recomputed
   // rather than captured: the popup is modal, so the store cannot change under
   // it, and a captured table would be one more thing to keep in step.

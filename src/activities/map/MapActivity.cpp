@@ -5347,16 +5347,23 @@ void MapActivity::drawPins() {
     }
   }
 
+  size_t edgesUnplaceable = 0;
   for (size_t i = 0; i < edgeCount; ++i) {
     if (edges[i].count == 0) continue;
-    drawPinEdgeMark(edges[i]);
-    ++drawn;
+    if (drawPinEdgeMark(edges[i])) {
+      ++drawn;
+    } else {
+      ++edgesUnplaceable;
+    }
   }
   // Never a silent cap: a marker that was not drawn is a pin the rider cannot
   // see, which is exactly the failure the feature is about.
   if (edgesDropped > 0)
     LOG_ERR(kLogTag, "%u off-screen pin marker(s) dropped: more than %d", static_cast<unsigned>(edgesDropped),
             kPinEdgeMax);
+  if (edgesUnplaceable > 0)
+    LOG_ERR(kLogTag, "%u off-screen pin marker(s) had nowhere clear of the screen's furniture",
+            static_cast<unsigned>(edgesUnplaceable));
   if (drawn > 0) LOG_DBG(kLogTag, "%d pin mark(s) drawn", drawn);
   // Said out loud even when off-screen markers are on and every one of these
   // got a marker: "three pins are behind the furniture" is the sentence that
@@ -5407,7 +5414,37 @@ uint8_t MapActivity::pinShapeStepFor(double dx, double dy) {
   return static_cast<uint8_t>(step);
 }
 
-void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
+bool MapActivity::slideEdgeMarkClear(const PinShapeFrame& frame, const Rect& area, int& headX, int& headY) const {
+  const auto clear = [&](const int hx, const int hy) {
+    const int boxX = hx - frame.headX;
+    const int boxY = hy - frame.headY;
+    if (boxX < area.x || boxY < area.y) return false;
+    if (boxX + frame.w > area.x + area.width || boxY + frame.h > area.y + area.height) return false;
+    return !chrome_.hits(boxX, boxY, frame.w, frame.h);
+  };
+  if (clear(headX, headY)) return true;
+
+  // Outward in both axes at once, nearest first, so the mark moves as little as
+  // it can. Sliding is allowed here and not for a pin's own balloon: this
+  // position is already synthetic -- the clamps in drawPinEdgeMark() move it to
+  // the boundary of the area -- and the bearing is carried by the shape's
+  // rotation (pinShapeStepFor()), not by where the shape sits. A balloon at the
+  // pin's real coordinate has no such freedom, because there the position *is*
+  // the statement.
+  for (int distance = kPinEdgeSlideStepPx; distance <= kPinEdgeSlideMaxPx; distance += kPinEdgeSlideStepPx) {
+    const int offsetX[4] = {distance, -distance, 0, 0};
+    const int offsetY[4] = {0, 0, distance, -distance};
+    for (int i = 0; i < 4; ++i) {
+      if (!clear(headX + offsetX[i], headY + offsetY[i])) continue;
+      headX += offsetX[i];
+      headY += offsetY[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
   // The pin itself, turned so its point aims at where the pin actually is. An arrow
   // plus a distance said "11 km that way" and nothing about *what* was that way,
   // and a separate arrow next to an upright pin said it twice (both judged on the
@@ -5437,6 +5474,15 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
   if (headX - frame.headX + frame.w > rightLimit) headX = rightLimit - frame.w + frame.headX;
   if (headY - frame.headY < topLimit) headY = topLimit + frame.headY;
   if (headY - frame.headY + frame.h > bottomLimit) headY = bottomLimit - frame.h + frame.headY;
+
+  // And off the screen's own furniture, which the area above cannot express:
+  // measured on an X4 Pro panel 2026-09-15, a marker for a pin below the panel
+  // landed squarely on the scale bar's "5 km" (MapChrome.h).
+  if (!slideEdgeMarkClear(frame, area, headX, headY)) {
+    LOG_DBG(kLogTag, "pin edge marker dropped: no clear spot within %d px of %d,%d", kPinEdgeSlideMaxPx, headX, headY);
+    return false;
+  }
+
   // drawPinBalloon() still takes a tip target -- back-solve it from the head
   // target and this frame's own tip-to-head offset.
   const int tipX = headX + frame.tipX - frame.headX;
@@ -5480,7 +5526,10 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     // the previous frame at this point.
     markerRect(MapViewport::anchorScreenX(renderer.getScreenWidth()), MapViewport::markerYForStep(markerStep()), mx, my,
                mw, mh);
-    const bool overlaps = textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my;
+    // The rider's marker, or the screen's furniture -- the escape routes below
+    // serve both, so one condition drives them (MapChrome.h).
+    const bool overlaps = (textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my) ||
+                          chrome_.hits(textX, textY, textWidth, textHeight);
     if (overlaps) {
       if (mx - leftLimit >= textWidth + 4) {
         textX = mx - textWidth - 4;
@@ -5505,6 +5554,7 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     }
   }
   renderer.drawText(SMALL_FONT_ID, textX, textY, text, true);
+  return true;
 }
 
 void MapActivity::showPinOnMap(size_t slot) {
