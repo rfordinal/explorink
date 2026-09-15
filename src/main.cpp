@@ -2322,8 +2322,9 @@ void loop() {
         battArg.toUpperCase();  // the subcommand; a hex address parses either case
         if (g.gaugeAddr == 0) {
           logSerial.printf("BATT_ERR:no gauge on this board\n");
-        } else if (battArg.length() > 0 && !battArg.startsWith("DM") && battArg != "SCAN") {
-          logSerial.printf("BATT_ERR:unknown:DM,SCAN\n");
+        } else if (battArg.length() > 0 && !battArg.startsWith("DM") && battArg != "SCAN" &&
+                   !battArg.startsWith("PROBE")) {
+          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE\n");
         } else if (battArg == "SCAN") {
           // Whether a charger IC sits on the gauge bus at all is unknown for X3
           // (BoardConfig.h: chargerAddr=0, unlike the T5 S3 Pro's BQ25896 or the
@@ -2341,6 +2342,34 @@ void loop() {
             }
           }
           logSerial.printf("BATT_SCAN:%s\n", found);
+        } else if (battArg.startsWith("PROBE")) {
+          // BATT_SCAN's ACK-only sweep cannot tell a real chip from a
+          // reserved-address bus quirk (0x78-0x7F, UM10204 s3.1.11): a real
+          // register set answers a readable, non-uniform pattern; a bus
+          // artifact answers all-NACK or a flat repeat. Sixteen registers,
+          // read-only -- no write reaches an unidentified chip.
+          String addrArg = battArg.substring(5);
+          addrArg.trim();
+          const long addr = strtol(addrArg.c_str(), nullptr, 0);
+          if (addrArg.length() == 0 || addr <= 0 || addr > 0x7F) {
+            logSerial.printf("BATT_ERR:probe addr\n");
+          } else {
+            powerbus::begin();
+            char hex[16 * 3 + 1];
+            size_t pos = 0;
+            hex[0] = '\0';
+            uint8_t okCount = 0;
+            for (uint8_t reg = 0; reg < 16; ++reg) {
+              uint8_t val = 0;
+              if (powerbus::read8(static_cast<uint8_t>(addr), reg, val)) {
+                ++okCount;
+                pos += static_cast<size_t>(snprintf(hex + pos, sizeof(hex) - pos, "%02X ", static_cast<unsigned>(val)));
+              } else {
+                pos += static_cast<size_t>(snprintf(hex + pos, sizeof(hex) - pos, "?? "));
+              }
+            }
+            logSerial.printf("BATT_PROBE:addr=0x%02lX ok=%u/16 regs=%s\n", addr, static_cast<unsigned>(okCount), hex);
+          }
         } else if (battArg.startsWith("DM")) {
           String addrArg = battArg.substring(2);
           addrArg.trim();
