@@ -536,3 +536,26 @@ this is read as the same race, not isolated to a specific file the way the
 `managed_components` case was. Every build log that session also printed
 `*** Original Arduino "idf_component.yml" restored ***`, a candidate for what
 a concurrent build clobbers, but that was not confirmed further.
+
+**A third symptom, 2026-09-15, and this one fails before compiling anything.**
+A `pio run -e x4pro` started while ANOTHER SESSION was doing a release flash on
+the same tree's toolchain died in 14 seconds with
+
+```
+*** Reinstall Arduino framework ***
+Error removing framework libs
+Framework cleanup failed - installation aborted
+```
+
+No source file was named, no compile started, and nothing in the project was
+wrong. This is the same shared `framework-arduinoespressif32-libs` the rule
+already names, caught at the moment the other process held it -- so the race is
+not only between two builds in one checkout, it is between **any two pio
+processes on this machine**, across worktrees and across sessions.
+
+That is the part worth remembering: the device lock coordinates access to the
+board, and nothing coordinates access to the toolchain. A session that takes
+`devlock` for a flash is also, silently, taking the framework directory. Until
+something enforces it, treat a build failure that mentions the framework or its
+cleanup as "someone else is building", check `pgrep -f "pio run"` and
+`tools/devlock.py status`, and wait rather than retry in a loop.

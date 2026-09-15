@@ -411,6 +411,103 @@ a workaround. The app keeps the key-to-meaning mapping, the hint-box hit test
 `wasPressed`/`wasReleased`/`isPressed` so the ~96 existing call sites compile
 unchanged.
 
+## What was built, 2026-09-14
+
+**Written the same pass, unverified on hardware at the time of writing.** The
+section above says what the controller and the loop do; this says what was done
+about it.
+
+### The shape
+
+A FreeRTOS task samples the GT911 every 10 ms and owns two things: the I2C half
+(`gt911ReadFrame`, including the acknowledging write) and the home key's
+recogniser. Nothing else moved.
+
+The controller poll was split first, as a refactor with no behaviour change:
+`gt911ReadFrame()` does every bus access and touches no gesture state,
+`gt911ApplyFrame()` does no bus access and is the previous body. That was
+possible only because `now` was already a parameter rather than a `millis()`
+call inside, so **a frame applied late carries the time it was read**. The whole
+design rests on that one property.
+
+### Why the key moved down and the glass did not
+
+The key is recognised in the task because a recogniser fed from the app's loop
+measures the loop's latency instead of the finger -- which is what the old
+`pumpHomeKey()` did, and why its window had crept to 500 ms.
+
+The glass stays on the app's thread because it is consumed as a **live level**:
+`isScreenTouchHeld()` drives the sliders, there is a 90 ms touch-down select, and
+the hint-box hit test needs `UITheme`. A finished-gesture queue cannot answer
+"where is the finger now". Contact frames are queued and applied unchanged on the
+app thread.
+
+An earlier version of this plan said the task would recognise *everything* the
+GT911 produces. That was wrong for the reason above. A later version said the
+task would hand over only the **latest** frame, which is worse: a glass tap made
+entirely inside a render would be consumed by the task and never reach the app,
+which is a regression against today. The handover is a coalesced queue of state
+changes -- edges always, a resting contact at 50 ms -- so a 4.3 s render costs
+tens of frames and not 430.
+
+### Three rules that decide whether it fails safe
+
+- **One gesture per `update()`, never a drain.** The key's events are one-shot
+  bools cleared at the top of `update()`, so mapping a whole queue into them
+  collapses it: two double taps would toggle the touch lock once instead of
+  twice, and a tap plus a hold would fire in the same frame, breaking "a hold
+  never also selects". One per call spreads a backlog over consecutive frames
+  instead of destroying it.
+- **A sampling gap over 100 ms cancels the gesture in flight.** After a stall the
+  last seen level is not evidence. Believing it is exactly how a missed release
+  becomes a phantom long press -- without this rule the 2026-09-05 frontlight
+  bug moves into the task instead of dying.
+- **A full frame queue suppresses the contact in flight.** A torn stream must not
+  become a tap or a swipe the finger never made.
+
+### What it costs, and who pays
+
+About 5.6 kB at runtime -- a 3 kB task stack and a 64-entry frame queue -- and
+only on a board whose GT911 answered the probe. The task refuses to start if
+`beginAsync()` is running and vice versa: two threads in this class's unlocked
+state is a data race on every field.
+
+### The constants, retuned
+
+The 500 ms double-tap window becomes **300 ms**, because 500 was compensating for
+poll latency that no longer exists and would now fuse two deliberate single taps
+-- free tapping on this key was measured at intervals down to 240 ms. The 500 ms
+refractory window is **deleted** and replaced by a 40 ms lower bound on the
+inter-tap interval, which is Android's `DOUBLE_TAP_MIN_TIME`: it rejects contact
+bounce without swallowing a fast third tap. Measured here, there is no bounce on
+this key to reject anyway -- a press is exactly one frame and a release exactly
+three, every time.
+
+### How it has to be verified
+
+Not by one double tap. The failure is probabilistic -- the report was "I have to
+try many times" -- so the test is statistical and adversarial:
+
+1. **N >= 20 double taps during renders**, against today's failure rate.
+2. **The false-positive direction**: two deliberate single taps 400-600 ms apart
+   during a render must give two Confirms, not a lock.
+3. **The phantom long press**: hold the key through a settings save, and tap
+   during a render where the first poll after the resume is late.
+4. **Glass regression**: a slider drag mid-render, the hint boxes, and a double
+   tap on the steady-state map at 53 ms, not only on map-open.
+5. **`TASKGAP` in `CMD:LOOPGAP`**: `LOOPGAP` must still show the same ~4 s loop
+   stall -- that is the control, the loop is *supposed* to stall -- while the
+   task's own worst gap stays near 10 ms. `cancels` is a failure count, not a
+   success: it means a gesture was dropped rather than mistimed.
+6. **X4 or X3 boot**: no task, no RAM delta, touch paths compiled out.
+
+### What it does not fix
+
+`getHeldTime()` still reports the first key of a chord, `ButtonNavigator` still
+swallows one release edge after a cancelled hold, and the T5 S3 Pro's user button
+still cannot long-press Confirm. The ADC button ladder is still sampled from
+`loop()` and still loses edges across a render. Those are the rest of T-266.
+
 ## Failure inventory
 
 Ranked by how likely it is to bite. Everything here is `[read]` from the code
