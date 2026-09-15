@@ -1,13 +1,15 @@
 #pragma once
 
-#include <algorithm>
 #include <Logging.h>
+
+#include <algorithm>
 #include <cmath>
 
 #include "GfxRenderer.h"
 #include "IMapCanvas.h"
-#include "MapTextMask.h"
+#include "MapChrome.h"
 #include "MapStroke.h"
+#include "MapTextMask.h"
 #include "fontIds.h"
 
 // Real-firmware IMapCanvas implementation: forwards each call to the real
@@ -41,10 +43,19 @@
 // reads as a road that continues off the panel. A **label** painted over is a
 // name with half its letters gone, which reads as a different name -- so the
 // placer has to stay out of those bands, while the road under them does not.
+// `chrome` is where the screen furniture registered itself for this frame
+// (MapChrome.h), and it answers areaReserved(). A null pointer answers "nothing
+// is reserved", which is what every caller outside the map screen wants and what
+// this class did before the register existed.
 class GfxRendererCanvas : public IMapCanvas {
  public:
-  explicit GfxRendererCanvas(GfxRenderer& renderer, int minY = 0, int bottomReservedPx = 0, int rightReservedPx = 0)
-      : renderer_(renderer), minY_(minY), bottomReserved_(bottomReservedPx), rightReserved_(rightReservedPx) {}
+  explicit GfxRendererCanvas(GfxRenderer& renderer, int minY = 0, int bottomReservedPx = 0, int rightReservedPx = 0,
+                             const MapChromeRegister* chrome = nullptr)
+      : renderer_(renderer),
+        minY_(minY),
+        bottomReserved_(bottomReservedPx),
+        rightReserved_(rightReservedPx),
+        chrome_(chrome) {}
 
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) override {
     const int maxX = renderer_.getScreenWidth() - 1;
@@ -190,9 +201,8 @@ class GfxRendererCanvas : public IMapCanvas {
   // fontIdForSize() skips whatever the renderer has not been given -- see the
   // note there, this cost a log flood once.
   static constexpr int kLabelFontIds[] = {MAP_SMALL_FONT_ID,   SMALL_FONT_ID,       UI_10_FONT_ID,
-                                          UI_12_FONT_ID,
-                                          NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
-                                          NOTOSANS_18_FONT_ID};
+                                          UI_12_FONT_ID,       NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID,
+                                          NOTOSANS_16_FONT_ID, NOTOSANS_18_FONT_ID};
 
   // GfxRenderer::drawText's y is the top of the ascender box (it adds the
   // ascender itself), which is exactly IMapCanvas's top-left contract.
@@ -259,6 +269,41 @@ class GfxRendererCanvas : public IMapCanvas {
     outY = minY_;
     outWidth = renderer_.getScreenWidth() - rightReserved_;
     outHeight = renderer_.getScreenHeight() - minY_ - bottomReserved_;
+  }
+
+  // Ink already on the panel under this box, for the label placer's
+  // least-ink-wins test (IMapCanvas::inkCoverage). Straight off the
+  // framebuffer, which at label time holds the whole finished map: names are
+  // drawn last (MapRenderer::render).
+  //
+  // Reports 0/0 -- "unknown" -- when the framebuffer cannot be read, which is
+  // the framebuffer being lent out for a build or a grayscale strip target
+  // being active. The placer then falls back to first-fit, the layout this
+  // firmware had before the test existed.
+  void inkCoverage(const int x, const int y, const int width, const int height, const int stepPx, int& outInked,
+                   int& outSamples) const override {
+    outInked = 0;
+    outSamples = 0;
+    if (!renderer_.readbackAvailable()) return;
+
+    const int step = stepPx < 1 ? 1 : stepPx;
+    // Clamped to the panel, not to drawableRect: the reserved bands hold real
+    // ink and a box is never placed into them anyway, while clamping to a
+    // narrower rect would silently count the clipped part as clean.
+    const int x0 = x < 0 ? 0 : x;
+    const int y0 = y < 0 ? 0 : y;
+    const int xEnd = std::min(x + width, renderer_.getScreenWidth());
+    const int yEnd = std::min(y + height, renderer_.getScreenHeight());
+    for (int py = y0; py < yEnd; py += step) {
+      for (int px = x0; px < xEnd; px += step) {
+        ++outSamples;
+        if (renderer_.isPixelInked(px, py)) ++outInked;
+      }
+    }
+  }
+
+  bool areaReserved(int x, int y, int width, int height) const override {
+    return chrome_ != nullptr && chrome_->hits(x, y, width, height);
   }
 
  private:
@@ -417,6 +462,9 @@ class GfxRendererCanvas : public IMapCanvas {
   int minY_ = 0;
   int bottomReserved_ = 0;
   int rightReserved_ = 0;
+  // Not owned: it lives in MapActivity and is rebuilt at the top of every
+  // frame, which is before this canvas is constructed.
+  const MapChromeRegister* chrome_ = nullptr;
   // Last resolved (size -> font id). Mutable because measureText/drawText are the
   // callers and the canvas is handed around by reference; the memo changes no
   // pixel. 0 is never a valid font id (fontIds.h reserves it as the not-found

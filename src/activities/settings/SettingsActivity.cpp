@@ -85,7 +85,16 @@ void SettingsActivity::rebuildSettingsLists() {
   if (!BoardConfig::hasTouch()) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   }
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
+  // Menu row disabled, 2026-09-14 (T-2008): FirmwareFlasher::validateImageFile()
+  // checks image structure only, not chip_id or board identity (unlike upstream
+  // CrossPoint's board_tag::Scanner, see docs/upstream-crosspoint.md). Every
+  // board sees this row today, so a person could pick an S3 image (x4pro/
+  // sticky/t5s3pro) from the SD card on the wrong S3 board -- same chip_id,
+  // different pins -- and it would pass validation and flash. Re-enable once
+  // T-2008 lands the chip/board check. SdFirmwareUpdateActivity itself is
+  // untouched: recovery-mode boot (left button + power on X3) still uses it,
+  // and that path has no menu to gate.
+  // systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   // Text Settings, Manage Fonts and Customise Status Bar went with the Reader
   // tab. The status bar they customise is the reader's; the map header draws
@@ -488,8 +497,8 @@ void SettingsActivity::openSleepTimeoutPicker() {
 void SettingsActivity::openFrontlightBrightnessPicker() {
   const uint8_t originalValue = SETTINGS.frontlightBrightness;
   auto picker = std::make_unique<IntervalSelectionActivity>(renderer, mappedInput, "FrontlightBrightnessInterval",
-                                                             StrId::STR_FRONTLIGHT, originalValue, 10, 100, 5, 20,
-                                                             StrId::STR_BRIGHTNESS_VALUE_FORMAT, false, true);
+                                                            StrId::STR_FRONTLIGHT, originalValue, 10, 100, 5, 20,
+                                                            StrId::STR_BRIGHTNESS_VALUE_FORMAT, false, true);
   // Same live-preview wiring as the color-temperature picker below: an in-memory
   // SETTINGS write per drag step, no saveToFile() until Confirm. main.cpp's
   // loop() already polls frontlightBrightness against the light every frame
@@ -509,9 +518,9 @@ void SettingsActivity::openFrontlightBrightnessPicker() {
 
 void SettingsActivity::openFrontlightColorTemperaturePicker() {
   const uint8_t originalValue = SETTINGS.frontlightColorTemperature;
-  auto picker = std::make_unique<IntervalSelectionActivity>(
-      renderer, mappedInput, "FrontlightColorTemperatureInterval", StrId::STR_FRONTLIGHT_COLOR_TEMP, originalValue, 0,
-      100, 5, 20, StrId::STR_COLOR_TEMP_VALUE_FORMAT, false, true);
+  auto picker = std::make_unique<IntervalSelectionActivity>(renderer, mappedInput, "FrontlightColorTemperatureInterval",
+                                                            StrId::STR_FRONTLIGHT_COLOR_TEMP, originalValue, 0, 100, 5,
+                                                            20, StrId::STR_COLOR_TEMP_VALUE_FORMAT, false, true);
   // Live preview while dragging: writes straight into SETTINGS (never saveToFile()
   // here -- rule 8 is no SD write per interaction) so main.cpp's loop() poll, which
   // already applies a frontlightColorTemperature change to the LED every frame
@@ -618,7 +627,7 @@ void SettingsActivity::render(RenderLock&&) {
     // Empty label draws no button at all (BaseTheme::drawButtonHints() skips
     // empty strings), which is the only honest hint for a row that ignores
     // Confirm.
-    confirmLabel = selected.disabled          ? ""
+    confirmLabel = selected.disabled                             ? ""
                    : selected.nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
                                                                  : tr(STR_TOGGLE);
   }

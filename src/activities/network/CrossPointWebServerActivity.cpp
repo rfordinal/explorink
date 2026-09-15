@@ -8,11 +8,11 @@
 
 #include <cstddef>
 
+#include "DeviceIdentity.h"
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
-#include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/QrUtils.h"
@@ -20,13 +20,23 @@
 
 namespace {
 // AP Mode configuration
-constexpr const char* AP_SSID = "CrossPoint-Reader";
 constexpr const char* AP_PASSWORD = nullptr;  // Open network for ease of use
-constexpr const char* AP_HOSTNAME = "crosspoint";
 constexpr uint8_t AP_CHANNEL = 1;
 constexpr uint8_t AP_MAX_CONNECTIONS = 4;
 constexpr int QR_CODE_WIDTH = 198;
 constexpr int QR_CODE_HEIGHT = 198;
+
+// Per-device so several ExplorInk devices on one LAN/hotspot list stay
+// distinguishable -- see docs/webserver-endpoints.md. Not constexpr: the
+// board is only known at runtime (DeviceIdentity::activeBoardId()).
+std::string apSsid() {
+  const char* id = DeviceIdentity::activeBoardId();
+  return id[0] ? std::string("ExplorInk-") + id : "ExplorInk";
+}
+std::string apHostname() {
+  const char* id = DeviceIdentity::activeBoardId();
+  return id[0] ? std::string("explorink-") + id : "explorink";
+}
 
 // DNS server for captive portal (redirects all DNS queries to our IP)
 DNSServer* dnsServer = nullptr;
@@ -110,33 +120,11 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
-  const char* modeName = "Join Network";
-  if (mode == NetworkMode::CONNECT_CALIBRE) {
-    modeName = "Connect to Calibre";
-  } else if (mode == NetworkMode::CREATE_HOTSPOT) {
-    modeName = "Create Hotspot";
-  }
+  const char* modeName = mode == NetworkMode::CREATE_HOTSPOT ? "Create Hotspot" : "Join Network";
   LOG_DBG("WEBACT", "Network mode selected: %s", modeName);
 
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
-
-  if (mode == NetworkMode::CONNECT_CALIBRE) {
-    startActivityForResult(
-        std::make_unique<CalibreConnectActivity>(renderer, mappedInput), [this](const ActivityResult& result) {
-          state = WebServerActivityState::MODE_SELECTION;
-
-          startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult& result) {
-                                   if (result.isCancelled) {
-                                     onGoHome();
-                                   } else {
-                                     onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                                   }
-                                 });
-        });
-    return;
-  }
 
   if (mode == NetworkMode::JOIN_NETWORK) {
     // STA mode - launch WiFi selection
@@ -170,7 +158,7 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
     isApMode = false;
 
     // Start mDNS for hostname resolution
-    restartMdns(AP_HOSTNAME, "WEBACT");
+    restartMdns(apHostname().c_str(), "WEBACT");
 
     // Start the web server
     startWebServer();
@@ -198,12 +186,13 @@ void CrossPointWebServerActivity::startAccessPoint() {
   delay(100);
 
   // Start soft AP
+  const std::string ssid = apSsid();
   bool apStarted;
   if (AP_PASSWORD && strlen(AP_PASSWORD) >= 8) {
-    apStarted = WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
+    apStarted = WiFi.softAP(ssid.c_str(), AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
   } else {
     // Open network (no password)
-    apStarted = WiFi.softAP(AP_SSID, nullptr, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
+    apStarted = WiFi.softAP(ssid.c_str(), nullptr, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
   }
 
   if (!apStarted) {
@@ -219,14 +208,14 @@ void CrossPointWebServerActivity::startAccessPoint() {
   char ipStr[16];
   snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", apIP[0], apIP[1], apIP[2], apIP[3]);
   connectedIP = ipStr;
-  connectedSSID = AP_SSID;
+  connectedSSID = ssid;
 
   LOG_DBG("WEBACT", "Access Point started!");
-  LOG_DBG("WEBACT", "SSID: %s", AP_SSID);
+  LOG_DBG("WEBACT", "SSID: %s", ssid.c_str());
   LOG_DBG("WEBACT", "IP: %s", connectedIP.c_str());
 
   // Start mDNS for hostname resolution
-  restartMdns(AP_HOSTNAME, "WEBACT");
+  restartMdns(apHostname().c_str(), "WEBACT");
 
   // Start DNS server for captive portal behavior
   // This redirects all DNS queries to our IP, making any domain typed resolve to us
@@ -426,7 +415,7 @@ void CrossPointWebServerActivity::renderServerRunning() const {
                       EpdFontFamily::BOLD);
     startY += height10 + metrics.verticalSpacing * 2;
 
-    std::string hostnameUrl = std::string("http://") + AP_HOSTNAME + ".local/";
+    std::string hostnameUrl = "http://" + apHostname() + ".local/";
     std::string ipUrl = tr(STR_OR_HTTP_PREFIX) + connectedIP + "/";
 
     // Show QR code for URL
@@ -459,7 +448,7 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     startY += height10 + 5;
 
     // Also show hostname URL
-    std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + AP_HOSTNAME + ".local/";
+    std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + apHostname() + ".local/";
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
   }
 

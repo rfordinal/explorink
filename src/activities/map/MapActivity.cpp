@@ -864,22 +864,87 @@ void MapActivity::drawBusyBadge() {
 // screen -- its box row starts at x=25 (BaseTheme.cpp's x4ButtonPositions),
 // so the bar sits left of that, and kScaleMarginBottom mirrors the busy
 // badge's own margin to clear the same band from above.
-void MapActivity::drawMapScale() {
+namespace {
+
+// The scale bar's numbers are drawn straight onto the map, and the map under
+// them is whatever happens to be there: a built-up stipple tone, a road casing,
+// a contour. Measured on an X4 Pro panel 2026-09-15 over Vinosady -- a road ran
+// through the `0` and a thick one through `km`, and the row was unreadable in
+// places.
+//
+// Same answer place names already use (MapLabels.cpp, kHaloRing): the string in
+// white around itself, then black on top. A halo rather than a white plate
+// because only the pixels the digits need are knocked out, so the map keeps
+// showing through between them -- the bar's own box is reserved against labels
+// and marks, but roads still draw under it by design, and a plate would erase
+// them.
+//
+// 2, which is the number this project already uses everywhere a white outline
+// keeps text off the map: data/mapstyle.json sets `label_halo_px: 2` for place
+// names and for contour heights, and `halo_px: 2` for the route's junction
+// dots. A 1 px ring was tried first and measured on an X4 Pro panel the same
+// day -- it is visible and it is not enough against a built-up stipple, whose
+// dots are themselves 1 px on a 1 px pitch. This is a fixed 10 pt UI face at one
+// size rather than a style-driven label, so the radius is a constant here rather
+// than a style field; it is the style's value, not an independent one.
+constexpr int kScaleHaloDx[8] = {-1, 1, 0, 0, -1, 1, -1, 1};
+constexpr int kScaleHaloDy[8] = {0, 0, -1, 1, -1, -1, 1, 1};
+constexpr int kScaleHaloPx = 2;
+
+void drawHaloedScaleText(GfxRenderer& renderer, const int x, const int y, const char* text) {
+  // Ring by ring outward, same shape as MapLabels' halo loop: the offsets are
+  // scaled by the radius rather than the ring being recomputed, so a wider halo
+  // costs one more pass and no new table.
+  for (int radius = 1; radius <= kScaleHaloPx; ++radius) {
+    for (int i = 0; i < 8; ++i) {
+      renderer.drawText(UI_10_FONT_ID, x + kScaleHaloDx[i] * radius, y + kScaleHaloDy[i] * radius, text, false);
+    }
+  }
+  renderer.drawText(UI_10_FONT_ID, x, y, text, true);
+}
+
+}  // namespace
+
+MapActivity::ScaleBarLayout MapActivity::scaleBarLayout() const {
+  ScaleBarLayout layout;
   const double mpp = MapViewport::kZoomLadder[zoomStep()].mpp;
-  const double niceMeters = niceScaleValue(kScaleTargetPx * mpp);
-  const int totalPx = static_cast<int>(lround(niceMeters / mpp));
-  const bool useKm = niceMeters >= 1000.0;
+  layout.niceMeters = niceScaleValue(kScaleTargetPx * mpp);
+  layout.totalPx = static_cast<int>(lround(layout.niceMeters / mpp));
+  layout.useKm = layout.niceMeters >= 1000.0;
 
   // Stacked bottom-up from the same clearance line the busy badge uses
   // (kScaleMarginBottom, mirroring kBusyMarginBottom): label text bottom
   // lands exactly there, with the ticks and bar above it -- not below, or
   // the labels would draw into GUI.drawButtonHints' band.
-  const int clearanceY = renderer.getScreenHeight() - kScaleMarginBottom;
-  const int labelY = clearanceY - renderer.getLineHeight(UI_10_FONT_ID);
-  const int tickBottom = labelY - 2;
-  const int barBottom = tickBottom - kScaleTickHeight;
-  const int barTop = barBottom - kScaleBarHeight;
-  const int tickTop = barTop - kScaleTickHeight;
+  layout.clearanceY = renderer.getScreenHeight() - kScaleMarginBottom;
+  layout.labelY = layout.clearanceY - renderer.getLineHeight(UI_10_FONT_ID);
+  layout.tickBottom = layout.labelY - 2;
+  layout.barBottom = layout.tickBottom - kScaleTickHeight;
+  layout.barTop = layout.barBottom - kScaleBarHeight;
+  layout.tickTop = layout.barTop - kScaleTickHeight;
+  return layout;
+}
+
+Rect MapActivity::mapScaleRect() const {
+  const ScaleBarLayout layout = scaleBarLayout();
+  // Grown by the halo radius on every side. The `0` is left-aligned on the bar's
+  // first tick and the last mark right-aligned on its last, so without this the
+  // outermost ring of their white outline falls outside the reserved box and a
+  // place name could be placed onto pixels the bar is about to knock out.
+  const int pad = kScaleHaloPx;
+  return Rect{kScaleMarginLeft - pad, layout.tickTop - pad, layout.totalPx + 2 * pad,
+              layout.clearanceY - layout.tickTop + 2 * pad};
+}
+
+void MapActivity::drawMapScale() {
+  const ScaleBarLayout layout = scaleBarLayout();
+  const double niceMeters = layout.niceMeters;
+  const int totalPx = layout.totalPx;
+  const bool useKm = layout.useKm;
+  const int labelY = layout.labelY;
+  const int tickBottom = layout.tickBottom;
+  const int barTop = layout.barTop;
+  const int tickTop = layout.tickTop;
 
   // Edges computed from the same total rather than a fixed per-segment
   // pixel width, so five segments always add up to exactly totalPx with no
@@ -930,16 +995,16 @@ void MapActivity::drawMapScale() {
   textX[kScaleSegments] = edgeX[kScaleSegments] - textWidths[kScaleSegments];
 
   constexpr int kLabelGap = 3;
-  renderer.drawText(UI_10_FONT_ID, textX[0], labelY, marks[0], true);
+  drawHaloedScaleText(renderer, textX[0], labelY, marks[0]);
   int lastLabelRight = textX[0] + textWidths[0];
   for (int i = 1; i < kScaleSegments; ++i) {
     const bool clearsPrev = textX[i] >= lastLabelRight + kLabelGap;
     const bool clearsFinal = textX[i] + textWidths[i] + kLabelGap <= textX[kScaleSegments];
     if (!clearsPrev || !clearsFinal) continue;  // tick stays; number would overlap a neighbour
-    renderer.drawText(UI_10_FONT_ID, textX[i], labelY, marks[i], true);
+    drawHaloedScaleText(renderer, textX[i], labelY, marks[i]);
     lastLabelRight = textX[i] + textWidths[i];
   }
-  renderer.drawText(UI_10_FONT_ID, textX[kScaleSegments], labelY, marks[kScaleSegments], true);
+  drawHaloedScaleText(renderer, textX[kScaleSegments], labelY, marks[kScaleSegments]);
 }
 
 void MapActivity::showBusy() {
@@ -1728,6 +1793,78 @@ void MapActivity::updateHeaderStatus() {
   }
 }
 
+Rect MapActivity::compassRect() const {
+  const int centreX = renderer.getScreenWidth() - kCompassCenterMarginRight;
+  const int centreY = kCompassCenterTop;
+  const int haloRadius = kCompassGlyphRadius + kCompassHaloMargin;
+  return Rect{centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2};
+}
+
+Rect MapActivity::headerRect() const {
+  // mapContentTop(), not headerBarHeight(): the separator row belongs to the
+  // header, and a pin drawn across it makes the band look broken rather than
+  // makes the pin look placed.
+  return Rect{0, 0, renderer.getScreenWidth(), mapContentTop()};
+}
+
+void MapActivity::buildChromeRegister() {
+  chrome_.clear();
+  pinsHiddenByChrome_ = 0;
+
+  const Rect header = headerRect();
+  chrome_.add(header.x, header.y, header.width, header.height, MapChromeTag::Header);
+
+  const Rect compass = compassRect();
+  chrome_.add(compass.x, compass.y, compass.width, compass.height, MapChromeTag::Compass);
+
+  const Rect scale = mapScaleRect();
+  chrome_.add(scale.x, scale.y, scale.width, scale.height, MapChromeTag::ScaleBar);
+
+  // Only when it is actually on the panel. The window is off by default, and
+  // reserving a box nothing draws would cost the top-left corner of every
+  // frame to protect a diagnostic that is not there.
+  if (SETTINGS.mapDebugInfo) {
+    layoutDebugOverlay();
+    int dx = 0, dy = 0, dw = 0, dh = 0;
+    if (debug_.currentRect(renderer, dx, dy, dw, dh)) {
+      chrome_.add(dx, dy, dw, dh, MapChromeTag::DebugWindow);
+    }
+  }
+
+  // Each button box on its own, never the band it sits in. The band is mostly
+  // empty: on an X4 the four 80 px boxes start at x=58 and end at x=422, so a
+  // full-width rect throws away two 58 px corners a pin fits in
+  // (LyraTheme.cpp, kX4FrontPositions). The theme answers false for a box it
+  // does not draw -- a touch panel, a locked panel, a button with no label --
+  // so this frees the band on its own wherever the boxes are absent.
+  //
+  // Portrait logical coordinates, the same pair MappedInputManager::hintBoxAt()
+  // uses for the hit test: the boxes are always painted in portrait whatever
+  // the reader is rotated to (BaseTheme.h), and the map screen is portrait, so
+  // these are the coordinates everything else on this screen is drawn in too.
+  const int portraitWidth = renderer.getDisplayHeight();
+  const int portraitHeight = renderer.getDisplayWidth();
+  Rect box;
+  for (int i = 0; i < 4; ++i) {
+    if (GUI.frontHintBox(i, portraitWidth, portraitHeight, box)) {
+      chrome_.add(box.x, box.y, box.width, box.height, MapChromeTag::Button);
+    }
+  }
+  for (int i = 0; i < 2; ++i) {
+    if (GUI.sideHintBox(i, portraitWidth, portraitHeight, box)) {
+      chrome_.add(box.x, box.y, box.width, box.height, MapChromeTag::SideButton);
+    }
+  }
+
+  // The register is sized for the ten pieces above plus room to spare, so this
+  // firing means something new started registering -- and the placers would
+  // then be drawing under furniture believing it absent.
+  if (chrome_.dropped() > 0) {
+    LOG_ERR(kLogTag, "chrome register full: %u rect(s) dropped, placers will draw under them",
+            static_cast<unsigned>(chrome_.dropped()));
+  }
+}
+
 void MapActivity::drawCompass(uint8_t headingStep) {
   const int centreX = renderer.getScreenWidth() - kCompassCenterMarginRight;
   const int centreY = kCompassCenterTop;
@@ -1743,8 +1880,8 @@ void MapActivity::drawCompass(uint8_t headingStep) {
   // inside it, so the clearance has to be the same in every direction or the
   // backing would clip the label at some headings and not others.
   const int haloRadius = kCompassGlyphRadius + kCompassHaloMargin;
-  renderer.fillRoundedRect(centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius,
-                           Color::White);
+  const Rect halo = compassRect();
+  renderer.fillRoundedRect(halo.x, halo.y, halo.width, halo.height, haloRadius, Color::White);
 
   // 1. "N", drawn as a 3-stroke monoline glyph -- not a font. GfxRenderer's
   // text renderer only has two orientations (TextRotation::None and a fixed
@@ -4971,8 +5108,10 @@ Rect MapActivity::pinEdgeArea() const {
   }
 
   // The compass sits top-right and the header row above it; clear both by taking
-  // the compass glyph's own bottom edge.
-  const int compassBottom = kCompassCenterTop + kCompassGlyphRadius;
+  // the compass box's own bottom edge (compassRect(), which is where the glyph
+  // and its halo are actually drawn).
+  const Rect compass = compassRect();
+  const int compassBottom = compass.y + compass.height;
   if (compassBottom + kPinEdgeMargin > top) top = compassBottom + kPinEdgeMargin / 2;
 
   if (right <= left || bottom <= top) return Rect{left, top, 0, 0};
@@ -5127,7 +5266,25 @@ void MapActivity::drawPins() {
     // The balloon hangs *above* its tip, so the on-screen test is asymmetric: a
     // tip a little below the panel still has a readable body on it.
     const PinShapeFrame& upright = kPinShapeFrames[0];
-    if (sx < -upright.w || sy < -upright.h || sx > screenW + upright.w || sy > screenH + upright.h) {
+    const bool offPanel = sx < -upright.w || sy < -upright.h || sx > screenW + upright.w || sy > screenH + upright.h;
+
+    // A pin under the screen's own furniture is a pin the rider never sees, so
+    // it is handled as one that is off the panel: it gets an edge marker if
+    // markers are on, and it is counted either way (MapChrome.h).
+    //
+    // The balloon is *not* moved to a clear spot and *not* flipped to hang the
+    // other way. Both would lie: the tip is the coordinate, and the shape's
+    // orientation already means something -- drawPinBalloon()'s `step` turns it
+    // so the point aims at an off-panel pin, so a flipped body would read as a
+    // direction that was never given. Maintainer's call, 2026-09-15.
+    //
+    // Step 0 (point-down) is what every pin inside the viewport is drawn with,
+    // so its frame is the box to test.
+    const bool underChrome = !offPanel && chrome_.hits(static_cast<int>(sx) - upright.tipX,
+                                                       static_cast<int>(sy) - upright.tipY, upright.w, upright.h);
+    if (underChrome) ++pinsHiddenByChrome_;
+
+    if (offPanel || underChrome) {
       if (!wantEdges) continue;
       if (!pinEdgeMarkerEnabled(entry)) continue;
       double ex = 0.0;
@@ -5190,17 +5347,32 @@ void MapActivity::drawPins() {
     }
   }
 
+  size_t edgesUnplaceable = 0;
   for (size_t i = 0; i < edgeCount; ++i) {
     if (edges[i].count == 0) continue;
-    drawPinEdgeMark(edges[i]);
-    ++drawn;
+    if (drawPinEdgeMark(edges[i])) {
+      ++drawn;
+    } else {
+      ++edgesUnplaceable;
+    }
   }
   // Never a silent cap: a marker that was not drawn is a pin the rider cannot
   // see, which is exactly the failure the feature is about.
   if (edgesDropped > 0)
     LOG_ERR(kLogTag, "%u off-screen pin marker(s) dropped: more than %d", static_cast<unsigned>(edgesDropped),
             kPinEdgeMax);
+  if (edgesUnplaceable > 0)
+    LOG_ERR(kLogTag, "%u off-screen pin marker(s) had nowhere clear of the screen's furniture",
+            static_cast<unsigned>(edgesUnplaceable));
   if (drawn > 0) LOG_DBG(kLogTag, "%d pin mark(s) drawn", drawn);
+  // Said out loud even when off-screen markers are on and every one of these
+  // got a marker: "three pins are behind the furniture" is the sentence that
+  // explains a panel the rider is confused by, and with markers off it is the
+  // only trace the pin left at all.
+  if (pinsHiddenByChrome_ > 0) {
+    LOG_DBG(kLogTag, "%u pin(s) hidden by screen furniture%s", static_cast<unsigned>(pinsHiddenByChrome_),
+            wantEdges ? ", shown as edge markers" : "");
+  }
 }
 
 void MapActivity::drawPinBalloon(int tipX, int tipY, size_t catalogIndex, uint8_t step) {
@@ -5242,7 +5414,37 @@ uint8_t MapActivity::pinShapeStepFor(double dx, double dy) {
   return static_cast<uint8_t>(step);
 }
 
-void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
+bool MapActivity::slideEdgeMarkClear(const PinShapeFrame& frame, const Rect& area, int& headX, int& headY) const {
+  const auto clear = [&](const int hx, const int hy) {
+    const int boxX = hx - frame.headX;
+    const int boxY = hy - frame.headY;
+    if (boxX < area.x || boxY < area.y) return false;
+    if (boxX + frame.w > area.x + area.width || boxY + frame.h > area.y + area.height) return false;
+    return !chrome_.hits(boxX, boxY, frame.w, frame.h);
+  };
+  if (clear(headX, headY)) return true;
+
+  // Outward in both axes at once, nearest first, so the mark moves as little as
+  // it can. Sliding is allowed here and not for a pin's own balloon: this
+  // position is already synthetic -- the clamps in drawPinEdgeMark() move it to
+  // the boundary of the area -- and the bearing is carried by the shape's
+  // rotation (pinShapeStepFor()), not by where the shape sits. A balloon at the
+  // pin's real coordinate has no such freedom, because there the position *is*
+  // the statement.
+  for (int distance = kPinEdgeSlideStepPx; distance <= kPinEdgeSlideMaxPx; distance += kPinEdgeSlideStepPx) {
+    const int offsetX[4] = {distance, -distance, 0, 0};
+    const int offsetY[4] = {0, 0, distance, -distance};
+    for (int i = 0; i < 4; ++i) {
+      if (!clear(headX + offsetX[i], headY + offsetY[i])) continue;
+      headX += offsetX[i];
+      headY += offsetY[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
   // The pin itself, turned so its point aims at where the pin actually is. An arrow
   // plus a distance said "11 km that way" and nothing about *what* was that way,
   // and a separate arrow next to an upright pin said it twice (both judged on the
@@ -5272,6 +5474,15 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
   if (headX - frame.headX + frame.w > rightLimit) headX = rightLimit - frame.w + frame.headX;
   if (headY - frame.headY < topLimit) headY = topLimit + frame.headY;
   if (headY - frame.headY + frame.h > bottomLimit) headY = bottomLimit - frame.h + frame.headY;
+
+  // And off the screen's own furniture, which the area above cannot express:
+  // measured on an X4 Pro panel 2026-09-15, a marker for a pin below the panel
+  // landed squarely on the scale bar's "5 km" (MapChrome.h).
+  if (!slideEdgeMarkClear(frame, area, headX, headY)) {
+    LOG_DBG(kLogTag, "pin edge marker dropped: no clear spot within %d px of %d,%d", kPinEdgeSlideMaxPx, headX, headY);
+    return false;
+  }
+
   // drawPinBalloon() still takes a tip target -- back-solve it from the head
   // target and this frame's own tip-to-head offset.
   const int tipX = headX + frame.tipX - frame.headX;
@@ -5315,7 +5526,10 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     // the previous frame at this point.
     markerRect(MapViewport::anchorScreenX(renderer.getScreenWidth()), MapViewport::markerYForStep(markerStep()), mx, my,
                mw, mh);
-    const bool overlaps = textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my;
+    // The rider's marker, or the screen's furniture -- the escape routes below
+    // serve both, so one condition drives them (MapChrome.h).
+    const bool overlaps = (textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my) ||
+                          chrome_.hits(textX, textY, textWidth, textHeight);
     if (overlaps) {
       if (mx - leftLimit >= textWidth + 4) {
         textX = mx - textWidth - 4;
@@ -5340,6 +5554,7 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     }
   }
   renderer.drawText(SMALL_FONT_ID, textX, textY, text, true);
+  return true;
 }
 
 void MapActivity::showPinOnMap(size_t slot) {
@@ -6346,7 +6561,11 @@ void MapActivity::renderRouteOverview() {
   // the side hints, both of which are drawn after the map and would cover a name
   // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
   // bar and the busy badge already bottom out on.
-  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
+  // Before any map data: the label placer and the POI marks ask the canvas what
+  // this frame's furniture owns, and the canvas reads this register
+  // (MapChrome.h).
+  buildChromeRegister();
+  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx, &chrome_);
 
   MapViewState view;
   view.markerX = anchorX;
@@ -6630,7 +6849,11 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // the side hints, both of which are drawn after the map and would cover a name
   // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
   // bar and the busy badge already bottom out on.
-  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
+  // Before any map data: the label placer and the POI marks ask the canvas what
+  // this frame's furniture owns, and the canvas reads this register
+  // (MapChrome.h).
+  buildChromeRegister();
+  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx, &chrome_);
 
   MapViewState view;
   view.markerX = markerX;
