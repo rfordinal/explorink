@@ -68,6 +68,98 @@ Devel builds only (`-DENABLE_BLE_CMD=1`, `env:t5s3pro`): `ON` starts an
 unauthenticated command channel with nothing on the screen to say so (T-222 in
 the parent repo).
 
+## CMD:WIFI
+
+```
+CMD:WIFI                 ->  WIFI:mode=0 conn=0 rssi=0 ip=0.0.0.0 clients=-1
+CMD:WIFI OFF             ->  WIFI_OK:off
+CMD:WIFI STA             ->  WIFI_OK:sta mode=1          (radio up, associated to nothing)
+CMD:WIFI AP              ->  WIFI_OK:ap ssid=<x> ip=<y>
+CMD:WIFI SCAN            ->  WIFI_OK:scan n=<x> ms=<y>
+CMD:WIFI CONNECT [ssid]  ->  WIFI_OK:connect ssid=<x> rssi=<y> ip=<z> ms=<t>
+```
+
+Same reason `CMD:BLE` exists, for the other radio. Every WiFi state this
+firmware has is reached through a screen that also repaints, scans or serves a
+page -- the sync screen, the web server, OTA, the font download -- so none of
+them is one thing changing.
+
+`CONNECT` with no argument uses the network the menu last joined. It reads the
+credential store and never writes it, so a bench run cannot change which
+network the device prefers.
+
+**A WiFi state is never a clean CPU state.** `HalPowerManager::setPowerSaving()`
+forces power saving *off* whenever `WiFi.getMode()` is not `WIFI_MODE_NULL`
+(`HalPowerManager.cpp:59-64`). So every WiFi reading carries a full-speed CPU as
+well as a radio, and the pair "WiFi off" / "WiFi on" is two changes, not one.
+Price the clock with `CMD:CPU` and subtract it, or the radio gets billed for
+both.
+
+## CMD:CPU
+
+```
+CMD:CPU              ->  CPU:mhz=80 hold=0 held=0
+CMD:CPU HOLD 240     ->  CPU_OK:hold mhz=240 held=1
+CMD:CPU AUTO         ->  CPU_OK:auto mhz=240
+```
+
+The loop throttles to `HalPowerManager::LOW_POWER_FREQ` three seconds after the
+last input, which on this board is 80 MHz. So an untouched bench state is at
+80 MHz, a state holding WiFi up is at full speed, and any pair spanning those
+two differs by a clock as well as by whatever was being measured. This is what
+separates them.
+
+**80, 160 and 240 only.** Below 80 the CPU leaves the PLL for the crystal, which
+drags APB down with it and takes flash and PSRAM timing with it on an S3. Both
+are correctness bounds `HalPowerManager.h` already documents (`LOW_POWER_FREQ`,
+`BLE_SAFE_FREQ`); this command must not be the one place that walks past them.
+
+The hold is a `HalPowerManager::Lock`, and the manager allows exactly one at a
+time. **`held=0` in the reply means something else holds it** and the next
+throttle will throw the clock away -- a run taken against `held=0` does not
+measure what its label says.
+
+## CMD:REFRESH
+
+```
+CMD:REFRESH                        ->  REFRESH:modes=fast,half,full patterns=flip,light,none
+CMD:REFRESH fast 30                ->  30 refreshes, no gap, whole-panel flip
+CMD:REFRESH half 20 5000           ->  20 refreshes, 5 s apart
+CMD:REFRESH fast 30 2000 light     ->  a tenth of the bytes change between frames
+CMD:REFRESH fast 30 2000 none      ->  nothing changes between frames
+```
+
+Each frame prints `REFRESH:i=<n> ms=<t>`, and the run ends with
+`REFRESH_END:... total_ms mean_ms min_ms max_ms span_ms`.
+
+**Why a run and not one refresh.** The meter samples about 66 times a second, so
+a single ~1,100 ms whole-panel frame on this board is roughly 70 samples with a
+state change at each end. One frame is a spike to be integrated, not a level to
+be read. A run of them at a fixed cadence *is* a level: (block mean - control
+mean) x block length / count is the energy one refresh costs.
+
+**The pattern is part of the measurement, not a detail.** `FAST` is differential
+on both panels this firmware drives ([`refresh-modes.md`](refresh-modes.md)): it
+moves only the pixels that differ from the previous plane. So `none` asks what
+the *call* costs with nothing to do, `flip` asks what the panel costs when every
+pixel moves, and `light` sits nearer a map redraw. Quoting one of them as "the
+cost of a refresh" without saying which is how a number becomes folklore.
+
+It writes straight into the framebuffer the panel already owns, exactly as
+`CMD:SHOWIMAGE` does, under a `RenderLock` held for the whole run. Whatever was
+on screen is destroyed and the next activity repaint cleans it up.
+
+## Driving the whole thing unattended
+
+`tools/power_campaign.py` in the parent repo runs a list of states end to end,
+holds each one for a fixed block, keeps the meter logging across all of them,
+and writes one `marks.jsonl` line per block with the wall-clock window and the
+`chg` read-back at both ends. `--report` reads the log back against those marks
+and prints each state against the controls either side. Thirty states by hand is
+thirty chances to mistype a state, skip a control, or lose the offset a window
+gets cut at -- and the device is the thing being measured, so anything typed at
+it during a block is part of the reading.
+
 ## What has been priced
 
 **2026-09-12, T5 S3 Pro, `t251-charge-off`, `env:t5s3pro`, JT-UM120 inline on

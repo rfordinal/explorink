@@ -43,6 +43,12 @@
 #include <BlePositionServer.h>
 #endif
 
+#ifdef ENABLE_WIFI_CMD
+// CMD:WIFI CONNECT reads the network the menu last joined. Read-only: a bench
+// run must not be able to change which network the device prefers.
+#include "WifiCredentialStore.h"
+#endif
+
 #ifdef ENABLE_SDBUS_CMD
 #include <esp_rom_crc.h>
 #endif
@@ -2790,6 +2796,315 @@ void loop() {
           logSerial.printf("BLE_ERR:unknown:ON,OFF\n");
         }
 #endif  // ENABLE_BLE_CMD
+#ifdef ENABLE_WIFI_CMD
+      } else if (cmd == "WIFI" || cmd.startsWith("WIFI ")) {
+        // Bring the WiFi radio up and down from the console, in the three
+        // shapes the firmware actually uses it in, so each one can be priced as
+        // a difference against the same idle screen.
+        //
+        // **Why it exists.** Every WiFi state on this device is behind a menu
+        // that also repaints the panel, scans, or serves a page -- the sync
+        // screen, the web server, OTA, the font download. None of them is one
+        // thing changing. The power campaign needs the radio alone, the same
+        // way CMD:BLE gives it the other radio alone (docs/power-bench.md).
+        //
+        //   CMD:WIFI            ->  WIFI:mode=0 conn=0 rssi=0 ip=0.0.0.0 clients=0
+        //   CMD:WIFI OFF        ->  WIFI_OK:off
+        //   CMD:WIFI STA        ->  WIFI_OK:sta            (radio up, associated to nothing)
+        //   CMD:WIFI AP         ->  WIFI_OK:ap ssid=<x> ip=<y>
+        //   CMD:WIFI SCAN       ->  WIFI_OK:scan n=<x> ms=<y>
+        //   CMD:WIFI CONNECT [ssid]  ->  WIFI_OK:connect ssid=<x> rssi=<y> ms=<z>
+        //
+        // CONNECT with no argument uses the last network the device joined
+        // through the menu; it reads the credential store and never writes it,
+        // so a bench run cannot change which network the device prefers.
+        //
+        // **A WiFi state is never a clean CPU state.** HalPowerManager::
+        // setPowerSaving() forces power saving *off* whenever WiFi.getMode() is
+        // not WIFI_MODE_NULL (HalPowerManager.cpp:59-64), so every reading below
+        // carries a 240 MHz CPU as well as a radio. Price the clock separately
+        // with CMD:CPU and subtract it, or the radio gets billed for both.
+        //
+        // Devel-only, same gate shape as CMD:BLE: AP mode puts an open network
+        // with the device's name on the air, and SCAN is a radio burst, both
+        // with nothing on the screen to say so.
+        String rest = cmd.length() > 4 ? cmd.substring(5) : String("");
+        rest.trim();
+        String verb = rest;
+        String arg;
+        const int sp = rest.indexOf(' ');
+        if (sp > 0) {
+          verb = rest.substring(0, sp);
+          arg = rest.substring(sp + 1);
+          arg.trim();
+        }
+        verb.toUpperCase();
+        if (verb.isEmpty()) {
+          const wifi_mode_t mode = WiFi.getMode();
+          logSerial.printf("WIFI:mode=%d conn=%u rssi=%d ip=%s clients=%d\n", static_cast<int>(mode),
+                           WiFi.status() == WL_CONNECTED ? 1u : 0u, static_cast<int>(WiFi.RSSI()),
+                           (mode & WIFI_MODE_AP) ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
+                           (mode & WIFI_MODE_AP) ? WiFi.softAPgetStationNum() : -1);
+        } else if (verb == "OFF") {
+          WiFi.disconnect(true, false);
+          WiFi.softAPdisconnect(true);
+          WiFi.mode(WIFI_OFF);
+          logSerial.printf("WIFI_OK:off\n");
+        } else if (verb == "STA") {
+          // Mode only, no begin(): the radio is initialised and listening and
+          // has joined nothing. This is the floor of "WiFi is on".
+          WiFi.mode(WIFI_STA);
+          WiFi.disconnect(false, false);
+          logSerial.printf("WIFI_OK:sta mode=%d\n", static_cast<int>(WiFi.getMode()));
+        } else if (verb == "AP") {
+          // Same call the web server activity makes, minus the web server, so
+          // the pair (AP up, AP up + server) is also measurable later.
+          WiFi.mode(WIFI_AP);
+          char ssid[32];
+          uint8_t mac[6] = {0};
+          WiFi.macAddress(mac);
+          snprintf(ssid, sizeof(ssid), "ExplorInk-bench-%02X%02X", mac[4], mac[5]);
+          const bool ok = WiFi.softAP(ssid, nullptr, 1, false, 4);
+          if (!ok) {
+            logSerial.printf("WIFI_ERR:softap\n");
+          } else {
+            logSerial.printf("WIFI_OK:ap ssid=%s ip=%s\n", ssid, WiFi.softAPIP().toString().c_str());
+          }
+        } else if (verb == "SCAN") {
+          // A burst rather than a state: it is the most expensive thing the
+          // radio does and it is short, so it is measured as energy over a
+          // repeat, not as a level.
+          WiFi.mode(WIFI_STA);
+          const unsigned long t0 = millis();
+          const int n = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/false);
+          const unsigned long ms = millis() - t0;
+          WiFi.scanDelete();
+          logSerial.printf("WIFI_OK:scan n=%d ms=%lu\n", n, ms);
+        } else if (verb == "CONNECT") {
+          std::string ssid = arg.length() > 0 ? std::string(arg.c_str()) : WIFI_STORE.getLastConnectedSsid();
+          if (ssid.empty()) {
+            logSerial.printf("WIFI_ERR:no saved ssid\n");
+          } else {
+            const WifiCredential* cred = WIFI_STORE.findCredential(ssid);
+            WiFi.mode(WIFI_STA);
+            if (cred != nullptr && !cred->password.empty()) {
+              WiFi.begin(ssid.c_str(), cred->password.c_str());
+            } else {
+              WiFi.begin(ssid.c_str());
+            }
+            const unsigned long t0 = millis();
+            while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
+              delay(100);
+            }
+            if (WiFi.status() != WL_CONNECTED) {
+              logSerial.printf("WIFI_ERR:connect ssid=%s status=%d ms=%lu\n", ssid.c_str(),
+                               static_cast<int>(WiFi.status()), millis() - t0);
+            } else {
+              logSerial.printf("WIFI_OK:connect ssid=%s rssi=%d ip=%s ms=%lu\n", ssid.c_str(),
+                               static_cast<int>(WiFi.RSSI()), WiFi.localIP().toString().c_str(), millis() - t0);
+            }
+          }
+        } else {
+          logSerial.printf("WIFI_ERR:unknown:OFF,STA,AP,SCAN,CONNECT\n");
+        }
+#endif  // ENABLE_WIFI_CMD
+#ifdef ENABLE_CPU_CMD
+      } else if (cmd == "CPU" || cmd.startsWith("CPU ")) {
+        // Pin the CPU clock so a state can be measured at a known frequency,
+        // and released again.
+        //
+        // **Why it exists.** The loop throttles to HalPowerManager::
+        // LOW_POWER_FREQ three seconds after the last input (main.cpp, the
+        // IDLE_POWER_SAVING_MS branch), so an untouched bench state is at
+        // 80 MHz on this board and a state that keeps WiFi up is at the full
+        // clock -- setPowerSaving() refuses to throttle while the radio is up.
+        // Two states that differ by "a radio" therefore also differ by "a
+        // clock", and without this command there is no way to tell how much of
+        // the difference is which.
+        //
+        //   CMD:CPU              ->  CPU:mhz=80 hold=0 held=0
+        //   CMD:CPU HOLD 240     ->  CPU_OK:hold mhz=240 held=1
+        //   CMD:CPU AUTO         ->  CPU_OK:auto mhz=240
+        //
+        // **80, 160 and 240 only.** Below 80 the CPU leaves the PLL for the
+        // crystal, which drags APB down with it and takes PSRAM and flash
+        // timing with it on an S3 -- both of those are correctness bounds the
+        // power manager already documents (HalPowerManager.h, LOW_POWER_FREQ
+        // and BLE_SAFE_FREQ). This command must not be the one place that
+        // walks past them.
+        //
+        // The hold is a HalPowerManager::Lock, and the manager allows exactly
+        // one at a time. `held=0` in the reply means something else already
+        // holds it and the clock will be thrown away by the next throttle --
+        // a run taken against `held=0` is not a measurement of what it says.
+        static HalPowerManager::Lock* cpuHold = nullptr;
+        String rest = cmd.length() > 3 ? cmd.substring(4) : String("");
+        rest.trim();
+        String verb = rest;
+        String arg;
+        const int sp = rest.indexOf(' ');
+        if (sp > 0) {
+          verb = rest.substring(0, sp);
+          arg = rest.substring(sp + 1);
+          arg.trim();
+        }
+        verb.toUpperCase();
+        if (verb.isEmpty()) {
+          logSerial.printf("CPU:mhz=%u hold=%u held=%u\n", static_cast<unsigned>(getCpuFrequencyMhz()),
+                           cpuHold != nullptr ? 1u : 0u, cpuHold != nullptr ? 1u : 0u);
+        } else if (verb == "AUTO") {
+          delete cpuHold;
+          cpuHold = nullptr;
+          logSerial.printf("CPU_OK:auto mhz=%u\n", static_cast<unsigned>(getCpuFrequencyMhz()));
+        } else if (verb == "HOLD") {
+          const long mhz = arg.toInt();
+          if (mhz != 80 && mhz != 160 && mhz != 240) {
+            logSerial.printf("CPU_ERR:mhz:80,160,240\n");
+          } else {
+            if (cpuHold == nullptr) {
+              cpuHold = new HalPowerManager::Lock();
+            }
+            const bool ok = setCpuFrequencyMhz(static_cast<uint32_t>(mhz));
+            logSerial.printf("CPU_%s:hold mhz=%u held=%u\n", ok ? "OK" : "ERR",
+                             static_cast<unsigned>(getCpuFrequencyMhz()), cpuHold != nullptr ? 1u : 0u);
+          }
+        } else {
+          logSerial.printf("CPU_ERR:unknown:HOLD,AUTO\n");
+        }
+#endif  // ENABLE_CPU_CMD
+#ifdef ENABLE_REFRESH_CMD
+      } else if (cmd == "REFRESH" || cmd.startsWith("REFRESH ")) {
+        // Drive the panel through N refreshes of one mode at a fixed cadence
+        // and report every duration, so the meter sees a repeated cycle long
+        // enough to integrate.
+        //
+        // **Why a repeat and not one refresh.** The bench meter samples about
+        // 66 times a second, so a single ~1,100 ms whole-panel frame on this
+        // board lands as roughly 70 samples with a state change at each end
+        // (parent repo docs/power-bench.md, "What this bench cannot do"). One
+        // frame is a spike to be integrated, not a level to be read. A run of
+        // them at a known cadence is a level: the mean draw over the run minus
+        // the idle draw of the same screen, times the run length, divided by
+        // the count, is the energy one refresh costs.
+        //
+        //   CMD:REFRESH                              ->  REFRESH:modes=fast,half,full
+        //   CMD:REFRESH fast 30                      ->  30 refreshes, no gap, flipping
+        //   CMD:REFRESH half 20 5000                 ->  20 refreshes, 5 s apart
+        //   CMD:REFRESH fast 30 2000 light           ->  a tenth of the rows change
+        //   CMD:REFRESH fast 30 2000 none            ->  nothing changes between frames
+        //
+        // **The pattern is part of the measurement, not a detail.** FAST is
+        // differential on both panels this firmware drives (docs/refresh-modes.md):
+        // it moves only the pixels that differ from the previous plane, so
+        // `none` asks what the *call* costs when there is nothing to do, `flip`
+        // asks what the panel costs when every pixel moves, and `light` sits
+        // where a map redraw sits. Quoting one of them as "the cost of a
+        // refresh" without saying which is how a number becomes folklore.
+        //
+        // Writes straight into the framebuffer the panel already owns, exactly
+        // as CMD:SHOWIMAGE does, so whatever was on screen is destroyed. The
+        // next activity repaint cleans it up.
+        String rest = cmd.length() > 7 ? cmd.substring(8) : String("");
+        rest.trim();
+        if (rest.isEmpty()) {
+          logSerial.printf("REFRESH:modes=fast,half,full patterns=flip,light,none\n");
+        } else {
+          // mode count [gap_ms] [pattern]
+          String tok[4];
+          int nTok = 0;
+          int from = 0;
+          while (nTok < 4 && from <= static_cast<int>(rest.length())) {
+            int to = rest.indexOf(' ', from);
+            if (to < 0) to = rest.length();
+            String t = rest.substring(from, to);
+            t.trim();
+            if (t.length() > 0) tok[nTok++] = t;
+            from = to + 1;
+          }
+          String modeName = tok[0];
+          modeName.toLowerCase();
+          const long count = nTok > 1 ? tok[1].toInt() : 0;
+          const long gapMs = nTok > 2 ? tok[2].toInt() : 0;
+          String pattern = nTok > 3 ? tok[3] : String("flip");
+          pattern.toLowerCase();
+
+          HalDisplay::RefreshMode mode = HalDisplay::RefreshMode::FAST_REFRESH;
+          bool modeOk = true;
+          if (modeName == "fast") {
+            mode = HalDisplay::RefreshMode::FAST_REFRESH;
+          } else if (modeName == "half") {
+            mode = HalDisplay::RefreshMode::HALF_REFRESH;
+          } else if (modeName == "full") {
+            mode = HalDisplay::RefreshMode::FULL_REFRESH;
+          } else {
+            modeOk = false;
+          }
+
+          const bool patternOk = (pattern == "flip" || pattern == "light" || pattern == "none");
+          // 15 minutes of wall clock, assuming a 2 s worst-case frame. The cap
+          // is on the *run*, not on the count: a 200-frame run with a 10 s gap
+          // would hold the main loop for half an hour and the device would look
+          // dead to everything else on it.
+          const long budgetMs = count * (gapMs + 2000);
+
+          if (!modeOk) {
+            logSerial.printf("REFRESH_ERR:mode:fast,half,full\n");
+          } else if (!patternOk) {
+            logSerial.printf("REFRESH_ERR:pattern:flip,light,none\n");
+          } else if (count < 1 || count > 400) {
+            logSerial.printf("REFRESH_ERR:count:1-400\n");
+          } else if (gapMs < 0 || gapMs > 60000) {
+            logSerial.printf("REFRESH_ERR:gap:0-60000\n");
+          } else if (budgetMs > 900000) {
+            logSerial.printf("REFRESH_ERR:budget:%ld ms over 900000\n", budgetMs);
+          } else {
+            uint8_t* buf = display.getFrameBuffer();
+            const uint32_t bufferSize = display.getBufferSize();
+            if (buf == nullptr || bufferSize == 0) {
+              logSerial.printf("REFRESH_ERR:no framebuffer\n");
+            } else {
+              // Held for the whole run for the same reason CMD:SHOWIMAGE holds
+              // it for one frame: the render task writes this same buffer, and
+              // a repaint landing between the pattern and the refresh would put
+              // an unknown image in the middle of a measurement.
+              RenderLock lock;
+              unsigned long total = 0;
+              unsigned long worst = 0;
+              unsigned long best = 0xFFFFFFFFul;
+              const unsigned long runStart = millis();
+              logSerial.printf("REFRESH_BEGIN:mode=%s count=%ld gap_ms=%ld pattern=%s bytes=%u\n", modeName.c_str(),
+                               count, gapMs, pattern.c_str(), static_cast<unsigned>(bufferSize));
+              for (long i = 0; i < count; i++) {
+                if (pattern == "flip") {
+                  // bit 1 = white (CMD:SHOWIMAGE's wire format), so this is a
+                  // whole-panel black/white alternation: every pixel moves.
+                  memset(buf, (i & 1) ? 0xFF : 0x00, bufferSize);
+                } else if (pattern == "light") {
+                  // One byte in ten flipped, spread across the whole buffer, so
+                  // the changed area is about a tenth of the panel rather than
+                  // a tenth of one edge.
+                  const uint8_t fill = (i & 1) ? 0xFF : 0x00;
+                  for (uint32_t b = 0; b < bufferSize; b += 10) {
+                    buf[b] = fill;
+                  }
+                }
+                const unsigned long t0 = millis();
+                display.displayBuffer(mode);
+                const unsigned long ms = millis() - t0;
+                total += ms;
+                if (ms > worst) worst = ms;
+                if (ms < best) best = ms;
+                logSerial.printf("REFRESH:i=%ld ms=%lu\n", i, ms);
+                if (gapMs > 0) delay(static_cast<uint32_t>(gapMs));
+              }
+              const unsigned long span = millis() - runStart;
+              logSerial.printf("REFRESH_END:mode=%s count=%ld total_ms=%lu mean_ms=%lu min_ms=%lu max_ms=%lu span_ms=%lu\n",
+                               modeName.c_str(), count, total, total / static_cast<unsigned long>(count), best, worst,
+                               span);
+            }
+          }
+        }
+#endif  // ENABLE_REFRESH_CMD
 #ifdef ENABLE_SDBUS_CMD
       } else if (cmd == "SDBUS" || cmd.startsWith("SDBUS ")) {
         // Bench instrument for BUG-037: toggle the three things
