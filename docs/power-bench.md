@@ -288,8 +288,32 @@ the charger at both ends, and never that the helper process it started was
 still alive. It does now, and a block whose helper dies inside five seconds is
 marked suspect.
 
-So T-250's BLE line is still open on the half that matters: **connected, and at
-a cadence, is unmeasured.** `--groups link` is the repeat.
+**The repeat ran the same afternoon** and is below.
+
+### BLE connected, measured
+
+`--groups link`, 2026-09-15, three minutes a state, same board and build, run
+directory `../../docs/power-runs/2026-09-15-t5s3pro-link-rail/`. The device
+logged `[BLEPOS] connected: interval 12 units (15 ms), latency 0, timeout 2000`
+once per connected block, so the link is attested by the device and not only by
+the helper still being alive.
+
+| state | +mA at VBUS | against advertising |
+|---|---|---|
+| advertising, nothing connected | +30.54 | -- |
+| connected at 15 ms, silent | **+26.93** | **-3.61** |
+| connected at 15 ms, a position every second | **+27.45** | **-3.09** |
+
+**A connection is cheaper than advertising here, by 3.6 mA.** Advertising
+transmits on three channels for as long as it is up; a link wakes on its own
+interval and is otherwise quiet. So the expensive BLE state on this device is
+the one *before* the phone arrives, not after.
+
+**A position a second costs 0.5 mA** over an idle link -- small, and above the
+control spread, so it is a number rather than a nothing.
+
+That closes T-250's BLE line, which guessed **10-20 mA for connected** and had
+never measured it. Connected at this firmware's 15 ms interval is **27 mA**.
 
 **Why a flat cost is what this build should produce.** Read off this build's own
 generated `sdkconfig.t5s3pro` (2026-09-15, `env:t5s3pro`) and the pinned
