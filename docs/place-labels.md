@@ -165,10 +165,16 @@ Rung 6 repeated to the millisecond across runs, so this is not noise. The cost
 is **0.3 % of a rung-6 frame and 0.8 % of a rung-5 one**.
 
 The estimate this replaces was 6-11 ms, derived from 25-40 C3 cycles per sample.
-It was low by roughly a third to a half: the real figure is nearer 60 cycles per
-sample, and reading a cycle count off the code was worth less than one serial
-capture. `MapLabelScratch::inkProbes` / `inkSamples` are what to re-price it
-with if the sampling step or the position count ever changes.
+The measurement says it was low by a third to a half, and that is all it says.
+
+**It does not give a per-sample cost.** Dividing the 12 ms by a sample count
+needs the device's own count, and the firmware does not log
+`MapLabelScratch::inkProbes` / `inkSamples` -- the 30,988 figure in the table
+above is the *host* preview at 480x800 placing 22 names, while the X3 is 528x792
+and placed 19. A per-sample cycle figure was written here on 2026-09-15 from that
+mismatch and is withdrawn: it mixed a measured device millisecond with a host
+count, which is the swap Teza V37 forbids. Logging the two counters is T-2016;
+until then the honest number is the per-frame delta.
 
 If it ever has to go, `MapLabelScratch::inkTest = false` is the switch, not a
 revert.

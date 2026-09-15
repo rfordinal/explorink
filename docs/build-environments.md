@@ -360,6 +360,32 @@ parallel build in another worktree swapped it mid-compile. Seen 2026-09-06 on
 deleting or hand-editing anything in it breaks every other build on the machine,
 and there was never anything wrong with it.
 
+## `sdkconfig.h: No such file` is the same directory, gone rather than swapped
+
+The stronger form of the section above. PlatformIO **removes** the package before
+unpacking a new copy, so while another session installs it
+`framework-arduinoespressif32-libs/<chip>/` is not stale, it is absent:
+
+```
+framework-arduinoespressif32-libs/esp32c3/include/newlib/platform_include/sys/reent.h:8:10:
+fatal error: sdkconfig.h: No such file or directory
+```
+
+followed by dozens of NimBLE failures and `[FAILED]`. Measured 2026-09-15: an
+`x4pro` build had just succeeded in the same worktree, a `default` build five
+minutes later failed this way, and `ls ~/.platformio/packages/` showed no
+`framework-arduinoespressif32-libs` at all. `~/.platformio/.cache/tmp/pkg-installing-*`
+plus another session's `pio run` in the process list named the cause.
+
+**Wait for it, and clear nothing.** Deleting or reinstalling the package yourself
+breaks the build that is mid-unpack, and it comes back on its own:
+
+```
+until [ -d ~/.platformio/packages/framework-arduinoespressif32-libs/esp32c3/include ]; do sleep 30; done
+```
+
+It took about four minutes on 2026-09-15; the rebuild after it was clean.
+
 ## `undefined reference to ble_store_config_*` is the shared build cache
 
 A link that failed 2026-09-10 on `t5s3pro`, with every source file compiling
