@@ -70,6 +70,25 @@ The semantics do not have to match the device's, and sometimes must not.
 the simulator, because there the firmware calls `update()` several times inside
 one frame. The fork's `EXPLORINK.md` is where that reasoning lives.
 
+## A brand-new file under `lib/hal/` does not exist in the simulator at all
+
+Different failure from the member-mismatch above, hit 2026-09-15 building
+`DeviceIdentity` (originally placed at `lib/hal/HalDeviceIdentity.*`):
+
+```
+src/activities/network/CrossPointWebServerActivity.cpp:11:10: fatal error: HalDeviceIdentity.h: No such file or directory
+```
+
+`[env:simulator]`'s `lib_ignore = hal` (`platformio.ini`) drops the **whole**
+`lib/hal/` directory, not just the HAL classes the fork re-implements. A new
+library that happens to live there -- even one that touches no HAL class, just
+`BoardConfig::ACTIVE.board` -- is invisible to the simulator build, full stop.
+Fixed by moving it to its own top-level `lib/<Name>/` directory, same as
+`lib/BlePositionServer/` (already builds under simulator, solves the identical
+BoardConfig-enum-variance problem for BLE naming). Rule: a new file that must
+build under both real hardware and the simulator does not go in `lib/hal/`,
+even if it feels HAL-adjacent.
+
 ## The simulated SD card
 
 Everything the firmware reads from the card lives under `./fs_/` next to the
