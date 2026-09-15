@@ -210,23 +210,67 @@ one.
    that way without giving up a whole edge. Markers now slide in 8 px steps
    until their box clears the register (`slideEdgeMarkClear()`).
 
+**Verified on an X3 panel, 2026-09-15.** Build
+`docs/firmware-builds/x3-882516cf-good-chrome-register-verified.bin` in the
+parent repo. Same method, different everything else: a 528x792 panel, rung 5
+(32 m/px) rather than 6, marker rung 3, Ride rather than Hike. The anchor was
+**read off the code** this time rather than measured -- `anchorScreenX(528)` is
+230 * 528 / 480 = 253 and `markerYForStep(3)` is 690 (`MapViewport.h`) -- and
+the calibration pin's box then agreed with it to the pixel.
+
+Seven pins, and every prediction held with nothing corrected:
+
+| pin | tip aimed at | expected | seen |
+|---|---|---|---|
+| `meet` | open map | draws | draws |
+| `#1` | the rider's marker | draws | draws |
+| `#2` | under button box 2 | hidden | hidden |
+| `#5` | under the compass | hidden | hidden |
+| `camp` | under the scale bar | hidden | hidden |
+| `#3` | **the 54 px gap between boxes 2 and 3** | **draws** | draws, touching neither box |
+| `#4` | the 65 px corner past box 4 | draws | draws |
+
+Two things only this board could say.
+
+**The gap between two buttons is usable here.** The X4's gaps are 8 px and
+28 px and a 42 px balloon fits in neither. The X3's middle gap is **54 px**
+(`kX3FrontPositions` = 65, 157, 291, 383, boxes 80 wide) and `#3` sits in it
+cleanly. So per-box registration pays twice on this panel: the gap and both
+65 px corners, all three of which a full-width band throws away.
+
+**The `mapPinsOffscreen`-off branch.** This board has the setting off, so the
+three hidden pins got no edge marker at all and the only trace is the count.
+Read off a serial capture through one `redraw`:
+
+```
+[DBG] [MAP] 4 pin mark(s) drawn
+[DBG] [MAP] 3 pin(s) hidden by screen furniture
+```
+
+No `, shown as edge markers` suffix, which is that branch exactly, and 4 + 3 is
+the split the targets predicted.
+
+**T-296's first half, on the board it was measured on.** The scale bar reads
+`0 2 km` with its halo and `Limbach` does not touch it. Honestly: this is a
+different view from the 2026-09-09 shot where `Bratislava` and the bar shared
+pixels, so it corroborates rather than proves -- the proof that a name cannot be
+placed there is structural and host-tested. **The second half cannot be tested
+on this board at all**: the X3 draws no side hint boxes on the map screen, zoom
+being on the front buttons (`Up`/`Down` in the bottom row), so the north arrow
+has nothing to collide with.
+
 **Still not verified:**
 
-- **The X3.** Different button positions (`kX3FrontPositions`, a 528 px panel)
-  and one side box per side rather than two stacked. It is also the board T-296
-  was measured on. Parent `docs/TODO.md`, T-2009.
 - **The X4.** Same 480x800 layout as the X4 Pro, so a regression check rather
   than a new one -- but a C3, a different binary and a third of the heap.
-- **Every rung but 6.** The scale bar's width is per rung, so `mapScaleRect()`
-  changes with it.
-- **`mapPinsOffscreen` off.** The board under test had it on, so the
-  edge-marker branch is what ran. With it off a hidden pin should leave only
-  `pinsHiddenByChrome_`'s log line, and that line has not been read.
-- **POI marks.** Not one square drew during the pass, and the layer was not the
+- **Every rung but 5 and 6.** The scale bar's width is per rung, so
+  `mapScaleRect()` changes with it. Rung 6 was seen on the X4 Pro and rung 5 on
+  the X3; 0 to 4 are unlooked at.
+- **POI marks.** Not one square drew on either board, and the layer was not the
   reason: `data/mapstyle.json` `layers.points` carries `square_px: 18`,
-  `safety_enabled: true` and **no `when` block**, so the layer is on at every
-  rung including 6. By elimination the test area had no `.tip` shard -- **that is
-  a deduction, not an observation.** Nobody looked at the card or at a
+  `safety_enabled: true` and **no `when` block**, so it is on at every rung. By
+  elimination neither card held a `.tip` shard for the test area -- **that is a
+  deduction, not an observation.** Nobody looked at either card or at a
   `placesEmitted` count. Only the host test covers this path.
 - `pinEdgeArea()`'s top edge moved down by 3 px, because it now takes the
   compass box (centre + glyph + halo = 39 px) rather than centre + glyph = 36 px.
