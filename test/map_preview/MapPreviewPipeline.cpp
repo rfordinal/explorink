@@ -211,6 +211,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // the render is allowed to need must not be one of them. On the device
   // MapActivity owns the same struct as a member (MapLabels.h).
   MapLabelScratch labels;
+  labels.inkTest = request.labelInkTest;
 
   HeapProbe::reset();
   // nullptr for the scratch is how the renderer is told to skip the whole
@@ -247,6 +248,8 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.placesDrawn = source->placesEmitted();
   result.labelsPlaced = labels.placed;
   result.labelsDropped = labels.dropped;
+  result.labelInkProbes = labels.inkProbes;
+  result.labelInkSamples = labels.inkSamples;
   result.bytesRead = source->bytesRead();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());

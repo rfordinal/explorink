@@ -244,6 +244,29 @@ class GfxRenderer {
 
   // Drawing
   void drawPixel(int x, int y, bool state = true) const;
+
+  // The inverse of drawPixel: is this logical pixel currently black?
+  //
+  // Added for the map's label placer, which picks where a name goes by how much
+  // ink each candidate position would cover (IMapCanvas::inkCoverage). That is a
+  // question about the finished frame, and the framebuffer is the only place the
+  // finished frame exists -- re-deriving it would mean a second pass over the
+  // roads layer off the SD card.
+  //
+  // Same rotation and the same bounds test as drawPixel, so a pixel written at
+  // (x, y) reads back at (x, y) in every orientation. Out of range reads false
+  // and does NOT log: this is called tens of thousands of times per frame and a
+  // clipped box is normal here, unlike a clipped write.
+  //
+  // False when there is no framebuffer to read, which callers must not confuse
+  // with white -- readbackAvailable() is the question to ask first.
+  bool isPixelInked(int x, int y) const;
+
+  // Whether isPixelInked() can answer at all. False while the framebuffer is
+  // lent out for a build (releaseFrameBufferForBuild) and false while a
+  // grayscale strip target is active, because then the band scratch holds the
+  // pixels and the framebuffer is stale.
+  bool readbackAvailable() const { return frameBuffer != nullptr && !_stripActive; }
   void drawLine(int x1, int y1, int x2, int y2, bool state = true) const;
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, bool state) const;
   void drawArc(int maxRadius, int cx, int cy, int xDir, int yDir, int lineWidth, bool state) const;

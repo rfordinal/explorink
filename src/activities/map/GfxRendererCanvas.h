@@ -261,6 +261,37 @@ class GfxRendererCanvas : public IMapCanvas {
     outHeight = renderer_.getScreenHeight() - minY_ - bottomReserved_;
   }
 
+  // Ink already on the panel under this box, for the label placer's
+  // least-ink-wins test (IMapCanvas::inkCoverage). Straight off the
+  // framebuffer, which at label time holds the whole finished map: names are
+  // drawn last (MapRenderer::render).
+  //
+  // Reports 0/0 -- "unknown" -- when the framebuffer cannot be read, which is
+  // the framebuffer being lent out for a build or a grayscale strip target
+  // being active. The placer then falls back to first-fit, the layout this
+  // firmware had before the test existed.
+  void inkCoverage(const int x, const int y, const int width, const int height, const int stepPx, int& outInked,
+                   int& outSamples) const override {
+    outInked = 0;
+    outSamples = 0;
+    if (!renderer_.readbackAvailable()) return;
+
+    const int step = stepPx < 1 ? 1 : stepPx;
+    // Clamped to the panel, not to drawableRect: the reserved bands hold real
+    // ink and a box is never placed into them anyway, while clamping to a
+    // narrower rect would silently count the clipped part as clean.
+    const int x0 = x < 0 ? 0 : x;
+    const int y0 = y < 0 ? 0 : y;
+    const int xEnd = std::min(x + width, renderer_.getScreenWidth());
+    const int yEnd = std::min(y + height, renderer_.getScreenHeight());
+    for (int py = y0; py < yEnd; py += step) {
+      for (int px = x0; px < xEnd; px += step) {
+        ++outSamples;
+        if (renderer_.isPixelInked(px, py)) ++outInked;
+      }
+    }
+  }
+
  private:
   static EpdFontFamily::Style styleFor(const bool bold) { return bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR; }
 
