@@ -195,6 +195,11 @@ because the two variants do not always place the same number of names:
 Every scene erases less map per name. The count moved in both directions and
 came out level over the eight scenes, 88 names either way.
 
+**Judged on the panel**, X3, 2026-09-15: the maintainer looked at the new layout
+on the glass and called it good. That is a verdict on what the panel shows, not
+a comparison -- the old layout was flashed that day only to time it and was
+never grabbed, so the numbers above remain the evidence that it is *better*.
+
 **It moves names around, and sometimes off.** Placement is greedy and marks its
 ground taken as it goes, so a cleaner position for one name can be the position
 the next name needed. Malacky and Vratna each gained a name that way; gap2 at
