@@ -54,7 +54,7 @@ the backdoor is its symptom.
 
 `gh_release_x4pro` is the shape that fixes it: `base` plus `nimble_dep`, the
 device flags, `LOG_LEVEL=1`, and none of the three bench flags. The C3 side
-still needs the same treatment -- see T-2007 in the parent repo's
+still needs the same treatment -- see T-2011 in the parent repo's
 `docs/TODO.md`.
 
 **Check a release before publishing it, against the image and not the branch:**
