@@ -18,6 +18,53 @@ is marked as such.
 | `slim` | ESP32-C3 | X4 + X3 | **no** | off | size experiments |
 | `sticky` | ESP32-S3 | Seeed Sticky | **no** | on | a different MCU family, one binary per family |
 | `t5s3pro` | ESP32-S3 | LilyGo T5 S3 Pro | **yes** | on, `LOG_LEVEL=2` | bring-up on the non-Xteink validation board. Adds `CMD:LIGHT` and `CMD:GNSS`, neither of which is in any other env. See [`lilygo-t5s3-bringup.md`](lilygo-t5s3-bringup.md) and [`gnss.md`](gnss.md) |
+| `x4pro` | ESP32-S3 | X4 Pro | **yes** | on, `LOG_LEVEL=2` | bench work on the X4 Pro. Carries `CMD:SETTING`, `CMD:BUTTON` and `CMD:TOUCHLOG`, so it is **not publishable** |
+| `gh_release_x4pro` | ESP32-S3 | X4 Pro | **yes** | on, `LOG_LEVEL=1` | the X4 Pro build that goes on GitHub and into the browser flasher. Added 2026-09-14 |
+
+## What a published build must not contain, and what two of them did
+
+**Three serial commands are bench instruments and every one of them is a way to
+hurt the person who lost the device.** The device gets lost or stolen, and USB
+and BLE share one unauthenticated command grammar (`MapCommandParser.h`, P3 and
+P5), so anyone holding it, or in radio range, reaches whatever is compiled in.
+
+| Flag | What it gives whoever picked the device up |
+|---|---|
+| `ENABLE_SETTING_CMD` | writes persisted settings: `mapDebugInfo` paints the rider's exact position on the panel, `mapAutoSyncTiles` and `mapTileFreshnessMode` spend their mobile data. The write survives a reboot |
+| `ENABLE_BUTTON_CMD` | injects button presses, reaching every screen the rider can |
+| `ENABLE_TOUCHLOG_CMD` | read-only, but it blocks the loop for up to eight seconds, which freezes the screen |
+
+**Measured 2026-09-14, on the published images fetched back off GitHub**, with
+`strings`:
+
+| Release | `SETTING_OK:` | `BUTTON_OK` | Built from |
+|---|---|---|---|
+| `explorink-x4pro-v0.2.0-alpha` | **present** | **present** | `env:x4pro`, the bench env |
+| `explorink-v0.2.0-alpha` (C3) | **present** | absent | `env:default`: its version string is `0.2.0-dev-v4-release-a9d7f244`, which only `scripts/git_branch.py` produces |
+
+`ENABLE_TOUCHLOG_CMD` is absent from both only because it did not exist when
+they were cut.
+
+**Why the C3 release was built from a bench env at all, and it is not
+carelessness:** `gh_release` has no `nimble_dep`, so it has no BLE peripheral,
+so it cannot receive a position or a tile from the phone. The only C3 env that
+can do the product's own job is `default`, and `default` carries the backdoor.
+**The release env is unusable, so the dev env shipped.** That is the defect;
+the backdoor is its symptom.
+
+`gh_release_x4pro` is the shape that fixes it: `base` plus `nimble_dep`, the
+device flags, `LOG_LEVEL=1`, and none of the three bench flags. The C3 side
+still needs the same treatment -- see T-2007 in the parent repo's
+`docs/TODO.md`.
+
+**Check a release before publishing it, against the image and not the branch:**
+
+```
+strings -n 4 firmware.bin | grep -E 'SETTING_OK:|BUTTON_OK|TOUCHLOG'
+```
+
+Nothing printed is the pass. This is the same rule the flash procedure already
+has -- a claim about what a build contains is about the binary, not the branch.
 
 `TRAILINK_VERSION` is set explicitly in every env except `default`, where
 `scripts/git_branch.py` derives it from the branch and short SHA.
