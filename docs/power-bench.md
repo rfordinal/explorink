@@ -398,6 +398,41 @@ Worth noting where it points: T-250 is named for **~20-40 unexplained mA** on
 this board, and T-244 is the rail being a latch that survives a reboot -- so two
 rides can differ by this without anything in the log saying so.
 
+### The rail experiment: the saving is the rail, not the receiver
+
+`--groups rail`, the same afternoon, three minutes a state, three controls
+agreeing to **0.08 mA**. `CMD:SDBUS RAIL` moves the rail without opening the
+UART, and every block reads the bit back (`SDBUS:cs=1 rst=0 rail=<n>`).
+
+| state | rail bit | UART | +mA at VBUS |
+|---|---|---|---|
+| control | 0 | closed | -- |
+| rail powered, nothing using it | 1 | closed | **-2.80** |
+| rail powered, receiver parsed | 1 | open | **-1.99** |
+
+**The whole saving belongs to the rail.** Powering it with nothing on the other
+end is already -2.80 mA; running the receiver and parsing its sentences on top
+gives back 0.81 mA, which is the UART peripheral and the parse, not a radio.
+
+**So this experiment did not isolate the receiver's own draw, and says why.**
+A multi-GNSS receiver in acquisition is tens of milliamps, and neither rail
+state shows anything of that size. Two readings survive and both stay `[open]`:
+
+- the receiver draws far less here than any datasheet figure would suggest, or
+- the rail-*down* state is paying for an unpowered receiver -- the ESP32 keeps
+  driving lines into a part with no supply and back-feeds it through the input
+  protection -- and that cost happens to exceed what the receiver costs when it
+  is properly powered.
+
+Either way there is a product-level consequence worth stating plainly:
+**`CMD:GNSS OFF` does not make the board cheaper. It makes it 2.8 mA dearer.**
+
+What would settle it, and neither fits in a bench afternoon: `CMD:GNSS PROBE`
+on a **real power-on boot** (it answers whether the board holds the rail on by
+itself -- see [`gnss.md`](gnss.md)), and a state with the rail down and the
+UART pins put to high-Z, which is the control that tells back-feed from
+everything else.
+
 ### The map screen
 
 | state | +mA at VBUS |
