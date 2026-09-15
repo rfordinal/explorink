@@ -11,7 +11,9 @@ A field that could not be read prints `?`. `chg` is `CHRG_STAT`, the charger's
 two bits: 0 not charging, 1 pre-charge, 2 fast charge, 3 done.
 
 `CMD:BATT DM <addr>` reads the gauge's data memory instead -- see "The data
-memory, and why it reads nothing useful on this board" below.
+memory, and why it reads nothing useful on this board" below. `CMD:BATT SCAN`
+sweeps the whole gauge bus -- see "The I2C sweep, and what it found on X3"
+below.
 
 **`curr_ma` is signed the way TI signs it**: positive is current *into* the cell,
 negative is current *out* of it. A charging board therefore reports the opposite
@@ -48,13 +50,16 @@ half of it**. The measurement 2b wants is unchanged.
 
 ## Scope and gating
 
-- **`-DENABLE_BATT_CMD=1` in `env:t5s3pro` only**, and in no release env. Devel
-  builds of other boards do not carry it.
-- **X3 would answer it too.** It carries a BQ27220 on the C3 binary, and the
-  profile is picked at runtime, so widening the flag is a one-line change when
-  an X3 measurement comes up. Until then a C3 build does not pay for the code.
+- **`-DENABLE_BATT_CMD=1` in `env:t5s3pro` and `env:default`** (2026-09-15,
+  `platformio.ini`), and in no release env. `env:default` is the C3 binary that
+  covers both X3 and X4 -- the widening this doc predicted.
 - **X4 has no gauge.** `gaugeAddr == 0` there, and the reply is
   `BATT_ERR:no gauge on this board`.
+- **Enabling `env:default` needed `Wire.h` moved off an `ENABLE_CHARGE_CMD`-only
+  guard** (`main.cpp:38`, was `#ifdef ENABLE_CHARGE_CMD`, now
+  `#if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)`). `env:t5s3pro`
+  always carried both flags together, so this latent gap never showed until a
+  BATT-only build tried to compile.
 - **It leaks nothing about the rider** -- no position, no route, no identity. It
   is devel-only because a command with no UI behind it does not belong in a build
   a stranger flashes, not because the reply is sensitive.
@@ -154,3 +159,37 @@ incremental read starting at 0x3E** (SLUUBD4A 2.2's own worked example does
 exactly that); an addressed read of each byte re-arms it and never delivers it.
 0x3E..0x61 is contiguous: two address bytes, 32 data bytes, `MACDataSum()`,
 `MACDataLen()`.
+
+## The I2C sweep, and what it found on X3
+
+`CMD:BATT SCAN` tries a zero-length write against every 7-bit address 0x01-0x7E
+and reports the ones that ACK. It exists because X3's `chargerAddr` is 0
+(`BoardConfig.h:913`) -- unlike the T5 S3 Pro's BQ25896 -- so whether X3 carries
+any charger IC at all was open, and there is no vendor schematic to answer it
+from (Xteink does not publish one, unlike LilyGo's dev board).
+
+```
+CMD:BATT SCAN  ->  BATT_SCAN:55 68 6B 7E
+```
+
+**Measured on the X3 that arrived 2026-09-09, 2026-09-15, build
+`x3-i2c-scan` `a1f055ff`:**
+
+- `0x55`, `0x68`, `0x6B` are all accounted for -- the BQ27220 gauge, the DS3231
+  RTC and the QMI8658 IMU, all three already in `BoardConfig.h:915`.
+- **`0x7E` is not in `BoardConfig.h` anywhere on this bus.** A real fourth
+  device, or a bus artifact -- 0x7E sits inside the I2C spec's reserved block
+  (0x78-0x7F, UM10204 s3.1.11), which real parts sometimes use anyway. An
+  ACK-only sweep cannot tell a real chip from a reserved-address quirk; only a
+  register read that comes back sane can.
+
+  **`CMD:BATT PROBE 0x7E` (`BATT_PROBE:addr=0x7E ok=0/16 regs=?? ?? ...`),
+  measured on the same X3, 2026-09-15, build `x3-i2c-scan` `8716699e`.** Every
+  one of 16 register-addressed reads NACKed. `BATT_SCAN` ACKs a bare
+  zero-length write; `BATT_PROBE` ACKs the address the same way but then fails
+  the repeated-start read that follows -- so whatever answers at 0x7E does not
+  behave like an addressable register device. **Read as: not a real
+  register-mapped chip, most likely the reserved-address artifact the spec
+  predicts** -- but this is inference from one probe pattern, not a datasheet,
+  so it stays short of certain. X3's charger IC (if it has an I2C-visible one
+  at all) is still unidentified.
