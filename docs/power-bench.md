@@ -374,6 +374,73 @@ Worth noting where it points: T-250 is named for **~20-40 unexplained mA** on
 this board, and T-244 is the rail being a latch that survives a reboot -- so two
 rides can differ by this without anything in the log saying so.
 
+### The map screen
+
+| state | +mA at VBUS |
+|---|---|
+| map open, idle | -0.67 |
+| back on the home screen | +0.01 |
+
+**An idle map screen costs nothing over an idle home screen.** E-ink holds an
+image with no current, and the map activity's loop adds nothing this bench can
+see.
+
+**And entering the map did not bring a radio up**, which is why this row is as
+low as it is. `MapActivity::onEnter()` gates the radio on
+`bleInUse_ = SETTINGS.mapGnssPosition == 0 || forcePhonePosition_` -- "one
+position source per map session, and the other radio does not run" -- and this
+device has the receiver as its source. Confirmed from the run's `serial.log`:
+the `map-idle` window carries neither `BlePositionServer.begin() returned` nor
+`[GNSS] aiding sent`. Two caveats on the row, both from that log: the viewport
+was empty (`1 missing` tile at that position) and the freshness check ran every
+30 s with nothing to do.
+
+**The two "map with a position stream" rows measured nothing** -- the fake
+phone died at import, as above. Read them as two more samples of "map idle",
+which is what they agree with.
+
+### Panel refreshes
+
+90 frames a block, one every 2,000 ms, whole-panel each time. `flip` alternates
+an all-black and an all-white fill, `light` moves a tenth of the bytes, `none`
+leaves the buffer alone.
+
+| mode, pattern | frame ms | +mA at VBUS | mJ per frame | mW while busy |
+|---|---|---|---|---|
+| `FAST`, flip | 597 | +19.28 | **261** | 437 |
+| `FAST`, light | 508 | +17.31 | **230** | 453 |
+| `HALF`, flip | 1461 | +28.68 | **515** | 353 |
+| `HALF`, light | 1162 | +24.07 | **393** | 339 |
+| `FULL`, flip | 1461 | +29.06 | **523** | 358 |
+| `FULL`, light | 1162 | +24.21 | **399** | 344 |
+| `FAST`, nothing changed | 260 | +13.98 | **165** | 635 |
+
+Three things fall out.
+
+**`FULL` and `HALF` are the same frame on this board, in energy as well as in
+time.** 1,461 ms both, 523 against 515 mJ -- a 1.5 % gap, narrower than the
+run's own control spread is against these numbers.
+[`refresh-modes.md`](refresh-modes.md) already said `FULL` does not clean better
+than `HALF` and costs a multi-flash for nothing; on the T5 S3 Pro it does not
+even cost the flash. The rule stands and now has a price attached.
+
+**`FAST` is half the energy and two-fifths of the time.** 261 against 515 mJ for
+the same all-pixels-move content.
+
+**A `FAST` call with nothing to move still costs 165 mJ and 260 ms** -- 63 % of
+the energy of a `FAST` frame where every pixel changes. The differential
+waveform saves the ink, not the trip: the frame is still converted and pushed
+whole. That is the same whole-panel data path
+[`t5s3-partial-refresh.md`](t5s3-partial-refresh.md) describes from the driver
+side, now measured from the supply side. It is also why the `mW while busy`
+column is *highest* for this row: a short window doing CPU and bus work rather
+than a long one moving ink.
+
+**One observation left alone.** `HALF` and `FULL` are non-differential and
+should not care what is on the panel, yet `light` runs 1,162 ms against `flip`'s
+1,461 ms and costs a quarter less. Something in the path is content-dependent in
+a mode where it should not be. Not chased here.
+
 ## What this bench cannot do
 
 - **Anything under about 5 mA.** The charger's own draw is 1.5 mA typical and
