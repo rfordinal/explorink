@@ -117,15 +117,31 @@ documented, generalised: geometry may run under chrome, decisions may not.
 The register is 16 entries of 10 bytes plus two `size_t` counters: **168 bytes
 on the C3** (`sizeof` is 176 on a 64-bit host, where `size_t` is 8 rather than
 4). It lives inside `MapActivity`, which is heap-allocated, so it is 168 bytes
-of the map screen's heap and **nothing at all of static RAM** -- measured
-2026-09-15 against `develop` at `623040fe`, `pio run -e default`:
+of the map screen's heap and **nothing at all of static RAM**.
 
-| | develop | with the register |
+**Read, not measured.** `sizeof` on a 64-bit host is 176; 168 is that adjusted
+for the C3's 4-byte `size_t`. The static-RAM figures below are measured and show
+zero, which is consistent with it living in the heap-allocated activity, but
+nobody has read the map screen's free heap on both builds. `CMD:INFO`'s `heap=`
+on the map screen, before and after, would settle it.
+
+Measured 2026-09-15, both sides `pio run -e default` on the same machine within
+the hour, the merge being the only difference -- `develop` at `ddc980dd` against
+the merge `3b5814c7`:
+
+| | before | after |
 |---|---|---|
 | RAM (static) | 59,140 B | 59,140 B |
-| Flash | 4,077,241 B | 4,078,555 B |
+| Flash | 4,063,665 B | 4,065,767 B |
 
-So: static RAM unchanged, flash up 1,314 B.
+So: static RAM unchanged, flash up 2,102 B for all four commits together.
+
+An earlier revision of this table said +1,314 B against `develop` at `623040fe`.
+Both halves of that were wrong by the time it was committed: the base was five
+`develop` merges old, and the figure covered only the register commit, not the
+scale bar halo or the edge-marker slide that followed it. **A cost measured
+against a base the session then rebases past is dead** -- re-measure against the
+merge's own first parent.
 
 A query is a linear walk of about ten rectangles with four compares each. The
 first draft reused `MapOccupancyGrid` (`src/activities/map/MapLabels.h`), which
@@ -149,12 +165,19 @@ Each of the three behavioural tests was confirmed to fail with the check
 disabled, so none of them is a test that cannot fail.
 
 **Verified on an X4 Pro panel, 2026-09-15.** Build
-`docs/firmware-builds/x4pro-chrome-occupancy-70b7c340-good-chrome-register-verified.bin`
+`docs/firmware-builds/x4pro-3b5814c7-good-chrome-register-verified.bin`
 in the parent repo. Six pins written over the serial console onto computed
 pixels: position pinned at 48.2889/17.2669 heading 0, rung 6 (45 m/px), and the
 pin anchor measured at (230, 584) with a calibration pin placed at the device's
 own coordinate, because the marker ladder moves the anchor off the style's
 `marker_y_px`.
+
+The x is exact: the changed-pixel box was 42 px wide, which is the shape's own
+width, so the tip sits 21 px in from its left edge. **The y is inferred** from
+the bottom of that box, and the box covers changed pixels rather than the shape,
+so it can be a pixel or two high. It did not matter -- every one of the six
+targets landed where it was aimed -- but a test needing better than a couple of
+pixels must measure it another way.
 
 | pin | tip aimed at | expected | seen |
 |---|---|---|---|
@@ -167,6 +190,13 @@ own coordinate, because the marker ladder moves the anchor off the style's
 
 `#3` is the one that pays for registering buttons one at a time. No place name
 touched the scale bar or a side box on any frame of the pass.
+
+The build that was flashed was commit `70b7c340`, which two later rebases
+removed from every branch. It is still the code that merged: `git diff 70b7c340
+3b5814c7` touches **four docs files and nothing under `src/`, `lib/`, `data/` or
+`platformio.ini`**, checked 2026-09-15. So the archived binary is the bytes of
+what is on `develop`, and it is filed under the merge's SHA rather than the dead
+one.
 
 **Two defects the host could not have found, both fixed in the same pass:**
 
@@ -192,12 +222,23 @@ touched the scale bar or a side box on any frame of the pass.
 - **`mapPinsOffscreen` off.** The board under test had it on, so the
   edge-marker branch is what ran. With it off a hidden pin should leave only
   `pinsHiddenByChrome_`'s log line, and that line has not been read.
-- **POI marks.** No `.tip` shard covered the test area, so not one square was
-  drawn. Only the host test covers that path.
+- **POI marks.** Not one square drew during the pass, and the layer was not the
+  reason: `data/mapstyle.json` `layers.points` carries `square_px: 18`,
+  `safety_enabled: true` and **no `when` block**, so the layer is on at every
+  rung including 6. By elimination the test area had no `.tip` shard -- **that is
+  a deduction, not an observation.** Nobody looked at the card or at a
+  `placesEmitted` count. Only the host test covers this path.
 - `pinEdgeArea()`'s top edge moved down by 3 px, because it now takes the
   compass box (centre + glyph + halo = 39 px) rather than centre + glyph = 36 px.
   The halo is drawn, so the new number is the right one; nobody has looked at
   the 3 px.
+
+**The one thing no test can fail on.** `MapActivity::buildChromeRegister()` has
+no host test: it needs a theme, a panel and a `GfxRenderer`. The 10 tests cover
+the register's arithmetic and the two placers that query it, so a rectangle
+registered in the *wrong place* passes all 519 of them and is caught only by a
+thumb on the glass. That is why the pin table above is the evidence for this
+feature and the host suite is not.
 
 **Known and not fixed:** an edge marker's distance label and a place name can
 draw on the same pixels -- `9.5 km` and `10 km` across `Svaty Jur` in this same
