@@ -252,6 +252,8 @@ InputManager::Gt911TaskStats HalGPIO::gt911TaskStats(const bool reset) { return 
 unsigned long HalGPIO::homeKeyEventAtMs() const { return inputMgr.homeKeyEventAtMs(); }
 InputManager::HomeKeyCounters HalGPIO::homeKeyCounters(const bool reset) { return inputMgr.homeKeyCounters(reset); }
 
+void HalGPIO::setTouchStaleMs(const uint16_t ms) { inputMgr.setTouchStaleMs(ms); }
+
 void HalGPIO::setHomeKeyDoubleTapWindow(const uint16_t windowMs) {
   InputManager::HomeKeyGestureSpec spec;
   spec.doubleWindowMs = windowMs;

@@ -193,6 +193,11 @@ void MappedInputManager::pumpHomeKey() const {
   const uint16_t wantWindow = TouchPolicy::homeKeyDoubleTapLocksTouch() ? kHomeKeyDoubleTapWindowMs : 0;
   if (wantWindow != appliedDoubleTapWindowMs) {
     gpio.setHomeKeyDoubleTapWindow(wantWindow);
+    // The glass gets the same bound as the key's tap, and for the same reason: a
+    // tap is aimed at something, and after a render took seconds the thing it
+    // was aimed at has moved. Pushed from here so both numbers live together --
+    // the SDK stays mechanical, the app owns what expires.
+    gpio.setTouchStaleMs(kHomeKeyTapStaleMs);
     appliedDoubleTapWindowMs = wantWindow;
   }
 

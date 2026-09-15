@@ -101,6 +101,8 @@ class HalGPIO {
   // Tell the key's recogniser what to look for. Re-applied when touch policy
   // flips, which it does once during boot as the controller comes up.
   void setHomeKeyDoubleTapWindow(uint16_t windowMs);
+  // How old a completed glass contact may be before its tap is refused; 0 never.
+  void setTouchStaleMs(uint16_t ms);
   // What the GT911 sampler managed, so a passing test can be told apart from a
   // lucky one. See InputManager::Gt911TaskStats.
   InputManager::Gt911TaskStats gt911TaskStats(bool reset);
