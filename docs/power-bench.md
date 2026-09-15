@@ -401,17 +401,17 @@ rides can differ by this without anything in the log saying so.
 ### The rail experiment: the saving is the rail, not the receiver
 
 `--groups rail`, the same afternoon, three minutes a state, three controls
-agreeing to **0.08 mA**. `CMD:SDBUS RAIL` moves the rail without opening the
+agreeing to **0.15 mA**. `CMD:SDBUS RAIL` moves the rail without opening the
 UART, and every block reads the bit back (`SDBUS:cs=1 rst=0 rail=<n>`).
 
 | state | rail bit | UART | +mA at VBUS |
 |---|---|---|---|
 | control | 0 | closed | -- |
-| rail powered, nothing using it | 1 | closed | **-2.80** |
-| rail powered, receiver parsed | 1 | open | **-1.99** |
+| rail powered, nothing using it | 1 | closed | **-2.72** |
+| rail powered, receiver parsed | 1 | open | **-1.91** |
 
 **The whole saving belongs to the rail.** Powering it with nothing on the other
-end is already -2.80 mA; running the receiver and parsing its sentences on top
+end is already -2.72 mA; running the receiver and parsing its sentences on top
 gives back 0.81 mA, which is the UART peripheral and the parse, not a radio.
 
 **So this experiment did not isolate the receiver's own draw, and says why.**
@@ -425,7 +425,7 @@ state shows anything of that size. Two readings survive and both stay `[open]`:
   is properly powered.
 
 Either way there is a product-level consequence worth stating plainly:
-**`CMD:GNSS OFF` does not make the board cheaper. It makes it 2.8 mA dearer.**
+**`CMD:GNSS OFF` does not make the board cheaper. It makes it 2.7 mA dearer.**
 
 What would settle it, and neither fits in a bench afternoon: `CMD:GNSS PROBE`
 on a **real power-on boot** (it answers whether the board holds the rail on by
