@@ -147,12 +147,28 @@ old first-fit. Measured on the host preview, 2026-09-15
 
 The millisecond columns are a **laptop** and the difference sits inside their
 own run-to-run spread -- they say the change is not structural, nothing more.
-The **sample count** is the figure that carries to the panel, because it is the
-same number there. Worst scene is 43,466 samples; at an estimated 25-40 C3
-cycles per sample that is **6-11 ms**, against a rung-6 render measured in
-seconds. `UNVERIFIED on hardware` -- the cycle figure is read off the code, not
-measured, and `MapLabelScratch::inkProbes` / `inkSamples` are there to price it
-for real when a device runs it.
+
+### Measured on an X3
+
+2026-09-15, Xteink X3 (ESP32-C3), MAC `7c:e8:b1:6f:c2:9c`, ride mode over
+Pezinok at 48.289 17.267, read off the device's own `render ... ms` log line
+(`MapActivity.cpp`). The same binary twice, once with a temporary
+`labels_->inkTest = false` in `MapActivity::onEnter()` -- so the two rows differ
+by the test and by nothing else:
+
+| rung | render | label pass, first-fit | label pass, least-ink | cost |
+|---|---|---|---|---|
+| 6 | 3,801 ms | 71 ms (3 runs, all 71) | 84, 83 ms | **+12 to +13 ms** |
+| 5 | 1,979 ms | 76 ms | 92 ms | **+16 ms** |
+
+Rung 6 repeated to the millisecond across runs, so this is not noise. The cost
+is **0.3 % of a rung-6 frame and 0.8 % of a rung-5 one**.
+
+The estimate this replaces was 6-11 ms, derived from 25-40 C3 cycles per sample.
+It was low by roughly a third to a half: the real figure is nearer 60 cycles per
+sample, and reading a cycle count off the code was worth less than one serial
+capture. `MapLabelScratch::inkProbes` / `inkSamples` are what to re-price it
+with if the sampling step or the position count ever changes.
 
 If it ever has to go, `MapLabelScratch::inkTest = false` is the switch, not a
 revert.
