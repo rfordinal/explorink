@@ -129,4 +129,29 @@ class IMapCanvas {
     outInked = 0;
     outSamples = 0;
   }
+
+  // True when this rectangle overlaps something the screen draws over the map
+  // after the map is finished -- a button box, the compass, the scale bar, the
+  // debug window, the header band (MapChrome.h).
+  //
+  // Only for things that have to be *found*: a place name and a POI mark, both
+  // of which say the wrong thing when half of them is painted over. Road
+  // geometry deliberately does not ask -- a line running under the button row
+  // still reads as a road leaving the panel, which is the same asymmetry
+  // GfxRendererCanvas's bottomReservedPx already documents.
+  //
+  // Defaulted to false rather than pure, because a canvas with no furniture
+  // over it is the honest answer for every implementation but the device's:
+  // test/map_preview draws the map alone, and the webapp's firmware preview
+  // panel renders through it. Note this is a default *implementation*, not a
+  // default argument -- the reason the file warns against those (a default
+  // argument binds statically and an override can disagree about it) does not
+  // apply to a body an override simply replaces.
+  virtual bool areaReserved(int x, int y, int width, int height) const {
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    return false;
+  }
 };

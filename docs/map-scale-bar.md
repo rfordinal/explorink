@@ -78,3 +78,11 @@ general on-panel legibility: measured on hardware, 2026-08-11, at one zoom
 rung (see above). **Not yet checked**: every other rung on the ladder, and
 whether the tick lines read cleanly against the alternating segments at 1x
 in bright daylight rather than an indoor screenshot.
+
+## The bar reserves its own pixels
+
+Since 2026-09-15 the bar's geometry is computed once
+(`MapActivity::scaleBarLayout()`) and used twice: `drawMapScale()` draws from it,
+and `MapActivity::mapScaleRect()` hands it to the chrome register, so a place
+name or a POI mark will not be placed on top of the bar.
+`docs/map-chrome-register.md`.

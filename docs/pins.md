@@ -679,3 +679,11 @@ tables are `constexpr` in flash. Flash went 59.5 % to 59.7 %.
 
 Pins will be drawn by `MapActivity`, not `MapRenderer`, so the webapp's firmware
 preview panel will not show them (parent `docs/device-preview.md`).
+
+## A pin under the screen's own furniture
+
+Since 2026-09-15 a pin whose balloon lands on the header, the compass, the scale
+bar, the debug window or a button box is handled as a pin that is off the panel:
+an edge marker when those are on, and a logged count either way. The balloon is
+not moved and not flipped -- the tip is the coordinate, and the shape's rotation
+already carries a direction. `docs/map-chrome-register.md`.

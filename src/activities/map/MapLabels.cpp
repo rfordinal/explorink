@@ -48,7 +48,7 @@ bool MapOccupancyGrid::anySet(const int x, const int y, const int width, const i
 }
 
 void MapOccupancyGrid::coverage(const int x, const int y, const int width, const int height, int& outSet,
-                               int& outTotal) const {
+                                int& outTotal) const {
   outSet = 0;
   outTotal = 0;
   int colLo = 0, colHi = 0, rowLo = 0, rowHi = 0;
@@ -363,6 +363,12 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       const Box& textBox = placements[p];
       const Box knockout = inflate(textBox, knockoutPad);
       if (!contains(drawable, knockout)) continue;
+      // Screen furniture owns its pixels (MapChrome.h). Refusing the position
+      // rather than the name is deliberate: there are eight of them, so a name
+      // beside the scale bar usually just moves to its other side. Only a place
+      // whose eight positions are all taken loses its label, and it is then
+      // counted as dropped like any other.
+      if (canvas.areaReserved(knockout.x, knockout.y, knockout.w, knockout.h)) continue;
       // Gap only against other labels: it is a spacing rule between names, not
       // a reason to refuse a name that reaches the edge of the screen.
       const Box spaced = inflate(knockout, style.placeLabelGapPx);
