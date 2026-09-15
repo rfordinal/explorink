@@ -178,18 +178,24 @@ CMD:BATT SCAN  ->  BATT_SCAN:55 68 6B 7E
 - `0x55`, `0x68`, `0x6B` are all accounted for -- the BQ27220 gauge, the DS3231
   RTC and the QMI8658 IMU, all three already in `BoardConfig.h:915`.
 - **`0x7E` is not in `BoardConfig.h` anywhere on this bus.** A real fourth
-  device, or a bus artifact -- 0x7E sits inside the I2C spec's reserved block
-  (0x78-0x7F, UM10204 s3.1.11), which real parts sometimes use anyway. An
-  ACK-only sweep cannot tell a real chip from a reserved-address quirk; only a
-  register read that comes back sane can.
+  device, or a bus artifact. `0x7E` sits inside I2C's reserved `1111 1XX` block
+  (UM10204 rev 7.0, s3.1.12, Table 4 -- `0x7C`-`0x7F`, R/W=1, "device ID"). But
+  the spec's own Device ID protocol (s3.1.17) only defines a function for
+  `0x7C` itself: write `1111 1000`, restart, read `1111 1001`. `0x7E` has no
+  defined I2C-standard behaviour at all -- it is not "the reserved Device ID
+  address" the way an earlier version of this note said, it is an unassigned
+  corner of a block that mostly is reserved for that one address. An ACK-only
+  sweep cannot tell a real chip from a reserved-address quirk; only a register
+  read that comes back sane can.
 
   **`CMD:BATT PROBE 0x7E` (`BATT_PROBE:addr=0x7E ok=0/16 regs=?? ?? ...`),
   measured on the same X3, 2026-09-15, build `x3-i2c-scan` `8716699e`.** Every
   one of 16 register-addressed reads NACKed. `BATT_SCAN` ACKs a bare
   zero-length write; `BATT_PROBE` ACKs the address the same way but then fails
   the repeated-start read that follows -- so whatever answers at 0x7E does not
-  behave like an addressable register device. **Read as: not a real
-  register-mapped chip, most likely the reserved-address artifact the spec
-  predicts** -- but this is inference from one probe pattern, not a datasheet,
-  so it stays short of certain. X3's charger IC (if it has an I2C-visible one
-  at all) is still unidentified.
+  behave like an addressable register device. **Confirmed repeatable**: both
+  commands run 3x each on the same X3, same day -- `55 68 6B 7E` and `ok=0/16`
+  every time, no flakiness. **Read as: not a real register-mapped chip, most
+  likely the reserved-address artifact** -- but this is inference from one
+  probe pattern, not a datasheet, so it stays short of certain. X3's charger
+  IC (if it has an I2C-visible one at all) is still unidentified.
