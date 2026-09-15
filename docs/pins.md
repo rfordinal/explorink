@@ -679,3 +679,19 @@ tables are `constexpr` in flash. Flash went 59.5 % to 59.7 %.
 
 Pins will be drawn by `MapActivity`, not `MapRenderer`, so the webapp's firmware
 preview panel will not show them (parent `docs/device-preview.md`).
+
+## A pin under the screen's own furniture
+
+Since 2026-09-15 a pin whose balloon lands on the header, the compass, the scale
+bar, the debug window or a button box is handled as a pin that is off the panel:
+an edge marker when those are on, and a logged count either way. The balloon is
+not moved and not flipped -- the tip is the coordinate, and the shape's rotation
+already carries a direction. `docs/map-chrome-register.md`.
+
+An edge marker is also kept off that furniture, since 2026-09-15: after it is
+clamped into `pinEdgeArea()` it is slid in 8 px steps until its box clears the
+chrome register, and dropped with a `LOG_ERR` if nothing within 80 px does.
+Sliding is allowed there and not for a pin's own balloon, because an edge
+marker's position is already synthetic and its bearing is carried by the shape's
+rotation. Measured on an X4 Pro panel that day: without it, the marker for a pin
+below the panel landed squarely on the scale bar's `5 km`.

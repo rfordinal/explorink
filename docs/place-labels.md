@@ -539,3 +539,11 @@ empty third of the panel filled with names.
 With no clip set the cell cap and the screen test are both off, so a caller
 that does not set one (a unit test, a probe) gets the old behaviour rather than
 a silently different one.
+
+## Screen furniture
+
+Since 2026-09-15 a placement is also refused when it lands on something the
+screen draws over the map -- the scale bar, the compass, a button box. It is the
+position that is refused, not the name: there are eight of them, so a name
+beside the scale bar usually just moves to its other side, and only a place whose
+eight positions are all taken loses its label. `docs/map-chrome-register.md`.

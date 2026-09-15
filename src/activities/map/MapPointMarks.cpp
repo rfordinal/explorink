@@ -213,6 +213,13 @@ void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, 
   const int left = cx - side / 2;
   const int top = cy - side / 2;
 
+  // Under the screen's own furniture this mark would be painted over and the
+  // rider would never see it (MapChrome.h). It is not moved to a clearer spot:
+  // a square says "this exists *here*", and a square nudged off its point says
+  // something false. One tile of a cluster can drop while the rest draw, which
+  // is right -- only the covered tile is invisible.
+  if (canvas.areaReserved(left, top, side, side)) return;
+
   // White under the square first: a mark sitting on a road casing or a
   // built-up tone is unreadable otherwise, and white is a real operation on
   // this canvas (IMapCanvas.h). The knock-out is the box's own area only --
