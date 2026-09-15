@@ -536,3 +536,20 @@ this is read as the same race, not isolated to a specific file the way the
 `managed_components` case was. Every build log that session also printed
 `*** Original Arduino "idf_component.yml" restored ***`, a candidate for what
 a concurrent build clobbers, but that was not confirmed further.
+
+**A third symptom, and this time the restore step itself failed.** `pio run
+-e t5s3pro` failed 2026-09-15 with
+
+```
+*** Original Arduino "idf_component.yml" couldnt be restored ***
+Building .pio/build/t5s3pro/firmware.bin
+...
+Error: Path '.pio/build/t5s3pro/firmware.elf' does not exist.
+```
+
+right after a `pio run -e default` had finished in a different worktree of
+this same clone. Re-running the identical `pio run -e t5s3pro`, nothing else
+touching `pio`, succeeded first try -- same fix as the two 2026-09-13 cases,
+so read as the same race, not confirmed by isolating it. The two earlier
+cases both saw the restore itself report success and something *after* it
+break; this is the first time the restore step has failed outright.
