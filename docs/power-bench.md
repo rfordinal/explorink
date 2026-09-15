@@ -275,25 +275,21 @@ hiding a state the device would not otherwise be in.
 |---|---|---|
 | radio down | +0.19 | -1.4 |
 | advertising, nothing connected | **+30.86** | +159.0 |
-| a central connected, silent | **+30.70** | +159.5 |
-| connected, a position every 7 s | **+30.56** | +160.0 |
-| connected, a position every second | **+30.60** | +160.1 |
 
-**All four BLE states are within 0.3 mA of each other**, which is under the
-control spread. Connecting costs nothing over advertising, and the position
-cadence costs nothing measurable at either end of the range the app offers. What
-is paid for is **the controller being enabled**, not what it does.
+**Advertising costs 30.9 mA on this board, and this run did not measure
+anything else about BLE.** Three further blocks are labelled "connected" in
+`marks.jsonl` and they are not: `tools/blefakephone.py` died at import in every
+one of them -- a fresh parent worktree has no `mapbuilder/tilegen` checkout and
+the tool imports `tiles` at module level -- so nothing ever connected and all
+three were advertising under another name. They read +30.70, +30.56 and
++30.60 mA, which now says only that the same state measures the same three
+times. **The harness could not see it**: it checked every command's reply and
+the charger at both ends, and never that the helper process it started was
+still alive. It does now, and a block whose helper dies inside five seconds is
+marked suspect.
 
-That answers the open half of T-250's BLE line, which guessed 10-20 mA for BLE
-*connected* and had never measured it: connected is the same as advertising, and
-both are about 30.7 mA.
-
-**It did not reproduce 2026-09-12's +11.7 mA, and the firmware is not the
-difference.** `lib/BlePositionServer/` is byte-identical between that branch and
-`develop` (`git log t251-fixes..develop -- lib/BlePositionServer/` is empty), so
-is `env:t5s3pro`, and every block here ran at 80 MHz -- read off the `[PWR]`
-lines in the run's `serial.log`, not assumed. What differs is how that 25 s
-window was cut, and that cannot be recovered from here.
+So T-250's BLE line is still open on the half that matters: **connected, and at
+a cadence, is unmeasured.** `--groups link` is the repeat.
 
 **Why a flat cost is what this build should produce.** Read off this build's own
 generated `sdkconfig.t5s3pro` (2026-09-15, `env:t5s3pro`) and the pinned
