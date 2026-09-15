@@ -148,19 +148,61 @@ the pixel. It would also have cost a 1,250-byte clear per frame.
 Each of the three behavioural tests was confirmed to fail with the check
 disabled, so none of them is a test that cannot fail.
 
-**Not verified -- needs the panel:**
+**Verified on an X4 Pro panel, 2026-09-15.** Build
+`docs/firmware-builds/x4pro-chrome-occupancy-70b7c340-good-chrome-register-verified.bin`
+in the parent repo. Six pins written over the serial console onto computed
+pixels: position pinned at 48.2889/17.2669 heading 0, rung 6 (45 m/px), and the
+pin anchor measured at (230, 584) with a calibration pin placed at the device's
+own coordinate, because the marker ladder moves the anchor off the style's
+`marker_y_px`.
 
-- the pin path. Nothing on the host draws a pin; `drawPins()` is `MapActivity`
-  and wants a real `GfxRenderer`.
-- that the rectangles land where the furniture actually is. Every one of them
-  comes from the drawing code's own numbers, which is the argument that they
-  must -- but the argument was equally good before T-296.
-- the X3. Its button positions and its one-box-per-side layout are a different
-  arrangement, and the X3 is the board T-296 was measured on.
+| pin | tip aimed at | expected | seen |
+|---|---|---|---|
+| `#1` | the rider's marker | draws | draws |
+| `camp` | open map | draws | draws |
+| `#2` | under button box 2 | refused, edge marker | edge marker above the row |
+| `#4` | under the compass | refused, edge marker | edge marker below the halo |
+| `#5` | under the scale bar | refused, edge marker | edge marker, **on the bar** -- see below |
+| `#3` | bottom-right corner past box 4 | **draws in place** | draws in place |
+
+`#3` is the one that pays for registering buttons one at a time. No place name
+touched the scale bar or a side box on any frame of the pass.
+
+**Two defects the host could not have found, both fixed in the same pass:**
+
+1. The scale bar's numbers had no halo. They are drawn straight onto the map,
+   and the map under them was a built-up stipple with roads through it -- one
+   through the `0`, a thick one through `km`. They carry a 2 px halo now, the
+   radius `data/mapstyle.json` already uses for place names, contour heights and
+   route junction dots (`docs/map-scale-bar.md`).
+2. The edge marker for `#5` landed on the scale bar. `pinEdgeArea()` clears the
+   two button bands by shrinking one rectangle, and a corner cannot be excluded
+   that way without giving up a whole edge. Markers now slide in 8 px steps
+   until their box clears the register (`slideEdgeMarkClear()`).
+
+**Still not verified:**
+
+- **The X3.** Different button positions (`kX3FrontPositions`, a 528 px panel)
+  and one side box per side rather than two stacked. It is also the board T-296
+  was measured on. Parent `docs/TODO.md`, T-2009.
+- **The X4.** Same 480x800 layout as the X4 Pro, so a regression check rather
+  than a new one -- but a C3, a different binary and a third of the heap.
+- **Every rung but 6.** The scale bar's width is per rung, so `mapScaleRect()`
+  changes with it.
+- **`mapPinsOffscreen` off.** The board under test had it on, so the
+  edge-marker branch is what ran. With it off a hidden pin should leave only
+  `pinsHiddenByChrome_`'s log line, and that line has not been read.
+- **POI marks.** No `.tip` shard covered the test area, so not one square was
+  drawn. Only the host test covers that path.
 - `pinEdgeArea()`'s top edge moved down by 3 px, because it now takes the
   compass box (centre + glyph + halo = 39 px) rather than centre + glyph = 36 px.
-  The halo is drawn, so the new number is the right one; it has not been looked
-  at on the glass.
+  The halo is drawn, so the new number is the right one; nobody has looked at
+  the 3 px.
+
+**Known and not fixed:** an edge marker's distance label and a place name can
+draw on the same pixels -- `9.5 km` and `10 km` across `Svaty Jur` in this same
+pass. It is a different pair from what the register covers: both are map things,
+placed by two passes that cannot see each other. Parent `docs/TODO.md`, T-2016.
 
 ## Adding a piece of chrome
 
