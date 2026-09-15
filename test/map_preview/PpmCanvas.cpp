@@ -218,6 +218,28 @@ bool PpmCanvas::drawTextRotated(const int centreX, const int centreY, const char
   return true;
 }
 
+void PpmCanvas::inkCoverage(const int x, const int y, const int width, const int height, const int stepPx,
+                            int& outInked, int& outSamples) const {
+  outInked = 0;
+  outSamples = 0;
+  const int step = stepPx < 1 ? 1 : stepPx;
+  // Clamped rather than clipped-away: a label box may hang over the canvas edge
+  // by a pixel or two and the part that is on screen is still the part that
+  // matters. An off-canvas sample is not white, it is absent -- counting it as
+  // white would make an edge position look cleaner than it is.
+  const int x0 = x < 0 ? 0 : x;
+  const int y0 = y < 0 ? 0 : y;
+  const int x1 = x + width > width_ ? width_ : x + width;
+  const int y1 = y + height > height_ ? height_ : y + height;
+  for (int py = y0; py < y1; py += step) {
+    const size_t row = static_cast<size_t>(py) * width_;
+    for (int px = x0; px < x1; px += step) {
+      ++outSamples;
+      if (pixels_[row + px] != 0) ++outInked;
+    }
+  }
+}
+
 void PpmCanvas::drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const {
   outX = 0;
   outY = 0;
