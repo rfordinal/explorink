@@ -251,6 +251,133 @@ the UI's "40 %" is a PWM duty or a step index, and how the boost driver's draw
 scales with duty. It is a duty, reached through a perceptual curve; the draw is
 linear in it with a fixed offset.
 
+### The CPU clock
+
+Frontlight off, every radio down, the clock pinned with `CMD:CPU HOLD`.
+
+| clock | +mA at VBUS | +mW |
+|---|---|---|
+| 80 MHz (the idle floor on this board) | -- | -- |
+| 160 MHz | +4.31 | +24.0 |
+| 240 MHz | +9.48 | +49.2 |
+| left to the power manager | -0.20 | -0.4 |
+
+About **0.058 mA/MHz**, straight to within 0.34 mA. The `AUTO` row lands on the
+80 MHz row, which is the check that matters: it says the loop really does
+throttle three seconds after the last input, and that pinning the clock is not
+hiding a state the device would not otherwise be in.
+
+**This row is the reason the WiFi rows below are readable at all.**
+
+### BLE
+
+| state | +mA at VBUS | +mW |
+|---|---|---|
+| radio down | +0.19 | -1.4 |
+| advertising, nothing connected | **+30.86** | +159.0 |
+| a central connected, silent | **+30.70** | +159.5 |
+| connected, a position every 7 s | **+30.56** | +160.0 |
+| connected, a position every second | **+30.60** | +160.1 |
+
+**All four BLE states are within 0.3 mA of each other**, which is under the
+control spread. Connecting costs nothing over advertising, and the position
+cadence costs nothing measurable at either end of the range the app offers. What
+is paid for is **the controller being enabled**, not what it does.
+
+That answers the open half of T-250's BLE line, which guessed 10-20 mA for BLE
+*connected* and had never measured it: connected is the same as advertising, and
+both are about 30.7 mA.
+
+**It did not reproduce 2026-09-12's +11.7 mA, and the firmware is not the
+difference.** `lib/BlePositionServer/` is byte-identical between that branch and
+`develop` (`git log t251-fixes..develop -- lib/BlePositionServer/` is empty), so
+is `env:t5s3pro`, and every block here ran at 80 MHz -- read off the `[PWR]`
+lines in the run's `serial.log`, not assumed. What differs is how that 25 s
+window was cut, and that cannot be recovered from here.
+
+**Why a flat cost is what this build should produce.** Read off this build's own
+generated `sdkconfig.t5s3pro` (2026-09-15, `env:t5s3pro`) and the pinned
+ESP-IDF 5.5.2.260206:
+
+```
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y      modem sleep is on
+CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y     its low-power clock is the main crystal
+CONFIG_RTC_CLK_SRC_INT_RC=y              there is no external 32 kHz crystal
+# CONFIG_PM_ENABLE is not set            no DFS and no light sleep
+```
+
+IDF's own Kconfig makes `BT_CTRL_LPCLK_SEL_EXT_32K_XTAL` **depend on**
+`RTC_CLK_SRC_EXT_CRYS || RTC_CLK_SRC_EXT_OSC`, so with the internal RC
+oscillator that option cannot even be selected. (The S3's
+`components/bt/controller/esp32s3/Kconfig.in` is one line sourcing the C3's, so
+the C3 text governs here.) Modem sleep therefore runs with the 40 MHz main
+crystal as its low-power clock and no power-management framework to gate
+anything -- which is exactly the shape of a cost that does not care about
+airtime.
+
+**That is read off the configuration and consistent with the measurement, not a
+proven cause.** What would settle it is whether this board has a 32.768 kHz
+crystal fitted, which is a question for the schematic.
+
+### WiFi
+
+| state | +mA at VBUS | +mW | radio alone, CPU subtracted |
+|---|---|---|---|
+| station mode, associated to nothing | +13.15 | +69.2 | ~3.7 mA |
+| soft AP up, no client | **+84.84** | +441.1 | **~75.4 mA** |
+| a full scan, back to back | +70.35 | +366.6 | ~60.9 mA |
+
+**Every WiFi figure carries a 240 MHz CPU.** `HalPowerManager::setPowerSaving()`
+forces power saving off whenever `WiFi.getMode()` is not `WIFI_MODE_NULL`
+(`HalPowerManager.cpp:59-64`), so "WiFi off" against "WiFi on" is two changes.
+Confirmed rather than assumed: all three blocks entered on
+`[PWR] Restoring normal CPU frequency` with no further change inside the window,
+while every control entered on `Going to low-power mode (80 MHz)`. The last
+column subtracts the 240 MHz row above.
+
+**The soft AP is the most expensive thing this board does** -- more than the
+frontlight at 100 %, and it is what the web server screen runs on for as long as
+it is open.
+
+There is no "associated and idle" row. `CMD:WIFI CONNECT` needs a network in the
+credential store and this board's card has none; putting one there is writing a
+rider's device state and is the maintainer's call, not a bench tool's.
+
+### GNSS: powering the receiver makes the board cheaper
+
+| state | +mA at VBUS |
+|---|---|
+| receiver rail down | -0.01 |
+| **rail powered, searching** | **-2.05** |
+| same, plus every sentence forwarded to the console | **-2.02** |
+| rail down again | -0.14 |
+
+Control spread over the run 0.38 mA, so -2.05 is five times the noise floor and
+it reproduced twice. **Powering the GNSS rail lowers the board's draw.**
+
+Checked before believing it:
+
+- `Gnss::end()` does cut the rail -- `config_.powerEnable(false)` after closing
+  the UART (`lib/Gnss/src/Gnss.cpp:188`), so the two states really differ by the
+  receiver's power.
+- The receiver really runs: sentences every second in the raw block, and
+  `$GPTXT,01,01,01,ANTENNA OK`.
+- All four blocks were at 80 MHz.
+- **Forwarding every sentence to the console costs 0.03 mA**, i.e. nothing. The
+  UART and the log are not where the money is.
+
+A receiver in acquisition should cost tens of milliamps, so a net of -2 means the
+rail-down state is paying roughly that much for something. The likeliest
+explanation is the ESP32 driving the UART line into an unpowered receiver and
+back-feeding it through its input protection -- **a hypothesis, not a measured
+cause**. `CMD:SDBUS RAIL` moves the rail without opening the UART, which is the
+control that separates "the rail is powered" from "the receiver is running";
+`tools/power_campaign.py --groups rail` is that experiment.
+
+Worth noting where it points: T-250 is named for **~20-40 unexplained mA** on
+this board, and T-244 is the rail being a latch that survives a reboot -- so two
+rides can differ by this without anything in the log saying so.
+
 ## What this bench cannot do
 
 - **Anything under about 5 mA.** The charger's own draw is 1.5 mA typical and
