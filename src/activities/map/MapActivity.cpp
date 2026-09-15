@@ -864,6 +864,36 @@ void MapActivity::drawBusyBadge() {
 // screen -- its box row starts at x=25 (BaseTheme.cpp's x4ButtonPositions),
 // so the bar sits left of that, and kScaleMarginBottom mirrors the busy
 // badge's own margin to clear the same band from above.
+namespace {
+
+// The scale bar's numbers are drawn straight onto the map, and the map under
+// them is whatever happens to be there: a built-up stipple tone, a road casing,
+// a contour. Measured on an X4 Pro panel 2026-09-15 over Vinosady -- a road ran
+// through the `0` and a thick one through `km`, and the row was unreadable in
+// places.
+//
+// Same answer place names already use (MapLabels.cpp, kHaloRing): the string in
+// white around itself, then black on top. A halo rather than a white plate
+// because only the pixels the digits need are knocked out, so the map keeps
+// showing through between them -- the bar's own box is reserved against labels
+// and marks, but roads still draw under it by design, and a plate would erase
+// them.
+//
+// Radius 1, not the style's placeLabelHaloPx: this is a 10 pt fixed UI face at
+// one size, not a style-driven label, so there is nothing to tune per rung.
+constexpr int kScaleHaloDx[8] = {-1, 1, 0, 0, -1, 1, -1, 1};
+constexpr int kScaleHaloDy[8] = {0, 0, -1, 1, -1, -1, 1, 1};
+constexpr int kScaleHaloPx = 1;
+
+void drawHaloedScaleText(GfxRenderer& renderer, const int x, const int y, const char* text) {
+  for (int i = 0; i < 8; ++i) {
+    renderer.drawText(UI_10_FONT_ID, x + kScaleHaloDx[i], y + kScaleHaloDy[i], text, false);
+  }
+  renderer.drawText(UI_10_FONT_ID, x, y, text, true);
+}
+
+}  // namespace
+
 MapActivity::ScaleBarLayout MapActivity::scaleBarLayout() const {
   ScaleBarLayout layout;
   const double mpp = MapViewport::kZoomLadder[zoomStep()].mpp;
@@ -886,7 +916,13 @@ MapActivity::ScaleBarLayout MapActivity::scaleBarLayout() const {
 
 Rect MapActivity::mapScaleRect() const {
   const ScaleBarLayout layout = scaleBarLayout();
-  return Rect{kScaleMarginLeft, layout.tickTop, layout.totalPx, layout.clearanceY - layout.tickTop};
+  // Grown by the halo radius on every side. The `0` is left-aligned on the bar's
+  // first tick and the last mark right-aligned on its last, so without this the
+  // outermost ring of their white outline falls outside the reserved box and a
+  // place name could be placed onto pixels the bar is about to knock out.
+  const int pad = kScaleHaloPx;
+  return Rect{kScaleMarginLeft - pad, layout.tickTop - pad, layout.totalPx + 2 * pad,
+              layout.clearanceY - layout.tickTop + 2 * pad};
 }
 
 void MapActivity::drawMapScale() {
@@ -948,16 +984,16 @@ void MapActivity::drawMapScale() {
   textX[kScaleSegments] = edgeX[kScaleSegments] - textWidths[kScaleSegments];
 
   constexpr int kLabelGap = 3;
-  renderer.drawText(UI_10_FONT_ID, textX[0], labelY, marks[0], true);
+  drawHaloedScaleText(renderer, textX[0], labelY, marks[0]);
   int lastLabelRight = textX[0] + textWidths[0];
   for (int i = 1; i < kScaleSegments; ++i) {
     const bool clearsPrev = textX[i] >= lastLabelRight + kLabelGap;
     const bool clearsFinal = textX[i] + textWidths[i] + kLabelGap <= textX[kScaleSegments];
     if (!clearsPrev || !clearsFinal) continue;  // tick stays; number would overlap a neighbour
-    renderer.drawText(UI_10_FONT_ID, textX[i], labelY, marks[i], true);
+    drawHaloedScaleText(renderer, textX[i], labelY, marks[i]);
     lastLabelRight = textX[i] + textWidths[i];
   }
-  renderer.drawText(UI_10_FONT_ID, textX[kScaleSegments], labelY, marks[kScaleSegments], true);
+  drawHaloedScaleText(renderer, textX[kScaleSegments], labelY, marks[kScaleSegments]);
 }
 
 void MapActivity::showBusy() {

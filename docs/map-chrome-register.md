@@ -24,7 +24,7 @@ One entry per piece, never per band:
 |---|---|
 | `Header` | `MapActivity::headerRect()`, which is `mapContentTop()` tall |
 | `Compass` | `MapActivity::compassRect()` -- the glyph plus its white halo |
-| `ScaleBar` | `MapActivity::mapScaleRect()` -- bar, ticks and numbers |
+| `ScaleBar` | `MapActivity::mapScaleRect()` -- bar, ticks and numbers, plus the numbers' 1 px halo |
 | `DebugWindow` | `MapDebugOverlay::currentRect()`, only when `mapDebugInfo` is on |
 | `Button` x4 | `BaseTheme::frontHintBox(i, ...)` |
 | `SideButton` x2 | `BaseTheme::sideHintBox(i, ...)` |
