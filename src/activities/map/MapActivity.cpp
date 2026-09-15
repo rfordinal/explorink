@@ -879,15 +879,26 @@ namespace {
 // and marks, but roads still draw under it by design, and a plate would erase
 // them.
 //
-// Radius 1, not the style's placeLabelHaloPx: this is a 10 pt fixed UI face at
-// one size, not a style-driven label, so there is nothing to tune per rung.
+// 2, which is the number this project already uses everywhere a white outline
+// keeps text off the map: data/mapstyle.json sets `label_halo_px: 2` for place
+// names and for contour heights, and `halo_px: 2` for the route's junction
+// dots. A 1 px ring was tried first and measured on an X4 Pro panel the same
+// day -- it is visible and it is not enough against a built-up stipple, whose
+// dots are themselves 1 px on a 1 px pitch. This is a fixed 10 pt UI face at one
+// size rather than a style-driven label, so the radius is a constant here rather
+// than a style field; it is the style's value, not an independent one.
 constexpr int kScaleHaloDx[8] = {-1, 1, 0, 0, -1, 1, -1, 1};
 constexpr int kScaleHaloDy[8] = {0, 0, -1, 1, -1, -1, 1, 1};
-constexpr int kScaleHaloPx = 1;
+constexpr int kScaleHaloPx = 2;
 
 void drawHaloedScaleText(GfxRenderer& renderer, const int x, const int y, const char* text) {
-  for (int i = 0; i < 8; ++i) {
-    renderer.drawText(UI_10_FONT_ID, x + kScaleHaloDx[i], y + kScaleHaloDy[i], text, false);
+  // Ring by ring outward, same shape as MapLabels' halo loop: the offsets are
+  // scaled by the radius rather than the ring being recomputed, so a wider halo
+  // costs one more pass and no new table.
+  for (int radius = 1; radius <= kScaleHaloPx; ++radius) {
+    for (int i = 0; i < 8; ++i) {
+      renderer.drawText(UI_10_FONT_ID, x + kScaleHaloDx[i] * radius, y + kScaleHaloDy[i] * radius, text, false);
+    }
   }
   renderer.drawText(UI_10_FONT_ID, x, y, text, true);
 }
