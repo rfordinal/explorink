@@ -541,13 +541,44 @@ all. Tracked as T-2018 in the parent repo. The staleness rule is right and
 invisible, and on a panel that holds a stale image for a second while it works,
 invisible is a design problem.
 
+### The glass, checked by thumb
+
+`[measured]` The contact path was the least certain part of the change -- frames
+now arrive through a coalesced queue (edges always, a resting contact at 50 ms)
+instead of being read from the register on each poll, and the 50 ms threshold was
+a choice nobody had tested. Exercised on the X4 Pro: a brightness slider dragged
+slowly and quickly, taps into a list, and the left-edge back swipe. The slider
+tracks the finger smoothly, the swipe works, the taps land.
+
+The counters agree over the same twelve minutes: **`frame_overflows=0`** and
+`cancels=0` across 70,378 sampler ticks, so the queue never filled and the
+coalescing never lost a frame. Worst task interval in that window was **17.0 ms**
+-- worse than the 11.0 ms seen under renders, almost certainly from the flash
+writes that a settings change makes, and still six times under the 100 ms cancel
+threshold.
+
+`[measured]` That last number is worth keeping for its own sake: **flash writes
+do not stall this task the way the design feared.** The gap rule was written for
+exactly that case, and across twelve minutes including settings work it never
+came close to firing.
+
 ### Still unverified
 
-Three of the six checks have not been run: the phantom long press through a
-settings save (flash writes suspend non-IRAM tasks, which is the case the gap
-rule exists for), the glass regression set (a slider drag mid-render, the hint
-boxes), and a boot on an X4 or X3 confirming no task is created and no RAM is
-spent. Nothing here should be read as covering them.
+**The gap rule itself is unmeasured, not verified.** It has never fired on
+hardware -- `cancels=0` in every run -- so the branch that cancels an in-flight
+gesture after a stall has executed exactly zero times outside a compiler. The
+test that would exercise it is a settings save (a flash write) while the key is
+held; deferred by the maintainer to a bug-fixing session, 2026-09-15. Read the
+zero as "the condition did not arise", never as "the handler works".
+
+Two other checks were on the list and are resolved differently. The phantom long
+press was sought and not seen across every run. A boot on an X4 or X3 was
+**dropped as low value** rather than skipped: `FREEINK_CAP_TOUCH` is 0 on those
+boards, so `beginGt911Task()` compiles to an empty stub, `pumpHomeKey()` takes
+the no-window branch that behaves exactly as before, and `wasHomeKeyTapped()` is
+always false there as it always was. The `default` environment builds. There is
+almost nothing left for a boot to find, and it would cost a flash on a board
+another session may be using.
 
 ### What it does not fix
 
