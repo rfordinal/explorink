@@ -34,8 +34,14 @@ repo -- the only reader that does not hang the JT-UM120.
 
 **Always A-B-A.** The device does things on its own -- a refresh, a sync check, a
 CPU frequency change -- and a single A-B pair cannot tell a feature's cost from
-the board drifting under it. Three controls 90 s apart agreed to **0.42 mA** on
-the run below, which is what makes a 11.65 mA answer believable.
+the board drifting under it. Eight controls across the 2026-09-15 sweep agreed to
+**0.38 mA** over four hours, which is what makes a 2 mA answer readable.
+
+**Agreeing controls are not a correctness proof.** The 2026-09-12 pair below had
+three controls agreeing to 0.42 mA and still put BLE advertising at 11.7 mA,
+against 30.9 mA for the same command on the same board three days later. Tight
+controls bound the *drift*; they say nothing about a state being what its label
+says.
 
 **Check `chg=0` again at the end.** If the watchdog were ever re-armed, charging
 comes back 40 s in and half the run is a different measurement
@@ -138,9 +144,10 @@ state change at each end. One frame is a spike to be integrated, not a level to
 be read. A run of them at a fixed cadence *is* a level: (block mean - control
 mean) x block length / count is the energy one refresh costs.
 
-**The pattern is part of the measurement, not a detail.** `FAST` is differential
-on both panels this firmware drives ([`refresh-modes.md`](refresh-modes.md)): it
-moves only the pixels that differ from the previous plane. So `none` asks what
+**The pattern is part of the measurement, not a detail.** On this board no mode
+is differential in the waveform -- `LgfxEpdDriver::display` ignores `prev`
+entirely -- but `Panel_EPD` arms a pixel only where the target changed, in every
+mode. So `none` asks what
 the *call* costs with nothing to do, `flip` asks what the panel costs when every
 pixel moves, and `light` sits nearer a map redraw. Quoting one of them as "the
 cost of a refresh" without saying which is how a number becomes folklore.
@@ -169,7 +176,7 @@ Each state 25 s of samples at ~66/s.
 | state | VBUS | power | against baseline |
 |---|---|---|---|
 | idle, light off, BLE off | 93.6 mA at 5.25 V | 491 mW | -- |
-| **BLE advertising** | 105.5 mA | 553 mW | **+11.7 mA, +61 mW** |
+| **BLE advertising** `[withdrawn]` | 105.5 mA | 553 mW | **+11.7 mA, +61 mW** |
 | **frontlight 40 %** | 123.1 mA | 645 mW | **+29.7 mA, +155 mW** |
 | **frontlight 100 %** | 165.9 mA | 868 mW | **+72.4 mA, +377 mW** |
 
@@ -189,10 +196,14 @@ Both runs measure the same law from different points, which is what makes it a
 law rather than a fit: 0.400 duty gave 0.41 of full, 0.219 duty gave 0.231 of
 full.
 
-**BLE advertising at 11.7 mA is the first measurement of that radio on this
-board at all.** T-250 guessed 10-20 mA for BLE *connected* at a 30 ms interval;
-advertising is the cheaper half of that range's floor. **This figure did not
-reproduce on 2026-09-15** -- see the sweep below.
+**The 11.7 mA advertising figure is withdrawn.** The same command on the same
+board read **30.9 mA** on 2026-09-15, 2.6x higher, with 17,500 samples against
+this pair's 25 s. `lib/BlePositionServer/` and `env:t5s3pro` are identical
+between the two branches (`git log t251-fixes..develop` on that path is empty),
+so the firmware is not the difference, and the advertising phase is not either:
+both runs used `CMD:BLE ON` on the home screen, where the fast phase never ends.
+**Why the two disagree is `[open]`**, and it is a larger discrepancy than most of
+what the sweep reports.
 
 ## The full sweep, 2026-09-15
 
@@ -223,8 +234,10 @@ Baseline 91.5 mA at 5.25 V, and the two controls bracketing this group agreed to
 
 **The duty column is read off the device, not derived.** `FrontlightManager`
 logs `apply: brightness=<pct> level=<n> totalDuty=<d>` on every change, and the
-campaign's `serial.log` carries one line per rung. It also settles the PWM
-width: `totalDuty=255` at 100 % means **8 bits** on this board. (The `level`
+campaign's `serial.log` carries one line per rung. The width is 8 bits and the frequency
+1 kHz, both from source rather than from this run: `BoardConfig.h:1201` is
+`{11, 5000, 8, true}` and `main.cpp` overrides the 5 kHz to 1 kHz for the
+`PT4103B23F`'s own ceiling (T-247). (The `level`
 field in that line is `_brightnessLevel`, which is set but unused here --
 `_useLevel` is false, so the duty comes from `perceptualDuty()`.)
 
@@ -235,12 +248,16 @@ One straight line fits all ten points:
 +mW at VBUS = 2.60 + 374.0 x duty      worst residual 1.4 mW
 ```
 
-**The intercept is the finding, not the slope.** 0.90 mA is what the
-`PT4103B23F` boost driver costs for being switched on at all, before it lights
-anything: a third of the whole cost of the light at 10 %, one per cent of it at
-100 %. It is why the naive "mA per per cent" column falls from 108 to 72 across
-the table -- that is the fixed term being divided by a growing duty, not the LED
-string behaving differently.
+**The intercept is the finding, not the slope**, and what it *is* stays `[open]`.
+0.90 mA is a third of the light's whole cost at 10 % and one per cent of it at
+100 %, and it is why the table's last column falls from 108 to 72 -- a fixed term
+divided by a growing duty, not the LED string behaving differently. (That column
+is mA per unit *duty*, not per UI per cent.) Two mechanisms produce the same
+intercept and this run separates neither: a fixed enable cost of the
+`PT4103B23F`, or a fixed cost **per PWM cycle**. They come apart in one run,
+because a per-cycle cost scales with the PWM frequency and an enable cost does
+not, and that frequency is a one-line change. No datasheet figure for the part's
+quiescent current is cited here either.
 
 So the cost of any rung is `0.90 + 70.85 x GAMMA_TABLE[pct] / 65535` mA at VBUS,
 and the gamma table is
@@ -276,8 +293,13 @@ hiding a state the device would not otherwise be in.
 | radio down | +0.19 | -1.4 |
 | advertising, nothing connected | **+30.86** | +159.0 |
 
-**Advertising costs 30.9 mA on this board, and this run did not measure
-anything else about BLE.** Three further blocks are labelled "connected" in
+**Advertising at the *fast* interval costs 30.9 mA, and this run did not measure
+anything else about BLE.** `BlePositionServer` advertises fast (NimBLE's 30-60 ms
+default) for `kFastAdvertisingMs`, then drops to 200-300 ms -- but the switch is
+made by `serviceAdvertising()`, which only the map and sync screens call.
+`CMD:BLE ON` on the home screen is this bench's own instruction, so **every
+advertising block here stayed in the fast phase for its whole length** and the
+slow phase a parked device actually holds is unmeasured. Three further blocks are labelled "connected" in
 `marks.jsonl` and they are not: `tools/blefakephone.py` died at import in every
 one of them -- a fresh parent worktree has no `mapbuilder/tilegen` checkout and
 the tool imports `tiles` at module level -- so nothing ever connected and all
@@ -304,10 +326,13 @@ the helper still being alive.
 | connected at 15 ms, silent | **+26.93** | **-3.61** |
 | connected at 15 ms, a position every second | **+27.45** | **-3.09** |
 
-**A connection is cheaper than advertising here, by 3.6 mA.** Advertising
-transmits on three channels for as long as it is up; a link wakes on its own
-interval and is otherwise quiet. So the expensive BLE state on this device is
-the one *before* the phone arrives, not after.
+**A connection is cheaper than fast-phase advertising here, by 3.6 mA.** Why is
+`[open]`: an advertising event carries three packets plus a scan-request listen
+window and a connection event one exchange, but the two intervals differ
+(30-60 ms against 15 ms) and neither was varied, so the ordering cannot be
+attributed yet. The result matters because the same ordering appeared in run 4 on
+2026-08-21 and was written off as counting noise; on this instrument, with
+controls at 0.15 mA, it is real.
 
 **A position a second costs 0.5 mA** over an idle link -- small, and above the
 control spread, so it is a number rather than a nothing.
@@ -372,13 +397,15 @@ rider's device state and is the maintainer's call, not a bench tool's.
 | same, plus every sentence forwarded to the console | **-2.02** |
 | rail down again | -0.14 |
 
-Control spread over the run 0.38 mA, so -2.05 is five times the noise floor and
-it reproduced twice. **Powering the GNSS rail lowers the board's draw.**
+Control spread over the run 0.38 mA, so -2.05 is five times the noise floor.
+`gnss-searching` and `gnss-raw` are two states rather than a repeat; the genuine
+repeat is `rail-up-receiver-on` in the second run, 0.14 mA away at -1.91.
+**Powering the GNSS rail lowers the board's draw.**
 
 Checked before believing it:
 
 - `Gnss::end()` does cut the rail -- `config_.powerEnable(false)` after closing
-  the UART (`lib/Gnss/src/Gnss.cpp:188`), so the two states really differ by the
+  the UART (`Gnss::end()`, `lib/Gnss/src/Gnss.cpp:192`), so the two states differ by the
   receiver's power.
 - The receiver really runs: sentences every second in the raw block, and
   `$GPTXT,01,01,01,ANTENNA OK`.
@@ -400,7 +427,7 @@ rides can differ by this without anything in the log saying so.
 
 ### The rail experiment: the saving is the rail, not the receiver
 
-`--groups rail`, the same afternoon, three minutes a state, three controls
+`--groups rail`, the same afternoon, three minutes a state, four controls
 agreeing to **0.15 mA**. `CMD:SDBUS RAIL` moves the rail without opening the
 UART, and every block reads the bit back (`SDBUS:cs=1 rst=0 rail=<n>`).
 
@@ -425,7 +452,10 @@ state shows anything of that size. Two readings survive and both stay `[open]`:
   is properly powered.
 
 Either way there is a product-level consequence worth stating plainly:
-**`CMD:GNSS OFF` does not make the board cheaper. It makes it 2.7 mA dearer.**
+**`CMD:GNSS OFF` does not make the board cheaper.** Against `CMD:GNSS ON`, the
+state a user or an activity can actually reach, it is **1.9 mA dearer**. The
+2.7 mA figure is the rail alone with the UART shut, which nothing but
+`CMD:SDBUS` reaches.
 
 What would settle it, and neither fits in a bench afternoon: `CMD:GNSS PROBE`
 on a **real power-on boot** (it answers whether the board holds the rail on by
@@ -433,30 +463,44 @@ itself -- see [`gnss.md`](gnss.md)), and a state with the rail down and the
 UART pins put to high-Z, which is the control that tells back-feed from
 everything else.
 
-### The map screen
+### The map screen: not a clean comparison
 
 | state | +mA at VBUS |
 |---|---|
-| map open, idle | -0.67 |
+| map open, idle | -0.55 |
 | back on the home screen | +0.01 |
 
-**An idle map screen costs nothing over an idle home screen.** E-ink holds an
-image with no current, and the map activity's loop adds nothing this bench can
-see.
+**Do not read that as "the map is free".** The map started the GNSS receiver on
+entry. `MapActivity::onEnter()` picks one position source and brings up only
+that one, and the run's `serial.log` says which, 2.3 s before the block opened:
 
-**And entering the map did not bring a radio up**, which is why this row is as
-low as it is. `MapActivity::onEnter()` gates the radio on
-`bleInUse_ = SETTINGS.mapGnssPosition == 0 || forcePhonePosition_` -- "one
-position source per map session, and the other radio does not run" -- and this
-device has the receiver as its source. Confirmed from the run's `serial.log`:
-the `map-idle` window carries neither `BlePositionServer.begin() returned` nor
-`[GNSS] aiding sent`. Two caveats on the row, both from that log: the viewport
-was empty (`1 missing` tile at that position) and the freshness check ran every
-30 s with nothing to do.
+```
+[MAP] ble: not started, position comes from the receiver
+[GNSS] aiding sent: ...
+[MAP] gnss: started, rx ring 8192 bytes
+```
 
-**The two "map with a position stream" rows measured nothing** -- the fake
-phone died at import, as above. Read them as two more samples of "map idle",
-which is what they agree with.
+A powered GNSS rail is worth **-1.9 to -2.7 mA** on this board (below), so a map
+screen carrying one against a home screen without one is not a like-for-like
+pair. Adding the credit back puts the map screen at roughly **+1.4 mA** over
+home -- three times the run's control spread. **The clean number needs a map
+entered with the receiver forced down, and this run does not have it.**
+
+**The evidence first published here was a check that could not fail.** An
+earlier version of this section said no radio came up, because the `map-idle`
+window carried no `BlePositionServer.begin() returned` and no
+`[GNSS] aiding sent`. Those are one-shot entry lines and the window starts 30 s
+after entry, so they can never be inside any window, for any state. A test whose
+negative result is guaranteed is not evidence.
+
+Two further caveats on the row, from the same log: the viewport was empty
+(`1 missing` tile at that position) and the freshness check ran every 30 s with
+nothing to do.
+
+**The two "map with a position stream" rows measured nothing** -- the fake phone
+died at import, as above. `map-position-1s` agrees with `map-idle` to 0.03 mA.
+`map-position-7s` reads **0.97 mA lower**, which is 2.5x the control spread and
+is not explained.
 
 ### Panel refreshes
 
@@ -476,29 +520,35 @@ leaves the buffer alone.
 
 Three things fall out.
 
-**`FULL` and `HALF` are the same frame on this board, in energy as well as in
-time.** 1,461 ms both, 523 against 515 mJ -- a 1.5 % gap, narrower than the
-run's own control spread is against these numbers.
-[`refresh-modes.md`](refresh-modes.md) already said `FULL` does not clean better
-than `HALF` and costs a multi-flash for nothing; on the T5 S3 Pro it does not
-even cost the flash. The rule stands and now has a price attached.
+**`FULL` and `HALF` are the same call on this board**, and that is read off the
+driver rather than measured: `LgfxEpdDriver.cpp:110-114` maps both
+`RefreshMode::Full` and `RefreshMode::Half` to `lgfx::epd_mode::epd_text`. The
+bench agrees -- 1,461 ms both, 523 against 515 mJ -- which is a consistency check
+on the instrument, not a finding. **It says nothing about
+[`refresh-modes.md`](refresh-modes.md)'s rule**, which is about the X4's SSD1677
+where `HALF` is `0xD7` and `FULL` is `0xF7`, two genuinely different controller
+sequences. This board never issues a distinct `FULL` waveform, so it can neither
+confirm nor refute that.
 
 **`FAST` is half the energy and two-fifths of the time.** 261 against 515 mJ for
 the same all-pixels-move content.
 
 **A `FAST` call with nothing to move still costs 165 mJ and 260 ms** -- 63 % of
-the energy of a `FAST` frame where every pixel changes. The differential
-waveform saves the ink, not the trip: the frame is still converted and pushed
-whole. That is the same whole-panel data path
-[`t5s3-partial-refresh.md`](t5s3-partial-refresh.md) describes from the driver
-side, now measured from the supply side. It is also why the `mW while busy`
-column is *highest* for this row: a short window doing CPU and bus work rather
-than a long one moving ink.
+the energy of a `FAST` frame where every pixel changes. The CPU still converts
+and pushes all 518,400 pixels and the scan still clocks every row, which is the
+whole-panel data path [`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)
+describes from the driver side, now measured from the supply side. What the 96 mJ
+between `none` and `flip` buys is `Panel_EPD`'s per-pixel arming -- **not a
+differential waveform**: `LgfxEpdDriver::display` takes `prev` and opens with
+`(void)prev`. It is also why the `mW while busy` column is *highest* for this
+row: a short window doing CPU and bus work rather than a long one moving ink.
 
-**One observation left alone.** `HALF` and `FULL` are non-differential and
-should not care what is on the panel, yet `light` runs 1,162 ms against `flip`'s
-1,461 ms and costs a quarter less. Something in the path is content-dependent in
-a mode where it should not be. Not chased here.
+**`epd_text` is content-dependent too**, which is why `light` runs 1,162 ms
+against `flip`'s 1,461 ms. An earlier version of this section filed that as an
+anomaly on the grounds that `HALF` and `FULL` are "non-differential" -- a
+property of the X4's SSD1677, wrongly carried to this board. Here
+`Panel_EPD::task_update()` arms a pixel only when its target changed, in every
+mode ([`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)).
 
 ## What this bench cannot do
 
