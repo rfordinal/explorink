@@ -3097,7 +3097,19 @@ void loop() {
                 logSerial.printf("REFRESH:i=%ld ms=%lu\n", i, ms);
                 if (gapMs > 0) delay(static_cast<uint32_t>(gapMs));
               }
+              // Leave the panel white, never black. A `flip` run ends on
+              // whichever fill its last index picked, and e-ink holds that with
+              // no power at all -- so an odd count left a device sitting on a
+              // black screen with nothing on it to repaint, which reads as a
+              // dead device rather than as a finished measurement. Reported
+              // from the bench 2026-09-15. Outside the timing loop on purpose:
+              // this frame is housekeeping and does not belong in the run's
+              // total_ms, its mean, or the per-frame energy computed from them.
               const unsigned long span = millis() - runStart;
+              if (pattern != "none") {
+                memset(buf, 0xFF, bufferSize);
+                display.displayBuffer(HalDisplay::RefreshMode::HALF_REFRESH);
+              }
               logSerial.printf("REFRESH_END:mode=%s count=%ld total_ms=%lu mean_ms=%lu min_ms=%lu max_ms=%lu span_ms=%lu\n",
                                modeName.c_str(), count, total, total / static_cast<unsigned long>(count), best, worst,
                                span);
