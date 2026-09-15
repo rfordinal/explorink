@@ -16,6 +16,11 @@ distinguishable; see `CrossPointWebServerActivity.cpp`'s `apHostname()`. If
 mDNS does not resolve on your network, use the IP address shown on the device
 screen.
 
+**Verified 2026-09-15**: flashed to an X3 (`default` env, commit `bc1d07fd`)
+and the maintainer confirmed it works. X4 Pro, T5 S3 Pro and the X4 side of the
+shared `default` binary only got a clean compile (`pio run -e x4pro`, `-e
+t5s3pro`, `-e simulator`) -- not yet flashed for this change.
+
 ## HTTP Pages
 
 | Method | Path | Purpose |
