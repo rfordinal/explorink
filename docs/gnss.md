@@ -29,7 +29,7 @@ shown, or labelled open.
 
 | | |
 |---|---|
-| Receiver | Quectel L76K, on-board. GPS + GLONASS, both seen |
+| Receiver | CASIC **AT6558R**, on-board, self-identified 2026-09-15. GPS + GLONASS, both seen. Called L76K here until then -- see "The receiver" |
 | Reached by | `CMD:GNSS` over the USB serial console, `env:t5s3pro` only |
 | On any screen | the map's header row -- a three-state GNSS glyph plus four signal bars, see [`map-header-status.md`](map-header-status.md). Nowhere else |
 | Feeding the map | **yes, ridden 2026-09-01** -- behind `mapGnssPosition`, off by default. See "The map reads it" |
@@ -61,8 +61,32 @@ its third caller.
 
 ## The receiver
 
-**L76K**, identified from the factory firmware on 2026-08-31. Quectel's own
-part, GPS + GLONASS + BeiDou, NMEA over UART.
+**The silicon is a CASIC AT6558R. It says so itself.** Captured 2026-09-15 from
+`CMD:GNSS RAW ON` during the power campaign
+(`../../docs/power-runs/2026-09-15-t5s3pro-spectrum/serial.log`), three
+`$GPTXT` lines the receiver emits on every power-up:
+
+```
+$GPTXT,01,01,02,MA=CASIC*27
+$GPTXT,01,01,02,IC=AT6558R-5N-32-1C580901*13
+$GPTXT,01,01,02,SW=URANUS5,V5.3.0.0*1D
+```
+
+This file said **L76K** until then, "identified from the factory firmware on
+2026-08-31". That was an inference from the vendor's code; this is the part
+answering for itself, so it wins. The module may still carry an L76K label --
+plenty of modules sold under that name are AT6558-based -- but the chip
+running the protocol is CASIC's, not Quectel's.
+
+**It settles the command table below.** Two rows there record L76K-documented
+commands the module never answered (T-209, measured 2026-09-11) while
+CASIC-family commands did. That reads as a puzzle while the part is believed to
+be a Quectel one and stops being a puzzle here: **the Quectel L76K document is
+not this part's datasheet**, and any claim sourced from it -- including
+"tracking costs the same as searching", below -- is about a different receiver
+until a CASIC document says the same.
+
+GPS + GLONASS in this configuration, NMEA over UART.
 
 - **9600 baud, 8N1 is correct**, confirmed on hardware: checksum-clean NMEA
   from the first read, no reframing, `cserr` at 0 across a rail-cycled session.
