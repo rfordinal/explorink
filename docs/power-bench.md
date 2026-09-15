@@ -508,33 +508,56 @@ is not explained.
 an all-black and an all-white fill, `light` moves a tenth of the bytes, `none`
 leaves the buffer alone.
 
-| mode, pattern | frame ms | +mA at VBUS | mJ per frame | mW while busy |
-|---|---|---|---|---|
-| `FAST`, flip | 597 | +19.28 | **261** | 437 |
-| `FAST`, light | 508 | +17.31 | **230** | 453 |
-| `HALF`, flip | 1461 | +28.68 | **515** | 353 |
-| `HALF`, light | 1162 | +24.07 | **393** | 339 |
-| `FULL`, flip | 1461 | +29.06 | **523** | 358 |
-| `FULL`, light | 1162 | +24.21 | **399** | 344 |
-| `FAST`, nothing changed | 260 | +13.98 | **165** | 635 |
+> **The energy columns below are withdrawn, 2026-09-15.** `CMD:REFRESH` blocks
+> `loop()` for the whole block, so `HalPowerManager`'s idle throttle never runs
+> and the board sits at **240 MHz from `REFRESH_BEGIN` to `REFRESH_END`** -- while
+> every control it is differenced against sits at 80 MHz. Each row therefore
+> carries the whole 80->240 MHz step (+9.48 mA) on top of the panel, and
+> `mJ per frame` charges the panel for ~2 s of 240 MHz idle per frame.
+>
+> Read off the run's own data, not inferred: all seven blocks enter on
+> `[PWR] Restoring normal CPU frequency` with the only change inside the window
+> being the return to 80 MHz at the end, and the tenth percentile of
+> `refresh-half-flip`'s one-second means is **100.5 mA** -- `cpu-240`'s 100.90,
+> not the control's 91.3.
+>
+> The frame times are unaffected and stand. The energies need re-reporting
+> against each block's own inter-frame level, which is in the committed
+> `meter.log` and needs no device; the clean fix is `CMD:CPU HOLD 240` on the
+> refresh blocks *and* on a matched control, the same way the WiFi group's clock
+> is handled.
 
-Three things fall out.
+| mode, pattern | frame ms | +mA at VBUS `[withdrawn]` | mJ per frame `[withdrawn]` | mW while busy `[withdrawn]` |
+|---|---|---|---|---|
+| `FAST`, flip | 597 | +19.28 | 261 | 437 |
+| `FAST`, light | 508 | +17.31 | 230 | 453 |
+| `HALF`, flip | 1461 | +28.68 | 515 | 353 |
+| `HALF`, light | 1162 | +24.07 | 393 | 339 |
+| `FULL`, flip | 1461 | +29.06 | 523 | 358 |
+| `FULL`, light | 1162 | +24.21 | 399 | 344 |
+| `FAST`, nothing changed | 260 | +13.98 | 165 | 635 |
+
+What survives, because it rests on the frame times rather than the energies.
 
 **`FULL` and `HALF` are the same call on this board**, and that is read off the
 driver rather than measured: `LgfxEpdDriver.cpp:110-114` maps both
 `RefreshMode::Full` and `RefreshMode::Half` to `lgfx::epd_mode::epd_text`. The
-bench agrees -- 1,461 ms both, 523 against 515 mJ -- which is a consistency check
-on the instrument, not a finding. **It says nothing about
+bench agrees, and the strongest form of that is not the energy: `total_ms`,
+`mean_ms`, `min_ms` and `max_ms` come back **byte-identical** between the two
+modes (131511 / 1461 / 1459 / 1464 on `flip`; 104535 / 1161 / 1161 / 1162 on
+`light`). That is a consistency check on the instrument, not a finding. **It says nothing about
 [`refresh-modes.md`](refresh-modes.md)'s rule**, which is about the X4's SSD1677
 where `HALF` is `0xD7` and `FULL` is `0xF7`, two genuinely different controller
 sequences. This board never issues a distinct `FULL` waveform, so it can neither
 confirm nor refute that.
 
-**`FAST` is half the energy and two-fifths of the time.** 261 against 515 mJ for
-the same all-pixels-move content.
+**`FAST` is two-fifths of the time**, 597 ms against 1,461 for the same
+all-pixels-move content. The energy ratio is withdrawn with the table.
 
-**A `FAST` call with nothing to move still costs 165 mJ and 260 ms** -- 63 % of
-the energy of a `FAST` frame where every pixel changes. The CPU still converts
+**A `FAST` call with nothing to move still costs 260 ms**, 44 % of the time of a
+`FAST` frame where every pixel changes. (The energy share is withdrawn with the
+table; it was inflated by the clock and the true share is smaller.) The CPU
+still converts
 and pushes all 518,400 pixels and the scan still clocks every row, which is the
 whole-panel data path [`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)
 describes from the driver side, now measured from the supply side. What the 96 mJ
