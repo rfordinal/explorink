@@ -35,7 +35,7 @@
 #include <esp_system.h>
 #endif
 
-#ifdef ENABLE_CHARGE_CMD
+#if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
 #include <Wire.h>  // the charger and the gauge sit on the same I2C bus
 #endif
 
@@ -2322,8 +2322,25 @@ void loop() {
         battArg.toUpperCase();  // the subcommand; a hex address parses either case
         if (g.gaugeAddr == 0) {
           logSerial.printf("BATT_ERR:no gauge on this board\n");
-        } else if (battArg.length() > 0 && !battArg.startsWith("DM")) {
-          logSerial.printf("BATT_ERR:unknown:DM\n");
+        } else if (battArg.length() > 0 && !battArg.startsWith("DM") && battArg != "SCAN") {
+          logSerial.printf("BATT_ERR:unknown:DM,SCAN\n");
+        } else if (battArg == "SCAN") {
+          // Whether a charger IC sits on the gauge bus at all is unknown for X3
+          // (BoardConfig.h: chargerAddr=0, unlike the T5 S3 Pro's BQ25896 or the
+          // X4 Pro's none). A full sweep answers it without opening the device --
+          // the same bus the gauge already uses, just every address instead of one.
+          powerbus::begin();
+          TwoWire& w = powerbus::wire();
+          char found[3 * 128 + 1];
+          size_t pos = 0;
+          found[0] = '\0';
+          for (uint8_t addr = 1; addr < 127; ++addr) {
+            w.beginTransmission(addr);
+            if (w.endTransmission(true) == 0) {
+              pos += static_cast<size_t>(snprintf(found + pos, sizeof(found) - pos, "%02X ", addr));
+            }
+          }
+          logSerial.printf("BATT_SCAN:%s\n", found);
         } else if (battArg.startsWith("DM")) {
           String addrArg = battArg.substring(2);
           addrArg.trim();
