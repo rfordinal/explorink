@@ -261,8 +261,14 @@ has nothing to collide with.
 
 **Still not verified:**
 
-- **The X4.** Same 480x800 layout as the X4 Pro, so a regression check rather
-  than a new one -- but a C3, a different binary and a third of the heap.
+- **The X4, and it never will be.** The board was lost on 2026-08-22 and does
+  not enumerate (`tools/devices.json` in the parent repo). It is also the one
+  combination that needs no separate pass: the X4 is a C3 running the `default`
+  binary, which the X3 exercised, on a 480x800 panel using
+  `kX4FrontPositions`, which the X4 Pro exercised. Both halves ran, and the X3
+  stressed the geometry harder than an X4 would -- a different panel width,
+  different box positions, no side boxes at all. Closed on that basis
+  2026-09-15 rather than left open against a board that does not exist.
 - **Every rung but 5 and 6.** The scale bar's width is per rung, so
   `mapScaleRect()` changes with it. Rung 6 was seen on the X4 Pro and rung 5 on
   the X3; 0 to 4 are unlooked at.
