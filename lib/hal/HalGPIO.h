@@ -104,6 +104,9 @@ class HalGPIO {
   // What the GT911 sampler managed, so a passing test can be told apart from a
   // lucky one. See InputManager::Gt911TaskStats.
   InputManager::Gt911TaskStats gt911TaskStats(bool reset);
+  // When this frame's key event actually happened, in millis(); 0 if none.
+  unsigned long homeKeyEventAtMs() const;
+  InputManager::HomeKeyCounters homeKeyCounters(bool reset);
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
   // Verify power button was held long enough after wakeup.

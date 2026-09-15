@@ -136,6 +136,9 @@ constexpr unsigned long TOUCH_HELD_OVERRIDE_WINDOW_MS = 250;
 // 500 ms would now fuse two deliberate single taps -- free tapping on this key
 // was measured at intervals down to 240 ms.
 constexpr uint16_t kHomeKeyDoubleTapWindowMs = 300;
+// How old a TAP may be when it is delivered. See pumpHomeKey() for why only the
+// tap expires.
+constexpr unsigned long kHomeKeyTapStaleMs = 2000;
 // The 500 ms refractory window that used to follow a resolved gesture is GONE.
 // It was a filter over a stream nobody trusted, and it swallowed a legitimate
 // fast third tap along with the noise. What replaces it is a lower bound on the
@@ -202,10 +205,31 @@ void MappedInputManager::pumpHomeKey() const {
   }
 
   homeDoubleTapResolved = gpio.wasHomeKeyDoubleTapped();
+
+  // A TAP expires. A double tap does not, and neither does a hold.
+  //
+  // The difference is meaning, which is why the rule lives here and not in the
+  // recogniser. A tap is a CONTEXTUAL action -- open this menu, select that row
+  // -- and the context is whatever was on screen when the finger moved. The loop
+  // stops for 2.7 to 4.3 s during a map render, and a menu that opens four
+  // seconds after the rider gave up on it is a surprise, not a late reward; on a
+  // panel where every reaction costs a second of refresh, acting on a stale
+  // intention is worse than dropping it. A double tap is a MODE TOGGLE -- "lock
+  // the glass" -- with no context to go stale, so it is still exactly what was
+  // asked for however late it lands. A hold is the same, minus the feedback
+  // under the thumb.
+  //
+  // 2 s rather than the 500 ms first proposed: maintainer's call, 2026-09-15.
+  // Against a 2.7-4.3 s render it means a tap from the tail of a redraw survives
+  // and one from the start does not, which is the line a thumb would draw.
+  const unsigned long tapAt = gpio.homeKeyEventAtMs();
+  const bool tapped = gpio.wasHomeKeyTapped();
+  const bool tapStale = tapped && tapAt != 0 && millis() - tapAt > kHomeKeyTapStaleMs;
+  if (tapStale) ++staleTapsDropped;
   // Locking is the rider saying "ignore what I touch", and the key is the one
   // control still listened to, for exactly one thing -- the double tap that
   // unlocks. So a single tap on a locked panel means nothing.
-  homeConfirmResolved = gpio.wasHomeKeyTapped() && !TouchPolicy::locked();
+  homeConfirmResolved = tapped && !tapStale && !TouchPolicy::locked();
 }
 
 void MappedInputManager::tapToPortrait(const float nx, const float ny, int& x, int& y) const {

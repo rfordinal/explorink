@@ -158,6 +158,15 @@ class MappedInputManager {
   // change rather than every frame, and so the boot-time flip of
   // TouchPolicy::homeKeyDoubleTapLocksTouch() is not missed.
   mutable uint16_t appliedDoubleTapWindowMs = 0xFFFF;
+
+ public:
+  // Taps refused for being older than the staleness bound. Counted rather than
+  // silent: a drop that nobody can see is indistinguishable from a gesture that
+  // never happened, and telling those two apart is the whole reason the
+  // instruments exist.
+  static inline uint32_t staleTapsDropped = 0;
+
+ private:
   mutable uint8_t hintDownButton = kNoHintButton;
   mutable uint8_t hintPressedButton = kNoHintButton;
   mutable uint8_t hintReleasedButton = kNoHintButton;

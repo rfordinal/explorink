@@ -5,6 +5,8 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <HalGPIO.h>
+
+#include "MappedInputManager.h"
 #include <Wire.h>
 
 #include <cstdlib>
@@ -407,6 +409,11 @@ void reportGaps(Print& out) {
              static_cast<unsigned>(task.ticks), static_cast<unsigned>(task.maxGapUs),
              static_cast<unsigned>(task.gapsOverLimit), static_cast<unsigned>(task.cancels),
              static_cast<unsigned>(task.frameOverflows));
+  const auto keys = gpio.homeKeyCounters(true);
+  out.printf("KEYGESTURES:produced=%u,delivered=%u,queue_drops=%u,stale_taps=%u\n",
+             static_cast<unsigned>(keys.produced), static_cast<unsigned>(keys.delivered),
+             static_cast<unsigned>(keys.queueDrops), static_cast<unsigned>(MappedInputManager::staleTapsDropped));
+  MappedInputManager::staleTapsDropped = 0;
   out.printf("LOOPGAP_END\n");
 
   for (uint8_t i = 0; i < kGapBuckets; ++i) gapCount[i] = 0;

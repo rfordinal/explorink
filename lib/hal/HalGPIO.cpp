@@ -249,6 +249,8 @@ bool HalGPIO::wasHomeKeyLongPressed() const { return inputMgr.wasHomeKeyLongPres
 bool HalGPIO::wasHomeKeyDoubleTapped() const { return inputMgr.wasHomeKeyDoubleTapped(); }
 void HalGPIO::beginGt911Task() { inputMgr.beginGt911Task(); }
 InputManager::Gt911TaskStats HalGPIO::gt911TaskStats(const bool reset) { return inputMgr.gt911TaskStats(reset); }
+unsigned long HalGPIO::homeKeyEventAtMs() const { return inputMgr.homeKeyEventAtMs(); }
+InputManager::HomeKeyCounters HalGPIO::homeKeyCounters(const bool reset) { return inputMgr.homeKeyCounters(reset); }
 
 void HalGPIO::setHomeKeyDoubleTapWindow(const uint16_t windowMs) {
   InputManager::HomeKeyGestureSpec spec;
