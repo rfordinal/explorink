@@ -217,6 +217,29 @@ Both users bracket the bus in `SPI.beginTransaction()`, so transfers serialise
 on the Arduino bus lock. **Serialised is not the same as tested** -- T-2019, and
 the reason `CMD:LORA` is a console rather than a background service.
 
+**First look, 2026-09-16: nothing broke.** One process drove both boards, ten
+packets per phase at the same spacing, the only difference being what the
+receiving board was doing.
+
+| phase | receiving board | delivered |
+|---|---|---|
+| A | home screen, nothing drawing | 10/10 |
+| B | map open, a redraw forced between packets | 10/10 |
+
+The card was genuinely in use during phase B, not idle: one render reported
+`589 ms in the card` with 10,792 points projected and eight CRC32 checks, and
+no tile read failed.
+
+**What this does not prove.** The packets were spaced two seconds apart and the
+renders took 49 to 909 ms, so **nothing here shows a radio transaction landing
+inside a card transfer** -- the window that would actually test the bus was
+never forced open, and an SX1262 holds a received packet until somebody reads
+it, which hides loss that a busier bus might cause. The honest reading is that
+continuous receive and map rendering coexist at this rate, and the hazard is
+narrower than "impossible". What would settle it: packets arriving faster than
+the render loop, and a CRC-checked read of a known file taken while the radio
+is transmitting rather than receiving.
+
 ## The oscillator, answered on the desk 2026-09-16 `[measured]`
 
 A review argued that our TCXO supply of 1.8 V was the most suspicious number in
