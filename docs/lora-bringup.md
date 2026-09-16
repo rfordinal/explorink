@@ -217,6 +217,77 @@ Both users bracket the bus in `SPI.beginTransaction()`, so transfers serialise
 on the Arduino bus lock. **Serialised is not the same as tested** -- T-2019, and
 the reason `CMD:LORA` is a console rather than a background service.
 
+**First look, 2026-09-16, and then the run that actually asked the question.**
+
+The first attempt used zoom rungs 2 and 3, where a render takes 49 to 909 ms,
+and packets two seconds apart: 10 of 10 delivered in both a control phase and a
+rendering phase, with the card genuinely in use. It proved nothing, because
+**no packet ever arrived while a render was running**.
+
+Rung 6 renders for 3 to 3.9 seconds, so the second run forced exactly that
+window. Twenty pings 1.2 s apart at the rendering board, which also answered
+each one, so radio transmits landed in the same window as the card reads:
+
+| | result |
+|---|---|
+| pings heard by the rendering board | **8 of 20** |
+| pongs that reached the sender back | 4 of 20 |
+| render windows, from the board's own log | 8, up to 3904 ms |
+| packets reported inside a render window | **0** |
+| card errors, CRC failures, radio errors | **0** |
+
+**Integrity is fine and throughput is not.** Nothing was corrupted: no tile read
+failed, no CRC mismatch, no `LORA_RX_ERR`. What happened is that traffic
+arriving during a render is lost.
+
+**The mechanism, inferred rather than measured**: `loraPoll()` runs from
+`loop()`, and an SX126x holds exactly one received packet. If `loop()` does not
+run for three seconds, the second packet of that window overwrites nothing --
+it simply never gets picked up, and the count lands near one per window, which
+is what 8 heard across 8 windows looks like. The zero-inside-a-window column
+says the same thing from the other side: nothing was *reported* during a
+render.
+
+**What this costs the design.** A device that listens while it draws cannot
+service the radio from `loop()`. It needs the packet event to reach a queue
+that does not depend on rendering -- RadioLib's `setPacketReceivedAction()` into
+a small FIFO, or a service call from the render path. That is a real constraint
+on any always-on mesh, and it is not the constraint this task was opened for:
+the bus hazard did not appear at all.
+
+**Still unmeasured**: whether a radio *transmit* can corrupt a card read. The
+four missing pongs are consistent with the same starvation and do not separate
+the two.
+
+### 3. `LORA_CS` also reaches the panel's i80 bus### 3. `LORA_CS` also reaches the panel's i80 bus
+
+GPIO46 is handed to LovyanGFX as `pinPwr`, which becomes the i80 driver's
+`dc_gpio_num` -- the IDF rejects a negative one and this board has no spare
+GPIO to give instead (`LilyGoT5S3LgfxConfig.cpp`, the `pinPwr` comment).
+`pinOe` is `-1` since the SDK fix of 2026-09-03; it used to carry `LORA_CS` as
+a placeholder, which is what put the radio's chip select on an EPD pin and
+killed the SD card (BUG-037).
+
+**An earlier version of this section said the panel bus holds GPIO46 LOW from
+display init onward, and that a listening radio is therefore impossible. That
+was a stale reading** of the pre-fix file, caught in review 2026-09-16.
+`prepareEpdPower()` drives the pin HIGH before the bus is built, and
+`lgfx::pinMode()` writes no level, so it stays HIGH: an ordinary refresh does
+not select the radio.
+
+What is genuinely open is narrower, and still unmeasured:
+
+- the microsecond window during i80 bus setup where the peripheral drives DC on
+  that pad, named in the SDK's own comment as the one case it does not cover;
+- whether anything re-initialises the display bus while the radio is up, which
+  would re-claim the pad for LCD_CAM;
+- whether continuous receive survives a full map redraw at all, with tile reads
+  on the same SPI bus.
+
+Both users bracket the bus in `SPI.beginTransaction()`, so transfers serialise
+on the Arduino bus lock. **Serialised is not the same as tested** -- T-2019, and
+the reason `CMD:LORA` is a console rather than a background service.
+
 **First look, 2026-09-16: nothing broke.** One process drove both boards, ten
 packets per phase at the same spacing, the only difference being what the
 receiving board was doing.

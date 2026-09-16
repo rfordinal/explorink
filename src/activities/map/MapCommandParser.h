@@ -19,7 +19,7 @@
 //
 //   pos <lat> <lon> [[heading] <0-15>] [[speed] <kmh>]
 //   heading <0-15>
-//   zoom <0-4>
+//   zoom <0-6>
 //   marker <0-4>
 //   mode ride|hike|cycle
 //   redraw
