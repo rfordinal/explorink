@@ -321,6 +321,14 @@ bool TeamBlackBox::replayLast(const TeamRoster& roster, TeamStore& store) {
     for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
       if (ctx.inThisFile[slot]) ctx.filled[slot] = true;
     }
+    // Every member answered for: the older files hold older positions and there
+    // is nothing left for them to say. This is the difference between reading
+    // one file and reading a fortnight of them on the way into the map screen.
+    bool everyone = true;
+    for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+      if (roster.at(slot).present && !ctx.filled[slot]) everyone = false;
+    }
+    if (everyone) break;
   }
 
   // Last, and only for the members no dated file mentioned.

@@ -719,14 +719,13 @@ class MapActivity final : public Activity,
   void openTeamMenu();
   void showTeamMemberOnMap(size_t slot);
   void drawTeam();
-  // The member's balloon: the pin shape with a filled head carrying their two or
-  // three letters, so a person and a place cannot be confused at a glance -- a
-  // rider's own pins are hollow-headed (drawPinBalloon).
+  // The member's balloon: the pin shape filled solid black with their two or
+  // three letters in white, so a person and a place cannot be confused at a
+  // glance -- a rider's own pins are hollow (drawPinBalloon). A stale position
+  // draws the hollow balloon with black letters instead: the fill is what says
+  // the position is current, and the panel must never draw "here they are" and
+  // "here they were an hour ago" the same way.
   void drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale);
-  // The head's fill. Solid for a fresh position, dithered for a stale one: the
-  // panel must never draw "here they are" and "here they were an hour ago" the
-  // same way (../../../docs/safety-concept.md, the provenance rule).
-  void fillTeamHead(int cx, int cy, bool stale) const;
   void teamRowText(size_t slot, char* buf, size_t bufLen) const;
   TeamVisibility teamSlotVisibility(size_t slot) const;
 

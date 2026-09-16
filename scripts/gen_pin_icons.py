@@ -369,15 +369,24 @@ def main():
         # used (for the glyph size), and changing that number is not part of this
         # fix.
         _, _, clear = head_circle(grid, mask)
-        return mask, grid, tip, head, clear
+        # The body: the silhouette with no halo around it. A team marker paints
+        # this solid black and puts the member's initials on it in white, so a
+        # person and a place are told apart by the fill and not by a glyph
+        # (docs/team-markers.md). Only the upright frame is emitted -- a team
+        # marker never rotates, and sixteen more arrays would be ~6 kB of flash
+        # for nothing.
+        body = silhouette(grid)
+        return mask, grid, tip, head, clear, body
 
     frames = []
     clear0 = 0
+    body0 = None
     for step in range(args.steps):
         angle = 360.0 * step / args.steps
-        mask, ink, tip, head, clear = bake(angle)
+        mask, ink, tip, head, clear, body = bake(angle)
         if step == 0:
             clear0 = clear
+            body0 = body
         frames.append((mask, ink, tip, head))
         print(
             f"step {step:2d} ({angle:5.1f} deg): {len(ink[0])}x{len(ink)}, "
@@ -404,6 +413,8 @@ def main():
         "//   mask -- the silhouette plus its halo, painted white first so neither the map",
         "//           nor a road line shows through the pin",
         "//   ink  -- the outline",
+        "//   body -- the silhouette with no halo, upright only: a team marker fills it",
+        "//           solid and writes the member's initials on it in white",
         "//",
         "// `tipX`/`tipY` locate the point inside the frame: draw at (x - tipX, y - tipY)",
         "// and the point lands exactly on the coordinate the pin means.",
@@ -427,6 +438,7 @@ def main():
     for step, (mask, ink, tip, head) in enumerate(frames):
         lines.append(carray(f"kPinShapeMask{step}Bits", pack(mask)))
         lines.append(carray(f"kPinShapeInk{step}Bits", pack(ink)))
+    lines.append(carray("kPinShapeBody0Bits", pack(body0)))
     lines.append("")
     lines.append("inline constexpr PinShapeFrame kPinShapeFrames[kPinShapeSteps] = {")
     for step, (mask, ink, tip, head) in enumerate(frames):

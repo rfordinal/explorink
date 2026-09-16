@@ -7180,15 +7180,6 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
 
 // --- team markers (../../../docs/team-markers.md) ----------------------------
 
-namespace {
-
-// The head's inner radius, inside the pin shape's outline. kPinGlyphPx is the
-// box a pin's baked glyph is drawn in, so a disc of half that lands inside the
-// same head without touching the outline.
-constexpr int kTeamHeadRadiusPx = kPinGlyphPx / 2;
-
-}  // namespace
-
 TeamVisibility MapActivity::teamSlotVisibility(size_t slot) const {
   const TeamFix& fix = team_.store().at(slot);
   const TeamFixAge age = teamFixAge(fix, MapTeam::utcNowOrZero(), millis());
@@ -7198,24 +7189,6 @@ TeamVisibility MapActivity::teamSlotVisibility(size_t slot) const {
                            static_cast<uint32_t>(SETTINGS.mapTeamHideMin) * 60u);
 }
 
-void MapActivity::fillTeamHead(int cx, int cy, bool stale) const {
-  // A disc drawn as horizontal spans. There is no circle primitive on
-  // GfxRenderer, and a square of ink inside a round outline reads as a bug.
-  for (int dy = -kTeamHeadRadiusPx; dy <= kTeamHeadRadiusPx; ++dy) {
-    const int halfWidth =
-        static_cast<int>(sqrt(static_cast<double>(kTeamHeadRadiusPx * kTeamHeadRadiusPx - dy * dy)));
-    if (halfWidth <= 0) continue;
-    if (stale) {
-      // Dithered, not solid: an old position must not be drawn the same way as a
-      // current one, and the difference has to survive being glanced at on a
-      // moving bike.
-      renderer.fillRectDither(cx - halfWidth, cy + dy, halfWidth * 2, 1, Color::DarkGray);
-    } else {
-      renderer.fillRect(cx - halfWidth, cy + dy, halfWidth * 2, 1, true);
-    }
-  }
-}
-
 void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale) {
   // The same baked shape a pin uses, point-down only: a member's marker never
   // rotates, because rotation already means "the thing is off that way" for pins
@@ -7223,24 +7196,38 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
   const PinShapeFrame& frame = kPinShapeFrames[0];
   const int x = tipX - frame.tipX;
   const int y = tipY - frame.tipY;
+
+  // White silhouette plus its halo first, so neither the map nor a road line
+  // shows through -- the same first pass drawPinBalloon() makes.
   renderer.drawMono1bpp(frame.mask, x, y, frame.w, frame.h, false);
-  renderer.drawMono1bpp(frame.ink, x, y, frame.w, frame.h, true);
+
+  // **A current member is a solid black balloon with white initials; a stale one
+  // is the hollow balloon with black initials.** Filling the whole body rather
+  // than a disc inside the head was the maintainer's call, 2026-09-16: a black
+  // circle in a white balloon reads as a pin with a dot in it, and the thing
+  // that has to be obvious at a glance is person-versus-place. The fill is also
+  // what says the position is current, so the two questions are answered by one
+  // mark.
+  if (stale) {
+    renderer.drawMono1bpp(frame.ink, x, y, frame.w, frame.h, true);
+  } else {
+    renderer.drawMono1bpp(kPinShapeBody0Bits, x, y, frame.w, frame.h, true);
+  }
 
   const int cx = x + frame.headX;
   const int cy = y + frame.headY;
-  fillTeamHead(cx, cy, stale);
 
-  // Letters in white on the filled head. Two fonts, picked by what fits: three
-  // wide characters at SMALL overflow a 22 px head, and letters spilling past
-  // the outline stop reading as a name.
+  // Letters in the head. Two fonts, picked by what fits: three wide characters
+  // at SMALL overflow a 22 px head, and letters spilling past the outline stop
+  // reading as a name.
   int fontId = SMALL_FONT_ID;
   int width = renderer.getTextWidth(fontId, acr);
-  if (width > kTeamHeadRadiusPx * 2) {
+  if (width > kPinGlyphPx) {
     fontId = MAP_SMALL_FONT_ID;
     width = renderer.getTextWidth(fontId, acr);
   }
   const int height = renderer.getLineHeight(fontId);
-  renderer.drawText(fontId, cx - width / 2, cy - height / 2, acr, false);
+  renderer.drawText(fontId, cx - width / 2, cy - height / 2, acr, stale);
 }
 
 void MapActivity::drawTeam() {

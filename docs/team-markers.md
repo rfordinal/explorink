@@ -161,9 +161,22 @@ for the same reason: a marker is not map data, and `MapRenderer` knows nothing
 about it. So the webapp's firmware preview panel cannot show team markers
 either.
 
-The head is a disc drawn as horizontal spans -- there is no circle primitive --
-filled solid or dithered, with the acronym in white on top. The font drops from
-`SMALL` to `MAP_SMALL` when three characters would not fit the 22 px head.
+**The whole balloon is filled, not a disc inside its head.** Maintainer's call,
+2026-09-16, after looking at the first version in the simulator: a black circle
+inside a white balloon reads as a pin with a dot in it, and the thing that has
+to be obvious at a glance is person-versus-place. `scripts/gen_pin_icons.py` now
+bakes a third array for that -- `kPinShapeBody0Bits`, the silhouette with no
+halo around it, upright only, because a team marker never rotates and sixteen
+more arrays would be flash spent on nothing.
+
+So a **current** member is a solid black balloon with white initials, and a
+**stale** one is the hollow balloon with black initials. The fill answers both
+questions with one mark: who it is, and whether the position is current. A
+dithered fill was tried first and thrown away in the same pass -- white letters
+on a 50 % dither are mush at 22 px.
+
+The font drops from `SMALL` to `MAP_SMALL` when three characters would not fit
+the 22 px head; `JKL` at `MAP_SMALL` fits inside the outline.
 
 **No off-screen edge markers yet.** The pins' edge markers merge overlapping
 marks into one arrow with a count, and a merged marker that eats somebody's
@@ -275,10 +288,12 @@ static RAM (21.3 %), clean, no warnings from any of the new files.
 
 ## What is open
 
-- **Every panel question.** The filled head against a hollow one, three letters
-  at 22 px, the dithered stale head, and whether a marker is findable on a map
-  full of building outlines. All of it has to be judged on the glass
-  (`CLAUDE.md`), and none of it has been.
+- **The panel itself.** The layout questions were answered in the **simulator**
+  on 2026-09-16 -- three members and a pin in one frame, solid against hollow,
+  two-letter and three-letter acronyms, at 480x800 1:1 -- and that is a laptop
+  LCD, not the glass. What a simulator cannot answer is how the solid fill and
+  the thin hollow outline read on e-ink in daylight, and whether a solid black
+  balloon ghosts where a hollow one does not. Still needs a device (T-2019).
 - **Flash and DRAM cost**, measured against the same tree with the flags off.
 - **Off-screen members**: no edge marker, by decision, until a design exists
   that does not merge two people into one arrow.
