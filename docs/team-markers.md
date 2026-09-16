@@ -242,7 +242,9 @@ The balloon says who and whether the position is current. The line under it says
 So a group riding together draws no text at all, which is the common case and
 the one that must stay clean. Age appears exactly when the marker goes hollow,
 so the two say the same thing at two resolutions; `?` is an age that cannot be
-known, which is every replayed fix on a device with no clock.
+known, which is every replayed fix on a device with no clock. **Under a minute
+the age is left out** -- `0m` reads as information and carries none, and there
+the hollow head is the whole message.
 
 **A label that cannot find a clear spot is dropped, not overprinted.** It tries
 four places around the marker -- under the point, above the head, then either

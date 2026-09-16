@@ -35,6 +35,10 @@ namespace {
 // known. Never seconds: a number that ticks on e-ink is a waveform pass per
 // tick, and "four minutes ago" is the resolution the question actually has.
 size_t formatAge(const TeamFixAge& age, char* buf, size_t bufLen) {
+  // Under a minute there is nothing to say: `0m` is a number that reads as
+  // information and carries none. It only comes up with the stale threshold
+  // turned down to zero, and then the hollow head is the whole message.
+  if (age.known && age.seconds < 60) return 0;
   if (!age.known) {
     if (bufLen < 2) return 0;
     buf[0] = '?';

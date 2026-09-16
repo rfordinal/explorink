@@ -86,6 +86,9 @@ TeamVisibility teamFixVisibility(const TeamFixAge& age, uint32_t staleAfterS, ui
 // An age that cannot be known prints `?` rather than a number nobody can stand
 // behind: that is every replayed fix on a device with no clock (teamFixAge).
 //
+// An age under a minute prints nothing at all -- `0m` reads as information and
+// carries none.
+//
 // Writes into `buf` and returns its length; 0 means there is nothing to draw.
 size_t teamMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const TeamFixAge& age, char* buf,
                        size_t bufLen);

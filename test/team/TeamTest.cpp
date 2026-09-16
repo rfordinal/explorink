@@ -319,6 +319,18 @@ TEST(TeamLabel, HoursAndTheUnknownAge) {
   EXPECT_STREQ(buf, "450 m/?");
 }
 
+TEST(TeamLabel, NothingIsSaidAboutTheLastMinute) {
+  TeamFixAge seconds;
+  seconds.known = true;
+  seconds.seconds = 40;
+  char buf[kTeamLabelBytes];
+  // Stale by a threshold of zero, but `0m` would read as information and carry
+  // none -- the hollow head is the whole message there.
+  EXPECT_EQ(teamMarkerLabel(false, 450, true, seconds, buf, sizeof(buf)), 0u);
+  ASSERT_GT(teamMarkerLabel(true, 450, true, seconds, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "450 m");
+}
+
 TEST(TeamLabel, DistanceSteps) {
   TeamFixAge age;
   char buf[kTeamLabelBytes];
