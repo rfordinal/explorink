@@ -115,9 +115,16 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
     rec.uptimeMs = stored.recvUptimeMs;
     rec.boot = bootId();
     memcpy(rec.who, member.acr, sizeof(rec.who));
-    // The acronym is a label the rider can retype; the id is what the transport
-    // said, and it is what a replay matches on (TeamRecord.h).
-    snprintf(rec.id, sizeof(rec.id), "%s", member.id);
+    // The identifier this position actually arrived under, not the member's
+    // first one: a rider heard over two radios has two, and the row should say
+    // which one spoke. Falls back to the member's own when the caller addressed
+    // them by acronym, which only the console does.
+    const bool addressedById = roster_.findId(idOrAcr) < TeamRoster::kSlotCount;
+    if (addressedById) {
+      snprintf(rec.id, sizeof(rec.id), "%.*s", static_cast<int>(idOrAcr.size()), idOrAcr.data());
+    } else if (member.idCount > 0) {
+      snprintf(rec.id, sizeof(rec.id), "%s", member.ids[0]);
+    }
     rec.latE7 = stored.latE7;
     rec.lonE7 = stored.lonE7;
     rec.heading = stored.heading;

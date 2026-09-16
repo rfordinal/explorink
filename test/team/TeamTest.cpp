@@ -60,6 +60,56 @@ TEST(TeamRosterRules, OneAcronymPerId) {
   EXPECT_FALSE(roster.set("id-2", "RO", "Marek", true));
 }
 
+TEST(TeamRosterRules, OnePersonSeveralRadios) {
+  TeamRoster roster;
+  ASSERT_TRUE(roster.set("lora-8f3a", "RF", "Roman", true));
+  // The same rider, relayed by a phone under a name that radio chose. The
+  // roster is the only thing that can know these are one person.
+  ASSERT_TRUE(roster.set("ble-7f", "RF", "Roman", true));
+  EXPECT_EQ(roster.count(), 1u);
+  const size_t slot = roster.findAcr("RF");
+  ASSERT_LT(slot, TeamRoster::kSlotCount);
+  EXPECT_EQ(roster.at(slot).idCount, 2u);
+  EXPECT_EQ(roster.findId("lora-8f3a"), slot);
+  EXPECT_EQ(roster.findId("ble-7f"), slot);
+
+  // An identifier belongs to one person: claiming it for somebody who is already
+  // in the roster would merge two riders into one marker.
+  ASSERT_TRUE(roster.set("mk-1", "MK", "Marek", true));
+  EXPECT_FALSE(roster.set("ble-7f", "MK", "Marek", true));
+
+  // And the list is bounded.
+  ASSERT_TRUE(roster.set("third", "RF", "Roman", true));
+  EXPECT_FALSE(roster.set("fourth", "RF", "Roman", true));
+}
+
+TEST(TeamRosterJson, SeveralIdsRoundTrip) {
+  TeamRoster roster;
+  ASSERT_TRUE(roster.set("lora-8f3a", "RF", "Roman", true));
+  ASSERT_TRUE(roster.set("ble-7f", "RF", "Roman", true));
+
+  char buf[TeamRoster::kJsonBytes];
+  const size_t len = roster.writeJson(buf, sizeof(buf));
+  ASSERT_GT(len, 0u);
+
+  TeamRoster loaded;
+  size_t skipped = 0;
+  ASSERT_TRUE(loaded.parseJson(std::string_view(buf, len), skipped));
+  EXPECT_EQ(skipped, 0u);
+  ASSERT_EQ(loaded.count(), 1u);
+  EXPECT_EQ(loaded.findId("ble-7f"), loaded.findAcr("RF"));
+}
+
+TEST(TeamRosterJson, TheOldSingleIdSpellingStillLoads) {
+  TeamRoster roster;
+  size_t skipped = 0;
+  ASSERT_TRUE(roster.parseJson(R"({"v":1,"members":[{"id":"a4c1380c","acr":"RF","name":"Roman","on":true}]})",
+                               skipped));
+  EXPECT_EQ(skipped, 0u);
+  ASSERT_EQ(roster.count(), 1u);
+  EXPECT_LT(roster.findId("a4c1380c"), TeamRoster::kSlotCount);
+}
+
 TEST(TeamRosterRules, MeIsReserved) {
   TeamRoster roster;
   EXPECT_FALSE(roster.set("id-1", "ME", "", true));
@@ -93,7 +143,8 @@ TEST(TeamRosterJson, RoundTrips) {
   ASSERT_EQ(loaded.count(), 2u);
   const size_t slot = loaded.findAcr("MK");
   ASSERT_LT(slot, TeamRoster::kSlotCount);
-  EXPECT_STREQ(loaded.at(slot).id, "b7e2");
+  ASSERT_EQ(loaded.at(slot).idCount, 1u);
+  EXPECT_STREQ(loaded.at(slot).ids[0], "b7e2");
   EXPECT_STREQ(loaded.at(slot).name, "Marek");
   EXPECT_FALSE(loaded.at(slot).enabled);
 }

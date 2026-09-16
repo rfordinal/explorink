@@ -21,7 +21,11 @@
 //
 // Document, /trailink/team/members.json:
 //
-//   {"v":1,"members":[{"id":"a4c1380c","acr":"RF","name":"Roman","on":true}]}
+//   {"v":1,"members":[{"acr":"RF","name":"Roman","on":true,"ids":["a4c1380c","ble-7f"]}]}
+//
+// **`ids` is a list because one person can be heard on more than one radio**,
+// and the transports call them different things (TeamMembers.h). The older
+// single `"id":"..."` spelling still loads and becomes a one-entry list.
 //
 // An unknown version is refused rather than guessed at: loading a v2 roster with
 // v1 rules could silently drop a member, and a member missing from an allowlist
@@ -49,9 +53,15 @@ class TeamRoster {
   // have to land on the same member.
   size_t find(std::string_view idOrAcr) const;
 
-  // Adds, or updates the member that already holds this acronym or id.
-  // False when: the acronym or id is unstorable, the acronym is taken by a
-  // different id (or the other way round), or the roster is full.
+  // Adds a member, or attaches another identifier to one that already exists.
+  //
+  // An acronym that is already in the roster keeps its slot and **gains** the
+  // id rather than replacing it: the same rider heard over LoRa and relayed over
+  // BLE is one person with two names, and only this device can know that.
+  //
+  // False when: the acronym or id is unstorable, the id already belongs to a
+  // different member, the roster is full, or the member already carries
+  // kTeamIdsPerMember identifiers.
   bool set(std::string_view id, std::string_view acr, std::string_view name, bool enabled);
 
   // False when no member holds that acronym or id.
@@ -70,9 +80,10 @@ class TeamRoster {
   // small. Sized by kJsonBytes.
   size_t writeJson(char* buf, size_t bufLen) const;
 
-  // Every member at their widest plus the framing, rounded up. Sized for the
-  // type, not for today's data (same rule as kPinLineMax).
-  static constexpr size_t kJsonBytes = 1024;
+  // Every member at their widest plus the framing, rounded up: twelve members
+  // with three identifiers each is about 1.5 kB. Sized for the type, not for
+  // today's data (same rule as kPinLineMax).
+  static constexpr size_t kJsonBytes = 2048;
 
  private:
   size_t firstFreeSlot() const;

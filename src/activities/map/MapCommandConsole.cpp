@@ -1036,14 +1036,16 @@ void MapConsoleState::writeTeamList(IMapReplyWriter& out) const {
       // coordinate fields; 0,0 is a place in the Atlantic and a reader must
       // never be able to confuse the two (parent docs/lora.md, "has not told us
       // versus is at 0,0").
-      snprintf(line, sizeof(line), "INFO team_%s=%s,%s,,,,", member.acr, member.id, member.enabled ? "on" : "off");
+      snprintf(line, sizeof(line), "INFO team_%s=%s,%s,,,,", member.acr, member.idCount > 0 ? member.ids[0] : "",
+               member.enabled ? "on" : "off");
       out.reply(line);
       continue;
     }
     formatE7(fix.latE7, lat, sizeof(lat));
     formatE7(fix.lonE7, lon, sizeof(lon));
-    snprintf(line, sizeof(line), "INFO team_%s=%s,%s,%s,%s,%lu,%s", member.acr, member.id,
-             member.enabled ? "on" : "off", lat, lon, static_cast<unsigned long>(fix.utc), teamSourceText(fix.source));
+    snprintf(line, sizeof(line), "INFO team_%s=%s,%s,%s,%s,%lu,%s", member.acr,
+             member.idCount > 0 ? member.ids[0] : "", member.enabled ? "on" : "off", lat, lon,
+             static_cast<unsigned long>(fix.utc), teamSourceText(fix.source));
     out.reply(line);
   }
 }

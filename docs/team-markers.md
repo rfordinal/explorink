@@ -51,14 +51,28 @@ a false rider on somebody's panel. BLE advertising here runs with no pairing and
 no bonding (`ble-advertising.md`), so "in range" is the only credential a
 stranger needs.
 
-Two identifiers per member, because they answer different questions:
+Each member carries a list of identifiers and one acronym, because they answer
+different questions:
 
 | field | what it is |
 |---|---|
-| `id` | what the transport calls the sender -- a MeshCore key prefix, a node id, a BLE address. Machine text, checked rather than trusted. |
+| `ids` | what the transports call them -- a MeshCore key, a node id, whatever a phone relay names them. Machine text, checked rather than trusted. |
 | `acr` | the two or three letters on the panel. Chosen by the rider, uppercased on the way in, unique in the roster. |
 | `name` | optional, for the Group list only. Never on the map: the head fits an acronym and nothing else. |
 | `on` | muted rather than deleted, so a member who is not riding today keeps their acronym and their history. |
+
+**One person can be heard on more than one radio, and only this device can know
+that.** The same rider arrives under a MeshCore key over LoRa and under whatever
+a phone relay calls them over BLE; nothing outside the device ties those
+together. So a member holds up to three identifiers and the ingest resolves any
+of them to the same slot -- `team add RF <second-id>` attaches rather than
+replaces.
+
+Two rules hold that together, and both exist so a search reading the card can
+untangle who was who: **an identifier belongs to one person** (a known id
+arriving under somebody else's acronym is refused), and **an acronym belongs to
+one member** (a known id under a *free* acronym is a rename, which is ordinary
+between rides).
 
 `ME` is reserved: it is the rider's own row in the black box, and a member under
 that acronym would put two people on one name in the file somebody reads when
@@ -71,8 +85,10 @@ Twelve members, fixed array, no heap.
 `/trailink/team/members.json`, rewritten whole on every edit:
 
 ```json
-{"v":1,"members":[{"id":"a4c1380c","acr":"RF","name":"Roman","on":true}]}
+{"v":1,"members":[{"acr":"RF","name":"Roman","on":true,"ids":["lora-8f3a","ble-7f"]}]}
 ```
+
+The older single `"id":"..."` spelling still loads and becomes a one-entry list.
 
 There is no append-only history here, unlike the pins log: a roster is a small
 setting, edited by a human between rides. The history of this feature lives in

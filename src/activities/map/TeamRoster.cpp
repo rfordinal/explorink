@@ -31,8 +31,13 @@ struct ParseCtx {
   bool versionOk = false;
   bool inMembers = false;
   bool inMember = false;
+  // Which array we are inside. `ids` nests inside a member, so the end of *that*
+  // array must not be read as the end of the members list.
+  int arrayDepth = 0;
+  int membersDepth = -1;
   char key[16] = {};
-  char id[kTeamIdBytes] = {};
+  char ids[kTeamIdsPerMember][kTeamIdBytes] = {};
+  size_t idCount = 0;
   char acr[kTeamAcrBytes] = {};
   char name[kTeamNameBytes] = {};
   bool enabled = true;
@@ -52,9 +57,21 @@ void onString(void* ctx, const char* value, size_t len) {
   auto* c = static_cast<ParseCtx*>(ctx);
   if (!c->inMember) return;
   const std::string_view v(value, len);
-  if (strcmp(c->key, "id") == 0) c->rowOk &= copyField(c->id, sizeof(c->id), v);
-  else if (strcmp(c->key, "acr") == 0) c->rowOk &= copyField(c->acr, sizeof(c->acr), v);
-  else if (strcmp(c->key, "name") == 0) c->rowOk &= copyField(c->name, sizeof(c->name), v);
+  // `id` is the single-identifier form older files use; `ids` is the array. Both
+  // land in the same list, because one radio is the common case and several is
+  // the one that matters.
+  if (strcmp(c->key, "id") == 0 || strcmp(c->key, "ids") == 0) {
+    if (c->idCount >= kTeamIdsPerMember) {
+      c->rowOk = false;
+    } else {
+      c->rowOk &= copyField(c->ids[c->idCount], kTeamIdBytes, v);
+      ++c->idCount;
+    }
+  } else if (strcmp(c->key, "acr") == 0) {
+    c->rowOk &= copyField(c->acr, sizeof(c->acr), v);
+  } else if (strcmp(c->key, "name") == 0) {
+    c->rowOk &= copyField(c->name, sizeof(c->name), v);
+  }
 }
 
 void onNumber(void* ctx, const char* value, size_t len) {
@@ -75,7 +92,7 @@ void onObjectStart(void* ctx) {
   auto* c = static_cast<ParseCtx*>(ctx);
   if (!c->inMembers || c->inMember) return;
   c->inMember = true;
-  c->id[0] = '\0';
+  c->idCount = 0;
   c->acr[0] = '\0';
   c->name[0] = '\0';
   c->enabled = true;
@@ -90,15 +107,36 @@ void onObjectEnd(void* ctx) {
   // A row the rules refuse is counted, never silently dropped: a member who is
   // missing from the allowlist is a rider whose marker never appears, and the
   // count is what tells the console the file needs fixing.
-  if (!c->rowOk || !c->roster->set(c->id, c->acr, c->name, c->enabled)) ++c->skipped;
+  if (!c->rowOk || c->idCount == 0) {
+    ++c->skipped;
+    return;
+  }
+  // Every identifier of the row, one call each: the first creates the member and
+  // the rest attach to it.
+  bool ok = true;
+  for (size_t i = 0; i < c->idCount; ++i) {
+    ok &= c->roster->set(c->ids[i], c->acr, c->name, c->enabled);
+  }
+  if (!ok) ++c->skipped;
 }
 
 void onArrayStart(void* ctx) {
   auto* c = static_cast<ParseCtx*>(ctx);
-  if (strcmp(c->key, "members") == 0) c->inMembers = true;
+  ++c->arrayDepth;
+  if (strcmp(c->key, "members") == 0) {
+    c->inMembers = true;
+    c->membersDepth = c->arrayDepth;
+  }
 }
 
-void onArrayEnd(void* ctx) { static_cast<ParseCtx*>(ctx)->inMembers = false; }
+void onArrayEnd(void* ctx) {
+  auto* c = static_cast<ParseCtx*>(ctx);
+  if (c->arrayDepth == c->membersDepth) {
+    c->inMembers = false;
+    c->membersDepth = -1;
+  }
+  --c->arrayDepth;
+}
 
 }  // namespace
 
@@ -116,8 +154,14 @@ size_t TeamRoster::count() const {
 
 size_t TeamRoster::findId(std::string_view id) const {
   if (id.empty()) return kSlotCount;
+  // Every identifier the member is known by, not just the first: the same person
+  // arrives under a MeshCore key on one radio and under something else entirely
+  // when a phone relays them (TeamMembers.h).
   for (size_t i = 0; i < kSlotCount; ++i) {
-    if (slots_[i].present && id == std::string_view(slots_[i].id)) return i;
+    if (!slots_[i].present) continue;
+    for (size_t n = 0; n < slots_[i].idCount; ++n) {
+      if (id == std::string_view(slots_[i].ids[n])) return i;
+    }
   }
   return kSlotCount;
 }
@@ -154,10 +198,11 @@ bool TeamRoster::set(std::string_view id, std::string_view acr, std::string_view
 
   const size_t byId = findId(id);
   const size_t byAcr = findAcr(norm);
-  // An acronym on one radio and the same acronym on another is two markers a
-  // rider reads as one person, so the pair has to stay one-to-one. Updating a
-  // member is spelled as the same id keeping its own acronym, or the same
-  // acronym moving to a new id -- never a crossing pair.
+  // **An identifier belongs to one person, and so does an acronym.** A known id
+  // arriving under an acronym that belongs to somebody *else* would merge two
+  // riders into one marker, and a search reading the card afterwards could not
+  // untangle them. A free acronym is a different thing: that is a rename, and a
+  // rider relabelling their group between rides is ordinary.
   if (byId < kSlotCount && byAcr < kSlotCount && byId != byAcr) return false;
 
   size_t slot = byId < kSlotCount ? byId : byAcr;
@@ -165,11 +210,21 @@ bool TeamRoster::set(std::string_view id, std::string_view acr, std::string_view
   if (slot >= kSlotCount) return false;
 
   TeamMember& member = slots_[slot];
+  const bool isNew = !member.present;
   member.present = true;
   member.enabled = enabled;
-  copyField(member.id, sizeof(member.id), id);
   memcpy(member.acr, norm, sizeof(norm));
   copyField(member.name, sizeof(member.name), name);
+
+  if (isNew) member.idCount = 0;
+  // A known member named by a radio that has not named them before gains that
+  // identifier rather than replacing the one they had: the LoRa key and the
+  // relayed BLE name are both true at once.
+  if (byId >= kSlotCount) {
+    if (member.idCount >= kTeamIdsPerMember) return false;
+    copyField(member.ids[member.idCount], kTeamIdBytes, id);
+    ++member.idCount;
+  }
   return true;
 }
 
@@ -211,8 +266,16 @@ size_t TeamRoster::writeJson(char* buf, size_t bufLen) const {
   bool first = true;
   for (const auto& member : slots_) {
     if (!member.present) continue;
-    written = snprintf(buf + len, bufLen - len, "%s{\"id\":\"%s\",\"acr\":\"%s\",\"name\":\"%s\",\"on\":%s}",
-                       first ? "" : ",", member.id, member.acr, member.name, member.enabled ? "true" : "false");
+    written = snprintf(buf + len, bufLen - len, "%s{\"acr\":\"%s\",\"name\":\"%s\",\"on\":%s,\"ids\":[",
+                       first ? "" : ",", member.acr, member.name, member.enabled ? "true" : "false");
+    if (written < 0 || static_cast<size_t>(written) >= bufLen - len) return 0;
+    len += static_cast<size_t>(written);
+    for (size_t i = 0; i < member.idCount; ++i) {
+      written = snprintf(buf + len, bufLen - len, "%s\"%s\"", i == 0 ? "" : ",", member.ids[i]);
+      if (written < 0 || static_cast<size_t>(written) >= bufLen - len) return 0;
+      len += static_cast<size_t>(written);
+    }
+    written = snprintf(buf + len, bufLen - len, "]}");
     if (written < 0 || static_cast<size_t>(written) >= bufLen - len) return 0;
     len += static_cast<size_t>(written);
     first = false;
