@@ -274,6 +274,40 @@ instrument, parent `docs/usb-power-meter.md`) and the procedure was at fault --
 overlapping reader processes, where the meter tolerates exactly one. Redo with
 one reader per run and a bus check before and after.
 
+## Deep sleep needs a latch, not just a park `[written, not exercised]`
+
+`loraStop()` is not enough on its own, and the gap is not obvious.
+
+It releases the **LoRa** user of the shared rail. With the GNSS receiver
+holding the other one (`CMD:GNSS ON`, or the map following a fix), the rail
+stays up through deep sleep -- the PCA9535 is an external chip and keeps its
+output register. Meanwhile GPIO1 goes hi-Z as the SoC sleeps, the SX126x's
+reset pull-up releases the chip, and the radio wakes powered, out of reset, on
+the SD card's SPI bus. That is the exact state `t5s3DeselectLoraRadio()` exists
+to prevent, arrived at from the other direction.
+
+The fix is the vendor's own sequence (LilyGo `T5S3-4.7-e-paper-PRO`,
+`examples/factory/main/ui_port.cpp`): sleep the radio, drive NRESET low, hold
+the pad, then cut the rail.
+
+```
+lora.sleep + NRESET low        enterDeepSleep()
+gpio_hold_en(T5S3_LORA_RST)    latch, or the pad floats while the SoC sleeps
+gpio_deep_sleep_hold_en()
+rail down (if nobody holds it)
+```
+
+**Both halves are required.** A held pad ignores `digitalWrite()`, so
+`setup()` calls `gpio_deep_sleep_hold_dis()` and `gpio_hold_dis()` before
+anything touches the radio -- without that, the next boot could not reset it
+and `begin()` would answer `CHIP_NOT_FOUND` until the power was pulled. The
+vendor does both; copying only the sleep half converts a rare SD hazard into a
+certain radio outage.
+
+**Not exercised on hardware.** The code is on both boards, but nothing has
+deep-slept with the GNSS receiver holding the rail and then checked the card.
+That run is what would confirm it.
+
 ## The first boot after a flash lands in download mode, twice over
 
 Flashing this board and then wondering why it is silent cost an hour on

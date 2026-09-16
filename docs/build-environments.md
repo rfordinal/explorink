@@ -429,3 +429,23 @@ Three consequences:
 
 Enabling it is T-294 in the parent repo, and it is a decision rather than a
 chore: five workflows that have never executed will all fire at once.
+
+## `clang-format-fix` on the device branch rewrites files that are not yours
+
+`./bin/clang-format-fix` on `release/lilygo-t5-s3-pro` reformats about **40
+files nobody in your change touched**. The branch trails `develop` by dozens of
+commits, so the formatter rewrites everything the newer configuration has since
+touched, and a `git status` after it looks like you edited half the tree.
+
+Run it, then put everything outside your own change back:
+
+```
+./bin/clang-format-fix
+git checkout -- $(git diff --name-only | grep -v -E '<your paths>')
+```
+
+On 2026-09-16 this had to be done twice, and the second time the formatter had
+also rewritten unrelated regions **inside** an edited file -- `src/main.cpp`.
+Reverting the whole file was not an option, so the diff was split and only the
+hunks belonging to the change were re-applied. Check `git diff` for your file
+after formatting, not only the file list.
