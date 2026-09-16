@@ -22,6 +22,16 @@
 
 inline constexpr int kPinShapeSteps = 16;
 inline constexpr int kPinGlyphPx = 22;
+// How far below the head's real centre `headY` sits. The baked glyphs are
+// drawn there because a Lucide icon's optical centre reads high inside the
+// head; text has its own metrics and wants the real centre, so a caller
+// drawing letters subtracts this.
+inline constexpr int kPinShapeGlyphDy = 4;
+// The head circle's own centre in the upright frame, with no --glyph-dy in it.
+// Text is centred on this: letters carry their own metrics and want the real
+// circle, while `headY` is where a baked glyph reads best.
+inline constexpr int kPinShapeHead0X = 21;
+inline constexpr int kPinShapeHead0Y = 19;
 
 struct PinShapeFrame {
   const uint8_t* mask;

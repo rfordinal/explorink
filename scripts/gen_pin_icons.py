@@ -368,7 +368,7 @@ def main():
         # Clear radius only, from the old per-frame scan -- only step 0's is ever
         # used (for the glyph size), and changing that number is not part of this
         # fix.
-        _, _, clear = head_circle(grid, mask)
+        circle_x, circle_y, clear = head_circle(grid, mask)
         # The body: the silhouette with no halo around it. A team marker paints
         # this solid black and puts the member's initials on it in white, so a
         # person and a place are told apart by the fill and not by a glyph
@@ -376,17 +376,19 @@ def main():
         # marker never rotates, and sixteen more arrays would be ~6 kB of flash
         # for nothing.
         body = silhouette(grid)
-        return mask, grid, tip, head, clear, body
+        return mask, grid, tip, head, clear, body, (circle_x, circle_y)
 
     frames = []
     clear0 = 0
     body0 = None
+    circle0 = (0, 0)
     for step in range(args.steps):
         angle = 360.0 * step / args.steps
-        mask, ink, tip, head, clear, body = bake(angle)
+        mask, ink, tip, head, clear, body, circle = bake(angle)
         if step == 0:
             clear0 = clear
             body0 = body
+            circle0 = circle
         frames.append((mask, ink, tip, head))
         print(
             f"step {step:2d} ({angle:5.1f} deg): {len(ink[0])}x{len(ink)}, "
@@ -421,6 +423,16 @@ def main():
         "",
         f"inline constexpr int kPinShapeSteps = {args.steps};",
         f"inline constexpr int kPinGlyphPx = {glyph};",
+        "// How far below the head's real centre `headY` sits. The baked glyphs are",
+        "// drawn there because a Lucide icon's optical centre reads high inside the",
+        "// head; text has its own metrics and wants the real centre, so a caller",
+        "// drawing letters subtracts this.",
+        f"inline constexpr int kPinShapeGlyphDy = {args.glyph_dy};",
+        "// The head circle's own centre in the upright frame, with no --glyph-dy in it.",
+        "// Text is centred on this: letters carry their own metrics and want the real",
+        "// circle, while `headY` is where a baked glyph reads best.",
+        f"inline constexpr int kPinShapeHead0X = {round(circle0[0])};",
+        f"inline constexpr int kPinShapeHead0Y = {round(circle0[1])};",
         "",
         "struct PinShapeFrame {",
         "  const uint8_t* mask;",

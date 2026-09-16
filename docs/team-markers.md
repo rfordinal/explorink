@@ -181,7 +181,22 @@ hollow one did not: white on solid black needs no clearance from the glyph grid.
 The ladder is `UI_12`, `UI_10`, `SMALL`, `MAP_SMALL`, and a face is taken when
 the acronym measures 26 px or less.
 
-That number is measured, not guessed -- `RF` is 29 px at UI_12 and 24 at UI_10,
+**Centred on the head circle, and on the capitals.** Two corrections, both
+made 2026-09-16 after the letters read low and right on the panel:
+
+- `headX`/`headY` in the baked frame are *not* the circle's centre. They carry
+  `--glyph-dy`, the downward nudge that makes a Lucide glyph read right inside
+  the head, and text does not want it. The generator now emits the circle's own
+  centre as `kPinShapeHead0X`/`Y` and the letters use that.
+- `drawText`'s `y` is the top of the ascender box, so centring on the line
+  height hangs an acronym low by half a descender -- which uppercase and digits
+  never use. The letters are placed so the cap band centres instead (cap height
+  taken as the usual ~0.72 of the ascender).
+
+Measured off the rendered frame afterwards, against the asset's own geometry:
+`RF` lands dead centre, `MK` within half a pixel.
+
+The 26 px number is measured, not guessed -- `RF` is 29 px at UI_12 and 24 at UI_10,
 `MK` 38 and 32 and 26 at SMALL, `JKL` 26 at SMALL. So `RF` gets UI_10 while `MK`
 and `JKL` get SMALL: **two acronyms of the same length can land on different
 faces**, because letter shapes differ, and each marker keeping the largest face

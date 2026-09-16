@@ -7214,8 +7214,14 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
     renderer.drawMono1bpp(kPinShapeBody0Bits, x, y, frame.w, frame.h, true);
   }
 
-  const int cx = x + frame.headX;
-  const int cy = y + frame.headY;
+  // The head circle's own centre, which is not `headX`/`headY`: those carry the
+  // generator's --glyph-dy, the downward nudge that makes a baked Lucide glyph
+  // read right inside the head. Letters have their own metrics and want the
+  // circle itself -- drawn at headY they sat visibly low (simulator,
+  // 2026-09-16). kPinShapeHead0* is that centre, measured by the generator off
+  // the upright silhouette and emitted for exactly this.
+  const int cx = x + kPinShapeHead0X;
+  const int cy = y + kPinShapeHead0Y;
 
   // Letters in the head, as large as they fit. A **filled** balloon carries a
   // bigger face than a glyph-in-a-hollow-head could: white on solid black needs
@@ -7250,8 +7256,16 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
       break;
     }
   }
-  const int height = renderer.getLineHeight(fontId);
-  renderer.drawText(fontId, cx - width / 2, cy - height / 2, acr, stale);
+  // Centred on the capitals, not on the line box. `drawText`'s y is the top of
+  // the ascender box and the baseline is one ascender below it, so a line-box
+  // centring hangs the letters low by the descender's half -- and an acronym is
+  // uppercase and digits only, which never use the descender at all.
+  //
+  // Cap height is not exposed, so it is taken as the usual ~0.72 of the
+  // ascender: ink centres at y + ascender - cap/2, and solving for ink at cy
+  // gives y = cy - 0.64 * ascender.
+  const int ascender = renderer.getTextHeight(fontId);
+  renderer.drawText(fontId, cx - width / 2, cy - (ascender * 16) / 25, acr, stale);
 }
 
 void MapActivity::drawTeam() {
