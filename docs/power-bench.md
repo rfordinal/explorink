@@ -451,6 +451,12 @@ state shows anything of that size. Two readings survive and both stay `[open]`:
   protection -- and that cost happens to exceed what the receiver costs when it
   is properly powered.
 
+**A third explanation is missing from the two above and may be the cheapest to be
+true**: the buck converter's own efficiency across an 88-to-91 mA step, which
+this project marks `[open]`. A VBUS meter cannot tell that from a board-side
+saving. The whole case, the four candidate explanations and the experiment order
+are in [`gnss-rail-power-anomaly.md`](gnss-rail-power-anomaly.md).
+
 Either way there is a product-level consequence worth stating plainly:
 **`CMD:GNSS OFF` does not make the board cheaper.** Against `CMD:GNSS ON`, the
 state a user or an activity can actually reach, it is **1.9 mA dearer**. The
