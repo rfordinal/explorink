@@ -339,7 +339,7 @@ TEST(TeamLabel, HoursAndTheUnknownAge) {
   // stand behind.
   const TeamFixAge unknown;
   ASSERT_GT(teamMarkerLabel(true, 450, true, unknown, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "450 m/?");
+  EXPECT_STREQ(buf, "500 m/?");
 }
 
 TEST(TeamLabel, NothingIsSaidAboutTheLastMinute) {
@@ -351,14 +351,21 @@ TEST(TeamLabel, NothingIsSaidAboutTheLastMinute) {
   // none -- the hollow head is the whole message there.
   EXPECT_EQ(teamMarkerLabel(false, 450, true, seconds, buf, sizeof(buf)), 0u);
   ASSERT_GT(teamMarkerLabel(true, 450, true, seconds, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "450 m");
+  EXPECT_STREQ(buf, "500 m");
 }
 
 TEST(TeamLabel, DistanceSteps) {
   TeamFixAge age;
   char buf[kTeamLabelBytes];
+  // 100 m steps under a kilometre: the fix behind the number is good to tens of
+  // metres and arrived minutes ago, so a metre is noise dressed as precision.
   ASSERT_GT(teamMarkerLabel(true, 940, false, age, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "940 m");
+  EXPECT_STREQ(buf, "900 m");
+  // Nearest hundred, floored at one: `0 m` would claim they are on top of you.
+  ASSERT_GT(teamMarkerLabel(true, 40, false, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "100 m");
+  ASSERT_GT(teamMarkerLabel(true, 960, false, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "1.0 km");
   ASSERT_GT(teamMarkerLabel(true, 9400, false, age, buf, sizeof(buf)), 0u);
   EXPECT_STREQ(buf, "9.4 km");
   // Rounded, not truncated, once the decimal is gone.

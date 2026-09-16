@@ -236,8 +236,8 @@ The balloon says who and whether the position is current. The line under it says
 |---|---|
 | *(nothing)* | current, and close enough that the map itself shows the distance |
 | `1.2 km` | far: the rung is zoomed out past rung 2 (6 m/px, 2.9 x 4.8 km on the panel) |
-| `1.2 km/12m` | far and stale |
-| `12m` | stale, but close enough to judge the distance by eye |
+| `1.2 km/15m` | far and stale |
+| `15m` | stale, but close enough to judge the distance by eye |
 
 So a group riding together draws no text at all, which is the common case and
 the one that must stay clean. Age appears exactly when the marker goes hollow,
@@ -245,6 +245,14 @@ so the two say the same thing at two resolutions; `?` is an age that cannot be
 known, which is every replayed fix on a device with no clock. **Under a minute
 the age is left out** -- `0m` reads as information and carries none, and there
 the hollow head is the whole message.
+
+**Both numbers are quantised, and neither is an accident.** The distance goes in
+100 m steps under a kilometre, tenths to ten, whole kilometres above -- the same
+grid the map's destination readout uses. The number behind it is a position that
+arrived minutes ago from a fix good to tens of metres, so a metre of it is noise
+dressed as precision, and a digit that moves with every fix is a waveform pass
+per fix on a panel that would otherwise hold its frame. Under 100 m it says
+`100 m` rather than `0 m`: no fix this old can promise they are on top of you.
 
 **Ages are rounded up, to five minutes.** Up rather than down because a position
 must never be claimed fresher than it is, and to five because that is how often

@@ -60,16 +60,29 @@ size_t formatAge(const TeamFixAge& age, char* buf, size_t bufLen) {
   return written > 0 && static_cast<size_t>(written) < bufLen ? static_cast<size_t>(written) : 0;
 }
 
-// Metres to a short human distance, same steps as PinGeo::formatDistance --
-// which is device-side and would drag its own header in here. 100 m under a
-// kilometre, one decimal under ten, whole kilometres above.
+// Metres to a short human distance, in the steps the map's own destination
+// readout uses (MapActivity::destHeaderText): **100 m under a kilometre**, one
+// decimal under ten, whole kilometres above.
+//
+// Quantised on purpose, and harder than it looks necessary. The number behind it
+// is a position that arrived minutes ago, from a fix good to tens of metres, and
+// a metre of it is noise dressed as precision. It also costs: a digit that moves
+// with every fix is a waveform pass per fix on a panel that would otherwise hold
+// its frame (the same reasoning as the header's, ../../docs/nearby-menu.md).
 size_t formatDistance(uint32_t metres, char* buf, size_t bufLen) {
   int written = 0;
-  if (metres < 1000) {
-    written = snprintf(buf, bufLen, "%lu m", static_cast<unsigned long>(metres));
+  // Nearest hundred, with a floor of one: under 100 m the two riders are within
+  // sight of each other and `0 m` would read as "on top of you", which no fix
+  // this old can promise.
+  const uint32_t hundreds = (metres + 50) / 100;
+  if (hundreds < 10) {
+    written = snprintf(buf, bufLen, "%lu00 m", static_cast<unsigned long>(hundreds < 1 ? 1 : hundreds));
   } else if (metres < 10000) {
-    written = snprintf(buf, bufLen, "%lu.%lu km", static_cast<unsigned long>(metres / 1000),
-                       static_cast<unsigned long>((metres % 1000) / 100));
+    // Same hundred-metre grid, printed as tenths of a kilometre -- so 960 m is
+    // `1.0 km` and not `0.9 km`, which the metre branch would have rounded the
+    // other way one step earlier.
+    written = snprintf(buf, bufLen, "%lu.%lu km", static_cast<unsigned long>(hundreds / 10),
+                       static_cast<unsigned long>(hundreds % 10));
   } else {
     written = snprintf(buf, bufLen, "%lu km", static_cast<unsigned long>((metres + 500) / 1000));
   }
