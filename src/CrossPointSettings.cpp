@@ -105,6 +105,14 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   }
   // Not in SettingsList (edited from the map's Pins list), so it is saved here.
   doc["mapPinsOffscreenMask"] = mapPinsOffscreenMask;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // Not in SettingsList: three numbers a rider sets once, if ever, and three
+  // more rows in the Map category would push the ones they do use off the first
+  // screen. Edited on the card or over the console.
+  doc["mapTeamStaleMin"] = mapTeamStaleMin;
+  doc["mapTeamHideMin"] = mapTeamHideMin;
+  doc["mapTeamKeepDays"] = mapTeamKeepDays;
+#endif
   doc["mapGnssPosition"] = mapGnssPosition;
   doc["frontlightOn"] = frontlightOn;
   doc["frontlightBrightness"] = frontlightBrightness;
@@ -235,6 +243,11 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Defaults to every bit set: a file written before this existed must behave the
   // way it did then, which is "the master decides for all of them".
   mapPinsOffscreenMask = doc["mapPinsOffscreenMask"] | (uint16_t)0xFFFF;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  mapTeamStaleMin = doc["mapTeamStaleMin"] | (uint8_t)5;
+  mapTeamHideMin = doc["mapTeamHideMin"] | (uint8_t)30;
+  mapTeamKeepDays = doc["mapTeamKeepDays"] | (uint8_t)14;
+#endif
   mapGnssPosition = doc["mapGnssPosition"] | (uint8_t)0;
   frontlightOn = (doc["frontlightOn"] | (uint8_t)0) ? 1 : 0;
   // Clamped, not trusted: this reaches the LEDC duty calculation, and the file

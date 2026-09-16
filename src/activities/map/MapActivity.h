@@ -22,6 +22,9 @@ struct PinShapeFrame;
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPins.h"
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#include "MapTeam.h"
+#endif
 #include "MapPointQuery.h"
 #include "MapPointSource.h"
 #include "MapProjection.h"
@@ -702,6 +705,34 @@ class MapActivity final : public Activity,
   // Three screens, and the popups are opened through pendingNearbyPopup_ from
   // loop(), never from inside a popup callback -- show()ing from a callback
   // reassigns the std::function currently running (PinPopup says the same).
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // ## Team markers (../../../docs/team-markers.md)
+  //
+  // The other riders' dots. Same popup deferral as PinPopup and Nearby, same
+  // reason: show()ing from inside a popup callback reassigns the std::function
+  // that is running.
+  enum class TeamPopup : uint8_t { None, List, Show };
+  TeamPopup pendingTeamPopup_ = TeamPopup::None;
+  uint8_t pendingTeamArg_ = 0;
+
+  void servicePendingTeamPopup();
+  void openTeamMenu();
+  void showTeamMemberOnMap(size_t slot);
+  void drawTeam();
+  // The member's balloon: the pin shape with a filled head carrying their two or
+  // three letters, so a person and a place cannot be confused at a glance -- a
+  // rider's own pins are hollow-headed (drawPinBalloon).
+  void drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale);
+  // The head's fill. Solid for a fresh position, dithered for a stale one: the
+  // panel must never draw "here they are" and "here they were an hour ago" the
+  // same way (../../../docs/safety-concept.md, the provenance rule).
+  void fillTeamHead(int cx, int cy, bool stale) const;
+  void teamRowText(size_t slot, char* buf, size_t bufLen) const;
+  TeamVisibility teamSlotVisibility(size_t slot) const;
+
+  MapTeam team_;
+#endif
+
   enum class NearbyPopup : uint8_t { None, Menu, Category, Detail };
   NearbyPopup pendingNearbyPopup_ = NearbyPopup::None;
   uint8_t pendingNearbyArg_ = 0;

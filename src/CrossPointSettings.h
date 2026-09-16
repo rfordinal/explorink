@@ -374,6 +374,35 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // every older build skips as an unknown version and would cost a rider their
   // pins (docs/pins.md, "Reading, and damage").
   uint16_t mapPinsOffscreenMask = 0xFFFF;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // ## Team markers (../../docs/team-markers.md)
+  //
+  // Whether other riders' dots are drawn at all. On by default *and* free when
+  // nobody is approved: with an empty roster the layer reads nothing and draws
+  // nothing, so a rider who does not ride in a group never pays for it.
+  uint8_t mapTeamMarkers = 1;
+  // **Two switches, because it is two kinds of data.** A member's position is
+  // theirs, sent to us on purpose; the rider's own trace is a record of where
+  // *they* went, on a card that is lost with the device. So the group's rows are
+  // on by default (the feature does not work without them) and the rider's own
+  // are off until they say otherwise, which is the same call GNSS track logging
+  // made for the same reason (mapGnssLog above).
+  uint8_t mapTeamLogPeers = 1;
+  uint8_t mapTeamLogSelf = 0;
+  // Minutes before a member's marker is drawn as stale (dithered head) and
+  // minutes before it is not drawn at all. 0 hides nothing -- a last known
+  // position kept on the panel forever is a legitimate choice for a search.
+  //
+  // A position whose age cannot be known is never hidden by these, whatever they
+  // are set to (TeamFix.h): every X4 is a device with no clock, and hiding what
+  // it cannot date would empty the panel at exactly the wrong moment.
+  uint8_t mapTeamStaleMin = 5;
+  uint8_t mapTeamHideMin = 30;
+  // Days of black box kept on the card. Rotation deletes whole day files, so the
+  // oldest evidence goes first and a file a laptop is reading never changes
+  // under it (TeamFiles.h).
+  uint8_t mapTeamKeepDays = 14;
+#endif
   // The GPS/tile/BLE readout in the map's top-left corner. Off by default: it
   // is diagnostic text, not something a rider needs on screen. Toggled from
   // the Settings screen (category Map) or live from the map's own menu

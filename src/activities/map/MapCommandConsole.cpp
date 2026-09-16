@@ -275,6 +275,11 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
     case MapCommandType::Pin:
       return executePin(cmd, out);
 
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+    case MapCommandType::Team:
+      return executeTeam(cmd, out);
+#endif
+
     case MapCommandType::Zoom:
       // The parser already rejected anything outside 0-4, so the ladder is
       // never indexed off its end from here.
@@ -854,3 +859,218 @@ bool MapCommandConsole::feed(char c, IMapReplyWriter& out) {
 
   return false;
 }
+
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+
+namespace {
+
+// The handle a `team` command addressed its member by. The grammar fills exactly
+// one of the two fields, and both verbs that take a member accept either
+// (MapCommandParser.h).
+std::string_view teamHandle(const MapCommand& cmd) {
+  return cmd.teamAcr[0] != '\0' ? std::string_view(cmd.teamAcr) : std::string_view(cmd.teamId);
+}
+
+const char* teamEditError(IMapTeamSource::Edit result) {
+  switch (result) {
+    case IMapTeamSource::Edit::UnknownMember:
+      return "ERR unknown_member";
+    case IMapTeamSource::Edit::Full:
+      return "ERR team_full";
+    case IMapTeamSource::Edit::Invalid:
+      return "ERR bad_member";
+    case IMapTeamSource::Edit::WriteFailed:
+      return "ERR team_write";
+    case IMapTeamSource::Edit::Ok:
+      break;
+  }
+  return "OK";
+}
+
+// Formats each row of a `team log` page as it streams off the card, so a page
+// costs one record on the stack rather than an array of them.
+class TeamLogReplyVisitor : public ITeamLogVisitor {
+ public:
+  explicit TeamLogReplyVisitor(IMapReplyWriter& out) : out_(out) {}
+
+  void onTeamLogRecord(const TeamRecord& rec) override {
+    char csv[kTeamLineMax + 1];
+    if (encodeTeamRecord(rec, csv, sizeof(csv)) == 0) return;
+    // The card's own line, verbatim: a recovery listing that reformats its
+    // source is a second format to keep in step with the first.
+    char line[kTeamLineMax + 16];
+    snprintf(line, sizeof(line), "INFO team_log=%s", csv);
+    out_.reply(line);
+  }
+
+ private:
+  IMapReplyWriter& out_;
+};
+
+}  // namespace
+
+bool MapConsoleState::executeTeam(const MapCommand& cmd, IMapReplyWriter& out) {
+  if (team_ == nullptr) {
+    // Distinct from "no members", exactly like `pins=unavailable`: a host must
+    // not read "this rider has no group" out of a screen that cannot answer.
+    out.reply("INFO team=unavailable");
+    out.reply("OK");
+    return false;
+  }
+
+  char line[kReplyBuf];
+  switch (cmd.teamVerb) {
+    case MapTeamVerb::Pos: {
+      TeamFix fix;
+      fix.latE7 = cmd.latE7;
+      fix.lonE7 = cmd.lonE7;
+      fix.utc = cmd.teamUtc;
+      fix.heading = cmd.heading;
+      fix.hasHeading = cmd.hasHeading;
+      fix.speedKmh = cmd.speedKmh;
+      fix.hasSpeed = cmd.hasSpeed;
+      fix.source = cmd.teamSource;
+      const IMapTeamSource::Ingest result = team_->teamPosition(teamHandle(cmd), fix);
+      switch (result) {
+        case IMapTeamSource::Ingest::UnknownMember:
+          // Said out loud rather than swallowed: on a radio this is the case
+          // that matters -- somebody outside the group is talking and the device
+          // is refusing them (../../../docs/team-markers.md).
+          out.reply("ERR unknown_member");
+          return false;
+        case IMapTeamSource::Ingest::Muted:
+          out.reply("ERR team_muted");
+          return false;
+        case IMapTeamSource::Ingest::WriteFailed:
+          // The row is written before the marker moves, so a refused card leaves
+          // the panel exactly as it was.
+          out.reply("ERR team_write");
+          return false;
+        case IMapTeamSource::Ingest::Accepted:
+          break;
+      }
+      snprintf(line, sizeof(line), "INFO team_pos=%s", teamHandle(cmd).data());
+      out.reply(line);
+      out.reply("OK");
+      // The member has to be drawn, so this is a redraw and not merely a report
+      // -- same as `pin set`.
+      ++seq_;
+      return true;
+    }
+
+    case MapTeamVerb::Add: {
+      const IMapTeamSource::Edit result = team_->teamAdd(cmd.teamAcr, cmd.teamId, cmd.teamName);
+      if (result != IMapTeamSource::Edit::Ok) {
+        out.reply(teamEditError(result));
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO team_add=%s", cmd.teamAcr);
+      out.reply(line);
+      out.reply("OK");
+      return false;
+    }
+
+    case MapTeamVerb::Del: {
+      const IMapTeamSource::Edit result = team_->teamRemove(teamHandle(cmd));
+      if (result != IMapTeamSource::Edit::Ok) {
+        out.reply(teamEditError(result));
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO team_del=%s", teamHandle(cmd).data());
+      out.reply(line);
+      out.reply("OK");
+      // A member that is gone must stop being drawn in the same frame.
+      ++seq_;
+      return true;
+    }
+
+    case MapTeamVerb::Reload: {
+      size_t skipped = 0;
+      if (!team_->teamReload(skipped)) {
+        out.reply("ERR team_read");
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO team_total=%lu", static_cast<unsigned long>(team_->teamCount()));
+      out.reply(line);
+      // Never silent: a skipped row is a member whose marker will never appear,
+      // and the count is the only sign the file needs fixing.
+      snprintf(line, sizeof(line), "INFO team_skipped=%lu", static_cast<unsigned long>(skipped));
+      out.reply(line);
+      out.reply("OK");
+      ++seq_;
+      return true;
+    }
+
+    case MapTeamVerb::List:
+      writeTeamList(out);
+      out.reply("OK");
+      return false;
+
+    case MapTeamVerb::Log:
+      writeTeamLog(cmd.teamLogOffset, out);
+      out.reply("OK");
+      return false;
+  }
+  return false;
+}
+
+void MapConsoleState::writeTeamList(IMapReplyWriter& out) const {
+  // Wider than kReplyBuf, same reason as writePinList's: an acronym, an id, two
+  // signed coordinates and a timestamp at their widest do not fit 64 characters,
+  // and a truncated coordinate points at the wrong place.
+  char line[128];
+  char lat[24];
+  char lon[24];
+
+  const size_t total = team_->teamCount();
+  snprintf(line, sizeof(line), "INFO team_total=%lu", static_cast<unsigned long>(total));
+  out.reply(line);
+
+  // Bounded by the roster (kTeamMaxMembers), so no paging: twelve lines is
+  // inside what `info` already sends in one command.
+  for (size_t i = 0; i < total; ++i) {
+    const TeamMember member = team_->teamMemberAt(i);
+    const TeamFix fix = team_->teamFixAt(i);
+    if (!fix.present) {
+      // **Empty is not zero.** A member who has not been heard from has empty
+      // coordinate fields; 0,0 is a place in the Atlantic and a reader must
+      // never be able to confuse the two (parent docs/lora.md, "has not told us
+      // versus is at 0,0").
+      snprintf(line, sizeof(line), "INFO team_%s=%s,%s,,,,", member.acr, member.id, member.enabled ? "on" : "off");
+      out.reply(line);
+      continue;
+    }
+    formatE7(fix.latE7, lat, sizeof(lat));
+    formatE7(fix.lonE7, lon, sizeof(lon));
+    snprintf(line, sizeof(line), "INFO team_%s=%s,%s,%s,%s,%lu,%s", member.acr, member.id,
+             member.enabled ? "on" : "off", lat, lon, static_cast<unsigned long>(fix.utc), teamSourceText(fix.source));
+    out.reply(line);
+  }
+}
+
+void MapConsoleState::writeTeamLog(uint16_t offset, IMapReplyWriter& out) {
+  char line[kReplyBuf];
+  TeamLogReplyVisitor visitor(out);
+
+  // Totals before entries, the same order `pin log` and `missing` answer in --
+  // asking for zero records is how the total is fetched without them.
+  const uint32_t total = team_->teamLogPage(offset, 0, visitor);
+  snprintf(line, sizeof(line), "INFO teamlog_total=%lu", static_cast<unsigned long>(total));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO teamlog_offset=%u", static_cast<unsigned>(offset));
+  out.reply(line);
+
+  // Newest first, so offset 0 is where everybody was last seen -- which is what
+  // somebody looking for a rider needs on the first screen.
+  team_->teamLogPage(offset, kTeamLogPageSize, visitor);
+
+  const uint32_t next = static_cast<uint32_t>(offset) + kTeamLogPageSize;
+  if (next < total) {
+    snprintf(line, sizeof(line), "INFO teamlog_next=%lu", static_cast<unsigned long>(next));
+  } else {
+    snprintf(line, sizeof(line), "INFO teamlog_next=done");
+  }
+  out.reply(line);
+}
+
+#endif  // ENABLE_TEAM_CMD

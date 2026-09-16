@@ -2876,6 +2876,15 @@ void MapActivity::onEnter() {
   // onto a history it never read (MapPins::pinSet).
   pins_.begin();
   consoleState_.setPinsSource(&pins_);
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // The roster, then everyone's last known position off the black box. A member
+  // who was heard on the previous ride is on the panel before anybody transmits
+  // again, which is the state a rider opens the map in after a reboot.
+  team_.begin();
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+  consoleState_.setTeamSource(&team_);
+#endif
+#endif
   // `points`/`gone`/point-shard `skip` -- wired only when the rider has
   // turned the point layer on. Same revision as TileSyncActivity's, and the
   // same reason: `gone` is an unauthenticated delete, and this repo's
@@ -3072,6 +3081,9 @@ void MapActivity::onExit() {
   // The pins source is a member of this activity, which main.cpp deletes right
   // after this returns -- the console must not be left pointing into it.
   consoleState_.setPinsSource(nullptr);
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+  consoleState_.setTeamSource(nullptr);
+#endif
   consoleState_.setPointShardsSource(nullptr);
   consoleState_.setGoneObserver(nullptr);
   consoleState_.setPointSkipObserver(nullptr);
@@ -3159,6 +3171,9 @@ void MapActivity::loop() {
   if (mappedInput.wasAnyPressed()) clockFineUntilMs_ = millis() + kClockFineAfterInputMs;
 
   if (pendingPinPopup_ != PinPopup::None) servicePendingPinPopup();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  if (pendingTeamPopup_ != TeamPopup::None) servicePendingTeamPopup();
+#endif
   if (pendingNearbyPopup_ != NearbyPopup::None) servicePendingNearbyPopup();
 
   if (pinNoticeUntilMs_ != 0 &&
@@ -3212,7 +3227,11 @@ void MapActivity::loop() {
     // A chained handler that draws a real frame instead of a popup
     // (showPinOnMap(), savePin()) drops the backdrop itself, so keeping it here
     // cannot strand a stale one.
-    const bool chaining = pendingPinPopup_ != PinPopup::None || pendingNearbyPopup_ != NearbyPopup::None;
+    const bool chaining = pendingPinPopup_ != PinPopup::None || pendingNearbyPopup_ != NearbyPopup::None
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+                          || pendingTeamPopup_ != TeamPopup::None
+#endif
+        ;
     if (justClosed && chaining) {
       // Deliberately nothing: the popup's pixels stay on the panel until the
       // next one draws over them.
@@ -3999,6 +4018,18 @@ void MapActivity::openMapMenu() {
     snprintf(count, sizeof(count), "%u", static_cast<unsigned>(pins_.pinCount()));
     values.emplace_back(count);
   }
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // Team, right under Pins: both are marks on the map the rider reaches for
+  // while moving, and the value column says how many members are approved -- not
+  // how many are on the panel, which changes with every position that arrives.
+  const int teamIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_TEAM));
+  {
+    char count[8];
+    snprintf(count, sizeof(count), "%u", static_cast<unsigned>(team_.teamCount()));
+    values.emplace_back(count);
+  }
+#endif
   const int modeIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_MODE));
   values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
@@ -4054,8 +4085,11 @@ void MapActivity::openMapMenu() {
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
       StrId::STR_MAP, options, values, 0,
-      [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, pinsIdx, nearbyIdx, modeIdx, rotationIdx, headingIdx,
-       zoomModeIdx, reloadIdx, debugInfoIdx](int idx) {
+      [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, pinsIdx,
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+       teamIdx,
+#endif
+       nearbyIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx, debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
         // that change nothing on it (zoom mode) put it back
         // instead of re-rendering, and so does a plain dismiss
@@ -4063,7 +4097,12 @@ void MapActivity::openMapMenu() {
         // buffer is not held across a tile read.
         // The pins list opens over the same map, so it keeps the backdrop --
         // openPinsMenu() gives it up itself if its own dialog outgrows the rect.
-        if (idx != zoomModeIdx && idx != pinsIdx && idx != nearbyIdx && idx != modeIdx) dropMenuBackdrop();
+        bool keepsBackdrop = idx == zoomModeIdx || idx == pinsIdx || idx == nearbyIdx || idx == modeIdx;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+        // The team list opens over the same map, exactly like the pins list.
+        keepsBackdrop = keepsBackdrop || idx == teamIdx;
+#endif
+        if (!keepsBackdrop) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
         } else if (idx == pinsIdx) {
@@ -4071,6 +4110,11 @@ void MapActivity::openMapMenu() {
           // own handleInput(), and show()ing from here reassigns the
           // std::function currently executing. loop() opens it next iteration.
           pendingPinPopup_ = PinPopup::List;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+        } else if (idx == teamIdx) {
+          // Recorded, not opened -- same reason as the pins list above.
+          pendingTeamPopup_ = TeamPopup::List;
+#endif
         } else if (idx == nearbyIdx) {
           // Same deferral, same reason. The radius search runs when the popup
           // opens, not here: it reads up to nine files off the card and this is
@@ -6389,6 +6433,16 @@ void MapActivity::pollGnssFix() {
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   updateManualHeadingCapture(headingStep);
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // The rider's own row in the black box, before every early return below: a fix
+  // that Observe mode holds back from the frame is still where the rider was,
+  // and that is the whole point of the file. Off by default and rate-limited
+  // inside logSelf().
+  //
+  // No speed: this path carries a coordinate and a heading, and inventing a
+  // number for the column would be worse than leaving it empty.
+  team_.logSelf(latE7, lonE7, MapTeam::utcNowOrZero(), headingStep, true, 0, false, TeamFixSource::Ble, millis());
+#endif
   // Before every early return below: a fix held back because Observe mode or the
   // route overview owns the frame is still a fresh fix, and a pin saved while one
   // of those is up is saved at it (riderLatE7()).
@@ -6578,6 +6632,9 @@ void MapActivity::renderRouteOverview() {
   // Pins on the overview too: "where is the car relative to this whole route" is
   // exactly the question the overview is for.
   drawPins();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  drawTeam();
+#endif
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -6907,6 +6964,9 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // The rider's own marks, over the map and under everything below: the marker,
   // the compass, the readout and the hints all still land on top of them.
   drawPins();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  drawTeam();
+#endif
   // And the POI the rider asked to look at, if any -- over the marks the
   // renderer drew, because the whole point of it is to be findable among them.
   drawViewedNearbyPoint();
@@ -7115,3 +7175,243 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   pendingEntryCleanRefresh_ = false;
   busyShown_ = false;  // this frame painted over the badge
 }
+
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+
+// --- team markers (../../../docs/team-markers.md) ----------------------------
+
+namespace {
+
+// The head's inner radius, inside the pin shape's outline. kPinGlyphPx is the
+// box a pin's baked glyph is drawn in, so a disc of half that lands inside the
+// same head without touching the outline.
+constexpr int kTeamHeadRadiusPx = kPinGlyphPx / 2;
+
+}  // namespace
+
+TeamVisibility MapActivity::teamSlotVisibility(size_t slot) const {
+  const TeamFix& fix = team_.store().at(slot);
+  const TeamFixAge age = teamFixAge(fix, MapTeam::utcNowOrZero(), millis());
+  // Settings are in minutes, because that is the unit a rider thinks in; the
+  // rules are in seconds, because that is what an age is measured in.
+  return teamFixVisibility(age, static_cast<uint32_t>(SETTINGS.mapTeamStaleMin) * 60u,
+                           static_cast<uint32_t>(SETTINGS.mapTeamHideMin) * 60u);
+}
+
+void MapActivity::fillTeamHead(int cx, int cy, bool stale) const {
+  // A disc drawn as horizontal spans. There is no circle primitive on
+  // GfxRenderer, and a square of ink inside a round outline reads as a bug.
+  for (int dy = -kTeamHeadRadiusPx; dy <= kTeamHeadRadiusPx; ++dy) {
+    const int halfWidth =
+        static_cast<int>(sqrt(static_cast<double>(kTeamHeadRadiusPx * kTeamHeadRadiusPx - dy * dy)));
+    if (halfWidth <= 0) continue;
+    if (stale) {
+      // Dithered, not solid: an old position must not be drawn the same way as a
+      // current one, and the difference has to survive being glanced at on a
+      // moving bike.
+      renderer.fillRectDither(cx - halfWidth, cy + dy, halfWidth * 2, 1, Color::DarkGray);
+    } else {
+      renderer.fillRect(cx - halfWidth, cy + dy, halfWidth * 2, 1, true);
+    }
+  }
+}
+
+void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale) {
+  // The same baked shape a pin uses, point-down only: a member's marker never
+  // rotates, because rotation already means "the thing is off that way" for pins
+  // and there are no off-screen team markers yet.
+  const PinShapeFrame& frame = kPinShapeFrames[0];
+  const int x = tipX - frame.tipX;
+  const int y = tipY - frame.tipY;
+  renderer.drawMono1bpp(frame.mask, x, y, frame.w, frame.h, false);
+  renderer.drawMono1bpp(frame.ink, x, y, frame.w, frame.h, true);
+
+  const int cx = x + frame.headX;
+  const int cy = y + frame.headY;
+  fillTeamHead(cx, cy, stale);
+
+  // Letters in white on the filled head. Two fonts, picked by what fits: three
+  // wide characters at SMALL overflow a 22 px head, and letters spilling past
+  // the outline stop reading as a name.
+  int fontId = SMALL_FONT_ID;
+  int width = renderer.getTextWidth(fontId, acr);
+  if (width > kTeamHeadRadiusPx * 2) {
+    fontId = MAP_SMALL_FONT_ID;
+    width = renderer.getTextWidth(fontId, acr);
+  }
+  const int height = renderer.getLineHeight(fontId);
+  renderer.drawText(fontId, cx - width / 2, cy - height / 2, acr, false);
+}
+
+void MapActivity::drawTeam() {
+  // One switch for the whole layer. Off means no marker and no reading of the
+  // store -- a rider who does not ride in a group pays nothing for this.
+  if (SETTINGS.mapTeamMarkers == 0) return;
+  if (team_.teamCount() == 0) return;
+
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  int drawn = 0;
+  int tooOld = 0;
+  int offPanel = 0;
+
+  for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+    const TeamMember& member = team_.roster().at(slot);
+    if (!member.present || !member.enabled) continue;
+    const TeamFix& fix = team_.store().at(slot);
+    if (!fix.present) continue;  // has not told us where they are -- not a marker
+
+    const TeamVisibility visibility = teamSlotVisibility(slot);
+    if (visibility == TeamVisibility::Hidden) {
+      ++tooOld;
+      continue;
+    }
+
+    double mercX = 0.0;
+    double mercY = 0.0;
+    MapProjection::lonLatToMerc(static_cast<double>(fix.latE7) / 1e7, static_cast<double>(fix.lonE7) / 1e7, mercX,
+                                mercY);
+    // Wide projection for the same reason pins use it: a member can be tens of
+    // kilometres away, which overflows the int16 path.
+    int32_t sx = 0;
+    int32_t sy = 0;
+    proj_.projectMercWide(mercX, mercY, sx, sy);
+
+    const PinShapeFrame& frame = kPinShapeFrames[0];
+    if (sx < -frame.w || sy < -frame.h || sx > screenW + frame.w || sy > screenH + frame.h) {
+      // No edge marker for a member yet, deliberately: the pins' one merges
+      // overlapping marks into a count, and a merged marker that eats somebody's
+      // initials answers the wrong question. The Team list carries the distance
+      // and the direction until that is built (../../../docs/team-markers.md).
+      ++offPanel;
+      continue;
+    }
+
+    drawTeamBalloon(static_cast<int>(sx), static_cast<int>(sy), member.acr,
+                    visibility == TeamVisibility::Stale);
+    ++drawn;
+  }
+
+  // Never silent: a member who is not on the panel is the case this feature
+  // exists for, and the log is what says which of the three reasons it was.
+  if (drawn > 0 || tooOld > 0 || offPanel > 0) {
+    LOG_DBG(kLogTag, "team: %d drawn, %d too old, %d off the panel", drawn, tooOld, offPanel);
+  }
+}
+
+void MapActivity::teamRowText(size_t slot, char* buf, size_t bufLen) const {
+  if (buf == nullptr || bufLen == 0) return;
+  const TeamFix& fix = team_.store().at(slot);
+  if (!fix.present) {
+    // Not "0 m", not "unknown": they have simply never told us, which is a
+    // different thing from being at a coordinate we do not trust.
+    snprintf(buf, bufLen, "--");
+    return;
+  }
+
+  char distance[16] = "--";
+  const char* sector = "";
+  if (hasReceivedAny_) {
+    const uint32_t metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7);
+    PinGeo::formatDistance(metres, distance, sizeof(distance));
+    sector = MapPointQuery::sectorName(MapPointQuery::sector8(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7));
+  }
+
+  const TeamFixAge age = teamFixAge(fix, MapTeam::utcNowOrZero(), millis());
+  if (!age.known) {
+    // A position with no date, which is every replayed one on a device with no
+    // clock. `?` rather than a number nobody can stand behind.
+    snprintf(buf, bufLen, "%s %s ?", distance, sector);
+    return;
+  }
+  if (age.seconds < 3600) {
+    snprintf(buf, bufLen, "%s %s %lum", distance, sector, static_cast<unsigned long>(age.seconds / 60));
+  } else {
+    snprintf(buf, bufLen, "%s %s %luh", distance, sector, static_cast<unsigned long>(age.seconds / 3600));
+  }
+}
+
+void MapActivity::openTeamMenu() {
+  const size_t count = team_.teamCount();
+  if (count == 0) {
+    // A roster is edited on the card or over the console, so there is nothing
+    // for the rider to press here. Say so instead of opening an empty list.
+    dropMenuBackdrop();
+    showPinNotice(tr(STR_TEAM_EMPTY));
+    return;
+  }
+
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  options.reserve(count);
+  values.reserve(count);
+
+  char row[32];
+  for (size_t index = 0; index < count; ++index) {
+    const size_t slot = team_.slotForIndex(index);
+    const TeamMember& member = team_.roster().at(slot);
+    // Acronym first, because that is what is on the panel: the list has to be
+    // readable against the markers without a second lookup.
+    std::string label = member.acr;
+    if (member.name[0] != '\0') {
+      label += " ";
+      label += member.name;
+    }
+    options.push_back(label);
+    teamRowText(slot, row, sizeof(row));
+    values.emplace_back(row);
+  }
+
+  optionPopup_.showWithValues(StrId::STR_MAP_TEAM, options, values, 0, [this](int idx) {
+    // Deferred, like every other popup opened from inside a popup callback.
+    pendingTeamArg_ = static_cast<uint8_t>(team_.slotForIndex(static_cast<size_t>(idx)));
+    pendingTeamPopup_ = TeamPopup::Show;
+  });
+  optionPopup_.setSize(BaseTheme::OptionPopupSize::Menu);
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::showTeamMemberOnMap(size_t slot) {
+  dropMenuBackdrop();
+  if (slot >= TeamRoster::kSlotCount) return;
+  const TeamFix& fix = team_.store().at(slot);
+  if (!fix.present) return;
+
+  // Observation mode wholesale, exactly as showPinOnMap() does it and for the
+  // same reasons -- the next fix must not yank the frame back, and "Follow mode"
+  // already knows the way home.
+  if (screenMode_ == MapScreenMode::Follow) {
+    screenMode_ = MapScreenMode::Observe;
+    observeReturnLatE7_ = lastLatE7_;
+    observeReturnLonE7_ = lastLonE7_;
+    observeReturnHeading_ = lastHeading_;
+    observeReturnSeq_ = lastDrawnSeq_;
+  }
+
+  LOG_INF(kLogTag, "show team member %s at %ld,%ld", team_.roster().at(slot).acr, static_cast<long>(fix.latE7),
+          static_cast<long>(fix.lonE7));
+  redrawDueMs_ = 0;
+  showBusy();
+  renderViewport(fix.latE7, fix.lonE7, anchorHeading_, lastDrawnSeq_);
+}
+
+void MapActivity::servicePendingTeamPopup() {
+  const TeamPopup which = pendingTeamPopup_;
+  const size_t arg = pendingTeamArg_;
+  pendingTeamPopup_ = TeamPopup::None;
+  pendingTeamArg_ = 0;
+  // Exhaustive switch, no default, so a new value cannot land here silently.
+  switch (which) {
+    case TeamPopup::None:
+      return;
+    case TeamPopup::List:
+      openTeamMenu();
+      return;
+    case TeamPopup::Show:
+      showTeamMemberOnMap(arg);
+      return;
+  }
+}
+
+#endif  // ENABLE_TEAM_MARKERS
