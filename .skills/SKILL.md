@@ -1194,3 +1194,14 @@ Note that `SCOPE.md` and the `scope-discipline` skill are inherited and still
 phrased around reading. Their reasoning holds -- one thing done well, the RAM
 gate, prefer no code -- but read "reading experience" as "navigation" until they
 are rewritten.
+
+## A feature nobody can use yet stays on its own branch
+
+**Decision, 2026-09-16.** Tests and a hardware pass make a merge safe; they do
+not make it worth doing. A feature no user can reach -- because its transport,
+its screen or its data source does not exist yet -- stays on its own branch, is
+synced *from* `develop` rather than into it, and is pushed. **Do not propose
+merging one**: from inside the diff it always looks ready. `docs/branching.md`,
+"A feature nobody can use yet stays on its own branch", has the reasoning; the
+register of which branches these are lives in the parent repo's
+`docs/feature-branches.md`.

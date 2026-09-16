@@ -286,8 +286,10 @@ made 2026-09-16 after the letters read low and right on the panel:
   never use. The letters are placed so the cap band centres instead (cap height
   taken as the usual ~0.72 of the ascender).
 
-Measured off the rendered frame afterwards, against the asset's own geometry:
-`RF` lands dead centre, `MK` within half a pixel.
+Measured off a **simulator** frame afterwards, against the asset's own geometry:
+`RF` lands dead centre, `MK` within half a pixel. The panel got an eye, not a
+ruler -- a device screenshot is a frame like any other, but nothing measured the
+letters there.
 
 `MapActivity::drawTeamBalloon()` logs each acronym's chosen face, its ink box and
 the usable width at `LOG_DBG`. That line is what settled every number above, and
@@ -441,23 +443,44 @@ share one binary, and the X3 is the device that cannot afford the DRAM.
 ### What it costs
 
 Measured 2026-09-16 on the C3 -- the chip the argument is about, since the X3 and
-the X4 share that binary. Same commit, same environment (`env:default`), one
-build with the flags and one without, twenty minutes apart:
+the X4 share that binary. Same commit (`bff18a02`), same environment
+(`env:default`), one build with the flags and one without, inside one hour:
 
 | | flash | static RAM |
 |---|---|---|
 | flags off | 4,068,927 B (62.1 %) | 59,140 B (18.0 %) |
-| flags on | 4,087,457 B (62.4 %) | 59,140 B (18.0 %) |
-| **the feature** | **+18,530 B** | **0 B** |
+| flags on | 4,091,923 B (62.4 %) | 59,140 B (18.0 %) |
+| **the feature** | **+22,996 B** | **0 B** |
+
+**An earlier reading of +18,530 B is in the history and was correct for what
+existed then** (`8f879c26`, before the filled silhouette, the labels, the clock
+work and the identifier list). Six commits later the same measurement gives
++22,996 B, so those six cost 4,466 B between them. A cost figure is only ever
+true for the commit it was taken at; this one names its own.
 
 The static RAM is unchanged because the roster and the store live inside the
-`MapActivity` instance, which is not a static object: their ~1 kB is heap, held
-only while the map screen is up. **That kilobyte has not been read off a
-device** -- a `heap` figure with the map open, flags on and off, is the half of
-T-2020 still outstanding.
+`MapActivity` instance, which is not a static object. **That instance grew to
+1,728 B**: `sizeof(TeamRoster)` is 1,344 B and `sizeof(TeamStore)` 384 B,
+measured with `g++` on the host against these headers. On the device `size_t` is
+four bytes rather than eight, so the roster is 48 B smaller there, about
+1,680 B. It is heap, held only while the map screen is up, and **it has still
+not been read off a device** -- a `heap` figure with the map open, flags on and
+off, is the half of T-2020 that remains.
 
-`env:x4pro` with both flags on links at 3,904,998 B flash (59.6 %) and 69,780 B
+`env:x4pro` with both flags on links at 3,908,118 B flash (59.6 %) and 69,780 B
 static RAM (21.3 %), clean, no warnings from any of the new files.
+
+## Where this lives
+
+**Branch `team-markers`, and it does not go to `develop` yet.** Maintainer's
+decision, 2026-09-16: nothing carries positions into this layer, so a rider on a
+release build would see a feature that cannot do anything. The gate is a real
+transport, LoRa first -- T-2022 in the parent repo's `docs/TODO.md`.
+
+The rule is [`branching.md`](branching.md), "A feature nobody can use yet stays
+on its own branch"; the register of which branches are in that state is the
+parent repo's `docs/feature-branches.md`. **Do not propose merging this.** Sync
+it from `develop` every few weeks instead.
 
 ## What is open
 
@@ -478,8 +501,10 @@ static RAM (21.3 %), clean, no warnings from any of the new files.
 ## The hardware pass
 
 X4 Pro, 2026-09-16. Flashed four times as the marks changed, the last being
-`47a2338a` (all archived as
-`docs/firmware-builds/2026-09-16-x4pro-team-markers-*` in the parent repo).
+`47a2338a` -- so **the branch tip is two commits ahead of anything that has run
+on hardware**: the frame-based age window and the age-check log are verified in
+the simulator only. (All archived as
+`docs/firmware-builds/2026-09-16-x4pro-team-markers-*` in the parent repo.)
 Driven entirely over the USB console, no radio and no phone.
 
 What ran:

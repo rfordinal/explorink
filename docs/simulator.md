@@ -201,6 +201,19 @@ software renderer and prints which one it took. Verified the same day: a dummy
 run and a windowed run write the same map frame -- 0 of 384,000 pixels differ, with the
 persisted fix reseeded before each run.
 
+**The map redraws on events, so a timed screenshot shows the state at the last
+event and not at the capture.** Measured 2026-09-16 while watching team markers
+age: positions were fed at 14 s, the capture fired at 115 s, and the frame was
+the one drawn at 14 s -- the markers still read as current because nothing had
+asked the map to draw them again. Two readings were thrown away before the cause
+was obvious.
+
+So a capture that is meant to show *elapsed* state sends `redraw` over the BLE
+shim first, or waits for whatever produces the redraw under test and captures
+after it. This is the same coupling the next paragraph describes from the other
+side: there a command's own redraw lands after the capture, here no redraw is
+coming at all.
+
 **A timed screenshot can capture the previous command's state.**
 `CROSSPOINT_SIM_SCREENSHOTS` fires on wall clock from process start, and a map
 console command sent over the BLE shim does not redraw immediately: if nothing is
