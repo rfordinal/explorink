@@ -99,10 +99,16 @@ class LoraRadio {
   // RadioLib's status code from whatever failed last, 0 when nothing did.
   int lastError() const { return lastError_; }
 
-  // The 16-byte version string the chip reports at register 0x0320, e.g.
-  // "SX1262 V2D". **This is the only thing that proves which part is fitted**
-  // -- parent docs/lora.md marks the SX1262 identity [open] because it was
-  // inferred from a BUSY pin in a header, never read off silicon.
+  // The 16-byte version string the chip reports at register 0x0320. Measured
+  // on this board 2026-09-16: "SX1261 V2D 2D02".
+  //
+  // **It does not say which part is fitted, and it cannot.** RadioLib expects
+  // the same string from an SX1262 (`SX1262.h:16`, RADIOLIB_SX1262_CHIP_TYPE
+  // is "SX1261"), so the two answer identically -- which is also why begin()
+  // succeeding proves the radio is alive and proves nothing about its model.
+  // The difference that matters is the power amplifier: SX1261 stops at
+  // +15 dBm, SX1262 reaches +22. Settle it with the vendor schematic or a
+  // measured output sweep, never with this string.
   const char* chipVersion();
 
  private:

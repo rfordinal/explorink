@@ -29,12 +29,13 @@ bool LoraRadio::begin(const LoraPins& pins, const LoraConfig& config) {
   if (impl_ != nullptr) end();
   impl_ = new Impl(pins);
 
-  // RadioLib verifies the part before configuring it: begin() calls
-  // SX126x::findChip(), which reads the 16-byte version string at 0x0320 and
-  // returns RADIOLIB_ERR_CHIP_NOT_FOUND (-2) when it does not say "SX1262".
-  // So a success here is the first hardware evidence of which radio is fitted
-  // -- until now the part was inferred from a BUSY pin in a pin header
-  // (parent docs/lora.md marks it [open]).
+  // RadioLib checks that an SX126x answers at all before configuring it:
+  // begin() calls SX126x::findChip(), which reads the version string at 0x0320
+  // and returns RADIOLIB_ERR_CHIP_NOT_FOUND (-2) when nothing matches.
+  // **That check does not identify the model.** RadioLib expects "SX1261" from
+  // an SX1262 too (`SX1262.h:16`), so it separates "a radio is there, powered
+  // and out of reset" from "nothing answers", and nothing finer. Which part is
+  // fitted stays open (parent docs/lora.md).
   //
   // useRegulatorLDO stays false, i.e. the DC-DC converter: LilyGo's modules
   // carry the inductor for it, and the LDO would roughly double receive

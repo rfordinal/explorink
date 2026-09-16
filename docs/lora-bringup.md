@@ -1,10 +1,10 @@
 # LoRa bring-up on the T5 S3 Pro
 
 The SX1262 console: what it does, what it proves, and what it deliberately
-does not solve yet. Written 2026-09-16, **nothing run on hardware** -- the
-second T5 S3 Pro that makes a link test possible had not arrived when this was
-written. Every claim here is `[repo]` (read off code) or `[secondhand]` (read
-off another project) unless it says otherwise.
+does not solve yet. Written 2026-09-16 and **run on two boards the same day**: the link works.
+The measured run is in "The first contact" below. Claims are marked
+`[measured]` on hardware, `[repo]` (read off code) or `[secondhand]` (read off
+another project).
 
 The assessment that scoped this work is the parent repo's `docs/lora.md`.
 
@@ -88,14 +88,50 @@ antenna transmits into a dead path while reporting success.
 `useRegulatorLDO` stays false, i.e. the DC-DC converter. The LDO roughly
 doubles receive current. `[assumed]` for this board.
 
-## What the console proves that nothing else could
+## The first contact, 2026-09-16 `[measured]`
 
-**Which radio is fitted.** `CMD:LORA ON` prints the 16-byte version string from
-register 0x0320. Until it runs, the SX1262 identity is an inference from a BUSY
-pin in a pin header (parent `docs/lora.md` marks it `[open]`). RadioLib checks
-the same string itself and returns `-2` (`RADIOLIB_ERR_CHIP_NOT_FOUND`) when it
-does not say `SX1262`, so a successful `ON` is already the answer; the printed
-string is the evidence to paste into a doc.
+Two T5 S3 Pro boards on one desk, both on this build, `PONG ON` on one and
+`PING` on the other. Four exchanges, **four replies, nothing lost**:
+
+```
+board A (pinging)                             board B (answering)
+LORA_OK:ping=1 air=170ms                      LORA_RX:len=6 rssi=-33.0 snr=12.0 text=PING 1
+LORA_PONG:rtt=434ms here_rssi=-33.0           LORA_OK:pong=1 -33.0 12.0
+          here_snr=11.8 there=1 -33.0 12.0
+```
+
+| | value |
+|---|---|
+| RSSI, both directions | -32 to -33 dBm |
+| SNR, both directions | 11.2 to 12.2 dB |
+| airtime, one 6-byte packet | 169-170 ms |
+| round trip, ping to pong | 434, 485, 485, 436 ms |
+| packets lost | 0 of 4 |
+
+**The boards were side by side, so -33 dBm says the radios work and says
+nothing about range.** Range is bring-up step 4 and needs a bike, not a bench
+(parent `docs/lora.md`).
+
+Airtime is worth reading twice: **170 ms for six bytes** at SF8 / 62.5 kHz.
+That is the budget every protocol decision above this layer spends from, and it
+is why an advert cadence is a real design question rather than a constant.
+
+The round trip is roughly two airtimes plus the far end's turnaround, which
+means it is dominated by the radio and not by our loop.
+
+## What the console proves, and what it cannot
+
+**That a radio is there, powered and out of reset.** `CMD:LORA ON` prints the
+16-byte version string from register 0x0320. Both boards answer
+`SX1261 V2D 2D02` `[measured]`.
+
+**It does not say which part is fitted, and an earlier version of this section
+claimed it did.** RadioLib expects the string `SX1261` from an SX1262 as well
+(`SX1262.h:16`, `RADIOLIB_SX1262_CHIP_TYPE`), so the two models answer
+identically and `RADIOLIB_ERR_CHIP_NOT_FOUND` only separates "something
+answers" from "nothing does". The SX1262 identity stays `[open]` in parent
+`docs/lora.md`. What would settle it: the vendor schematic, or a measured
+output sweep -- an SX1261 stops at +15 dBm where an SX1262 reaches +22.
 
 The string is read with our own SPI transaction (opcode `0x1D`, the 16-bit
 address, one dummy byte) because RadioLib's `readRegister()` is protected
@@ -154,10 +190,32 @@ baseline):
 That is the whole radio driver plus the console. It is a devel-only env, so no
 release build pays it today.
 
+## The first boot after a flash lands in download mode, twice over
+
+Flashing this board and then wondering why it is silent cost an hour on
+2026-09-16, and the same thing happened on the first board in August. The
+sequence, so the next session skips it:
+
+1. `pio run -t upload` succeeds, every image verified. The board then boots
+   into the ROM loader, not into the app: `rst:0x15 (USB_UART_CHIP_RESET)`,
+   `boot:0x23 (DOWNLOAD(USB/UART0))`, `waiting for download` `[measured]`. On
+   this board **DTR drives GPIO0**, so a reset caused by the host -- esptool's
+   own, or merely closing a serial capture -- re-enters the loader
+   (parent `docs/PROGRESS.md`, 2026-09-06 and the browser-flasher entry).
+2. Left alone, it then drops off USB entirely. That is **deep sleep**, not an
+   unplug, and it looks exactly like a dead board.
+3. The way out is the board's own power button: **hold BOOT (left, top) for
+   about two seconds**. A tap does not do it -- the wake check subtracts boot
+   time (`lib/hal/HalGPIO.cpp`).
+
+The e-paper panel makes this worse than it needs to be: it keeps the last
+stock frame with no power, so "the old firmware is still on screen" is not
+evidence of anything.
+
 ## What is not done
 
-- **Nothing has run on hardware.** Every row above is code or another
-  project's config.
+- **Range is unmeasured.** The link works at desk distance; that is all.
+  Bring-up step 4 is a moving bike.
 - **No host test pinning the wire bytes.** Parent `docs/lora.md` bring-up step
   3 asks for one, after OpenTrailPaper's `tools/mesh_test/`: sync word,
   preamble, channel hash and slot numbers checked against known-good bytes,
