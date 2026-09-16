@@ -35,6 +35,10 @@
 #include <esp_system.h>
 #endif
 
+#ifdef ENABLE_LORA_CMD
+#include <LoraRadio.h>
+#endif
+
 #ifdef ENABLE_CHARGE_CMD
 #include <Wire.h>  // the charger and the gauge sit on the same I2C bus
 #endif
@@ -386,15 +390,9 @@ void t5s3DeselectLoraRadio() {
 }  // namespace
 #endif  // FREEINK_DEVICE_LILYGO
 
-#ifdef ENABLE_GNSS_CMD
-// Bring-up instrument for the LilyGo T5 S3 Pro's on-board L76K receiver, driven
-// entirely from CMD:GNSS below. There is no UI and no map integration yet: the
-// point is to find out whether the receiver is wired the way the header says
-// before anything depends on it (docs/gnss.md).
-Gnss gnss;
-
-// The receiver's power rail is a single PCA9535 expander pin that powers the
-// LoRa radio along with it -- there is no way to have GNSS on this board
+#if defined(ENABLE_GNSS_CMD) || defined(ENABLE_LORA_CMD)
+// The GNSS receiver's power rail is a single PCA9535 expander pin that powers
+// the LoRa radio along with it -- there is no way to have GNSS on this board
 // without also powering the SX1262 (BoardT5S3Pins.h:70).
 //
 // That matters more than it looks. LORA_CS (GPIO46) is also handed to LovyanGFX
@@ -409,8 +407,31 @@ Gnss gnss;
 // is done here rather than left to BoardT5S3::disableGpsLora(), because nothing
 // in this firmware calls BoardT5S3::begin(): that function has never run on
 // this board, so LORA_RST is undriven at boot and cannot be assumed low.
-static bool gnssPowerEnable(bool on) {
+// Two subsystems, one switch. The GNSS receiver and the LoRa radio are powered
+// by the same PCA9535 pin (BoardT5S3Pins.h:70), so whoever turns it off turns
+// the other one off with it. A plain on/off call therefore cannot be correct:
+// CMD:GNSS OFF must not kill a listening radio, and parking the radio must not
+// blind a map that is following a fix.
+//
+// The users are a bitmask rather than a counter on purpose -- a counter gets
+// out of step the first time a caller asks twice, and Gnss::begin() treats a
+// second call as a no-op by design, so double calls are normal here.
+enum RailUser : uint8_t {
+  kRailUserGnss = 1 << 0,
+  kRailUserLora = 1 << 1,
+};
+static uint8_t t5s3RailUsers = 0;
+
+static bool t5s3RailHold(uint8_t user, bool on) {
   if (BoardConfig::ACTIVE.board != BoardConfig::Board::LilyGoT5S3) return false;
+
+  const uint8_t wanted = on ? (t5s3RailUsers | user) : static_cast<uint8_t>(t5s3RailUsers & ~user);
+  const bool railWanted = wanted != 0;
+  const bool railHeld = t5s3RailUsers != 0;
+  if (railWanted == railHeld) {
+    t5s3RailUsers = wanted;
+    return true;
+  }
 
   // Wire is normally already up from GT911 touch init (InputManager.cpp:839).
   // Only re-run the board's own I2C setup if the expander does not answer, so
@@ -426,16 +447,30 @@ static bool gnssPowerEnable(bool on) {
   // Level before direction, matching disableGpsLora(): switching an expander
   // pin to output first would drive whatever the output register happens to
   // hold, which on a cold boot is the PCA9535's power-on default of high.
-  if (!BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, on)) return false;
+  if (!BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, railWanted)) return false;
   if (!BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT)) {
     // The write above already took effect and the direction may already have
     // been output from an earlier call, so a failure here can leave the rail
     // live while this function reports failure. Undo it before returning.
-    if (on) BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, false);
+    if (railWanted) BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, false);
     return false;
   }
+  t5s3RailUsers = wanted;
   return true;
 }
+
+#endif  // ENABLE_GNSS_CMD || ENABLE_LORA_CMD
+
+#ifdef ENABLE_GNSS_CMD
+// Bring-up instrument for the LilyGo T5 S3 Pro's on-board L76K receiver, driven
+// entirely from CMD:GNSS below. There is no UI and no map integration yet: the
+// point is to find out whether the receiver is wired the way the header says
+// before anything depends on it (docs/gnss.md).
+Gnss gnss;
+
+// The shape Gnss wants for its power hook: one bool, no idea who else is on the
+// rail. Everything that knows about sharing stays above this line.
+static bool gnssPowerEnable(bool on) { return t5s3RailHold(kRailUserGnss, on); }
 
 // Opens the receiver: rail up, UART up, with this board's pins and ring size.
 // Declared in GnssAccess.h so the map can call it too -- CMD:GNSS ON was the
@@ -624,6 +659,129 @@ static void gnssRawByteSink(uint8_t b) {
   }
 }
 #endif
+#ifdef ENABLE_LORA_CMD
+// Bring-up instrument for the SX1262 on the T5 S3 Pro, and the only thing that
+// drives it. There is no UI, no mesh and no protocol yet: this exists to answer
+// whether two boards can hear each other at all, because every layer above a
+// radio is undebuggable until that is known (parent docs/lora.md, bring-up
+// step 3).
+//
+// Devel-only (-DENABLE_LORA_CMD lives in env:t5s3pro and in no release env) for
+// three separate reasons, any one of them enough. It powers a rail. It
+// transmits -- airtime in a licensed band is not something a stranger's device
+// should spend on their behalf. And a received packet is printed verbatim,
+// which in a later build would be somebody else's group traffic.
+LoraRadio lora;
+
+// Every number here is a wire setting: change one and this board stops being
+// able to hear the other one. The defaults come from LoraConfig, which carries
+// MeshCore's own EU defaults so a bring-up board and a MeshCore node share a
+// channel. FREQ and POWER below move them for a range test.
+static LoraConfig gLoraConfig;
+
+static bool gLoraPongMode = false;
+static uint32_t gLoraRxCount = 0;
+static uint32_t gLoraTxCount = 0;
+
+// Ping bookkeeping. One outstanding ping at a time: this measures a link, not
+// throughput, and a queue would only hide which reply belongs to which send.
+static uint32_t gLoraPingSeq = 0;
+static unsigned long gLoraPingSentMs = 0;
+static bool gLoraPingWaiting = false;
+
+static const LoraPins kT5S3LoraPins = {
+    static_cast<int8_t>(T5S3_LORA_CS),    // NSS 46, also the panel's pin_oe/pin_pwr
+    static_cast<int8_t>(T5S3_LORA_IRQ),   // DIO1 10
+    static_cast<int8_t>(T5S3_LORA_RST),   // NRESET 1
+    static_cast<int8_t>(T5S3_LORA_BUSY),  // BUSY 47
+};
+
+// Prints a received payload without trusting it. Anything off the air is
+// attacker-controlled text on a device whose console a stranger can also reach
+// (parent docs/TODO.md, T-222), so control bytes never reach the terminal.
+static void loraPrintPayload(const uint8_t* data, size_t length) {
+  char text[65];
+  size_t out = 0;
+  for (size_t i = 0; i < length && out < sizeof(text) - 1; ++i) {
+    const uint8_t b = data[i];
+    text[out++] = (b >= 0x20 && b < 0x7F) ? static_cast<char>(b) : '.';
+  }
+  text[out] = '\0';
+  logSerial.printf("LORA_RX:len=%u rssi=%.1f snr=%.1f text=%s\n", static_cast<unsigned>(length), lora.rssi(),
+                   lora.snr(), text);
+}
+
+// Starts the radio: rail first, then the chip. Kept apart from the rail call
+// because the rail is shared with the GNSS receiver and this must not be the
+// thing that turns that off (t5s3RailHold above).
+static bool loraStart() {
+  if (lora.ready()) return true;
+  if (!t5s3RailHold(kRailUserLora, true)) return false;
+
+  // The datasheet's power-on timing is tens of microseconds, but the rail here
+  // goes through an I2C expander write and a regulator, and the GNSS bring-up
+  // measured its own part needing time after the same switch.
+  delay(10);
+
+  if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
+    t5s3RailHold(kRailUserLora, false);
+    return false;
+  }
+  return true;
+}
+
+static void loraStop() {
+  lora.end();
+  gLoraPongMode = false;
+  gLoraPingWaiting = false;
+  t5s3RailHold(kRailUserLora, false);
+}
+
+// One step, called from loop(). Nothing here blocks: a listening radio has to
+// coexist with a panel refresh and a button press, and a blocking listen would
+// freeze both for the length of the window.
+static void loraPoll() {
+  if (!lora.ready()) return;
+
+  uint8_t buffer[64];
+  const int length = lora.poll(buffer, sizeof(buffer));
+  if (length == 0) return;
+  if (length < 0) {
+    // A damaged packet is evidence too: at the edge of range it is the first
+    // thing that happens, well before packets stop arriving altogether.
+    logSerial.printf("LORA_RX_ERR:crc or read failed err=%d rssi=%.1f\n", lora.lastError(), lora.rssi());
+    return;
+  }
+
+  gLoraRxCount++;
+  loraPrintPayload(buffer, static_cast<size_t>(length));
+
+  buffer[length < static_cast<int>(sizeof(buffer)) ? length : static_cast<int>(sizeof(buffer)) - 1] = '\0';
+  const char* text = reinterpret_cast<const char*>(buffer);
+
+  if (gLoraPongMode && strncmp(text, "PING ", 5) == 0) {
+    // The reply carries what only this end can know -- how well it heard the
+    // ping. That is the whole point of a link test: the sender learns both
+    // directions from one exchange.
+    char reply[64];
+    snprintf(reply, sizeof(reply), "PONG %s %.1f %.1f", text + 5, lora.rssi(), lora.snr());
+    if (lora.transmit(reply)) {
+      gLoraTxCount++;
+      logSerial.printf("LORA_OK:pong=%s\n", reply + 5);
+    } else {
+      logSerial.printf("LORA_ERR:pong not sent err=%d\n", lora.lastError());
+    }
+    return;
+  }
+
+  if (gLoraPingWaiting && strncmp(text, "PONG ", 5) == 0) {
+    const unsigned long rtt = millis() - gLoraPingSentMs;
+    gLoraPingWaiting = false;
+    logSerial.printf("LORA_PONG:rtt=%lums here_rssi=%.1f here_snr=%.1f there=%s\n", rtt, lora.rssi(), lora.snr(),
+                     text + 5);
+  }
+}
+#endif  // ENABLE_LORA_CMD
 #if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
 // I2C for the two power chips on the gauge bus: the BQ27220 fuel gauge (0x55)
 // and the BQ25896 charger (0x6B) on the T5 S3 Pro. Shared by CMD:BATT and
@@ -1407,6 +1565,13 @@ void loop() {
     lastMemPrint = millis();
   }
 
+#ifdef ENABLE_LORA_CMD
+  // One non-blocking look at the radio per iteration. It reads a GPIO and does
+  // nothing else unless a packet is actually waiting, so it costs the loop
+  // almost nothing while the radio is off or silent.
+  loraPoll();
+#endif
+
 #ifdef ENABLE_GNSS_CMD
   // Drain the receiver's UART every iteration. The parser does no work beyond
   // what the port already buffered, and at 9600 baud a full NMEA cycle is well
@@ -1785,6 +1950,155 @@ void loop() {
             SETTINGS.saveToFile();
           }
           logSerial.printf("LIGHT_OK:%u\n", static_cast<unsigned>(frontlight.brightness()));
+        }
+#endif
+#ifdef ENABLE_LORA_CMD
+      } else if (cmd == "LORA" || cmd.startsWith("LORA ")) {
+        // The whole LoRa bring-up console. Devel-only -- see the comment on the
+        // LoraRadio instance above for the three reasons.
+        //
+        //   CMD:LORA              ->  LORA_STATE:...
+        //   CMD:LORA ON           ->  LORA_OK:on chip=<version string off silicon>
+        //   CMD:LORA OFF          ->  LORA_OK:off
+        //   CMD:LORA RX ON|OFF    ->  LORA_OK:rx=1|0   (packets print as LORA_RX:)
+        //   CMD:LORA TX <text>    ->  LORA_OK:tx=<bytes> ms=<airtime>
+        //   CMD:LORA PING         ->  LORA_OK:ping=<seq>, then LORA_PONG: on reply
+        //   CMD:LORA PONG ON|OFF  ->  LORA_OK:pong=1|0  (answer every PING heard)
+        //   CMD:LORA POWER <dbm>  ->  LORA_OK:power=<dbm>   (2..22)
+        //   CMD:LORA FREQ <mhz>   ->  LORA_OK:freq=<mhz>
+        //
+        // The two-board link test is CMD:LORA PONG ON on one device and
+        // CMD:LORA PING on the other. One exchange reports both directions:
+        // rtt and the local rssi/snr are this end's, and the numbers after
+        // "there=" are how the far end heard us.
+        String argument = cmd.substring(4);
+        argument.trim();
+        String upper = argument;
+        upper.toUpperCase();
+
+        if (argument.length() == 0) {
+          logSerial.printf(
+              "LORA_STATE:ready=%d listening=%d pong=%d rail=%d freq=%.3f bw=%.1f sf=%u cr=%u power=%d rx=%lu "
+              "tx=%lu\n",
+              lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
+              gLoraConfig.freqMhz, gLoraConfig.bandwidthKhz, static_cast<unsigned>(gLoraConfig.spreadingFactor),
+              static_cast<unsigned>(gLoraConfig.codingRate), static_cast<int>(gLoraConfig.txPowerDbm),
+              static_cast<unsigned long>(gLoraRxCount), static_cast<unsigned long>(gLoraTxCount));
+        } else if (upper == "ON") {
+          if (loraStart()) {
+            // The version string is the first hardware answer to a question
+            // this project has carried as [open] since 2026-08-23: which radio
+            // is actually fitted. It is read off register 0x0320, not inferred.
+            logSerial.printf("LORA_OK:on chip=%s\n", lora.chipVersion());
+          } else {
+            logSerial.printf("LORA_ERR:begin failed err=%d (rail, reset, tcxo or not an SX1262)\n", lora.lastError());
+          }
+        } else if (upper == "OFF") {
+          loraStop();
+          logSerial.printf("LORA_OK:off\n");
+        } else if (upper == "RX ON" || upper == "RX") {
+          if (!loraStart()) {
+            logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
+          } else if (lora.startListening()) {
+            logSerial.printf("LORA_OK:rx=1\n");
+          } else {
+            logSerial.printf("LORA_ERR:rx err=%d\n", lora.lastError());
+          }
+        } else if (upper == "RX OFF") {
+          lora.stopListening();
+          logSerial.printf("LORA_OK:rx=0\n");
+        } else if (upper == "PONG ON" || upper == "PONG") {
+          if (!loraStart()) {
+            logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
+          } else if (lora.startListening()) {
+            gLoraPongMode = true;
+            logSerial.printf("LORA_OK:pong=1\n");
+          } else {
+            logSerial.printf("LORA_ERR:rx err=%d\n", lora.lastError());
+          }
+        } else if (upper == "PONG OFF") {
+          gLoraPongMode = false;
+          logSerial.printf("LORA_OK:pong=0\n");
+        } else if (upper == "PING" || upper.startsWith("PING ")) {
+          if (!loraStart()) {
+            logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
+          } else {
+            // Listening before sending, not after: the far end can reply in a
+            // few hundred milliseconds and a radio still in standby would miss
+            // its own answer.
+            lora.startListening();
+            char payload[48];
+            snprintf(payload, sizeof(payload), "PING %lu", static_cast<unsigned long>(++gLoraPingSeq));
+            const unsigned long before = millis();
+            if (lora.transmit(payload)) {
+              gLoraTxCount++;
+              gLoraPingSentMs = before;
+              gLoraPingWaiting = true;
+              logSerial.printf("LORA_OK:ping=%lu air=%lums\n", static_cast<unsigned long>(gLoraPingSeq),
+                               millis() - before);
+            } else {
+              logSerial.printf("LORA_ERR:tx err=%d\n", lora.lastError());
+            }
+          }
+        } else if (upper.startsWith("TX ")) {
+          // Case is preserved here, unlike every branch above: this is the
+          // payload, and a link test that silently upper-cases what it sends
+          // would be lying about the bytes on the air.
+          String payload = argument.substring(3);
+          payload.trim();
+          if (payload.length() == 0) {
+            logSerial.printf("LORA_ERR:tx wants text\n");
+          } else if (!loraStart()) {
+            logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
+          } else {
+            const unsigned long before = millis();
+            if (lora.transmit(payload.c_str())) {
+              gLoraTxCount++;
+              logSerial.printf("LORA_OK:tx=%u ms=%lu\n", static_cast<unsigned>(payload.length()), millis() - before);
+            } else {
+              logSerial.printf("LORA_ERR:tx err=%d\n", lora.lastError());
+            }
+          }
+        } else if (upper.startsWith("POWER ")) {
+          const long dbm = argument.substring(6).toInt();
+          if (dbm < -9 || dbm > 22) {
+            logSerial.printf("LORA_ERR:power wants -9..22 dBm\n");
+          } else {
+            gLoraConfig.txPowerDbm = static_cast<int8_t>(dbm);
+            const bool wasUp = lora.ready();
+            if (wasUp) {
+              // Re-begin rather than setOutputPower(): the whole point of this
+              // console is that one place decides the wire settings, and a
+              // radio configured half by begin() and half by a setter is how a
+              // link test starts lying about what it measured.
+              lora.end();
+              if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
+                logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
+              }
+            }
+            logSerial.printf("LORA_OK:power=%d\n", static_cast<int>(gLoraConfig.txPowerDbm));
+          }
+        } else if (upper.startsWith("FREQ ")) {
+          const float mhz = argument.substring(5).toFloat();
+          // The SX1262's own range. What is legal is much narrower and is not
+          // this firmware's to decide: EU 868 duty cycle and sub-band limits
+          // are open questions (parent docs/TODO.md, T-285) and this command
+          // exists on a bench build only.
+          if (mhz < 150.0f || mhz > 960.0f) {
+            logSerial.printf("LORA_ERR:freq wants 150..960 MHz\n");
+          } else {
+            gLoraConfig.freqMhz = mhz;
+            const bool wasUp = lora.ready();
+            if (wasUp) {
+              lora.end();
+              if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
+                logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
+              }
+            }
+            logSerial.printf("LORA_OK:freq=%.3f\n", gLoraConfig.freqMhz);
+          }
+        } else {
+          logSerial.printf("LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ\n");
         }
 #endif
 #ifdef ENABLE_GNSS_CMD

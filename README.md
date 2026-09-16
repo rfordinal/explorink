@@ -198,6 +198,9 @@ what is still wrong.
 [`docs/gnss.md`](./docs/gnss.md) is that board's satellite receiver: the
 `CMD:GNSS` bring-up console, the NMEA parser in `lib/Gnss/`, and the power rail
 it shares with the LoRa radio.
+[`docs/lora-bringup.md`](./docs/lora-bringup.md) is that board's LoRa radio: the
+`CMD:LORA` console, the SX1262 wrapper in `lib/LoraRadio/`, the wire settings it
+shares with MeshCore, and the panel pin the radio's chip select collides with.
 [`docs/gnss-to-map-plan.md`](./docs/gnss-to-map-plan.md) is the ordered plan for
 getting the map to read that receiver, written so one session takes one step.
 [`docs/t5s3-partial-refresh.md`](./docs/t5s3-partial-refresh.md) is why a
