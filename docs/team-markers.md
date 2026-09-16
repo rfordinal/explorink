@@ -347,18 +347,20 @@ static RAM (21.3 %), clean, no warnings from any of the new files.
 
 ## The hardware pass
 
-X4 Pro, 2026-09-16, build `47aa6817` (archived as
-`docs/firmware-builds/2026-09-16-x4pro-team-markers-47aa6817-good.*` in the
-parent repo). Driven entirely over the USB console, no radio and no phone.
+X4 Pro, 2026-09-16. Flashed twice: `47aa6817` for the first pass and
+`e125db7c` once the letters were resized and centred (both archived as
+`docs/firmware-builds/2026-09-16-x4pro-team-markers-*-good.*` in the parent
+repo). Driven entirely over the USB console, no radio and no phone.
 
 What ran:
 
 - `team add` three times, then `team pos` three times, then `pin set camp` for
   something to compare against. Every one answered `OK`.
 - **Three members on the panel**, solid black balloons with white initials --
-  `RF`, `MK` and a three-letter `JKL`, which drops to `MAP_SMALL` and still fits
-  inside the outline. The hollow camp pin sits next to them in the same frame
-  (`docs/device-shots/2026-09-16-x4pro-team-markers-480x800.png`).
+  `RF` at UI_12, `MK` at UI_10 and a three-letter `JKL` at SMALL, each centred in
+  its head. The hollow camp pin sits next to them in the same frame
+  (`docs/device-shots/2026-09-16-x4pro-team-markers-480x800.png`, reshot after
+  the sizing fix).
 - **The Group list**: `RF Roman  450 m NE 1m`, `MK Marek  440 m SW 1m`,
   `JKL Jakub  480 m S 1m` (`...-team-group-list-480x800.png`).
 - **The black box on a real card.** `team log` read back three rows, newest
