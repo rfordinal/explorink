@@ -712,8 +712,11 @@ static void loraPrintPayload(const uint8_t* data, size_t length) {
     text[out++] = (b >= 0x20 && b < 0x7F) ? static_cast<char>(b) : '.';
   }
   text[out] = '\0';
-  logSerial.printf("LORA_RX:len=%u rssi=%.1f snr=%.1f text=%s\n", static_cast<unsigned>(length), lora.rssi(),
-                   lora.snr(), text);
+  // The frequency error is the oscillator's answer at the other end of the
+  // link: it is what the receiver had to absorb inside its bandwidth, and it
+  // does not depend on distance -- which makes the desk a valid place to ask.
+  logSerial.printf("LORA_RX:len=%u rssi=%.1f snr=%.1f ferr=%.0fHz text=%s\n", static_cast<unsigned>(length),
+                   lora.rssi(), lora.snr(), static_cast<double>(lora.frequencyError()), text);
 }
 
 // Starts the radio: rail first, then the chip. Kept apart from the rail call
@@ -1233,6 +1236,25 @@ void enterDeepSleep(bool fromTimeout = false) {
   // the SD card's bus. Park it while the rail is still ours, the same reason
   // the frontlight is turned off below.
   loraStop();
+
+  // **loraStop() is not enough on its own, found in review 2026-09-16.** It
+  // releases only the LoRa user of the shared rail: with the GNSS receiver
+  // holding the other one, the rail stays up through deep sleep, GPIO1 goes
+  // hi-Z as the SoC sleeps, and the SX1262's own reset pull-up then takes the
+  // radio out of reset -- powered and on the card's bus, which is the exact
+  // state this block exists to prevent.
+  //
+  // The latch is the fix, and it is the vendor's own sequence
+  // (LilyGo T5S3-4.7-e-paper-PRO, examples/factory/main/ui_port.cpp: sleep the
+  // radio, drive NRESET low, hold the pad, then cut the rail). The matching
+  // release lives in setup() -- a held pad ignores digitalWrite(), so without
+  // it the next boot could not reset the radio at all.
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3) {
+    pinMode(T5S3_LORA_RST, OUTPUT);
+    digitalWrite(T5S3_LORA_RST, LOW);
+    gpio_hold_en(static_cast<gpio_num_t>(T5S3_LORA_RST));
+    gpio_deep_sleep_hold_en();
+  }
 #endif
 
   halTiltSensor.deepSleep();
@@ -1371,6 +1393,16 @@ void setup() {
           BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 
 #if FREEINK_DEVICE_LILYGO
+  // Release the deep-sleep latch on the radio's reset line first. enterDeepSleep()
+  // holds that pad low so a rail left up by the GNSS receiver cannot let the
+  // radio out of reset while the SoC sleeps -- and a held pad ignores every
+  // later digitalWrite(), so without this line the radio could never be reset
+  // again and begin() would fail with CHIP_NOT_FOUND until the battery was
+  // pulled. The SD power enable is released the same way in the SDK
+  // (SDCardManager.cpp, gpio_hold_dis before the rail is driven).
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(static_cast<gpio_num_t>(T5S3_LORA_RST));
+
   // Before Storage.begin() on purpose, and this is the window the SDK fix does
   // not reach: prepareEpdPower() runs at display init, which is later.
   t5s3DeselectLoraRadio();
@@ -2051,6 +2083,11 @@ void loop() {
         //   CMD:LORA PONG ON|OFF  ->  LORA_OK:pong=1|0  (answer every PING heard)
         //   CMD:LORA POWER <dbm>  ->  LORA_OK:power=<dbm>   (-9..22)
         //   CMD:LORA FREQ <mhz>   ->  LORA_OK:freq=<mhz>
+        //   CMD:LORA SF <5-12>    ->  LORA_OK:sf=<n>
+        //   CMD:LORA BW <khz>     ->  LORA_OK:bw=<khz>
+        //   CMD:LORA TCXO <volts> ->  LORA_OK:tcxo=<v> xosc=ok|FAILED errors=<hex>
+        //   CMD:LORA OSC          ->  LORA_OSC:...  (does the oscillator start?)
+        //   CMD:LORA CW <1-30>    ->  carrier for N seconds, for a meter reading
         //
         // The two-board link test is CMD:LORA PONG ON on one device and
         // CMD:LORA PING on the other. One exchange reports both directions:
@@ -2071,10 +2108,16 @@ void loop() {
               static_cast<unsigned long>(gLoraRxCount), static_cast<unsigned long>(gLoraTxCount));
         } else if (upper == "ON") {
           if (loraStart()) {
-            // The version string is the first hardware answer to a question
-            // this project has carried as [open] since 2026-08-23: which radio
-            // is actually fitted. It is read off register 0x0320, not inferred.
-            logSerial.printf("LORA_OK:on chip=%s\n", lora.chipVersion());
+            // The version string says a radio is there; it cannot say which
+            // model (RadioLib expects "SX1261" from an SX1262 too). The
+            // oscillator verdict is the useful half: begin() succeeds even when
+            // the TCXO never started, because RadioLib falls back to the
+            // crystal without telling anyone.
+            uint16_t oscErrors = 0;
+            const bool osc = lora.oscillatorStarts(&oscErrors);
+            logSerial.printf("LORA_OK:on chip=%s tcxo=%.1fV xosc=%s errors=0x%04X\n", lora.chipVersion(),
+                             static_cast<double>(gLoraConfig.tcxoVoltage), osc ? "ok" : "FAILED",
+                             static_cast<unsigned>(oscErrors));
           } else {
             logSerial.printf("LORA_ERR:begin failed err=%d (rail, reset, tcxo or not an SX1262)\n", lora.lastError());
           }
@@ -2144,6 +2187,99 @@ void loop() {
               logSerial.printf("LORA_ERR:tx err=%d\n", lora.lastError());
             }
           }
+        } else if (upper.startsWith("TCXO ")) {
+          // The experiment the review asked for. LilyGo's own examples run this
+          // module at 1.6 V (RadioLib's default, applied by their begin()) and
+          // then raise it to 2.4 or 3.0; we inherited 1.8 from the MeshCore
+          // port. Nobody has asked the chip which of those actually start its
+          // oscillator, and begin() cannot answer it -- it falls back silently.
+          const float volts = argument.substring(5).toFloat();
+          if (volts < 0.0f || volts > 3.3f) {
+            logSerial.printf("LORA_ERR:tcxo wants 0..3.3 V (0 = crystal, no TCXO supply)\n");
+          } else {
+            gLoraConfig.tcxoVoltage = volts;
+            if (loraReconfigure()) {
+              // **Say which question was answered.** The first version printed
+              // xosc=FAILED whenever the radio happened to be off, because
+              // loraReconfigure() is a no-op then -- a check that reports a
+              // failure it never tested, which is worse than no check. Measured
+              // 2026-09-16: five voltages "failed" in a row with errors=0x0000
+              // before anyone noticed the radio had never been started.
+              if (!lora.ready()) {
+                logSerial.printf("LORA_OK:tcxo=%.1f xosc=untested (radio off -- applies at the next ON)\n",
+                                 static_cast<double>(volts));
+              } else {
+                uint16_t oscErrors = 0;
+                const bool osc = lora.oscillatorStarts(&oscErrors);
+                logSerial.printf("LORA_OK:tcxo=%.1f xosc=%s errors=0x%04X\n", static_cast<double>(volts),
+                                 osc ? "ok" : "FAILED", static_cast<unsigned>(oscErrors));
+              }
+            } else {
+              logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
+            }
+          }
+        } else if (upper == "OSC") {
+          uint16_t oscErrors = 0;
+          if (!lora.ready()) {
+            logSerial.printf("LORA_ERR:radio not up\n");
+          } else {
+            const bool osc = lora.oscillatorStarts(&oscErrors);
+            logSerial.printf("LORA_OSC:tcxo=%.1fV xosc=%s errors=0x%04X\n",
+                             static_cast<double>(gLoraConfig.tcxoVoltage), osc ? "ok" : "FAILED",
+                             static_cast<unsigned>(oscErrors));
+          }
+        } else if (upper.startsWith("SF ")) {
+          const long sf = argument.substring(3).toInt();
+          if (sf < 5 || sf > 12) {
+            logSerial.printf("LORA_ERR:sf wants 5..12\n");
+          } else {
+            gLoraConfig.spreadingFactor = static_cast<uint8_t>(sf);
+            if (loraReconfigure()) {
+              logSerial.printf("LORA_OK:sf=%u\n", static_cast<unsigned>(gLoraConfig.spreadingFactor));
+            } else {
+              logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
+            }
+          }
+        } else if (upper.startsWith("BW ")) {
+          // The narrow rungs are the point, not a curiosity: at 7.8 kHz a link
+          // that still works bounds the two boards' combined frequency error to
+          // about 2 kHz, which no unhealthy oscillator passes.
+          const float bw = argument.substring(3).toFloat();
+          if (bw < 7.0f || bw > 500.0f) {
+            logSerial.printf("LORA_ERR:bw wants 7.8..500 kHz\n");
+          } else {
+            gLoraConfig.bandwidthKhz = bw;
+            if (loraReconfigure()) {
+              logSerial.printf("LORA_OK:bw=%.1f\n", static_cast<double>(gLoraConfig.bandwidthKhz));
+            } else {
+              logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
+            }
+          }
+        } else if (upper.startsWith("CW ")) {
+          // An unmodulated carrier for a USB-meter reading: the PA current tells
+          // an SX1261 from an SX1262 where RSSI at desk distance cannot
+          // (about 85 mA apart at full power). Bounded here rather than left as
+          // a switch -- this occupies the channel for as long as it runs, and
+          // 30 s at 22 dBm is already well past any duty cycle.
+          const long seconds = argument.substring(3).toInt();
+          if (seconds < 1 || seconds > 30) {
+            logSerial.printf("LORA_ERR:cw wants 1..30 seconds\n");
+          } else if (!loraStart()) {
+            logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
+          } else if (!lora.carrier(true)) {
+            logSerial.printf("LORA_ERR:cw err=%d\n", lora.lastError());
+          } else {
+            logSerial.printf("LORA_CW:on power=%d seconds=%ld\n", static_cast<int>(gLoraConfig.txPowerDbm), seconds);
+            // Blocking on purpose: nothing else may drive the radio while a
+            // carrier is up, and the meter's reading is the only output that
+            // matters for this command.
+            const unsigned long until = millis() + static_cast<unsigned long>(seconds) * 1000UL;
+            while (static_cast<int32_t>(millis() - until) < 0) {
+              delay(50);
+            }
+            lora.carrier(false);
+            logSerial.printf("LORA_CW:off\n");
+          }
         } else if (upper.startsWith("POWER ")) {
           const long dbm = argument.substring(6).toInt();
           if (dbm < -9 || dbm > 22) {
@@ -2173,7 +2309,7 @@ void loop() {
             }
           }
         } else {
-          logSerial.printf("LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ\n");
+          logSerial.printf("LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ SF BW TCXO OSC CW\n");
         }
 #endif
 #ifdef ENABLE_GNSS_CMD

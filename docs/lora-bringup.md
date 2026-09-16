@@ -217,6 +217,63 @@ Both users bracket the bus in `SPI.beginTransaction()`, so transfers serialise
 on the Arduino bus lock. **Serialised is not the same as tested** -- T-2019, and
 the reason `CMD:LORA` is a console rather than a background service.
 
+## The oscillator, answered on the desk 2026-09-16 `[measured]`
+
+A review argued that our TCXO supply of 1.8 V was the most suspicious number in
+the configuration, because LilyGo's examples use 2.4 or 3.0 V. **The argument
+was wrong twice and the measurement settled it.**
+
+Wrong first because those examples call `radio.begin()` before `setTCXO()`, and
+RadioLib's default is 1.6 V -- so the vendor's own firmware initialises this
+module *below* the value being called underfed, and its three different values
+(1.6, 2.4, 3.0) say nobody there tuned it either.
+
+Wrong second because the failure mode is not a slow loss of sensitivity.
+**RadioLib hides a dead oscillator**: on `XOSC_START_ERR` it sets the TCXO
+voltage to zero and retries in crystal mode (`SX126x.cpp:1444-1450`), so
+`begin()` succeeds either way and proves nothing. `CMD:LORA OSC` asks the chip
+instead -- clear the errors, force `STANDBY_XOSC`, read them back.
+
+| | result |
+|---|---|
+| oscillator at 1.6 / 1.8 / 2.2 / 2.4 / 3.0 V | starts, `errors=0x0000`, every one |
+| oscillator at 0 V (no DIO3 supply) | `begin()` fails, `-707 SPI_CMD_FAILED` |
+| frequency error, board A / board B | **+641 to +657 Hz / -645 to -661 Hz** |
+| link at BW 7.8 kHz | works, 1430 ms airtime, SNR 11-12 dB |
+
+The 0 V row is the one that says this module **has** a TCXO fed from DIO3: take
+the supply away and the radio does not come up at all.
+
+The frequency error is equal and opposite at the two ends, which makes it a
+real relative offset between the boards rather than an artefact: about 650 Hz
+at 869.618 MHz is **0.75 ppm**, a TCXO figure. The narrow-bandwidth link is the
+independent check -- at 7.8 kHz a sick oscillator does not get a packet through,
+and both directions worked.
+
+**So 1.8 V stays.** The setting is now measured rather than inherited.
+
+## What the power amplifier draws `[measured, partial]`
+
+`CMD:LORA CW <seconds>` puts an unmodulated carrier up so a USB meter can read
+the PA. Board A through the meter, whole-board VBUS at 5.25 V:
+
+| state | current |
+|---|---|
+| idle, radio up | 94.5 mA |
+| carrier at +22 dBm | 233 mA |
+| **difference** | **+139 mA** |
+
+That is the PA-class answer RSSI could not give. An SX1261 tops out near
++15 dBm and a few tens of milliamps; a draw like this is the SX1262's
+high-power amplifier. It agrees with LilyGo's own product README, which lists
+the part as SX1262 for this board.
+
+**The sweep below 22 dBm is missing and the runs that attempted it are
+discarded**: the USB meter hung partway (a documented failure of that
+instrument, parent `docs/usb-power-meter.md`) and the procedure was at fault --
+overlapping reader processes, where the meter tolerates exactly one. Redo with
+one reader per run and a bus check before and after.
+
 ## The first boot after a flash lands in download mode, twice over
 
 Flashing this board and then wondering why it is silent cost an hour on

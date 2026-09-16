@@ -108,6 +108,34 @@ class LoraRadio {
   float rssi() const { return rssi_; }
   float snr() const { return snr_; }
 
+  // Carrier frequency offset of the last received packet, in Hz, as the chip
+  // measured it. This is the instrument for the oscillator question: a TCXO
+  // that started is accurate to a few ppm, and the two boards' combined error
+  // is what a receiver has to absorb inside its bandwidth. Distance does not
+  // enter into it, so it is answerable on a desk.
+  float frequencyError();
+
+  // The chip's own error register, and a test that provokes it.
+  //
+  // **A successful begin() does not mean the TCXO is running.** When the
+  // oscillator fails to start, RadioLib clears the TCXO voltage and silently
+  // retries in crystal mode (SX126x.cpp:1444-1450), so the radio comes up
+  // either way. oscillatorStarts() asks the chip directly: clear the errors,
+  // force standby on the external oscillator, and read the errors back.
+  // XOSC_START_ERR (bit 0x20) means the part this board actually has did not
+  // start at the voltage we configured.
+  uint16_t deviceErrors();
+  bool oscillatorStarts(uint16_t* errorsOut);
+
+  // An unmodulated carrier, for measuring what the power amplifier draws.
+  // RSSI at desk distance cannot separate an SX1261 from an SX1262 -- the two
+  // differ by about 85 mA of PA current at full power, and that is measurable
+  // with a USB meter and nothing else (parent docs/usb-power-meter.md).
+  //
+  // **Transmits continuously until it is turned off**, which is why the console
+  // bounds it rather than exposing it raw.
+  bool carrier(bool on);
+
   // RadioLib's status code from whatever failed last, 0 when nothing did.
   int lastError() const { return lastError_; }
 

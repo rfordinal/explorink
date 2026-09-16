@@ -193,6 +193,52 @@ int LoraRadio::poll(uint8_t* buffer, size_t bufferSize) {
   return static_cast<int>(wanted);
 }
 
+float LoraRadio::frequencyError() {
+  if (!ready_) return 0.0f;
+  return impl_->radio.getFrequencyError();
+}
+
+uint16_t LoraRadio::deviceErrors() {
+  if (!ready_) return 0;
+  return impl_->radio.getDeviceErrors();
+}
+
+bool LoraRadio::oscillatorStarts(uint16_t* errorsOut) {
+  if (errorsOut != nullptr) *errorsOut = 0;
+  if (!ready_) return false;
+
+  impl_->radio.clearDeviceErrors();
+
+  // Standby on the external oscillator is what forces the question: in
+  // STANDBY_RC the chip runs off its internal RC and never touches the TCXO,
+  // so the error can only appear once something asks for the real clock.
+  lastError_ = impl_->radio.standby(RADIOLIB_SX126X_STANDBY_XOSC);
+
+  // The SX126x datasheet's TCXO startup delay is set by begin() as 16 ms; give
+  // it more than that before reading the verdict.
+  delay(50);
+
+  const uint16_t errors = impl_->radio.getDeviceErrors();
+  if (errorsOut != nullptr) *errorsOut = errors;
+
+  // Back to the cheap standby whatever happened, so this leaves the radio the
+  // way it found it.
+  impl_->radio.standby();
+
+  return (errors & RADIOLIB_SX126X_XOSC_START_ERR) == 0;
+}
+
+bool LoraRadio::carrier(bool on) {
+  if (!ready_) return false;
+  if (on) {
+    impl_->listening = false;
+    lastError_ = impl_->radio.transmitDirect();
+  } else {
+    lastError_ = impl_->radio.standby();
+  }
+  return lastError_ == RADIOLIB_ERR_NONE;
+}
+
 const char* LoraRadio::chipVersion() {
   version_[0] = '\0';
   if (impl_ == nullptr) return version_;
