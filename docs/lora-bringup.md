@@ -39,7 +39,7 @@ reports **both directions**, which is why the reply carries numbers rather
 than being a bare acknowledgement:
 
 ```
-LORA_PONG:rtt=412ms here_rssi=-61.0 here_snr=9.2 there=7 -58.0 10.5
+LORA_PONG:rtt=434ms here_rssi=-33.0 here_snr=11.8 there=1 -33.0 12.0
 ```
 
 `here_*` is how this board heard the reply. `there=` is the sequence number
@@ -55,7 +55,7 @@ asymmetric link, which is the normal failure at range.
 | spreading factor | 8 | MeshCore default |
 | coding rate | 5 | MeshCore default |
 | sync word | 0x12 (private) | MeshCore default |
-| preamble | 16 symbols | MeshCore default |
+| preamble | 16 symbols | what MeshCore's `std_init` passes -- **but see below** |
 | TX power | 14 dBm | bench default, not MeshCore's 22 |
 
 They are MeshCore's defaults (its `platformio.ini`: `LORA_FREQ=869.618`,
@@ -64,6 +64,17 @@ so that a bring-up board and a MeshCore node share a channel and each is
 evidence about the other. **Changing one of these changes which radios can hear
 us**, which is the reason they live in one struct with the reasoning next to
 them rather than being scattered as call arguments.
+
+**The preamble is where "same channel as MeshCore" stops being true, found in
+review 2026-09-16.** `CustomSX1262::std_init()` does pass 16
+(`src/helpers/radiolib/CustomSX1262.h:57`), but every MeshCore node then calls
+`RadioLibWrapper::setParams()`, which overrides it with
+`preambleLengthForSF(sf)` -- and that is **32 for any SF of 8 or below**
+(`src/helpers/radiolib/RadioLibWrappers.h:56`, `CustomSX1262Wrapper.h:20`).
+At MeshCore's own default SF8, a real node transmits a 32-symbol preamble and
+we transmit 16. Two of our own boards are unaffected, which is why the link
+test passed; joining a MeshCore mesh is not, and T-2020 has to pin 32 rather
+than 16.
 
 TX power is the one deliberate difference: 14 dBm on a bench, raised by hand
 for a range test. What is legal is narrower than what the chip allows, and the
@@ -80,10 +91,17 @@ currentLimit   = 140 mA  SX126X_CURRENT_LIMIT
 
 All three are read off `dz0ny/meshcore-paperui`, which runs MeshCore on this
 exact board -- its `platformio.ini` `env:t5-epaper` also lists our four pins
-unchanged (NSS 46, DIO1 10, NRESET 1, BUSY 47) `[secondhand]`. **They are the
-first suspects if the radio answers SPI and never hears anything**: a wrong
-TCXO voltage leaves the chip without a stable clock, and DIO2 not switching the
-antenna transmits into a dead path while reporting success.
+unchanged (NSS 46, DIO1 10, NRESET 1, BUSY 47) `[secondhand]`.
+
+**Only two of the three are actually deltas**, found in review: RadioLib's own
+`begin()` already sets `setDio2AsRfSwitch(true)` and `setCurrentLimit(60.0)`
+(`SX126x.cpp:54,57`). So the DIO2 line restates what the library does, the
+current limit raises 60 mA to 140, and the TCXO voltage is the one setting that
+would otherwise be wrong (RadioLib defaults to 1.6 V).
+
+**The TCXO voltage is the first suspect if the radio answers SPI and never
+hears anything**: without a stable clock the chip does everything except work,
+and every call still reports success.
 
 `useRegulatorLDO` stays false, i.e. the DC-DC converter. The LDO roughly
 doubles receive current. `[assumed]` for this board.
@@ -104,7 +122,7 @@ LORA_PONG:rtt=434ms here_rssi=-33.0           LORA_OK:pong=1 -33.0 12.0
 |---|---|
 | RSSI, both directions | -32 to -33 dBm |
 | SNR, both directions | 11.2 to 12.2 dB |
-| airtime, one 6-byte packet | 169-170 ms |
+| transmit call, one 6-byte packet | 169-170 ms wall time |
 | round trip, ping to pong | 434, 485, 485, 436 ms |
 | packets lost | 0 of 4 |
 
@@ -112,9 +130,18 @@ LORA_PONG:rtt=434ms here_rssi=-33.0           LORA_OK:pong=1 -33.0 12.0
 nothing about range.** Range is bring-up step 4 and needs a bike, not a bench
 (parent `docs/lora.md`).
 
-Airtime is worth reading twice: **170 ms for six bytes** at SF8 / 62.5 kHz.
-That is the budget every protocol decision above this layer spends from, and it
-is why an advert cadence is a real design question rather than a constant.
+**The 170 ms is the transmit call, not the airtime**, and the doc said
+otherwise until review caught it: `air=` is `millis()` around a blocking
+`LoraRadio::transmit()`, so it includes the SPI traffic, the BUSY waits and the
+re-arm afterwards. Computed time on air for this packet is **157 ms**
+(4.096 ms per symbol at SF8 / 62.5 kHz; 20.25 preamble symbols = 82.9 ms plus
+18 payload symbols = 73.7 ms), which leaves about 13 ms of call overhead.
+
+157 ms for six bytes is the budget every protocol decision above this layer
+spends from, and it is why an advert cadence is a real design question rather
+than a constant. The arithmetic also confirms the wire settings independently:
+a 32-symbol preamble would have taken 222 ms, so these boards really did
+transmit with 16.
 
 The round trip is roughly two airtimes plus the far end's turnaround, which
 means it is dominated by the radio and not by our loop.
@@ -135,8 +162,8 @@ output sweep -- an SX1261 stops at +15 dBm where an SX1262 reaches +22.
 
 The string is read with our own SPI transaction (opcode `0x1D`, the 16-bit
 address, one dummy byte) because RadioLib's `readRegister()` is protected
-unless `RADIOLIB_GODMODE` is set, and a library-wide switch is a strange price
-for one string.
+behind `#if !RADIOLIB_GODMODE && !RADIOLIB_LOW_LEVEL` (`SX126x.h:849`), and
+both are library-wide switches -- a strange price for one string.
 
 ## The three hazards this shares a board with
 
@@ -161,34 +188,34 @@ Every exit from `LoraRadio` therefore ends in `park()`, which sleeps the chip
 **and holds NRESET low**. The reset is the part the card needs; the sleep is
 only power.
 
-### 3. `LORA_CS` is also the panel's `pin_oe` / `pin_pwr`
+### 3. `LORA_CS` also reaches the panel's i80 bus
 
-LovyanGFX drives GPIO46 as part of the display bus
-(`LilyGoT5S3LgfxConfig.cpp:162,166`), and leaves it LOW from display init
-onward. **So a panel refresh and a live radio transaction cannot be separated
-by this code today.** The console is usable because a bench session is not
-redrawing the map while it pings.
+GPIO46 is handed to LovyanGFX as `pinPwr`, which becomes the i80 driver's
+`dc_gpio_num` -- the IDF rejects a negative one and this board has no spare
+GPIO to give instead (`LilyGoT5S3LgfxConfig.cpp`, the `pinPwr` comment).
+`pinOe` is `-1` since the SDK fix of 2026-09-03; it used to carry `LORA_CS` as
+a placeholder, which is what put the radio's chip select on an EPD pin and
+killed the SD card (BUG-037).
 
-**This is the open piece of work, not an oversight.** A radio that listens
-while the map renders needs arbitration that does not exist: either the panel
-config stops using GPIO46 as filler, or radio transactions are scheduled
-against refreshes. It has to be answered before any always-on mesh, and it is
+**An earlier version of this section said the panel bus holds GPIO46 LOW from
+display init onward, and that a listening radio is therefore impossible. That
+was a stale reading** of the pre-fix file, caught in review 2026-09-16.
+`prepareEpdPower()` drives the pin HIGH before the bus is built, and
+`lgfx::pinMode()` writes no level, so it stays HIGH: an ordinary refresh does
+not select the radio.
+
+What is genuinely open is narrower, and still unmeasured:
+
+- the microsecond window during i80 bus setup where the peripheral drives DC on
+  that pad, named in the SDK's own comment as the one case it does not cover;
+- whether anything re-initialises the display bus while the radio is up, which
+  would re-claim the pad for LCD_CAM;
+- whether continuous receive survives a full map redraw at all, with tile reads
+  on the same SPI bus.
+
+Both users bracket the bus in `SPI.beginTransaction()`, so transfers serialise
+on the Arduino bus lock. **Serialised is not the same as tested** -- T-2019, and
 the reason `CMD:LORA` is a console rather than a background service.
-
-## What it costs
-
-Measured 2026-09-16 on this laptop, `env:t5s3pro`, the same worktree an hour
-apart, the only difference being the change itself (`git stash` for the
-baseline):
-
-| | flash | static RAM |
-|---|---|---|
-| release tip, no radio | 3,956,499 B | 71,904 B |
-| with RadioLib and `CMD:LORA` | 3,983,911 B | 72,616 B |
-| **cost** | **27,412 B (27 kB)** | **712 B** |
-
-That is the whole radio driver plus the console. It is a devel-only env, so no
-release build pays it today.
 
 ## The first boot after a flash lands in download mode, twice over
 

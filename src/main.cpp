@@ -689,6 +689,11 @@ static uint32_t gLoraPingSeq = 0;
 static unsigned long gLoraPingSentMs = 0;
 static bool gLoraPingWaiting = false;
 
+// A pong that never comes has to expire, or the next reply -- minutes later,
+// to a different ping -- would be reported with a round trip measured from the
+// wrong send. 10 s is far past the ~500 ms a working link takes.
+static constexpr unsigned long kLoraPongWaitMs = 10000;
+
 static const LoraPins kT5S3LoraPins = {
     static_cast<int8_t>(T5S3_LORA_CS),    // NSS 46, also the panel's pin_oe/pin_pwr
     static_cast<int8_t>(T5S3_LORA_IRQ),   // DIO1 10
@@ -734,7 +739,47 @@ static void loraStop() {
   lora.end();
   gLoraPongMode = false;
   gLoraPingWaiting = false;
-  t5s3RailHold(kRailUserLora, false);
+
+  // Drive the reset line here as well, and unconditionally. LoraRadio::park()
+  // returns immediately when the object never started -- which is exactly the
+  // state after a reboot that left a live radio behind, because the expander
+  // holds the rail through a reset while LORA_RST reverts to an undriven
+  // input. Without this line, CMD:LORA OFF would print OK and change nothing
+  // on a board whose radio is powered and out of reset on the card's bus.
+  pinMode(T5S3_LORA_RST, OUTPUT);
+  digitalWrite(T5S3_LORA_RST, LOW);
+
+  if (!t5s3RailHold(kRailUserLora, false)) {
+    // The rail is shared, so a failure here is a battery problem rather than a
+    // data one -- but it must not be silent, because LORA_STATE prints the
+    // software mask and would then disagree with the hardware.
+    LOG_ERR("LORA", "rail release failed -- expander did not answer");
+  }
+}
+
+// Applies a changed wire setting to a running radio. Re-begin() rather than a
+// setter: one place decides the whole configuration, and a radio configured
+// half by begin() and half by setOutputPower() is how a link test starts lying
+// about what it measured.
+//
+// Restores what the radio was doing, which the first version of this did not:
+// after a power change the board silently stopped listening, and in a range
+// test a responder that has gone deaf looks exactly like a link that has run
+// out of range.
+static bool loraReconfigure() {
+  if (!lora.ready()) return true;  // nothing running; the new value applies at the next ON
+
+  const bool wasListening = lora.listening();
+  lora.end();
+  if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
+    gLoraPongMode = false;
+    return false;
+  }
+  if (wasListening && !lora.startListening()) {
+    gLoraPongMode = false;
+    return false;
+  }
+  return true;
 }
 
 // One step, called from loop(). Nothing here blocks: a listening radio has to
@@ -742,6 +787,12 @@ static void loraStop() {
 // freeze both for the length of the window.
 static void loraPoll() {
   if (!lora.ready()) return;
+
+  if (gLoraPingWaiting && (millis() - gLoraPingSentMs) > kLoraPongWaitMs) {
+    gLoraPingWaiting = false;
+    logSerial.printf("LORA_PING_TIMEOUT:seq=%lu after=%lums\n", static_cast<unsigned long>(gLoraPingSeq),
+                     kLoraPongWaitMs);
+  }
 
   uint8_t buffer[64];
   const int length = lora.poll(buffer, sizeof(buffer));
@@ -859,17 +910,17 @@ bool write8(uint8_t addr, uint8_t reg, uint8_t value) {
 // 2018), tables 9, 13, 15 and 20-24, via the parent repo's power-path doc.
 namespace bq25896 {
 
-constexpr uint8_t kRegAdcCtrl = 0x02;    // CONV_START bit 7, CONV_RATE bit 6
-constexpr uint8_t kRegChargeCtrl = 0x03; // CHG_CONFIG bit 4 (bit 5 is OTG -- never touched)
-constexpr uint8_t kRegWatchdog = 0x07;   // WATCHDOG[1:0] in bits 5:4
-constexpr uint8_t kRegBatfet = 0x09;     // BATFET_DIS bit 5
-constexpr uint8_t kRegStatus = 0x0B;     // VBUS_STAT 7:5, CHRG_STAT 4:3, PG_STAT 2
-constexpr uint8_t kRegFault = 0x0C;      // WATCHDOG_FAULT bit 7
-constexpr uint8_t kRegBatV = 0x0E;       // BATV[6:0], 20 mV/LSB, offset 2.304 V
-constexpr uint8_t kRegSysV = 0x0F;       // SYSV[6:0], 20 mV/LSB, offset 2.304 V
-constexpr uint8_t kRegVbusV = 0x11;      // VBUSV[6:0], 100 mV/LSB, offset 2.6 V
-constexpr uint8_t kRegIchg = 0x12;       // ICHGR[6:0], 50 mA/LSB, charge current only
-constexpr uint8_t kRegPart = 0x14;       // PN[5:3] = 000 for bq25896; bit 7 is REG_RST, never written
+constexpr uint8_t kRegAdcCtrl = 0x02;     // CONV_START bit 7, CONV_RATE bit 6
+constexpr uint8_t kRegChargeCtrl = 0x03;  // CHG_CONFIG bit 4 (bit 5 is OTG -- never touched)
+constexpr uint8_t kRegWatchdog = 0x07;    // WATCHDOG[1:0] in bits 5:4
+constexpr uint8_t kRegBatfet = 0x09;      // BATFET_DIS bit 5
+constexpr uint8_t kRegStatus = 0x0B;      // VBUS_STAT 7:5, CHRG_STAT 4:3, PG_STAT 2
+constexpr uint8_t kRegFault = 0x0C;       // WATCHDOG_FAULT bit 7
+constexpr uint8_t kRegBatV = 0x0E;        // BATV[6:0], 20 mV/LSB, offset 2.304 V
+constexpr uint8_t kRegSysV = 0x0F;        // SYSV[6:0], 20 mV/LSB, offset 2.304 V
+constexpr uint8_t kRegVbusV = 0x11;       // VBUSV[6:0], 100 mV/LSB, offset 2.6 V
+constexpr uint8_t kRegIchg = 0x12;        // ICHGR[6:0], 50 mA/LSB, charge current only
+constexpr uint8_t kRegPart = 0x14;        // PN[5:3] = 000 for bq25896; bit 7 is REG_RST, never written
 
 uint8_t address() { return BoardConfig::ACTIVE.batteryGauge.chargerAddr; }
 
@@ -894,20 +945,33 @@ bool updateBits(uint8_t reg, uint8_t mask, uint8_t value) {
 // 10 80 s, 11 160 s (Table 13, p.39).
 uint16_t watchdogSeconds(uint8_t reg07) {
   switch ((reg07 >> 4) & 0x03) {
-    case 0: return 0;
-    case 1: return 40;
-    case 2: return 80;
-    default: return 160;
+    case 0:
+      return 0;
+    case 1:
+      return 40;
+    case 2:
+      return 80;
+    default:
+      return 160;
   }
 }
 
 bool watchdogBitsFromSeconds(long seconds, uint8_t& bits) {
   switch (seconds) {
-    case 0: bits = 0; return true;
-    case 40: bits = 1; return true;
-    case 80: bits = 2; return true;
-    case 160: bits = 3; return true;
-    default: return false;
+    case 0:
+      bits = 0;
+      return true;
+    case 40:
+      bits = 1;
+      return true;
+    case 80:
+      bits = 2;
+      return true;
+    case 160:
+      bits = 3;
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -1034,6 +1098,11 @@ void silentRestart() {
   // book, looking like a trampoline back to the reader they just exited.
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
+#ifdef ENABLE_LORA_CMD
+  // A restart clears the SoC, not the I2C expander that holds the radio's rail,
+  // and it leaves LORA_RST undriven -- same hazard as deep sleep.
+  loraStop();
+#endif
   ESP.restart();
 }
 
@@ -1044,6 +1113,11 @@ void silentRestartToReader() {
   LOG_DBG("MAIN", "Silent restart (target=reader)");
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
+#ifdef ENABLE_LORA_CMD
+  // A restart clears the SoC, not the I2C expander that holds the radio's rail,
+  // and it leaves LORA_RST undriven -- same hazard as deep sleep.
+  loraStop();
+#endif
   ESP.restart();
 }
 
@@ -1149,6 +1223,17 @@ void enterDeepSleep(bool fromTimeout = false) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
+
+#ifdef ENABLE_LORA_CMD
+  // The radio does not survive this on its own, and "not surviving" is the
+  // dangerous direction here. The PCA9535 keeps the shared GNSS/LoRa rail
+  // powered across deep sleep -- it is an external chip with its own output
+  // register -- while LORA_RST reverts to an undriven input at reset, so a
+  // radio left listening would wake up powered, out of reset and selected on
+  // the SD card's bus. Park it while the rail is still ours, the same reason
+  // the frontlight is turned off below.
+  loraStop();
+#endif
 
   halTiltSensor.deepSleep();
   // Inert on a board without one. The light is a hold away from being left on
@@ -1964,7 +2049,7 @@ void loop() {
         //   CMD:LORA TX <text>    ->  LORA_OK:tx=<bytes> ms=<airtime>
         //   CMD:LORA PING         ->  LORA_OK:ping=<seq>, then LORA_PONG: on reply
         //   CMD:LORA PONG ON|OFF  ->  LORA_OK:pong=1|0  (answer every PING heard)
-        //   CMD:LORA POWER <dbm>  ->  LORA_OK:power=<dbm>   (2..22)
+        //   CMD:LORA POWER <dbm>  ->  LORA_OK:power=<dbm>   (-9..22)
         //   CMD:LORA FREQ <mhz>   ->  LORA_OK:freq=<mhz>
         //
         // The two-board link test is CMD:LORA PONG ON on one device and
@@ -2065,18 +2150,11 @@ void loop() {
             logSerial.printf("LORA_ERR:power wants -9..22 dBm\n");
           } else {
             gLoraConfig.txPowerDbm = static_cast<int8_t>(dbm);
-            const bool wasUp = lora.ready();
-            if (wasUp) {
-              // Re-begin rather than setOutputPower(): the whole point of this
-              // console is that one place decides the wire settings, and a
-              // radio configured half by begin() and half by a setter is how a
-              // link test starts lying about what it measured.
-              lora.end();
-              if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
-                logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
-              }
+            if (loraReconfigure()) {
+              logSerial.printf("LORA_OK:power=%d\n", static_cast<int>(gLoraConfig.txPowerDbm));
+            } else {
+              logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
             }
-            logSerial.printf("LORA_OK:power=%d\n", static_cast<int>(gLoraConfig.txPowerDbm));
           }
         } else if (upper.startsWith("FREQ ")) {
           const float mhz = argument.substring(5).toFloat();
@@ -2088,14 +2166,11 @@ void loop() {
             logSerial.printf("LORA_ERR:freq wants 150..960 MHz\n");
           } else {
             gLoraConfig.freqMhz = mhz;
-            const bool wasUp = lora.ready();
-            if (wasUp) {
-              lora.end();
-              if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
-                logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
-              }
+            if (loraReconfigure()) {
+              logSerial.printf("LORA_OK:freq=%.3f\n", gLoraConfig.freqMhz);
+            } else {
+              logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
             }
-            logSerial.printf("LORA_OK:freq=%.3f\n", gLoraConfig.freqMhz);
           }
         } else {
           logSerial.printf("LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ\n");
@@ -2421,8 +2496,9 @@ void loop() {
           // (investigations/agnss.md). The module decodes its own ephemeris
           // perfectly given signal, so retention is the lever, not injection.
           if (gnss.sendNmeaSentence("PCAS06,L")) {
-            logSerial.printf("GNSS_OK:eph-query sent -- LT= reads 0 on the L76K whatever it holds, "
-                             "measured 2026-09-11; enable NAV-STATUS instead\n");
+            logSerial.printf(
+                "GNSS_OK:eph-query sent -- LT= reads 0 on the L76K whatever it holds, "
+                "measured 2026-09-11; enable NAV-STATUS instead\n");
           } else {
             logSerial.printf("GNSS_ERR:eph query not sent, receiver not running\n");
           }
@@ -2603,8 +2679,8 @@ void loop() {
               uint8_t calc = static_cast<uint8_t>(echo[0] + echo[1]);
               for (int i = 0; lenSane && i < dataLen; ++i) calc = static_cast<uint8_t>(calc + block[i]);
               calc = static_cast<uint8_t>(255 - calc);
-              const bool echoOk = echo[0] == static_cast<uint8_t>(addr & 0xFF) &&
-                                  echo[1] == static_cast<uint8_t>((addr >> 8) & 0xFF);
+              const bool echoOk =
+                  echo[0] == static_cast<uint8_t>(addr & 0xFF) && echo[1] == static_cast<uint8_t>((addr >> 8) & 0xFF);
               const bool sumOk = lenSane && calc == sum && echoOk;
 
               char hex[sizeof(block) * 3 + 1];
@@ -2621,10 +2697,11 @@ void loop() {
               // Design Capacity example reads the MSB at 0x40.
               char secText[8] = "?";
               if (opOk) snprintf(secText, sizeof(secText), "%u", static_cast<unsigned>((opStatus >> 1) & 0x03));
-              logSerial.printf("BATT_DM:addr=0x%04lX len=%u sum=%s echo=%s sec=%s opstat=0x%04X u8=%u u16=0x%04X data=%s\n",
-                               addr, static_cast<unsigned>(len), sumOk ? "ok" : "bad", echoOk ? "ok" : "bad", secText,
-                               static_cast<unsigned>(opStatus), static_cast<unsigned>(block[0]),
-                               static_cast<unsigned>((block[0] << 8) | block[1]), hex);
+              logSerial.printf(
+                  "BATT_DM:addr=0x%04lX len=%u sum=%s echo=%s sec=%s opstat=0x%04X u8=%u u16=0x%04X data=%s\n", addr,
+                  static_cast<unsigned>(len), sumOk ? "ok" : "bad", echoOk ? "ok" : "bad", secText,
+                  static_cast<unsigned>(opStatus), static_cast<unsigned>(block[0]),
+                  static_cast<unsigned>((block[0] << 8) | block[1]), hex);
             }
           }
         } else {
@@ -2672,13 +2749,11 @@ void loop() {
         // then clears CHG_CONFIG. ON puts charging back and leaves the watchdog
         // alone -- see the ON branch for why re-arming it is not a restore.
         //
-        //   CMD:CHARGE            ->  CHARGE:chg=1 wd_s=40 batfet_dis=0 vbus_stat=1 chrg_stat=2 pg=1 wd_fault=0 curr_ma=214
-        //   CMD:CHARGE OFF        ->  CHARGE_OK:off wd_s=0 ... (then the status line)
-        //   CMD:CHARGE ON         ->  CHARGE_OK:on wd_s=40 ...
-        //   CMD:CHARGE WD 0|40|80|160
-        //   CMD:CHARGE BATFET <dwell_ms>
-        //   CMD:CHARGE ADC        ->  CHARGE_ADC:vbat_mv=3912 sys_mv=4032 vbus_mv=5000 ichg_ma=0
-        //   CMD:CHARGE REG        ->  CHARGE_REG:00=3a 01=... 14=x
+        //   CMD:CHARGE            ->  CHARGE:chg=1 wd_s=40 batfet_dis=0 vbus_stat=1 chrg_stat=2 pg=1 wd_fault=0
+        //   curr_ma=214 CMD:CHARGE OFF        ->  CHARGE_OK:off wd_s=0 ... (then the status line) CMD:CHARGE ON ->
+        //   CHARGE_OK:on wd_s=40 ... CMD:CHARGE WD 0|40|80|160 CMD:CHARGE BATFET <dwell_ms> CMD:CHARGE ADC        ->
+        //   CHARGE_ADC:vbat_mv=3912 sys_mv=4032 vbus_mv=5000 ichg_ma=0 CMD:CHARGE REG        ->  CHARGE_REG:00=3a
+        //   01=... 14=x
         //
         // **There is no register-write subcommand and there will not be one.**
         // See the bq25896 namespace above: four named bits are reachable, the
@@ -2722,12 +2797,12 @@ void loop() {
                                 powerbus::read16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, 0x0C, rawCurrent);
             char currText[12] = "?";
             if (currOk) snprintf(currText, sizeof(currText), "%d", static_cast<int>(static_cast<int16_t>(rawCurrent)));
-            logSerial.printf("CHARGE:chg=%u wd_s=%u batfet_dis=%u vbus_stat=%u chrg_stat=%u pg=%u wd_fault=%u curr_ma=%s\n",
-                             static_cast<unsigned>((reg03 >> 4) & 0x01),
-                             static_cast<unsigned>(bq25896::watchdogSeconds(reg07)),
-                             static_cast<unsigned>((reg09 >> 5) & 0x01), static_cast<unsigned>((reg0b >> 5) & 0x07),
-                             static_cast<unsigned>((reg0b >> 3) & 0x03), static_cast<unsigned>((reg0b >> 2) & 0x01),
-                             static_cast<unsigned>((reg0c >> 7) & 0x01), currText);
+            logSerial.printf(
+                "CHARGE:chg=%u wd_s=%u batfet_dis=%u vbus_stat=%u chrg_stat=%u pg=%u wd_fault=%u curr_ma=%s\n",
+                static_cast<unsigned>((reg03 >> 4) & 0x01), static_cast<unsigned>(bq25896::watchdogSeconds(reg07)),
+                static_cast<unsigned>((reg09 >> 5) & 0x01), static_cast<unsigned>((reg0b >> 5) & 0x07),
+                static_cast<unsigned>((reg0b >> 3) & 0x03), static_cast<unsigned>((reg0b >> 2) & 0x01),
+                static_cast<unsigned>((reg0c >> 7) & 0x01), currText);
           };
 
           if (rest.isEmpty()) {
@@ -2932,7 +3007,8 @@ void loop() {
                 ok = false;
                 break;
               }
-              pos += static_cast<size_t>(snprintf(line + pos, sizeof(line) - pos, "%02X ", static_cast<unsigned>(value)));
+              pos +=
+                  static_cast<size_t>(snprintf(line + pos, sizeof(line) - pos, "%02X ", static_cast<unsigned>(value)));
             }
             if (!ok) {
               logSerial.printf("CHARGE_ERR:i2c\n");

@@ -4,6 +4,8 @@
 #include <RadioLib.h>
 #include <SPI.h>
 
+#include <new>
+
 // RadioLib's objects are big and its headers are heavy, so they stay out of
 // LoraRadio.h: everything above this line can include the radio without
 // pulling RadioLib into its own translation unit.
@@ -27,7 +29,15 @@ struct LoraRadio::Impl {
 
 bool LoraRadio::begin(const LoraPins& pins, const LoraConfig& config) {
   if (impl_ != nullptr) end();
-  impl_ = new Impl(pins);
+
+  // Nothrow, because a bare `new` that fails on ESP32 calls abort() rather than
+  // returning null (CLAUDE.md, rule 9) -- and "the radio could not start" has to
+  // stay a value the caller can log, not a panic.
+  impl_ = new (std::nothrow) Impl(pins);
+  if (impl_ == nullptr) {
+    lastError_ = RADIOLIB_ERR_MEMORY_ALLOCATION_FAILED;
+    return false;
+  }
 
   // RadioLib checks that an SX126x answers at all before configuring it:
   // begin() calls SX126x::findChip(), which reads the version string at 0x0320
@@ -51,8 +61,13 @@ bool LoraRadio::begin(const LoraPins& pins, const LoraConfig& config) {
   }
 
   // The antenna switch is wired to DIO2 on every SX1262 module of this shape.
-  // Without this the chip transmits into a disconnected path: the send still
+  // Without it the chip transmits into a disconnected path: the send still
   // reports success and nothing ever hears it.
+  //
+  // RadioLib's begin() already sets this (SX126x.cpp:57), so this is a
+  // deliberate re-statement rather than the fix it looks like -- the setting is
+  // one of the three that decide whether the radio is heard at all, and a
+  // reader should find it named here with the other two.
   if (config.dio2AsRfSwitch) {
     lastError_ = impl_->radio.setDio2AsRfSwitch(true);
     if (lastError_ != RADIOLIB_ERR_NONE) {
@@ -62,14 +77,29 @@ bool LoraRadio::begin(const LoraPins& pins, const LoraConfig& config) {
   }
 
   // Over-current protection for the PA. 140 mA is what the one project running
-  // MeshCore on this board uses; the chip's own default is 60 mA, which clips
-  // a +22 dBm transmit.
-  impl_->radio.setCurrentLimit(config.currentLimitMa);
+  // MeshCore on this board uses. **RadioLib's** begin() has already set 60 mA
+  // (SX126x.cpp:54), which clips a +22 dBm transmit -- that number is the
+  // library's choice, not the chip's power-on default.
+  //
+  // Checked, unlike an earlier version of this code: a silent failure here
+  // leaves the radio transmitting at reduced power, which looks like bad range
+  // and nothing else.
+  lastError_ = impl_->radio.setCurrentLimit(config.currentLimitMa);
+  if (lastError_ != RADIOLIB_ERR_NONE) {
+    end();
+    return false;
+  }
 
-  // About 2 dB of receive sensitivity for about 2 mA. Worth it on a device
-  // that spends its life listening, and the choice is recorded here rather
-  // than left to the chip default so the power measurement knows about it.
-  impl_->radio.setRxBoostedGainMode(config.rxBoostedGain);
+  // Buys receive sensitivity for a little more receive current. **How much of
+  // each is [open] here**: the figures an earlier comment carried (2 dB for
+  // 2 mA) had no source, and the SX126x datasheet is behind a form
+  // (parent docs/TODO.md, T-285). Recorded as a deliberate setting either way,
+  // so the power campaign knows which state it measured.
+  lastError_ = impl_->radio.setRxBoostedGainMode(config.rxBoostedGain);
+  if (lastError_ != RADIOLIB_ERR_NONE) {
+    end();
+    return false;
+  }
 
   ready_ = true;
   return true;
@@ -77,15 +107,29 @@ bool LoraRadio::begin(const LoraPins& pins, const LoraConfig& config) {
 
 bool LoraRadio::transmit(const uint8_t* data, size_t length) {
   if (!ready_) return false;
+
   const bool wasListening = impl_->listening;
-  lastError_ = impl_->radio.transmit(data, length);
-  if (wasListening && lastError_ == RADIOLIB_ERR_NONE) startListening();
-  return lastError_ == RADIOLIB_ERR_NONE;
+
+  // transmit() leaves the chip in standby whether it worked or not
+  // (SX126x.cpp:248-251), so the flag stops being true the moment the call
+  // returns -- not when the re-arm below succeeds. A listening flag that
+  // outlives the listening is how a deaf radio reports itself as healthy.
+  impl_->listening = false;
+
+  const int16_t sent = impl_->radio.transmit(data, length);
+  lastError_ = sent;
+
+  // Re-arm only after a send that worked: after a failure the chip's state is
+  // not known, and startReceive() on top of that hides the original error.
+  // The result of the send is captured above, because startListening()
+  // overwrites lastError_ -- returning that instead reported a packet that
+  // really went out as a failure, and a caller would send it twice.
+  if (wasListening && sent == RADIOLIB_ERR_NONE) startListening();
+
+  return sent == RADIOLIB_ERR_NONE;
 }
 
-bool LoraRadio::transmit(const char* text) {
-  return transmit(reinterpret_cast<const uint8_t*>(text), strlen(text));
-}
+bool LoraRadio::transmit(const char* text) { return transmit(reinterpret_cast<const uint8_t*>(text), strlen(text)); }
 
 bool LoraRadio::startListening() {
   if (!ready_) return false;
@@ -112,7 +156,20 @@ int LoraRadio::poll(uint8_t* buffer, size_t bufferSize) {
   if (digitalRead(impl_->pins.irq) == LOW) return 0;
 
   const size_t length = impl_->radio.getPacketLength();
-  const size_t wanted = length < bufferSize ? length : bufferSize;
+  size_t wanted = length < bufferSize ? length : bufferSize;
+
+  // **Never pass 0 to readData().** RadioLib reads the length again itself and
+  // treats a zero `len` as "no limit", copying the whole packet -- up to 255
+  // bytes -- into the caller's buffer (SX126x.cpp:557-563). Zero is reachable
+  // here: getPacketLength() returns the zero-initialised status byte when its
+  // own SPI read fails, which on a bus shared with the SD card is not
+  // hypothetical. Clamping to the buffer keeps that from writing past it.
+  if (wanted == 0) wanted = bufferSize;
+  if (wanted == 0) {
+    impl_->radio.startReceive();
+    return 0;
+  }
+
   lastError_ = impl_->radio.readData(buffer, wanted);
 
   // RSSI and SNR describe the packet just read and are only valid here, before
@@ -121,8 +178,16 @@ int LoraRadio::poll(uint8_t* buffer, size_t bufferSize) {
   snr_ = impl_->radio.getSNR();
 
   // Back to listening whatever happened: a CRC error is a normal event on a
-  // radio link, not a reason to go deaf.
-  impl_->radio.startReceive();
+  // radio link, not a reason to go deaf. The result is checked, because a
+  // failed re-arm is the worst failure this class can have -- the radio stops
+  // hearing anything while listening() still says it is listening, which is
+  // indistinguishable from quiet air.
+  const int16_t rearmed = impl_->radio.startReceive();
+  if (rearmed != RADIOLIB_ERR_NONE) {
+    impl_->listening = false;
+    lastError_ = rearmed;
+    return -1;
+  }
 
   if (lastError_ != RADIOLIB_ERR_NONE) return -1;
   return static_cast<int>(wanted);
@@ -171,6 +236,13 @@ void LoraRadio::park() {
     impl_->radio.sleep();
     impl_->listening = false;
   }
+
+  // ready_ drops here, not only in end(). A parked chip is held in reset, so
+  // its BUSY line stays high and every later RadioLib call would wait out the
+  // 1000 ms bus timeout before failing (Module.h, spiConfig.timeout) -- several
+  // of those per command, inside loop(), with the panel and the buttons behind
+  // it. begin() is the way back.
+  ready_ = false;
 
   // The sleep above is for the radio's own power; this line is for the SD
   // card. NRESET low parks the chip's MISO, and the card shares that wire with

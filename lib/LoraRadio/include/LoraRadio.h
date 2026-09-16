@@ -18,12 +18,24 @@
 // power -- it assumes the rail is already up and says so in begin().
 //
 // **The SPI bus is shared with the SD card** (SCLK14 MISO21 MOSI13, SD_CS12
-// against LORA_CS46) and LORA_CS is also handed to the panel driver as its
-// pin_oe/pin_pwr. So nothing here may run while the card or the panel is in
-// use; park() puts the radio back in reset, which is the state the card needs
-// (measured 2026-09-03, main.cpp t5s3DeselectLoraRadio()). Arbitration between
-// map rendering and a listening radio does not exist yet and is the next piece
-// of work, not an oversight.
+// against LORA_CS46), and LORA_CS also reaches the panel's i80 bus as its
+// dc_gpio_num, because that driver rejects a negative pin and this board has
+// no spare GPIO (LilyGoT5S3LgfxConfig.cpp, prepareEpdPower() and the pinPwr
+// comment). The SDK deselects it before the bus is built and lgfx::pinMode()
+// writes no level, so it stays HIGH afterwards -- the radio is not selected by
+// an ordinary refresh.
+//
+// What protects the card while the radio is off is park(): it holds NRESET
+// low, which parks the chip's MISO (measured 2026-09-03, nine runs,
+// main.cpp t5s3DeselectLoraRadio()).
+//
+// **What is not established is a radio that listens while the map renders.**
+// Both users bracket the bus in SPI transactions, so the transfers themselves
+// serialise; the open questions are the microsecond window where the i80
+// peripheral drives DC on that pin during bus setup, and whether anything
+// re-initialises the display bus while the radio is up. Nobody has measured
+// it (parent docs/TODO.md, T-2019), so treat a listening radio during a redraw
+// as untested rather than as safe.
 
 struct LoraPins {
   int8_t cs;    // NSS
@@ -51,10 +63,10 @@ struct LoraConfig {
   // (platformio.ini:102-113) -- secondhand until our own hardware confirms it.
   // A wrong TCXO voltage is the classic silent failure here: the radio answers
   // SPI and never hears anything.
-  float tcxoVoltage = 1.8f;      // SX126X_DIO3_TCXO_VOLTAGE
-  bool dio2AsRfSwitch = true;    // SX126X_DIO2_AS_RF_SWITCH
-  float currentLimitMa = 140.0f; // SX126X_CURRENT_LIMIT
-  bool rxBoostedGain = true;     // SX126X_RX_BOOSTED_GAIN
+  float tcxoVoltage = 1.8f;       // SX126X_DIO3_TCXO_VOLTAGE
+  bool dio2AsRfSwitch = true;     // SX126X_DIO2_AS_RF_SWITCH
+  float currentLimitMa = 140.0f;  // SX126X_CURRENT_LIMIT
+  bool rxBoostedGain = true;      // SX126X_RX_BOOSTED_GAIN
 };
 
 class LoraRadio {
