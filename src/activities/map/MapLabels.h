@@ -16,12 +16,19 @@
 // on screen. Second, it needs the text width, which only the canvas knows
 // (IMapCanvas::measureText).
 //
-// The knowledge of what is on screen is kept as a coarse occupancy grid rather
-// than by re-reading any layer. Roads and buildings are deliberately NOT in it:
-// a name is meant to sit over the map -- that is what the halo or the box is
-// for -- and tracking road pixels would cost a second roads pass over the SD
-// card for no decision. The route is in it, because the route is the one thing
-// on screen a label must not hide.
+// What is on screen is known two ways, and the split is deliberate.
+//
+// The **route** is in a coarse occupancy grid, marked by the pass that draws it,
+// and it is a hard rule: a label may not cover more than
+// `max_route_overlap_pct` of itself with the line the rider is following.
+//
+// **Everything else** -- roads, buildings, area tones, contours, dots, POI marks,
+// the labels already placed -- is read straight back off the canvas at placement
+// time (IMapCanvas::inkCoverage), and it is a preference: among the positions the
+// hard rules allow, the one covering the least ink wins. That read is free
+// because names are drawn last, over the finished frame; there is no second pass
+// over any layer. Until 2026-09-15 it was not done at all and the first position
+// that fitted was taken, which chose which part of the map to erase by accident.
 
 // One bit per kCellPx square of screen. 8 px is about half a label's height, so
 // a box test lands on 3-4 rows of cells: fine enough that a name beside the
@@ -128,6 +135,26 @@ struct MapLabelScratch {
   uint8_t placed = 0;
   uint8_t dropped = 0;
 
+  // What the ink test cost this frame: boxes probed, and pixel samples read
+  // across them (IMapCanvas::inkCoverage). Counts rather than a time, because
+  // a count is the same number on the host preview and on the panel -- the
+  // device's per-sample cost is one multiplication away, and a millisecond
+  // measured on a laptop says nothing about a C3.
+  uint16_t inkProbes = 0;
+  uint32_t inkSamples = 0;
+
+  // Switches the least-ink test off, back to first-fit placement.
+  //
+  // Kept because the two layouts have to be comparable on the SAME frame: a
+  // side-by-side built from two binaries also differs by whatever else moved
+  // between them, and a judgement on the panel is worth only as much as the
+  // pair it was made from. It is also the fallback if the test ever turns out
+  // too slow on a device -- one bool rather than a revert.
+  //
+  // Config, not per-frame state, so reset() deliberately leaves it alone. The
+  // firmware never sets it: MapActivity takes the default.
+  bool inkTest = true;
+
   // The panel, so offer() can refuse a place that cannot be named anyway.
   //
   // Without it every slot is contested by the whole tile range, which is far
@@ -173,6 +200,8 @@ struct MapLabelScratch {
     count = 0;
     placed = 0;
     dropped = 0;
+    inkProbes = 0;
+    inkSamples = 0;
     clipW = 0;
     clipH = 0;
   }

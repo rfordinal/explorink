@@ -7,6 +7,8 @@
 #include <cstring>
 
 #include "BlePositionServer.h"
+#include "MapPointShards.h"
+#include "MapProjection.h"
 
 namespace {
 
@@ -84,6 +86,9 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       hasPosition_ = true;
       latE7_ = cmd.latE7;
       lonE7_ = cmd.lonE7;
+      // A real fix off the wire, not a persisted stand-in -- `info` may
+      // reveal it again (see positionIsFromPersistedFix_'s doc).
+      positionIsFromPersistedFix_ = false;
       if (cmd.hasHeading) heading_ = cmd.heading;
       if (cmd.hasSpeed) speedKmh_ = cmd.speedKmh;
       if (cmd.hasAccuracy) {
@@ -134,6 +139,21 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
 
     case MapCommandType::Skip: {
+      // A point shard, not a tile: same wire word reused at z10
+      // (MapPointShards::kShardZoom), routed away from the tile tally and
+      // skipObserver_ entirely. Those exist to count *tiles* -- neither
+      // TileSyncActivity's nor MapActivity's tile-skip handler checks `z`,
+      // so a z10 skip landing there would be recorded into
+      // MissingTilesStore/autoSyncPending_ as a skipped z10 tile (code
+      // review, 2026-09-13; there is no z10 tile today, but nothing enforces
+      // that).
+      if (cmd.skipZ == MapPointShards::kShardZoom) {
+        if (pointSkipObserver_ != nullptr) {
+          pointSkipObserver_->onPointShardSkipped(cmd.skipCol, cmd.skipRow, cmd.skipReason);
+        }
+        out.reply("OK");
+        return false;
+      }
       // Counted, not acted on: the tile is still missing, so it stays on the
       // store's list. This only stops the fetch screen waiting for it.
       ++skips_.count;
@@ -232,6 +252,25 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       // that changed is on the tile sync screen.
       return false;
     }
+
+    case MapCommandType::Points:
+      writePoints(out);
+      out.reply("OK");
+      return false;
+
+    case MapCommandType::Gone:
+      if (goneObserver_ == nullptr) {
+        out.reply("INFO gone=unavailable");
+        out.reply("OK");
+        return false;
+      }
+      // Before the reply, same rule pushObserver_/skipObserver_ follow: the
+      // phone must not hear OK before the delete is at least underway.
+      goneObserver_->onPointShardGone(cmd.skipCol, cmd.skipRow);
+      // Write-only, same shape as `push`: it reveals no position, route or
+      // stored data, so it answers nothing but OK.
+      out.reply("OK");
+      return false;
 
     case MapCommandType::Pin:
       return executePin(cmd, out);
@@ -407,13 +446,21 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   snprintf(line, sizeof(line), "INFO pos=%d", hasPosition_ ? 1 : 0);
   out.reply(line);
 
-  formatE7(latE7_, number, sizeof(number));
-  snprintf(line, sizeof(line), "INFO lat=%s", number);
-  out.reply(line);
+  // Withheld for a persisted-fix seed (TileSyncActivity's askAboutPoints()):
+  // that position is the rider's home, not something on their screen right
+  // now, and this channel is unauthenticated (positionIsFromPersistedFix_'s
+  // doc). `pos=` above still says a position is set, which is what
+  // pointShardRange() needs to be believed; the coordinate itself is not
+  // this reply's to give out.
+  if (!positionIsFromPersistedFix_) {
+    formatE7(latE7_, number, sizeof(number));
+    snprintf(line, sizeof(line), "INFO lat=%s", number);
+    out.reply(line);
 
-  formatE7(lonE7_, number, sizeof(number));
-  snprintf(line, sizeof(line), "INFO lon=%s", number);
-  out.reply(line);
+    formatE7(lonE7_, number, sizeof(number));
+    snprintf(line, sizeof(line), "INFO lon=%s", number);
+    out.reply(line);
+  }
 
   snprintf(line, sizeof(line), "INFO heading=%u", static_cast<unsigned>(heading_));
   out.reply(line);
@@ -628,6 +675,70 @@ void MapConsoleState::writeTiles(IMapReplyWriter& out) const {
     snprintf(line, sizeof(line), "INFO tile_%u_%u_%u=%s", static_cast<unsigned>(tileRange_.z),
              static_cast<unsigned>(col), static_cast<unsigned>(row), state);
     out.reply(line);
+  }
+}
+
+bool MapConsoleState::pointShardRange(MapPointShards::Range& outRange) const {
+  if (!hasPosition_) return false;
+  double mercX = 0.0;
+  double mercY = 0.0;
+  MapProjection::lonLatToMerc(latE7_ / 1e7, lonE7_ / 1e7, mercX, mercY);
+  outRange = MapPointShards::rangeForRadius(mercX, mercY, MapPointShards::kSearchRadiusM);
+  return true;
+}
+
+void MapConsoleState::writePoints(IMapReplyWriter& out) const {
+  if (pointShards_ == nullptr) {
+    // Not wired -- same distinction `missing=unavailable` makes: a build that
+    // never connected a source must not read as a device with zero shards.
+    out.reply("INFO points=unavailable");
+    return;
+  }
+  MapPointShards::Range range;
+  if (!pointShardRange(range)) {
+    // The shard range is centred on the rider; with no fix there is nothing
+    // to centre it on, the same refusal the Nearby menu gives
+    // (nearby-menu.md, "With no clever reordering"). Named as its own state
+    // rather than folded into a `point_total=0` reply on principle, the same
+    // way `tiles=none` is kept apart from an empty viewport -- though for
+    // this range specifically, `rangeForRadius()`'s bbox always spans at
+    // least one shard, so `point_total=0` cannot actually happen today
+    // (verified in code review, 2026-09-13).
+    out.reply("INFO points=no_position");
+    return;
+  }
+
+  // Every other listing in this file caps its output (writeTiles() at 32,
+  // writeMissing()/writeHave()/writePinList() by their stores' own page
+  // sizes) -- this one did not. The ≤9 shape is arithmetic
+  // (MapPointShards.h: a 50 km search bbox against a 39.135 km z10 shard
+  // spans at most 3x3), asserted in exactly one test for one coordinate, and
+  // MapPointShards.h itself warns that changing kSearchRadiusM or
+  // kShardZoom independently breaks it "quietly". Clamped here so that kind
+  // of change fails loud on this screen instead: an unbounded reply is one
+  // BLE indication per shard, each blocking on the peer's ATT confirm on
+  // this activity task -- the same button freeze HeldTilesStore::
+  // kMaxPerListing exists to prevent (code review, 2026-09-13).
+  static constexpr uint32_t kMaxPointShardsPerListing = 9;
+  const uint32_t total = range.count();
+  const uint32_t capped = total < kMaxPointShardsPerListing ? total : kMaxPointShardsPerListing;
+
+  char line[kReplyBuf];
+  snprintf(line, sizeof(line), "INFO point_total=%lu", static_cast<unsigned long>(capped));
+  out.reply(line);
+
+  // Same col-outer, row-inner order MapPointQuery::walk() opens shards in --
+  // no protocol reason to match it, but a log line from either side then reads
+  // in the same sequence.
+  uint32_t sent = 0;
+  for (uint32_t col = range.col0; col <= range.col1 && sent < kMaxPointShardsPerListing; ++col) {
+    for (uint32_t row = range.row0; row <= range.row1 && sent < kMaxPointShardsPerListing; ++row) {
+      const bool have = pointShards_->hasPointShard(col, row);
+      snprintf(line, sizeof(line), "INFO point_%lu_%lu=%s", static_cast<unsigned long>(col),
+               static_cast<unsigned long>(row), have ? "have" : "absent");
+      out.reply(line);
+      ++sent;
+    }
   }
 }
 

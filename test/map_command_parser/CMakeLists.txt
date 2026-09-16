@@ -7,6 +7,11 @@ add_executable(MapCommandParserTest
   # The console formats `pin log` records, so it needs the record codec. The pins
   # feature's own cases live in test/pins.
   ${REPO_ROOT}/src/activities/map/PinRecord.cpp
+  # writePoints() projects the rider's fix to Mercator to find the z10 shard
+  # range. MapPointShards.h is header-only but calls MapTileGrid's tile-grid
+  # arithmetic, which is not.
+  ${REPO_ROOT}/src/activities/map/MapProjection.cpp
+  ${REPO_ROOT}/src/activities/map/MapTileGrid.cpp
 )
 
 target_include_directories(MapCommandParserTest PRIVATE

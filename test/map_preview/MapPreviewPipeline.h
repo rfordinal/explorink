@@ -54,6 +54,11 @@ struct MapPreviewRequest {
   // (MapOffScreenReject in test/map_tile_reader/).
   bool rejectOffScreen = true;
 
+  // Place a label at the first position that fits instead of the one covering
+  // the least ink (MapLabelScratch::inkTest). The A/B switch for judging the
+  // placement change on one frame, not for the device.
+  bool labelInkTest = true;
+
   // Override the rung's buildings decision (the style's `buildingsEnabled`,
   // which data/mapstyle.json switches off above rung 0). Empty follows the
   // style, which is what the device does and what a preview should show by
@@ -148,6 +153,13 @@ struct MapPreviewResult {
   // thinning the picture -- which is the intended order.
   uint8_t labelsPlaced = 0;
   uint8_t labelsDropped = 0;
+
+  // What the least-ink placement test cost: candidate boxes probed, and pixel
+  // samples read across them (IMapCanvas::inkCoverage). The same two numbers
+  // the device would report, so a cost argued here holds there -- only the
+  // per-sample time differs.
+  uint16_t labelInkProbes = 0;
+  uint32_t labelInkSamples = 0;
   uint8_t lodZoom = 0;
   uint32_t col0 = 0, row0 = 0, col1 = 0, row1 = 0;
   long smallestTileBytes = -1;

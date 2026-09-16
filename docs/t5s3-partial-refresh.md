@@ -691,3 +691,60 @@ respectively, and the OpenTrailPaper items marked epidy-era are **history, not
 their shipping behaviour**.
 
 Nothing in section 5 has been built.
+
+## 8. Vendor waveform: epdiy ED047TC1 phases and grey level encoding
+
+**2026-09-14.** The ED047TC1 waveform file from the LilyGo vendor's own repository (branch H752-01) defines five distinct waveform modes, structured around phase counts and their timing. This section documents what the file actually specifies for full vs partial update phases, the timing implications, and how 16 grey levels are encoded.
+
+**Source file**: `lib/epdiy/src/waveforms/epdiy_ED047TC1.h` from `Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO` repository (branch H752-01), raw URL `https://raw.githubusercontent.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO/H752-01/lib/epdiy/src/waveforms/epdiy_ED047TC1.h`, read 2026-09-14.
+
+### 8a. Five waveform modes and their phase structure
+
+The waveform defines five EpdWaveformMode structures (line 27 in the vendor file), spanning three operational regimes:
+
+**Corrected 2026-09-14, against the fetched file directly** (`epd_wp_epdiy_ED047TC1_*_times[]` arrays, summed with Python): the first commit of this section stated 1650 ms for modes 2, 5 and 16 alike, and 588 ms for mode 17. Only mode 2/5's sum is close (1570 ms, not 1650); mode 16 and mode 17 were each computed wrong, and mode 16 is not the "same total, sparser LUT" claim originally written here -- it is a genuinely shorter waveform.
+
+| Mode | Type | Phases | Phase times (ms) | Total time (`sum(phase_times)`) | Purpose |
+|------|------|--------|------------------|------------|---------|
+| 1 | GC16_FAST | 5 | [1000,1000,1000,1000,1000] | 5000 ms | Full refresh, 1-bit (fastest) |
+| 2 | GC16 | 30 | [30,30,20,20,30,30,30,40,40,50,50,50,100,200,300,10,10,8,8,8,8,8,10,10,15,15,20,20,100,300] | **1570 ms** | Full refresh, 16-grey (standard) |
+| 5 | GC16_PARTIAL | 30 | [30,30,20,20,30,30,30,40,40,50,50,50,100,200,300,10,10,8,8,8,8,8,10,10,15,15,20,20,100,300] | **1570 ms** | Partial refresh, 16-grey |
+| 16 | GC16 (optimized) | 15 | [30,30,20,20,30,30,30,40,40,50,50,50,100,200,300] | **1020 ms** | Full refresh, 16-grey (fewer phases) |
+| 17 | GC16_PARTIAL (sparse) | 15 | [10,10,8,8,8,8,8,10,10,15,15,20,20,100,300] | **550 ms** | Partial refresh, sparse (fastest partial) |
+
+**Specification temperature range**: 20-30°C (line 26, `EpdWaveformTempInterval`), a single range for all modes. LilyGo's own statement (docs/panel-ed047tc1.md, vendor mail 2026-09-04) confirms the firmware is "fixed at 20°C" and does not include temperature compensation, so waveform fidelity degrades outside this range.
+
+### 8b. Phase count: full vs partial refresh
+
+**Full refresh (16-grey, GC16 or optimized GC16)**:
+- Mode 2 (standard GC16): **30 phases**, 1570 ms total
+- Mode 16 (optimized): **15 phases**, **1020 ms total** -- genuinely shorter, not the same length with a sparser LUT
+
+**Partial refresh (GC16_PARTIAL)**:
+- Mode 5 (matching full, 30 phases): **30 phases**, 1570 ms total
+- Mode 17 (sparse, optimized): **15 phases**, 550 ms total
+
+**Key insight, verified element-by-element in Python against the fetched arrays**: Modes 2 and 5 are **identical in phase count and timing** (both 30 phases, same 30-element `phase_times[]` array, 1570 ms) -- the vendor's waveform distinguishes full vs partial refresh at the LUT data level (which pixels are updated), not at the phase-count or timing level for 16-grey updates. Two levels down from that, modes 16 and 17 are not independent waveforms either: **mode 16's 15-element array is exactly the first 15 elements of mode 2/5's 30-element array, and mode 17's 15-element array is exactly the last 15 elements of the same array** (`m2[:15] == m16` and `m2[15:] == m17`, both `True`). So the file encodes one 30-phase timing sequence for full 16-grey precision, and modes 16/17 are that same sequence split into its first half (a faster full-refresh option) and second half (the fast partial option) -- not two separately authored waveforms.
+
+### 8c. 16 grey levels: phase-by-phase encoding
+
+The panel achieves 16 grey levels (0-15, where 0=white, 15=black) through the LUT structure:
+- **LUT dimensions**: Each mode has one LUT table with **16 rows** (one per grey level) and **16 columns** (one per drive command code, pre-indexed for the four voltage bytes per phase line).
+- **Per phase**: Each of the 30 or 15 phase rows contains a full LUT copy, allowing grey-level-dependent drive sequencing.
+- **Encoding**: The four bytes per LUT entry encode 16 2-bit drive codes (4 bits per byte = 2 codes; 4 bytes = 16 codes total), one code per possible grey level. At each phase, a pixel reads its grey value from the framebuffer (0-15), indexes the corresponding LUT row and current phase, and applies the 2-bit drive code at that index.
+
+**Sparse encoding (Mode 17)**: The partial-refresh sparse mode uses predominantly `0x80` (a single 1-bit set, meaning "drive to one polarity") across most LUT entries, suggesting that partial refreshes can tolerate less granular grey sequencing than full refreshes and still achieve visible 16-level output.
+
+### 8d. Refresh time implications
+
+**Full refresh, 16-grey**: 1570 ms nominal for the full 30-phase sequence (mode 2/5), or 1020 ms for the 15-phase fast option (mode 16). Against the X4's datasheet claim of 4 s for full refresh, the ED047TC1 on the LilyGo board is nominally 2.5x to 3.9x faster on paper, depending on which mode drives it. However, measured times on hardware (section 1 of this doc, and refresh-modes.md) diverge from vendor nominal figures, so this datasheet value is **an upper bound, not a measured result on our board**.
+
+**Partial refresh, fast**: 550 ms nominal (Mode 17, the second half of the 30-phase sequence), the vendor's `<200 ms` reference in docs/panel-ed047tc1.md appears to be achievable only with a more aggressively sparse waveform than Mode 17, or with windowed (actually scoped) refresh that does not clock every row of the panel. Since epdiy and our own M5GFX `Panel_EPD` do clock every row (section 2c), the 550 ms partial-phase timing is more realistic for actual hardware on this board.
+
+**Nominal vs measured**: A 1570 ms full refresh and 550 ms partial-phase time assume the panel clocks out every phase without intervention. On the ESP32-S3's LCD peripheral (section 2c), PSRAM bandwidth, DMA stalling, or ISR latency may extend these. Section 3's 1,081-1,117 ms measured window cost sits between Mode 17's 550 ms (if only partial-phase cost) and Mode 2/5's 1570 ms (if full-phase cost), and lands close to Mode 16's 1020 ms -- consistent with the hypothesis that measured times include the gate-scan loop overhead and other fixed per-refresh costs not itemized in phase timing alone, on top of something closer to the 15-phase sequence than the full 30-phase one.
+
+### 8e. What is open
+
+- **Actual measured phase times on this hardware**, using the method in section 3: an unchanged-frame subtraction, or a timer bracket around `blit_dmabuf`, would answer whether the vendor's phase timings match the panel's actual response. The 550 ms / 1570 ms figures are untested on our board.
+- **Grey-level fidelity in the sparse Mode 17 encoding vs Mode 5's full encoding**: whether the reduced LUT precision in Mode 17 is visible on the panel or purely an implementation detail.
+- **Cold performance**: Modes 1-5 specify temperature range 20-30°C, so Mode 17's 550 ms and Mode 2's 1570 ms both degrade below 20°C, per vendor statement in docs/panel-ed047tc1.md. No measurement exists.

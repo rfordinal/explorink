@@ -39,7 +39,7 @@
 #include <LoraRadio.h>
 #endif
 
-#ifdef ENABLE_CHARGE_CMD
+#if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
 #include <Wire.h>  // the charger and the gauge sit on the same I2C bus
 #endif
 
@@ -56,6 +56,20 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DebugInput.h"
+#include "DebugTouchLog.h"
+
+// Every input sample in loop() goes through here so the gap between two of them
+// can be measured. The gap IS the bug being chased: a GT911 holds exactly one
+// unacknowledged frame and discards everything after it, so a wide gap turns a
+// double tap into a single one (src/DebugTouchLog.h). Hooking the six call sites
+// rather than HalGPIO::update() keeps the recorder in src/, which lib/hal cannot
+// include and which the simulator replaces wholesale.
+static inline void sampleInput() {
+#ifdef ENABLE_TOUCHLOG_CMD
+  DebugTouchLog::noteUpdate();
+#endif
+  gpio.update();
+}
 #include "GnssAccess.h"
 #include "GnssFakeSky.h"
 #include "GnssLog.h"
@@ -147,6 +161,26 @@ void toggleFrontlight(const char* source) {
   LOG_INF("BTN", "%s: frontlight %u%%", source, static_cast<unsigned>(frontlight.brightness()));
 }
 
+// Not inside the T5 S3 Pro's button block below, and that is the point: any
+// board with a capacitive home key and a digitizer carries this gesture
+// (TouchPolicy::homeKeyDoubleTapLocksTouch()), the X4 Pro included.
+void toggleTouchLock() {
+  // One flag, flipped. Nothing has to be remembered across it: the mode the
+  // rider chose lives in SETTINGS.touchMode and the lock never touches it, so
+  // unlocking simply stops overriding it (TouchPolicy::mode()). The earlier
+  // version stored DISABLED *into* touchMode and kept the previous value in RAM,
+  // which lost it across a reboot and put a value in that field that the
+  // Settings row does not list.
+  SETTINGS.touchLocked = SETTINGS.touchLocked != 0 ? 0 : 1;
+  // One SD write per deliberate tap, the same reasoning toggleFrontlight() above
+  // carries: a handful of writes a ride, not one per interaction.
+  SETTINGS.saveToFile();
+  // The hint boxes appear or vanish with the mode and the layout reserves room
+  // for them or does not, so the screen is repainted rather than nudged.
+  activityManager.requestUpdate();
+  LOG_INF("BTN", "Home key: touch %s", SETTINGS.touchLocked != 0 ? "locked" : "unlocked");
+}
+
 // How long BOOT must be held before it means sleep. On the T5 S3 Pro a shorter
 // press means Back (boardButtonHook() below), so the two gestures share one
 // number and it has to be long enough to tap deliberately with gloves on:
@@ -199,14 +233,19 @@ uint16_t powerHoldDurationMs() {
 // four above. It is not a GPIO at all: the GT911 reports it in its own status
 // byte, bit 0x10, and InputManager::serviceTouch() reads that bit on every board
 // **regardless of TouchConfig::hasHomeKey** -- that flag is consulted nowhere in
-// InputManager and gates nothing today, so do not go looking for it as the
-// switch that turns this key on. Confirmed working on this panel 2026-09-05
-// (holding it turns the frontlight on). Its jobs are handled in loop(), not
-// here:
+// InputManager, so do not go looking for it as the switch that turns this key
+// on. It is not unused, though: `TouchPolicy::homeKeyDoubleTapLocksTouch()`
+// reads it through `BoardConfig::hasHomeKey()` to decide whether the key carries
+// three gestures or one. Confirmed working on this panel 2026-09-05 (holding it
+// turns the frontlight on). Its jobs are handled in loop(), not here:
 //
 //   home key tap        -> Confirm (Select), after the double-tap window
 //   home key double tap -> lock / unlock the touch panel (toggleTouchLock)
 //   home key hold       -> frontlight on / off (toggleFrontlight)
+//
+// **None of those three is specific to this board any more.** They are keyed on
+// having a home key and a digitizer, so the X4 Pro gets all three; the table
+// above is about the four physical switches, which really are this board's.
 //
 // Why the light hangs off a physical hold and not a touch control: gloves defeat
 // the capacitive panel, and the light is exactly what a rider reaches for with
@@ -215,9 +254,15 @@ uint16_t powerHoldDurationMs() {
 // short press was doing nothing here -- shortPwrBtn defaults to IGNORE. Sleep
 // and Back are now the same press told apart by how long it is held, which is
 // what powerHoldDurationMs() above sets. Why the lock hangs off a double tap:
-// nothing else on this board can stop the glass reacting to a bag, a palm or rain, and the single tap was worth
-// keeping as Select. The cost is that Select through this key waits out the
-// double-tap window -- a single tap cannot be known to be single until then.
+// nothing else on a touch board can stop the glass reacting to a bag, a palm or
+// rain, and the single tap was worth keeping as Select. The cost is that Select
+// through this key waits out the double-tap window -- a single tap cannot be
+// known to be single until then.
+//
+// And while the lock is on, that single tap does not select at all
+// (`MappedInputManager::pumpHomeKey()`), so the double tap is the only way out
+// of it. On the X4 Pro that is not a detail: Back and Confirm both come from
+// touch there, so a lock with no working unlock gesture would be a dead device.
 namespace {
 constexpr unsigned long USER_BUTTON_HOLD_MS = 600;
 // A held button keeps stepping the light at this rate. Slow enough to let go on
@@ -226,23 +271,6 @@ constexpr unsigned long USER_BUTTON_HOLD_MS = 600;
 // hold sets a flag (frontlightHoldActive) and loop() saves the level once, once
 // the button is up.
 constexpr unsigned long USER_BUTTON_REPEAT_MS = 500;
-
-void toggleTouchLock() {
-  // One flag, flipped. Nothing has to be remembered across it: the mode the
-  // rider chose lives in SETTINGS.touchMode and the lock never touches it, so
-  // unlocking simply stops overriding it (TouchPolicy::mode()). The earlier
-  // version stored DISABLED *into* touchMode and kept the previous value in RAM,
-  // which lost it across a reboot and put a value in that field that the
-  // Settings row does not list.
-  SETTINGS.touchLocked = SETTINGS.touchLocked != 0 ? 0 : 1;
-  // One SD write per deliberate tap, the same reasoning the frontlight hold
-  // below carries: a handful of writes a ride, not one per interaction.
-  SETTINGS.saveToFile();
-  // The hint boxes appear or vanish with the mode and the layout reserves room
-  // for them or does not, so the screen is repainted rather than nudged.
-  activityManager.requestUpdate();
-  LOG_INF("BTN", "Home key: touch %s", SETTINGS.touchLocked != 0 ? "locked" : "unlocked");
-}
 
 // A synthetic press has to survive InputManager's debounce, which commits a
 // state change only once two update() calls at least DEBOUNCE_DELAY (5 ms)
@@ -1164,10 +1192,10 @@ static void screenshotPlaneSink(void*, bool, const uint8_t* rows, int, int numRo
 }
 
 void waitForPowerRelease() {
-  gpio.update();
+  sampleInput();
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
     delay(50);
-    gpio.update();
+    sampleInput();
   }
 }
 
@@ -1428,6 +1456,10 @@ void setup() {
   if (frontlight.present()) {
     frontlight.setBrightness(SETTINGS.frontlightBrightness);
     if (!SETTINGS.frontlightOn) frontlight.off();
+    // No-op on a single-channel board (FrontlightManager.h) -- calling it
+    // unconditionally still requires present() so it never runs on a board with
+    // no light at all.
+    if (frontlight.hasColorTemperature()) frontlight.setColorTemperature(SETTINGS.frontlightColorTemperature);
   }
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
@@ -1475,7 +1507,7 @@ void setup() {
     // settle window even if the loop body takes longer than expected on slow boots.
     const unsigned long settleStart = millis();
     while (millis() - settleStart < 500) {
-      gpio.update();
+      sampleInput();
       delay(10);
     }
     if (gpio.isPressed(HalGPIO::BTN_UP)) {
@@ -1610,9 +1642,9 @@ void setup() {
     // transition the held bit through lastDebounceTime into currentState
     // without setting pressedEvents, so the first loop()'s own gpio.update()
     // sees state == currentState and emits nothing.
-    gpio.update();
+    sampleInput();
     delay(10);
-    gpio.update();
+    sampleInput();
   }
 
   // Ensure we're not still holding the power button before leaving setup
@@ -1626,7 +1658,7 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
-  gpio.update();
+  sampleInput();
   // One step of any injected button press, in the same frame the real buttons
   // were read (DebugInput.h). Before the CMD: parser below, so a press queued
   // this iteration starts on the next one and never lands mid-frame with the
@@ -1645,15 +1677,16 @@ void loop() {
   if (mappedInputManager.wasHomeKeyLongPress()) {
     toggleFrontlight("Home key hold");
   }
-#if FREEINK_DEVICE_LILYGO
   // The third gesture on the same key: a double tap locks or unlocks the panel.
   // Resolved in MappedInputManager, which holds the first tap for the double-tap
   // window and decides between Confirm and this -- a tap that had already
   // selected could not be taken back once the second tap arrived.
+  //
+  // No board condition here: wasHomeKeyDoubleTap() is false on a board that has
+  // no home key or no digitizer, because pumpHomeKey() never resolves one there.
   if (mappedInputManager.wasHomeKeyDoubleTap()) {
     toggleTouchLock();
   }
-#endif
   // The Settings row writes the level straight into SETTINGS, so the light has
   // to be told. Only while it is on: changing the level must not turn it on.
   static uint8_t appliedFrontlightBrightness = SETTINGS.frontlightBrightness;
@@ -1661,6 +1694,19 @@ void loop() {
     appliedFrontlightBrightness = SETTINGS.frontlightBrightness;
     if (frontlight.present() && frontlight.brightness() > 0) {
       frontlight.setBrightness(appliedFrontlightBrightness);
+    }
+  }
+  // Same reasoning as frontlightBrightness above: the color-temperature picker
+  // (SettingsActivity::openFrontlightColorTemperaturePicker()) writes straight
+  // into SETTINGS on Confirm, so the light has to be told here too. Applied
+  // regardless of on/off state -- unlike brightness, changing the warm/cool mix
+  // while the light is off is harmless and should still take effect once it's
+  // switched back on.
+  static uint8_t appliedFrontlightColorTemperature = SETTINGS.frontlightColorTemperature;
+  if (SETTINGS.frontlightColorTemperature != appliedFrontlightColorTemperature) {
+    appliedFrontlightColorTemperature = SETTINGS.frontlightColorTemperature;
+    if (frontlight.hasColorTemperature()) {
+      frontlight.setColorTemperature(appliedFrontlightColorTemperature);
     }
   }
   if (frontlightStateChanged && !frontlightHoldActive) {
@@ -1995,6 +2041,66 @@ void loop() {
           logSerial.printf("BUTTON_OK:%s:%ld\n", DebugInput::kButtonNames[button], holdMs);
         }
 #endif  // ENABLE_BUTTON_CMD
+#ifdef ENABLE_TOUCHLOG_CMD
+      } else if (cmd == "TOUCHLOG" || cmd.startsWith("TOUCHLOG ")) {
+        // Raw GT911 status register, timestamped, with the loop deliberately
+        // blocked for the whole capture. The five open questions in
+        // firmware/explorink docs/input-gestures.md are all questions about when
+        // a byte changes, and nothing else in this firmware can see that --
+        // src/DebugTouchLog.h has the reasoning and the two modes.
+        //
+        //   CMD:TOUCHLOG                      ->  3000 ms at 5 ms, clearing
+        //   CMD:TOUCHLOG 6000 5000 noclear    ->  6 s at 5 ms, never clearing
+        //   CMD:TOUCHLOG 8000 5000 delay2000  ->  hold the frame 2 s, ack once, watch
+        long durationMs = 3000;
+        long intervalUs = 5000;
+        bool clearAfterRead = true;
+        long clearDelayMs = 0;
+        String rest = cmd.length() > 8 ? cmd.substring(9) : String("");
+        rest.trim();
+        if (rest.length() > 0) {
+          const int firstGap = rest.indexOf(' ');
+          durationMs = (firstGap < 0 ? rest : rest.substring(0, firstGap)).toInt();
+          if (firstGap >= 0) {
+            String tail = rest.substring(firstGap + 1);
+            tail.trim();
+            const int secondGap = tail.indexOf(' ');
+            const String intervalToken = secondGap < 0 ? tail : tail.substring(0, secondGap);
+            // A mode token may sit in either slot, so the interval is optional.
+            // `delay<N>` is the third mode: hold the frame N ms, acknowledge it
+            // once, then watch (src/DebugTouchLog.h, open question 5).
+            auto applyMode = [&](const String& mode) {
+              if (mode.startsWith("delay")) {
+                clearDelayMs = mode.substring(5).toInt();
+                clearAfterRead = false;
+              } else {
+                clearAfterRead = mode != "noclear";
+              }
+            };
+            if (intervalToken == "clear" || intervalToken == "noclear" || intervalToken.startsWith("delay")) {
+              applyMode(intervalToken);
+            } else {
+              intervalUs = intervalToken.toInt();
+              if (secondGap >= 0) {
+                String mode = tail.substring(secondGap + 1);
+                mode.trim();
+                applyMode(mode);
+              }
+            }
+          }
+        }
+        if (durationMs <= 0 || intervalUs <= 0) {
+          logSerial.printf("TOUCHLOG_ERR:args:<ms> <us> clear|noclear\n");
+        } else {
+          DebugTouchLog::capture(logSerial, static_cast<uint32_t>(durationMs), static_cast<uint32_t>(intervalUs),
+                                 clearAfterRead, static_cast<uint32_t>(clearDelayMs < 0 ? 0 : clearDelayMs));
+        }
+      } else if (cmd == "LOOPGAP") {
+        // How long the input sampler goes unread. Read it, do the thing being
+        // measured, read it again -- the report resets on read, so the second
+        // answer covers only the interval between them.
+        DebugTouchLog::reportGaps(logSerial);
+#endif  // ENABLE_TOUCHLOG_CMD
       } else if (cmd == "GOTO_MAP" || cmd.startsWith("GOTO_MAP ")) {
         // Power saving is already off for every CMD: above -- load-bearing here
         // in particular: NimBLEDevice::init() (MapActivity::onEnter() ->
@@ -2742,8 +2848,54 @@ void loop() {
         battArg.toUpperCase();  // the subcommand; a hex address parses either case
         if (g.gaugeAddr == 0) {
           logSerial.printf("BATT_ERR:no gauge on this board\n");
-        } else if (battArg.length() > 0 && !battArg.startsWith("DM")) {
-          logSerial.printf("BATT_ERR:unknown:DM\n");
+        } else if (battArg.length() > 0 && !battArg.startsWith("DM") && battArg != "SCAN" &&
+                   !battArg.startsWith("PROBE")) {
+          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE\n");
+        } else if (battArg == "SCAN") {
+          // Whether a charger IC sits on the gauge bus at all is unknown for X3
+          // (BoardConfig.h: chargerAddr=0, unlike the T5 S3 Pro's BQ25896 or the
+          // X4 Pro's none). A full sweep answers it without opening the device --
+          // the same bus the gauge already uses, just every address instead of one.
+          powerbus::begin();
+          TwoWire& w = powerbus::wire();
+          char found[3 * 128 + 1];
+          size_t pos = 0;
+          found[0] = '\0';
+          for (uint8_t addr = 1; addr < 127; ++addr) {
+            w.beginTransmission(addr);
+            if (w.endTransmission(true) == 0) {
+              pos += static_cast<size_t>(snprintf(found + pos, sizeof(found) - pos, "%02X ", addr));
+            }
+          }
+          logSerial.printf("BATT_SCAN:%s\n", found);
+        } else if (battArg.startsWith("PROBE")) {
+          // BATT_SCAN's ACK-only sweep cannot tell a real chip from a
+          // reserved-address bus quirk (0x78-0x7F, UM10204 s3.1.11): a real
+          // register set answers a readable, non-uniform pattern; a bus
+          // artifact answers all-NACK or a flat repeat. Sixteen registers,
+          // read-only -- no write reaches an unidentified chip.
+          String addrArg = battArg.substring(5);
+          addrArg.trim();
+          const long addr = strtol(addrArg.c_str(), nullptr, 0);
+          if (addrArg.length() == 0 || addr <= 0 || addr > 0x7F) {
+            logSerial.printf("BATT_ERR:probe addr\n");
+          } else {
+            powerbus::begin();
+            char hex[16 * 3 + 1];
+            size_t pos = 0;
+            hex[0] = '\0';
+            uint8_t okCount = 0;
+            for (uint8_t reg = 0; reg < 16; ++reg) {
+              uint8_t val = 0;
+              if (powerbus::read8(static_cast<uint8_t>(addr), reg, val)) {
+                ++okCount;
+                pos += static_cast<size_t>(snprintf(hex + pos, sizeof(hex) - pos, "%02X ", static_cast<unsigned>(val)));
+              } else {
+                pos += static_cast<size_t>(snprintf(hex + pos, sizeof(hex) - pos, "?? "));
+              }
+            }
+            logSerial.printf("BATT_PROBE:addr=0x%02lX ok=%u/16 regs=%s\n", addr, static_cast<unsigned>(okCount), hex);
+          }
         } else if (battArg.startsWith("DM")) {
           String addrArg = battArg.substring(2);
           addrArg.trim();

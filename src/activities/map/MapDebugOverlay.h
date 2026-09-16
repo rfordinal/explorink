@@ -119,6 +119,19 @@ class MapDebugOverlay {
   // empty and dirty at once.
   bool empty() const;
 
+  // The box this window occupies on the panel right now, for a caller that has
+  // to keep off it (MapChrome.h). False when there is no layout yet or the
+  // window is empty, and then nothing is reserved.
+  //
+  // **It reports the previous frame's rows, and that is the right answer.** A
+  // frame registers its furniture before drawing anything, but the slots that
+  // decide this window's height are written *during* that frame -- so what this
+  // returns is the box that is on the glass, which is the box a pin would
+  // actually disappear behind. The one frame where it is wrong is the frame a
+  // slot first appears or last empties, and the high-water rule below already
+  // means the box on the panel does not shrink until the next full frame.
+  bool currentRect(GfxRenderer& renderer, int& x, int& y, int& w, int& h) const;
+
  private:
   struct Slot {
     char owner[12];

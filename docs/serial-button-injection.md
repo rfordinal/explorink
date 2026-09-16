@@ -198,6 +198,14 @@ altogether -- the fork's JSON socket (`docs/simulator.md`).
   `main.cpp`**, not timed out on hardware. The map screen holds
   `preventAutoSleep()` anyway, so timing it out needs the Home screen and a
   full timeout of pressing (T-286).
-- **Not run on an X4 or X4 Pro** (C3). The injection point is board-agnostic
-  `src/` code, but the C3 envs (`default`, `sticky`) have not been flashed with
-  it.
+- **Run on a C3 on 2026-09-09, on an Xteink X3.** Env `default`, build
+  `92c949ae`: `CMD:BUTTON back`, `up` and `down` each answered `BUTTON_OK`, and
+  on the map screen `up` zoomed one rung, the scale bar going 500 m to 200 m. So
+  the injector is confirmed on both chip families and the board-agnostic claim
+  above is no longer an inference.
+- **The device has to be awake first.** At 10 MHz it does not read the line at
+  all, so a press sent to an idle device is silently dropped -- the same trap
+  that swallows `CMD:GOTO_MAP` (`power-management.md`, "And starves RX
+  outright"). It cost six minutes on the X3 run above.
+- **Not run on an X4 or an X4 Pro.** The X4 Pro has since been flashed from
+  `t5s3-to-x4pro` but the injector was not exercised there.

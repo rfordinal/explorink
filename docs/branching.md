@@ -358,6 +358,35 @@ alone (`docs/freeink-sdk-fork.md` among them), which is the deferred cost of the
 no-cherry-pick rule working as intended rather than a new problem.
 `release/xteink-x4-pro` is 6 behind, 1 ahead, same pin.
 
+## `git log -S` skips merges, so it cannot prove a branch never had something
+
+Used 2026-09-12 to ask when `[env:x4pro]` left `release/lilygo-t5-s3-pro`.
+
+```
+git log -S'[env:x4pro]' release/lilygo-t5-s3-pro -- platformio.ini
+```
+
+printed nothing, and that was read as "it was never there". Wrong: `-S` skips
+merge commits by default, and a merge is exactly where a conflict resolution
+drops a block. The conclusion drawn from it happened to be right and the
+evidence was worthless.
+
+What actually answers it is reading the file at each parent of the suspect
+merge:
+
+```
+git show <merge>^1:platformio.ini | grep -c '^\[env:x4pro\]'   # 0, the branch side
+git show <merge>^2:platformio.ini | grep -c '^\[env:x4pro\]'   # 1, the develop side
+git show <merge>:platformio.ini   | grep -c '^\[env:x4pro\]'   # 0, the result
+```
+
+0, 1, 0 names the merge as the place it was dropped, and names which side won.
+
+**On a branch with merges, a silent `-S` is not a negative finding.** Where the
+pickaxe has to see merges at all, it needs `--diff-merges` -- but for "which
+merge resolved this away", reading the two parents is shorter and says which
+side was taken, which the pickaxe never does.
+
 ## No cherry-pick between our own branches
 
 **Maintainer's decision, 2026-09-09.** A change reaches another branch of ours

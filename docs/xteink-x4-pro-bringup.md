@@ -196,10 +196,150 @@ because the port note is the one a later session still needs.
    enumerate the same -- so ask the chip before picking an env
    (`../../../CLAUDE.md`, "Identify the port before every flash").
 2. ~~**That it boots at all.**~~ Done, once the controller probe ran. A map
-   frame is still untried; Boot and Home are what has been on the glass.
-3. **Touch.** Still open. GT911 plus a capacitive Home key is a different input
-   story from the T5 S3 Pro's buttons. `TouchPolicy.h` and the touch lock were
-   written against that board.
+   frame followed on 2026-09-09 -- see "The hardware pass" below.
+3. ~~**Touch.**~~ Done 2026-09-09. GT911 plus a capacitive Home key turned out
+   to be *most* of the T5's story and not a different one: the SDK reports the
+   key identically on both boards, so the tap, the hold and the double tap all
+   work here. `TouchPolicy.h` and the touch lock were indeed written against the
+   T5, and the one thing that had to change was a board name where a capability
+   belonged (`dcb8e023`).
+
+## The T5 S3 Pro tree, merged in to see what survives
+
+Branch `t5s3-to-x4pro`, forked from `release/xteink-x4-pro` on 2026-09-09 and
+merged with `release/lilygo-t5-s3-pro` whole. 93 commits, 25 non-docs files.
+Parent `docs/TODO.md` T-297 is the plan; its counts (212 commits, 53 files) are
+from before the T5 branch synced `develop`, which moved the merge base and
+shrank the incoming set.
+
+Why here and not `develop`: the X4 Pro is the **other** S3 board. The T5 S3 Pro
+has physical keys and one warm frontlight channel; this board has a GT911
+digitizer, a capacitive Home key and warm plus cool. So this is the board that
+answers whether that work is board-agnostic or T5-shaped, and it answers it
+before any of it reaches a production branch.
+
+One conflict, `src/main.cpp`, both hunks additive, resolved as a union. The SDK
+pointer stayed at `955b2530`; the T5 branch pinned `e514a868`, which is an
+ancestor of it, so ours is the newer of the two and there is no downgrade to
+audit.
+
+### Three things switched themselves on for this board, and a fourth did not
+
+Read off the code before the pass; all three since confirmed on hardware:
+
+- `HalGPIO::wasHomeKeyTapped()` and `wasHomeKeyLongPressed()`
+  (`lib/hal/HalGPIO.cpp:248`) forward straight to the SDK's `InputManager`, so
+  they answer on any profile with a capacitive home key. This board's profile
+  has one.
+- `MappedInputManager::wasHomeKeyConfirm()` reports a home-key tap as
+  **Confirm**, with no board condition
+  (`src/MappedInputManager.cpp`, `wasPressed`/`wasReleased`).
+- `loop()` toggles the frontlight on a home-key **hold**, gated only by
+  `FrontlightManager::present()` (`src/main.cpp`, the
+  `mappedInputManager.wasHomeKeyLongPress()` branch).
+
+**The fourth was the lock, and it was gated off.** The home key's double tap
+locks and unlocks the touch panel on the T5, and both the policy
+(`TouchPolicy::homeKeyDoubleTapLocksTouch()`) and the dispatch in `loop()` were
+`#if FREEINK_DEVICE_LILYGO`. So this board got two of the key's three gestures
+and, worse, none of `pumpHomeKey()`'s three filters -- including the one written
+for a measured defect where a latched hold fires from a press already turned
+into a tap.
+
+The maintainer found it by thumb before anyone found it by reading: a double tap
+selected an item and locked nothing. Fixed in `dcb8e023` by keying both on
+`BoardConfig::hasHomeKey()` plus `hasTouch()` instead of a board name.
+
+**Why the lock is load-bearing here rather than convenient.** A locked panel
+deliberately refuses the single tap as well
+(`MappedInputManager::pumpHomeKey()`: `homeConfirmResolved =
+!TouchPolicy::locked()`), so the double tap is the only way out -- and on this
+board Back and Confirm both come from touch, so a lock without a working unlock
+would be a device with no input at all. The double tap is therefore resolved
+above that gate, not below it.
+
+**Confirm on a tap is still a T5 decision inherited by accident.** There the
+user button was the only readable button and had to carry two jobs. Here there
+are two physical keys (`Left` on GPIO0, `Right` on GPIO7) plus the Home key, so
+what a tap should mean is a question this board has not actually answered -- it
+works, which is not the same as being right.
+
+What did **not** come across: the T5's `userButtonHook()` is behind `#if
+FREEINK_DEVICE_LILYGO` and does not compile here, and the LEDC frequency
+override is guarded at runtime on `BoardConfig::Board::LilyGoT5S3`
+(`src/main.cpp`, the `ledcChangeFrequency()` call in `setup()`). This board therefore runs the SDK's default frontlight PWM
+frequency, which is on the SDK's own Pending list -- see "What is open" below.
+
+GNSS is not in this binary at all. `lib/Gnss`, `GnssLog` and the map's GNSS
+reader are all behind `ENABLE_GNSS_CMD`, which `platformio.ini` sets in
+`[env:t5s3pro]` and in no other env (`src/GnssAccess.h` explains why that flag's
+name is narrower than its meaning). `MapGnssHeading` is host-tested either way.
+
+### The hardware pass, 2026-09-09: it went through
+
+Build `df8850b1`, `env:x4pro`, flashed over `/dev/ttyACM0`. Maintainer on the
+device: everything works. What the boot capture proves on its own, and what only
+a thumb could answer, are separated below.
+
+**Read off the device's own log:**
+
+- **Boot, Home, and the panel.** Controller promoted `SSD1677 -> UC8279 800x480`
+  (`LUT_VER=68`), `Hardware detect: xteink_x4_pro (800x480)`, SDMMC card
+  mounted, Boot then Home, `8279x4_DRF` refreshes at 488 ms and 1344 ms.
+- **The double tap locks, on this board.** Two taps inside the window and then
+  `[BTN] Home key: touch locked`, followed by a repaint. The first tap selected
+  nothing -- that is `pumpHomeKey()`'s arbitration, which this board did not
+  have before `dcb8e023`.
+- **A map frame, the first one on an X4 Pro.** `2 tiles ok, 0 missing, 2153
+  ways, 1 places, 542818 bytes`; `render 1183 ms` (landuse 236, relief 126,
+  buildings 233, water 147, roads 433, places 7, labels 1); `framebuffer ready
+  in 1192 ms`. Heap 175,424 B before the tile load and 175,328 after, a delta of
+  96 B. Free heap settles at 172,216 B with the map up, `MaxAlloc` 131,060.
+  Longest loop 3,318 ms, all of it `onEnter`.
+- **The physical keys stay live under the lock.** `Down` stepped the zoom from
+  3.0 m/px (LOD z13) to 6.0 m/px (z12) while `touchLocked` was set. Correct: the
+  lock is a touch policy and the Left/Right keys are GPIOs.
+- **The frontlight is two channels and `setBrightness()` splits them.**
+  `FrontlightMgr begin: attached gpio=8 warm=9 ok=1`, and at brightness 50:
+  `coolDuty=162 warmDuty=163`. So `toggleFrontlight()` needed no change for a
+  warm-plus-cool board.
+
+**Confirmed by the maintainer on the glass**, which no log can show: the second
+double tap unlocks, the hint boxes give way to the lock glyph, a single tap does
+nothing while locked, the hold lights the panel during the hold rather than on
+release, and the latched-hold defect did not reproduce -- no stray frontlight
+toggle after a map render.
+
+**Still open after this pass:**
+
+- **The boot flash.** `main.cpp`'s `setup()` seeds `setBrightness()` before `off()` and the
+  log shows `lit=1` then `lit=0` inside the same millisecond. Whether that is
+  visible on a warm-plus-cool panel was not the thing being watched. If it is,
+  the fix is a set-without-actuating path in `FrontlightManager`, not swapping
+  those two lines -- the order is deliberate and the comment above it says why.
+- **`TOUCH_DISABLED` from Settings.** The lock reaches the same effective mode
+  and has a way out; the stored preference does not (parent `docs/TODO.md`
+  T-265). What this pass settles is that a *locked* X4 Pro is recoverable, not
+  that the Settings row is safe.
+- **Frontlight PWM frequency.** The LEDC override at `main.cpp` is guarded on
+  `BoardConfig::Board::LilyGoT5S3`, so this board runs the SDK default, and that
+  frequency is on the SDK's own Pending list.
+- **Heap under sustained use.** One map frame is one sample.
+
+Also, from the same capture and worth knowing before anyone screenshots this
+board: it renders from a **persisted GPS fix at the maintainer's own location**.
+The coordinates are in the log, and a rendered frame identifies a place far more
+precisely than it looks (`../../CLAUDE.md`, "After every device screenshot,
+judge two things").
+
+**So the rule is about map frames, not about this board.** No render from this
+pass is committed or published, and none should be while that fix is the one on
+the card. A screen with no map on it is a different artifact and gets judged on
+its own: `../../../docs/device-shots/2026-09-09-x4pro-home-480x800.bmp` is the
+Home screen -- wordmark, menu rows, battery -- with no map, no place label and no
+debug overlay, so it carries nothing to leak and is cleared for the site. An
+earlier revision of this paragraph said "nothing from this pass", full stop,
+which read as a ban on the whole board and held that shot back once.
 
 ## What is open
 
@@ -209,8 +349,12 @@ because the port note is the one a later session still needs.
   treating any of those as known.
 - Whether the OEM bootloader locks anything the way the AliExpress units did
   (parent `docs/devices/xteink-lineup.md`).
-- Frontlight control: the SDK has it, nothing here has driven it. The T5 S3 Pro
-  has `CMD:LIGHT` behind `ENABLE_FRONTLIGHT_CMD` on its own branch; whether that
-  command should exist here is a decision, not a copy.
+- ~~Frontlight control: the SDK has it, nothing here has driven it.~~ Driven
+  2026-09-09: the home key's hold toggles it and the Settings row sets the level
+  (behind `FREEINK_CAP_FRONTLIGHT`, a capability rather than a board name, so it
+  compiles in here). What is still open is `CMD:LIGHT` -- it sits behind
+  `ENABLE_FRONTLIGHT_CMD`, which `[env:x4pro]` does not set, and whether a
+  command that actuates the device belongs in this env is a decision rather
+  than a copy.
 - Battery drain with the frontlight on. Early units had it badly enough to be
   reported in reviews.

@@ -108,6 +108,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["mapGnssPosition"] = mapGnssPosition;
   doc["frontlightOn"] = frontlightOn;
   doc["frontlightBrightness"] = frontlightBrightness;
+  doc["frontlightColorTemperature"] = frontlightColorTemperature;
   doc["mapGnssLog"] = mapGnssLog;
   doc["mapHasLastFix"] = mapHasLastFix;
   doc["mapLastLatE7"] = mapLastLatE7;
@@ -242,6 +243,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   frontlightBrightness = doc["frontlightBrightness"] | (uint8_t)50;
   if (frontlightBrightness < 1) frontlightBrightness = 1;
   if (frontlightBrightness > 100) frontlightBrightness = 100;
+  // Same clamp discipline as frontlightBrightness above: this reaches the LEDC
+  // duty split, and the file is user-editable.
+  frontlightColorTemperature = doc["frontlightColorTemperature"] | (uint8_t)50;
+  if (frontlightColorTemperature > 100) frontlightColorTemperature = 100;
   mapGnssLog = doc["mapGnssLog"] | (uint8_t)0;
   mapHasLastFix = doc["mapHasLastFix"] | false;
   mapLastLatE7 = doc["mapLastLatE7"] | 0;

@@ -172,6 +172,16 @@ void MapDebugOverlay::draw(GfxRenderer& renderer) {
   paint(renderer, rows);
 }
 
+bool MapDebugOverlay::currentRect(GfxRenderer& renderer, int& x, int& y, int& w, int& h) const {
+  if (!layoutSet_) return false;
+  // The same rows repaint() would use, and for its reason: the box on the panel
+  // is never shorter than the tallest it has been since the last full frame.
+  const int rows = std::max(std::min(visibleRows(), capacityRows(renderer)), highWaterRows_);
+  if (rows <= 0) return false;
+  boxRect(renderer, rows, x, y, w, h);
+  return true;
+}
+
 bool MapDebugOverlay::repaint(GfxRenderer& renderer, int& x, int& y, int& w, int& h) {
   if (!layoutSet_ || !dirty()) return false;
 

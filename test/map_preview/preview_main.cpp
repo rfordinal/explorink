@@ -8,8 +8,17 @@
 //               [--tile <col>/<row>] [--hatch] [--route <file.tir>]
 //               [--no-points] [--no-labels] [--point-categories water,hut,...]
 //               [--fit-route] [--no-marker] [--out <file>]
+//               [--no-ink-test] [--bench <runs>]
 //   map_preview --tiles <dir> --route <file.tir> --fit-route
 //   map_preview --zoom-ladder
+//
+// --no-ink-test places each label at the first position that fits instead of
+// the one covering the least ink, i.e. the layout before 2026-09-15. Same
+// binary, same frame, one flag apart -- which is what makes a side-by-side a
+// judgement about the placement rule and not about two builds.
+//
+// --bench re-renders the view N times and prints the median, for pricing a
+// render change on the host. Not a device number.
 //
 // <dir> is a mapbuilder-produced SD root (mapbuilder/build_tiles.py), i.e.
 // it contains base/<z>/<col>/<row>.tib. Loading/projection logic lives in
@@ -42,10 +51,13 @@
 // mode, so the same coordinate can be diffed between ride and hike on the
 // laptop before anything is flashed.
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "MapModeMask.h"
 #include "MapPointTypes.h"
@@ -58,7 +70,7 @@ namespace {
 constexpr int SCREEN_WIDTH = 480;
 constexpr int SCREEN_HEIGHT = 800;
 
-bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& outPath) {
+bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& outPath, int& benchRuns) {
   bool haveLat = false, haveLon = false, haveTiles = false;
   // --mode and --zoom together pick the class mask, and --mode may arrive
   // first, so the mask cannot be built while the arguments are still coming in.
@@ -163,6 +175,15 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
       request.routePath = v;
     } else if (arg == "--fit-route") {
       request.fitRoute = true;
+    } else if (arg == "--no-ink-test") {
+      // First-fit label placement, the behaviour before the least-ink test.
+      // Renders the SAME frame the other way, which is the only honest way to
+      // judge the change (MapLabelScratch::inkTest).
+      request.labelInkTest = false;
+    } else if (arg == "--bench") {
+      const char* v = next();
+      if (!v) return false;
+      benchRuns = std::atoi(v);
     } else if (arg == "--hatch") {
       request.drawHatch = true;
     } else if (arg == "--no-marker") {
@@ -215,11 +236,13 @@ int main(int argc, char** argv) {
 
   MapPreviewRequest request;
   std::string outPath = "map_preview.ppm";
-  if (!parseArgs(argc, argv, request, outPath)) {
+  int benchRuns = 0;
+  if (!parseArgs(argc, argv, request, outPath, benchRuns)) {
     std::fprintf(stderr,
                  "usage: map_preview --tiles <dir> --lat <d> --lon <d> "
                  "[--heading 0-15] [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle] "
                  "[--tile <col>/<row>] [--hatch] [--route <file.tir>] [--fit-route] [--out <file>]\n"
+                 "       [--no-ink-test] [--bench <runs>]\n"
                  "       map_preview --tiles <dir> --route <file.tir> --fit-route\n"
                  "       map_preview --zoom-ladder\n");
     return 1;
@@ -232,12 +255,37 @@ int main(int argc, char** argv) {
   PpmCanvas canvas(SCREEN_WIDTH, SCREEN_HEIGHT);
   const MapPreviewResult preview = renderMapPreview(request, canvas);
 
+  // --bench: re-render the same view N times and report the median. A fresh
+  // canvas per run, because a second render onto a painted one would measure a
+  // frame that is already half black.
+  //
+  // Median rather than mean: this is a laptop with other processes on it, and
+  // one descheduled run would move a mean and cannot move a median. The number
+  // is a HOST number -- it sizes the change against the rest of the render, it
+  // does not predict the panel. `label ink test: ... samples read` is the
+  // figure that carries across (MapPreviewResult::labelInkSamples).
+  if (benchRuns > 0) {
+    std::vector<double> ms;
+    ms.reserve(static_cast<size_t>(benchRuns));
+    for (int run = 0; run < benchRuns; ++run) {
+      PpmCanvas benchCanvas(SCREEN_WIDTH, SCREEN_HEIGHT);
+      const auto start = std::chrono::steady_clock::now();
+      (void)renderMapPreview(request, benchCanvas);
+      const auto end = std::chrono::steady_clock::now();
+      ms.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+    std::sort(ms.begin(), ms.end());
+    std::printf("bench: %d runs, median %.2f ms, min %.2f ms, max %.2f ms (ink test %s)\n", benchRuns,
+                ms[ms.size() / 2], ms.front(), ms.back(), request.labelInkTest ? "on" : "off");
+  }
+
   std::printf("z%u col %u..%u row %u..%u: loaded %d tiles (%d missing, mask 0x%x), %u ways, %u places\n",
               preview.lodZoom, preview.col0, preview.col1, preview.row0, preview.row1, preview.tilesLoaded,
               preview.tilesMissing, preview.missingMask, preview.waysDrawn, preview.placesDrawn);
   std::printf("marker y=%d, class mask 0x%08x, %u ways dropped by it\n", preview.markerY, request.classMask,
               preview.waysFiltered);
   std::printf("place labels: %u drawn, %u dropped (no room)\n", preview.labelsPlaced, preview.labelsDropped);
+  std::printf("label ink test: %u boxes probed, %u samples read\n", preview.labelInkProbes, preview.labelInkSamples);
   std::printf("tile size on disk: %ld..%ld bytes, %u bytes actually read\n", preview.smallestTileBytes,
               preview.largestTileBytes, preview.bytesRead);
   if (request.drawPoints) {

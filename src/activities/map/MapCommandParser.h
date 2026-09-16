@@ -31,6 +31,8 @@
 //   checked <n>|unknown
 //   push <n>
 //   fake <missing> <held>
+//   points
+//   gone <col> <row>
 //   info
 //   stats
 //   pin set <key> <lat> <lon> [<utc>]
@@ -83,6 +85,27 @@
 // waiting for a file that will never arrive. `<reason>` is one free-form word
 // (no spaces), for the log -- the device shows a count, not a reason.
 //
+// `points` and `gone` are the point-layer sync exchange
+// (../../docs/point-layer-lifecycle.md, decision 2 and 3): the device sends
+// `NEED_POINTS <count> fmt <version>` the same way it sends `NEED_TILES`, the
+// phone answers `points`, the device lists up to 9 z10 shards
+// (MapPointShards::rangeForRadius) as `INFO point_<col>_<row>=have|absent`,
+// then `OK`. The phone pushes what it can over the existing begin/chunk
+// frames and reports the rest.
+//
+// **A shard the phone cannot supply reuses `skip`, unchanged.** `skip <z>
+// <col> <row> [<reason>]` already carries a zoom, so the phone sends
+// `skip 10 <col> <row> <reason>` -- z10 is MapPointShards::kShardZoom and
+// never a tile zoom, so the two conversations cannot collide, and only one
+// conversation is open on the command channel at a time anyway. Adding a
+// second `skip`-shaped word for the same job would be a second thing to keep
+// in sync with the first for no new capability.
+//
+// `gone <col> <row>` is genuinely new: the CDN answered a definite 404 for
+// that shard, so the device deletes its copy. No zoom, because points have
+// exactly one shard zoom -- unlike `skip`, there is nothing here that could
+// ever mean a tile.
+//
 // `pin` is the pins feature's whole wire path (../../docs/pins-plan.md). The
 // device has no keyboard and no GPS, so `pin set` is the only way to place a pin
 // at a coordinate the rider is not standing on -- a distant pin gets tested
@@ -124,6 +147,8 @@ enum class MapCommandType : uint8_t {
   Info,
   Stats,
   Fake,
+  Points,
+  Gone,
   Pin,
   Error,  // see MapCommand::error
 };
@@ -177,6 +202,9 @@ struct MapCommand {
   uint16_t missingOffset = 0;
   // Skip and Stale: which tile, and (Skip only) why. Shared fields because the
   // two carry the same coordinate triple and never occur in one command.
+  // Gone reuses skipCol/skipRow for its z10 shard coordinate and leaves skipZ
+  // at 0 -- a point shard's zoom is always MapPointShards::kShardZoom, known
+  // to the handler, not carried on the wire.
   uint8_t skipZ = 0;
   uint32_t skipCol = 0;
   uint32_t skipRow = 0;
