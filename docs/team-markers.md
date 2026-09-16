@@ -218,7 +218,7 @@ between "has not told us" and "is at 0,0" is one the whole layer has to keep.
 | `mapTeamLogSelf` | **off** | write the rider's own trace to the same file |
 | `mapTeamStaleMin` | 5 | minutes before a marker goes stale |
 | `mapTeamHideMin` | 30 | minutes before it is not drawn (0 = never hide) |
-| `mapTeamKeepDays` | 14 | days of black box kept on the card |
+| `mapTeamKeepDays` | 14 | days of black box kept on the card (0 keeps everything) |
 
 A member's position is theirs, sent to us on purpose. The rider's own trace is a
 record of where *they* went, on a card that is lost with the device -- so it is
@@ -252,15 +252,26 @@ On in `env:x4pro`, `env:t5s3pro` and `env:simulator`. **Off everywhere else**,
 including every release environment and every C3 build -- the X4 and the X3
 share one binary, and the X3 is the device that cannot afford the DRAM.
 
-Cost when on: about 950 bytes of DRAM inside `MapActivity` (twelve roster rows
-plus twelve fixes, no heap), plus flash.
+### What it costs
 
-**Only one side of that is measured.** `pio run -e x4pro` on 2026-09-16, with
-both flags on, links at **3,904,950 B flash (59.6 %) and 69,780 B static RAM
-(21.3 %)**, clean, no warnings from any of the new files. The same build with the
-flags stripped has not been made, so the *difference* -- the number the gating
-argument actually rests on -- is still unknown. That is T-2020 in the parent
-repo's `docs/TODO.md`.
+Measured 2026-09-16 on the C3 -- the chip the argument is about, since the X3 and
+the X4 share that binary. Same commit, same environment (`env:default`), one
+build with the flags and one without, twenty minutes apart:
+
+| | flash | static RAM |
+|---|---|---|
+| flags off | 4,068,927 B (62.1 %) | 59,140 B (18.0 %) |
+| flags on | 4,087,457 B (62.4 %) | 59,140 B (18.0 %) |
+| **the feature** | **+18,530 B** | **0 B** |
+
+The static RAM is unchanged because the roster and the store live inside the
+`MapActivity` instance, which is not a static object: their ~1 kB is heap, held
+only while the map screen is up. **That kilobyte has not been read off a
+device** -- a `heap` figure with the map open, flags on and off, is the half of
+T-2020 still outstanding.
+
+`env:x4pro` with both flags on links at 3,904,998 B flash (59.6 %) and 69,780 B
+static RAM (21.3 %), clean, no warnings from any of the new files.
 
 ## What is open
 
