@@ -579,6 +579,59 @@ property of the X4's SSD1677, wrongly carried to this board. Here
 `Panel_EPD::task_update()` arms a pixel only when its target changed, in every
 mode ([`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)).
 
+## The LoRa radio, 2026-09-16
+
+**T5 S3 Pro (the first unit, `7c:2c:67:8a:4c:b4`), `feat/lora-bringup` at
+`bd7055fb`, `env:t5s3pro`, JT-UM120 inline on VBUS, home screen.** Taken while
+the radio was brought up for the first time, so this is the first entry in this
+file for a part that had never been driven.
+
+The radio's rail is up and the SX1262 is initialised and idle in every row; the
+carrier is `CMD:LORA CW <seconds>`, an unmodulated transmission at the
+commanded power.
+
+| commanded power | idle | carrier | delta at VBUS | delta power |
+|---|---|---|---|---|
+| +10 dBm | 89.2 mA | 133.2 mA | **+44.0 mA** | +231 mW |
+| +14 dBm | 89.7 mA | 158.5 mA | **+68.8 mA** | +361 mW |
+| +17 dBm | 89.1 mA | 183.8 mA | **+94.8 mA** | +498 mW |
+| +20 dBm | 88.9 mA | 210.7 mA | **+121.7 mA** | +639 mW |
+| +22 dBm | 89.2 mA | 228.0 mA | **+138.9 mA** | +729 mW |
+
+Controls: the idle column spans 0.8 mA across the five runs, and +22 dBm
+measured twice in the session gave 137.2 and 138.9 mA, about 1 %.
+
+**What a packet costs, at the settings the link runs on.** A six-byte packet at
+SF8 / BW 62.5 kHz / CR 4/5 takes 157 ms on the air (computed, Semtech's
+time-on-air formula). At +14 dBm that is **57 mJ of transmit energy**, on top of
+whatever the board is doing anyway. Any advert cadence is that number times the
+rate, and it is why cadence is a design question rather than a constant.
+
+**Two states this does not price**, both in the L series' plan
+([`lora-idle-power.md`](lora-idle-power.md)): the radio asleep (L4) and the
+radio in continuous receive (L5). Receive is the one that matters for a mesh,
+because it is the state a listening device holds all day, and it is not in this
+table.
+
+**This is VBUS, so it includes the 5 V to 3.3 V conversion** and is not
+comparable to the SX1262 datasheet's PA current.
+
+### The run broke the runbook, and the idle column is how that is known
+
+This file's own recipe says `CMD:CHARGE OFF` first, so that the charger stops
+adding its current to the reading. **This run did not do that.** The first two
+steps -- +10 and +14 dBm, taken first -- read an idle of **356 mA** against the
+89 mA the rest of the session settled at, which swamped a 44 mA delta and
+produced a ladder that fell where it should have risen. Both were re-run at the
+end and it is the re-runs that are in the table.
+
+What saved it was not judgement, it was the control: **a ladder is only
+readable once its idle row repeats**. Five idles inside 0.8 mA is what makes
+the rows comparable to each other, and the 356 mA row is what an uncontrolled
+baseline looks like when it is hiding the effect.
+
+Next LoRa run disables charging like every other run in this file.
+
 ## What this bench cannot do
 
 - **Anything under about 5 mA.** The charger's own draw is 1.5 mA typical and

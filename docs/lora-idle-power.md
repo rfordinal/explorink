@@ -65,6 +65,37 @@ have never verified (**[assumed]**). A sign error shows up in the same check:
 `isCharging()`'s comment says positive means charging, so a discharge leg must
 come back negative.
 
+## What the bring-up already paid for, 2026-09-16
+
+The radio ran for the first time on 2026-09-16 and a transmit-power ladder was
+taken on the same instrument this plan assumes (JT-UM120 on VBUS). It does not
+execute any leg of the plan below, but it prices the part of **L6** that is the
+PA, and it changes what the remaining legs have to isolate.
+
+| commanded power | delta at VBUS over an idle, radio-up board |
+|---|---|
+| +10 dBm | +44.0 mA |
+| +14 dBm | +68.8 mA |
+| +17 dBm | +94.8 mA |
+| +20 dBm | +121.7 mA |
+| +22 dBm | +138.9 mA |
+
+Numbers, conditions and the charging trap that cost two of the runs are in
+[`power-bench.md`](power-bench.md), "The LoRa radio, 2026-09-16".
+
+**What this means for the legs.** L6 minus L5 was written as "beaconing", and
+the PA half of it is now known at every power setting; what L6 still has to
+supply is the airtime, which is a computed 157 ms for a six-byte packet at the
+link's settings. **L4 and L5 are untouched and are the two that matter most**:
+the cheapest state a working radio can hold, and the price of listening. A mesh
+device spends its life in L5, not in L6.
+
+**L7 changed shape too.** It was written as "the GPIO46 hazard under real
+load". The hazard is narrower than it was: the SDK fixed the panel's chip-select
+collision on 2026-09-03, so an ordinary refresh no longer selects the radio, and
+what is open is whether continuous receive survives a redraw at all (T-2019).
+The leg is still worth running; its question is now reception, not corruption.
+
 ## The states
 
 Each leg is one row. Frontlight **off** in every one -- it is tens of milliamps
