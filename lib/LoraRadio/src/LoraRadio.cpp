@@ -193,6 +193,22 @@ int LoraRadio::poll(uint8_t* buffer, size_t bufferSize) {
   return static_cast<int>(wanted);
 }
 
+bool LoraRadio::setPacketAction(void (*handler)()) {
+  if (!ready_ || handler == nullptr) return false;
+  impl_->radio.setPacketReceivedAction(handler);
+  return true;
+}
+
+void LoraRadio::clearPacketAction() {
+  if (impl_ == nullptr) return;
+
+  // Not gated on ready_, unlike setPacketAction(). park() clears ready_ while
+  // the interrupt is still attached to a live GPIO, so a gate here would leave
+  // the handler armed on a pin whose radio is being held in reset -- and the
+  // reset itself moves that line.
+  impl_->radio.clearPacketReceivedAction();
+}
+
 float LoraRadio::frequencyError() {
   if (!ready_) return 0.0f;
   return impl_->radio.getFrequencyError();

@@ -707,9 +707,13 @@ LoraRadio lora;
 // channel. FREQ and POWER below move them for a range test.
 static LoraConfig gLoraConfig;
 
-static bool gLoraPongMode = false;
-static uint32_t gLoraRxCount = 0;
-static uint32_t gLoraTxCount = 0;
+// Read by the service task, written by the console in loop(). volatile because
+// two tasks touch them; not atomic because nothing here is a decision -- the
+// counters are a bench readout and gLoraPongMode flips once per operator
+// command, never mid-packet.
+static volatile bool gLoraPongMode = false;
+static volatile uint32_t gLoraRxCount = 0;
+static volatile uint32_t gLoraTxCount = 0;
 
 // Ping bookkeeping. One outstanding ping at a time: this measures a link, not
 // throughput, and a queue would only hide which reply belongs to which send.
@@ -729,28 +733,152 @@ static const LoraPins kT5S3LoraPins = {
     static_cast<int8_t>(T5S3_LORA_BUSY),  // BUSY 47
 };
 
+// --- Radio servicing -------------------------------------------------------
+//
+// **The radio is serviced by its own task, not by loop().** Measured on this
+// board 2026-09-16: a board rendering a map at zoom rung 6 heard 8 of 20
+// packets, with no card error and no CRC failure. A map render runs
+// synchronously inside MapActivity::loop() -- not in ActivityManager's render
+// task -- so a rung 6 redraw owns the loop task for 3 to 3.9 s, and an SX126x
+// holds exactly one packet. Everything after the first arrival inside that
+// window was lost (parent docs/TODO.md, T-2023 and T-2019).
+//
+// Three properties this arrangement has to keep, and the reason for each:
+//
+//   Core 0. ActivityManager pins its render task to core 1 and the Arduino
+//   loop task runs there too, so a radio task on core 0 is not behind either
+//   of them for CPU. Priority 3 sits above both (they run at 1) and far below
+//   the BLE host's tasks, which must not be delayed by a radio read.
+//
+//   It never touches storage, the panel or the console. SdFat is not
+//   thread-safe (lib/hal/HalStorage.cpp) and neither is an activity, so the
+//   task reads the chip and queues the bytes; loop() does the printing. That
+//   also keeps the "a received payload is attacker-controlled text" handling
+//   in one place.
+//
+//   One mutex owns the chip. The SPI *bus* needs no new lock -- SD and the
+//   radio share the global SPI object on this board (BoardConfig.h,
+//   LILYGO_T5S3 has separateSpi=false), Arduino's SPI takes a real mutex per
+//   transaction (esp32-hal-spi.c, SPI_MUTEX_LOCK; CONFIG_DISABLE_HAL_LOCKS is
+//   not set in the pinned framework) and SdFat in SHARED_SPI mode releases CS
+//   at the end of every card operation (SdSpiCard.cpp, readSectors -> readStop
+//   -> spiStop). What is NOT protected by any of that is RadioLib's own chip
+//   state and this class's rssi_/snr_ members, so every call into LoraRadio --
+//   from the task and from the console alike -- happens under gLoraMutex.
+static SemaphoreHandle_t gLoraMutex = nullptr;
+static SemaphoreHandle_t gLoraWake = nullptr;
+static QueueHandle_t gLoraRxQueue = nullptr;
+static TaskHandle_t gLoraServiceTask = nullptr;
+
+// True exactly while the radio is listening. It decides whether the service
+// task ticks at all: with the radio off it blocks forever, so a devel build
+// that never turns the radio on costs the same power as one without this task.
+static volatile bool gLoraServiceArmed = false;
+
+// Set false by CMD:LORA ISR OFF, to prove the tick alone still delivers.
+// **The tick is not a fallback nobody exercises**: a missed DIO1 edge would
+// leave the radio deaf while listening() still reports health, which is the
+// worst failure this path can have, so there is a way to test the path that
+// catches it.
+static volatile bool gLoraIsrWanted = true;
+
+// How long the service task waits for DIO1 before looking at the pin anyway.
+// 100 ms against a packet whose time on air is about 150 ms at SF8/62.5 kHz:
+// short enough that a missed interrupt costs no packet, long enough that a
+// listening radio wakes the CPU ten times a second and not more.
+static constexpr uint32_t kLoraServiceTickMs = 100;
+
+// One received packet, as the service task read it. Sized to the same 64 bytes
+// the old loop()-side buffer used.
+struct LoraRxEvent {
+  uint32_t arrivedMs;  // when the task read it, not when loop() got to print it
+  int16_t length;      // -1: a packet arrived damaged
+  int16_t error;
+  float rssi;
+  float snr;
+  float freqErrorHz;
+  bool ponged;
+  uint8_t data[64];
+};
+
+// Depth 8. The queue exists so the radio can be re-armed without waiting for
+// loop(), and 8 covers a full 3.9 s render at the bench's 1.2 s packet spacing
+// with room to spare. A full queue drops the oldest print, never a packet:
+// by the time anything is queued the chip is already listening again.
+static constexpr size_t kLoraRxQueueDepth = 8;
+
+// Counted rather than ignored: a drop here means the console fell behind, and
+// on a bench that counts packets the difference between "not heard" and "heard
+// but not printed" is the entire finding.
+static volatile uint32_t gLoraRxQueueDrops = 0;
+
+// RAII around the chip mutex. Every path into LoraRadio takes it -- grep for
+// `lora.` and each hit is either inside the service task's locked section or
+// under the lock the CMD:LORA handler takes for its whole body.
+// Recursive, for the same reason HalStorage's is (lib/hal/HalStorage.cpp): the
+// entry points lock themselves so a caller cannot forget -- loraStop() is
+// reached from the deep-sleep and restart paths as well as from the console --
+// and the console already holds the lock across its whole body when it calls
+// them. A plain mutex would deadlock on exactly the path that parks the radio
+// before sleep, which is the one path that must not fail.
+class LoraLock {
+ public:
+  LoraLock() {
+    if (gLoraMutex != nullptr) xSemaphoreTakeRecursive(gLoraMutex, portMAX_DELAY);
+  }
+  ~LoraLock() {
+    if (gLoraMutex != nullptr) xSemaphoreGiveRecursive(gLoraMutex);
+  }
+  LoraLock(const LoraLock&) = delete;
+  LoraLock& operator=(const LoraLock&) = delete;
+};
+
+// Interrupt context. Gives the semaphore and nothing else: reading the packet
+// means SPI, SPI means a mutex, and a mutex may not be taken in an ISR.
+static void IRAM_ATTR loraDio1Isr() {
+  BaseType_t higherPriorityWoken = pdFALSE;
+  xSemaphoreGiveFromISR(gLoraWake, &higherPriorityWoken);
+  if (higherPriorityWoken == pdTRUE) portYIELD_FROM_ISR();
+}
+
+// Turns the tick on or off and kicks the task, so a radio that just started
+// listening is serviced now rather than at the end of the previous wait.
+static void loraArmService(bool armed) {
+  gLoraServiceArmed = armed;
+  if (gLoraWake != nullptr) xSemaphoreGive(gLoraWake);
+}
+
 // Prints a received payload without trusting it. Anything off the air is
 // attacker-controlled text on a device whose console a stranger can also reach
 // (parent docs/TODO.md, T-222), so control bytes never reach the terminal.
-static void loraPrintPayload(const uint8_t* data, size_t length) {
+static void loraPrintPayload(const LoraRxEvent& event) {
   char text[65];
   size_t out = 0;
+  const size_t length = event.length > 0 ? static_cast<size_t>(event.length) : 0;
   for (size_t i = 0; i < length && out < sizeof(text) - 1; ++i) {
-    const uint8_t b = data[i];
+    const uint8_t b = event.data[i];
     text[out++] = (b >= 0x20 && b < 0x7F) ? static_cast<char>(b) : '.';
   }
   text[out] = '\0';
   // The frequency error is the oscillator's answer at the other end of the
   // link: it is what the receiver had to absorb inside its bandwidth, and it
   // does not depend on distance -- which makes the desk a valid place to ask.
-  logSerial.printf("LORA_RX:len=%u rssi=%.1f snr=%.1f ferr=%.0fHz text=%s\n", static_cast<unsigned>(length),
-                   lora.rssi(), lora.snr(), static_cast<double>(lora.frequencyError()), text);
+  //
+  // at= is the service task's millis(), not this line's: a render can hold the
+  // console for seconds after the packet was already read and answered, and a
+  // bench that timed arrivals by when they printed would be measuring the
+  // panel. Every other number here was captured with the packet.
+  logSerial.printf("LORA_RX:at=%lu len=%u rssi=%.1f snr=%.1f ferr=%.0fHz text=%s\n",
+                   static_cast<unsigned long>(event.arrivedMs), static_cast<unsigned>(length),
+                   static_cast<double>(event.rssi), static_cast<double>(event.snr),
+                   static_cast<double>(event.freqErrorHz), text);
 }
 
 // Starts the radio: rail first, then the chip. Kept apart from the rail call
 // because the rail is shared with the GNSS receiver and this must not be the
 // thing that turns that off (t5s3RailHold above).
 static bool loraStart() {
+  LoraLock lock;
   if (lora.ready()) return true;
   if (!t5s3RailHold(kRailUserLora, true)) return false;
 
@@ -763,10 +891,23 @@ static bool loraStart() {
     t5s3RailHold(kRailUserLora, false);
     return false;
   }
+
+  // Attached even when the ISR is not wanted, and then detached, rather than
+  // conditionally attached: one place decides, and CMD:LORA ISR reads back
+  // what is actually armed instead of what somebody meant to arm.
+  lora.setPacketAction(loraDio1Isr);
+  if (!gLoraIsrWanted) lora.clearPacketAction();
   return true;
 }
 
 static void loraStop() {
+  LoraLock lock;
+  loraArmService(false);
+
+  // Before end(), because end() parks the chip by holding NRESET low -- and
+  // that line moving with an interrupt still armed on DIO1 is a wake for a
+  // packet that does not exist.
+  lora.clearPacketAction();
   lora.end();
   gLoraPongMode = false;
   gLoraPingWaiting = false;
@@ -798,26 +939,145 @@ static void loraStop() {
 // test a responder that has gone deaf looks exactly like a link that has run
 // out of range.
 static bool loraReconfigure() {
+  LoraLock lock;
   if (!lora.ready()) return true;  // nothing running; the new value applies at the next ON
 
   const bool wasListening = lora.listening();
+  lora.clearPacketAction();
   lora.end();
   if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
     gLoraPongMode = false;
+    loraArmService(false);
     return false;
   }
+  // The interrupt belongs to the RadioLib module the begin() above replaced, so
+  // it has to be attached again. Forgetting this is a radio that still answers
+  // every console command and never reports a packet until the next tick.
+  lora.setPacketAction(loraDio1Isr);
+  if (!gLoraIsrWanted) lora.clearPacketAction();
   if (wasListening && !lora.startListening()) {
     gLoraPongMode = false;
+    loraArmService(false);
     return false;
+  }
+  loraArmService(wasListening);
+  return true;
+}
+
+// One servicing step. Runs on the radio task, under the chip mutex, and reads
+// at most one packet: an SX126x holds one, so one read empties it and the
+// re-arm inside LoraRadio::poll() is what makes the chip ready for the next.
+//
+// Answers the PING here rather than queueing the reply for loop(). The whole
+// point of this task is that loop() may be seconds away, and a pong that late
+// measures the panel instead of the link.
+static bool loraServiceStep(LoraRxEvent& event) {
+  LoraLock lock;
+  if (!lora.ready() || !lora.listening()) return false;
+
+  const int length = lora.poll(event.data, sizeof(event.data));
+  if (length == 0) return false;
+
+  event.arrivedMs = millis();
+  event.length = static_cast<int16_t>(length);
+  event.error = static_cast<int16_t>(lora.lastError());
+  event.rssi = lora.rssi();
+  event.snr = lora.snr();
+  // Read in the same order the loop()-side code read it -- after poll()'s
+  // re-arm, not before. The number is the instrument the oscillator question
+  // was measured with (docs/lora-bringup.md), and moving the read would change
+  // what it reports without anyone deciding to.
+  event.freqErrorHz = lora.frequencyError();
+  event.ponged = false;
+  if (length < 0) return true;
+
+  // A NUL inside the buffer, so the string compares below cannot run past the
+  // packet. The byte at index `length` is free: poll() never fills the last
+  // slot beyond what it returns.
+  const size_t textEnd =
+      static_cast<size_t>(length) < sizeof(event.data) ? static_cast<size_t>(length) : sizeof(event.data) - 1;
+  event.data[textEnd] = '\0';
+  const char* text = reinterpret_cast<const char*>(event.data);
+
+  if (gLoraPongMode && strncmp(text, "PING ", 5) == 0) {
+    // The reply carries what only this end can know -- how well it heard the
+    // ping. That is the whole point of a link test: the sender learns both
+    // directions from one exchange.
+    char reply[64];
+    snprintf(reply, sizeof(reply), "PONG %s %.1f %.1f", text + 5, static_cast<double>(event.rssi),
+             static_cast<double>(event.snr));
+    if (lora.transmit(reply)) {
+      gLoraTxCount++;
+      event.ponged = true;
+    } else {
+      event.error = static_cast<int16_t>(lora.lastError());
+    }
   }
   return true;
 }
 
-// One step, called from loop(). Nothing here blocks: a listening radio has to
-// coexist with a panel refresh and a button press, and a blocking listen would
-// freeze both for the length of the window.
-static void loraPoll() {
-  if (!lora.ready()) return;
+// The radio task. Core 0 and priority 3 for the reasons at the top of this
+// section; the wait is the only thing worth reading twice.
+//
+// It waits on DIO1's semaphore, but never on that alone. A missed edge -- a
+// give lost while the queue was full, a re-arm that raced the pin -- would
+// leave a listening radio permanently deaf while LORA_STATE still reported
+// listening=1, and nothing downstream could tell that from quiet air. The tick
+// makes that failure cost one packet instead of all of them. MeshCore carries
+// the same watchdog for the same reason (Dispatcher.cpp:74).
+//
+// With the radio off it blocks forever instead of ticking, so this task costs
+// nothing on a board whose radio was never turned on.
+static void loraServiceTaskFn(void*) {
+  for (;;) {
+    const TickType_t wait = gLoraServiceArmed ? pdMS_TO_TICKS(kLoraServiceTickMs) : portMAX_DELAY;
+    xSemaphoreTake(gLoraWake, wait);
+
+    LoraRxEvent event;
+    if (!loraServiceStep(event)) continue;
+
+    // Never blocks. By the time anything reaches this line the chip is already
+    // listening again, so a full queue costs a console line and not a packet --
+    // and a task that waited here would be exactly the stall it exists to
+    // remove.
+    if (xQueueSend(gLoraRxQueue, &event, 0) != pdTRUE) {
+      gLoraRxQueueDrops++;
+    }
+  }
+}
+
+// Creates the mutex, the queue and the task. Called once from setup(), before
+// any console command can reach the radio: the mutex has to exist before the
+// first LoraLock, and creating it lazily would put that race into the one
+// place that must not have one.
+static void loraServiceBegin() {
+  gLoraMutex = xSemaphoreCreateRecursiveMutex();
+  gLoraWake = xSemaphoreCreateBinary();
+  gLoraRxQueue = xQueueCreate(kLoraRxQueueDepth, sizeof(LoraRxEvent));
+  if (gLoraMutex == nullptr || gLoraWake == nullptr || gLoraRxQueue == nullptr) {
+    LOG_ERR("LORA", "service objects not created -- radio console disabled");
+    return;
+  }
+
+  // Core 0: ActivityManager pins its render task to core 1 and the Arduino
+  // loop task runs there too. Priority 3 is above both of those (they run at
+  // 1) and far below the BLE host, which must not wait behind a radio read.
+  // 4096 bytes of stack: this path is RadioLib plus a 64-byte buffer, with no
+  // printing and no filesystem in it.
+  const BaseType_t created =
+      xTaskCreatePinnedToCore(&loraServiceTaskFn, "LoraService", 4096, nullptr, 3, &gLoraServiceTask, 0);
+  if (created != pdPASS) {
+    gLoraServiceTask = nullptr;
+    LOG_ERR("LORA", "service task not created -- radio console disabled");
+  }
+}
+
+// Called from loop(). Prints what the service task already read and answered,
+// and expires a ping that never got one. No radio work happens here -- that is
+// the whole change: a redraw may hold this for seconds without costing a
+// packet.
+static void loraDrain() {
+  if (gLoraRxQueue == nullptr) return;
 
   if (gLoraPingWaiting && (millis() - gLoraPingSentMs) > kLoraPongWaitMs) {
     gLoraPingWaiting = false;
@@ -825,42 +1085,48 @@ static void loraPoll() {
                      kLoraPongWaitMs);
   }
 
-  uint8_t buffer[64];
-  const int length = lora.poll(buffer, sizeof(buffer));
-  if (length == 0) return;
-  if (length < 0) {
-    // A damaged packet is evidence too: at the edge of range it is the first
-    // thing that happens, well before packets stop arriving altogether.
-    logSerial.printf("LORA_RX_ERR:crc or read failed err=%d rssi=%.1f\n", lora.lastError(), lora.rssi());
-    return;
+  if (gLoraRxQueueDrops != 0) {
+    const uint32_t dropped = gLoraRxQueueDrops;
+    gLoraRxQueueDrops = 0;
+    // The packets were heard and answered; it is the printing that could not
+    // keep up. Said out loud because a silent gap in the log would read as
+    // lost traffic on a bench whose whole question is how much traffic is lost.
+    logSerial.printf("LORA_RX_UNPRINTED:%lu\n", static_cast<unsigned long>(dropped));
   }
 
-  gLoraRxCount++;
-  loraPrintPayload(buffer, static_cast<size_t>(length));
-
-  buffer[length < static_cast<int>(sizeof(buffer)) ? length : static_cast<int>(sizeof(buffer)) - 1] = '\0';
-  const char* text = reinterpret_cast<const char*>(buffer);
-
-  if (gLoraPongMode && strncmp(text, "PING ", 5) == 0) {
-    // The reply carries what only this end can know -- how well it heard the
-    // ping. That is the whole point of a link test: the sender learns both
-    // directions from one exchange.
-    char reply[64];
-    snprintf(reply, sizeof(reply), "PONG %s %.1f %.1f", text + 5, lora.rssi(), lora.snr());
-    if (lora.transmit(reply)) {
-      gLoraTxCount++;
-      logSerial.printf("LORA_OK:pong=%s\n", reply + 5);
-    } else {
-      logSerial.printf("LORA_ERR:pong not sent err=%d\n", lora.lastError());
+  LoraRxEvent event;
+  while (xQueueReceive(gLoraRxQueue, &event, 0) == pdTRUE) {
+    if (event.length < 0) {
+      // A damaged packet is evidence too: at the edge of range it is the first
+      // thing that happens, well before packets stop arriving altogether.
+      logSerial.printf("LORA_RX_ERR:crc or read failed err=%d rssi=%.1f\n", static_cast<int>(event.error),
+                       static_cast<double>(event.rssi));
+      continue;
     }
-    return;
-  }
 
-  if (gLoraPingWaiting && strncmp(text, "PONG ", 5) == 0) {
-    const unsigned long rtt = millis() - gLoraPingSentMs;
-    gLoraPingWaiting = false;
-    logSerial.printf("LORA_PONG:rtt=%lums here_rssi=%.1f here_snr=%.1f there=%s\n", rtt, lora.rssi(), lora.snr(),
-                     text + 5);
+    gLoraRxCount++;
+    loraPrintPayload(event);
+
+    if (event.ponged) {
+      logSerial.printf("LORA_OK:pong sent for %s\n", reinterpret_cast<const char*>(event.data) + 5);
+      continue;
+    }
+
+    const char* text = reinterpret_cast<const char*>(event.data);
+    if (gLoraPongMode && strncmp(text, "PING ", 5) == 0) {
+      logSerial.printf("LORA_ERR:pong not sent err=%d\n", static_cast<int>(event.error));
+      continue;
+    }
+
+    if (gLoraPingWaiting && strncmp(text, "PONG ", 5) == 0) {
+      // Measured from the task's arrival stamp, not from now: the console may
+      // be several seconds behind a render and a round trip timed here would
+      // report the panel's latency as the link's.
+      const unsigned long rtt = event.arrivedMs - gLoraPingSentMs;
+      gLoraPingWaiting = false;
+      logSerial.printf("LORA_PONG:rtt=%lums here_rssi=%.1f here_snr=%.1f there=%s\n", rtt,
+                       static_cast<double>(event.rssi), static_cast<double>(event.snr), text + 5);
+    }
   }
 }
 #endif  // ENABLE_LORA_CMD
@@ -1371,6 +1637,13 @@ void setup() {
   silentRebootMagic = 0;
   silentRebootTarget = 0;
 
+#ifdef ENABLE_LORA_CMD
+  // Before anything can reach CMD:LORA. The task idles on a semaphore until a
+  // console command turns the radio on, so creating it here costs 4 kB of
+  // stack on a devel build and nothing else.
+  loraServiceBegin();
+#endif
+
   gpio.begin();
   powerManager.begin();
   frontlight.begin();
@@ -1729,10 +2002,10 @@ void loop() {
   }
 
 #ifdef ENABLE_LORA_CMD
-  // One non-blocking look at the radio per iteration. It reads a GPIO and does
-  // nothing else unless a packet is actually waiting, so it costs the loop
-  // almost nothing while the radio is off or silent.
-  loraPoll();
+  // Printing only. The radio itself is serviced by its own task, because this
+  // line can be 3.9 s away while a map renders and an SX126x holds one packet
+  // (T-2023, and the section above LoraLock).
+  loraDrain();
 #endif
 
 #ifdef ENABLE_GNSS_CMD
@@ -2194,11 +2467,21 @@ void loop() {
         //   CMD:LORA TCXO <volts> ->  LORA_OK:tcxo=<v> xosc=ok|FAILED errors=<hex>
         //   CMD:LORA OSC          ->  LORA_OSC:...  (does the oscillator start?)
         //   CMD:LORA CW <1-30>    ->  carrier for N seconds, for a meter reading
+        //   CMD:LORA ISR ON|OFF   ->  LORA_OK:isr=1|0 tick=<ms>  (OFF proves the
+        //                             100 ms tick alone still delivers packets)
         //
         // The two-board link test is CMD:LORA PONG ON on one device and
         // CMD:LORA PING on the other. One exchange reports both directions:
         // rtt and the local rssi/snr are this end's, and the numbers after
         // "there=" are how the far end heard us.
+        // The whole handler runs under the chip mutex, so every `lora.` call
+        // below is serialised against the service task -- one lock at the top
+        // rather than one per branch, because a branch added later would
+        // otherwise be one `lora.` call with no lock and nothing would say so.
+        // CMD:LORA CW holds it for its whole carrier, which is correct: there
+        // is no reception to service while the PA is keyed.
+        LoraLock loraLock;
+
         String argument = cmd.substring(4);
         argument.trim();
         String upper = argument;
@@ -2206,12 +2489,13 @@ void loop() {
 
         if (argument.length() == 0) {
           logSerial.printf(
-              "LORA_STATE:ready=%d listening=%d pong=%d rail=%d freq=%.3f bw=%.1f sf=%u cr=%u power=%d rx=%lu "
-              "tx=%lu\n",
+              "LORA_STATE:ready=%d listening=%d pong=%d rail=%d isr=%d armed=%d freq=%.3f bw=%.1f sf=%u cr=%u "
+              "power=%d rx=%lu tx=%lu\n",
               lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
-              gLoraConfig.freqMhz, gLoraConfig.bandwidthKhz, static_cast<unsigned>(gLoraConfig.spreadingFactor),
-              static_cast<unsigned>(gLoraConfig.codingRate), static_cast<int>(gLoraConfig.txPowerDbm),
-              static_cast<unsigned long>(gLoraRxCount), static_cast<unsigned long>(gLoraTxCount));
+              gLoraIsrWanted ? 1 : 0, gLoraServiceArmed ? 1 : 0, gLoraConfig.freqMhz, gLoraConfig.bandwidthKhz,
+              static_cast<unsigned>(gLoraConfig.spreadingFactor), static_cast<unsigned>(gLoraConfig.codingRate),
+              static_cast<int>(gLoraConfig.txPowerDbm), static_cast<unsigned long>(gLoraRxCount),
+              static_cast<unsigned long>(gLoraTxCount));
         } else if (upper == "ON") {
           if (loraStart()) {
             // The version string says a radio is there; it cannot say which
@@ -2234,11 +2518,13 @@ void loop() {
           if (!loraStart()) {
             logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
           } else if (lora.startListening()) {
+            loraArmService(true);
             logSerial.printf("LORA_OK:rx=1\n");
           } else {
             logSerial.printf("LORA_ERR:rx err=%d\n", lora.lastError());
           }
         } else if (upper == "RX OFF") {
+          loraArmService(false);
           lora.stopListening();
           logSerial.printf("LORA_OK:rx=0\n");
         } else if (upper == "PONG ON" || upper == "PONG") {
@@ -2246,6 +2532,7 @@ void loop() {
             logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
           } else if (lora.startListening()) {
             gLoraPongMode = true;
+            loraArmService(true);
             logSerial.printf("LORA_OK:pong=1\n");
           } else {
             logSerial.printf("LORA_ERR:rx err=%d\n", lora.lastError());
@@ -2261,6 +2548,7 @@ void loop() {
             // few hundred milliseconds and a radio still in standby would miss
             // its own answer.
             lora.startListening();
+            loraArmService(lora.listening());
             char payload[48];
             snprintf(payload, sizeof(payload), "PING %lu", static_cast<unsigned long>(++gLoraPingSeq));
             const unsigned long before = millis();
@@ -2414,8 +2702,24 @@ void loop() {
               logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
             }
           }
+        } else if (upper == "ISR ON" || upper == "ISR OFF") {
+          // Detaching the interrupt is how the tick gets tested. A missed DIO1
+          // edge leaves a listening radio deaf while LORA_STATE still reports
+          // listening=1, so the tick is the only thing standing between that
+          // and a silent failure -- and a fallback nobody has exercised is a
+          // wish, not a guarantee (parent docs/TODO.md, T-2023, criterion A1).
+          gLoraIsrWanted = upper.endsWith("ON");
+          if (lora.ready()) {
+            if (gLoraIsrWanted) {
+              lora.setPacketAction(loraDio1Isr);
+            } else {
+              lora.clearPacketAction();
+            }
+          }
+          logSerial.printf("LORA_OK:isr=%d tick=%lums\n", gLoraIsrWanted ? 1 : 0,
+                           static_cast<unsigned long>(kLoraServiceTickMs));
         } else {
-          logSerial.printf("LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ SF BW TCXO OSC CW\n");
+          logSerial.printf("LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ SF BW TCXO OSC CW ISR\n");
         }
 #endif
 #ifdef ENABLE_GNSS_CMD

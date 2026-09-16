@@ -29,13 +29,17 @@
 // low, which parks the chip's MISO (measured 2026-09-03, nine runs,
 // main.cpp t5s3DeselectLoraRadio()).
 //
-// **What is not established is a radio that listens while the map renders.**
-// Both users bracket the bus in SPI transactions, so the transfers themselves
-// serialise; the open questions are the microsecond window where the i80
-// peripheral drives DC on that pin during bus setup, and whether anything
-// re-initialises the display bus while the radio is up. Nobody has measured
-// it (parent docs/TODO.md, T-2019), so treat a listening radio during a redraw
-// as untested rather than as safe.
+// **A radio that listens while the map renders is a servicing problem, not a
+// bus problem.** Measured 2026-09-16: a board rendering at zoom rung 6 heard
+// 8 of 20 packets with zero card errors and zero CRC failures. Both users
+// bracket the bus in SPI transactions, so the transfers serialise; what was
+// lost was everything arriving while nobody called poll(). Whoever owns this
+// class has to service it off the rendering path (docs/lora-bringup.md, "The
+// radio has its own task now"; parent docs/TODO.md, T-2019 and T-2023).
+//
+// Two narrower bus questions stay open and unmeasured: the microsecond window
+// where the i80 peripheral drives DC on this pin during bus setup, and whether
+// anything re-initialises the display bus while the radio is up.
 
 struct LoraPins {
   int8_t cs;    // NSS
@@ -92,10 +96,28 @@ class LoraRadio {
   void stopListening();
   bool listening() const;
 
-  // Called from loop(). Returns the byte count of one received packet, 0 when
-  // nothing arrived, -1 when a packet arrived damaged. rssi() and snr()
-  // describe that packet and are overwritten by the next one.
+  // Reads one packet if one is waiting. Returns the byte count, 0 when nothing
+  // arrived, -1 when a packet arrived damaged. rssi() and snr() describe that
+  // packet and are overwritten by the next one.
+  //
+  // **The caller decides how often this runs, and that decision is the whole
+  // game.** An SX126x holds exactly one packet: whatever arrives while the
+  // previous one is still in the chip is lost. Called from a firmware loop()
+  // that also renders a map, that meant 8 of 20 packets on this board
+  // (parent docs/TODO.md, T-2023). Nothing in this class can fix that -- the
+  // fix is where poll() is called from.
   int poll(uint8_t* buffer, size_t bufferSize);
+
+  // Hands the DIO1 line to an interrupt handler, so a caller does not have to
+  // poll a pin to learn that a packet landed. RadioLib attaches it to the pin
+  // this class was given, which is why it lives here rather than in the board
+  // code: the pin number is this class's business and nobody else's.
+  //
+  // **The handler runs in interrupt context**, so it may not touch SPI, the
+  // radio, or anything that takes a lock -- an SX126x is read over the shared
+  // bus and that read cannot happen in an ISR. Give a semaphore and leave.
+  bool setPacketAction(void (*handler)());
+  void clearPacketAction();
 
   // Puts the chip in its own sleep state, then holds NRESET low. The reset is
   // what makes the SD card safe again, not the sleep: an SX1262 in reset parks
