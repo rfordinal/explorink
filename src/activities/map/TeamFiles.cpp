@@ -186,6 +186,7 @@ void replayLine(void* ctx, std::string_view line, uint32_t) {
   fix.latE7 = rec.latE7;
   fix.lonE7 = rec.lonE7;
   fix.utc = rec.utc;
+  fix.recvUtc = rec.recvUtc;
   // A row from *this* run keeps its uptime, and with it its age: re-entering the
   // map must not turn a position heard a minute ago into an undateable one
   // (seen on an X4 Pro, 2026-09-16). A row from any other run carries an uptime

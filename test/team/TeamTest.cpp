@@ -117,21 +117,28 @@ TEST(TeamRosterJson, ABadRowIsSkippedAndCounted) {
   EXPECT_EQ(skipped, 1u);
 }
 
-TEST(TeamRecordCsv, TheBootColumnIsOptional) {
+TEST(TeamRecordCsv, OlderRowsStillRead) {
   TeamRecord out;
-  // A card written before the column existed is still somebody's last known
-  // position: it parses, and its boot is 0, which means "not this run".
+  // The original eight-field row: still somebody's last known position, and the
+  // two dating columns simply read as 0.
   ASSERT_TRUE(decodeTeamRecord("1789430400,81234,RF,48.1486000,17.1077000,4,62,lora", out));
+  EXPECT_EQ(out.recvUtc, 0u);
   EXPECT_EQ(out.boot, 0u);
   EXPECT_STREQ(out.who, "RF");
   EXPECT_EQ(out.latE7, 481486000);
 
+  // Nine fields: `boot` but no `recv_utc`.
   ASSERT_TRUE(decodeTeamRecord("1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora", out));
+  EXPECT_EQ(out.boot, 3149271044u);
+  EXPECT_EQ(out.recvUtc, 0u);
+
+  // Ten, which is what this build writes.
+  ASSERT_TRUE(decodeTeamRecord("1789430400,1789430402,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora", out));
+  EXPECT_EQ(out.recvUtc, 1789430402u);
   EXPECT_EQ(out.boot, 3149271044u);
   EXPECT_EQ(out.latE7, 481486000);
 
-  // Ten fields is not a row this build knows how to read.
-  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,RF,48.1,17.1,,,lora", out));
+  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,5,RF,48.1,17.1,,,lora", out));  // eleven
 }
 
 TEST(TeamRecordCsv, RoundTrips) {
@@ -147,11 +154,12 @@ TEST(TeamRecordCsv, RoundTrips) {
   rec.hasSpeed = true;
   rec.source = TeamFixSource::Lora;
   rec.boot = 3149271044u;
+  rec.recvUtc = 1789430402u;
 
   char line[kTeamLineMax + 1];
   const size_t len = encodeTeamRecord(rec, line, sizeof(line));
   ASSERT_GT(len, 0u);
-  EXPECT_STREQ(line, "1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora");
+  EXPECT_STREQ(line, "1789430400,1789430402,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora");
 
   TeamRecord back;
   ASSERT_TRUE(decodeTeamRecord(std::string_view(line, len), back));
@@ -163,6 +171,7 @@ TEST(TeamRecordCsv, RoundTrips) {
   EXPECT_EQ(back.speedKmh, 62);
   EXPECT_EQ(back.source, TeamFixSource::Lora);
   EXPECT_EQ(back.boot, rec.boot);
+  EXPECT_EQ(back.recvUtc, rec.recvUtc);
   EXPECT_STREQ(back.who, "RF");
 }
 
@@ -175,7 +184,7 @@ TEST(TeamRecordCsv, EmptyHeadingAndSpeedStayEmpty) {
 
   char line[kTeamLineMax + 1];
   ASSERT_GT(encodeTeamRecord(rec, line, sizeof(line)), 0u);
-  EXPECT_STREQ(line, "0,0,0,ME,-48.1486000,0.0000005,,,gnss");
+  EXPECT_STREQ(line, "0,0,0,0,ME,-48.1486000,0.0000005,,,gnss");
 
   TeamRecord back;
   ASSERT_TRUE(decodeTeamRecord(line, back));
@@ -188,7 +197,7 @@ TEST(TeamRecordCsv, MalformedRowsAreRefused) {
   TeamRecord out;
   EXPECT_FALSE(decodeTeamRecord(kTeamCsvHeader, out));          // the header line
   EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,,,", out));        // no source word
-  EXPECT_FALSE(decodeTeamRecord("1,2,3,RF,48.1,17.1,,,lora,x", out));  // one field too many
+  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,RF,48.1,17.1,,,lora,x", out));  // one field too many
   EXPECT_FALSE(decodeTeamRecord("1,2,TOOLONG,48.1,17.1,,,lora", out));
   EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,16,,lora", out));  // heading out of range
 }
@@ -220,6 +229,18 @@ TEST(TeamAge, PrefersTheSendersClockAndFallsBackToReceipt) {
   const TeamFixAge byUptime = teamFixAge(fix, 0, 65000);
   EXPECT_TRUE(byUptime.known);
   EXPECT_EQ(byUptime.seconds, 60u);
+}
+
+TEST(TeamAge, OurOwnReceiptClockDatesAReplayedFix) {
+  // The sender had no clock, we did. That is the common case: a peer's beacon
+  // may carry nothing, and our own time comes from the phone or the receiver.
+  TeamFix fix;
+  fix.present = true;
+  fix.fromLog = true;  // read back off the card, so its uptime means nothing
+  fix.recvUtc = 1789430400u;
+  const TeamFixAge age = teamFixAge(fix, 1789430400u + 600u, 1234);
+  EXPECT_TRUE(age.known);
+  EXPECT_EQ(age.seconds, 600u);
 }
 
 TEST(TeamAge, AReplayedFixWithNoClockHasNoKnownAge) {

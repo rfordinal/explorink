@@ -91,13 +91,14 @@ Edited three ways: by hand on the card, then `team reload`; or with `team add` /
 One CSV row per accepted position, header written when a file is created:
 
 ```
-utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
-1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora
+utc,recv_utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
+1789430400,1789430402,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora
 ```
 
 | field | notes |
 |---|---|
-| `utc` | the sender's clock; **0 means they had no clock**, never a time we invented |
+| `utc` | the **sender's** clock; 0 means they had none, never a time we invented |
+| `recv_utc` | **our** clock when we heard it; 0 only when this device had none |
 | `uptime_ms` | our uptime at receipt -- what orders rows inside a run with no clock |
 | `boot` | which run of this device wrote the row; 0 in a file older than the column |
 | `who` | member acronym, or `ME` for the rider |
@@ -126,7 +127,18 @@ A device with no clock writes `bb-noclock.csv`, and **rotation never deletes
 it**: a day it cannot name is a day it cannot judge. Every X4 is such a device
 until the phone hands it a time.
 
-**`boot` is what makes the stored time usable.** A device with no clock dates a
+**The device knows the time, so every row is stamped with it.** The clock comes
+from the phone's position packet or from the GNSS receiver, whichever has
+spoken -- the same two sources the map header reads (`MapTeam::utcNowOrZero`).
+`recv_utc` is when *this device* heard the position, and it is the column a
+search reads: the sender's own `utc` is theirs and is often absent, while ours
+is there whenever the device knew the time at all. It is also what dates a
+position across a reboot.
+
+An age is worked out from the best clock available, in this order: the sender's
+timestamp, our receipt time, our uptime at receipt, unknown.
+
+**`boot` is the last rung of that ladder.** A device with no clock dates a
 position by the difference between two of its own uptimes, and an uptime from a
 previous run is a number with no relation to this one. Without the column every
 replayed row had to be treated as undateable -- so **re-entering the map turned
@@ -134,9 +146,15 @@ every age into `?`**, even for a position heard a minute earlier, which is what
 an X4 Pro showed on 2026-09-16. With it, a row from this run is as good as live
 and a row from an older run is honestly unknown.
 
-The id is drawn once per run from the microsecond counter at first use, mixed so
-two boots a millisecond apart cannot share one. Rows without the column read
-fine and count as "not this run".
+It only matters on a device that has never been told the time -- an X4 before
+the phone connects -- where an age is the difference between two uptimes and
+that only means anything inside one run. The id is drawn once per run from the
+microsecond counter at first use, mixed so two boots a millisecond apart cannot
+share one.
+
+Rows missing either column read fine: eight fields is the original row, nine
+adds `boot`, ten adds `recv_utc`. A card written by an older build is still
+somebody's last known position.
 
 ### What comes back at boot
 

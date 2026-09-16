@@ -152,9 +152,10 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen) {
   char speed[8] = {};
   if (rec.hasSpeed) snprintf(speed, sizeof(speed), "%u", static_cast<unsigned>(rec.speedKmh));
 
-  const int written = snprintf(buf, bufLen, "%lu,%lu,%lu,%s,%s,%s,%s,%s,%s", static_cast<unsigned long>(rec.utc),
-                               static_cast<unsigned long>(rec.uptimeMs), static_cast<unsigned long>(rec.boot), rec.who,
-                               lat, lon, heading, speed, teamSourceText(rec.source));
+  const int written = snprintf(buf, bufLen, "%lu,%lu,%lu,%lu,%s,%s,%s,%s,%s,%s", static_cast<unsigned long>(rec.utc),
+                               static_cast<unsigned long>(rec.recvUtc), static_cast<unsigned long>(rec.uptimeMs),
+                               static_cast<unsigned long>(rec.boot), rec.who, lat, lon, heading, speed,
+                               teamSourceText(rec.source));
   if (written < 0 || static_cast<size_t>(written) >= bufLen) return 0;
   return static_cast<size_t>(written);
 }
@@ -162,19 +163,22 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen) {
 bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
   if (line.empty() || line.size() > kTeamLineMax) return false;
 
-  // Nine fields since the `boot` column, eight before it. Counted up front
-  // rather than guessed at, because the third field is a number in one shape and
-  // an acronym in the other, and "is this a number" is not a format decision.
+  // Ten fields today, nine before `recv_utc`, eight before `boot` -- counted up
+  // front rather than guessed at, because the field after the numbers is an
+  // acronym and "is this a number" is not a format decision.
   size_t fields = 1;
   for (const char c : line) {
     if (c == ',') ++fields;
   }
-  if (fields != 8 && fields != 9) return false;
-  const bool hasBoot = fields == 9;
+  if (fields < 8 || fields > 10) return false;
+  const bool hasBoot = fields >= 9;
+  const bool hasRecvUtc = fields == 10;
 
   std::string_view rest = line;
-  std::string_view utc, uptime, boot, who, lat, lon, heading, speed, src;
-  if (!nextField(rest, utc, false) || !nextField(rest, uptime, false)) return false;
+  std::string_view utc, recvUtc, uptime, boot, who, lat, lon, heading, speed, src;
+  if (!nextField(rest, utc, false)) return false;
+  if (hasRecvUtc && !nextField(rest, recvUtc, false)) return false;
+  if (!nextField(rest, uptime, false)) return false;
   if (hasBoot && !nextField(rest, boot, false)) return false;
   if (!nextField(rest, who, false) || !nextField(rest, lat, false) || !nextField(rest, lon, false) ||
       !nextField(rest, heading, false) || !nextField(rest, speed, false) || !nextField(rest, src, true)) {
@@ -183,6 +187,7 @@ bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
 
   TeamRecord rec;
   if (!parseUint(utc, rec.utc) || !parseUint(uptime, rec.uptimeMs)) return false;
+  if (hasRecvUtc && !parseUint(recvUtc, rec.recvUtc)) return false;
   if (hasBoot && !parseUint(boot, rec.boot)) return false;
   if (who != kTeamSelfWho && !isValidTeamAcr(who)) return false;
   memcpy(rec.who, who.data(), who.size());

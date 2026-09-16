@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "CrossPointSettings.h"
+#include "GnssAccess.h"
 #include "PinGeo.h"
 
 namespace {
@@ -53,9 +54,21 @@ uint32_t MapTeam::bootId() {
 }
 
 uint32_t MapTeam::utcNowOrZero() {
+  // **Both radios carry a clock, so ask both.** The phone's position packet
+  // anchors one (BlePositionServer::utcNow) and every GNSS receiver sends UTC
+  // with its date sentence, well before it has a position fix (Gnss.h). The map
+  // header already reads them this way; a position's time must come from the
+  // same place, or a row on the card would be undated on exactly the device that
+  // did know the time.
   uint32_t utc = 0;
-  if (!freeink::BlePositionServer::getInstance().utcNow(utc)) return 0;
-  return utc;
+  if (freeink::BlePositionServer::getInstance().utcNow(utc)) return utc;
+#ifdef ENABLE_GNSS_CMD
+  if (gnss.running()) {
+    const uint32_t gnssUtc = gnss.fix().utc;
+    if (gnssUtc != 0) return gnssUtc;
+  }
+#endif
+  return 0;
 }
 
 size_t MapTeam::slotForIndex(size_t index) const {
@@ -86,6 +99,10 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
   stored.present = true;
   stored.fromLog = false;
   stored.recvUptimeMs = millis();
+  // **When we heard it, by our own clock.** The sender's `utc` is theirs and is
+  // often absent; this one is ours, it is what the black box is read by, and it
+  // is what dates the position after a reboot or a re-entry into the map.
+  stored.recvUtc = utcNowOrZero();
 
   // The card first, always -- see the class comment. Skipped entirely when the
   // rider has turned peer logging off, and the marker still moves: what is on
@@ -94,6 +111,7 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
   if (SETTINGS.mapTeamLogPeers != 0) {
     TeamRecord rec;
     rec.utc = stored.utc;
+    rec.recvUtc = stored.recvUtc;
     rec.uptimeMs = stored.recvUptimeMs;
     rec.boot = bootId();
     memcpy(rec.who, member.acr, sizeof(rec.who));
@@ -193,6 +211,7 @@ void MapTeam::logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t headin
 
   TeamRecord rec;
   rec.utc = utc;
+  rec.recvUtc = utc;  // our own position: the two times are the same reading
   rec.uptimeMs = nowUptimeMs;
   rec.boot = bootId();
   snprintf(rec.who, sizeof(rec.who), "%s", kTeamSelfWho);

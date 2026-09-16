@@ -13,6 +13,14 @@ TeamFixAge teamFixAge(const TeamFix& fix, uint32_t nowUtc, uint32_t nowUptimeMs)
     age.seconds = nowUtc - fix.utc;
     return age;
   }
+  // Our own clock at receipt. The sender may have had none, and this one is
+  // still a real time -- it is what makes a replayed position dateable, and what
+  // the black box is read by.
+  if (fix.recvUtc != 0 && nowUtc != 0 && nowUtc >= fix.recvUtc) {
+    age.known = true;
+    age.seconds = nowUtc - fix.recvUtc;
+    return age;
+  }
   // A fix replayed from the black box carries a previous run's uptime, so the
   // subtraction below would date it by an unrelated clock. Left unknown instead.
   if (!fix.fromLog && nowUptimeMs >= fix.recvUptimeMs) {

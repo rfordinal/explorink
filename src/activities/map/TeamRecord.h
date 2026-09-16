@@ -16,8 +16,14 @@
 //
 // CSV, one row per accepted position, header written when a file is created:
 //
-//   utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
-//   1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora
+//   utc,recv_utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
+//   1789430400,1789430402,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora
+//
+// **`recv_utc` is the column a search reads.** The sender's `utc` is theirs and
+// is often absent -- a peer with no clock, a console line, an early frame. Ours
+// is there whenever the device knew the time at all, from the phone's packet or
+// from the GNSS receiver (MapTeam::utcNowOrZero), and it says when this device
+// heard the position. It is also what dates a position across a reboot.
 //
 // **`boot` is what makes `uptime_ms` mean something after a reload.** A device
 // with no clock dates a position by its own uptime, and an uptime from a
@@ -48,7 +54,8 @@
 inline constexpr const char* kTeamSelfWho = "ME";
 
 struct TeamRecord {
-  uint32_t utc = 0;
+  uint32_t utc = 0;      // the sender's clock
+  uint32_t recvUtc = 0;  // ours, when we heard it
   uint32_t uptimeMs = 0;
   // Identifies the run of *this device* that wrote the row, so its uptime can be
   // compared against the current one. 0 when the row predates the column.
@@ -67,7 +74,7 @@ struct TeamRecord {
 // the type, not for today's data (same rule as kPinLineMax).
 inline constexpr size_t kTeamLineMax = 96;
 
-inline constexpr const char* kTeamCsvHeader = "utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src";
+inline constexpr const char* kTeamCsvHeader = "utc,recv_utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src";
 
 const char* teamSourceText(TeamFixSource source);
 bool teamSourceFromText(std::string_view text, TeamFixSource& out);
@@ -80,9 +87,10 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen);
 // refused like any other malformed row). False means "skip this line and keep
 // reading" -- never "the file is broken".
 //
-// Takes the row with or without the `boot` column: a card written by an older
-// build is still somebody's last known position, and refusing it would throw
-// away the evidence over a field that only helps dating.
+// Takes eight, nine or ten fields: a card written by an older build is still
+// somebody's last known position, and refusing it would throw away the evidence
+// over columns that only help dating. Eight is the original row, nine adds
+// `boot`, ten adds `recv_utc` in front of it.
 bool decodeTeamRecord(std::string_view line, TeamRecord& out);
 
 // The file a fix belongs in. Rotation is by day, so the name carries the date:

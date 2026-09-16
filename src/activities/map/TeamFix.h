@@ -31,8 +31,14 @@ struct TeamFix {
   // is recorded as such rather than filled in with ours -- a fabricated time in
   // a search is worse than an admitted gap (same rule as PinRecord's utc).
   uint32_t utc = 0;
-  // Our uptime when the fix landed. This, not utc, is what dates a fix on a
-  // device with no clock, which every X4 is.
+  // **Our own clock when the fix landed**, in unix seconds, or 0 when the device
+  // did not know the time. This is the one that survives everything: a reboot, a
+  // re-entry into the map, a sender with no clock of their own. It comes from
+  // the phone's packet or from the GNSS receiver, whichever knows
+  // (MapTeam::utcNowOrZero).
+  uint32_t recvUtc = 0;
+  // Our uptime when the fix landed. The last resort, for a device that has never
+  // been told the time -- an X4 before the phone connects.
   uint32_t recvUptimeMs = 0;
   // Replayed from the black box at boot rather than heard this run. Its uptime
   // belongs to a previous run, so it can only be dated by utc -- and on a device
@@ -51,9 +57,18 @@ struct TeamFixAge {
   uint32_t seconds = 0;
 };
 
-// `nowUtc` 0 means the device has no clock. Prefers the sender's own timestamp
-// when both clocks exist, because that is when the rider was actually there;
-// falls back to our receipt uptime for a fix heard this run.
+// A ladder, most trustworthy first. `nowUtc` 0 means the device has no clock
+// right now.
+//
+//   1. the sender's own timestamp -- when the rider was actually there
+//   2. our clock at receipt -- when we heard it, which survives a reboot
+//   3. our uptime at receipt -- only inside the run that measured it
+//   4. unknown
+//
+// Two and three are the same event dated by two clocks. Three is kept because a
+// device that has never been told the time still knows how long ago something
+// happened; it is thrown away across a reboot, which is what the row's `boot`
+// column detects (TeamRecord.h).
 TeamFixAge teamFixAge(const TeamFix& fix, uint32_t nowUtc, uint32_t nowUptimeMs);
 
 // What the map does with it.
