@@ -3,9 +3,10 @@
 Who else is out there, where they were last seen, and what the card keeps when
 the ride is over.
 
-Built 2026-09-16. **Nothing has run on a device yet.** Every line below is read
-off the code or proved by a host test (`test/team/`); the panel questions are
-listed at the end and are open.
+Built 2026-09-16 and **run on an X4 Pro the same day** -- see "The hardware
+pass" at the end for what was actually exercised and what still is not. The
+rules below are proved by host tests (`test/team/`) unless a line says
+otherwise.
 
 ## What it is
 
@@ -288,12 +289,9 @@ static RAM (21.3 %), clean, no warnings from any of the new files.
 
 ## What is open
 
-- **The panel itself.** The layout questions were answered in the **simulator**
-  on 2026-09-16 -- three members and a pin in one frame, solid against hollow,
-  two-letter and three-letter acronyms, at 480x800 1:1 -- and that is a laptop
-  LCD, not the glass. What a simulator cannot answer is how the solid fill and
-  the thin hollow outline read on e-ink in daylight, and whether a solid black
-  balloon ghosts where a hollow one does not. Still needs a device (T-2019).
+- **Daylight and ghosting.** The marks were read on the panel indoors (below).
+  Whether a solid black balloon ghosts where a hollow one does not, and how both
+  read in direct sun, is a ride and not a desk test.
 - **Flash and DRAM cost**, measured against the same tree with the flags off.
 - **Off-screen members**: no edge marker, by decision, until a design exists
   that does not merge two people into one arrow.
@@ -304,3 +302,34 @@ static RAM (21.3 %), clean, no warnings from any of the new files.
   claims. MeshCore adverts are Ed25519-signed, which is the reason that protocol
   was picked, but nothing here verifies a signature yet -- the allowlist stops a
   stranger, not somebody replaying a member's id.
+
+## The hardware pass
+
+X4 Pro, 2026-09-16, build `47aa6817` (archived as
+`docs/firmware-builds/2026-09-16-x4pro-team-markers-47aa6817-good.*` in the
+parent repo). Driven entirely over the USB console, no radio and no phone.
+
+What ran:
+
+- `team add` three times, then `team pos` three times, then `pin set camp` for
+  something to compare against. Every one answered `OK`.
+- **Three members on the panel**, solid black balloons with white initials --
+  `RF`, `MK` and a three-letter `JKL`, which drops to `MAP_SMALL` and still fits
+  inside the outline. The hollow camp pin sits next to them in the same frame
+  (`docs/device-shots/2026-09-16-x4pro-team-markers-480x800.png`).
+- **The Group list**: `RF Roman  450 m NE 1m`, `MK Marek  440 m SW 1m`,
+  `JKL Jakub  480 m S 1m` (`...-team-group-list-480x800.png`).
+- **The black box on a real card.** `team log` read back three rows, newest
+  first, each with `utc` 0 -- the device had no phone and therefore no clock,
+  and it recorded that rather than inventing a time.
+- **The boot replay.** A hard reset, then back into the map:
+  `roster: 3 member(s), 0 row(s) skipped` / `black box: 1 file(s) read, 3 member
+  position(s) restored` / `team: 3 drawn, 0 too old, 0 off the panel`. The three
+  came back **hollow with black letters**, which is the age-unknown rule doing
+  exactly what it says: a replayed fix on a device with no clock cannot be
+  dated, so it draws as stale and is never hidden
+  (`...-team-after-reboot-480x800.png`).
+
+What did **not** run: any radio, any phone, a stale-by-clock marker (that needs
+a device that knows the time), a rejected stranger over a real transport, and
+day rotation (one file, one day).
