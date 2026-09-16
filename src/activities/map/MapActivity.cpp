@@ -7180,6 +7180,40 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
 
 // --- team markers (../../../docs/team-markers.md) ----------------------------
 
+namespace {
+
+// Where a short ASCII string's **ink** starts and ends, relative to the pen
+// position, in pixels.
+//
+// `getTextWidth()` is the advance width, which counts both side bearings. A mark
+// centred on it is centred on the pen run and not on what the eye sees, and the
+// two differ by whatever the first and last glyph's bearings differ by: `JKL`
+// carries a wide trailing bearing on `L` and sat visibly left inside the pin
+// head, while `RF` did not (reported on the panel 2026-09-16).
+//
+// False when the font or either end glyph is missing, in which case the caller
+// falls back to the advance width.
+bool teamAcrInkBounds(const GfxRenderer& renderer, int fontId, const char* acr, int advance, int& left, int& right) {
+  if (acr == nullptr || acr[0] == '\0') return false;
+  const auto& fonts = renderer.getFontMap();
+  const auto it = fonts.find(fontId);
+  if (it == fonts.end()) return false;
+
+  const size_t len = strlen(acr);
+  const EpdGlyph* first = it->second.getGlyph(static_cast<uint32_t>(acr[0]));
+  const EpdGlyph* last = it->second.getGlyph(static_cast<uint32_t>(acr[len - 1]));
+  if (first == nullptr || last == nullptr) return false;
+
+  // advanceX is 12.4 fixed point (EpdFontData.h), so >> 4 is its whole pixels.
+  const int lastAdvance = static_cast<int>(last->advanceX) >> 4;
+  const int trailing = lastAdvance - (last->left + last->width);
+  left = first->left;
+  right = advance - trailing;
+  return right > left;
+}
+
+}  // namespace
+
 TeamVisibility MapActivity::teamSlotVisibility(size_t slot) const {
   const TeamFix& fix = team_.store().at(slot);
   const TeamFixAge age = teamFixAge(fix, MapTeam::utcNowOrZero(), millis());
@@ -7229,30 +7263,48 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
   // starts at UI_12 and steps down only when the acronym would spill past the
   // head's own width (maintainer's call on the panel, 2026-09-16).
   //
-  // How wide the letters may be. The head's clear circle is kPinGlyphPx across
-  // the diagonal, but letters sit on a band through its middle, and the chord
-  // there is shorter than the diameter -- at the full width a three-letter
-  // acronym sat on the outline both sides (simulator, 2026-09-16), which reads
-  // as a cut-off word.
+  // How wide the letters may be: the head disc's chord at the height the
+  // capitals actually occupy, not its diameter. A word is a band through the
+  // middle of the circle and the circle is narrower there, which is why a
+  // three-letter acronym sized against the diameter sat on the edge both sides
+  // (simulator, 2026-09-16).
   //
-  // 26 px is measured, not guessed: `RF` is 24 px at UI_10, `MK` 32 px at the
-  // same face and 26 at SMALL, `JKL` 26 at SMALL. So this number is what decides
-  // whether a given pair of letters keeps the larger face, and it was set by
-  // looking at those three on the panel.
+  // Measured against the **outer** radius, not the clear one a baked glyph uses:
+  // this marker is filled, so outline and fill are the same ink and a letter
+  // only has to stay inside the silhouette.
   //
-  // **Two acronyms of the same length can land on different faces**, because
-  // letter shapes differ -- `MK` is a third wider than `RF` at any size. Each
-  // marker gets the largest face its own letters fit, rather than the whole
-  // group dropping to whatever the widest member can take.
-  static constexpr int kAcrMaxWidth = 26;
+  // Cap height is not exposed by the renderer, so it is taken as the usual ~0.72
+  // of the ascender. One pixel of margin either side keeps a wide letter off the
+  // edge.
+  const auto usableWidth = [this](int candidate) {
+    const int cap = (renderer.getTextHeight(candidate) * 18) / 25;
+    const int half = cap / 2;
+    const int chordHalfSquared = kPinShapeHeadOuterRadius * kPinShapeHeadOuterRadius - half * half;
+    if (chordHalfSquared <= 0) return 0;
+    int chordHalf = 1;
+    while ((chordHalf + 1) * (chordHalf + 1) <= chordHalfSquared) ++chordHalf;
+    return chordHalf * 2 - 2;
+  };
+
   static constexpr int kAcrFonts[] = {UI_12_FONT_ID, UI_10_FONT_ID, SMALL_FONT_ID, MAP_SMALL_FONT_ID};
   int fontId = kAcrFonts[sizeof(kAcrFonts) / sizeof(kAcrFonts[0]) - 1];
-  int width = renderer.getTextWidth(fontId, acr);
+  // Measured on the ink, not on the advance: the fit question is whether the
+  // letters touch the outline, and the advance counts side bearings that draw
+  // nothing.
+  int inkLeft = 0;
+  int inkRight = renderer.getTextWidth(fontId, acr);
   for (const int candidate : kAcrFonts) {
-    const int candidateWidth = renderer.getTextWidth(candidate, acr);
-    if (candidateWidth <= kAcrMaxWidth) {
+    const int advance = renderer.getTextWidth(candidate, acr);
+    int left = 0;
+    int right = advance;
+    if (!teamAcrInkBounds(renderer, candidate, acr, advance, left, right)) {
+      left = 0;
+      right = advance;
+    }
+    if (right - left <= usableWidth(candidate)) {
       fontId = candidate;
-      width = candidateWidth;
+      inkLeft = left;
+      inkRight = right;
       break;
     }
   }
@@ -7264,8 +7316,11 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
   // Cap height is not exposed, so it is taken as the usual ~0.72 of the
   // ascender: ink centres at y + ascender - cap/2, and solving for ink at cy
   // gives y = cy - 0.64 * ascender.
+  LOG_DBG(kLogTag, "acr '%s': font %d ink %d..%d (w %d, usable %d) at head %d,%d", acr, fontId, inkLeft, inkRight,
+          inkRight - inkLeft, usableWidth(fontId), cx, cy);
   const int ascender = renderer.getTextHeight(fontId);
-  renderer.drawText(fontId, cx - width / 2, cy - (ascender * 16) / 25, acr, stale);
+  // The pen goes where the *ink's* middle lands on the head's centre.
+  renderer.drawText(fontId, cx - (inkLeft + inkRight) / 2, cy - (ascender * 16) / 25, acr, stale);
 }
 
 void MapActivity::drawTeam() {

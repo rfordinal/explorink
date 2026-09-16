@@ -32,6 +32,15 @@ inline constexpr int kPinShapeGlyphDy = 4;
 // circle, while `headY` is where a baked glyph reads best.
 inline constexpr int kPinShapeHead0X = 21;
 inline constexpr int kPinShapeHead0Y = 19;
+// The head's clear radius, measured off the upright silhouette: how far from
+// that centre a mark can reach and still be inside the head. Text uses it to
+// work out the chord at its own cap height, which is shorter than the
+// diameter and is what actually bounds a word.
+inline constexpr int kPinShapeHeadRadius = 16;
+// The head disc's outer radius. A **filled** marker may use all of it --
+// outline and fill are the same ink -- while a glyph drawn inside a hollow
+// head has to stay within kPinShapeHeadRadius above.
+inline constexpr int kPinShapeHeadOuterRadius = 20;
 
 struct PinShapeFrame {
   const uint8_t* mask;

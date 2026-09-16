@@ -376,7 +376,14 @@ def main():
         # marker never rotates, and sixteen more arrays would be ~6 kB of flash
         # for nothing.
         body = silhouette(grid)
-        return mask, grid, tip, head, clear, body, (circle_x, circle_y)
+        # The head disc's *outer* radius, measured on the silhouette at the
+        # circle's own centre row. A filled marker may use all of it: the outline
+        # and the fill are the same ink there, so the only thing a letter has to
+        # stay clear of is the silhouette's edge.
+        centre_row = body[int(round(circle_y))]
+        run = [x for x, v in enumerate(centre_row) if v]
+        outer = (run[-1] - run[0] + 1) // 2 if run else 0
+        return mask, grid, tip, head, clear, body, (circle_x, circle_y, outer)
 
     frames = []
     clear0 = 0
@@ -433,6 +440,15 @@ def main():
         "// circle, while `headY` is where a baked glyph reads best.",
         f"inline constexpr int kPinShapeHead0X = {round(circle0[0])};",
         f"inline constexpr int kPinShapeHead0Y = {round(circle0[1])};",
+        "// The head's clear radius, measured off the upright silhouette: how far from",
+        "// that centre a mark can reach and still be inside the head. Text uses it to",
+        "// work out the chord at its own cap height, which is shorter than the",
+        "// diameter and is what actually bounds a word.",
+        f"inline constexpr int kPinShapeHeadRadius = {clear0};",
+        "// The head disc's outer radius. A **filled** marker may use all of it --",
+        "// outline and fill are the same ink -- while a glyph drawn inside a hollow",
+        "// head has to stay within kPinShapeHeadRadius above.",
+        f"inline constexpr int kPinShapeHeadOuterRadius = {circle0[2]};",
         "",
         "struct PinShapeFrame {",
         "  const uint8_t* mask;",

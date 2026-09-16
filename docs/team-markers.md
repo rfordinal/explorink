@@ -177,9 +177,29 @@ dithered fill was tried first and thrown away in the same pass -- white letters
 on a 50 % dither are mush at 22 px.
 
 **The letters are as large as they fit**, which a filled balloon allows and a
-hollow one did not: white on solid black needs no clearance from the glyph grid.
-The ladder is `UI_12`, `UI_10`, `SMALL`, `MAP_SMALL`, and a face is taken when
-the acronym measures 26 px or less.
+hollow one did not: outline and fill are the same ink, so a letter only has to
+stay inside the silhouette rather than clear of an outline. The ladder is
+`UI_12`, `UI_10`, `SMALL`, `MAP_SMALL`.
+
+**What "fit" means is geometry, not a magic number.** A word is a band through
+the middle of the head disc, and a circle is narrower there than at its
+diameter, so the bound is the disc's **chord at the cap height**: the generator
+emits the disc's outer radius (`kPinShapeHeadOuterRadius`, 20 px) and the cap
+height is taken as the usual ~0.72 of the ascender, with a pixel of margin each
+side. Three attempts got there -- a flat 26 px, then 28, then the clear radius a
+baked glyph uses, which is the wrong circle for a filled mark.
+
+**Measured on the ink, not on the advance.** `getTextWidth()` counts both side
+bearings; `JKL` carries a wide trailing bearing on its `L` and sat visibly left
+inside the head while `RF` did not. The first and last glyph's metrics
+(`EpdGlyph::left`, `width`, `advanceX`) give the real ink box, and both the fit
+test and the centring use it.
+
+With those in place: `RF` takes UI_12 (ink 27 px against 34 usable), `MK` UI_10
+(32 against 34), `JKL` SMALL (29 against 36). **Two acronyms of the same length
+can land on different faces**, because letter shapes differ -- each marker keeps
+the largest face its own letters fit rather than the whole group dropping to
+what the widest member can take.
 
 **Centred on the head circle, and on the capitals.** Two corrections, both
 made 2026-09-16 after the letters read low and right on the panel:
@@ -196,13 +216,10 @@ made 2026-09-16 after the letters read low and right on the panel:
 Measured off the rendered frame afterwards, against the asset's own geometry:
 `RF` lands dead centre, `MK` within half a pixel.
 
-The 26 px number is measured, not guessed -- `RF` is 29 px at UI_12 and 24 at UI_10,
-`MK` 38 and 32 and 26 at SMALL, `JKL` 26 at SMALL. So `RF` gets UI_10 while `MK`
-and `JKL` get SMALL: **two acronyms of the same length can land on different
-faces**, because letter shapes differ, and each marker keeping the largest face
-its own letters fit beats the whole group dropping to what the widest member can
-take. Above 26 px the letters sit on the outline and the word reads as cut off
-(simulator, 2026-09-16).
+`MapActivity::drawTeamBalloon()` logs each acronym's chosen face, its ink box and
+the usable width at `LOG_DBG`. That line is what settled every number above, and
+it is the only way to tell "the font stepped down" from "the letters are drawn
+wrong" without a ruler on a screenshot.
 
 **No off-screen edge markers yet.** The pins' edge markers merge overlapping
 marks into one arrow with a count, and a merged marker that eats somebody's
