@@ -7217,14 +7217,38 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
   const int cx = x + frame.headX;
   const int cy = y + frame.headY;
 
-  // Letters in the head. Two fonts, picked by what fits: three wide characters
-  // at SMALL overflow a 22 px head, and letters spilling past the outline stop
-  // reading as a name.
-  int fontId = SMALL_FONT_ID;
+  // Letters in the head, as large as they fit. A **filled** balloon carries a
+  // bigger face than a glyph-in-a-hollow-head could: white on solid black needs
+  // no clearance from the outline, only room inside the head, so the ladder
+  // starts at UI_12 and steps down only when the acronym would spill past the
+  // head's own width (maintainer's call on the panel, 2026-09-16).
+  //
+  // How wide the letters may be. The head's clear circle is kPinGlyphPx across
+  // the diagonal, but letters sit on a band through its middle, and the chord
+  // there is shorter than the diameter -- at the full width a three-letter
+  // acronym sat on the outline both sides (simulator, 2026-09-16), which reads
+  // as a cut-off word.
+  //
+  // 26 px is measured, not guessed: `RF` is 24 px at UI_10, `MK` 32 px at the
+  // same face and 26 at SMALL, `JKL` 26 at SMALL. So this number is what decides
+  // whether a given pair of letters keeps the larger face, and it was set by
+  // looking at those three on the panel.
+  //
+  // **Two acronyms of the same length can land on different faces**, because
+  // letter shapes differ -- `MK` is a third wider than `RF` at any size. Each
+  // marker gets the largest face its own letters fit, rather than the whole
+  // group dropping to whatever the widest member can take.
+  static constexpr int kAcrMaxWidth = 26;
+  static constexpr int kAcrFonts[] = {UI_12_FONT_ID, UI_10_FONT_ID, SMALL_FONT_ID, MAP_SMALL_FONT_ID};
+  int fontId = kAcrFonts[sizeof(kAcrFonts) / sizeof(kAcrFonts[0]) - 1];
   int width = renderer.getTextWidth(fontId, acr);
-  if (width > kPinGlyphPx) {
-    fontId = MAP_SMALL_FONT_ID;
-    width = renderer.getTextWidth(fontId, acr);
+  for (const int candidate : kAcrFonts) {
+    const int candidateWidth = renderer.getTextWidth(candidate, acr);
+    if (candidateWidth <= kAcrMaxWidth) {
+      fontId = candidate;
+      width = candidateWidth;
+      break;
+    }
   }
   const int height = renderer.getLineHeight(fontId);
   renderer.drawText(fontId, cx - width / 2, cy - height / 2, acr, stale);

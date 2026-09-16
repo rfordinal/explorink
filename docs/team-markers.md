@@ -176,8 +176,18 @@ questions with one mark: who it is, and whether the position is current. A
 dithered fill was tried first and thrown away in the same pass -- white letters
 on a 50 % dither are mush at 22 px.
 
-The font drops from `SMALL` to `MAP_SMALL` when three characters would not fit
-the 22 px head; `JKL` at `MAP_SMALL` fits inside the outline.
+**The letters are as large as they fit**, which a filled balloon allows and a
+hollow one did not: white on solid black needs no clearance from the glyph grid.
+The ladder is `UI_12`, `UI_10`, `SMALL`, `MAP_SMALL`, and a face is taken when
+the acronym measures 26 px or less.
+
+That number is measured, not guessed -- `RF` is 29 px at UI_12 and 24 at UI_10,
+`MK` 38 and 32 and 26 at SMALL, `JKL` 26 at SMALL. So `RF` gets UI_10 while `MK`
+and `JKL` get SMALL: **two acronyms of the same length can land on different
+faces**, because letter shapes differ, and each marker keeping the largest face
+its own letters fit beats the whole group dropping to what the widest member can
+take. Above 26 px the letters sit on the outline and the word reads as cut off
+(simulator, 2026-09-16).
 
 **No off-screen edge markers yet.** The pins' edge markers merge overlapping
 marks into one arrow with a count, and a merged marker that eats somebody's
