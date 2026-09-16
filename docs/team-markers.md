@@ -27,6 +27,11 @@ Three parts:
 It answers *where is everybody* and *where were they last seen*. It is not
 navigation and it does not route anybody anywhere.
 
+**The plain-language version lives in Outline**, in Slovak, for anyone who does
+not open the code: [Skupina](https://wiki.comsultia.com/doc/skupina-Jq08cb0e5C)
+(ExplorInk > Produkt a hardvér). This file is the mechanism; that one is what the
+feature is and why it behaves the way it does.
+
 ## The layer does not know which radio spoke
 
 `MapTeam::teamPosition()` is the only way a position gets in. A LoRa frame, a
