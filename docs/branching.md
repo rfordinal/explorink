@@ -201,6 +201,39 @@ The test is not "which board is on the desk", it is **"would this work exist if
 that board did not"**. A feature that merely has to be *verified* on a
 particular board is still `develop` work.
 
+## A feature nobody can use yet stays on its own branch
+
+**Maintainer's decision, 2026-09-16**, on the group-markers layer
+(`team-markers`, [`team-markers.md`](team-markers.md)). The code was finished,
+host-tested and verified on an X4 Pro, and it still does not go to `develop`,
+because **nothing carries positions into it**: the only feed is a devel-only
+console command, so a rider on a release build would see a feature that cannot
+do anything.
+
+**The gate is not "is it correct", it is "does a user get something out of it".**
+Tests passing and a hardware pass are what make a merge *safe*; they are not what
+makes it *worth doing*. A feature merged before its transport exists is dead
+weight on the trunk: it costs flash in every build, it drifts against every
+refactor, and nobody can tell whether it still works because nobody can use it.
+
+Three rules follow, and none of them is optional:
+
+- **Do not propose merging such a branch.** From inside the diff the work looks
+  ready, which is exactly why the decision is recorded outside it -- the register
+  is the parent repo's `docs/feature-branches.md`, and it names the gate per
+  branch.
+- **Sync the branch from `develop`, never the reverse.** `git merge
+  origin/develop` inside the branch's worktree, every few weeks, so that the day
+  the gate passes is not also the day months of drift get resolved. Same
+  direction and same reason as "Sync the device branch before forking a feature
+  off it" above.
+- **Push it.** A branch that lives on one laptop is one disk failure away from
+  being a story about work that was done once.
+
+This is not the same thing as a device branch. A `release/<device>` branch is
+hardware-conditional work that *does* go back into `develop` once the board is
+stable. This is finished work waiting for something else to exist.
+
 ## A stable device branch goes back into `develop`, whole
 
 **Same decision.** When a device branch is stable — everything on it works —
