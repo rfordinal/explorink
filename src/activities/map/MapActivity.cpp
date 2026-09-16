@@ -7365,6 +7365,7 @@ void MapActivity::serviceTeamAges(uint32_t now) {
   // the number's own resolution.
   if (SETTINGS.mapTeamMarkers == 0) return;
   if (now - teamAgeCheckedMs_ < kTeamAgeRefreshMs) return;
+  const uint32_t sinceLast = now - teamAgeCheckedMs_;
   teamAgeCheckedMs_ = now;
 
   // **Only redraw when what would be drawn has changed.** Every marker hidden,
@@ -7374,6 +7375,11 @@ void MapActivity::serviceTeamAges(uint32_t now) {
   // quiet costs one compare every five minutes and no refresh at all once the
   // last marker is past hiding.
   const uint32_t signature = teamAgeSignature();
+  // Said out loud on every window, not only when it redraws: "nothing changed"
+  // and "the check never ran" look identical on the panel, and telling them
+  // apart took a device, a stopwatch and two wrong guesses (2026-09-16).
+  LOG_DBG(kLogTag, "team: age check after %lu ms, signature %lu -> %lu", static_cast<unsigned long>(sinceLast),
+          static_cast<unsigned long>(teamAgeSignature_), static_cast<unsigned long>(signature));
   if (signature == teamAgeSignature_) return;
   teamAgeSignature_ = signature;
 
@@ -7533,6 +7539,14 @@ void MapActivity::drawTeam() {
     }
     ++drawn;
   }
+
+  // The window starts at the frame, not at boot. What is drawn here *is* the
+  // answer the next check compares against, so re-basing both on every draw
+  // means a marker goes grey one window after it goes stale -- rather than up to
+  // two, which is what a boot-aligned clock gave and what made a panel look
+  // broken for ten minutes on 2026-09-16.
+  teamAgeCheckedMs_ = millis();
+  teamAgeSignature_ = teamAgeSignature();
 
   // Never silent: a member who is not on the panel is the case this feature
   // exists for, and the log is what says which of the three reasons it was.

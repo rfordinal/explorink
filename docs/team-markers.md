@@ -477,10 +477,10 @@ static RAM (21.3 %), clean, no warnings from any of the new files.
 
 ## The hardware pass
 
-X4 Pro, 2026-09-16. Flashed twice: `47aa6817` for the first pass and
-`e125db7c` once the letters were resized and centred (both archived as
-`docs/firmware-builds/2026-09-16-x4pro-team-markers-*-good.*` in the parent
-repo). Driven entirely over the USB console, no radio and no phone.
+X4 Pro, 2026-09-16. Flashed four times as the marks changed, the last being
+`47a2338a` (all archived as
+`docs/firmware-builds/2026-09-16-x4pro-team-markers-*` in the parent repo).
+Driven entirely over the USB console, no radio and no phone.
 
 What ran:
 
@@ -503,6 +503,20 @@ What ran:
   exactly what it says: a replayed fix on a device with no clock cannot be
   dated, so it draws as stale and is never hidden
   (`...-team-after-reboot-480x800.png`).
+
+- **Going grey on its own.** Three members were fed and the device left alone.
+  Twenty minutes later the panel showed them grey with `400 m/20m`,
+  `500 m/20m`, `400 m/20m` -- distance, and an age in five-minute steps -- with
+  nobody having touched it. That is the five-minute age check repainting a frame
+  the rider was looking at.
+
+  **It took three grabs to see it, and the first two were the bug report.** The
+  window was aligned to boot rather than to the last frame, so the first check
+  only established a baseline and the change could take up to ten minutes to
+  appear. The window now restarts at every draw. The check also logs every time
+  it runs, not only when it redraws: "nothing changed" and "the check never ran"
+  look identical on a panel, and telling them apart cost a device, a stopwatch
+  and two wrong guesses.
 
 What did **not** run: any radio, any phone, a stale-by-clock marker (that needs
 a device that knows the time), a rejected stranger over a real transport, and
