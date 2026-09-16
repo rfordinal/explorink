@@ -162,7 +162,7 @@ about it. So the webapp's firmware preview panel cannot show team markers
 either.
 
 **The whole balloon is filled, not a disc inside its head.** Maintainer's call,
-2026-09-16, after looking at the first version in the simulator: a black circle
+2026-09-16, made on a simulator frame and confirmed on the second one: a black circle
 inside a white balloon reads as a pin with a dot in it, and the thing that has
 to be obvious at a glance is person-versus-place. `scripts/gen_pin_icons.py` now
 bakes a third array for that -- `kPinShapeBody0Bits`, the silhouette with no
