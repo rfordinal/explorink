@@ -726,6 +726,39 @@ class MapActivity final : public Activity,
   // the position is current, and the panel must never draw "here they are" and
   // "here they were an hour ago" the same way.
   void drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale);
+  // What one team pass has already put on the panel, so two labels cannot land
+  // on top of each other. A flat list rather than the map's own occupancy grid:
+  // twelve members plus their labels and the rider's marker is 25 boxes, and a
+  // linear scan of that is cheaper than 1,250 bytes of grid.
+  struct TeamLabelBoxes {
+    static constexpr size_t kMax = kTeamMaxMembers * 2 + 1;
+    int16_t x[kMax] = {};
+    int16_t y[kMax] = {};
+    int16_t w[kMax] = {};
+    int16_t h[kMax] = {};
+    size_t count = 0;
+
+    void add(int bx, int by, int bw, int bh) {
+      if (count >= kMax) return;
+      x[count] = static_cast<int16_t>(bx);
+      y[count] = static_cast<int16_t>(by);
+      w[count] = static_cast<int16_t>(bw);
+      h[count] = static_cast<int16_t>(bh);
+      ++count;
+    }
+
+    bool hits(int bx, int by, int bw, int bh) const {
+      for (size_t i = 0; i < count; ++i) {
+        if (bx < x[i] + w[i] && bx + bw > x[i] && by < y[i] + h[i] && by + bh > y[i]) return true;
+      }
+      return false;
+    }
+  };
+
+  // The distance/age line under a member's marker. Four shapes, and which one is
+  // drawn is TeamFix.h's teamMarkerLabel(). False when every spot it tried was
+  // taken, which is a dropped label and never an overprinted one.
+  bool drawTeamLabel(int tipX, int tipY, const char* text, TeamLabelBoxes& taken);
   void teamRowText(size_t slot, char* buf, size_t bufLen) const;
   TeamVisibility teamSlotVisibility(size_t slot) const;
 

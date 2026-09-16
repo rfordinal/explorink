@@ -7323,6 +7323,53 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
   renderer.drawText(fontId, cx - (inkLeft + inkRight) / 2, cy - (ascender * 16) / 25, acr, stale);
 }
 
+bool MapActivity::drawTeamLabel(int tipX, int tipY, const char* text, TeamLabelBoxes& taken) {
+  // Under the point, centred on it. SMALL_FONT_ID for the same reason the pins'
+  // edge markers use it: a distance readout is detail-view chrome, not a primary
+  // label, and the heavier face overstated it on the panel.
+  const int width = renderer.getTextWidth(SMALL_FONT_ID, text);
+  const int height = renderer.getLineHeight(SMALL_FONT_ID);
+  const PinShapeFrame& frame = kPinShapeFrames[0];
+
+  // Four places to try, nearest first: under the point, above the head, then
+  // either side of it. Two members a few hundred metres apart land their labels
+  // on top of each other otherwise, and two numbers overprinted read as one
+  // wrong number (the same failure the map's own place labels avoid,
+  // MapLabels.h).
+  const int headY = tipY - frame.tipY + kPinShapeHead0Y;
+  const struct {
+    int x;
+    int y;
+  } spots[] = {
+      {tipX - width / 2, tipY + 2},
+      {tipX - width / 2, tipY - frame.tipY - height - 2},
+      {tipX + frame.w / 2 + 2, headY - height / 2},
+      {tipX - frame.w / 2 - width - 2, headY - height / 2},
+  };
+
+  for (const auto& spot : spots) {
+    if (spot.x < 0 || spot.y < 0) continue;
+    if (spot.x + width > renderer.getScreenWidth() || spot.y + height > renderer.getScreenHeight()) continue;
+    if (chrome_.hits(spot.x, spot.y, width, height)) continue;
+    if (taken.hits(spot.x, spot.y, width, height)) continue;
+    // White first, one pixel out in each direction, then the black text on top.
+    // Without it the number lands straight on road lines and area dither and is
+    // unreadable -- seen in the simulator, 2026-09-16. Four passes rather than
+    // eight: the diagonals add ink and almost no legibility at this size, and
+    // this runs inside a full render that is already a second long.
+    renderer.drawText(SMALL_FONT_ID, spot.x - 1, spot.y, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x + 1, spot.y, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x, spot.y - 1, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x, spot.y + 1, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x, spot.y, text, true);
+    taken.add(spot.x, spot.y, width, height);
+    return true;
+  }
+  // Dropped rather than overprinted: the balloon already says who and where, and
+  // the Group list has the number for whoever wants it.
+  return false;
+}
+
 void MapActivity::drawTeam() {
   // One switch for the whole layer. Off means no marker and no reading of the
   // store -- a rider who does not ride in a group pays nothing for this.
@@ -7334,6 +7381,27 @@ void MapActivity::drawTeam() {
   int drawn = 0;
   int tooOld = 0;
   int offPanel = 0;
+
+  // From this rung out, a marker on the panel can still be kilometres away and
+  // the distance stops being readable off the map itself: rung 2 is 6 m/px and
+  // covers 2.9 x 4.8 km (docs/zoom-rungs.md). Closer in, the scale bar and the
+  // map do the job and a number per member is clutter.
+  static constexpr uint8_t kTeamDistanceFromRung = 2;
+  const bool wantDistance = zoomStep() >= kTeamDistanceFromRung;
+
+  // What a label may not cover: the balloons themselves, the labels already
+  // placed, and the rider's own marker. ~200 bytes on this frame, which is
+  // inside the Resource Protocol's cap and far cheaper than the label pass the
+  // map's own names use (a 1,250-byte occupancy grid, MapLabels.h) -- twelve
+  // members cannot fill one.
+  TeamLabelBoxes taken;
+  {
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    markerRect(MapViewport::anchorScreenX(renderer.getScreenWidth()), MapViewport::markerYForStep(markerStep()), mx, my,
+               mw, mh);
+    taken.add(mx, my, mw, mh);
+  }
+  int labelsDropped = 0;
 
   for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
     const TeamMember& member = team_.roster().at(slot);
@@ -7367,15 +7435,29 @@ void MapActivity::drawTeam() {
       continue;
     }
 
-    drawTeamBalloon(static_cast<int>(sx), static_cast<int>(sy), member.acr,
-                    visibility == TeamVisibility::Stale);
+    const bool stale = visibility == TeamVisibility::Stale;
+    drawTeamBalloon(static_cast<int>(sx), static_cast<int>(sy), member.acr, stale);
+    taken.add(static_cast<int>(sx) - frame.tipX, static_cast<int>(sy) - frame.tipY, frame.w, frame.h);
+    // The label says what the balloon cannot: how far, and how old. Distance only
+    // once the rung is wide enough that the eye cannot judge it; age only when
+    // the position has gone stale, so a group riding together draws no text at
+    // all (TeamFix.h, teamMarkerLabel).
+    const uint32_t metres =
+        hasReceivedAny_ ? PinGeo::distanceM(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7) : 0;
+    char label[kTeamLabelBytes];
+    if (teamMarkerLabel(wantDistance && hasReceivedAny_, metres, stale,
+                        teamFixAge(fix, MapTeam::utcNowOrZero(), millis()), label, sizeof(label)) != 0 &&
+        !drawTeamLabel(static_cast<int>(sx), static_cast<int>(sy), label, taken)) {
+      ++labelsDropped;
+    }
     ++drawn;
   }
 
   // Never silent: a member who is not on the panel is the case this feature
   // exists for, and the log is what says which of the three reasons it was.
   if (drawn > 0 || tooOld > 0 || offPanel > 0) {
-    LOG_DBG(kLogTag, "team: %d drawn, %d too old, %d off the panel", drawn, tooOld, offPanel);
+    LOG_DBG(kLogTag, "team: %d drawn, %d too old, %d off the panel, %d label(s) with nowhere clear", drawn, tooOld,
+            offPanel, labelsDropped);
   }
 }
 

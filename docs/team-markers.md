@@ -227,6 +227,34 @@ initials answers the wrong question. Until that is designed, a member outside
 the viewport is counted in the log and carried by the Group list, which has
 their distance and direction.
 
+### The label under a marker
+
+The balloon says who and whether the position is current. The line under it says
+**how far** and **how old**, and it has four shapes:
+
+| label | when |
+|---|---|
+| *(nothing)* | current, and close enough that the map itself shows the distance |
+| `1.2 km` | far: the rung is zoomed out past rung 2 (6 m/px, 2.9 x 4.8 km on the panel) |
+| `1.2 km/12m` | far and stale |
+| `12m` | stale, but close enough to judge the distance by eye |
+
+So a group riding together draws no text at all, which is the common case and
+the one that must stay clean. Age appears exactly when the marker goes hollow,
+so the two say the same thing at two resolutions; `?` is an age that cannot be
+known, which is every replayed fix on a device with no clock.
+
+**A label that cannot find a clear spot is dropped, not overprinted.** It tries
+four places around the marker -- under the point, above the head, then either
+side -- against the balloons already drawn, the labels already placed, the
+rider's own marker and the screen's furniture. Two numbers on top of each other
+read as one wrong number. The count of dropped labels goes in the debug line
+next to the drawn/too-old/off-panel counts.
+
+It carries a white halo, drawn as four offset passes before the black text: at
+`SMALL` on a map full of road lines and area dither it is otherwise unreadable
+(simulator, 2026-09-16).
+
 ### The Group list
 
 Map menu > **Group**. One row per member: acronym, optional name, and a value

@@ -278,6 +278,59 @@ TEST(TeamGrammar, ListReloadAndLog) {
   EXPECT_EQ(parseMapCommand("team list extra").type, MapCommandType::Error);
 }
 
+TEST(TeamLabel, FourShapes) {
+  TeamFixAge fresh;
+  fresh.known = true;
+  fresh.seconds = 30;
+  TeamFixAge old;
+  old.known = true;
+  old.seconds = 12 * 60;
+
+  char buf[kTeamLabelBytes];
+  // Nothing: close in, and current.
+  EXPECT_EQ(teamMarkerLabel(false, 1200, false, fresh, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "");
+
+  // Distance alone: the rung is wide enough that the eye cannot judge it.
+  ASSERT_GT(teamMarkerLabel(true, 1200, false, fresh, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "1.2 km");
+
+  // Age alone: close enough to see, old enough to doubt.
+  ASSERT_GT(teamMarkerLabel(false, 1200, true, old, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "12m");
+
+  // Both.
+  ASSERT_GT(teamMarkerLabel(true, 1200, true, old, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "1.2 km/12m");
+}
+
+TEST(TeamLabel, HoursAndTheUnknownAge) {
+  TeamFixAge hours;
+  hours.known = true;
+  hours.seconds = 3 * 3600 + 900;
+  char buf[kTeamLabelBytes];
+  ASSERT_GT(teamMarkerLabel(false, 0, true, hours, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "3h");
+
+  // A replayed fix on a device with no clock: `?`, never a number nobody can
+  // stand behind.
+  const TeamFixAge unknown;
+  ASSERT_GT(teamMarkerLabel(true, 450, true, unknown, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "450 m/?");
+}
+
+TEST(TeamLabel, DistanceSteps) {
+  TeamFixAge age;
+  char buf[kTeamLabelBytes];
+  ASSERT_GT(teamMarkerLabel(true, 940, false, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "940 m");
+  ASSERT_GT(teamMarkerLabel(true, 9400, false, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "9.4 km");
+  // Rounded, not truncated, once the decimal is gone.
+  ASSERT_GT(teamMarkerLabel(true, 12600, false, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "13 km");
+}
+
 // --- the console over a fake source -----------------------------------------
 
 class FakeTeamSource : public IMapTeamSource {

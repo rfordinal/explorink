@@ -2,6 +2,7 @@
 
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
 
+#include <cstddef>
 #include <cstdint>
 
 // One member's last known position, and the age rules the panel draws by.
@@ -68,5 +69,28 @@ enum class TeamVisibility : uint8_t {
 // where everyone was. It draws as Stale, so the panel never claims it is
 // current. `hideAfterS` 0 turns hiding off entirely.
 TeamVisibility teamFixVisibility(const TeamFixAge& age, uint32_t staleAfterS, uint32_t hideAfterS);
+
+// The label under a member's marker. Four shapes, and three of them say
+// something the balloon alone cannot: how far and how old.
+//
+//   ""             everything current, and the rider can see the distance
+//   "1.2 km"       far enough that the gap matters
+//   "1.2 km/12m"   far and old
+//   "12m"          old, but close enough to judge by eye
+//
+// **Age only when the position has gone stale**, so a group riding together
+// draws no text at all; **distance only when the panel cannot show it** -- the
+// marker is off the frame, or the rung is zoomed out far enough that "somewhere
+// over there" needs a number (MapActivity, kTeamDistanceFromRung).
+//
+// An age that cannot be known prints `?` rather than a number nobody can stand
+// behind: that is every replayed fix on a device with no clock (teamFixAge).
+//
+// Writes into `buf` and returns its length; 0 means there is nothing to draw.
+size_t teamMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const TeamFixAge& age, char* buf,
+                       size_t bufLen);
+
+// Longest label this writes: "1234.5 km/999h" and the terminator, rounded up.
+inline constexpr size_t kTeamLabelBytes = 24;
 
 #endif  // ENABLE_TEAM_MARKERS
