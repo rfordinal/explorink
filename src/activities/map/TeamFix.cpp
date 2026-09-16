@@ -45,9 +45,18 @@ size_t formatAge(const TeamFixAge& age, char* buf, size_t bufLen) {
     buf[1] = '\0';
     return 1;
   }
-  const int written = age.seconds < 3600
-                          ? snprintf(buf, bufLen, "%lum", static_cast<unsigned long>(age.seconds / 60))
-                          : snprintf(buf, bufLen, "%luh", static_cast<unsigned long>(age.seconds / 3600));
+
+  // **Rounded up, to five minutes.** Two reasons and they are the same reason.
+  // A number that ticks on e-ink is a waveform pass per tick, and the panel only
+  // revisits these every kTeamAgeRefreshMs anyway (MapActivity) -- so a
+  // resolution finer than that period is a number that is wrong most of the
+  // time. And rounding *up* is the only safe direction: "10 minutes" for a fix
+  // that is nine and a half is a position claimed older than it is, which costs
+  // nobody anything, while rounding down claims a stale position is fresher.
+  const uint32_t minutes = (age.seconds + 59) / 60;
+  const uint32_t rounded = ((minutes + kTeamAgeStepMinutes - 1) / kTeamAgeStepMinutes) * kTeamAgeStepMinutes;
+  const int written = rounded < 60 ? snprintf(buf, bufLen, "%lum", static_cast<unsigned long>(rounded))
+                                   : snprintf(buf, bufLen, "%luh", static_cast<unsigned long>((rounded + 59) / 60));
   return written > 0 && static_cast<size_t>(written) < bufLen ? static_cast<size_t>(written) : 0;
 }
 

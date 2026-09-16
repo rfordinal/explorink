@@ -246,6 +246,25 @@ known, which is every replayed fix on a device with no clock. **Under a minute
 the age is left out** -- `0m` reads as information and carries none, and there
 the hollow head is the whole message.
 
+**Ages are rounded up, to five minutes.** Up rather than down because a position
+must never be claimed fresher than it is, and to five because that is how often
+the panel revisits it (below): a finer number would be wrong between refreshes.
+
+### The panel re-reads the ages every five minutes
+
+What is on the glass is only as fresh as the last redraw, and what makes the map
+redraw is a **fix**. A rider whose phone has stopped talking, or whose group has
+gone quiet, would otherwise read a frame saying everyone is current for as long
+as they look at it -- which is exactly the moment the ages matter.
+
+So `MapActivity::serviceTeamAges()` revisits them on their own clock, one step
+apart (`kTeamAgeRefreshMs` = `kTeamAgeStepMinutes`), and **redraws only when the
+frame would differ**: it folds every member's visibility and reported age step
+into one number and compares it with the last drawn one. A group that has gone
+quiet therefore costs one compare every five minutes and no refresh at all once
+the last marker is past hiding. It does not stamp the busy badge -- that belongs
+to a press the rider made, and nobody asked for this frame.
+
 **A label that cannot find a clear spot is dropped, not overprinted.** It tries
 four places around the marker -- under the point, above the head, then either
 side -- against the balloons already drawn, the labels already placed, the

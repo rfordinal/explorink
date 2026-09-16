@@ -716,6 +716,18 @@ class MapActivity final : public Activity,
   uint8_t pendingTeamArg_ = 0;
 
   void servicePendingTeamPopup();
+  // Re-reads every member's age on its own clock and redraws only when the frame
+  // would differ. What the panel shows is otherwise as old as the last fix,
+  // which is exactly wrong when the fixes have stopped.
+  void serviceTeamAges(uint32_t now);
+  uint32_t teamAgeSignature() const;
+
+  // How often the ages are revisited, and it is the step they are reported in
+  // (TeamFix.h, kTeamAgeStepMinutes): a finer period redraws for a number that
+  // has not changed.
+  static constexpr uint32_t kTeamAgeRefreshMs = kTeamAgeStepMinutes * 60u * 1000u;
+  uint32_t teamAgeCheckedMs_ = 0;
+  uint32_t teamAgeSignature_ = 0;
   void openTeamMenu();
   void showTeamMemberOnMap(size_t slot);
   void drawTeam();

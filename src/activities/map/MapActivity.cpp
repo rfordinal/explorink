@@ -3542,6 +3542,9 @@ void MapActivity::loop() {
   if (bleInUse_) freeink::BlePositionServer::getInstance().flushTransferStatus();
 
   const uint32_t now = millis();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  serviceTeamAges(now);
+#endif
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
     redrawDueMs_ = 0;
     renderCurrent();
@@ -7321,6 +7324,57 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
   const int ascender = renderer.getTextHeight(fontId);
   // The pen goes where the *ink's* middle lands on the head's centre.
   renderer.drawText(fontId, cx - (inkLeft + inkRight) / 2, cy - (ascender * 16) / 25, acr, stale);
+}
+
+void MapActivity::serviceTeamAges(uint32_t now) {
+  // The panel holds whatever was drawn last, so an age on it is only as fresh as
+  // the last redraw -- and what makes the map redraw is a *fix*. A rider whose
+  // phone has stopped talking, or whose group has gone quiet, would otherwise
+  // read a frame saying everyone is current for as long as they look at it.
+  //
+  // So the ages are revisited on their own clock, at the step they are reported
+  // in (kTeamAgeStepMinutes): a finer period would redraw for a number that has
+  // not changed, and a coarser one would leave the panel lying for longer than
+  // the number's own resolution.
+  if (SETTINGS.mapTeamMarkers == 0) return;
+  if (now - teamAgeCheckedMs_ < kTeamAgeRefreshMs) return;
+  teamAgeCheckedMs_ = now;
+
+  // **Only redraw when what would be drawn has changed.** Every marker hidden,
+  // or every age still inside the same five-minute step, means an identical
+  // frame -- and a full refresh for an identical frame is a second of panel time
+  // and a slice of the ghosting budget spent on nothing. A group that has gone
+  // quiet costs one compare every five minutes and no refresh at all once the
+  // last marker is past hiding.
+  const uint32_t signature = teamAgeSignature();
+  if (signature == teamAgeSignature_) return;
+  teamAgeSignature_ = signature;
+
+  // Not armRedraw(): that one stamps the busy badge, which belongs to a press
+  // the rider made. Nobody asked for this frame.
+  redrawDueMs_ = now;
+  LOG_DBG(kLogTag, "team: an age crossed a %u-minute step, redrawing", static_cast<unsigned>(kTeamAgeStepMinutes));
+}
+
+uint32_t MapActivity::teamAgeSignature() const {
+  // What the next frame would say about every member, folded into one number:
+  // the visibility and the reported age step, per slot. Cheap enough to run
+  // every five minutes and exact enough that it changes if and only if some
+  // marker would look different.
+  const uint32_t nowUtc = MapTeam::utcNowOrZero();
+  const uint32_t nowMs = millis();
+  uint32_t signature = 2166136261u;
+  for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+    const TeamMember& member = team_.roster().at(slot);
+    const TeamFix& fix = team_.store().at(slot);
+    if (!member.present || !member.enabled || !fix.present) continue;
+    const TeamFixAge age = teamFixAge(fix, nowUtc, nowMs);
+    const uint32_t step = age.known ? (age.seconds / 60) / kTeamAgeStepMinutes : 0;
+    signature = (signature ^ static_cast<uint32_t>(slot)) * 16777619u;
+    signature = (signature ^ static_cast<uint32_t>(teamSlotVisibility(slot))) * 16777619u;
+    signature = (signature ^ step) * 16777619u;
+  }
+  return signature;
 }
 
 bool MapActivity::drawTeamLabel(int tipX, int tipY, const char* text, TeamLabelBoxes& taken) {

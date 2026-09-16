@@ -89,9 +89,19 @@ TeamVisibility teamFixVisibility(const TeamFixAge& age, uint32_t staleAfterS, ui
 // An age under a minute prints nothing at all -- `0m` reads as information and
 // carries none.
 //
+// Every other age is **rounded up to kTeamAgeStepMinutes**, which is also how
+// often the panel revisits it: a finer number would be wrong between refreshes,
+// and rounding up is the safe direction (a position is never claimed fresher
+// than it is).
+//
 // Writes into `buf` and returns its length; 0 means there is nothing to draw.
 size_t teamMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const TeamFixAge& age, char* buf,
                        size_t bufLen);
+
+// The step an age is reported in, and the period the map re-reads it on
+// (MapActivity::kTeamAgeRefreshMs). One number, because a display step finer
+// than the refresh is a number that is wrong most of the time.
+inline constexpr uint32_t kTeamAgeStepMinutes = 5;
 
 // Longest label this writes: "1234.5 km/999h" and the terminator, rounded up.
 inline constexpr size_t kTeamLabelBytes = 24;

@@ -297,11 +297,34 @@ TEST(TeamLabel, FourShapes) {
 
   // Age alone: close enough to see, old enough to doubt.
   ASSERT_GT(teamMarkerLabel(false, 1200, true, old, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "12m");
+  EXPECT_STREQ(buf, "15m");
 
   // Both.
   ASSERT_GT(teamMarkerLabel(true, 1200, true, old, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "1.2 km/12m");
+  EXPECT_STREQ(buf, "1.2 km/15m");
+}
+
+TEST(TeamLabel, RoundedUpToFiveMinutes) {
+  char buf[kTeamLabelBytes];
+  TeamFixAge age;
+  age.known = true;
+  // Rounded up, never down: a position is never claimed fresher than it is, and
+  // the step matches how often the panel revisits it.
+  age.seconds = 61;
+  ASSERT_GT(teamMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "5m");
+  age.seconds = 5 * 60;
+  ASSERT_GT(teamMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "5m");
+  age.seconds = 5 * 60 + 1;
+  ASSERT_GT(teamMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "10m");
+  age.seconds = 47 * 60;
+  ASSERT_GT(teamMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "50m");
+  age.seconds = 58 * 60;
+  ASSERT_GT(teamMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
+  EXPECT_STREQ(buf, "1h");
 }
 
 TEST(TeamLabel, HoursAndTheUnknownAge) {
@@ -310,7 +333,7 @@ TEST(TeamLabel, HoursAndTheUnknownAge) {
   hours.seconds = 3 * 3600 + 900;
   char buf[kTeamLabelBytes];
   ASSERT_GT(teamMarkerLabel(false, 0, true, hours, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "3h");
+  EXPECT_STREQ(buf, "4h");
 
   // A replayed fix on a device with no clock: `?`, never a number nobody can
   // stand behind.
