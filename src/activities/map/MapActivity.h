@@ -738,6 +738,10 @@ class MapActivity final : public Activity,
   // the position is current, and the panel must never draw "here they are" and
   // "here they were an hour ago" the same way.
   void drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale);
+  // The grey fill for a stale member, painted row by row inside the silhouette:
+  // grey on this panel is a dither, and a rectangle of it would spill past the
+  // balloon.
+  void fillTeamBodyDither(int x, int y) const;
   // What one team pass has already put on the panel, so two labels cannot land
   // on top of each other. A flat list rather than the map's own occupancy grid:
   // twelve members plus their labels and the rider's marker is 25 boxes, and a

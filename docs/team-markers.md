@@ -142,9 +142,17 @@ device may not have at boot.
 
 | state | drawn as | when |
 |---|---|---|
-| fresh | solid black head | younger than `mapTeamStaleMin` (5 min) |
-| stale | dithered head | older than that |
+| fresh | solid black balloon, white initials | younger than `mapTeamStaleMin` (5 min) |
+| stale | grey balloon, black initials | older than that |
 | hidden | not drawn | older than `mapTeamHideMin` (30 min); 0 turns hiding off |
+
+**Grey, not hollow.** A hollow marker is a different *shape* of thing and reads
+as a different kind of mark rather than as the same person an hour older;
+fading is what everyone already reads as "older" without being told. Maintainer's
+call, 2026-09-16, on the first version. Grey on this panel is a dither
+(`eink-grayscale.md`), painted row by row inside the silhouette because a
+rectangle of it would spill past the shape -- and it is the **light** dither,
+because black initials on the dark one are mush at this size.
 
 Age prefers the sender's own timestamp when both clocks exist, because that is
 when the rider was actually there, and falls back to our receipt uptime for a
@@ -171,10 +179,8 @@ halo around it, upright only, because a team marker never rotates and sixteen
 more arrays would be flash spent on nothing.
 
 So a **current** member is a solid black balloon with white initials, and a
-**stale** one is the hollow balloon with black initials. The fill answers both
-questions with one mark: who it is, and whether the position is current. A
-dithered fill was tried first and thrown away in the same pass -- white letters
-on a 50 % dither are mush at 22 px.
+**stale** one is the same balloon in grey with black ones -- the shape never
+changes, only how dark it is.
 
 **The letters are as large as they fit**, which a filled balloon allows and a
 hollow one did not: outline and fill are the same ink, so a letter only has to

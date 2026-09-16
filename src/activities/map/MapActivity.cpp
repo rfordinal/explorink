@@ -7226,6 +7226,27 @@ TeamVisibility MapActivity::teamSlotVisibility(size_t slot) const {
                            static_cast<uint32_t>(SETTINGS.mapTeamHideMin) * 60u);
 }
 
+void MapActivity::fillTeamBodyDither(int x, int y) const {
+  // The body bitmap is 1bpp MSB-first with bit 0 = ink (pins_shape.h), so each
+  // row is a handful of runs. Filling those runs rather than the bounding box is
+  // what keeps the grey inside the balloon.
+  const PinShapeFrame& frame = kPinShapeFrames[0];
+  const int stride = (frame.w + 7) / 8;
+  for (int row = 0; row < frame.h; ++row) {
+    const uint8_t* bits = kPinShapeBody0Bits + row * stride;
+    int runStart = -1;
+    for (int col = 0; col <= frame.w; ++col) {
+      const bool ink = col < frame.w && ((bits[col >> 3] >> (7 - (col & 7))) & 1) == 0;
+      if (ink && runStart < 0) {
+        runStart = col;
+      } else if (!ink && runStart >= 0) {
+        renderer.fillRectDither(x + runStart, y + row, col - runStart, 1, Color::LightGray);
+        runStart = -1;
+      }
+    }
+  }
+}
+
 void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale) {
   // The same baked shape a pin uses, point-down only: a member's marker never
   // rotates, because rotation already means "the thing is off that way" for pins
@@ -7239,13 +7260,19 @@ void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stal
   renderer.drawMono1bpp(frame.mask, x, y, frame.w, frame.h, false);
 
   // **A current member is a solid black balloon with white initials; a stale one
-  // is the hollow balloon with black initials.** Filling the whole body rather
+  // is the same balloon in grey with black ones.** Filling the whole body rather
   // than a disc inside the head was the maintainer's call, 2026-09-16: a black
   // circle in a white balloon reads as a pin with a dot in it, and the thing
-  // that has to be obvious at a glance is person-versus-place. The fill is also
-  // what says the position is current, so the two questions are answered by one
-  // mark.
+  // that has to be obvious at a glance is person-versus-place.
+  //
+  // **Grey, not hollow**, is the second half of that call. A hollow marker is a
+  // different *shape* of thing, and a rider reads that as a different kind of
+  // mark rather than as the same person an hour older; fading is what everyone
+  // already reads as "older". Grey on this panel is a dither
+  // (docs/eink-grayscale.md), so it is painted row by row inside the silhouette
+  // -- a rectangle of dither would spill past the shape.
   if (stale) {
+    fillTeamBodyDither(x, y);
     renderer.drawMono1bpp(frame.ink, x, y, frame.w, frame.h, true);
   } else {
     renderer.drawMono1bpp(kPinShapeBody0Bits, x, y, frame.w, frame.h, true);
