@@ -252,27 +252,46 @@ and both directions worked.
 
 **So 1.8 V stays.** The setting is now measured rather than inherited.
 
-## What the power amplifier draws `[measured, partial]`
+## What the power amplifier draws `[measured]`
 
 `CMD:LORA CW <seconds>` puts an unmodulated carrier up so a USB meter can read
-the PA. Board A through the meter, whole-board VBUS at 5.25 V:
+the PA. Board A through the meter, whole-board VBUS at 5.25 V, one reader per
+run, all in one session on 2026-09-16:
 
-| state | current |
-|---|---|
-| idle, radio up | 94.5 mA |
-| carrier at +22 dBm | 233 mA |
-| **difference** | **+139 mA** |
+| commanded power | idle | carrier | PA delta |
+|---|---|---|---|
+| +10 dBm | 89.2 mA | 133.2 mA | **44.0 mA** |
+| +14 dBm | 89.7 mA | 158.5 mA | **68.8 mA** |
+| +17 dBm | 89.1 mA | 183.8 mA | **94.8 mA** |
+| +20 dBm | 88.9 mA | 210.7 mA | **121.7 mA** |
+| +22 dBm | 89.2 mA | 228.0 mA | **138.9 mA** |
 
-That is the PA-class answer RSSI could not give. An SX1261 tops out near
-+15 dBm and a few tens of milliamps; a draw like this is the SX1262's
-high-power amplifier. It agrees with LilyGo's own product README, which lists
-the part as SX1262 for this board.
+The idle row is the same to within 0.8 mA across every run, and +22 dBm
+measured twice in the session came back 137.2 and 138.9 mA -- about 1 %. Those
+two are the reason the ladder can be read as a ladder rather than as five
+separate numbers.
 
-**The sweep below 22 dBm is missing and the runs that attempted it are
-discarded**: the USB meter hung partway (a documented failure of that
-instrument, parent `docs/usb-power-meter.md`) and the procedure was at fault --
-overlapping reader processes, where the meter tolerates exactly one. Redo with
-one reader per run and a bus check before and after.
+**This settles the part.** An SX1261 stops at +15 dBm; this radio keeps
+climbing through 17, 20 and 22, and draws 139 mA of VBUS doing it. It is an
+SX1262, which is also what LilyGo's product README says for this board.
+The chip's own version register cannot say so -- see above.
+
+**It is VBUS, not chip current.** The number includes the 5 V to 3.3 V
+conversion and whatever else the board does while transmitting, so it is not
+comparable to a datasheet's PA figure. What it is good for is exactly what it
+was used for: a ratio between power settings, and a class of amplifier.
+
+### The first two runs were charging current, not radio current
+
+The 10 and 14 dBm runs were taken first and read an **idle of 356 mA**, four
+times the settled figure, which swamped a 44 mA PA delta and produced an
+inverted ladder. The cause is in the instrument's own caveat: VBUS is the board
+**plus the charger**, and the cell was still taking a charge.
+
+The rule this leaves: **a PA ladder is only readable once the idle row repeats**.
+Take idle first, wait for it to stop moving, and re-run any step whose idle
+disagrees with the others -- the ladder's whole value is the difference between
+rows, and a drifting baseline destroys it silently.
 
 ## Deep sleep needs a latch, not just a park `[written, not exercised]`
 
