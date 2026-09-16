@@ -77,6 +77,14 @@ class MapTeam final : public IMapTeamSource {
   // source and same rule as MapPins::utcNowOrZero().
   static uint32_t utcNowOrZero();
 
+  // This run's identity, drawn once from the hardware RNG and never zero.
+  //
+  // It is what makes a stored `uptime_ms` usable: on a device with no clock the
+  // age of a position is the difference between two uptimes, and that only means
+  // anything inside one run. Written into every black box row and compared on
+  // replay (TeamRecord.h, the `boot` column).
+  static uint32_t bootId();
+
   // How often, and how far, before the rider's own row is written again.
   // Deliberately not settings: a rider choosing a logging cadence is a
   // preference nobody asked for, and both numbers exist only to keep a

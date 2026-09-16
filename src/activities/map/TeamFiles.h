@@ -59,7 +59,12 @@ class TeamBlackBox {
   // wins: dated files newest first, `bb-noclock.csv` last, and inside one file
   // the last row for a member. Returns false only when the directory could not
   // be read.
-  static bool replayLast(const TeamRoster& roster, TeamStore& store);
+  //
+  // `bootId` is this run's identity (MapTeam::bootId()). A row carrying it was
+  // written by *this* run, so its uptime is comparable with the current one and
+  // the position stays dateable across a re-entry into the map; every other row
+  // is honestly undateable and draws as stale with `?`.
+  static bool replayLast(const TeamRoster& roster, TeamStore& store, uint32_t bootId);
 
   // Deletes dated files older than `keepDays` days before `nowUtc`. Does nothing
   // when the device has no clock (`nowUtc` 0): a day it cannot name is a day it

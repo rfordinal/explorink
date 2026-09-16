@@ -117,6 +117,23 @@ TEST(TeamRosterJson, ABadRowIsSkippedAndCounted) {
   EXPECT_EQ(skipped, 1u);
 }
 
+TEST(TeamRecordCsv, TheBootColumnIsOptional) {
+  TeamRecord out;
+  // A card written before the column existed is still somebody's last known
+  // position: it parses, and its boot is 0, which means "not this run".
+  ASSERT_TRUE(decodeTeamRecord("1789430400,81234,RF,48.1486000,17.1077000,4,62,lora", out));
+  EXPECT_EQ(out.boot, 0u);
+  EXPECT_STREQ(out.who, "RF");
+  EXPECT_EQ(out.latE7, 481486000);
+
+  ASSERT_TRUE(decodeTeamRecord("1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora", out));
+  EXPECT_EQ(out.boot, 3149271044u);
+  EXPECT_EQ(out.latE7, 481486000);
+
+  // Ten fields is not a row this build knows how to read.
+  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,RF,48.1,17.1,,,lora", out));
+}
+
 TEST(TeamRecordCsv, RoundTrips) {
   TeamRecord rec;
   rec.utc = 1789430400u;
@@ -129,11 +146,12 @@ TEST(TeamRecordCsv, RoundTrips) {
   rec.speedKmh = 62;
   rec.hasSpeed = true;
   rec.source = TeamFixSource::Lora;
+  rec.boot = 3149271044u;
 
   char line[kTeamLineMax + 1];
   const size_t len = encodeTeamRecord(rec, line, sizeof(line));
   ASSERT_GT(len, 0u);
-  EXPECT_STREQ(line, "1789430400,81234,RF,48.1486000,17.1077000,4,62,lora");
+  EXPECT_STREQ(line, "1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora");
 
   TeamRecord back;
   ASSERT_TRUE(decodeTeamRecord(std::string_view(line, len), back));
@@ -144,6 +162,7 @@ TEST(TeamRecordCsv, RoundTrips) {
   EXPECT_TRUE(back.hasHeading);
   EXPECT_EQ(back.speedKmh, 62);
   EXPECT_EQ(back.source, TeamFixSource::Lora);
+  EXPECT_EQ(back.boot, rec.boot);
   EXPECT_STREQ(back.who, "RF");
 }
 
@@ -156,7 +175,7 @@ TEST(TeamRecordCsv, EmptyHeadingAndSpeedStayEmpty) {
 
   char line[kTeamLineMax + 1];
   ASSERT_GT(encodeTeamRecord(rec, line, sizeof(line)), 0u);
-  EXPECT_STREQ(line, "0,0,ME,-48.1486000,0.0000005,,,gnss");
+  EXPECT_STREQ(line, "0,0,0,ME,-48.1486000,0.0000005,,,gnss");
 
   TeamRecord back;
   ASSERT_TRUE(decodeTeamRecord(line, back));
@@ -168,8 +187,8 @@ TEST(TeamRecordCsv, EmptyHeadingAndSpeedStayEmpty) {
 TEST(TeamRecordCsv, MalformedRowsAreRefused) {
   TeamRecord out;
   EXPECT_FALSE(decodeTeamRecord(kTeamCsvHeader, out));          // the header line
-  EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,,,", out));   // no source word
-  EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,,,lora,x", out));  // one field too many
+  EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,,,", out));        // no source word
+  EXPECT_FALSE(decodeTeamRecord("1,2,3,RF,48.1,17.1,,,lora,x", out));  // one field too many
   EXPECT_FALSE(decodeTeamRecord("1,2,TOOLONG,48.1,17.1,,,lora", out));
   EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,16,,lora", out));  // heading out of range
 }

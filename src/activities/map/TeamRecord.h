@@ -16,8 +16,16 @@
 //
 // CSV, one row per accepted position, header written when a file is created:
 //
-//   utc,uptime_ms,who,lat,lon,heading,speed_kmh,src
-//   1789430400,81234,RF,48.1486000,17.1077000,4,62,lora
+//   utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
+//   1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora
+//
+// **`boot` is what makes `uptime_ms` mean something after a reload.** A device
+// with no clock dates a position by its own uptime, and an uptime from a
+// *previous* run is a number with no relation to this one -- so without this
+// column every replayed position had to be treated as undateable, and re-opening
+// the map turned every age into `?` even for a fix heard a minute earlier
+// (seen on an X4 Pro, 2026-09-16). With it, a row from this run is as good as
+// live and one from an older run is honestly unknown.
 //
 // CSV rather than the pins log's `v1|...|crc32` framing, deliberately. This file
 // is read by a person -- on a laptop, possibly by somebody looking for a rider
@@ -42,6 +50,9 @@ inline constexpr const char* kTeamSelfWho = "ME";
 struct TeamRecord {
   uint32_t utc = 0;
   uint32_t uptimeMs = 0;
+  // Identifies the run of *this device* that wrote the row, so its uptime can be
+  // compared against the current one. 0 when the row predates the column.
+  uint32_t boot = 0;
   char who[kTeamAcrBytes] = {};
   int32_t latE7 = 0;
   int32_t lonE7 = 0;
@@ -56,7 +67,7 @@ struct TeamRecord {
 // the type, not for today's data (same rule as kPinLineMax).
 inline constexpr size_t kTeamLineMax = 96;
 
-inline constexpr const char* kTeamCsvHeader = "utc,uptime_ms,who,lat,lon,heading,speed_kmh,src";
+inline constexpr const char* kTeamCsvHeader = "utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src";
 
 const char* teamSourceText(TeamFixSource source);
 bool teamSourceFromText(std::string_view text, TeamFixSource& out);
@@ -68,6 +79,10 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen);
 // Parses one row, terminator already stripped, header line included (it is
 // refused like any other malformed row). False means "skip this line and keep
 // reading" -- never "the file is broken".
+//
+// Takes the row with or without the `boot` column: a card written by an older
+// build is still somebody's last known position, and refusing it would throw
+// away the evidence over a field that only helps dating.
 bool decodeTeamRecord(std::string_view line, TeamRecord& out);
 
 // The file a fix belongs in. Rotation is by day, so the name carries the date:

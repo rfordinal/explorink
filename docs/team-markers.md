@@ -91,14 +91,15 @@ Edited three ways: by hand on the card, then `team reload`; or with `team add` /
 One CSV row per accepted position, header written when a file is created:
 
 ```
-utc,uptime_ms,who,lat,lon,heading,speed_kmh,src
-1789430400,81234,RF,48.1486000,17.1077000,4,62,lora
+utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
+1789430400,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora
 ```
 
 | field | notes |
 |---|---|
 | `utc` | the sender's clock; **0 means they had no clock**, never a time we invented |
 | `uptime_ms` | our uptime at receipt -- what orders rows inside a run with no clock |
+| `boot` | which run of this device wrote the row; 0 in a file older than the column |
 | `who` | member acronym, or `ME` for the rider |
 | `lat`, `lon` | decimal degrees, 7 places, integer-formatted (there is no FPU) |
 | `heading` | 0-15 sixteenths of a turn, empty when not sent |
@@ -124,6 +125,18 @@ a laptop is reading never changes under it.
 A device with no clock writes `bb-noclock.csv`, and **rotation never deletes
 it**: a day it cannot name is a day it cannot judge. Every X4 is such a device
 until the phone hands it a time.
+
+**`boot` is what makes the stored time usable.** A device with no clock dates a
+position by the difference between two of its own uptimes, and an uptime from a
+previous run is a number with no relation to this one. Without the column every
+replayed row had to be treated as undateable -- so **re-entering the map turned
+every age into `?`**, even for a position heard a minute earlier, which is what
+an X4 Pro showed on 2026-09-16. With it, a row from this run is as good as live
+and a row from an older run is honestly unknown.
+
+The id is drawn once per run from the microsecond counter at first use, mixed so
+two boots a millisecond apart cannot share one. Rows without the column read
+fine and count as "not this run".
 
 ### What comes back at boot
 

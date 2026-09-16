@@ -163,6 +163,7 @@ bool readRecordAt(const char* path, uint32_t byteOffset, TeamRecord& out) {
 struct ReplayCtx {
   const TeamRoster* roster = nullptr;
   TeamStore* store = nullptr;
+  uint32_t bootId = 0;
   bool filled[TeamRoster::kSlotCount] = {};   // filled by an already-read, newer file
   bool inThisFile[TeamRoster::kSlotCount] = {};
 };
@@ -185,10 +186,13 @@ void replayLine(void* ctx, std::string_view line, uint32_t) {
   fix.latE7 = rec.latE7;
   fix.lonE7 = rec.lonE7;
   fix.utc = rec.utc;
-  fix.recvUptimeMs = 0;
-  // Its uptime belongs to a previous run, so this fix can only ever be dated by
-  // its utc -- and on a device with no clock, not at all (TeamFix::fromLog).
-  fix.fromLog = true;
+  // A row from *this* run keeps its uptime, and with it its age: re-entering the
+  // map must not turn a position heard a minute ago into an undateable one
+  // (seen on an X4 Pro, 2026-09-16). A row from any other run carries an uptime
+  // measured against a clock that no longer exists, so it stays undateable.
+  const bool sameRun = rec.boot != 0 && rec.boot == r->bootId;
+  fix.recvUptimeMs = sameRun ? rec.uptimeMs : 0;
+  fix.fromLog = !sameRun;
   fix.heading = rec.heading;
   fix.hasHeading = rec.hasHeading;
   fix.speedKmh = rec.speedKmh;
@@ -295,7 +299,7 @@ bool TeamBlackBox::append(const TeamRecord& rec) {
   return true;
 }
 
-bool TeamBlackBox::replayLast(const TeamRoster& roster, TeamStore& store) {
+bool TeamBlackBox::replayLast(const TeamRoster& roster, TeamStore& store, uint32_t bootId) {
   store.clear();
   if (!Storage.ready()) {
     LOG_ERR(kLogTag, "no card -- nobody's last position restored");
@@ -306,6 +310,7 @@ bool TeamBlackBox::replayLast(const TeamRoster& roster, TeamStore& store) {
   ReplayCtx ctx;
   ctx.roster = &roster;
   ctx.store = &store;
+  ctx.bootId = bootId;
 
   char path[64];
   String current;

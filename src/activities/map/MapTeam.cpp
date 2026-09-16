@@ -28,8 +28,28 @@ bool MapTeam::begin() {
   // Rotate before the replay, so a day that is past keeping is not read back
   // into RAM on its way to being deleted.
   TeamBlackBox::rotate(utcNowOrZero(), SETTINGS.mapTeamKeepDays);
-  TeamBlackBox::replayLast(roster_, store_);
+  TeamBlackBox::replayLast(roster_, store_, bootId());
   return true;
+}
+
+uint32_t MapTeam::bootId() {
+  // Once per boot, and never zero: zero is what a row written before this column
+  // existed carries, and it has to keep meaning "not this run".
+  //
+  // Built from the microsecond counter at first use rather than from a hardware
+  // RNG, so the simulator and the device take the same path -- and first use is
+  // a human opening the map, which lands anywhere inside a wide window. A
+  // collision would date a previous run's row as if it were this run's, so the
+  // low bits of micros() are mixed up into the high ones instead of being used
+  // raw: two boots that entered the map within a millisecond of each other would
+  // otherwise share an id.
+  static uint32_t id = 0;
+  if (id == 0) {
+    const uint32_t seed = static_cast<uint32_t>(micros());
+    id = seed * 2654435761u;  // Knuth's multiplicative hash: spreads the low bits
+    if (id == 0) id = 1;
+  }
+  return id;
 }
 
 uint32_t MapTeam::utcNowOrZero() {
@@ -75,6 +95,7 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
     TeamRecord rec;
     rec.utc = stored.utc;
     rec.uptimeMs = stored.recvUptimeMs;
+    rec.boot = bootId();
     memcpy(rec.who, member.acr, sizeof(rec.who));
     rec.latE7 = stored.latE7;
     rec.lonE7 = stored.lonE7;
@@ -135,7 +156,7 @@ bool MapTeam::teamReload(size_t& skipped) {
   // Positions are keyed by slot and a reload can renumber the slots, so the
   // store is rebuilt from the card rather than reindexed: a marker under the
   // wrong acronym is worse than a marker that takes a moment to come back.
-  TeamBlackBox::replayLast(roster_, store_);
+  TeamBlackBox::replayLast(roster_, store_, bootId());
   loaded_ = true;
   return true;
 }
@@ -173,6 +194,7 @@ void MapTeam::logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t headin
   TeamRecord rec;
   rec.utc = utc;
   rec.uptimeMs = nowUptimeMs;
+  rec.boot = bootId();
   snprintf(rec.who, sizeof(rec.who), "%s", kTeamSelfWho);
   rec.latE7 = latE7;
   rec.lonE7 = lonE7;
