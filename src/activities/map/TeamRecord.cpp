@@ -152,10 +152,11 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen) {
   char speed[8] = {};
   if (rec.hasSpeed) snprintf(speed, sizeof(speed), "%u", static_cast<unsigned>(rec.speedKmh));
 
-  const int written = snprintf(buf, bufLen, "%lu,%lu,%lu,%lu,%s,%s,%s,%s,%s,%s", static_cast<unsigned long>(rec.utc),
-                               static_cast<unsigned long>(rec.recvUtc), static_cast<unsigned long>(rec.uptimeMs),
-                               static_cast<unsigned long>(rec.boot), rec.who, lat, lon, heading, speed,
-                               teamSourceText(rec.source));
+  const int written =
+      snprintf(buf, bufLen, "%lu,%lu,%lu,%lu,%s,%s,%s,%s,%s,%s,%s", static_cast<unsigned long>(rec.utc),
+               static_cast<unsigned long>(rec.recvUtc), static_cast<unsigned long>(rec.uptimeMs),
+               static_cast<unsigned long>(rec.boot), rec.who, rec.id, lat, lon, heading, speed,
+               teamSourceText(rec.source));
   if (written < 0 || static_cast<size_t>(written) >= bufLen) return 0;
   return static_cast<size_t>(written);
 }
@@ -170,17 +171,20 @@ bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
   for (const char c : line) {
     if (c == ',') ++fields;
   }
-  if (fields < 8 || fields > 10) return false;
+  if (fields < 8 || fields > 11) return false;
   const bool hasBoot = fields >= 9;
-  const bool hasRecvUtc = fields == 10;
+  const bool hasRecvUtc = fields >= 10;
+  const bool hasId = fields == 11;
 
   std::string_view rest = line;
-  std::string_view utc, recvUtc, uptime, boot, who, lat, lon, heading, speed, src;
+  std::string_view utc, recvUtc, uptime, boot, who, id, lat, lon, heading, speed, src;
   if (!nextField(rest, utc, false)) return false;
   if (hasRecvUtc && !nextField(rest, recvUtc, false)) return false;
   if (!nextField(rest, uptime, false)) return false;
   if (hasBoot && !nextField(rest, boot, false)) return false;
-  if (!nextField(rest, who, false) || !nextField(rest, lat, false) || !nextField(rest, lon, false) ||
+  if (!nextField(rest, who, false)) return false;
+  if (hasId && !nextField(rest, id, false)) return false;
+  if (!nextField(rest, lat, false) || !nextField(rest, lon, false) ||
       !nextField(rest, heading, false) || !nextField(rest, speed, false) || !nextField(rest, src, true)) {
     return false;
   }
@@ -192,6 +196,13 @@ bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
   if (who != kTeamSelfWho && !isValidTeamAcr(who)) return false;
   memcpy(rec.who, who.data(), who.size());
   rec.who[who.size()] = '\0';
+  // Empty is legal: `ME` rows have no transport identity, and neither does a row
+  // written before the column.
+  if (!id.empty()) {
+    if (!isValidTeamId(id)) return false;
+    memcpy(rec.id, id.data(), id.size());
+    rec.id[id.size()] = '\0';
+  }
   if (!parseE7(lat, rec.latE7) || !parseE7(lon, rec.lonE7)) return false;
   if (!heading.empty()) {
     uint32_t value = 0;

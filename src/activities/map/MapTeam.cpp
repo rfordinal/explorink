@@ -115,6 +115,9 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
     rec.uptimeMs = stored.recvUptimeMs;
     rec.boot = bootId();
     memcpy(rec.who, member.acr, sizeof(rec.who));
+    // The acronym is a label the rider can retype; the id is what the transport
+    // said, and it is what a replay matches on (TeamRecord.h).
+    snprintf(rec.id, sizeof(rec.id), "%s", member.id);
     rec.latE7 = stored.latE7;
     rec.lonE7 = stored.lonE7;
     rec.heading = stored.heading;

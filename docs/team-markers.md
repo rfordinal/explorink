@@ -91,8 +91,8 @@ Edited three ways: by hand on the card, then `team reload`; or with `team add` /
 One CSV row per accepted position, header written when a file is created:
 
 ```
-utc,recv_utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
-1789430400,1789430402,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora
+utc,recv_utc,uptime_ms,boot,who,id,lat,lon,heading,speed_kmh,src
+1789430400,1789430402,81234,3149271044,RF,a4c1380c,48.1486000,17.1077000,4,62,lora
 ```
 
 | field | notes |
@@ -102,6 +102,7 @@ utc,recv_utc,uptime_ms,boot,who,lat,lon,heading,speed_kmh,src
 | `uptime_ms` | our uptime at receipt -- what orders rows inside a run with no clock |
 | `boot` | which run of this device wrote the row; 0 in a file older than the column |
 | `who` | member acronym, or `ME` for the rider |
+| `id` | what the transport calls that member; empty for `ME` and for older rows |
 | `lat`, `lon` | decimal degrees, 7 places, integer-formatted (there is no FPU) |
 | `heading` | 0-15 sixteenths of a turn, empty when not sent |
 | `speed_kmh` | empty when not sent |
@@ -126,6 +127,20 @@ a laptop is reading never changes under it.
 A device with no clock writes `bb-noclock.csv`, and **rotation never deletes
 it**: a day it cannot name is a day it cannot judge. Every X4 is such a device
 until the phone hands it a time.
+
+**The acronym is a label, the id is the identity.** `RF` is what the rider typed
+and can retype, so a roster edit between rides makes an old row's acronym point
+at somebody else. The id is what the transport said; a replay matches on it
+first and falls back to the acronym for rows written before the column.
+
+**And the id is not a MAC.** A constant broadcast identifier is a tracking
+device and modern phones flag it as one, so our own advertised id has to rotate
+from a group secret (`../../../docs/safety-concept.md`, "Anti-stalking") -- and a
+peer's BLE address is usually a resolvable random address that rotates anyway,
+which is not something to store. What belongs here is the transport's *durable*
+identity: for MeshCore the Ed25519 public key, which is also what makes a forged
+position detectable there. The roster holds that, the rotating advert is
+resolved to it, and the black box records it.
 
 **The device knows the time, so every row is stamped with it.** The clock comes
 from the phone's position packet or from the GNSS receiver, whichever has
@@ -152,9 +167,9 @@ that only means anything inside one run. The id is drawn once per run from the
 microsecond counter at first use, mixed so two boots a millisecond apart cannot
 share one.
 
-Rows missing either column read fine: eight fields is the original row, nine
-adds `boot`, ten adds `recv_utc`. A card written by an older build is still
-somebody's last known position.
+Rows missing any of these read fine: eight fields is the original row, nine adds
+`boot`, ten adds `recv_utc`, eleven adds `id`. A card written by an older build
+is still somebody's last known position.
 
 ### What comes back at boot
 

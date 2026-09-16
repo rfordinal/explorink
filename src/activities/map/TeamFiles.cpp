@@ -174,7 +174,11 @@ void replayLine(void* ctx, std::string_view line, uint32_t) {
   if (!decodeTeamRecord(line, rec)) return;
   if (std::string_view(rec.who) == kTeamSelfWho) return;  // the rider's own trace, not a marker
 
-  const size_t slot = r->roster->findAcr(rec.who);
+  // By id first: a roster edit between rides can move an acronym to a different
+  // person, and then the acronym in an old row points at somebody who was never
+  // there. The acronym is the fallback, for rows written before the id column.
+  size_t slot = rec.id[0] != '\0' ? r->roster->findId(rec.id) : TeamRoster::kSlotCount;
+  if (slot >= TeamRoster::kSlotCount) slot = r->roster->findAcr(rec.who);
   // A row for somebody who is no longer in the roster stays in the file and is
   // simply not drawn: the black box is evidence and is never rewritten, but the
   // allowlist decides what reaches the panel.

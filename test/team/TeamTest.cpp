@@ -132,13 +132,19 @@ TEST(TeamRecordCsv, OlderRowsStillRead) {
   EXPECT_EQ(out.boot, 3149271044u);
   EXPECT_EQ(out.recvUtc, 0u);
 
-  // Ten, which is what this build writes.
+  // Ten: `recv_utc` but no id.
   ASSERT_TRUE(decodeTeamRecord("1789430400,1789430402,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora", out));
   EXPECT_EQ(out.recvUtc, 1789430402u);
   EXPECT_EQ(out.boot, 3149271044u);
+  EXPECT_STREQ(out.id, "");
+
+  // Eleven, which is what this build writes.
+  ASSERT_TRUE(
+      decodeTeamRecord("1789430400,1789430402,81234,3149271044,RF,a4c1380c,48.1486000,17.1077000,4,62,lora", out));
+  EXPECT_STREQ(out.id, "a4c1380c");
   EXPECT_EQ(out.latE7, 481486000);
 
-  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,5,RF,48.1,17.1,,,lora", out));  // eleven
+  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,RF,x,48.1,17.1,,,lora,extra", out));  // twelve
 }
 
 TEST(TeamRecordCsv, RoundTrips) {
@@ -155,11 +161,12 @@ TEST(TeamRecordCsv, RoundTrips) {
   rec.source = TeamFixSource::Lora;
   rec.boot = 3149271044u;
   rec.recvUtc = 1789430402u;
+  snprintf(rec.id, sizeof(rec.id), "a4c1380c");
 
   char line[kTeamLineMax + 1];
   const size_t len = encodeTeamRecord(rec, line, sizeof(line));
   ASSERT_GT(len, 0u);
-  EXPECT_STREQ(line, "1789430400,1789430402,81234,3149271044,RF,48.1486000,17.1077000,4,62,lora");
+  EXPECT_STREQ(line, "1789430400,1789430402,81234,3149271044,RF,a4c1380c,48.1486000,17.1077000,4,62,lora");
 
   TeamRecord back;
   ASSERT_TRUE(decodeTeamRecord(std::string_view(line, len), back));
@@ -172,6 +179,7 @@ TEST(TeamRecordCsv, RoundTrips) {
   EXPECT_EQ(back.source, TeamFixSource::Lora);
   EXPECT_EQ(back.boot, rec.boot);
   EXPECT_EQ(back.recvUtc, rec.recvUtc);
+  EXPECT_STREQ(back.id, "a4c1380c");
   EXPECT_STREQ(back.who, "RF");
 }
 
@@ -184,7 +192,8 @@ TEST(TeamRecordCsv, EmptyHeadingAndSpeedStayEmpty) {
 
   char line[kTeamLineMax + 1];
   ASSERT_GT(encodeTeamRecord(rec, line, sizeof(line)), 0u);
-  EXPECT_STREQ(line, "0,0,0,0,ME,-48.1486000,0.0000005,,,gnss");
+  // `ME` has no transport identity: the id column is empty, not invented.
+  EXPECT_STREQ(line, "0,0,0,0,ME,,-48.1486000,0.0000005,,,gnss");
 
   TeamRecord back;
   ASSERT_TRUE(decodeTeamRecord(line, back));
@@ -197,7 +206,7 @@ TEST(TeamRecordCsv, MalformedRowsAreRefused) {
   TeamRecord out;
   EXPECT_FALSE(decodeTeamRecord(kTeamCsvHeader, out));          // the header line
   EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,,,", out));        // no source word
-  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,RF,48.1,17.1,,,lora,x", out));  // one field too many
+  EXPECT_FALSE(decodeTeamRecord("1,2,3,4,RF,id,48.1,17.1,,,lora,x", out));  // one field too many
   EXPECT_FALSE(decodeTeamRecord("1,2,TOOLONG,48.1,17.1,,,lora", out));
   EXPECT_FALSE(decodeTeamRecord("1,2,RF,48.1,17.1,16,,lora", out));  // heading out of range
 }
