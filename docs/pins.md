@@ -679,3 +679,41 @@ tables are `constexpr` in flash. Flash went 59.5 % to 59.7 %.
 
 Pins will be drawn by `MapActivity`, not `MapRenderer`, so the webapp's firmware
 preview panel will not show them (parent `docs/device-preview.md`).
+
+## A pin under the screen's own furniture
+
+Since 2026-09-15 a pin whose balloon lands on the header, the compass, the scale
+bar, the debug window or a button box is handled as a pin that is off the panel:
+an edge marker when those are on, and a logged count either way. The balloon is
+not moved and not flipped -- the tip is the coordinate, and the shape's rotation
+already carries a direction. `docs/map-chrome-register.md`.
+
+An edge marker is also kept off that furniture, since 2026-09-15: after it is
+clamped into `pinEdgeArea()` it is slid in 8 px steps until its box clears the
+chrome register, and dropped with a `LOG_ERR` if nothing within 80 px does.
+Sliding is allowed there and not for a pin's own balloon, because an edge
+marker's position is already synthetic and its bearing is carried by the shape's
+rotation. Measured on an X4 Pro panel that day: without it, the marker for a pin
+below the panel landed squarely on the scale bar's `5 km`.
+
+## Putting a pin on a chosen pixel, for a placement test
+
+A placement rule is only testable if a pin can be aimed at a known pixel. The
+device takes lat/lon, so the screen position has to be computed back, and the
+anchor has to be measured rather than read from the style: the marker ladder
+moves it off `marker_x_px`/`marker_y_px`.
+
+1. Pin the frame: `pin set c1 <lat> <lon>` at the device's own position after
+   `pos <lat> <lon> heading 0`. Heading 0 makes the frame north-up, so x is east
+   and y is south.
+2. Grab two framebuffers, one before and one after that pin, and diff them. The
+   changed box is the balloon: its **width matches the frame's own** (42 px for
+   step 0), which fixes the tip's x; its bottom fixes the tip's y to within a
+   pixel or two.
+3. With `mpp` from `CMD:INFO` and that anchor `(ax, ay)`, a target pixel
+   `(x, y)` is
+   `lon = lon0 + (x-ax)*mpp/(111320*cos(lat0))` and
+   `lat = lat0 - (y-ay)*mpp/111320`.
+
+Used 2026-09-15 to aim six pins at six pixels on an X4 Pro and settle the chrome
+register on the glass (`docs/map-chrome-register.md`).

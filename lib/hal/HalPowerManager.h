@@ -26,6 +26,23 @@ class HalPowerManager {
   SemaphoreHandle_t modeMutex = nullptr;  // Protect access to currentLockMode
 
  public:
+  // The idle floor with the radio down. 10 MHz on a C3 with no PSRAM; 80 on a
+  // PSRAM board, and that 80 is a correctness bound too, not a tuning choice.
+  //
+  // On S3 the MSPI clock -- flash and PSRAM both -- is bound to the CPU's clock
+  // source (MSPI_TIMING_LL_FLASH_CPU_CLK_SRC_BINDED, hal/esp32s3/mspi_ll.h), so
+  // dropping to the crystal has to retune MSPI in the same breath. ESP-IDF does
+  // that in esp_clk_utils_mspi_speed_mode_sync_before_cpu_freq_switching(), and
+  // every caller of it lives in esp_pm, which needs CONFIG_PM_ENABLE -- not set
+  // here. Arduino's setCpuFrequencyMhz() goes straight to
+  // rtc_clk_cpu_freq_set_config_fast() and touches no MSPI timing at all. So
+  // flash and PSRAM would keep running tuned for a clock that is gone.
+  //
+  // Exactly the same shape as BLE_SAFE_FREQ below: the defence compiles out.
+  // Note the two are independent -- radio down does NOT lower this floor on a
+  // PSRAM board. docs/power-management.md, "A PSRAM board's floor is 80 MHz
+  // too". Came from upstream CrossPoint f42fab1c with no comment; the mechanism
+  // above is our reading, unverified on hardware.
 #if BOARD_HAS_PSRAM
   static constexpr int LOW_POWER_FREQ = 80;  // MHz
 #else

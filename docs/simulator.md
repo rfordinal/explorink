@@ -70,6 +70,25 @@ The semantics do not have to match the device's, and sometimes must not.
 the simulator, because there the firmware calls `update()` several times inside
 one frame. The fork's `EXPLORINK.md` is where that reasoning lives.
 
+## A brand-new file under `lib/hal/` does not exist in the simulator at all
+
+Different failure from the member-mismatch above, hit 2026-09-15 building
+`DeviceIdentity` (originally placed at `lib/hal/HalDeviceIdentity.*`):
+
+```
+src/activities/network/CrossPointWebServerActivity.cpp:11:10: fatal error: HalDeviceIdentity.h: No such file or directory
+```
+
+`[env:simulator]`'s `lib_ignore = hal` (`platformio.ini`) drops the **whole**
+`lib/hal/` directory, not just the HAL classes the fork re-implements. A new
+library that happens to live there -- even one that touches no HAL class, just
+`BoardConfig::ACTIVE.board` -- is invisible to the simulator build, full stop.
+Fixed by moving it to its own top-level `lib/<Name>/` directory, same as
+`lib/BlePositionServer/` (already builds under simulator, solves the identical
+BoardConfig-enum-variance problem for BLE naming). Rule: a new file that must
+build under both real hardware and the simulator does not go in `lib/hal/`,
+even if it feels HAL-adjacent.
+
 ## The simulated SD card
 
 Everything the firmware reads from the card lives under `./fs_/` next to the
@@ -150,6 +169,27 @@ CROSSPOINT_SIM_SCREENSHOTS='6000:./qa-artifacts/map.bmp' \
 Keys: `BACK`, `ENTER`, `LEFT`, `RIGHT`, `UP`, `DOWN`, `POWER`, `SLEEP`, `HOME`,
 `QUIT`. Screenshots are BMP at the host's drawable resolution. Upstream's
 `README.md` has the touch actions, the sleep/wake pair and the heap overrides.
+
+**Key events need room between them.** A script with 200 ms between `DOWN`
+presses moved the Home selector not at all: the run went straight into whatever
+row was already selected, and nothing in the log said a key had been dropped.
+600 ms apart works. Measured 2026-09-07.
+
+**Home skips its disabled rows.** Pins and Wallet are drawn but not selectable
+(`HomeActivity::nextSelectable()`), so from a fresh boot the Settings row is
+**four** `DOWN` presses away, not six. A full Settings-tab sweep, one run per
+tab:
+
+```bash
+SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software \
+CROSSPOINT_SIM_INPUT_SCRIPT='4000:DOWN;4600:DOWN;5200:DOWN;5800:DOWN;6600:ENTER;7600:ENTER;13000:QUIT' \
+CROSSPOINT_SIM_SCREENSHOTS='11000:./qa-artifacts/tab1.bmp' \
+  ./.pio/build/simulator/program
+```
+
+One `ENTER` after the Settings one per tab to advance, 700 ms apart -- the tab
+row is selected on entry, so `ENTER` there cycles the category rather than
+opening a row.
 
 **Headless: `SDL_VIDEODRIVER=dummy`.** A scripted run then takes no focus from
 whatever the desktop is doing (a Wayland desktop ignores SDL's focus hint, so

@@ -1,0 +1,5 @@
+TOUCHLOG_BEGIN:8000ms,5000us,delay2000,addr=0x5D,irq=10
+TOUCHLOG_CLEARED:-1
+TOUCHLOG_DATA:us,status,int,repeats,x,y
+4,0x00,1,1601,-1,-1
+TOUCHLOG_END:samples=1601,rows=1,failed=0,span_us=8000001

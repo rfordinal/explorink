@@ -5,13 +5,24 @@
 #include <PowerManager.h>
 #include <PowerTelemetry.h>
 #include <WiFi.h>
-#include <esp_bt.h>
 #include <esp_sleep.h>
 #include <soc/soc_caps.h>
 
 #include <cassert>
 
 #include "HalGPIO.h"
+
+// The BT controller header ships only with builds that compile the Bluetooth
+// component, so an env without it (Sticky, 2026-08-17 to 2026-09-07) failed to
+// compile on the unconditional include rather than on anything it uses. Where
+// the header is absent no BT controller can exist, so the floor question below
+// answers itself and the guard cannot hide a wrong clock.
+#if __has_include(<esp_bt.h>)
+#include <esp_bt.h>
+#define HAL_HAS_BT_CONTROLLER 1
+#else
+#define HAL_HAS_BT_CONTROLLER 0
+#endif
 
 HalPowerManager powerManager;  // Singleton instance
 
@@ -20,9 +31,11 @@ int HalPowerManager::lowPowerFloorMhz() {
   // one condition that matters and the one that cannot go stale: if the
   // controller is enabled, the radio may touch the BT MAC at any moment, and
   // the MAC needs APB at 80 MHz.
+#if HAL_HAS_BT_CONTROLLER
   if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
     return BLE_SAFE_FREQ;
   }
+#endif
   return LOW_POWER_FREQ;
 }
 

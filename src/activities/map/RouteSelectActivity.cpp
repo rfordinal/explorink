@@ -30,9 +30,9 @@ void RouteSelectActivity::onEnter() {
   entries_ = makeUniqueNoThrow<MapRouteStore::Entry[]>(MapRouteStore::kMaxRoutes);
   if (!entries_) {
     LOG_ERR(kLogTag, "OOM: %lu route entries", static_cast<unsigned long>(MapRouteStore::kMaxRoutes));
-    // No list to choose from, so do not show an empty one -- go where Skip goes.
-    // The map with no route is the behaviour this screen exists to add to, not a
-    // failure state.
+    // No list to choose from, so do not show an empty one. Straight to the map
+    // rather than through the satellite wait like the rows below: this branch is
+    // an allocation that already failed, and the wait screen is another one.
     activityManager.goToMap();
     return;
   }
@@ -91,7 +91,7 @@ void RouteSelectActivity::loop() {
 void RouteSelectActivity::chooseSelected() {
   if (isSkipRow(selected_)) {
     LOG_INF(kLogTag, "skip: opening the map with no route");
-    activityManager.goToMap();
+    activityManager.goToGnssAcquire();
     return;
   }
 
@@ -107,7 +107,7 @@ void RouteSelectActivity::chooseSelected() {
   // screen did says the file is a route, not that its geometry is intact
   // (MapRouteReader.h, "Two checksums, at two different times"). A route that
   // fails there draws no route and says so, rather than drawing part of one.
-  activityManager.goToMap(path);
+  activityManager.goToGnssAcquire(path);
 }
 
 void RouteSelectActivity::renderScreen() {

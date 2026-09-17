@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Warn when the commit just made moved the freeink-sdk pin.
+#
+# 44fe2972 (2026-09-07) moved it backwards inside a commit about a frontlight
+# Settings row and said nothing about the submodule in its 17-line body. It cost
+# three days of the release branch building without two patches of our own,
+# including the LoRa chip-select fix a hardware pass had confirmed four days
+# earlier. A gitlink is one line of diff and one "changed file" in --stat, so
+# review does not see it.
+#
+# Git does not run this hook for merge commits; post-merge covers those.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}" || exit 0
+
+if [ -f scripts/sdk_pin_check.py ]; then
+  python3 scripts/sdk_pin_check.py --quiet-when-unchanged || true
+fi
+exit 0

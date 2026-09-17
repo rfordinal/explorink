@@ -8,6 +8,10 @@ add_executable(PinsTest
   ${REPO_ROOT}/src/activities/map/MapCommandConsole.cpp
   ${REPO_ROOT}/src/activities/map/HeldTilesStore.cpp
   ${REPO_ROOT}/src/activities/map/MapModeMask.cpp
+  # MapCommandConsole's writePoints() projects to Mercator for the z10 shard
+  # range; MapPointShards.h is header-only but calls MapTileGrid's arithmetic.
+  ${REPO_ROOT}/src/activities/map/MapProjection.cpp
+  ${REPO_ROOT}/src/activities/map/MapTileGrid.cpp
 )
 
 target_include_directories(PinsTest PRIVATE

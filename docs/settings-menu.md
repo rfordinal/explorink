@@ -4,11 +4,11 @@ ExplorInk inherited CrossPoint's whole e-reader Settings screen. Most of it
 configures books. This file says which rows went, which stayed, why, and what a
 later pass still owes.
 
-Status on this branch (`release/lilygo-t5-s3-pro`): **flashed and read on a
-LilyGo T5 S3 Pro, 2026-09-07.** All four tabs were grabbed off the panel with
-`CMD:SCREENSHOT` at the board's own 540x960. The `develop` side is built only:
-`pio run -e default` (X4) and `-e simulator` link clean, and the simulator's
-480x800 captures are host renders on the X4 profile.
+Status: **flashed and read on a LilyGo T5 S3 Pro, 2026-09-07.** All four tabs
+were grabbed off the panel with `CMD:SCREENSHOT` at the board's own 540x960.
+On the X4 and the X4 Pro this is built only: `pio run -e default` (X4),
+`-e x4pro` and `-e simulator` all link clean, and the simulator's 480x800
+captures are host renders on the X4 profile.
 
 ## The staged removal, and why nothing is deleted yet
 
@@ -73,6 +73,73 @@ Two things make it unusual and both are deliberate:
 `loop()` applies a change while the light is on and never turns it on: choosing a
 level is not a request for light. The gestures that share this number are in
 `docs/lilygo-t5s3-bringup.md`, "The remap, 2026-09-07".
+
+**Changed to a slider 2026-09-13**, the same pass that added Light Color below:
+Confirm now opens `openFrontlightBrightnessPicker()` (`IntervalSelectionActivity`,
+range 10-100, `STR_BRIGHTNESS_VALUE_FORMAT` = "%u%%") instead of cycling the value
+in tens in place. The list row itself is unchanged -- still `SettingType::VALUE`,
+still rendered with the `STR_FRONTLIGHT` case's own `%` suffix -- only what
+Confirm does with it changed, the same way `STR_TIME_TO_SLEEP` already worked.
+Live-preview wiring is identical to Light Color's, described below.
+
+## Frontlight color: a slider, only on the two-channel boards
+
+**Added 2026-09-13.** A second row, **Light Color**, appears only where the
+board's frontlight has a second (warm) PWM channel -- `#if FREEINK_CAP_WARMLIGHT`
+in `SettingsList.h`, true today for X4 Pro (`docs/xteink-x4-pro-bringup.md`) and
+compiled out everywhere else, including plain-Frontlight boards like the T5 S3
+Pro that only have one channel. `FrontlightManager::hasColorTemperature()` is
+the runtime version of the same gate.
+
+Like the Frontlight row above, this one opens `IntervalSelectionActivity` --
+the same touch-drag/tap/button slider dialog the sleep-timeout row already uses
+(`openSleepTimeoutPicker()`) -- because a mix between two extremes reads better
+as a slider than as a stepped list.
+`0` is fully cool, `100` fully warm, `50` (the default) neutral; the row and the
+picker both format it with `STR_COLOR_TEMP_VALUE_FORMAT` ("%u%% warm").
+
+Persistence follows the Frontlight row's pattern exactly: `frontlightColorTemperature`
+is hand-serialised in `CrossPointSettings.cpp` (clamped 0-100 on load, since the
+settings file is user-editable and the value reaches the LEDC duty split), and
+the row carries no JSON key of its own.
+
+**Live preview while dragging, added the same day after a hardware pass showed
+the mix only changing on Confirm read as a stepped picker, not a slider.**
+`IntervalSelectionActivity` gained an optional `onValueChanged` hook (empty by
+default, so the sleep-timeout picker is unaffected): fired with the live value
+on every drag/tap/button-step change, before Confirm. The color-temperature
+opener uses it to write straight into `SETTINGS.frontlightColorTemperature` --
+never `saveToFile()` there, rule 8 is no SD write per interaction -- so it is
+only an in-memory change while the finger is still on the slider.
+
+Applying that in-memory change to the LED is still the poll from before: `main.cpp`'s
+`loop()` compares `SETTINGS.frontlightColorTemperature` against a static
+`appliedFrontlightColorTemperature` every frame, the same way it already does
+for `frontlightBrightness`, and calls `frontlight.setColorTemperature()` when it
+changes. That poll runs unconditionally each frame regardless of which activity
+is on screen, so it picks up the picker's in-drag writes and lights the mix the
+rider is currently looking at, not just the value they land on. Unlike
+brightness, this applies whether the light is on or off -- picking a color
+while the light is off should not be silently discarded, since there is no
+"off" value hidden in this field the way there is for `frontlightOn`.
+
+Cancelling (Back) must undo the in-memory writes the drag made -- the file on
+disk was never touched, so there is nothing to reload, but `SETTINGS` in RAM is
+left at whatever the finger last touched. The result handler puts it back to
+the value captured before the picker opened, and the same poll relights the
+original color a frame later.
+
+**Confirmed on X4 Pro hardware, 2026-09-13**: both sliders react while
+dragging, not only on Confirm. That the poll fires during
+`IntervalSelectionActivity` and not only `SettingsActivity` was read off
+`main.cpp`'s `loop()` structure beforehand (the poll block sits flat in the
+top-level loop, not gated on which activity is current); this hardware pass is
+what actually watched it happen. One edge case stays unverified: dragging the
+brightness slider while the light is off still writes into
+`SETTINGS.frontlightBrightness` the same as always, but the existing
+`frontlight.brightness() > 0` gate on that poll means nothing lights up until
+the light is turned back on -- consistent with "choosing a level is not a
+request for light" above, but nobody has watched it happen with the light off.
 
 ## Rows hidden, and the consumer that proves them reader-only
 
@@ -149,7 +216,8 @@ Fading Fix (dropped on any touch board) and Check for updates (OTA is gated on
 **Still open: `settings.json` was not read back.** The hidden rows keep being
 serialised in theory, and the visible settings did survive the flash with the
 rider's own values rather than defaults — but `CMD:SETTING` is a four-key
-allow-list (`main.cpp:1335-1352`) and none of the hidden keys is in it, so
+allow-list (`main.cpp:1467-1474`, plus two GNSS-gated keys on a build with a
+receiver) and none of the hidden keys is in it, so
 nothing was actually read off the device. Pulling the card or reaching it over
 WebDAV would settle it.
 

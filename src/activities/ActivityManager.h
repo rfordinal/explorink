@@ -108,10 +108,22 @@ class ActivityManager {
   // `routePath` is an absolute card path to a .tir route, or nullptr for none
   // (MapActivity.h). `CMD:GOTO_MAP` and every internal fallback pass nothing, so
   // the scripted path into the map is unchanged.
-  void goToMap(const char* routePath = nullptr, bool resumedFromSleep = false);
-  // The trip picker -- what the home menu's Trips row opens. Straight to the
-  // map when the card carries no trips: a one-row list whose only row is Skip
-  // is a screen that exists to be dismissed (RouteSelectActivity.h).
+  void goToMap(const char* routePath = nullptr, bool resumedFromSleep = false, bool adoptRunningGnss = false,
+               bool forcePhonePosition = false);
+  // The map, with the satellite wait in front of it when there is something to
+  // wait for: the GNSS setting on, a build with a receiver, and no usable fix
+  // yet. Anything else goes straight to the map, so this is safe to call from
+  // every path a person takes into it (GnssAcquireActivity.h).
+  //
+  // `CMD:GOTO_MAP` and the wake-into-map path deliberately keep calling
+  // goToMap() instead -- one is host tooling that must land on the map itself,
+  // and the other is a resume, not a departure.
+  void goToGnssAcquire(const char* routePath = nullptr);
+  // The trip picker -- what the home menu's Trips row opens. Goes to
+  // RouteEmptyActivity instead of the list when the card carries no trips: a
+  // one-row list whose only row is Skip is a screen that exists to be
+  // dismissed (RouteSelectActivity.h), and going straight to the map with
+  // nothing said reads as broken rather than empty (RouteEmptyActivity.h).
   void goToRouteSelect();
   // Asks the phone for the tiles the map had to hatch. Its own screen rather
   // than a map-menu item: it is preparation done at home, not something a rider

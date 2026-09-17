@@ -465,14 +465,24 @@ does not currently block that — see the parent repo's `docs/TODO.md`.
 
 ## What a hardware pass has to check
 
-Built and host-tested only: `default` (esp32c3) and `t5s3pro` (esp32s3) both
-compile clean with no new warnings, 424/424 host tests pass. None of that says
-anything about a finger on glass.
+Built and host-tested: `default` (esp32c3) and `t5s3pro` (esp32s3) both compile
+clean with no new warnings, 424/424 host tests pass. None of that says anything
+about a finger on glass, so the list below is what hardware has to answer.
+
+**Rows 1 and 2 are answered, on a T5 S3 Pro, 2026-09-10.** The maintainer used
+every map control by finger on the panel: the six boxes are there, each fires
+the key it names, and panning, the look-ahead, the zoom ladder and the menu all
+work without a serial cable. That closed T-573 in the parent repo. **Rows 3 to
+6 are still open** -- nobody has tested the slide-off branch, OFF mode or the
+X4 regression, and a green host suite says nothing about any of them.
 
 1. **T5 S3 Pro, BUTTONS mode.** Are the six boxes on screen, in the X4
    arrangement, fully inside 540x960? Does a tap on each fire the right action?
+   **Done 2026-09-10, on the board.**
 2. **Do the boxes match the keys they name** as screens change (home, settings,
    reader, map) — and does a tap on a box with no label do nothing?
+   **Done 2026-09-10 for the map path**; the reader and settings screens were
+   not walked box by box.
 3. **Slide off.** Press a box, drag off it, lift. Nothing should fire, and the
    next press must still work (the stuck-held branch).
 4. **Long press on a box** — chapter skip / the long-press menu, whichever the

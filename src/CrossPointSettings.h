@@ -333,6 +333,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // row's label says "track" rather than "log" so that switching it on tells
   // the rider what it writes.
   uint8_t mapGnssLog = 0;
+  // How long the satellite wait screen stands there before it opens the map
+  // anyway, as an index into the row's own values: 0 no limit, 1 two minutes,
+  // 2 five minutes, 3 ten minutes (SettingsList.h, GnssAcquireActivity.h).
+  //
+  // **Five minutes by default, and the default matters more than the value.**
+  // A ride on 2026-09-01 took 526 s to first fix and a walk on 2026-09-04 never
+  // got one, so a screen with no limit is a screen that can hold a rider out of
+  // their own map indefinitely. The map is useful without a fix -- it draws from
+  // the persisted last position and the receiver keeps searching behind it --
+  // so the wait is a courtesy, not a gate.
+  //
+  // "No limit" stays offered because somebody standing still watching the sky
+  // fill is exactly who this screen was built for, and a timeout would cut them
+  // off mid-observation.
+  uint8_t mapGnssWaitLimit = 2;
   // Edge markers for pins outside the viewport: a direction arrow and the
   // distance, drawn where the bearing ray leaves the screen
   // (MapActivity::drawPins(), ../docs/pins.md). Pins *inside* the viewport are
@@ -429,17 +444,26 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // it. Two fields rather than one brightness: turning the light off must not
   // forget the level it was at, and a level of 0 would.
   //
-  // Not in SettingsList: only the LilyGo T5 S3 Pro has a frontlight in any env
-  // built today, and a Settings row would offer every rider a control for
-  // hardware they do not have. It is written by the user button's hold
-  // (main.cpp) and by CMD:LIGHT.
+  // frontlightBrightness has a Settings row, behind FREEINK_CAP_FRONTLIGHT
+  // (SettingsList.h) -- a capability and not a board name, so it compiles in for
+  // the X4 Pro as well as the T5 S3 Pro without anything here naming either.
+  // frontlightOn has no row on purpose: off is a state the key holds produce,
+  // and storing it as a value would lose the level the rider picked.
   //
-  // mapGnssPosition was the other field with this reasoning and it now has a
-  // row, gated on a build flag -- so absence here is a choice about a control
-  // the rider does not need, not a rule. This one is already reachable by
-  // holding the user button, which is why it did not follow.
+  // Both fields are serialised by hand in CrossPointSettings.cpp rather than by
+  // the generic loop, which is why the row carries no JSON key: two writers for
+  // one field would fight.
   uint8_t frontlightOn = 0;
   uint8_t frontlightBrightness = 50;
+  // Warm/cool mix for boards with a two-channel frontlight (FREEINK_CAP_WARMLIGHT,
+  // e.g. X4 Pro): 0 = fully cool, 100 = fully warm, 50 = neutral. Meaningless and
+  // unused on single-channel boards -- FrontlightManager::setColorTemperature()
+  // is a no-op there, so the row is gated out at SettingsList.h rather than kept
+  // in sync with a fact this field can't hold on that hardware.
+  //
+  // Serialised by hand alongside frontlightOn/frontlightBrightness for the same
+  // reason: it has no JSON key of its own in SettingsList.h.
+  uint8_t frontlightColorTemperature = 50;
   // Power button return from footnotes (1 = enabled, 0 = disabled)
   uint8_t pwrBtnFootnoteBack = 1;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)

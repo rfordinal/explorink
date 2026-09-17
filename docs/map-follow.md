@@ -650,6 +650,16 @@ Window rate ran between **0.099 and 0.228 per second** depending on how much the
 rider actually moved, which put the loop inside a blocking panel call for **11 %
 to 25 % of wall clock**. Buttons are not serviced during that window.
 
+**That rate is an upper bound on follow frames, not a count of them**
+`[corrected 2026-09-07]`. `ref_window` is one bucket for three call sites: the
+marker moving (`MapActivity.cpp:5270`), the debug overlay repainting on its own
+5 s timer with no reference to position (`:2142`, constants `:178-179`), and the
+map menu closing (`:3090`). A walk with the debug overlay on can have a window
+rate the rider's movement does not explain -- the 2026-09-07 walk had 785
+windows in 4 h 08 min, one per 19 s, against a phone that cannot send faster
+than one position per 30 s at walking pace. Attribution needs a counter per call
+site; T-277 in the parent repo.
+
 The maintainer reported a long press on Home for the frontlight reacting slower
 and slower over that walk `[reported, 2026-09-05]`, and the loop rate did fall,
 from 14.9 to 12.6 iterations per second. **Neither is degradation.** Per-refresh
@@ -662,6 +672,12 @@ gets a name.
 non-blocking path (`lib/hal/HalDisplay.cpp:88`), but nothing on the map uses
 them -- the only callers are `EpubReaderActivity` and `GrayscaleFrame`. Tracked
 as T-263 in the parent repo.
+
+There is a cheaper fix than going async, and it is specific to this board: a
+whole-panel `FAST` costs **545 ms against the window's 1,030 ms** here
+([`refresh-modes.md`](refresh-modes.md), "And on this board a window is dearer
+than the whole panel"), so the follow path could halve its blocking time by not
+asking for a window at all. T-277.
 
 ## What the ride measured
 

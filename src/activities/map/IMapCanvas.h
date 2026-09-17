@@ -96,4 +96,62 @@ class IMapCanvas {
   // device this is narrower than the panel: the header band is off limits
   // (docs/map-header-status.md).
   virtual void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const = 0;
+
+  // How much of this rectangle is already inked -- black samples, and how many
+  // samples were taken. Read back off whatever the implementation drew into, so
+  // it reports EVERY layer: roads, buildings, area tones, contours, dots, the
+  // route, the labels placed before this one.
+  //
+  // Only the label placer calls it, and only because it is the one pass that
+  // has to choose rather than draw: a name has eight places it could go and
+  // they are not equally destructive. Counting the ink under each one is what
+  // turns "the first position that fits" into "the position that covers the
+  // least map" (docs/place-labels.md, "Least ink wins").
+  //
+  // Sampled every `stepPx` pixels in both axes rather than per pixel: a 2 px
+  // grid is a quarter of the reads and the answer is a comparison between eight
+  // boxes of the SAME size, so a systematic undercount cancels out. `stepPx`
+  // below 1 is treated as 1.
+  //
+  // **The default reports nothing readable, and that is a supported answer.** A
+  // canvas with no readback (a test stub, a future streaming surface) returns
+  // 0/0, and the placer then falls back to exactly the first-fit order it used
+  // before this existed -- a worse layout, never a wrong one. Silence has to
+  // mean "unknown" here rather than "no ink", or an unreadable canvas would
+  // report every position as perfectly clean and the preference order would
+  // stop working too.
+  virtual void inkCoverage(int x, int y, int width, int height, int stepPx, int& outInked, int& outSamples) const {
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    (void)stepPx;
+    outInked = 0;
+    outSamples = 0;
+  }
+
+  // True when this rectangle overlaps something the screen draws over the map
+  // after the map is finished -- a button box, the compass, the scale bar, the
+  // debug window, the header band (MapChrome.h).
+  //
+  // Only for things that have to be *found*: a place name and a POI mark, both
+  // of which say the wrong thing when half of them is painted over. Road
+  // geometry deliberately does not ask -- a line running under the button row
+  // still reads as a road leaving the panel, which is the same asymmetry
+  // GfxRendererCanvas's bottomReservedPx already documents.
+  //
+  // Defaulted to false rather than pure, because a canvas with no furniture
+  // over it is the honest answer for every implementation but the device's:
+  // test/map_preview draws the map alone, and the webapp's firmware preview
+  // panel renders through it. Note this is a default *implementation*, not a
+  // default argument -- the reason the file warns against those (a default
+  // argument binds statically and an override can disagree about it) does not
+  // apply to a body an override simply replaces.
+  virtual bool areaReserved(int x, int y, int width, int height) const {
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    return false;
+  }
 };

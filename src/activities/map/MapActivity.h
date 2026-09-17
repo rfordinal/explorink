@@ -8,10 +8,16 @@
 #include "CrossPointSettings.h"
 #include "HalFileSource.h"
 #include "MapBleConsole.h"
+#include "MapChrome.h"
+
+// One baked rotation of the pin shape. Forward-declared rather than included:
+// pins_shape.h carries every rotation's bitmap and only the .cpp draws from it.
+struct PinShapeFrame;
 #include "MapCommandConsole.h"
 #include "MapDebugOverlay.h"
 #include "MapFixTrust.h"
 #include "MapFollow.h"
+#include "MapGnssBars.h"
 #include "MapGnssHeading.h"
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
@@ -151,14 +157,31 @@ struct GnssFix;
 //   (../../../docs/tile-autobuild.md) -- rather than "nobody will ever have it".
 // - **One ask per kAutoSyncIntervalMs.** A rate cap, not a settle timer: the
 //   next ask is not pushed further out by more hatching.
-class MapActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver, public IMapFakeSink {
+class MapActivity final : public Activity,
+                          public IMapSkipObserver,
+                          public IMapStaleObserver,
+                          public IMapFakeSink,
+                          public IMapPointShardsSource,
+                          public IMapGoneObserver,
+                          public IMapPointSkipObserver {
  public:
   // `routePath` is an absolute card path to a .tir route, or nullptr for none.
   // RouteSelectActivity passes what the rider picked; every other caller --
   // `CMD:GOTO_MAP` over serial, the OOM fallbacks -- passes nothing and gets the
   // map exactly as it was before routes existed.
+  // `adoptRunningGnss` says the receiver was started by the screen that opened
+  // this one (GnssAcquireActivity) and this session now owns it -- so onExit()
+  // drops the rail, which it must not do for a receiver a host `CMD:GNSS ON`
+  // owns. Without it the acquisition screen's handover would leak the rail: the
+  // map would see a running receiver, decline ownership, and leave it powered
+  // after the rider went home.
+  //
+  // `forcePhonePosition` runs this session on BLE even though the GNSS setting
+  // is on -- the rider pressed "phone position" rather than waiting for the sky
+  // (../../../docs/gnss-acquire.md). One position source per session either way
+  // (bleInUse_), so this only chooses which one.
   MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath = nullptr,
-              bool resumedFromSleep = false);
+              bool resumedFromSleep = false, bool adoptRunningGnss = false, bool forcePhonePosition = false);
 
   bool isMapActivity() const override { return true; }
 
@@ -197,6 +220,16 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // is the one that has the projection and MISSING_TILES, which is why the sink
   // lives here rather than on the screen that shows the result.
   void seedFakeTiles(uint16_t missing, uint16_t held, uint16_t& seededMissing, uint16_t& seededHeld) override;
+
+  // IMapPointShardsSource -- does the card hold this z10 point shard. Same
+  // existence-only check TileSyncActivity answers `points` with.
+  bool hasPointShard(uint32_t col, uint32_t row) const override;
+
+  // IMapGoneObserver -- the phone says the CDN has no such shard.
+  void onPointShardGone(uint32_t col, uint32_t row) override;
+
+  // IMapPointSkipObserver -- the phone cannot supply this shard right now.
+  void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override;
 
  private:
   void renderWaiting();
@@ -372,6 +405,36 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // labels rounded to a nice ground distance (1/2/5 x 10^n) for the current
   // zoom step's mpp (MapViewport::kZoomLadder).
   void drawMapScale();
+  // The scale bar's geometry, worked out once and used twice: drawMapScale()
+  // draws from it, and the chrome register reserves what it covers. Two copies
+  // of this arithmetic is how the bar and the place label came to share pixels
+  // on an X3 (docs/TODO.md T-296).
+  struct ScaleBarLayout {
+    int totalPx = 0;  // the bar's width, a whole number of segments
+    int tickTop = 0;  // topmost ink -- the tick overshoot above the bar
+    int barTop = 0;
+    int barBottom = 0;
+    int tickBottom = 0;
+    int labelY = 0;      // top of the row of numbers
+    int clearanceY = 0;  // bottom of that row, and of the bar as a whole
+    double niceMeters = 0.0;
+    bool useKm = false;
+  };
+  ScaleBarLayout scaleBarLayout() const;
+  // What the bar and its numbers cover, for the chrome register. The numbers
+  // stay inside the bar's own span by construction (drawMapScale() pins the
+  // first and last to the end ticks), so the bar's width is the whole of it.
+  Rect mapScaleRect() const;
+  // The compass glyph plus its white halo -- a square around a disc, because
+  // the halo is what a placer has to clear and the glyph turns inside it.
+  Rect compassRect() const;
+  // The status band across the top, down to and including the separator row.
+  // The map itself is already clipped out of it (mapContentTop()); this is for
+  // everything drawn straight onto the renderer, which is not.
+  Rect headerRect() const;
+  // Rebuilds chrome_ for this frame. Called at the top of a full render, before
+  // any map data is drawn, because the placers inside the render ask it.
+  void buildChromeRegister();
   // Immediate "working on it" feedback, above the button hints. A ladder step
   // or a Refresh does not reach the panel for the better part of two seconds
   // (settle, tile reads, then the refresh itself), which is long enough that a
@@ -420,6 +483,20 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // does have are still current. Different setting, different cooldown,
   // different question.
   void maybeCheckTileFreshness();
+  // The Live rung's half of decision 2 (docs/point-layer-lifecycle.md): sends
+  // NEED_POINTS at most once per power cycle, never on the tile autosync's
+  // hatch-triggered ask -- a hatched tile says nothing about whether a spring
+  // moved, so the two conversations share only the mode setting, not the
+  // trigger. Riding onto new ground without a reboot is not covered yet.
+  //
+  // "Once per power cycle" is a real boot-lifetime static in the .cpp, not a
+  // member of this class: MapActivity is deleted and reconstructed by
+  // ActivityManager::replaceActivity() on every map <-> menu round trip
+  // (ActivityManager.cpp), so a plain member reset to false on each entry --
+  // asking again every time the rider glances at the menu and back (found in
+  // code review, 2026-09-13, before a member version of this flag ever
+  // shipped).
+  void maybeSyncPointsLive();
   // `NEED_TILES <count> fmt <version> view` -- the `view` word is what tells
   // the phone to answer from `tiles` (this screen) rather than page `missing`
   // (the tile sync screen). docs/ble-map-transfer-protocol.md.
@@ -526,6 +603,9 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // The style for the fix currently on screen. One place, so the full redraw
   // and the partial move cannot disagree about what the marker is claiming.
   MapFixTrust::MarkerStyle markerStyle() const { return MapFixTrust::styleFor(trust_); }
+  // Opens the session on the position the card remembers, with a marker that
+  // says so -- see the comment on the definition.
+  void seedFromPersistedFix();
 
   // Buttons, and the two timers they arm.
   void handleButtons();
@@ -830,7 +910,12 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
     uint8_t catalogIndex = 0;  // which pin, so the marker can carry its glyph
     uint8_t count = 0;         // 0 means merged into another mark
   };
-  void drawPinEdgeMark(const PinEdgeMark& mark);
+  // False when the mark could not be placed anywhere clear, and then nothing is
+  // drawn -- the caller counts it rather than letting it vanish quietly.
+  bool drawPinEdgeMark(const PinEdgeMark& mark);
+  // Moves a mark's head until the balloon's box clears both `area` and the
+  // chrome register. False when nothing within kPinEdgeSlideMaxPx does.
+  bool slideEdgeMarkClear(const PinShapeFrame& frame, const Rect& area, int& headX, int& headY) const;
   // Where an edge marker and its label may land: the panel minus everything this
   // screen already draws over the map -- the button bar, the side-hint boxes and the
   // compass. Empty (zero width or height) when there is nothing left, which is a
@@ -845,6 +930,15 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // Two markers closer than this merge into one with a count: two arrows on top
   // of each other read as one broken arrow.
   static constexpr int kPinEdgeMergePx = 52;  // a whole pin wide, since a marker is one now
+  // How far an edge marker may slide to get off the screen's furniture, and in
+  // what steps. pinEdgeArea() clears both button bands and the compass by
+  // shrinking one rectangle, which cannot express the scale bar, the debug
+  // window or the header -- they are corners and bands, not full edges. The
+  // register can, so the mark is slid until it clears (slideEdgeMarkClear()).
+  // 80 is a little under two pin widths: far enough to get past the scale bar,
+  // short enough that the marker still reads as being on the side the pin is.
+  static constexpr int kPinEdgeSlideStepPx = 8;
+  static constexpr int kPinEdgeSlideMaxPx = 80;
   // Which store slot the nth row of the open Pins list stands for. Recomputed
   // rather than captured: the popup is modal, so the store cannot change under
   // it, and a captured table would be one more thing to keep in step.
@@ -936,6 +1030,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // nonzero for a slightly different reason and stops being nonzero at a different
   // moment.
   bool resumedFromSleep_ = false;
+  // Both set by the acquisition screen's handover, both constructor arguments --
+  // see the constructor's comment for what each one buys.
+  bool adoptRunningGnss_ = false;
+  bool forcePhonePosition_ = false;
   // True while the panel holds the route overview rather than a follow frame.
   // Fixes are still recorded in that state but do not redraw -- see
   // renderRouteOverview().
@@ -1013,8 +1111,10 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   double lastAcceptedLon_ = 0.0;
   uint32_t lastAcceptedFixMs_ = 0;
 
-  int drawnGnssBars_ = -1;
-  int drawnGnssBarHeight_ = -1;
+  // What the GNSS block last painted, and the memory its hysteresis is measured
+  // against. Starts at "nothing drawn yet" (MapGnssBars::State), which must not
+  // compare equal to an empty block or the first header pass would skip it.
+  MapGnssBars::State drawnGnssBlock_;
 
   // Set from BlePositionServer::begin()'s return in onEnter(). Without this,
   // a BLE stack that failed to come up (plausible: init costs ~75 KB heap,
@@ -1113,11 +1213,17 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
 
   // How much the marker is allowed to claim about the newest fix, and the
   // hysteresis latch behind it. Set by whichever ingest path accepted the fix
-  // (BLE, or the console's `pos`), read only through markerStyle().
+  // (BLE, the console's `pos`, or the receiver), read only through
+  // markerStyle().
   //
   // Starts Unstated, which draws the marker exactly as it drew before any of
-  // this existed -- so a source that says nothing about quality, and a device
-  // that has not had a fix yet, both look like they always did.
+  // this existed -- the right default for a source that says nothing about
+  // quality.
+  //
+  // **A device that has not had a fix yet is NOT that case**, and treating it as
+  // one was a defect: a frame drawn from the card's persisted fix showed a whole
+  // ring and a sharp arrow for a position and heading from another session
+  // (seedFromPersistedFix(), which now sets Loose and Unknown).
   MapFixTrust::Trust trust_{};
   MapFixTrust::State trustState_{};
   // What the marker on the panel is actually claiming right now, recorded where
@@ -1349,6 +1455,16 @@ class MapActivity final : public Activity, public IMapSkipObserver, public IMapS
   // which is why they all sit together there rather than next to the code
   // that writes them.
   MapDebugOverlay debug_;
+  // Which rectangles of this frame belong to the screen's own furniture rather
+  // than to the map (MapChrome.h). Rebuilt per full render by
+  // buildChromeRegister(); read by GfxRendererCanvas::areaReserved() and by
+  // drawPins().
+  MapChromeRegister chrome_;
+  // Pins whose balloon landed under that furniture this frame. Never a silent
+  // drop: an unseen pin is exactly the failure the pin feature exists to
+  // prevent, so the count is logged even when off-screen markers are off and
+  // there is nothing else to show for it.
+  uint16_t pinsHiddenByChrome_ = 0;
   // Follow frames: the raw values driving the marker, and what the viewport
   // reset cost.
   uint8_t debugFixSlot_ = MapDebugOverlay::kInvalidSlot;

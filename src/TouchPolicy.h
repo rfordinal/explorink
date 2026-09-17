@@ -1,5 +1,6 @@
 #pragma once
 
+#include <BoardConfig.h>
 #include <HalGPIO.h>
 
 #include "CrossPointSettings.h"
@@ -64,13 +65,24 @@ inline bool hintsVisible() { return !panelPresent() || mode() == CrossPointSetti
 //
 // A board constant rather than a setting, because it decides what a physical key
 // means and the answer differs by hardware, not by preference.
-inline constexpr bool homeKeyDoubleTapLocksTouch() {
-#if FREEINK_DEVICE_LILYGO
-  return true;
-#else
-  return false;
-#endif
-}
+// Whether the capacitive home key's double tap is the lock gesture. Two
+// conditions, and neither is a board name: there has to be a home key to double
+// tap, and a digitizer worth locking. It was `#if FREEINK_DEVICE_LILYGO` until
+// 2026-09-09, which shut the gesture out of the X4 Pro -- a board with both, and
+// the reference device.
+//
+// Not constexpr, and not cacheable: `panelPresent()` reads `hasTouch()` live
+// because the touch controller finishes its init after static construction, so
+// this answers false for the first part of boot and true afterwards. Every
+// caller must therefore tolerate the flip. `pumpHomeKey()` does: the branch this
+// picks clears the pending-tap state on the way through, so a flip starts the
+// gesture fresh rather than half-resolved.
+//
+// The gesture is load-bearing on a board whose Back and Confirm both come from
+// touch. While the lock is on, a single tap deliberately does NOT select
+// (`MappedInputManager::pumpHomeKey()`), so the double tap is the *only* way
+// back -- which is why it is resolved before that gate and not after it.
+inline bool homeKeyDoubleTapLocksTouch() { return panelPresent() && BoardConfig::hasHomeKey(); }
 
 // Whether to draw the lock glyph instead of the hint boxes. The boxes vanishing
 // is the signal that touch is off, but on their own they cannot distinguish OFF

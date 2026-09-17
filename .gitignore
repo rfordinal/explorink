@@ -31,9 +31,10 @@ lib/EpdFont/scripts/output/
 /.dummy
 /CMakeLists.txt
 /dependencies.lock
-/sdkconfig.default
-/sdkconfig.defaults
-sdkconfig.sticky
+# PlatformIO writes one sdkconfig per env at build time. Listed one by one until
+# 2026-09-09, which meant every new env left an untracked file behind until
+# somebody noticed; a pattern covers the next one too.
+sdkconfig.*
 # ctest scratch, written when ctest runs from the repo root instead of build/test
 Testing/
 qa-artifacts

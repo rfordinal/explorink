@@ -20,7 +20,7 @@ this file is only what comes next.
 | 2b | What the pair draws | device, a cell that is confirmed present (T-583), one small firmware change | open, **gated on T-583** |
 | 3 | GNSS as a third `applyFix()` caller | device | **done, verified on hardware**: the map drew from the receiver on the ride 2026-09-01, and the BLE path with the setting off was re-checked 2026-09-02 |
 | 4 | Heading from course, on-device | device | **built and ridden once, 2026-09-01** -- the gate held on 31 stationary rows; nobody watched the arrow on the panel |
-| 5 | Priority when both sources are live, **and the duty cycle** | numbers from 2, product decision | **reframed 2026-09-02**: a ride took 10+ min to first fix, so the question is what it costs to never power the receiver down |
+| 5 | Priority when both sources are live, **and the duty cycle** | numbers from 2, product decision | **half answered 2026-09-10**: the rider picks the source at the door, on the satellite wait screen ([`gnss-acquire.md`](gnss-acquire.md)). The duty cycle is still open and still needs step 2's numbers |
 
 ## How sessions share this
 
@@ -479,6 +479,17 @@ Phone connected **and** the receiver has a fix: which wins? The phone has the
 stabilised heading, the receiver has independence. Needs step 2's numbers (a
 duty-cycled receiver has a price) and step 4 (without it the receiver has no
 usable heading). Product decision.
+
+**Half of this was answered on 2026-09-10, and not by an algorithm.** One
+position source per map session was already the rule (`bleInUse_`, maintainer's
+call 2026-09-03), so there is no "both live" state inside a map session to
+arbitrate -- what was missing was a place for the rider to choose which one, at
+the moment they care. That is the satellite wait screen: it shows what the sky
+is worth right now and offers the receiver or the phone
+([`gnss-acquire.md`](gnss-acquire.md)). The screen is built and unverified.
+
+What is left of step 5 is the duty cycle, which is a power question and still
+gated on step 2.
 
 `power-management.md`'s T5S3 section already frames the duty-cycle question and
 its G1-G7 measurement list; that is where the numbers land, not here.

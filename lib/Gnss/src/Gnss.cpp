@@ -143,6 +143,11 @@ bool Gnss::begin(const GnssConfig& config) {
   for (uint8_t i = 0; i < kMaxTalkers; ++i) {
     talkers_[i] = TalkerState();
   }
+  // The sky snapshot goes with the counts it belongs to. A stale plot from a
+  // session before the rail dropped would draw satellites this one has not
+  // heard from.
+  satelliteCount_ = 0;
+  satelliteStale_ = 0;
   sentences_ = 0;
   checksumErrors_ = 0;
   framingErrors_ = 0;
@@ -282,6 +287,11 @@ bool Gnss::injectAidIni(double latitude, double longitude, bool haveTime, uint32
   return config_.serial->write(frame, sizeof(frame)) == sizeof(frame);
 }
 
+bool Gnss::sendRaw(const uint8_t* data, size_t length) {
+  if (!running_ || config_.serial == nullptr || data == nullptr || length == 0) return false;
+  return config_.serial->write(data, length) == length;
+}
+
 bool Gnss::sendNmeaSentence(const char* body) {
   if (!running_ || config_.serial == nullptr || body == nullptr) return false;
   const size_t bodyLen = std::strlen(body);
@@ -332,6 +342,10 @@ bool Gnss::poll() {
     if (byteRead < 0) break;
     ++bytesRead_;
     const char c = static_cast<char>(byteRead);
+
+    if (rawByteSink_ != nullptr) {
+      rawByteSink_(static_cast<uint8_t>(byteRead));
+    }
 
     if (c == '$') {
       // A '$' mid-sentence means the previous one was cut short. Restarting is
@@ -571,6 +585,10 @@ void Gnss::parseGsv(const char* talker, const char* body) {
     state->pendingBest = 0;
     state->expectedNext = 2;
     state->cycleIntact = true;
+    // The sky snapshot is swept per cycle rather than accumulated: everything
+    // this constellation reported last time is provisionally gone until this
+    // cycle lists it again.
+    markTalkerStale(talker);
   } else if (messageNumber != state->expectedNext) {
     // A message of this cycle was lost -- a checksum error on a 9600 baud line
     // is exactly what checksumErrors_ counts. Without this the survivors
@@ -585,13 +603,46 @@ void Gnss::parseGsv(const char* talker, const char* body) {
   // Four fields per satellite from field 4: PRN, elevation, azimuth, C/N0.
   // An empty C/N0 means the satellite is in view but not tracked.
   for (uint8_t slot = 0; slot < 4; ++slot) {
-    const uint8_t snrIndex = static_cast<uint8_t>(4 + slot * 4 + 3);
-    if (!nmeaField(body, snrIndex, field, sizeof(field))) break;
+    const uint8_t base = static_cast<uint8_t>(4 + slot * 4);
+    // No PRN field at all means this sentence carries fewer than four
+    // satellites, which the last sentence of a cycle normally does.
+    if (!nmeaField(body, base, field, sizeof(field))) break;
     if (field[0] == '\0') continue;
-    const uint8_t snr = static_cast<uint8_t>(atoi(field));
-    if (snr == 0) continue;
-    ++state->pendingCount;
-    if (snr > state->pendingBest) state->pendingBest = snr;
+    const uint8_t prn = static_cast<uint8_t>(atoi(field));
+
+    uint8_t elevation = 0;
+    uint16_t azimuth = 0;
+    bool hasPosition = false;
+    if (nmeaField(body, static_cast<uint8_t>(base + 1), field, sizeof(field)) && field[0] != '\0') {
+      elevation = static_cast<uint8_t>(atoi(field));
+      hasPosition = true;
+    }
+    if (nmeaField(body, static_cast<uint8_t>(base + 2), field, sizeof(field)) && field[0] != '\0') {
+      azimuth = static_cast<uint16_t>(atoi(field));
+      hasPosition = true;
+    }
+
+    uint8_t snr = 0;
+    if (nmeaField(body, static_cast<uint8_t>(base + 3), field, sizeof(field)) && field[0] != '\0') {
+      snr = static_cast<uint8_t>(atoi(field));
+    }
+
+    // The aggregates commit at the end of an intact cycle and this snapshot
+    // updates per sentence, deliberately: the counts are numbers a reader
+    // compares against each other (satsWithSignal against satsInView), so a
+    // half-scanned sky would make them disagree. A plot has no such pairing --
+    // a satellite drawn one sentence early is simply drawn.
+    if (snr > 0) {
+      ++state->pendingCount;
+      if (snr > state->pendingBest) state->pendingBest = snr;
+    }
+
+    GnssSatellite* sat = satelliteSlot(talker, prn);
+    if (sat == nullptr) continue;
+    sat->elevation = elevation;
+    sat->azimuth = azimuth;
+    sat->hasPosition = hasPosition;
+    sat->snr = snr;
   }
 
   state->inView = inView;
@@ -600,6 +651,7 @@ void Gnss::parseGsv(const char* talker, const char* body) {
       state->snrCount = state->pendingCount;
       state->snrBest = state->pendingBest;
     }
+    sweepSatellites(talker, state->cycleIntact);
     // Cleared whether or not the cycle was intact, so a dropped message can
     // never leak into the next sweep.
     state->pendingCount = 0;
@@ -607,6 +659,58 @@ void Gnss::parseGsv(const char* talker, const char* body) {
     state->cycleIntact = true;
     state->expectedNext = 1;
   }
+}
+
+GnssSatellite* Gnss::satelliteSlot(const char* talker, uint8_t prn) {
+  for (uint8_t i = 0; i < satelliteCount_; ++i) {
+    GnssSatellite& sat = satellites_[i];
+    if (sat.prn == prn && sat.talker[0] == talker[0] && sat.talker[1] == talker[1]) {
+      // Listed by the cycle now scanning, so it survives its sweep.
+      satelliteStale_ &= ~(1UL << i);
+      return &sat;
+    }
+  }
+  if (satelliteCount_ >= kMaxSatellites) return nullptr;
+  GnssSatellite& sat = satellites_[satelliteCount_];
+  sat = GnssSatellite{};
+  sat.talker[0] = talker[0];
+  sat.talker[1] = talker[1];
+  sat.prn = prn;
+  satelliteStale_ &= ~(1UL << satelliteCount_);
+  ++satelliteCount_;
+  return &sat;
+}
+
+void Gnss::markTalkerStale(const char* talker) {
+  for (uint8_t i = 0; i < satelliteCount_; ++i) {
+    if (satellites_[i].talker[0] == talker[0] && satellites_[i].talker[1] == talker[1]) {
+      satelliteStale_ |= (1UL << i);
+    }
+  }
+}
+
+void Gnss::sweepSatellites(const char* talker, bool cycleIntact) {
+  // Compacts in place and rebuilds the mask against the new indices in the same
+  // pass. Both of those matter: only THIS talker's unseen entries may be
+  // dropped, and another constellation whose own cycle is still open must keep
+  // its marks -- a receiver is free to interleave GSV cycles, and sweeping on
+  // one talker's cycle end must not empty another's plot.
+  uint32_t nextStale = 0;
+  uint8_t write = 0;
+  for (uint8_t read = 0; read < satelliteCount_; ++read) {
+    const bool stale = (satelliteStale_ & (1UL << read)) != 0;
+    const GnssSatellite& sat = satellites_[read];
+    const bool mine = sat.talker[0] == talker[0] && sat.talker[1] == talker[1];
+    // A complete cycle that did not list it means it really is gone. A torn
+    // cycle proves nothing, so the entry stays and only its mark is dropped --
+    // the same reasoning that stops a torn cycle committing counts.
+    if (cycleIntact && stale && mine) continue;
+    if (stale && !mine) nextStale |= (1UL << write);
+    if (write != read) satellites_[write] = satellites_[read];
+    ++write;
+  }
+  satelliteCount_ = write;
+  satelliteStale_ = nextStale;
 }
 
 Gnss::TalkerState* Gnss::talkerFor(const char* id) {

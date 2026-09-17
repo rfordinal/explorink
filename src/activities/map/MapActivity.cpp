@@ -2,6 +2,7 @@
 
 #include <BlePositionServer.h>
 #include <HalPowerManager.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -14,7 +15,10 @@
 
 #include "CrossPointSettings.h"
 #include "MapPointMarks.h"
+#include "MapPointReader.h"
+#include "MapPointShardStorage.h"
 #include "MapPointShards.h"
+#include "MapPointSource.h"
 #include "TouchPolicy.h"
 // APP_STATE.showBootScreen: the quick-resume-sleep decision, read in onExit().
 #include "CrossPointState.h"
@@ -26,6 +30,7 @@
 #include "HeldTilesStore.h"
 #include "HikeIcons.h"
 #include "MapFollow.h"
+#include "MapGnssBars.h"
 #include "MapGnssHeading.h"
 #include "MapHatch.h"
 // missingTileAnchorFromLastFix(), for `fake` -- it seeds around the same origin
@@ -123,6 +128,16 @@ constexpr uint32_t kFreshnessIntervalMs = 10 * 60 * 1000;
 // A check is one `have` reply and a handful of kB of HTTP; a phone that has not
 // finished in this long is not going to.
 constexpr uint32_t kFreshnessQuietMs = 40 * 1000;
+
+// True once NEED_POINTS has gone out this power cycle. A file-scope static,
+// not a MapActivity member: the activity is deleted and reconstructed on
+// every map <-> menu round trip (ActivityManager::replaceActivity()), and a
+// member would reset with it -- asking again on every glance at the menu,
+// not once per power cycle as decision 2's placeholder intends
+// (docs/point-layer-lifecycle.md, "The `Live` cooldown for points has no
+// number"; found in code review, 2026-09-13). Never cleared: a re-ask on the
+// same boot would need the cooldown number that doc says does not exist yet.
+bool g_pointsAskedThisPowerCycle = false;
 
 // Rate cap on maybeCheckTileFreshness()'s own gate-reason logging -- that
 // function runs every tick, so without this a blocked gate prints on every
@@ -321,32 +336,19 @@ constexpr int kHeaderGnssIconToBtGap = 6;
 // zoom hints in drawZoomSideHints().
 constexpr const char* kHeaderUtcSuffix = " UTC";
 
-// GNSS bars: **how many** bars are filled says how many satellites are being
-// tracked, and **how tall** they all are says how strong the best one is. Two
-// numbers in one block, because they answer two different questions and a rider
-// needs both: four weak satellites and two strong ones are both "no fix", and
-// they need opposite things done about them.
+// GNSS bars: **how many** bars are filled says how many satellites the antenna
+// hears, and **how tall** they all are says how strong the best one is.
 //
-// Deliberately not the BLE staircase next to it. Those bars step up in height by
-// design, so a glance tells the two blocks apart without reading either.
+// The thresholds, the hysteresis and the reasons behind every number live in
+// MapGnssBars.h -- pure arithmetic, host-tested, out of this file for the same
+// reason MapGnssHeading and MapFixTrust are.
 //
-// Four is the count that matters: a position needs four satellites, so a full
-// block means a fix is due and a half-full one means it is not coming yet.
-constexpr int kHeaderGnssBarCount = kHeaderBleBarCount;
+// Deliberately not the BLE staircase next to it. Those bars step up in height
+// by design, so a glance tells the two blocks apart without reading either.
+constexpr int kHeaderGnssBarCount = MapGnssBars::kBarCount;
+static_assert(kHeaderGnssBarCount == kHeaderBleBarCount,
+              "the GNSS block reuses the BLE block's width and slot pitch (kHeaderBleBarsWidth)");
 
-// SNR here is C/N0 in dB-Hz, the satellite signal against the noise floor. The
-// steps are the two thresholds this whole problem turns on, measured elsewhere
-// and written down in Gnss::injectAidIni(): below about 24 a satellite is not
-// usable, from 24 it can be tracked when the receiver already holds the
-// ephemeris, and from about 31 the receiver can read the ephemeris off the air
-// by itself. So the top step is "this can fix unaided" and the middle is "this
-// needs aiding", which is exactly the distinction the panel should carry.
-int resolveGnssBarHeight(uint8_t bestSnr) {
-  if (bestSnr == 0) return 0;
-  if (bestSnr < 24) return kHeaderIconHeight / 4;
-  if (bestSnr < 31) return kHeaderIconHeight / 2;
-  return kHeaderIconHeight;
-}
 #endif
 
 // The clock sits leftmost in the status row, between the place name and the
@@ -862,22 +864,87 @@ void MapActivity::drawBusyBadge() {
 // screen -- its box row starts at x=25 (BaseTheme.cpp's x4ButtonPositions),
 // so the bar sits left of that, and kScaleMarginBottom mirrors the busy
 // badge's own margin to clear the same band from above.
-void MapActivity::drawMapScale() {
+namespace {
+
+// The scale bar's numbers are drawn straight onto the map, and the map under
+// them is whatever happens to be there: a built-up stipple tone, a road casing,
+// a contour. Measured on an X4 Pro panel 2026-09-15 over Vinosady -- a road ran
+// through the `0` and a thick one through `km`, and the row was unreadable in
+// places.
+//
+// Same answer place names already use (MapLabels.cpp, kHaloRing): the string in
+// white around itself, then black on top. A halo rather than a white plate
+// because only the pixels the digits need are knocked out, so the map keeps
+// showing through between them -- the bar's own box is reserved against labels
+// and marks, but roads still draw under it by design, and a plate would erase
+// them.
+//
+// 2, which is the number this project already uses everywhere a white outline
+// keeps text off the map: data/mapstyle.json sets `label_halo_px: 2` for place
+// names and for contour heights, and `halo_px: 2` for the route's junction
+// dots. A 1 px ring was tried first and measured on an X4 Pro panel the same
+// day -- it is visible and it is not enough against a built-up stipple, whose
+// dots are themselves 1 px on a 1 px pitch. This is a fixed 10 pt UI face at one
+// size rather than a style-driven label, so the radius is a constant here rather
+// than a style field; it is the style's value, not an independent one.
+constexpr int kScaleHaloDx[8] = {-1, 1, 0, 0, -1, 1, -1, 1};
+constexpr int kScaleHaloDy[8] = {0, 0, -1, 1, -1, -1, 1, 1};
+constexpr int kScaleHaloPx = 2;
+
+void drawHaloedScaleText(GfxRenderer& renderer, const int x, const int y, const char* text) {
+  // Ring by ring outward, same shape as MapLabels' halo loop: the offsets are
+  // scaled by the radius rather than the ring being recomputed, so a wider halo
+  // costs one more pass and no new table.
+  for (int radius = 1; radius <= kScaleHaloPx; ++radius) {
+    for (int i = 0; i < 8; ++i) {
+      renderer.drawText(UI_10_FONT_ID, x + kScaleHaloDx[i] * radius, y + kScaleHaloDy[i] * radius, text, false);
+    }
+  }
+  renderer.drawText(UI_10_FONT_ID, x, y, text, true);
+}
+
+}  // namespace
+
+MapActivity::ScaleBarLayout MapActivity::scaleBarLayout() const {
+  ScaleBarLayout layout;
   const double mpp = MapViewport::kZoomLadder[zoomStep()].mpp;
-  const double niceMeters = niceScaleValue(kScaleTargetPx * mpp);
-  const int totalPx = static_cast<int>(lround(niceMeters / mpp));
-  const bool useKm = niceMeters >= 1000.0;
+  layout.niceMeters = niceScaleValue(kScaleTargetPx * mpp);
+  layout.totalPx = static_cast<int>(lround(layout.niceMeters / mpp));
+  layout.useKm = layout.niceMeters >= 1000.0;
 
   // Stacked bottom-up from the same clearance line the busy badge uses
   // (kScaleMarginBottom, mirroring kBusyMarginBottom): label text bottom
   // lands exactly there, with the ticks and bar above it -- not below, or
   // the labels would draw into GUI.drawButtonHints' band.
-  const int clearanceY = renderer.getScreenHeight() - kScaleMarginBottom;
-  const int labelY = clearanceY - renderer.getLineHeight(UI_10_FONT_ID);
-  const int tickBottom = labelY - 2;
-  const int barBottom = tickBottom - kScaleTickHeight;
-  const int barTop = barBottom - kScaleBarHeight;
-  const int tickTop = barTop - kScaleTickHeight;
+  layout.clearanceY = renderer.getScreenHeight() - kScaleMarginBottom;
+  layout.labelY = layout.clearanceY - renderer.getLineHeight(UI_10_FONT_ID);
+  layout.tickBottom = layout.labelY - 2;
+  layout.barBottom = layout.tickBottom - kScaleTickHeight;
+  layout.barTop = layout.barBottom - kScaleBarHeight;
+  layout.tickTop = layout.barTop - kScaleTickHeight;
+  return layout;
+}
+
+Rect MapActivity::mapScaleRect() const {
+  const ScaleBarLayout layout = scaleBarLayout();
+  // Grown by the halo radius on every side. The `0` is left-aligned on the bar's
+  // first tick and the last mark right-aligned on its last, so without this the
+  // outermost ring of their white outline falls outside the reserved box and a
+  // place name could be placed onto pixels the bar is about to knock out.
+  const int pad = kScaleHaloPx;
+  return Rect{kScaleMarginLeft - pad, layout.tickTop - pad, layout.totalPx + 2 * pad,
+              layout.clearanceY - layout.tickTop + 2 * pad};
+}
+
+void MapActivity::drawMapScale() {
+  const ScaleBarLayout layout = scaleBarLayout();
+  const double niceMeters = layout.niceMeters;
+  const int totalPx = layout.totalPx;
+  const bool useKm = layout.useKm;
+  const int labelY = layout.labelY;
+  const int tickBottom = layout.tickBottom;
+  const int barTop = layout.barTop;
+  const int tickTop = layout.tickTop;
 
   // Edges computed from the same total rather than a fixed per-segment
   // pixel width, so five segments always add up to exactly totalPx with no
@@ -928,16 +995,16 @@ void MapActivity::drawMapScale() {
   textX[kScaleSegments] = edgeX[kScaleSegments] - textWidths[kScaleSegments];
 
   constexpr int kLabelGap = 3;
-  renderer.drawText(UI_10_FONT_ID, textX[0], labelY, marks[0], true);
+  drawHaloedScaleText(renderer, textX[0], labelY, marks[0]);
   int lastLabelRight = textX[0] + textWidths[0];
   for (int i = 1; i < kScaleSegments; ++i) {
     const bool clearsPrev = textX[i] >= lastLabelRight + kLabelGap;
     const bool clearsFinal = textX[i] + textWidths[i] + kLabelGap <= textX[kScaleSegments];
     if (!clearsPrev || !clearsFinal) continue;  // tick stays; number would overlap a neighbour
-    renderer.drawText(UI_10_FONT_ID, textX[i], labelY, marks[i], true);
+    drawHaloedScaleText(renderer, textX[i], labelY, marks[i]);
     lastLabelRight = textX[i] + textWidths[i];
   }
-  renderer.drawText(UI_10_FONT_ID, textX[kScaleSegments], labelY, marks[kScaleSegments], true);
+  drawHaloedScaleText(renderer, textX[kScaleSegments], labelY, marks[kScaleSegments]);
 }
 
 void MapActivity::showBusy() {
@@ -1402,6 +1469,52 @@ void MapActivity::maybeCheckTileFreshness() {
           static_cast<unsigned long>(g_heldTiles.size()));
 }
 
+void MapActivity::maybeSyncPointsLive() {
+  if (g_pointsAskedThisPowerCycle) return;
+  if (SETTINGS.mapPointsEnabled == 0) return;
+  if (SETTINGS.mapTileFreshnessMode != CrossPointSettings::MAP_TILE_FRESHNESS_LIVE) return;
+  // No fix this session yet -- consoleState_ only gains one through a real
+  // `pos` (applyFix()'s own path), so this is "never fixed since boot", not
+  // "fixed a while ago".
+  if (!consoleState_.hasPosition()) return;
+  // Same two gates maybeCheckTileFreshness() enforces, missing here in the
+  // first cut (code review, 2026-09-13): a transfer already owns the link
+  // (autoSyncPending_), or a freshness check has a listing open
+  // (freshnessPending_) -- asking now would interleave NEED_POINTS's own
+  // `points` conversation into either one, the same collision class
+  // `TileSyncActivity`'s hardware-measured 2026-08-11 comment describes.
+  if (autoSyncPending_ > 0) return;
+  if (freshnessPending_) return;
+  if (!freeink::BlePositionServer::getInstance().isCommandSubscribed()) return;
+
+  MapPointShards::Range range;
+  if (!consoleState_.pointShardRange(range)) return;  // cannot happen right after hasPosition(); stay honest anyway
+
+  char line[48];
+  snprintf(line, sizeof(line), "NEED_POINTS %lu fmt %u", static_cast<unsigned long>(range.count()),
+           static_cast<unsigned>(MapPointReader::kFormatVersion));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "points: NEED_POINTS not delivered");
+    return;
+  }
+  g_pointsAskedThisPowerCycle = true;
+  LOG_INF(kLogTag, "points: asked about %lu shard(s) around the fix, once this power cycle",
+          static_cast<unsigned long>(range.count()));
+}
+
+bool MapActivity::hasPointShard(uint32_t col, uint32_t row) const {
+  return MapPointShardStorage::exists(kTileRoot, col, row);
+}
+
+void MapActivity::onPointShardGone(uint32_t col, uint32_t row) {
+  MapPointShardStorage::deleteIfPresent(kLogTag, kTileRoot, col, row);
+}
+
+void MapActivity::onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) {
+  LOG_INF(kLogTag, "points: phone could not supply %lu/%lu (%s)", static_cast<unsigned long>(col),
+          static_cast<unsigned long>(row), reason);
+}
+
 void MapActivity::expireAutoSync() {
   if (autoSyncPending_ == 0 || autoSyncDeadlineMs_ == 0) return;
 
@@ -1589,9 +1702,11 @@ void MapActivity::updateHeaderStatus() {
   bool barsMoved = connected && bars != drawnBleBars_;
 #ifdef ENABLE_GNSS_CMD
   if (!bleInUse_) {
-    const uint8_t tracked = gnss.satsWithSignal();
-    const int gnssBars = tracked > kHeaderGnssBarCount ? kHeaderGnssBarCount : static_cast<int>(tracked);
-    barsMoved = gnssBars != drawnGnssBars_ || resolveGnssBarHeight(gnss.bestSnr()) != drawnGnssBarHeight_;
+    // Against drawnGnssBlock_, which is both the panel's state and the
+    // hysteresis' memory -- resolve() reads it and does not write it, so asking
+    // here and drawing later cannot apply the slack twice.
+    const MapGnssBars::Block block = MapGnssBars::resolve(gnss.satsWithSignal(), gnss.bestSnr(), drawnGnssBlock_);
+    barsMoved = block.bars != drawnGnssBlock_.bars || block.heightStep != drawnGnssBlock_.heightStep;
   }
 #endif
 
@@ -1678,6 +1793,78 @@ void MapActivity::updateHeaderStatus() {
   }
 }
 
+Rect MapActivity::compassRect() const {
+  const int centreX = renderer.getScreenWidth() - kCompassCenterMarginRight;
+  const int centreY = kCompassCenterTop;
+  const int haloRadius = kCompassGlyphRadius + kCompassHaloMargin;
+  return Rect{centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2};
+}
+
+Rect MapActivity::headerRect() const {
+  // mapContentTop(), not headerBarHeight(): the separator row belongs to the
+  // header, and a pin drawn across it makes the band look broken rather than
+  // makes the pin look placed.
+  return Rect{0, 0, renderer.getScreenWidth(), mapContentTop()};
+}
+
+void MapActivity::buildChromeRegister() {
+  chrome_.clear();
+  pinsHiddenByChrome_ = 0;
+
+  const Rect header = headerRect();
+  chrome_.add(header.x, header.y, header.width, header.height, MapChromeTag::Header);
+
+  const Rect compass = compassRect();
+  chrome_.add(compass.x, compass.y, compass.width, compass.height, MapChromeTag::Compass);
+
+  const Rect scale = mapScaleRect();
+  chrome_.add(scale.x, scale.y, scale.width, scale.height, MapChromeTag::ScaleBar);
+
+  // Only when it is actually on the panel. The window is off by default, and
+  // reserving a box nothing draws would cost the top-left corner of every
+  // frame to protect a diagnostic that is not there.
+  if (SETTINGS.mapDebugInfo) {
+    layoutDebugOverlay();
+    int dx = 0, dy = 0, dw = 0, dh = 0;
+    if (debug_.currentRect(renderer, dx, dy, dw, dh)) {
+      chrome_.add(dx, dy, dw, dh, MapChromeTag::DebugWindow);
+    }
+  }
+
+  // Each button box on its own, never the band it sits in. The band is mostly
+  // empty: on an X4 the four 80 px boxes start at x=58 and end at x=422, so a
+  // full-width rect throws away two 58 px corners a pin fits in
+  // (LyraTheme.cpp, kX4FrontPositions). The theme answers false for a box it
+  // does not draw -- a touch panel, a locked panel, a button with no label --
+  // so this frees the band on its own wherever the boxes are absent.
+  //
+  // Portrait logical coordinates, the same pair MappedInputManager::hintBoxAt()
+  // uses for the hit test: the boxes are always painted in portrait whatever
+  // the reader is rotated to (BaseTheme.h), and the map screen is portrait, so
+  // these are the coordinates everything else on this screen is drawn in too.
+  const int portraitWidth = renderer.getDisplayHeight();
+  const int portraitHeight = renderer.getDisplayWidth();
+  Rect box;
+  for (int i = 0; i < 4; ++i) {
+    if (GUI.frontHintBox(i, portraitWidth, portraitHeight, box)) {
+      chrome_.add(box.x, box.y, box.width, box.height, MapChromeTag::Button);
+    }
+  }
+  for (int i = 0; i < 2; ++i) {
+    if (GUI.sideHintBox(i, portraitWidth, portraitHeight, box)) {
+      chrome_.add(box.x, box.y, box.width, box.height, MapChromeTag::SideButton);
+    }
+  }
+
+  // The register is sized for the ten pieces above plus room to spare, so this
+  // firing means something new started registering -- and the placers would
+  // then be drawing under furniture believing it absent.
+  if (chrome_.dropped() > 0) {
+    LOG_ERR(kLogTag, "chrome register full: %u rect(s) dropped, placers will draw under them",
+            static_cast<unsigned>(chrome_.dropped()));
+  }
+}
+
 void MapActivity::drawCompass(uint8_t headingStep) {
   const int centreX = renderer.getScreenWidth() - kCompassCenterMarginRight;
   const int centreY = kCompassCenterTop;
@@ -1693,8 +1880,8 @@ void MapActivity::drawCompass(uint8_t headingStep) {
   // inside it, so the clearance has to be the same in every direction or the
   // backing would clip the label at some headings and not others.
   const int haloRadius = kCompassGlyphRadius + kCompassHaloMargin;
-  renderer.fillRoundedRect(centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2, haloRadius,
-                           Color::White);
+  const Rect halo = compassRect();
+  renderer.fillRoundedRect(halo.x, halo.y, halo.width, halo.height, haloRadius, Color::White);
 
   // 1. "N", drawn as a 3-stroke monoline glyph -- not a font. GfxRenderer's
   // text renderer only has two orientations (TextRotation::None and a fixed
@@ -2253,15 +2440,16 @@ void MapActivity::drawHeaderStatusStrip() {
     drawnGnssState_ = state;
 
     // Bars: count = satellites tracked, height = the best one's signal.
+    // MapGnssBars owns both ladders and their hysteresis.
     //
     // An empty block is the useful case, not a missing one. On 2026-09-04 the
     // receiver saw nothing at all for fifteen minutes outdoors and the panel
     // said only "searching" -- a state it also shows when a fix is two seconds
     // away. Four empty slots say "it hears nothing", which is a different
     // problem with a different answer, and it needs no cable to read.
-    const uint8_t tracked = gnss.satsWithSignal();
-    const int filled = tracked > kHeaderGnssBarCount ? kHeaderGnssBarCount : static_cast<int>(tracked);
-    const int barHeight = resolveGnssBarHeight(gnss.bestSnr());
+    const MapGnssBars::Block block = MapGnssBars::resolve(gnss.satsWithSignal(), gnss.bestSnr(), drawnGnssBlock_);
+    const int filled = block.bars;
+    const int barHeight = MapGnssBars::barHeightPx(block.heightStep, kHeaderIconHeight);
     for (int i = 0; i < kHeaderGnssBarCount; ++i) {
       const int x = gnssBarsLeft + i * (kHeaderBleBarWidth + kHeaderBleBarGap);
       if (i < filled && barHeight > 0) {
@@ -2273,8 +2461,7 @@ void MapActivity::drawHeaderStatusStrip() {
         renderer.fillRect(x, iconBottom - 1, kHeaderBleBarWidth, 1, true);
       }
     }
-    drawnGnssBars_ = filled;
-    drawnGnssBarHeight_ = barHeight;
+    drawnGnssBlock_ = MapGnssBars::State{block.bars, block.heightStep};
   }
 #endif
 
@@ -2452,8 +2639,12 @@ void MapActivity::updateDebugOverlay() {
 }
 
 MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath,
-                         bool resumedFromSleep)
-    : Activity("Map", renderer, mappedInput), transfer_(kTileRoot), resumedFromSleep_(resumedFromSleep) {
+                         bool resumedFromSleep, bool adoptRunningGnss, bool forcePhonePosition)
+    : Activity("Map", renderer, mappedInput),
+      transfer_(kTileRoot),
+      resumedFromSleep_(resumedFromSleep),
+      adoptRunningGnss_(adoptRunningGnss),
+      forcePhonePosition_(forcePhonePosition) {
   if (routePath != nullptr && routePath[0] != '\0') {
     // Truncation would open the wrong file or none, so a path that does not fit
     // is refused outright rather than shortened.
@@ -2489,6 +2680,38 @@ MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
   debugTransferSlot_ = debug_.reserve("transfer");
 }
 
+// The fix off the card, as this session's opening picture.
+//
+// **The marker must claim nothing about it.** It is a position from a previous
+// session -- possibly days old, which is why pinFixAgeWarning() already says
+// "fix from last session" -- and a heading from whenever that was. Both entry
+// branches used to leave `trust_` at Unstated, and Unstated draws a whole ring
+// and a sharp arrow: the marker said "you are here, facing that way" about data
+// that supports neither half.
+//
+// Reported off the panel 2026-09-10, on a receiver that had never had a fix:
+// `gnss on q0 u0 v1 t1 s23` in the debug window, a solid ring and an arrow on
+// the glass. The satellite wait screen is what made it visible -- it hands
+// riders into the map with no fix on purpose -- but the defect is as old as the
+// persisted-fix path.
+//
+// Loose and Unknown, not Unstated: Unstated means "this source does not speak
+// accuracy", and the card does speak. It says the position is from another
+// session, which is exactly the claim the broken ring exists to make.
+void MapActivity::seedFromPersistedFix() {
+  hasReceivedAny_ = true;
+  showingPersistedFix_ = true;
+  lastLatE7_ = SETTINGS.mapLastLatE7;
+  lastLonE7_ = SETTINGS.mapLastLonE7;
+  lastHeading_ = SETTINGS.mapLastHeading;
+  updateManualHeadingCapture(lastHeading_);
+  trust_.pos = MapFixTrust::Pos::Loose;
+  trust_.dir = MapFixTrust::Dir::Unknown;
+  // The latch too, or the first real fix's hysteresis measures against a state
+  // the panel never showed.
+  trustState_.pos = MapFixTrust::Pos::Loose;
+}
+
 void MapActivity::onEnter() {
   Activity::onEnter();
   LOG_DBG(kLogTag, "onEnter start");
@@ -2504,7 +2727,11 @@ void MapActivity::onEnter() {
   // See bleInUse_'s comment (MapActivity.h) for what this costs and why the
   // trade was taken.
 #ifdef ENABLE_GNSS_CMD
-  bleInUse_ = SETTINGS.mapGnssPosition == 0;
+  // forcePhonePosition_ is the rider's own answer to that question, taken on the
+  // acquisition screen while the receiver was still searching: the sky is not
+  // opening, use the phone. It only ever moves the choice towards BLE -- the
+  // setting still decides every entry that did not come through that screen.
+  bleInUse_ = SETTINGS.mapGnssPosition == 0 || forcePhonePosition_;
 #else
   bleInUse_ = true;
 #endif
@@ -2540,11 +2767,15 @@ void MapActivity::onEnter() {
   // two.
   gnssStartedHere_ = false;
   haveGnssFixMs_ = false;
-  if (SETTINGS.mapGnssPosition != 0) {
+  if (!bleInUse_) {
     if (gnss.running()) {
-      // Somebody else's session -- CMD:GNSS ON from the host. Read it, but do
-      // not adopt it: onExit() must leave it exactly as it found it.
-      LOG_INF(kLogTag, "gnss: already running, not started here");
+      // Already up, and who owns it decides whether onExit() may drop the rail.
+      // adoptRunningGnss_ means the acquisition screen started it and handed it
+      // over, so this session finishes the job. Without that flag the owner is
+      // a host `CMD:GNSS ON` session and onExit() must leave it exactly as it
+      // found it.
+      gnssStartedHere_ = adoptRunningGnss_;
+      LOG_INF(kLogTag, "gnss: already running, %s", adoptRunningGnss_ ? "adopted from the acquire screen" : "not ours");
     } else if (gnssStart()) {
       gnssStartedHere_ = true;
       LOG_INF(kLogTag, "gnss: started, rx ring %lu bytes", static_cast<unsigned long>(gnss.rxBufferSize()));
@@ -2647,6 +2878,17 @@ void MapActivity::onEnter() {
   // onto a history it never read (MapPins::pinSet).
   pins_.begin();
   consoleState_.setPinsSource(&pins_);
+  // `points`/`gone`/point-shard `skip` -- wired only when the rider has
+  // turned the point layer on. Same revision as TileSyncActivity's, and the
+  // same reason: `gone` is an unauthenticated delete, and this repo's
+  // security rule defaults a new write command to devel-only unless it is
+  // read-only (CLAUDE.md, "Security"). With nothing wired, `points`/`gone`
+  // simply answer `unavailable`.
+  if (SETTINGS.mapPointsEnabled != 0) {
+    consoleState_.setPointShardsSource(this);
+    consoleState_.setGoneObserver(this);
+    consoleState_.setPointSkipObserver(this);
+  }
   // Constant for the build, so once here rather than per reset. `info` reports
   // it; the tile sync screen quotes the same number in NEED_TILES.
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
@@ -2755,14 +2997,7 @@ void MapActivity::onEnter() {
   if (route_) {
     // Remembered so a later button press can re-render around it, exactly as the
     // no-route path does.
-    if (SETTINGS.mapHasLastFix) {
-      hasReceivedAny_ = true;
-      showingPersistedFix_ = true;
-      lastLatE7_ = SETTINGS.mapLastLatE7;
-      lastLonE7_ = SETTINGS.mapLastLonE7;
-      lastHeading_ = SETTINGS.mapLastHeading;
-      updateManualHeadingCapture(lastHeading_);
-    }
+    if (SETTINGS.mapHasLastFix) seedFromPersistedFix();
     renderRouteOverview();
     LOG_DBG(kLogTag, "onEnter done");
     return;
@@ -2773,12 +3008,7 @@ void MapActivity::onEnter() {
   // clears the banner (see the BLE/console branches in loop()).
   LOG_DBG(kLogTag, "onEnter: mapHasLastFix=%d", (int)SETTINGS.mapHasLastFix);
   if (SETTINGS.mapHasLastFix) {
-    hasReceivedAny_ = true;
-    showingPersistedFix_ = true;
-    lastLatE7_ = SETTINGS.mapLastLatE7;
-    lastLonE7_ = SETTINGS.mapLastLonE7;
-    lastHeading_ = SETTINGS.mapLastHeading;
-    updateManualHeadingCapture(lastHeading_);
+    seedFromPersistedFix();
     LOG_DBG(kLogTag, "onEnter: rendering persisted fix %d,%d", (int)lastLatE7_, (int)lastLonE7_);
     // Before the read, not after: this is the only viewport reset with no
     // feedback of any kind in front of it (a zoom or menu redraw gets the busy
@@ -2844,6 +3074,9 @@ void MapActivity::onExit() {
   // The pins source is a member of this activity, which main.cpp deletes right
   // after this returns -- the console must not be left pointing into it.
   consoleState_.setPinsSource(nullptr);
+  consoleState_.setPointShardsSource(nullptr);
+  consoleState_.setGoneObserver(nullptr);
+  consoleState_.setPointSkipObserver(nullptr);
   MISSING_TILES.flushIfDirty();
 
   // Before end(): the hooks point at a member of this activity, and this
@@ -2858,8 +3091,9 @@ void MapActivity::onExit() {
   freeink::BlePositionServer::getInstance().end();
 
 #ifdef ENABLE_GNSS_CMD
-  // Only what this activity started. A CMD:GNSS ON session from the host runs
-  // on past the map, which is what a bring-up expects.
+  // Only what this session owns -- what it started, or what the acquisition
+  // screen handed it (adoptRunningGnss_, onEnter()). A CMD:GNSS ON session from
+  // the host runs on past the map, which is what a bring-up expects.
   // Whatever is buffered belongs to the ride that just ended.
   GnssLog::flush();
   if (gnssStartedHere_) {
@@ -3209,6 +3443,7 @@ void MapActivity::loop() {
   expireAutoSync();
   maybeAutoSyncTiles();
   maybeCheckTileFreshness();
+  maybeSyncPointsLive();
   // Also the link state and the signal bars, which have nothing to do with
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
@@ -4898,8 +5133,10 @@ Rect MapActivity::pinEdgeArea() const {
   }
 
   // The compass sits top-right and the header row above it; clear both by taking
-  // the compass glyph's own bottom edge.
-  const int compassBottom = kCompassCenterTop + kCompassGlyphRadius;
+  // the compass box's own bottom edge (compassRect(), which is where the glyph
+  // and its halo are actually drawn).
+  const Rect compass = compassRect();
+  const int compassBottom = compass.y + compass.height;
   if (compassBottom + kPinEdgeMargin > top) top = compassBottom + kPinEdgeMargin / 2;
 
   if (right <= left || bottom <= top) return Rect{left, top, 0, 0};
@@ -5054,7 +5291,25 @@ void MapActivity::drawPins() {
     // The balloon hangs *above* its tip, so the on-screen test is asymmetric: a
     // tip a little below the panel still has a readable body on it.
     const PinShapeFrame& upright = kPinShapeFrames[0];
-    if (sx < -upright.w || sy < -upright.h || sx > screenW + upright.w || sy > screenH + upright.h) {
+    const bool offPanel = sx < -upright.w || sy < -upright.h || sx > screenW + upright.w || sy > screenH + upright.h;
+
+    // A pin under the screen's own furniture is a pin the rider never sees, so
+    // it is handled as one that is off the panel: it gets an edge marker if
+    // markers are on, and it is counted either way (MapChrome.h).
+    //
+    // The balloon is *not* moved to a clear spot and *not* flipped to hang the
+    // other way. Both would lie: the tip is the coordinate, and the shape's
+    // orientation already means something -- drawPinBalloon()'s `step` turns it
+    // so the point aims at an off-panel pin, so a flipped body would read as a
+    // direction that was never given. Maintainer's call, 2026-09-15.
+    //
+    // Step 0 (point-down) is what every pin inside the viewport is drawn with,
+    // so its frame is the box to test.
+    const bool underChrome = !offPanel && chrome_.hits(static_cast<int>(sx) - upright.tipX,
+                                                       static_cast<int>(sy) - upright.tipY, upright.w, upright.h);
+    if (underChrome) ++pinsHiddenByChrome_;
+
+    if (offPanel || underChrome) {
       if (!wantEdges) continue;
       if (!pinEdgeMarkerEnabled(entry)) continue;
       double ex = 0.0;
@@ -5117,17 +5372,32 @@ void MapActivity::drawPins() {
     }
   }
 
+  size_t edgesUnplaceable = 0;
   for (size_t i = 0; i < edgeCount; ++i) {
     if (edges[i].count == 0) continue;
-    drawPinEdgeMark(edges[i]);
-    ++drawn;
+    if (drawPinEdgeMark(edges[i])) {
+      ++drawn;
+    } else {
+      ++edgesUnplaceable;
+    }
   }
   // Never a silent cap: a marker that was not drawn is a pin the rider cannot
   // see, which is exactly the failure the feature is about.
   if (edgesDropped > 0)
     LOG_ERR(kLogTag, "%u off-screen pin marker(s) dropped: more than %d", static_cast<unsigned>(edgesDropped),
             kPinEdgeMax);
+  if (edgesUnplaceable > 0)
+    LOG_ERR(kLogTag, "%u off-screen pin marker(s) had nowhere clear of the screen's furniture",
+            static_cast<unsigned>(edgesUnplaceable));
   if (drawn > 0) LOG_DBG(kLogTag, "%d pin mark(s) drawn", drawn);
+  // Said out loud even when off-screen markers are on and every one of these
+  // got a marker: "three pins are behind the furniture" is the sentence that
+  // explains a panel the rider is confused by, and with markers off it is the
+  // only trace the pin left at all.
+  if (pinsHiddenByChrome_ > 0) {
+    LOG_DBG(kLogTag, "%u pin(s) hidden by screen furniture%s", static_cast<unsigned>(pinsHiddenByChrome_),
+            wantEdges ? ", shown as edge markers" : "");
+  }
 }
 
 void MapActivity::drawPinBalloon(int tipX, int tipY, size_t catalogIndex, uint8_t step) {
@@ -5169,7 +5439,37 @@ uint8_t MapActivity::pinShapeStepFor(double dx, double dy) {
   return static_cast<uint8_t>(step);
 }
 
-void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
+bool MapActivity::slideEdgeMarkClear(const PinShapeFrame& frame, const Rect& area, int& headX, int& headY) const {
+  const auto clear = [&](const int hx, const int hy) {
+    const int boxX = hx - frame.headX;
+    const int boxY = hy - frame.headY;
+    if (boxX < area.x || boxY < area.y) return false;
+    if (boxX + frame.w > area.x + area.width || boxY + frame.h > area.y + area.height) return false;
+    return !chrome_.hits(boxX, boxY, frame.w, frame.h);
+  };
+  if (clear(headX, headY)) return true;
+
+  // Outward in both axes at once, nearest first, so the mark moves as little as
+  // it can. Sliding is allowed here and not for a pin's own balloon: this
+  // position is already synthetic -- the clamps in drawPinEdgeMark() move it to
+  // the boundary of the area -- and the bearing is carried by the shape's
+  // rotation (pinShapeStepFor()), not by where the shape sits. A balloon at the
+  // pin's real coordinate has no such freedom, because there the position *is*
+  // the statement.
+  for (int distance = kPinEdgeSlideStepPx; distance <= kPinEdgeSlideMaxPx; distance += kPinEdgeSlideStepPx) {
+    const int offsetX[4] = {distance, -distance, 0, 0};
+    const int offsetY[4] = {0, 0, distance, -distance};
+    for (int i = 0; i < 4; ++i) {
+      if (!clear(headX + offsetX[i], headY + offsetY[i])) continue;
+      headX += offsetX[i];
+      headY += offsetY[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
   // The pin itself, turned so its point aims at where the pin actually is. An arrow
   // plus a distance said "11 km that way" and nothing about *what* was that way,
   // and a separate arrow next to an upright pin said it twice (both judged on the
@@ -5199,6 +5499,15 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
   if (headX - frame.headX + frame.w > rightLimit) headX = rightLimit - frame.w + frame.headX;
   if (headY - frame.headY < topLimit) headY = topLimit + frame.headY;
   if (headY - frame.headY + frame.h > bottomLimit) headY = bottomLimit - frame.h + frame.headY;
+
+  // And off the screen's own furniture, which the area above cannot express:
+  // measured on an X4 Pro panel 2026-09-15, a marker for a pin below the panel
+  // landed squarely on the scale bar's "5 km" (MapChrome.h).
+  if (!slideEdgeMarkClear(frame, area, headX, headY)) {
+    LOG_DBG(kLogTag, "pin edge marker dropped: no clear spot within %d px of %d,%d", kPinEdgeSlideMaxPx, headX, headY);
+    return false;
+  }
+
   // drawPinBalloon() still takes a tip target -- back-solve it from the head
   // target and this frame's own tip-to-head offset.
   const int tipX = headX + frame.tipX - frame.headX;
@@ -5242,7 +5551,10 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     // the previous frame at this point.
     markerRect(MapViewport::anchorScreenX(renderer.getScreenWidth()), MapViewport::markerYForStep(markerStep()), mx, my,
                mw, mh);
-    const bool overlaps = textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my;
+    // The rider's marker, or the screen's furniture -- the escape routes below
+    // serve both, so one condition drives them (MapChrome.h).
+    const bool overlaps = (textX < mx + mw && textX + textWidth > mx && textY < my + mh && textY + textHeight > my) ||
+                          chrome_.hits(textX, textY, textWidth, textHeight);
     if (overlaps) {
       if (mx - leftLimit >= textWidth + 4) {
         textX = mx - textWidth - 4;
@@ -5267,6 +5579,7 @@ void MapActivity::drawPinEdgeMark(const PinEdgeMark& mark) {
     }
   }
   renderer.drawText(SMALL_FONT_ID, textX, textY, text, true);
+  return true;
 }
 
 void MapActivity::showPinOnMap(size_t slot) {
@@ -5941,14 +6254,20 @@ uint8_t MapActivity::gnssHeadingStep(const GnssFix& fix) {
 // (dead reckoning, no satellites) is excluded here for the same reason
 // pollGnssFix() refuses to draw a position from it.
 MapActivity::GnssHeaderState MapActivity::gnssHeaderState() const {
-  if (SETTINGS.mapGnssPosition == 0 || !gnss.running()) return GnssHeaderState::Off;
+  // bleInUse_ rather than the setting: a session the rider sent to the phone on
+  // the acquisition screen must not draw a receiver glyph, even with the setting
+  // on and a host-owned receiver running next to it.
+  if (bleInUse_ || !gnss.running()) return GnssHeaderState::Off;
   const GnssFix& fix = gnss.fix();
   if (!fix.valid || fix.quality == 0 || fix.quality == 6) return GnssHeaderState::Seeking;
   return GnssHeaderState::Fixed;
 }
 
 void MapActivity::pollGnssFix() {
-  if (SETTINGS.mapGnssPosition == 0) return;
+  // One position source per session (bleInUse_), so a BLE session ignores the
+  // receiver even when something else has it running -- otherwise a rider who
+  // chose the phone would get a dot from whichever source spoke last.
+  if (bleInUse_) return;
   if (!gnss.running()) return;
 
   const GnssFix& fix = gnss.fix();
@@ -5966,12 +6285,18 @@ void MapActivity::pollGnssFix() {
   // showing whatever a previous BLE session had latched, which is to say
   // nothing about the receiver. posTrustForHdop() is that missing half.
   trust_.pos = MapFixTrust::posTrustForHdop(fix.hdop, fix.satsUsed, trustState_);
-  // `trust_.dir` is deliberately left alone. MapFixTrust says outright that
-  // there is no degrees-to-state mapping and that a receiver's course would
-  // have to come from whether it is moving, not from a figure -- and nobody has
-  // written that mapping. Leaving it Unstated draws the glyph this screen has
-  // always drawn, which is honest; inventing a rule here would put a second,
-  // unreviewed opinion next to the one that file exists to hold.
+  // `trust_.dir` goes back to Unstated rather than being computed. MapFixTrust
+  // says outright that there is no degrees-to-state mapping and that a
+  // receiver's course would have to come from whether it is moving, not from a
+  // figure -- and nobody has written that mapping. Unstated draws the glyph this
+  // screen has always drawn, which is honest; inventing a rule here would put a
+  // second, unreviewed opinion next to the one that file exists to hold.
+  //
+  // **Assigned, not left alone.** It used to be left, which was correct while
+  // nothing else ever wrote it. seedFromPersistedFix() now sets Unknown, so a
+  // session that opened on the card's fix would otherwise never draw a heading
+  // again once the receiver started working.
+  trust_.dir = MapFixTrust::Dir::Unstated;
 
   // **One gate, and it only catches a fix that contradicts itself.**
   //
@@ -6261,7 +6586,11 @@ void MapActivity::renderRouteOverview() {
   // the side hints, both of which are drawn after the map and would cover a name
   // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
   // bar and the busy badge already bottom out on.
-  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
+  // Before any map data: the label placer and the POI marks ask the canvas what
+  // this frame's furniture owns, and the canvas reads this register
+  // (MapChrome.h).
+  buildChromeRegister();
+  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx, &chrome_);
 
   MapViewState view;
   view.markerX = anchorX;
@@ -6545,7 +6874,11 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // the side hints, both of which are drawn after the map and would cover a name
   // (GfxRendererCanvas). kScaleMarginBottom is the same clearance line the scale
   // bar and the busy badge already bottom out on.
-  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx);
+  // Before any map data: the label placer and the POI marks ask the canvas what
+  // this frame's furniture owns, and the canvas reads this register
+  // (MapChrome.h).
+  buildChromeRegister();
+  GfxRendererCanvas canvas(renderer, mapContentTop(), kScaleMarginBottom, kSideHintReservedPx, &chrome_);
 
   MapViewState view;
   view.markerX = markerX;
@@ -6733,9 +7066,29 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
   // NOT at the current mode's height: the boxes are taller than the padlock
   // strip, so a snapshot sized for the padlock would leave a sliver of stale box
   // pixels above it, and e-ink holds that indefinitely.
-  const int chromeBand = UITheme::getInstance().chromeBandHeight();
-  captureRegion(chromeFront_, Rect{0, renderer.getScreenHeight() - chromeBand, renderer.getScreenWidth(), chromeBand});
-  captureRegion(chromeSide_, GUI.sideButtonHintsRect(renderer));
+  //
+  // **Only on a board with a digitizer.** The swap exists for one event: the
+  // touch lock going on or off, which trades the hint boxes for the padlock.
+  // Both halves of that need a panel -- TouchPolicy::locked() and
+  // lockIndicator() are `panelPresent() && ...`, and hintsVisible() is
+  // unconditionally true without one -- so on an X3 or an X4 the chrome the
+  // snapshot protects cannot change, and swapChrome() would restore a picture
+  // identical to what is already on the glass.
+  //
+  // It is not a free convenience there. Measured on an X3 (ESP32-C3) 2026-09-12:
+  // these two buffers are 8,448 bytes, the front band 5 x 528 and the side band
+  // 11 x 528 after the 90-degree rotation, and they are held for as long as the
+  // map screen is up. With the two heap block headers that is the whole 8,456 B
+  // of free heap the device-branch promotion cost that board (T-2002,
+  // docs/map-memory.md). The C3 has no PSRAM and was down to a 12.9 kB boot
+  // floor; the S3 boards, which do have PSRAM and also have the touch this
+  // guards on, keep the optimisation.
+  if (TouchPolicy::panelPresent()) {
+    const int chromeBand = UITheme::getInstance().chromeBandHeight();
+    captureRegion(chromeFront_,
+                  Rect{0, renderer.getScreenHeight() - chromeBand, renderer.getScreenWidth(), chromeBand});
+    captureRegion(chromeSide_, GUI.sideButtonHintsRect(renderer));
+  }
 
   // Composited last, over the map's own bottom-edge pixels rather than into
   // reserved space -- same idea as the debug window at the top of the screen

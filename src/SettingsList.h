@@ -246,6 +246,17 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Value(StrId::STR_FRONTLIGHT, &CrossPointSettings::frontlightBrightness, {10, 100, 10}, nullptr,
                            StrId::STR_CAT_DISPLAY),
 #endif
+#if FREEINK_CAP_WARMLIGHT
+        // Warm/cool mix, only on boards with a second frontlight channel (X4 Pro
+        // today). Gated on FREEINK_CAP_WARMLIGHT rather than FREEINK_CAP_FRONTLIGHT
+        // so single-channel boards (de-link, LilyGo, Murphy, Paper Mono) never see
+        // a row for a mix their hardware can't produce. Opens a slider dialog
+        // (SettingsActivity::openFrontlightColorTemperaturePicker(), same pattern
+        // as STR_TIME_TO_SLEEP) rather than cycling in place -- no JSON key here
+        // for the same hand-serialization reason as frontlightBrightness above.
+        SettingInfo::Value(StrId::STR_FRONTLIGHT_COLOR_TEMP, &CrossPointSettings::frontlightColorTemperature,
+                           {0, 100, 5}, nullptr, StrId::STR_CAT_DISPLAY),
+#endif
 
     // --- Map ---
 #ifdef ENABLE_GNSS_CMD
@@ -278,6 +289,19 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // receiver.
         SettingInfo::Toggle(StrId::STR_MAP_GNSS_POSITION, &CrossPointSettings::mapGnssPosition, "mapGnssPosition",
                             StrId::STR_CAT_MAP),
+        // How long the satellite wait screen holds before it opens the map by
+        // itself (GnssAcquireActivity.h). Same build gate as the row above --
+        // without a receiver there is no wait to limit.
+        //
+        // A row rather than a constant because the right answer is the rider's
+        // and it changes with what they are doing: somebody parked and watching
+        // the sky fill wants no limit, somebody who just wants their map wants
+        // two minutes. The screen states the countdown while it runs, so the
+        // setting is never something that happens to them silently.
+        SettingInfo::Enum(StrId::STR_MAP_GNSS_WAIT, &CrossPointSettings::mapGnssWaitLimit,
+                          {StrId::STR_GNSS_WAIT_NEVER, StrId::STR_GNSS_WAIT_2MIN, StrId::STR_GNSS_WAIT_5MIN,
+                           StrId::STR_GNSS_WAIT_10MIN},
+                          "mapGnssWaitLimit", StrId::STR_CAT_MAP),
         // One CSV row per accepted fix to /trailink/gnss.csv (GnssLog.h). Same
         // build gate and the same reason as the row above.
         //

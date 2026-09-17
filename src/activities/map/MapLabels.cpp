@@ -48,7 +48,7 @@ bool MapOccupancyGrid::anySet(const int x, const int y, const int width, const i
 }
 
 void MapOccupancyGrid::coverage(const int x, const int y, const int width, const int height, int& outSet,
-                               int& outTotal) const {
+                                int& outTotal) const {
   outSet = 0;
   outTotal = 0;
   int colLo = 0, colHi = 0, rowLo = 0, rowHi = 0;
@@ -143,6 +143,28 @@ struct HaloOffset {
   int dy;
 };
 constexpr HaloOffset kHaloRing[8] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+
+// The positions a label is tried in, around its dot. Four cardinal then four
+// diagonal -- see the table built in draw().
+constexpr int kPlacementCount = 8;
+
+// Sampling step for the ink test, in screen pixels. Every second pixel in both
+// axes is a quarter of the reads, and the test is a comparison between eight
+// boxes of the same size, so the undercount is identical in all eight and
+// cancels. 1 px would be exact and four times the cost for an answer that
+// decides nothing differently; 4 px starts stepping over a 1 px hairline road,
+// which is the very thing the test exists to keep uncovered.
+constexpr int kInkStepPx = 2;
+
+// How much more ink a cartographically preferred position may carry and still
+// beat a cleaner one, in per mille of its own box. 2 % of a 110 x 28 box is
+// about 60 pixels -- roughly one thin road crossing a corner.
+//
+// Not zero on purpose. With an exact minimum, two positions that differ by a
+// single dithered pixel of woodland swap places, and a name that moves from the
+// right of its dot to below it between two redraws of the same ground reads as
+// a different map rather than a tidier one.
+constexpr int kInkTolerancePermille = 20;
 
 struct Box {
   int x;
@@ -303,18 +325,16 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
 
     // Eight positions, in preference order: right of the dot first (the
     // cartographic default for left-to-right text), then left, then below and
-    // above, then the four diagonals. Whichever fits first wins; there is no
-    // scoring, because a label that fits anywhere is already better than no
-    // label at all. The diagonals matter more than they look -- measured on the
-    // Zahorie route overview, four of six village names had no cardinal slot
-    // free and the diagonals recovered them.
+    // above, then the four diagonals. The diagonals matter more than they look
+    // -- measured on the Zahorie route overview, four of six village names had
+    // no cardinal slot free and the diagonals recovered them.
     //
     // The diagonal offset is the straight one scaled by ~0.7, so a diagonal
     // label sits the same distance from the dot as a cardinal one instead of
     // 1.4x further out.
     const int gap = style.placeLabelOffsetPx + dotHalf;
     const int diag = gap * 7 / 10;
-    const Box placements[8] = {
+    const Box placements[kPlacementCount] = {
         {candidate.x + gap, candidate.y - textH / 2, textW, textH},
         {candidate.x - gap - textW, candidate.y - textH / 2, textW, textH},
         {candidate.x - textW / 2, candidate.y + gap, textW, textH},
@@ -325,10 +345,30 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
         {candidate.x - diag - textW, candidate.y + diag, textW, textH},
     };
 
-    bool drew = false;
-    for (const Box& textBox : placements) {
+    // Which of the eight to take is decided in two steps, and the order is the
+    // point: the hard rules first, then least ink among whatever survived.
+    //
+    // Before 2026-09-15 the first position that passed the hard rules won
+    // outright, and that is a coin toss about information: "right of the dot"
+    // is as likely to land across a primary road as on empty field. The name is
+    // drawn with a halo, so whatever it sits on is knocked out -- the position
+    // choice is literally choosing which part of the map to erase.
+    //
+    // `ink` is per mille of the box's samples, so the eight are comparable even
+    // though the edge-clamped ones take fewer samples.
+    int ink[kPlacementCount] = {};
+    bool usable[kPlacementCount] = {};
+    int leastInk = 1001;
+    for (int p = 0; p < kPlacementCount; ++p) {
+      const Box& textBox = placements[p];
       const Box knockout = inflate(textBox, knockoutPad);
       if (!contains(drawable, knockout)) continue;
+      // Screen furniture owns its pixels (MapChrome.h). Refusing the position
+      // rather than the name is deliberate: there are eight of them, so a name
+      // beside the scale bar usually just moves to its other side. Only a place
+      // whose eight positions are all taken loses its label, and it is then
+      // counted as dropped like any other.
+      if (canvas.areaReserved(knockout.x, knockout.y, knockout.w, knockout.h)) continue;
       // Gap only against other labels: it is a spacing rule between names, not
       // a reason to refuse a name that reaches the edge of the screen.
       const Box spaced = inflate(knockout, style.placeLabelGapPx);
@@ -338,6 +378,44 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       scratch.route.coverage(knockout.x, knockout.y, knockout.w, knockout.h, routeCells, totalCells);
       if (totalCells > 0 && 100 * routeCells > style.placeLabelRouteOverlapPct * totalCells) continue;
 
+      int inked = 0, samples = 0;
+      if (scratch.inkTest) {
+        canvas.inkCoverage(knockout.x, knockout.y, knockout.w, knockout.h, kInkStepPx, inked, samples);
+        ++scratch.inkProbes;
+        scratch.inkSamples += static_cast<uint32_t>(samples);
+      }
+
+      usable[p] = true;
+      // No readback on this canvas -- and the switch above being off -- means
+      // every position scores 0 and the pick below collapses to the first
+      // usable one, the old first-fit behaviour exactly.
+      ink[p] = samples > 0 ? inked * 1000 / samples : 0;
+      if (ink[p] < leastInk) leastInk = ink[p];
+      // Nothing can beat clean ground, and the tie-break below already prefers
+      // the lowest index among equals, so the remaining positions cannot change
+      // the answer. This is what keeps the cost near zero in open country: one
+      // probe per label, same as the old first-fit.
+      if (ink[p] == 0) break;
+    }
+
+    // Least ink wins, but only by a margin. Within kInkTolerancePermille the
+    // cartographic order decides instead, because a name that jumps from the
+    // right of its dot to below it for one per cent less ink makes the map look
+    // unsettled between two redraws of the same place -- and the reader has to
+    // re-find which dot each name belongs to.
+    int bestIndex = -1;
+    for (int p = 0; p < kPlacementCount; ++p) {
+      if (!usable[p]) continue;
+      if (ink[p] <= leastInk + kInkTolerancePermille) {
+        bestIndex = p;
+        break;
+      }
+    }
+
+    const bool drew = bestIndex >= 0;
+    if (drew) {
+      const Box& textBox = placements[bestIndex];
+      const Box knockout = inflate(textBox, knockoutPad);
       if (style.placeLabelBg) {
         if (style.placeLabelBgBorderPx > 0) {
           canvas.fillRoundedRect(knockout.x, knockout.y, knockout.w, knockout.h, 0, MapInk::Black);
@@ -363,8 +441,6 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       scratch.taken.markRect(knockout.x, knockout.y, knockout.w, knockout.h);
       ++scratch.placed;
       if (minor) ++placedMinor; else ++placedMajor;
-      drew = true;
-      break;
     }
     if (!drew) ++scratch.dropped;
   }

@@ -1379,23 +1379,14 @@ removed for the rest of the run. Past the cap a file still downloads
 normally -- only the grid stops adding new squares for it; the bar
 (`runTotal()`/`announced_`) is unaffected either way.
 
-**Verified: read off the code, compiled clean, `env:default` and
-`env:simulator`... except `env:simulator` did not build.** The simulator
-(`https://github.com/rfordinal/explorink-simulator#explorink`, pinned at
-`f349db3`, matching the local checkout in `firmware/explorink-simulator`)
-fails this build with `MappedInputManager.cpp:135:29: error: 'class HalGPIO'
-has no member named 'updateSequence'` -- unrelated to this feature (this
-change touches no input code), and present before this change too. `develop`'s
-`HalGPIO` grew `updateSequence()` for the touch-modes work merged the same day
-(`f106dff5`) and the simulator's HAL shim has not been given a matching stub
-yet. So `tools/sim_push_test.py`'s `case_city_grid` -- built exactly to
-photograph this batch-visualisation question -- could not run this pass.
-**Open, needs**: add an `updateSequence()` stub to `explorink-simulator`'s
-`HalGPIO`, then `pio run -e simulator` and `python3 tools/sim_push_test.py
---firmware <this worktree>` to get the `06-batch-*-partial.bmp` screenshot and
-the `push tile discovered live` log lines this feature was written to produce.
-Not measured on hardware either -- no device available this session (see
-`docs/PROGRESS.md`).
+**Verified two ways.** Hardware: a LilyGo T5 S3 Pro (cherry-picked onto
+`release/lilygo-t5-s3-pro`, no X4/X4 Pro available this session), pin
+commands and the burst grid both confirmed working. Simulator: `env:simulator`
+builds clean now that T-267 (the missing `updateSequence()` stub) was fixed
+elsewhere the same day -- `tools/sim_push_test.py`, 43/43 checks, and the
+`06-batch-*-partial.bmp` / `02-first-file.bmp` screenshots show exactly the
+designed transition: a flat placeholder count before the first file's BEGIN
+frame, real nested z11/z12/z13 frames from the instant after.
 
 ### Verified vs assumed (the announced batch)
 

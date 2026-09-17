@@ -21,6 +21,29 @@ aggravator, and vibration is out.
 (`docs/mounting.md` in the parent repo), so every hardware check is blocked until
 a replacement arrives.
 
+**Report 3, 2026-09-07, T5 S3 Pro: no daylight problem at all.** Maintainer,
+after several days of running firmware on that board -- a refresh in daylight is
+unproblematic there. **Observed, not measured**: no thumb stencil has been run
+on that panel, and no light level was recorded, so this is one device reported
+clean rather than a panel cleared.
+
+It is the first evidence on the question that matters most here, because it
+separates the two readings of reports 1 and 2. If the failure were e-ink as
+such, the T5 S3 Pro would show it. It does not, which is what this file's own
+leading suspect predicts: **the failure is a property of a panel, and the
+suspect is the X4's GDEQ0426T82 and whether its pixels carry light-shielding
+gates** (see "A patent describes it in an EPD" below). Two panels, two
+behaviours, and only one of them measured on nothing.
+
+Consequences, both already tracked:
+
+- **Panel choice is a device-selection criterion**, T-514 in the parent repo.
+  The stencil test is what turns this report into a measurement, and it now has
+  a board to run on.
+- **Any product argument that leans on the failure has to name the panel.** The
+  parent repo's `tourist-mode.md` and `device-fit.md` leaned on it for the city
+  scenario ("a hand shades the panel"), and both were corrected on 2026-09-07.
+
 **Update, 2026-09-01: a firmware mitigation for this already exists in our
 tree and defaults off, unrecorded whether either report ran with it on.**
 `fastepd.md`, section 1, has the full trail — upstream `crosspoint-reader#603`

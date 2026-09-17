@@ -64,6 +64,35 @@ talking through.
 The short power press *is* covered: `main.cpp`'s force-refresh path reads
 `mappedInputManager.wasReleased(Power)`.
 
+## A press into an unknown screen is a write to persisted state
+
+**Paid for 2026-09-10.** A release pass sent `CMD:BUTTON confirm` and a run of
+`down` presses without a screenshot between them, to walk from the wait screen to
+Settings. The presses did not land where the script assumed. Afterwards the board
+came up with its GNSS wait limit reading "no limit" on a fresh boot, and a map
+session running on BLE.
+
+**What caused which is not established, and the first version of this section
+said it was.** The BLE session is equally explained by a stray Confirm activating
+the wait screen's own "Take position from the phone" row, which changes nothing
+persisted; the wait limit reading zero has no such explanation and does point at
+a menu. Calling both "the injection flipped two settings" was a cause named from
+one observation.
+
+What would settle it: read those two rows on the panel before pressing anything,
+and again after.
+
+The cost was not the settings either way. It was that the next screenshot showed
+a map session on BLE and a wait screen with no countdown, and **both read as
+defects in code written the same hour**. Ten minutes went into looking for a bug
+that was a button press.
+
+So: **one press, one screenshot, or do not press.** A queue of presses is only
+safe on a screen whose layout is already on the glass in front of you. This is
+also why the injector is worth having at all -- it is the only way to reach
+Settings from a laptop -- and why it must be driven like a thumb rather than like
+a script.
+
 ## The timing model
 
 `src/DebugInput.cpp`. One press at a time, the rest queued (8 deep), each press
@@ -169,6 +198,14 @@ altogether -- the fork's JSON socket (`docs/simulator.md`).
   `main.cpp`**, not timed out on hardware. The map screen holds
   `preventAutoSleep()` anyway, so timing it out needs the Home screen and a
   full timeout of pressing (T-286).
-- **Not run on an X4 or X4 Pro** (C3). The injection point is board-agnostic
-  `src/` code, but the C3 envs (`default`, `sticky`) have not been flashed with
-  it.
+- **Run on a C3 on 2026-09-09, on an Xteink X3.** Env `default`, build
+  `92c949ae`: `CMD:BUTTON back`, `up` and `down` each answered `BUTTON_OK`, and
+  on the map screen `up` zoomed one rung, the scale bar going 500 m to 200 m. So
+  the injector is confirmed on both chip families and the board-agnostic claim
+  above is no longer an inference.
+- **The device has to be awake first.** At 10 MHz it does not read the line at
+  all, so a press sent to an idle device is silently dropped -- the same trap
+  that swallows `CMD:GOTO_MAP` (`power-management.md`, "And starves RX
+  outright"). It cost six minutes on the X3 run above.
+- **Not run on an X4 or an X4 Pro.** The X4 Pro has since been flashed from
+  `t5s3-to-x4pro` but the injector was not exercised there.

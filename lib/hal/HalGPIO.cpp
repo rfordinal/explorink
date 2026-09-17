@@ -134,6 +134,28 @@ void HalGPIO::begin() {
   }
 #else
   _deviceType = DeviceType::X4;
+#if FREEINK_DEVICE_X4PRO
+  // Same per-batch controller question as the C3 X4, and it has to be asked
+  // here too: the X4 Pro ships SSD1677, UC8179 and UC8279 across production
+  // runs, all three drivers are compiled in, and the profile's SSD1677 is only
+  // the default. XteinkDetect's probe is deliberately board-agnostic -- it
+  // bit-bangs whatever pins ACTIVE carries -- so it works on this S3 as it does
+  // on the C3 (XteinkDetect.cpp, FREEINK_XTEINK_DISPLAY_PROBE).
+  //
+  // Runs here because the probe needs the display pins as GPIOs: after
+  // holdPowerRails() has raised the GPIO1 peripheral rail (main.cpp setup()),
+  // before EpdBus::begin() hands the same pins to the SPI peripheral.
+  //
+  // Without this call the S3 drove SSD1677 commands unconditionally, and the
+  // panel silently ignored every one of them: on 2026-09-09 the first flash of
+  // this env booted fine and mounted the SD card, while the glass kept the
+  // stock firmware's last frame. The same build with this line reports
+  //   [XTDET] bus probe VER=00 0F 68 00 00 FLG=13 -> UltraChip
+  //   [XTDET] promoted SSD1677 -> UC8279 800x480 (LUT_VER=68)
+  // and draws. So OUR reference unit is a UC8279 batch, not the SSD1677 the
+  // profile defaults to -- the probe is the only thing that finds that out.
+  freeink::applyXteinkDisplayController();
+#endif
 #endif
   inputMgr.begin();
 }

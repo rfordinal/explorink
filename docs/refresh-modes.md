@@ -150,6 +150,64 @@ The X4's 500 ms figure stays as measured. These are different panels and the
 cost is device-specific -- do not carry either number to a third board without
 measuring it there.
 
+#### And on this board a window is dearer than the whole panel
+
+**T5 S3 Pro, whole-panel `FAST`: ~545 ms, against the window's ~1,030 ms**
+`[measured, 2026-09-07]`. **A window costs about twice a full frame here**,
+which is the reverse of the X4, where the two are the same 500 ms and area does
+not enter into the waveform at all.
+
+Instrument: the same `PowerTelemetry` counters, off a 4 h 08 min walk's
+`power.csv`, build `0.2.0-t5s3pro`. The two kinds were separated by keeping only
+the one-minute intervals in which exactly one of the four refresh counters grew
+-- `panel_busy_ms` is a single bucket for all four, so any mixed interval
+charges its whole panel time to whichever counter you divide by, and the earlier
+1,081 ms figure carried the whole-panel share inside it. Windowed: median
+1,030 ms, n=374, p25 1,028, p75 1,055. Whole-panel `FAST`: median 545 ms, n=35,
+472 to 668. Both timings are wall clock around the driver call at the same
+boundary, `HalDisplay::displayWindow` (`lib/hal/HalDisplay.cpp:118`) and
+`HalDisplay::displayBuffer` (`:78`), so they are comparable.
+
+**Why a rectangle costs more than the whole frame is unexplained** `[open]`,
+and after a source pass on 2026-09-09 it is unexplained in a stronger sense:
+**the two numbers are the same operation.**
+
+The driver question above is answered. The `t5s3pro` env links `LgfxEpdDriver`,
+via `freeink-sdk/libs/hardware/BoardT5S3/src/LilyGoT5S3LgfxConfig.cpp`, and that
+driver **overrides `displayWindow` not at all**. So
+`PanelDriver::displayWindow`'s base implementation runs
+`display(bus, fb, prev, RefreshMode::Fast, turnOff)`, the rectangle is dropped,
+and `LgfxEpdDriver::display` -- which opens `(void)prev` -- does exactly
+`fillCanvasBW(fb)` and `pushCanvas(epd_fast)`. A whole-panel `FAST` calls the
+same function with the same mode. **Every one of the walk's 2,608 window
+requests took the whole-panel path.**
+
+So the earlier sentence here, "the extra second is inside that driver", was
+wrong and is withdrawn: there is no second driver path for it to be inside. It
+is worse than that for the comparison -- the whole-panel bracket runs strictly
+*more* code than the window one (`resolveReleasedMode`, `consumePrevFrameFor`
+and `swapBuffers` in `FreeInkDisplay::displayBuffer`, none of which
+`displayWindow` runs), so every difference the source contains points the wrong
+way.
+
+The numbers themselves survived being re-checked. Recomputed by hand against
+the card's whole history (`docs/power-runs/run8-2026-09-08.csv` in the parent
+repo, a superset of run7): windowed **1,030 ms** at n=998, whole-panel `FAST`
+**517 ms** at n=73, and the two distributions do not overlap. Not a small
+sample, not an averaging artefact.
+
+One mechanism in the code could produce a factor like this, and it is content
+rather than path: an unchanged frame arms no pixel, so the panel task runs one
+empty pass instead of eleven. Fitted to the two observed modes that is ~52 ms
+per pass over a ~455 ms fixed cost `[derived]`. It is falsifiable without a
+code change and `t5s3-partial-refresh.md` section 3 says how.
+
+The consequence for the plan is the reverse of what this section used to
+advise: **routing the marker path to a whole-panel `FAST` saves nothing**,
+because that is already what it does. Only which counter increments would
+change. T-277 in the parent repo carries the withdrawal; the blocking itself is
+T-263 and its fix is the async path, not a change of waveform.
+
 The consequence for the rider is in [`map-follow.md`](map-follow.md), "A
 windowed refresh blocks the loop": at this cost the map's main loop spends up to
 a quarter of its wall clock inside a blocking panel call.

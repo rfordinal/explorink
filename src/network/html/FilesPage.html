@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Files - TrailInk</title>
+  <title>Files - ExplorInk</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -65,7 +65,7 @@
   </style>
 </head>
 <body>
-<h1>&#128506; TrailInk</h1>
+<h1>&#128506; ExplorInk</h1>
 
 <div class="nav-links">
   <a href="/">Home</a>
@@ -433,7 +433,7 @@ function loadStatus() {
     .then(function (r) { return r.json(); })
     .then(function (s) {
       document.getElementById('status').textContent =
-        'TrailInk ' + s.version + ' • ' + s.device + ' • ' + s.ip
+        'ExplorInk ' + s.version + ' • ' + s.device + ' • ' + s.ip
         + ' • heap ' + fmtSize(s.freeHeap);
     })
     .catch(function () {});

@@ -2,9 +2,19 @@
 
 `NimBLEDevice::deinit(true)` can kill the device. The NimBLE host task calls a
 NULL function pointer and the chip resets. The bug is in NimBLE-Arduino, not in
-our code. Still unfixed upstream as of 2026-09-04: issue #1184 is open with
-no replies and 2.5.1 (2026-07-30) is still the newest release, both checked
-through the GitHub API rather than remembered.
+our code.
+
+**Fixed upstream 2026-09-05, and the fix is ours.** Our one-line PR
+[#1185](https://github.com/h2zero/NimBLE-Arduino/pull/1185) was merged as
+`e0c8f5a` and closed issue
+[#1184](https://github.com/h2zero/NimBLE-Arduino/issues/1184).
+
+**The fork does not go away yet, because no release carries it.** The newest
+tag is still **2.5.1 (2026-07-30)**, which predates the merge, so a release
+spec in `platformio.ini` would still pull the unpatched library. Keep the fork
+until a tagged release contains `e0c8f5a`; T-235 watches for it. Both the merge
+and the release list were checked through the GitHub API on 2026-09-10 rather
+than remembered.
 
 We call `deinit(true)` from `BlePositionServer::end()`
 (`lib/BlePositionServer/src/BlePositionServer.cpp:457`), and two activities call
@@ -230,8 +240,10 @@ library through a merge without anybody noticing.
 **Offered upstream in the same pass**, so the fork has an exit:
 [#1184](https://github.com/h2zero/NimBLE-Arduino/issues/1184) is the report and
 [#1185](https://github.com/h2zero/NimBLE-Arduino/pull/1185) is the one-line PR
-against master, which still carries the line. When that merges and ships, drop
-the fork and go back to a release spec. T-235 watches it.
+against master. **It merged on 2026-09-05** as `e0c8f5a`, which closed the
+issue. The exit is therefore half taken: master no longer carries the line,
+but **no tagged release does either**, so the fork stays until one ships.
+T-235 watches for the tag, not for the merge.
 
 ### The two options not taken
 

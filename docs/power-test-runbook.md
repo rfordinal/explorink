@@ -10,6 +10,8 @@ findings or the design:
   [`power-plan.md`](power-plan.md).
 - Findings (what is measured, what broke, why):
   [`power-management.md`](power-management.md).
+- The LoRa/GNSS rail on T5 S3 Pro (the L series, and the gauge-current
+  instrument it needs first): [`lora-idle-power.md`](lora-idle-power.md).
 
 Every run here uses the frozen baseline and its four conditions
 (`power-plan.md`, "The frozen baseline"). Experiment order, agreed 2026-08-19:
@@ -215,7 +217,7 @@ In flow order. Skipping a line is how the 2026-08-16 hangs happened twice.
 
 **Only now, the device:**
 
-- [ ] `python3 tools/x4lock.py acquire --owner <session> --reason "<exp>" --ttl <s>`
+- [ ] `python3 tools/devlock.py acquire --device <board> --owner <session> --reason "<exp>" --ttl <s>`
       (parent repo). Never take it before the binary exists.
 - [ ] Identify the port: `udevadm info -q property -n /dev/ttyACM0 | grep
       ID_VENDOR_ID` -- `303a` is the X4, `04e8` the phone. On the wrong port
@@ -451,6 +453,15 @@ column: `CMD:BATT` answers somebody standing at the console, not a ride
 (`power-management.md`, "The BQ27220 already reads current, and throws it
 away"). Unplug USB before reading it -- the sign is positive into the cell, so
 a reading with VBUS attached describes the charge path.
+
+**Or leave USB plugged in and switch the charger off** (2026-09-12,
+`charge-control.md`): `CMD:CHARGE OFF` takes the charge current out of the path,
+and the gauge then reads 0 with the cable still attached -- measured 344 mA into
+the cell charging against 0 mA with charging disabled. That is what makes a
+bench state priceable without losing the console, and it is the state every
+USB-meter reading in this runbook should be taken in. One caveat that is now
+measured rather than assumed: do **not** also force `BATFET_DIS`, which adds
+about 8.6 mA to the VBUS reading on this board.
 
 ## The instrument problem, honestly
 

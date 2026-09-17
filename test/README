@@ -14,6 +14,10 @@ Run a single suite directly:
 Google Test is fetched via CMake FetchContent on first configure; the pinned
 version lives in test/CMakeLists.txt.
 
+gnss_sky_view covers the satellite wait screen's projection: azimuth and
+elevation to a pixel, the signal buckets and the mountain ridge profile
+(docs/gnss-acquire.md).
+
 Three targets here are host tools, not gtest suites, so ctest does not run them:
 
   map_preview  renders a map frame with the device's own MapRenderer --

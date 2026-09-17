@@ -38,6 +38,12 @@ class PpmCanvas : public IMapCanvas {
   // adapter does -- GfxRendererCanvas's minY).
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override;
 
+  // Reads back the buffer this canvas has been drawing into -- the host half of
+  // the label placer's "least ink wins" test. One byte per pixel here against
+  // the device's packed bits, so the two implementations cannot share code, but
+  // they answer over the same finished frame and in the same units.
+  void inkCoverage(int x, int y, int width, int height, int stepPx, int& outInked, int& outSamples) const override;
+
   bool writePpm(const std::string& path) const;
 
   // Loads a canvas back from a PPM this class itself wrote (binary P6,

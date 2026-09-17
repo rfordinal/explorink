@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+#include "CrossPointSettings.h"
+#include "GnssAccess.h"
 #include "OpdsServerStore.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
@@ -14,8 +16,10 @@
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
+#include "map/GnssAcquireActivity.h"
 #include "map/MapActivity.h"
 #include "map/MapRouteStore.h"
+#include "map/RouteEmptyActivity.h"
 #include "map/RouteSelectActivity.h"
 #include "map/TileSyncActivity.h"
 #include "network/CrossPointWebServerActivity.h"
@@ -204,13 +208,39 @@ void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
 
-void ActivityManager::goToMap(const char* routePath, bool resumedFromSleep) {
-  replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput, routePath, resumedFromSleep));
+void ActivityManager::goToMap(const char* routePath, bool resumedFromSleep, bool adoptRunningGnss,
+                              bool forcePhonePosition) {
+  replaceActivity(std::make_unique<MapActivity>(renderer, mappedInput, routePath, resumedFromSleep, adoptRunningGnss,
+                                                forcePhonePosition));
+}
+
+void ActivityManager::goToGnssAcquire(const char* routePath) {
+#ifdef ENABLE_GNSS_CMD
+  // Nothing to wait for unless the rider asked for the receiver.
+  if (SETTINGS.mapGnssPosition == 0) {
+    goToMap(routePath);
+    return;
+  }
+  // Already tracking -- a second entry into the map inside one session, or a
+  // host `CMD:GNSS ON` that has been running. Showing a wait screen over a
+  // receiver that has the answer is a screen that exists to be dismissed.
+  //
+  // Same acceptance test as the map's: `valid` latches on the first solution,
+  // `quality` is what says the receiver still has satellites (Gnss.h).
+  const GnssFix& fix = gnss.fix();
+  if (gnss.running() && fix.valid && fix.quality != 0 && fix.quality != 6) {
+    goToMap(routePath, false, false, false);
+    return;
+  }
+  replaceActivity(std::make_unique<GnssAcquireActivity>(renderer, mappedInput, routePath));
+#else
+  goToMap(routePath);
+#endif
 }
 
 void ActivityManager::goToRouteSelect() {
   if (!MapRouteStore::anyRoutes()) {
-    goToMap();
+    replaceActivity(std::make_unique<RouteEmptyActivity>(renderer, mappedInput));
     return;
   }
   replaceActivity(std::make_unique<RouteSelectActivity>(renderer, mappedInput));

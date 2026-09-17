@@ -206,7 +206,10 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 // Straight to the map, no picker -- that is now Trips' job (onTripsOpen()).
-void HomeActivity::onMapOpen() { activityManager.goToMap(); }
+// The satellite wait sits in front of the map on a build with a receiver, and
+// falls through to the map itself on every other build and setting
+// (ActivityManager::goToGnssAcquire()).
+void HomeActivity::onMapOpen() { activityManager.goToGnssAcquire(); }
 
 // The trip picker lives here, not on a separate row: Trips is where a rider
 // already looks for "which trip", so it opens RouteSelectActivity rather than

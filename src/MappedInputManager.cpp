@@ -1,5 +1,7 @@
 #include "MappedInputManager.h"
 
+#include "DebugTouchLog.h"
+
 #include <GfxRenderer.h>
 
 #include <algorithm>
@@ -143,6 +145,13 @@ constexpr unsigned long HOME_KEY_REFRACTORY_MS = 500;
 bool MappedInputManager::hasTouch() const { return gpio.hasTouch(); }
 
 void MappedInputManager::update() const {
+#ifdef ENABLE_TOUCHLOG_CMD
+  // Recorded here rather than in loop(): this is the call whose spacing decides
+  // whether a GT911 frame is seen at all, and an activity can iterate without
+  // making it. src/DebugTouchLog.h has why the gap is the measurement that
+  // matters.
+  DebugTouchLog::noteUpdate();
+#endif
   gpio.update();
   ensureHintTouchPumped();
 }

@@ -49,6 +49,31 @@ struct GnssFix {
   uint32_t utc = 0;
 };
 
+// One satellite as the receiver last reported it in GSV, which is the only
+// sentence that says anything per satellite. GGA's satsUsed is a count and
+// cannot answer "where is the sky open".
+//
+// Every field is the receiver's own claim about a satellite it can see, not one
+// it is necessarily using in the solution -- GSV lists both, and `snr == 0` is
+// how it says "in view, not tracked". A caller drawing the sky wants both.
+struct GnssSatellite {
+  // GSV talker id without the '$', e.g. "GP", "GL", "GB". Two chars, not
+  // null-terminated: the constellation a PRN belongs to, because PRN numbers
+  // repeat across them and 12 on GPS is not 12 on BeiDou.
+  char talker[2] = {0, 0};
+  uint8_t prn = 0;
+  // Degrees above the horizon, 0-90. Zero also means "the field was empty",
+  // which the receiver does for a satellite it has an almanac for but has not
+  // located yet -- see hasPosition.
+  uint8_t elevation = 0;
+  uint16_t azimuth = 0;  // degrees true, 0-359
+  uint8_t snr = 0;       // dB-Hz carrier-to-noise; 0 = in view, not tracked
+  // False when elevation and azimuth were both empty in the sentence. A caller
+  // plotting the sky must not draw those at (0,0), which is due north on the
+  // horizon and reads as a real satellite sitting in the worst place there is.
+  bool hasPosition = false;
+};
+
 // Raw sentence sink: every checksum-valid sentence, with its "*hh" checksum and
 // without the leading '$' or the trailing CRLF. Used for bring-up passthrough.
 // Called from poll(), on the caller's task.
@@ -56,6 +81,13 @@ struct GnssFix {
 // `sentence[length]` is guaranteed to be '\0', so a sink may treat it as a
 // C string and ignore `length`. Stated because a caller already relies on it.
 using GnssRawSink = void (*)(const char* sentence, size_t length);
+
+// Raw byte sink: every byte poll() reads off the UART, before any NMEA framing
+// is applied -- unlike GnssRawSink above, which only sees sentences that passed
+// the '$...*hh' checksum. A CASIC binary reply (e.g. an ACK-ACK, `BA CE ...`)
+// has no '$' and no NMEA checksum, so it never reaches GnssRawSink; it lands
+// here, byte by byte, as it arrives. Called from poll(), on the caller's task.
+using GnssRawByteSink = void (*)(uint8_t byte);
 
 struct GnssConfig {
   // Not owned. Must outlive the Gnss instance.
@@ -103,6 +135,11 @@ struct GnssConfig {
 
 class Gnss {
  public:
+  // Entries the sky snapshot holds (satelliteCount() below). Capped at 32
+  // because the per-cycle sweep marks stale entries in one uint32_t bit mask,
+  // which is what keeps that sweep a bit test rather than a second array.
+  static constexpr uint8_t kMaxSatellites = 32;
+
   // Calling begin() while already running is a no-op that returns true, and in
   // particular does NOT adopt the new config or reset the counters. That is
   // deliberate -- a second begin() must not drop the rail and throw away a fix
@@ -141,6 +178,12 @@ class Gnss {
   // not know, so a `$PCAS...` answer reaches the raw sink (setRawSink) and
   // nowhere else -- turn that on before asking, or the answer goes nowhere.
   bool sendNmeaSentence(const char* body);
+
+  // Send `length` bytes to the receiver exactly as given -- no framing, no
+  // checksum added. For a pre-built binary frame (CASIC or otherwise) whose
+  // checksum the caller already computed. Returns false if not running or the
+  // write was short.
+  bool sendRaw(const uint8_t* data, size_t length);
 
   // Consume every byte the UART has buffered and parse what completes. Returns
   // true if this call changed anything in fix() -- position, quality, speed,
@@ -194,6 +237,27 @@ class Gnss {
   // Satellites the receiver can see, summed across constellations (GSV field
   // 3 per talker). Always at least satsUsed, usually more.
   uint8_t satsInView() const;
+  // The sky as GSV last described it, one entry per satellite any constellation
+  // reported. Held so a caller can DRAW the sky rather than count it: the three
+  // aggregates below say how good the signal is, and none of them says where to
+  // look for a better one.
+  //
+  // Updated in place per talker, not rebuilt per sentence: a satellite keeps its
+  // slot across cycles, and an entry only disappears when a COMPLETE cycle for
+  // its constellation stopped listing it. That matters because a lost GSV
+  // sentence is ordinary on a 9600 baud line, and dropping four satellites out
+  // of a plot every time one goes missing would read as the sky emptying (the
+  // same failure the counts above guard against with cycleIntact).
+  //
+  // Costs kMaxSatellites entries of internal RAM, always allocated, never
+  // grown. 32 covers GPS+GLONASS+BeiDou in view at once on the receiver here
+  // (45 GPGSV and 45 GLGSV sentences in one capture, 2026-09-04); satellites
+  // past that are dropped, which undercounts the plot rather than moving any
+  // existing entry.
+  uint8_t satelliteCount() const { return satelliteCount_; }
+  // Undefined for index >= satelliteCount(). Callers walk 0..count-1.
+  const GnssSatellite& satellite(uint8_t index) const { return satellites_[index]; }
+
   // Satellites reporting a non-zero carrier-to-noise ratio, and the best one,
   // both in dB-Hz. This is the pair that separates "sees sky" from "sees
   // ceiling": indoors the count collapses and the best value sits in the teens.
@@ -266,6 +330,9 @@ class Gnss {
 
   // Pass nullptr to stop.
   void setRawSink(GnssRawSink sink) { rawSink_ = sink; }
+  // Pass nullptr to stop. See GnssRawByteSink above for why this exists
+  // alongside setRawSink().
+  void setRawByteSink(GnssRawByteSink sink) { rawByteSink_ = sink; }
 
  private:
   // NMEA caps a sentence at 82 characters including the delimiters; the extra
@@ -292,6 +359,18 @@ class Gnss {
   void parseGsv(const char* talker, const char* body);
   void parseZda(const char* body);
   TalkerState* talkerFor(const char* id);
+  // Find the entry for this satellite, or take a free one. Returns nullptr when
+  // the snapshot is full -- the new satellite is dropped rather than evicting
+  // one, for the same reason talkerFor() drops a late constellation: an entry
+  // already on the plot disappearing is a worse lie than one that never
+  // appeared.
+  GnssSatellite* satelliteSlot(const char* talker, uint8_t prn);
+  // Marks every entry of this talker as not-yet-seen, at the start of its GSV
+  // cycle. sweepSatellites() then either removes what stayed unseen (a complete
+  // cycle really did stop listing it) or clears the marks (the cycle lost a
+  // sentence, so absence proves nothing).
+  void markTalkerStale(const char* talker);
+  void sweepSatellites(const char* talker, bool cycleIntact);
 
   GnssConfig config_;
   bool running_ = false;
@@ -305,6 +384,12 @@ class Gnss {
 
   GnssFix fix_;
   TalkerState talkers_[kMaxTalkers];
+  GnssSatellite satellites_[kMaxSatellites];
+  uint8_t satelliteCount_ = 0;
+  // Bit i: satellites_[i] has not been listed by the GSV cycle now being
+  // scanned. Only ever set for the talker whose cycle is open, so two
+  // constellations interleaving their cycles cannot sweep each other away.
+  uint32_t satelliteStale_ = 0;
 
   uint32_t beginMs_ = 0;
   uint32_t lastFixMs_ = 0;
@@ -325,4 +410,5 @@ class Gnss {
   uint32_t bytesRead_ = 0;
 
   GnssRawSink rawSink_ = nullptr;
+  GnssRawByteSink rawByteSink_ = nullptr;
 };

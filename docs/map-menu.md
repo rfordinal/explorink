@@ -318,13 +318,24 @@ title wrapped to the full-screen budget wins `maxTextWidth` on its own and
 drags the dialog wider than the box it was told to match. The wrap budget has
 to be the box's, or the box is not a box.
 
-Verified on the T5 S3 Pro 2026-09-06, first cut: the `Menu` box is one rect and
-the map menu draws in it (screenshot, 494x382 measured against 496x384
-computed), and it was too wide -- hence 70%. Still open: whether the narrower
-box reads right, and whether the three-window close is visibly cheap. The
-"leaving Pins re-renders the screen" report is what the window split above is
-for; the band refusal is the arithmetic's explanation for it and has not been
-read off the device log.
+**Verified on the T5 S3 Pro, 2026-09-07.** Menu, pin list and confirmation all
+open at their box, the map does not blink between them, and Back out of the pin
+list puts the map back with no busy badge and no wait -- maintainer, on the
+panel: "vsetko funguje dokonalo". The `Menu` box at 70% x 40% (378x384 there)
+reads right; 92% did not, and the first cut's screenshot measured 494x382
+against 496x384 computed, which is how the box maths was confirmed.
+
+One claim here is arithmetic, not measurement: the byte table above. The
+full-width band was never observed being refused -- the log showed the capture
+succeeding with 119 kB free and `MaxAlloc` at 77,812. The band split is
+therefore a cost reduction that stands on its own, not the fix for the
+re-render; that was the backdrop being spent one popup early (above). Whether
+the old band would have been refused on a busier heap is open and no longer
+worth chasing.
+
+Still unmeasured: the close's actual wall-clock time against the full redraw it
+replaces, and all of this on an X4 or X4 Pro -- the numbers in the table for a
+480x800 panel are computed, and no such device has run this code.
 
 ## The hint says "Options", not "Select"
 
