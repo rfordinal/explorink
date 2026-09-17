@@ -549,6 +549,30 @@ applies them once the panel is idle:
 Nothing is dropped. That is the difference between this and ignoring input while
 busy.
 
+### What the simulator already proved
+
+Three checks, host-side, with the map seeded from a persisted fix and the local
+CDN mirror symlinked under `fs_/` (see `simulator.md`):
+
+- **The output did not change.** Same input script on this branch and on
+  `develop`, three states each (zoomed map, menu open, map after the menu
+  closed): **0 of 384,000 pixels differ** in all three. Reseeded before every
+  run, because the simulator writes settings back.
+- **Closing the menu still restores the map exactly.** The frame after a Back is
+  byte-identical to the frame before the menu opened, so the backdrop capture
+  and restore survive their new `frameInFlight()` refusals.
+- **`loop()` really does run during a compose.** The host composes in ~20 ms, so
+  nothing lands mid-frame there naturally; a throwaway build with `delay(2500)`
+  at the top of `composeViewport()` made it panel-slow. Two zoom presses at
+  3.006 s and 3.600 s, inside a compose running from ~1.6 s to 4.1 s, were both
+  seen by `loop()`, both held, and applied as one accumulated step afterwards
+  (one redraw, not two). That is the whole point of the change, demonstrated:
+  before it, `loop()` could not have seen either press.
+
+What the simulator cannot show: the panel's own refresh, the real 2.80 s compose
+cost, the render task's true stack use (the fork stubs the high-water mark at a
+flat 2,048 bytes), or anything about power.
+
 ### What a hardware pass has to check
 
 - **The render task's stack.** The map moved onto a task with an 8,192-byte
