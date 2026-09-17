@@ -3281,11 +3281,21 @@ void MapActivity::loop() {
         showBusy();  // the popup's pixels are still up; say the redraw started
         renderCurrent();
       }
-    } else if (justClosed && menuBackdrop_) {
-      // Dismissed by a tap outside the dialog (touch panels): no row callback
-      // ran and no button edge lands in the branch above, so a backdrop still
-      // held here is the only sign the map is sitting under the popup's pixels.
-      restoreMenuBackdrop();
+    } else if (justClosed) {
+      // Dismissed by a tap outside the dialog (touch panels): no row callback ran
+      // and no button edge lands in the branch above.
+      //
+      // A held backdrop used to be the only sign the map was sitting under the
+      // popup's pixels -- true while a missing backdrop meant OOM. Since T-2024 a
+      // capture is also refused whenever the menu opened during a compose, which
+      // is an ordinary thing to do, and then this branch had nothing to restore
+      // and asked for nothing: the popup's pixels stayed on the glass until some
+      // later full frame, which a marker move does not provide.
+      if (!restoreMenuBackdrop()) {
+        redrawDueMs_ = 0;
+        showBusy();
+        renderCurrent();
+      }
     }
     return;
   }
@@ -3325,8 +3335,17 @@ void MapActivity::loop() {
     }
   }
 
+  // Not while a frame is in flight, and the reason is subtler than "it races the
+  // compose": the branch below writes trust_, the altitude and lastDrawnSeq_
+  // *before* applyFix() gets to decide anything, and the compose reads all three.
+  // Held at applyFix() alone, a fix would leave its marker style and its "last
+  // known" flag applied to the frame drawing the previous position.
+  //
+  // Skipping costs nothing: getLatest() does not consume (BlePositionServer.cpp),
+  // so the packet is still there on the next idle tick, and the seq dedup below
+  // is what decides whether it is new.
   freeink::PositionUpdate update;
-  if (freeink::BlePositionServer::getInstance().getLatest(update)) {
+  if (!frameInFlight() && freeink::BlePositionServer::getInstance().getLatest(update)) {
     // showingPersistedFix_ is in the condition because onEnter() seeds
     // lastDrawnSeq_ = 0 and hasReceivedAny_ = true for the card's last fix. A
     // phone whose rolling counter happens to sit at 0 would then have its first
@@ -3380,7 +3399,11 @@ void MapActivity::loop() {
   // power numbers and a device-side heading first. This order is the smallest
   // thing that is not that decision -- and the case step 3 is built for has no
   // phone connected at all.
-  pollGnssFix();
+  // Same gate, same reason as the BLE branch above: this one also writes the
+  // marker's trust and the altitude before applyFix() decides. The receiver
+  // keeps its own buffer and produces another sample a second later, so a
+  // skipped tick costs nothing the panel could show anyway.
+  if (!frameInFlight()) pollGnssFix();
 
   // The receiver's own numbers, written every loop. set() is a vsnprintf into
   // the slot's buffer -- no drawing, no panel, no allocation -- and
@@ -5856,7 +5879,7 @@ void MapActivity::panBy(PanDirection direction) {
     if (pendingPanCount_ < sizeof(pendingPan_)) {
       pendingPan_[pendingPanCount_++] = static_cast<uint8_t>(direction);
     } else {
-      LOG_DBG(kLogTag, "pan queue full, press dropped");
+      LOG_INF(kLogTag, "pan queue full, press dropped");
     }
     return;
   }
@@ -6009,6 +6032,9 @@ void MapActivity::serviceDeferredInput() {
   // held from before it opened is not that button, and applying it would replace
   // the overview a second after it appeared.
   if (overviewShown_) {
+    if (pendingZoomDelta_ != 0 || pendingMarkerDelta_ != 0 || pendingPanCount_ > 0) {
+      LOG_INF(kLogTag, "held presses dropped: the route overview owns the frame");
+    }
     pendingZoomDelta_ = 0;
     pendingMarkerDelta_ = 0;
     pendingPanCount_ = 0;
@@ -6037,6 +6063,7 @@ void MapActivity::serviceDeferredInput() {
     // marker claiming to be where they are not -- and a parked phone sends no
     // new seq to correct it (loop()'s BLE branch).
     if (screenMode_ != MapScreenMode::Observe) {
+      LOG_INF(kLogTag, "held pans dropped: no longer in observation mode");
       pendingPanCount_ = 0;
       return;
     }
@@ -7175,6 +7202,19 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
 }
 
 void MapActivity::recordHatchedTiles() {
+  // The held tiles first: they are what the freshness round asks about, and
+  // maybeCheckTileFreshness() reads that store two calls later in the same tick.
+  for (uint8_t i = 0; i < heldThisFrameCount_; ++i) {
+    const HeldTile& tile = heldThisFrame_[i];
+    g_heldTiles.record(tile.z, tile.col, tile.row, tile.contentId);
+  }
+  heldThisFrameCount_ = 0;
+  if (diagonalChanged_) {
+    diagonalChanged_ = false;
+    // Up to 3 s of blocking wait inside, which is exactly why it is here and not
+    // in the frame that decided the rung had changed.
+    sendViewportDiagonalIfChanged();
+  }
   if (hatchedThisFrameCount_ == 0) return;
   uint32_t fetchable = 0;
   const uint32_t now = millis();
@@ -7456,17 +7496,27 @@ void MapActivity::composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingS
   // Recorded, not replaced. The store accumulates across resets and drains as
   // the phone answers, so a rider who pans across a city can have all of it
   // checked rather than only the last screenful (HeldTilesStore).
+  // Collected for the main task, like the hatched list above and for the same
+  // reason: g_heldTiles is read on ordinary loop ticks and record() rewrites
+  // entries in place. Reset here, so one frame's list is one frame's list.
+  heldThisFrameCount_ = 0;
   for (uint32_t index = 0; index < range.count(); ++index) {
     // A tile that did not open has no content to compare, and saying it is
     // held at content 0 would have the phone report it stale forever. It is
     // already on the missing path, which is where it belongs.
     if ((missing & (1u << index)) != 0) continue;
-    g_heldTiles.record(range.z, range.colAt(index), range.rowAt(index), source_->contentIdAt(index));
+    if (heldThisFrameCount_ < MapViewport::kMaxTiles) {
+      heldThisFrame_[heldThisFrameCount_++] =
+          HeldTile{range.z, range.colAt(index), range.rowAt(index), source_->contentIdAt(index)};
+    }
   }
   consoleState_.setRenderStats(source_->tilesOpened(), source_->tilesUnavailable(), source_->waysEmitted(),
                                source_->bytesRead(), source_->waysFiltered());
   consoleState_.setZoomInfo(zoomStep(), range.z, MapViewport::kZoomLadder[zoomStep()].mpp);
-  sendViewportDiagonalIfChanged();
+  // Flagged, never sent from here: the send is a BLE indication that blocks up to
+  // 3 s waiting for the phone's confirm, and this task holds the RenderLock.
+  // loop() sends it on the next idle tick (servicePendingSends()).
+  diagonalChanged_ = true;
 
   // Snapshot what the chrome is about to cover, before it covers it. That is
   // what lets a later lock/unlock swap the boxes for the padlock with two small

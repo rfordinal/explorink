@@ -293,6 +293,26 @@ class MapActivity final : public Activity,
   };
   HatchedTile hatchedThisFrame_[MapViewport::kMaxTiles];
   uint8_t hatchedThisFrameCount_ = 0;
+  // The tiles the frame actually drew, with the content id it drew them at, for
+  // the same hand-off and the same reason: g_heldTiles is a fixed array with a
+  // count that the main task reads on ordinary ticks (maybeCheckTileFreshness()),
+  // and record() can overwrite an entry in place. The sibling of the
+  // missing-tiles rule, which the first fix pass applied to one store and not to
+  // the other.
+  struct HeldTile {
+    uint8_t z;
+    uint32_t col;
+    uint32_t row;
+    uint32_t contentId;
+  };
+  HeldTile heldThisFrame_[MapViewport::kMaxTiles];
+  uint8_t heldThisFrameCount_ = 0;
+  // Set by the frame when the rung it drew differs from the one the phone was
+  // last told about. The send itself is a BLE indication that waits up to 3 s for
+  // a confirm (BlePositionServer::sendCommandChunk), so it must never happen on
+  // the render task: it would hold the RenderLock for those seconds and freeze
+  // every partial paint, every held press and a Back out of the screen with it.
+  bool diagonalChanged_ = false;
   // Main task only, and only when no frame is in flight: reads what the last
   // compose collected into MISSING_TILES, and publishes what autosync should ask
   // for.
