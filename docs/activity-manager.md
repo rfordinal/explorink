@@ -561,6 +561,14 @@ CDN mirror symlinked under `fs_/` (see `simulator.md`):
 - **Closing the menu still restores the map exactly.** The frame after a Back is
   byte-identical to the frame before the menu opened, so the backdrop capture
   and restore survive their new `frameInFlight()` refusals.
+- **Six states, not three.** Repeated with one run per state, same key script on
+  both sides: map entry, two zoom steps, a marker step, the menu open, the menu
+  closed again, and a menu row activated. **0 of 384,000 pixels differ in all
+  six.** A sleep/wake run produced no capture on either side (the scripted QUIT
+  never took after `SLEEP`), so it says nothing either way -- and the map
+  console, which would have driven the pin-notice and `goto` paths, cannot be
+  reached in the simulator at all (parent `docs/TODO.md` T-154, broken on
+  `develop` too).
 - **`loop()` really does run during a compose.** The host composes in ~20 ms, so
   nothing lands mid-frame there naturally; a throwaway build with `delay(2500)`
   at the top of `composeViewport()` made it panel-slow. Two zoom presses at
