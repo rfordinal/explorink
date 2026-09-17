@@ -714,7 +714,16 @@
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "modes": [
+                "hike"
+              ],
+              "width": 1,
+              "pattern": "dashed"
+            }
+          ]
         },
         {
           "casing_px": 0,
@@ -796,7 +805,7 @@
         {
           "casing_px": 0,
           "color": "#000000",
-          "hidden": false,
+          "hidden": true,
           "major": false,
           "match": {
             "class": [
