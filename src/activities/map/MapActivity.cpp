@@ -2736,6 +2736,9 @@ void MapActivity::seedFromPersistedFix() {
 }
 
 void MapActivity::onEnter() {
+  // Whoever runs onEnter() runs loop() (ActivityManager::loop()), and that is the
+  // only task allowed to ask for a frame -- see requestFrame().
+  loopTaskHandle_ = xTaskGetCurrentTaskHandle();
   Activity::onEnter();
   LOG_DBG(kLogTag, "onEnter start");
 
@@ -3213,7 +3216,7 @@ void MapActivity::loop() {
   // Select has the identical problem on CONFIRM: it fires on the *press*
   // edge too, and handleButtons() opens the menu on CONFIRM's *release* edge.
   // gpio.update() only runs once per outer loop() (main.cpp), so a Select
-  // whose row spends the better part of two seconds rendering never sees the
+  // whose row spends the better part of two seconds rendering never saw the
   // release until this activity's next loop() call -- by which point the
   // popup is already closed, so handleButtons() runs and reopens it. No
   // extra redraw needed here the way Back's case gets one: every Select
@@ -5748,7 +5751,7 @@ void MapActivity::showPinNotice(const char* text) {
   // Five call sites read `renderCurrent(); showPinNotice(...)`, an ordering that
   // only worked while the render was synchronous: painted now, the notice would
   // sit under the frame that is about to be composed. Stash it instead and let
-  // serviceDeferredInput() draw it once the frame has landed.
+  // servicePendingPaints() draw it once the frame has landed.
   if (frameInFlight()) {
     taskENTER_CRITICAL(&mapFrameRequestSpinlock);
     strncpy(pendingNotice_, text, sizeof(pendingNotice_) - 1);
@@ -6191,6 +6194,16 @@ bool MapActivity::preventThrottle() {
 
 
 void MapActivity::requestFrame(FrameRequest kind, int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  // The invariant, made observable. Every frameInFlight() gate on this screen is
+  // a check-then-paint, and it is race-free only because a compose cannot start
+  // between the check and the paint -- which holds only while every request comes
+  // from the task that runs loop(). LOG_ERR rather than assert() alone: a release
+  // build compiles the assert out, and a rule whose violation is invisible is a
+  // wish (CLAUDE.md, "Code comments answer WHY").
+  if (loopTaskHandle_ != nullptr && xTaskGetCurrentTaskHandle() != loopTaskHandle_) {
+    LOG_ERR(kLogTag, "frame requested off the loop task -- every frameInFlight() gate is now a race");
+    assert(false && "MapActivity frame requested off the main task");
+  }
   taskENTER_CRITICAL(&mapFrameRequestSpinlock);
   // Last request wins. Three quick zoom presses used to paint three frames back
   // to back because each call site drew its own; they now coalesce into the one
@@ -6313,7 +6326,7 @@ void MapActivity::render(RenderLock&&) {
   // handleInput() can replace on the main task mid-draw, and pinNoticePatch_ is a
   // unique_ptr the main task's own clearPinNotice() resets. Drawing either from
   // this task is a cross-task write to a container, which is a heap bug rather
-  // than a torn pixel. serviceDeferredInput() paints them on the next main-task
+  // than a torn pixel. servicePendingPaints() paints them on the next main-task
   // tick instead, which is still after this frame and still on top of it.
   if (kind != FrameRequest::None) {
     // The map moved onto this task with the stack that task already had (8,192
@@ -6412,10 +6425,15 @@ void MapActivity::composeCurrent() {
     composeWaiting();
     return;
   }
-  // Read as one, because they are written as one: requestFrame() sets the triple
-  // under this spinlock, and a preemption between two bare loads here would
-  // compose around a latitude from one fix and a longitude from the next -- a
-  // place that never existed.
+  // Read as one, because requestFrame() writes the triple as one under this
+  // spinlock: a preemption between two bare loads here would compose around a
+  // latitude from one fix and a longitude from the next, a place that never
+  // existed.
+  //
+  // The spinlock covers that writer, not every writer. applyFix()'s hold
+  // branches and seedFromPersistedFix() set the same fields bare -- safe only
+  // because they run on the main task with no frame in flight, which is the same
+  // invariant requestFrame() checks rather than a second guarantee.
   int32_t latE7;
   int32_t lonE7;
   uint8_t heading;

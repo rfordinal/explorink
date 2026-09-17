@@ -242,9 +242,18 @@ class MapActivity final : public Activity,
   // the seam between them:
   //
   // - **render*()** records what the panel should show next and wakes the
-  //   render task. Safe from the main task, from a console callback, from
-  //   anywhere. Last request wins, so three quick zoom presses coalesce into
+  //   render task. Last request wins, so three quick zoom presses coalesce into
   //   the one frame the rider is actually waiting for.
+  //
+  //   **Only from the main task.** That is the invariant every one of this
+  //   screen's frameInFlight() gates rests on, and it is not obvious: a gate
+  //   reads the flag and then paints, which is only race-free because a compose
+  //   cannot *start* in between. It cannot, because every request is delivered
+  //   at the tail of ActivityManager::loop() (ActivityManager.cpp, requestUpdate's
+  //   deferred flag) -- after MapActivity::loop() has returned. One
+  //   requestUpdate(true) from a BLE, web or GNSS callback would turn all of
+  //   them into silent TOCTOU races, so requestFrame() checks the calling task
+  //   and says so rather than leaving the rule as a wish.
   // - **compose*()** paints it. Called only from render(RenderLock&&), which
   //   means only from the render task, which means the framebuffer has one
   //   writer for the whole length of a frame.
@@ -262,6 +271,9 @@ class MapActivity final : public Activity,
   void composeRouteOverview();
   // Written by whoever asks for a frame, read by the render task. Small enough
   // that a spinlock around the pair costs nothing (MapActivity.cpp).
+  // The task the activity's loop() runs on, captured in onEnter(). Only used to
+  // catch a frame request arriving from anywhere else (requestFrame()).
+  TaskHandle_t loopTaskHandle_ = nullptr;
   FrameRequest pendingFrame_ = FrameRequest::None;
   int32_t pendingFrameLatE7_ = 0;
   int32_t pendingFrameLonE7_ = 0;
@@ -270,7 +282,7 @@ class MapActivity final : public Activity,
   // A notice asked for while a frame was still pending. It has to be drawn
   // *after* that frame or the frame paints over it -- the five call sites read
   // `renderCurrent(); showPinNotice(...)`, which was an ordering that only
-  // worked while the render was synchronous. Painted by serviceDeferredInput()
+  // worked while the render was synchronous. Painted by servicePendingPaints()
   // on the main task, never by the render task: the patch under it is a
   // unique_ptr the main task also resets.
   char pendingNotice_[64] = {0};
@@ -317,7 +329,7 @@ class MapActivity final : public Activity,
   // compose collected into MISSING_TILES, and publishes what autosync should ask
   // for.
   void recordHatchedTiles();
-  // Draws the open OptionPopup, or hands it to serviceDeferredInput() when a
+  // Draws the open OptionPopup, or hands it to servicePendingPaints() when a
   // frame is being composed -- a popup painted under a compose is a menu the
   // rider never sees. Always on the main task: OptionPopup rebuilds a layout
   // cache and owns vectors that handleInput() can replace, so drawing it from
@@ -328,8 +340,9 @@ class MapActivity final : public Activity,
   // mutates state the compose reads -- the zoom rung, the marker rung, proj_ for
   // a pan -- so applying them mid-frame would draw a frame that is half one
   // thing and half another. They are held here and applied by
-  // serviceDeferredInput() once the panel is idle: nothing is dropped, which is
-  // the whole difference between this and ignoring input while busy (T-2018).
+  // serviceDeferredInput() once the panel is idle. Two things still drop a
+  // press, both deliberate and both logged: a pan queue already four deep, and a
+  // context the rider has left (the overview, or leaving Observe).
   //
   // Zoom and marker accumulate into one delta on purpose, so three quick presses
   // still cost one redraw. A pan cannot: each step is projected through the frame
