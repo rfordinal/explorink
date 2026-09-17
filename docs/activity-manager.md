@@ -573,23 +573,39 @@ What the simulator cannot show: the panel's own refresh, the real 2.80 s compose
 cost, the render task's true stack use (the fork stubs the high-water mark at a
 flat 2,048 bytes), or anything about power.
 
-### What a hardware pass has to check
+### What the hardware pass measured
 
-- **The render task's stack.** The map moved onto a task with an 8,192-byte
-  stack, and the label pass alone wants ~3.8 KB (`MapLabels.h`). Every composed
-  frame logs `stack free` at debug level; if that number gets close to zero the
-  stack has to grow, and the cost is permanent RAM.
-- **A press during a redraw is answered.** Same bench as the 2.80 s / 4.34 s
-  numbers above.
-- **The menu, the pin notice and the badge still land in the right order** --
-  they are the three paths whose ordering the synchronous render used to
-  guarantee for free.
-- **Wall clock.** A frame should be slightly slower now, bounded by `loop()`'s
-  own duty cycle (`delay(10)` at its tail, `POWER_TELEMETRY.onLoop()` reports
-  it). Unmeasured.
-- **Power.** `loop()` used to do nothing for 2.80 s and now runs ~280 iterations
-  in that window. Expected small, unmeasured -- the bench meter settles it
-  (parent `docs/usb-power-meter.md`).
+X4 Pro, build `x4pro-map-render-task-1c606edb` (archived in the parent repo's
+`docs/firmware-builds/`), 2026-09-17. Map used by hand: entry, zoom and marker
+steps, the menu opened and closed, one tile fetched over BLE.
+
+- **The render task's stack holds it.** Thirteen composed frames, lowest
+  `stack free` **4,548 bytes of 8,192**. Peak compose use is therefore about
+  3.6 KB with 4.5 KB spare, so the stack does not need to grow. This was the one
+  thing the move could have broken silently.
+- **`loop()` is no longer blocked by a frame.** Frames took 0.6 s to 2.2 s
+  (`render 2241 ms` at the worst), while the main loop's worst iteration across
+  the whole session was **656 ms** -- and that one is the synchronous loading
+  frame in `onEnter()`, which is deliberately painted on the main task so it
+  reaches the panel before the expensive frame starts. A later 3,596 ms spike
+  belongs to a BLE reply timeout (`[BLEPOS] reply unconfirmed after 3000 ms`),
+  not to a render. Before this change a 2.2 s frame *was* the loop iteration.
+- **A press during a compose is held and then honoured.** Two quick zoom presses:
+  the first landed on an idle panel and rendered, the second arrived 1.6 s into
+  that compose and was applied **5 ms after the frame finished** -- the first
+  `serviceDeferredInput()` tick after it. Nothing dropped, nothing applied
+  mid-frame.
+- **The transfer path survives a slow frame.** `autosync: asked for 1 tiles`, a
+  329 kB tile over BLE in 43 s, `tiles arrived, redrawing`. A 2 s compose no
+  longer starves it.
+- **Menu, hints and ordinary interaction** were exercised by the maintainer and
+  behaved as before.
+
+Still unmeasured: **power**. `loop()` used to do nothing for the length of a
+frame and now runs its ordinary ticks there instead, so there is some added
+active CPU time, bounded by the loop's own duty cycle. The bench meter settles
+it (parent `docs/usb-power-meter.md`) with the same redraw sequence either side
+of the merge, both in the same hour.
 
 ### Known, and left open
 
