@@ -529,7 +529,7 @@ Three different answers, depending on what the paint is for:
   `captureMenuBackdrop()`, `restoreMenuBackdrop()`. Reading the framebuffer
   mid-compose captures half a frame; writing to it tears one. Every caller
   already has a full-render fallback for "no snapshot".
-- **Defer to the next main-task tick.** The pin notice and the option popup,
+- **Paint on the next main-task tick, from `servicePendingPaints()`.** The pin notice and the option popup,
   because both belong *on top* of the frame. Five call sites read
   `renderCurrent(); showPinNotice(...)`, an ordering that only worked while the
   render was synchronous. `serviceDeferredInput()` paints them once the frame has
@@ -538,6 +538,15 @@ Three different answers, depending on what the paint is for:
   notice's patch is a `unique_ptr` the main task also resets. Painting either
   from the render task is a cross-task write to a container, which is a heap bug
   rather than a torn pixel.
+
+  **Where that drain sits is load-bearing, and the first attempt got it wrong.**
+  It lived in `serviceDeferredInput()`, near the bottom of `loop()` -- below the
+  popup block, which returns early for as long as a menu is open. So a CONFIRM
+  during a compose stashed the repaint, the menu became active, and every tick
+  from then on returned before the drain: the frame landed and **the menu never
+  appeared**, until some unrelated press made the popup repaint itself.
+  Reproduced twice by hand on an X4 Pro, 2026-09-17. The paints now run from
+  `servicePendingPaints()`, called above the popup block.
 
 ### One owner per piece of state, and the compose is not it
 

@@ -3218,6 +3218,13 @@ void MapActivity::loop() {
   // popup is already closed, so handleButtons() runs and reopens it. No
   // extra redraw needed here the way Back's case gets one: every Select
   // branch (openMapMenu()) already renders the map itself.
+  // Before the popup block below, which returns early for as long as a menu is
+  // open: a menu asked for during a compose is painted here, on the first tick
+  // after the frame lands. Measured on an X4 Pro 2026-09-17, before this call
+  // existed: CONFIRM during a redraw left the menu invisible until an unrelated
+  // press happened to repaint it.
+  servicePendingPaints();
+
   const bool popupWasActive = optionPopup_.isActive();
   if (optionPopup_.handleInput(mappedInput, [this] { paintPopup(); })) {
     if (popupWasActive && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -5964,16 +5971,12 @@ void MapActivity::stepMarker(int delta) {
   armSave();
 }
 
-void MapActivity::serviceDeferredInput() {
-  // Everything here was held because a frame owned the panel. One action per
-  // tick, each one getting its own frame: the next tick sees that frame in
-  // flight and comes back later.
+void MapActivity::servicePendingPaints() {
+  // Both of these belong on top of the frame that was being composed when they
+  // were asked for, and both are main-task objects: OptionPopup rebuilds a layout
+  // cache and owns vectors handleInput() can replace, and the notice's patch is a
+  // unique_ptr this task also resets (render()'s comment has the reason).
   if (frameInFlight()) return;
-
-  // The two paints first, because they belong on top of the frame that just
-  // landed and nothing else should get between. Drawn here, on the main task,
-  // rather than in render(): OptionPopup and the notice patch are main-task
-  // objects (render()'s comment has the reason).
   char notice[sizeof(pendingNotice_)];
   taskENTER_CRITICAL(&mapFrameRequestSpinlock);
   memcpy(notice, pendingNotice_, sizeof(notice));
@@ -5981,16 +5984,17 @@ void MapActivity::serviceDeferredInput() {
   const bool repaintPopup = pendingPopupRepaint_;
   pendingPopupRepaint_ = false;
   taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
-  if (notice[0] != '\0') {
-    drawPinNotice(notice);
-    return;
-  }
-  if (repaintPopup) {
-    // Only if it is still open: the rider may have dismissed it while the frame
-    // was composing, and painting it back would put a dead menu on the panel.
-    if (optionPopup_.isActive()) optionPopup_.processRender(renderer, mappedInput);
-    return;
-  }
+  if (notice[0] != '\0') drawPinNotice(notice);
+  // Only if it is still open: the rider may have dismissed it while the frame was
+  // composing, and painting a dead menu back would strand it on the panel.
+  if (repaintPopup && optionPopup_.isActive()) optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::serviceDeferredInput() {
+  // Everything here was held because a frame owned the panel. One action per
+  // tick, each one getting its own frame: the next tick sees that frame in
+  // flight and comes back later.
+  if (frameInFlight()) return;
 
   // A fix beats a ladder press: it is the answer to "where am I", and it is the
   // one thing here that goes stale on its own.

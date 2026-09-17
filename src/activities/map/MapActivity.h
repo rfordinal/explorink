@@ -331,6 +331,12 @@ class MapActivity final : public Activity,
   uint8_t pendingFixHeading_ = 0;
   uint8_t pendingFixSeq_ = 0;
   void serviceDeferredInput();
+  // The two paints that were held back by a frame: the pin notice and the open
+  // menu. Separate from serviceDeferredInput() and called earlier, because an
+  // open popup owns input and loop() returns early while it does -- a drain that
+  // sits below that return never runs, and the menu the rider asked for stays
+  // invisible until some later press repaints it.
+  void servicePendingPaints();
 
   void renderWaiting();
   // A frame that says the tiles are being read, refreshed before the read
