@@ -101,6 +101,12 @@ constexpr uint32_t kObserveZoomHoldMs = 600;
 // counted from the first new tile since the last flush (renderViewport()).
 constexpr uint32_t kMissingTilesSaveIntervalMs = 10 * 60 * 1000;
 
+// How long the menu waits for the rider to stop pressing before it repaints.
+// Long enough to swallow a double tap (measured human repeat is ~150-250 ms
+// apart), short enough that a single press still feels immediate against the
+// ~500 ms whole-panel refresh the repaint itself costs.
+constexpr uint32_t kPopupRepaintSettleMs = 150;
+
 // The main task does not compose frames any more (T-2024, parent docs/TODO.md).
 // Every render*() entry below records what the panel should show next and wakes
 // ActivityManager's render task; the compose*() sibling is the painter and runs
@@ -6007,13 +6013,19 @@ void MapActivity::servicePendingPaints() {
   taskENTER_CRITICAL(&mapFrameRequestSpinlock);
   memcpy(notice, pendingNotice_, sizeof(notice));
   pendingNotice_[0] = '\0';
-  const bool repaintPopup = pendingPopupRepaint_;
-  pendingPopupRepaint_ = false;
   taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
   if (notice[0] != '\0') drawPinNotice(notice);
-  // Only if it is still open: the rider may have dismissed it while the frame was
-  // composing, and painting a dead menu back would strand it on the panel.
-  if (repaintPopup && optionPopup_.isActive()) optionPopup_.processRender(renderer, mappedInput);
+
+  if (popupRepaintDueMs_ == 0) return;
+  // Only if it is still open: a row callback may have closed it, and painting a
+  // dead menu back would strand it on the panel.
+  if (!optionPopup_.isActive()) {
+    popupRepaintDueMs_ = 0;
+    return;
+  }
+  if (static_cast<int32_t>(millis() - popupRepaintDueMs_) < 0) return;
+  popupRepaintDueMs_ = 0;
+  optionPopup_.processRender(renderer, mappedInput);
 }
 
 void MapActivity::serviceDeferredInput() {
@@ -6256,17 +6268,12 @@ void MapActivity::renderViewport(int32_t latE7, int32_t lonE7, uint8_t headingSt
 }
 
 void MapActivity::paintPopup() {
-  // The popup draws over the map, so it has to be the last thing on the panel.
-  // A compose in flight would paint straight over it, and a popup the rider
-  // cannot see is a screen that has stopped answering -- so hand it to render()
-  // instead, which draws it after the frame it is composing.
-  if (frameInFlight()) {
-    taskENTER_CRITICAL(&mapFrameRequestSpinlock);
-    pendingPopupRepaint_ = true;
-    taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
-    return;
-  }
-  optionPopup_.processRender(renderer, mappedInput);
+  // Never immediately. The paint costs a whole-panel refresh that blocks the main
+  // task, and a press arriving inside it is lost -- see the comment on
+  // popupRepaintDueMs_. servicePendingPaints() draws the settled result, and it
+  // also waits out a compose: the popup draws over the map, so a frame in flight
+  // would paint straight over it.
+  popupRepaintDueMs_ = millis() + kPopupRepaintSettleMs;
 }
 
 bool MapActivity::frameInFlight() const {

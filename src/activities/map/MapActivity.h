@@ -329,13 +329,23 @@ class MapActivity final : public Activity,
   // compose collected into MISSING_TILES, and publishes what autosync should ask
   // for.
   void recordHatchedTiles();
-  // Draws the open OptionPopup, or hands it to servicePendingPaints() when a
-  // frame is being composed -- a popup painted under a compose is a menu the
-  // rider never sees. Always on the main task: OptionPopup rebuilds a layout
-  // cache and owns vectors that handleInput() can replace, so drawing it from
-  // the render task is a cross-task write to a container.
+  // Asks for the open OptionPopup to be drawn, on a short settle rather than now.
+  //
+  // OptionPopup::processRender() ends in a whole-panel displayBuffer(), which on
+  // an X4 Pro is the better part of a second and blocks the main task -- so the
+  // input sampler does not run while it happens, and a second press lands in the
+  // dead time and is never seen. Two taps of Up moved the selection once.
+  // Handling the input is free; only the picture is expensive, so the picture
+  // waits for the burst to end. Every other screen gets this for nothing by
+  // passing requestUpdate() as the popup's redraw callback (SettingsActivity and
+  // friends), which ActivityManager already coalesces once per loop; this screen
+  // paints the popup itself, so it needs its own settle.
+  //
+  // Always on the main task: OptionPopup rebuilds a layout cache and owns vectors
+  // that handleInput() can replace, so drawing it from the render task is a
+  // cross-task write to a container.
   void paintPopup();
-  bool pendingPopupRepaint_ = false;
+  uint32_t popupRepaintDueMs_ = 0;
   // Presses that arrived while a frame was being composed. Every one of them
   // mutates state the compose reads -- the zoom rung, the marker rung, proj_ for
   // a pan -- so applying them mid-frame would draw a frame that is half one
