@@ -1833,7 +1833,8 @@ void loop() {
           const int applied = explorink_set_text_idle(rest.toInt());
           logSerial.printf(applied < 0 ? "EPDIDLE_ERR:range\n" : "EPDIDLE_OK:%d\n", applied);
         }
-#endif  // ENABLE_EPDLUT_CMD#ifdef ENABLE_TOUCHLOG_CMD
+#endif  // ENABLE_EPDLUT_CMD
+#ifdef ENABLE_TOUCHLOG_CMD
       } else if (cmd == "TOUCHLOG" || cmd.startsWith("TOUCHLOG ")) {
         // Raw GT911 status register, timestamped, with the loop deliberately
         // blocked for the whole capture. The five open questions in
