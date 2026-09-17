@@ -509,6 +509,45 @@ Seventeen `CMD:SDBUS READ` of a 26,239-byte tile during that traffic, all
 inside its own card reads. **This closes the last open case of T-2019** -- the
 one the 8-of-20 run could not separate from starvation.
 
+### What listening costs `[measured 2026-09-17]`
+
+VBUS, on `t5s3pro`, with the charger switched off for the run (`CMD:CHARGE
+OFF`, back on after) so no charge current sits in the reading. Three states,
+each held twice, alternating:
+
+| state | VBUS |
+|---|---|
+| radio off, shared GNSS/LoRa rail released | 163.7 and 163.7 mA |
+| rail up, SX1262 initialised, idle | 161.0 and 161.1 mA |
+| rail up, continuous receive, service task ticking | 166.3 and 166.6 mA |
+
+**Listening costs +5.3 and +5.5 mA of VBUS** against an idle initialised chip.
+An earlier run on the same board gave +4.9 mA, so three readings agree. VBUS
+milliamps are not board milliamps -- the buck makes the meter read about 0.8x
+the board's current (`../../docs/usb-power-meter.md`) -- so the board pays
+roughly **+6.6 mA**, which lands in the 4 to 6 mA that `lora-idle-power.md`
+predicted from Semtech's figure before anything was run.
+
+Two things this does not say, both worth more than the number.
+
+**Absolute VBUS is not comparable between runs.** The same three states
+measured earlier the same day sat at 90 to 97 mA rather than 161 to 167.
+Only differences inside one run mean anything here, which is the method the
+meter doc calls (c) and the only one this instrument supports.
+
+**The rail up with an idle chip read 2.6 mA *lower* than the radio fully off**,
+twice, with a per-leg spread of 1.8 mA. That is reproducible and unexplained.
+It is recorded as a measurement, not as a finding: the obvious reading -- that
+turning a rail on saves power -- is not credible, so something about the two
+states differs in a way this instrument sees and this text cannot name.
+
+**The service task's own cost does not appear.** With the radio off the task
+blocks on `portMAX_DELAY`, and the two radio-off legs agree to 0.0 mA. That is
+consistent with the task being free when nothing is wanted, and it is not proof
+of it: a tick that cost a fraction of a milliamp would be invisible here, and
+the comparison that would settle it -- this build against the one before the
+task existed -- was not run.
+
 ### What the bench did not settle
 
 **The panic case was never exercised.** Criterion 5c wanted a pong whose time on
@@ -532,7 +571,9 @@ nothing measured before, because nobody had tried a high spreading factor here.
 before-and-after was taken on the same board in the same hour, so "within 5 %"
 is consistent-with rather than shown.
 
-**Not run at all**: the 30-minute soak, and the idle-power legs.
+**Not run at all**: the 30-minute soak. The idle-power question was
+answered separately -- see "What listening costs" above -- except for the one
+part that needs the pre-task build flashed for a comparison.
 
 ### Two defects the bench exposed
 
