@@ -86,8 +86,40 @@ class LoraRadio {
 
   // Blocking send. Returns false on a RadioLib error; airtime is the caller's
   // problem, not this class's -- see the duty-cycle note in docs/lora-bringup.md.
+  //
+  // **Only safe from a task whose core has no watchdog on its idle task.**
+  // RadioLib waits for TxDone in a spin that calls the platform's yield(), and
+  // on ESP32 Arduino that is vPortYield() (esp32-hal-misc.c, __yield), which
+  // hands the CPU only to equal-or-higher priority work. A caller above idle
+  // priority therefore starves its core's idle task for the whole time on air,
+  // and `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y` with
+  // `CONFIG_ESP_TASK_WDT_PANIC=y` turns a long send into a reboot. Seconds of
+  // air are ordinary here: a slow spreading factor on a narrow bandwidth is
+  // exactly what a range test reaches for. Use startTransmit() off the loop
+  // task.
   bool transmit(const uint8_t* data, size_t length);
   bool transmit(const char* text);
+
+  // The same send, without the spin. Hands the packet to the chip and returns;
+  // the caller learns it finished from DIO1, which carries TxDone and nothing
+  // else while transmitting. Leaves the radio not listening either way --
+  // finishTransmit() does not re-arm, because only the caller knows whether it
+  // wanted to be listening at all.
+  bool startTransmit(const uint8_t* data, size_t length);
+  bool startTransmit(const char* text);
+
+  // True between a startTransmit() and the finishTransmit() that clears it.
+  bool transmitting() const;
+
+  // 1 when the send completed and the chip was released, 0 when it is still on
+  // air, -1 on an error (the chip is released in that case too). Safe to call
+  // when nothing is transmitting: it answers 0.
+  int finishTransmit();
+
+  // Ends a send that never reported TxDone. Without it a chip that missed its
+  // interrupt would leave transmitting() true forever and the radio would
+  // never listen again.
+  void abortTransmit();
 
   // Puts the chip in continuous receive and leaves it there. Non-blocking on
   // purpose: a blocking listen would hold the firmware's loop() -- and with it
