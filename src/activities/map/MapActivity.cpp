@@ -6080,6 +6080,19 @@ void MapActivity::requestFrame(FrameRequest kind, int32_t latE7, int32_t lonE7, 
   pendingFrameLonE7_ = lonE7;
   pendingFrameHeading_ = headingStep;
   pendingFrameSeq_ = seq;
+  if (kind == FrameRequest::Viewport) {
+    // The anchor a ladder step re-renders around. A zoom step is this same call
+    // with a different mpp, so it has to know what the frame was built around --
+    // otherwise zooming out shows more of wherever the marker has drifted to
+    // instead of more of the road ahead (docs/map-data-spec.md).
+    //
+    // Set here rather than in composeViewport() so the newest request wins: a
+    // compose that started before the latest fix must not put its own older
+    // coordinates back when it finishes.
+    lastLatE7_ = latE7;
+    lastLonE7_ = lonE7;
+    lastHeading_ = headingStep;
+  }
   taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
   // Deferred rather than immediate: ActivityManager sends one notification at the
   // end of the loop iteration, so a row callback that asks twice pays once.
@@ -7076,14 +7089,10 @@ void MapActivity::composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingS
     return;
   }
 
-  // Remembered so a ladder step can re-render around the same fix. A zoom
-  // step re-anchors the viewport on the marker, which is exactly this call
-  // with a different mpp -- otherwise zooming out shows more of wherever the
-  // marker has drifted to instead of more of the road ahead
-  // (docs/map-data-spec.md).
-  lastLatE7_ = latE7;
-  lastLonE7_ = lonE7;
-  lastHeading_ = headingStep;
+  // The anchor is remembered where the frame is *asked for*, not here
+  // (renderViewport()). Written here, an older frame finishing after a newer fix
+  // landed would put its own coordinates back and the next ladder step would
+  // re-render around a position the rider had already left.
 
   const uint32_t startMs = millis();
   const uint32_t heapBefore = ESP.getFreeHeap();
