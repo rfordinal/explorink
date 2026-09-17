@@ -255,15 +255,17 @@ mesh, and it is not the constraint this task was opened for: the bus hazard did
 not appear at all. What was built in answer is "The radio has its own task now"
 below -- written, not yet exercised.
 
-**Still unmeasured**: whether a radio *transmit* can corrupt a card read. The
-four missing pongs are consistent with the same starvation and do not separate
-the two.
+**Answered 2026-09-17**: a radio transmit does not corrupt a card read.
+Seventeen CRC32-checked reads of a 26 kB tile while the board both received and
+transmitted came back byte-identical, zero errors ("The bench"). The four
+missing pongs were starvation, as suspected.
 
-## The radio has its own task now `[written, not exercised]`
+## The radio has its own task now `[measured 2026-09-17]`
 
 Written 2026-09-16 against the 8-of-20 measurement above, on branch
-`lora/rx-task` off `feat/lora`. **Nothing here has run on hardware.** What it
-has to pass before it counts is at the end of this section.
+`lora/rx-task` off `feat/lora`; run on two boards 2026-09-17. **20 of 20, and
+16 of them read inside a render window.** "The bench" below has the numbers,
+including the three criteria it did not settle.
 
 ### Why `loop()` was the wrong place
 
@@ -467,6 +469,88 @@ of 88 B, a task control block and two semaphores, so about 5.2 kB. The stack
 half of that is an estimate until a hardware run reports `stack=` from
 `LORA_STATE`.
 
+### The bench, 2026-09-17 `[measured]`
+
+Two T5 S3 Pro boards, both flashed with `48b9defb`. One renders a map at zoom
+rung 6 and answers every ping (`CMD:LORA PONG ON`, `pos 48.2889 17.2669`,
+`zoom 6`, a `redraw` every 2 s); the other sends twenty pings 1.2 s apart. The
+same bench that produced 8 of 20.
+
+| | loop()-serviced | with the task |
+|---|---|---|
+| pings heard by the rendering board | 8 of 20 | **20 of 20** |
+| packets read **inside** a render window | 0 | **16 of 20** |
+| pongs that reached the sender back | 4 of 20 | **20 of 20** |
+| `LORA_RX_ERR`, card errors | 0 | 0 |
+| `LORA_RX_UNPRINTED` | n/a | 0 |
+
+Ten render windows, 3,119 to 3,369 ms each, so rung 6 behaved as before. The
+`at=` stamps are what settle it: three packets were read at device ms 98,581,
+99,752 and 100,981 inside a window that ran 98,128 to 101,493, and they printed
+only after it ended. The radio is serviced while the panel is busy, which is
+the whole claim.
+
+Round trip during rendering: twenty of twenty, **406 to 444 ms, median 430**.
+The idle figure from first contact was about 500 ms, so answering from the
+service task cost no latency -- it removed some, because the reply no longer
+waits for `loop()`.
+
+`rearm=0` and `tx_timeout=0` across the run, and the service task's stack
+high-water mark left 3,120 bytes free of 4,096 -- about 1 kB used on the receive
+path.
+
+**The tick alone delivers.** With `CMD:LORA ISR OFF`, six of six pings were
+heard and six of six pongs came back. The 100 ms tick is not a fallback nobody
+has exercised.
+
+**A card read survives a radio that is both receiving and transmitting.**
+Seventeen `CMD:SDBUS READ` of a 26,239-byte tile during that traffic, all
+`crc32=3a467adf`, zero read errors, with pong mode on so the board transmitted
+inside its own card reads. **This closes the last open case of T-2019** -- the
+one the 8-of-20 run could not separate from starvation.
+
+### What the bench did not settle
+
+**The panic case was never exercised.** Criterion 5c wanted a pong whose time on
+air exceeds the 5 s watchdog, which is what the old blocking send would have
+starved core 0's idle task through. No rung that links between these two boards
+produces one: SF12 at BW 7.8 and BW 15.6 and SF10 at BW 7.8 all delivered
+nothing at all, and the slowest working rung, SF9 at BW 7.8, gave a pong of
+about 3.7 s. No reset was seen in any of those runs, but a 3.7 s send does not
+test a 5 s threshold. The hazard is still argued from the code and the
+`sdkconfig`, not from a board.
+
+**SF10 and above do not link between these boards at narrow bandwidth**, while
+SF8 and SF9 do, and SF8 at BW 62.5 carried 20 of 20 in the same hour. Four runs,
+2026-09-17: SF12/BW7.8, SF12/BW15.6 and SF10/BW7.8 delivered zero packets;
+SF8/BW7.8 and SF9/BW7.8 delivered and were answered. A wire-settings question
+rather than a servicing one -- it belongs with T-2020, and it contradicts
+nothing measured before, because nobody had tried a high spreading factor here.
+
+**Render cost is unmeasured as a comparison.** Renders came in at 3,077 to
+3,369 ms, inside the 3 to 3.9 s the earlier run reported, but no controlled
+before-and-after was taken on the same board in the same hour, so "within 5 %"
+is consistent-with rather than shown.
+
+**Not run at all**: the 30-minute soak, and the idle-power legs.
+
+### Two defects the bench exposed
+
+**`CMD:LORA PING` starts its reply timer before the send, not after it.**
+`gLoraPingSentMs` is stamped ahead of a blocking `transmit()`, so at a slow rung
+the 10 s wait has already expired by the time the packet leaves: a ping with
+20,067 ms of air reported `LORA_PING_TIMEOUT` 55 ms after `LORA_OK:ping`. On the
+default rung the airtime is 157 ms and nobody noticed. Pre-existing; exposed by
+the slow-rung runs.
+
+**`rearm=` counts the ordinary post-transmit re-listen.** The service task
+restores reception through the watchdog after finishing a send, so the counter
+tracks the number of pongs rather than the anomaly it was introduced to name --
+the rendering board read `rearm=20` after twenty pongs. The instrument is honest
+about what it measures and wrong about what it was documented to mean; a re-arm
+after our own transmit should be accounted separately from one that repairs
+something else.
+
 ### What a hardware pass has to check
 
 The bench is the one that produced the 8 of 20: two boards, twenty pings 1.2 s
@@ -645,9 +729,13 @@ evidence of anything.
   preamble, channel hash and slot numbers checked against known-good bytes,
   because each of them fails as silence. The settings live in one struct now,
   which is the precondition for such a test, not a substitute for it.
-- **The service task has never run on hardware.** It is written and it builds;
-  "The radio has its own task now" lists the eight things a pass has to check,
-  starting with 20 of 20 packets through a rung 6 redraw (T-2023).
+- **The slow-rung link.** SF10 and above deliver nothing between our two boards
+  at narrow bandwidth, while SF8 and SF9 do (measured 2026-09-17, "The bench").
+  Unexplained, and it bounds every range test to the faster rungs until it is.
+- **The service task's panic case is unexercised.** The task no longer blocks on
+  a send, which is what would have starved core 0's idle task past the 5 s
+  watchdog -- but no rung that links produces a send long enough to prove it on
+  a board.
 - **No duty-cycle accounting.** The console will transmit as often as it is
   told to.
 - **No power figure.** The L series in `lora-idle-power.md` prices the radio's
