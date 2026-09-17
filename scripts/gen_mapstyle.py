@@ -397,6 +397,12 @@ _LINE_DASH_PX = {
     # The line stays whole and short combs hang off its right-hand side: the
     # rock-face mark. Takes `tick_px` and `gap_px`; `dash_px` means nothing here.
     "hachured": (0, 8),
+    # The same tooth, crossing the line instead of hanging off it: the
+    # topographic railway. Takes `tick_px` (reach on EACH side, so the rung is
+    # 2x that long) and `gap_px`. `dash_px` is refused rather than quietly
+    # meaning the reach -- which is what it means for `hachured` on a road, and
+    # is the trap this refusal exists to stop spreading.
+    "ladder": (3, 8),
 }
 
 # The mark a dash_mark period carries. `dot` is `square` at half the size rather
@@ -414,12 +420,25 @@ _TICK_SIDE = {"downhill": "Downhill", "uphill": "Uphill",
 
 
 def _tick(rule, what, pattern_kind):
-    """(side, tooth width) for a hachured rule, else the defaults."""
+    """(side, tooth width) for a hachured or ladder rule, else the defaults."""
+    if pattern_kind == "Ladder":
+        # A rung reaches both ways, so there is no side to pick. Refused rather
+        # than warned: unlike a stray field on a solid line, `tick_side` here
+        # reads as a working choice that the renderer then ignores.
+        if rule.get("tick_side") is not None:
+            sys.exit(f"gen_mapstyle.py: {what}: `tick_side` has no meaning on 'ladder' -- the rung "
+                     f"crosses the line and reaches both ways. It is 'hachured' that picks a side")
+        width = _round_px(rule.get("tick_width_px", 1), f"{what}.tick_width_px")
+        if width < 1:
+            width = 1
+        if width > 255:
+            sys.exit(f"gen_mapstyle.py: {what}: tick_width_px {width} does not fit a uint8_t")
+        return "Downhill", width
     if pattern_kind != "Hachured":
         for key in ("tick_side", "tick_width_px"):
             if rule.get(key) is not None:
                 print(f"gen_mapstyle.py: warning -- {what}: `{key}` has no effect without "
-                      f"`pattern: \"hachured\"`")
+                      f"`pattern: \"hachured\"` or `pattern: \"ladder\"`")
         return "Downhill", 1
     name = str(rule.get("tick_side", "downhill")).strip().lower()
     if name not in _TICK_SIDE:
@@ -475,13 +494,43 @@ def _dash(rule, what):
                  f"{sorted(_LINE_DASH_PX)}")
     dash, gap = _LINE_DASH_PX[pattern]
     kind = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dashed", "ticked": "Ticked",
-            "none": "None", "dash_mark": "DashMark", "hachured": "Hachured"}[pattern]
+            "none": "None", "dash_mark": "DashMark", "hachured": "Hachured",
+            "ladder": "Ladder"}[pattern]
+    if pattern == "ladder":
+        if not what.startswith("layers.roads."):
+            sys.exit(f"gen_mapstyle.py: {what}: pattern 'ladder' is a roads-layer mark. A relief "
+                     f"class wants 'hachured' (a rock face has a downhill side, a rung does not), "
+                     f"and a water class has no use for rungs at all")
+        # `dash_px` is refused only when `tick_px` is absent, and the difference is
+        # inheritance. A `when` block resolves by merging over its base rule, so a
+        # class whose base is `ticked` (railway was, until 2026-09-16) hands its
+        # `dash_px` down to a ride-mode override that asks for a ladder. Refusing
+        # that outright rejects the idiom this whole style file is written in.
+        # With `tick_px` given there is nothing ambiguous to refuse: it wins, and
+        # the inherited dash is a leftover of the base pattern. Without it the
+        # dash would silently become the reach, which is the trap worth stopping.
+        if rule.get("tick_px") is None:
+            if rule.get("dash_px") is not None:
+                sys.exit(f"gen_mapstyle.py: {what}: 'ladder' would take its rung reach from "
+                         f"`dash_px` ({_round_px(rule['dash_px'], f'{what}.dash_px')}px), which is "
+                         f"this class's dash from another pattern rather than a reach anyone chose. "
+                         f"Give `tick_px` -- how far a rung reaches on each side")
+        else:
+            dash = _round_px(rule["tick_px"], f"{what}.tick_px")
+        if dash < 1:
+            sys.exit(f"gen_mapstyle.py: {what}: tick_px must be at least 1 -- a rung of zero "
+                     f"length is a plain line, which is 'solid'")
+        if _round_px(rule.get("gap_px", gap), f"{what}.gap_px") < 2:
+            sys.exit(f"gen_mapstyle.py: {what}: 'ladder' needs gap_px of at least 2 -- rungs "
+                     f"closer than that fill in and the mark becomes a band")
     if pattern == "none" and not what.startswith("layers.water."):
         sys.exit(f"gen_mapstyle.py: {what}: pattern 'none' is only meaningful on a water class, "
                  f"whose mark can be its tone alone. A road or a contour that draws no line is "
                  f"`hidden: true` -- and unlike 'none' that also keeps the class out of the rung's "
                  f"tile read (gen_mode_masks.py)")
-    if rule.get("dash_px") is not None:
+    # Not for a ladder: its reach came from `tick_px` above, and an inherited
+    # `dash_px` from the class's previous pattern must not overwrite it.
+    if rule.get("dash_px") is not None and pattern != "ladder":
         dash = _round_px(rule["dash_px"], f"{what}.dash_px")
     if rule.get("gap_px") is not None:
         gap = _round_px(rule["gap_px"], f"{what}.gap_px")
