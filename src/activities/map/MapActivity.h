@@ -188,6 +188,12 @@ class MapActivity final : public Activity,
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  // T-2024: the map is composed on ActivityManager's render task now, like
+  // every other screen. Before this it painted straight from loop(), which
+  // blocked the main task for 2.80 s per redraw and 4.34 s on entry
+  // (firmware docs/input-gestures.md, X4 Pro 2026-09-14) -- no button edge,
+  // no GNSS drain and no radio poll ran inside that window.
+  void render(RenderLock&&) override;
   // Same mechanism CrossPointWebServerActivity/OtaUpdateActivity/etc. use --
   // don't let the device auto-sleep (and drop off USB) while the BLE
   // peripheral is running and might receive a position update any moment.
@@ -232,6 +238,48 @@ class MapActivity final : public Activity,
   void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override;
 
  private:
+  // Requesting a frame and painting one are two different things, and this is
+  // the seam between them:
+  //
+  // - **render*()** records what the panel should show next and wakes the
+  //   render task. Safe from the main task, from a console callback, from
+  //   anywhere. Last request wins, so three quick zoom presses coalesce into
+  //   the one frame the rider is actually waiting for.
+  // - **compose*()** paints it. Called only from render(RenderLock&&), which
+  //   means only from the render task, which means the framebuffer has one
+  //   writer for the whole length of a frame.
+  //
+  // A compose*() that needs another kind of frame (no source_, a route fit
+  // that read short) calls the compose*() sibling directly -- it is already
+  // inside the render, and requesting there would only bounce the work back
+  // to the next tick.
+  enum class FrameRequest : uint8_t { None, Current, Viewport, Waiting, LoadingTiles, RouteOverview };
+  void requestFrame(FrameRequest kind, int32_t latE7 = 0, int32_t lonE7 = 0, uint8_t headingStep = 0, uint8_t seq = 0);
+  void composeWaiting();
+  void composeLoadingTiles();
+  void composeCurrent();
+  void composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq);
+  void composeRouteOverview();
+  // Written by whoever asks for a frame, read by the render task. Small enough
+  // that a spinlock around the pair costs nothing (MapActivity.cpp).
+  FrameRequest pendingFrame_ = FrameRequest::None;
+  int32_t pendingFrameLatE7_ = 0;
+  int32_t pendingFrameLonE7_ = 0;
+  uint8_t pendingFrameHeading_ = 0;
+  uint8_t pendingFrameSeq_ = 0;
+  // A notice asked for while a frame was still pending. It has to be drawn
+  // *after* that frame or the frame paints over it -- the four call sites read
+  // `renderCurrent(); showPinNotice(...)`, which was an ordering that only
+  // worked while the render was synchronous.
+  char pendingNotice_[64] = {0};
+  // True while a frame is requested or being composed. Every partial paint that
+  // still runs on the main task asks this first.
+  bool frameInFlight() const;
+  // Draws the open OptionPopup, or defers it to render() when a frame is being
+  // composed -- a popup painted under a compose is a menu the rider never sees.
+  void paintPopup();
+  bool pendingPopupRepaint_ = false;
+
   void renderWaiting();
   // A frame that says the tiles are being read, refreshed before the read
   // starts. Entering this screen with a stored fix goes straight into
@@ -630,11 +678,10 @@ class MapActivity final : public Activity,
   // row commits and closes on one Select -- picking Mode steps
   // ride->hike->cycle->ride and is done, same as any other row; a rider who
   // wants a different mode (or a different zoom/rotation/heading value)
-  // again presses CONFIRM again. Draws the popup itself via
-  // optionPopup_.processRender() right after show() -- MapActivity never
-  // calls requestUpdate() (it always has drawn straight to the buffer, on
-  // the main task, not through Activity's render(RenderLock&&)/render-task
-  // path), so nothing else would ever paint the popup's first frame.
+  // again presses CONFIRM again. Draws the popup itself via paintPopup() right
+  // after show(): a frame request would compose the *map*, which is the one
+  // thing that must not land on top of an open menu, so nothing else would ever
+  // paint the popup's first frame.
   void openMapMenu();
   // The map pixels the menu is about to cover, saved so closing the menu costs
   // one window refresh instead of a full re-render (tiles off the card, then a
@@ -956,6 +1003,9 @@ class MapActivity final : public Activity,
   // rectangle, so it costs one small window refresh and leaves the map up; the
   // patch is what lets it disappear again without re-reading a tile.
   void showPinNotice(const char* text);
+  // The painter behind showPinNotice(): draws the box and refreshes its window.
+  // Render task only -- showPinNotice() decides whether now is the moment.
+  void drawPinNotice(const char* text);
   void clearPinNotice();
   void pinNoticeRect(int& x, int& y, int& w, int& h) const;
   // A popup that opened over the menu can be bigger than the menu was. The
@@ -1389,11 +1439,12 @@ class MapActivity final : public Activity,
   // -- so the transition into or out of "no clock" moves this value and
   // repaints, same as a minute rolling over does.
   int16_t drawnClockMinute_ = -1;
-  // The touch mode the chrome on screen was painted for. This screen has to
-  // poll it because it paints from its own loop() rather than through
-  // Activity::render(RenderLock&&), so the repaint the lock toggle asks for
-  // never reaches it -- see the check in loop(). 0xFF means "nothing painted
-  // yet", so the first frame after entering settles it without a redraw.
+  // The touch mode the chrome on screen was painted for. This screen polls it
+  // because the toggle's repaint request carries no frame kind (main.cpp asks
+  // every screen at once), and because swapChrome()'s two strips are the right
+  // answer here rather than a whole new frame -- see the check in loop().
+  // 0xFF means "nothing painted yet", so the first frame after entering settles
+  // it without a redraw.
   uint8_t drawnTouchMode_ = 0xFF;
   // The map under the chrome, taken on every full frame before the chrome covers
   // it. Two rectangles, never their union: the bottom band and the side boxes
