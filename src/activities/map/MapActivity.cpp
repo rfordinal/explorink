@@ -3407,8 +3407,20 @@ void MapActivity::loop() {
   // replies -- only the transport differs (MapCommandConsole.h). poll()
   // returns true only for a command that changed something, so every true
   // here is a real redraw request.
-  const bool serialWants = serial_.poll();
-  const bool bleWants = ble_.poll();
+  //
+  // Not while a frame is in flight. A console command is the one input that
+  // reaches straight into state the compose is reading -- `pin set` rewrites the
+  // pin store drawPins() is walking, `zoom`/`mode` move the ladder the
+  // projection reads, `pos` moves the anchor -- and unlike a button it cannot be
+  // deferred by serviceDeferredInput(), because the command has already been
+  // parsed and its reply is owed. Holding the bytes in the transport for one
+  // frame costs a script a couple of seconds and keeps every console write on
+  // the same task as the rest of the main loop. Locking inside
+  // MapCommandConsole is not an option: host tests compile it
+  // (test/pins/CMakeLists.txt) and it must stay free of firmware-only headers.
+  const bool consoleIdle = !frameInFlight();
+  const bool serialWants = consoleIdle && serial_.poll();
+  const bool bleWants = consoleIdle && ble_.poll();
   if (serialWants || bleWants) {
     syncLaddersFromConsole();
     // Console commands redraw immediately rather than through the button
@@ -3471,9 +3483,17 @@ void MapActivity::loop() {
   //
   // All of it is a handful of integer compares per tick when the feature is
   // off or idle -- the same cost class as the redraw and save deadlines below.
-  drainTransferredTiles();
-  expireAutoSync();
-  maybeAutoSyncTiles();
+  //
+  // All of it, plus recording what the last frame hatched, is main-task-only
+  // work on state the compose also touches (MISSING_TILES, lastTileRange_), so
+  // it stands aside while a frame is in flight rather than reading a list the
+  // render task is still filling.
+  if (!frameInFlight()) {
+    recordHatchedTiles();
+    drainTransferredTiles();
+    expireAutoSync();
+    maybeAutoSyncTiles();
+  }
   maybeCheckTileFreshness();
   maybeSyncPointsLive();
   // Also the link state and the signal bars, which have nothing to do with
@@ -3870,7 +3890,15 @@ bool MapActivity::captureMenuBackdrop() {
   // Reading the framebuffer while a compose writes it captures half a frame, and
   // the backdrop's whole job is to be a clean picture of the map. No backdrop is
   // an understood state: the menu's close path pays one full re-render.
-  if (frameInFlight()) return false;
+  //
+  // The old one goes with it. Kept across a refusal, it would be blitted back by
+  // some later close -- a rectangle of a frame with a different anchor and a
+  // different rung, stamped into the middle of the current map and held there by
+  // e-ink until the next full frame.
+  if (frameInFlight()) {
+    dropMenuBackdrop();
+    return false;
+  }
   dropMenuBackdrop();
   const Rect rect = optionPopup_.frameRect(renderer);
   const size_t size = renderer.getRegionByteSize(rect.x, rect.y, rect.width, rect.height);
@@ -3914,8 +3942,13 @@ void MapActivity::dropMenuBackdrop() {
 bool MapActivity::restoreMenuBackdrop() {
   // Writing the map back underneath a compose would tear the frame it is drawing,
   // and the frame is about to replace these pixels anyway. Refuse, and the caller
-  // falls back to a full render.
-  if (frameInFlight()) return false;
+  // falls back to a full render -- and drop the pixels, because a backdrop that
+  // outlives its own frame is a stale rectangle waiting for a later close to
+  // paste it onto a newer map.
+  if (frameInFlight()) {
+    dropMenuBackdrop();
+    return false;
+  }
   if (!menuBackdrop_) return false;
   const Rect rect = menuBackdropRect_;
   const bool written =
@@ -4132,7 +4165,14 @@ void MapActivity::openMapMenu() {
           // of button presses, and a menu row cannot be pressed in a burst --
           // the popup is gone. Same reasoning as switchMode()'s own redraw.
           // The pixels the popup left behind need that frame anyway.
+          //
+          // Unless a frame is already in flight: stepZoom() then holds the step
+          // (serviceDeferredInput()), and asking for a frame here would compose
+          // the *old* rung first and the new one seconds later. Let the held step
+          // bring its own frame through armRedraw().
+          const bool rungHeld = frameInFlight();
           stepZoom(idx == zoomInIdx ? -1 : +1);
+          if (rungHeld) return;
           redrawDueMs_ = 0;
           showBusy();
           renderCurrent();
@@ -5675,19 +5715,15 @@ void MapActivity::pinNoticeRect(int& x, int& y, int& w, int& h) const {
 
 void MapActivity::showPinNotice(const char* text) {
   if (text == nullptr || text[0] == '\0') return;
-  // Four call sites read `renderCurrent(); showPinNotice(...)`, an ordering that
+  // Five call sites read `renderCurrent(); showPinNotice(...)`, an ordering that
   // only worked while the render was synchronous: painted now, the notice would
   // sit under the frame that is about to be composed. Stash it instead and let
-  // render() draw it once the compose is done.
+  // serviceDeferredInput() draw it once the frame has landed.
   if (frameInFlight()) {
     taskENTER_CRITICAL(&mapFrameRequestSpinlock);
     strncpy(pendingNotice_, text, sizeof(pendingNotice_) - 1);
     pendingNotice_[sizeof(pendingNotice_) - 1] = '\0';
     taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
-    // A frame already in flight had its notification spent before this notice
-    // existed, so ask for one of our own -- otherwise the text waits for
-    // whatever repaint happens to come next.
-    requestUpdate();
     return;
   }
   drawPinNotice(text);
@@ -5929,24 +5965,77 @@ void MapActivity::stepMarker(int delta) {
 }
 
 void MapActivity::serviceDeferredInput() {
-  // One action per tick, each one getting its own frame: the next tick sees that
-  // frame in flight and comes back later. Zoom before marker before pan is an
-  // arbitrary order between three things the rider cannot press at the same
-  // instant anyway.
+  // Everything here was held because a frame owned the panel. One action per
+  // tick, each one getting its own frame: the next tick sees that frame in
+  // flight and comes back later.
   if (frameInFlight()) return;
-  if (pendingZoomDelta_ != 0) {
-    const int delta = pendingZoomDelta_;
+
+  // The two paints first, because they belong on top of the frame that just
+  // landed and nothing else should get between. Drawn here, on the main task,
+  // rather than in render(): OptionPopup and the notice patch are main-task
+  // objects (render()'s comment has the reason).
+  char notice[sizeof(pendingNotice_)];
+  taskENTER_CRITICAL(&mapFrameRequestSpinlock);
+  memcpy(notice, pendingNotice_, sizeof(notice));
+  pendingNotice_[0] = '\0';
+  const bool repaintPopup = pendingPopupRepaint_;
+  pendingPopupRepaint_ = false;
+  taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
+  if (notice[0] != '\0') {
+    drawPinNotice(notice);
+    return;
+  }
+  if (repaintPopup) {
+    // Only if it is still open: the rider may have dismissed it while the frame
+    // was composing, and painting it back would put a dead menu on the panel.
+    if (optionPopup_.isActive()) optionPopup_.processRender(renderer, mappedInput);
+    return;
+  }
+
+  // A fix beats a ladder press: it is the answer to "where am I", and it is the
+  // one thing here that goes stale on its own.
+  if (hasPendingFix_) {
+    hasPendingFix_ = false;
+    applyFix(pendingFixLatE7_, pendingFixLonE7_, pendingFixHeading_, pendingFixSeq_);
+    return;
+  }
+
+  // An overview is a picture the rider explicitly asked for and it holds the
+  // frame until a button asks for the map back (overviewShown_). A ladder press
+  // held from before it opened is not that button, and applying it would replace
+  // the overview a second after it appeared.
+  if (overviewShown_) {
     pendingZoomDelta_ = 0;
-    stepZoom(delta);
+    pendingMarkerDelta_ = 0;
+    pendingPanCount_ = 0;
+    return;
+  }
+
+  if (pendingZoomDelta_ != 0) {
+    // One rung at a time, not the sum: both ladders refuse an out-of-range
+    // result outright rather than clamping it, so feeding back an accumulated
+    // -3 from rung 2 would move nothing at all and swallow three presses. The
+    // settle timer in armRedraw() still coalesces them into one redraw.
+    const int step = pendingZoomDelta_ < 0 ? -1 : 1;
+    pendingZoomDelta_ = static_cast<int8_t>(pendingZoomDelta_ - step);
+    stepZoom(step);
     return;
   }
   if (pendingMarkerDelta_ != 0) {
-    const int delta = pendingMarkerDelta_;
-    pendingMarkerDelta_ = 0;
-    stepMarker(delta);
+    const int step = pendingMarkerDelta_ < 0 ? -1 : 1;
+    pendingMarkerDelta_ = static_cast<int8_t>(pendingMarkerDelta_ - step);
+    stepMarker(step);
     return;
   }
   if (pendingPanCount_ > 0) {
+    // Only in the mode that pans. A queued step applied after the rider went
+    // back to Follow would anchor the frame 30 % off the rider and leave a
+    // marker claiming to be where they are not -- and a parked phone sends no
+    // new seq to correct it (loop()'s BLE branch).
+    if (screenMode_ != MapScreenMode::Observe) {
+      pendingPanCount_ = 0;
+      return;
+    }
     const PanDirection dir = static_cast<PanDirection>(pendingPan_[0]);
     for (uint8_t i = 1; i < pendingPanCount_; ++i) pendingPan_[i - 1] = pendingPan_[i];
     --pendingPanCount_;
@@ -6080,6 +6169,17 @@ void MapActivity::requestFrame(FrameRequest kind, int32_t latE7, int32_t lonE7, 
   pendingFrameLonE7_ = lonE7;
   pendingFrameHeading_ = headingStep;
   pendingFrameSeq_ = seq;
+  // Which kind of picture the panel is about to hold, decided here rather than
+  // when the compose gets round to it. overviewShown_ is what makes a fix hold
+  // instead of redrawing (applyFix()), and set at compose time it left a window
+  // between the request and the first pixel where an arriving fix requested an
+  // ordinary viewport -- last request wins, so the overview the rider picked was
+  // simply never drawn. Same failure the anchor had, same fix.
+  if (kind == FrameRequest::RouteOverview) {
+    overviewShown_ = true;
+  } else if (kind == FrameRequest::Viewport || kind == FrameRequest::Current) {
+    overviewShown_ = false;
+  }
   if (kind == FrameRequest::Viewport) {
     // The anchor a ladder step re-renders around. A zoom step is this same call
     // with a different mpp, so it has to know what the frame was built around --
@@ -6120,7 +6220,6 @@ void MapActivity::paintPopup() {
     taskENTER_CRITICAL(&mapFrameRequestSpinlock);
     pendingPopupRepaint_ = true;
     taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
-    requestUpdate();
     return;
   }
   optionPopup_.processRender(renderer, mappedInput);
@@ -6146,7 +6245,6 @@ void MapActivity::render(RenderLock&&) {
   int32_t lonE7;
   uint8_t headingStep;
   uint8_t seq;
-  char notice[sizeof(pendingNotice_)];
   taskENTER_CRITICAL(&mapFrameRequestSpinlock);
   kind = pendingFrame_;
   latE7 = pendingFrameLatE7_;
@@ -6154,10 +6252,6 @@ void MapActivity::render(RenderLock&&) {
   headingStep = pendingFrameHeading_;
   seq = pendingFrameSeq_;
   pendingFrame_ = FrameRequest::None;
-  memcpy(notice, pendingNotice_, sizeof(notice));
-  pendingNotice_[0] = '\0';
-  const bool repaintPopup = pendingPopupRepaint_;
-  pendingPopupRepaint_ = false;
   taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
 
   switch (kind) {
@@ -6183,20 +6277,25 @@ void MapActivity::render(RenderLock&&) {
       break;
   }
 
+  // The notice and the popup are deliberately NOT drawn here. Both are main-task
+  // objects: OptionPopup rebuilds its layout cache and owns vectors that
+  // handleInput() can replace on the main task mid-draw, and pinNoticePatch_ is a
+  // unique_ptr the main task's own clearPinNotice() resets. Drawing either from
+  // this task is a cross-task write to a container, which is a heap bug rather
+  // than a torn pixel. serviceDeferredInput() paints them on the next main-task
+  // tick instead, which is still after this frame and still on top of it.
   if (kind != FrameRequest::None) {
     // The map moved onto this task with the stack that task already had (8,192
-    // bytes, ActivityManager::begin()), while the label pass alone wants ~3.8 KB
-    // (MapLabels.h). That budget is the one thing this change could break
-    // silently, so every frame says how close it came -- ESP-IDF's high-water
-    // mark is in bytes, not words. An overflow here is a panic, not a glitch.
+    // bytes, ActivityManager::begin()). The label pass's ~3.8 KB working set is
+    // NOT on it -- MapLabelScratch is heap-allocated in onEnter() precisely so it
+    // is not a local (MapLabels.h) -- but the compose chain is deep and that
+    // budget is the one thing this change could break silently, so every frame
+    // says how close it came. ESP-IDF's high-water mark is in bytes, not words.
+    // An overflow here is a panic, not a glitch.
     LOG_DBG(kLogTag, "frame composed on the render task, stack free %u bytes",
             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   }
 
-  // Both of these go on top of the frame they were asked for, never under it,
-  // and the popup goes last of all -- it is the only one that owns the panel.
-  if (notice[0] != '\0') drawPinNotice(notice);
-  if (repaintPopup) optionPopup_.processRender(renderer, mappedInput);
 }
 
 void MapActivity::composeWaiting() {
@@ -6282,7 +6381,21 @@ void MapActivity::composeCurrent() {
     composeWaiting();
     return;
   }
-  composeViewport(lastLatE7_, lastLonE7_, lastHeading_, lastDrawnSeq_);
+  // Read as one, because they are written as one: requestFrame() sets the triple
+  // under this spinlock, and a preemption between two bare loads here would
+  // compose around a latitude from one fix and a longitude from the next -- a
+  // place that never existed.
+  int32_t latE7;
+  int32_t lonE7;
+  uint8_t heading;
+  uint8_t seq;
+  taskENTER_CRITICAL(&mapFrameRequestSpinlock);
+  latE7 = lastLatE7_;
+  lonE7 = lastLonE7_;
+  heading = lastHeading_;
+  seq = lastDrawnSeq_;
+  taskEXIT_CRITICAL(&mapFrameRequestSpinlock);
+  composeViewport(latE7, lonE7, heading, seq);
 }
 
 MarkerMetrics MapActivity::markerMetrics() const {
@@ -6402,10 +6515,10 @@ void MapActivity::drawObserveFixMarker() {
 }
 
 void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
-  // The frame being composed owns the framebuffer and draws its own marker, so
-  // erasing and restamping this one underneath it would tear that frame. The fix
-  // is not lost, only this one repaint of it: the next fix moves the marker
-  // again, a second later on either channel.
+  // Backstop. applyFix() already holds a fix that arrives mid-frame and re-applies
+  // it when the panel is idle, so this should not be reachable from there any
+  // more -- but a future caller reaching moveMarker() during a compose would tear
+  // the frame it is drawing, and a silent tear is worse than a skipped move.
   if (frameInFlight()) {
     LOG_DBG(kLogTag, "marker move skipped: a frame is being composed");
     return;
@@ -6680,6 +6793,21 @@ void MapActivity::pollGnssFix() {
 #endif
 
 void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
+  if (frameInFlight()) {
+    // The follow decision is taken against proj_, markerDrawnX_/Y_ and
+    // anchorHeading_, every one of which the compose is rewriting right now, and
+    // a decision taken against half a reset is a marker stamped somewhere the
+    // rider is not. Hold the fix whole; serviceDeferredInput() re-applies it
+    // once the panel is idle. Holding rather than dropping matters at the end of
+    // a leg: a parked phone stops advancing `seq`, so a fix skipped here would
+    // otherwise be the last word (loop()'s BLE branch).
+    hasPendingFix_ = true;
+    pendingFixLatE7_ = latE7;
+    pendingFixLonE7_ = lonE7;
+    pendingFixHeading_ = headingStep;
+    pendingFixSeq_ = seq;
+    return;
+  }
   updateManualHeadingCapture(headingStep);
   // Before every early return below: a fix held back because Observe mode or the
   // route overview owns the frame is still a fresh fix, and a pin saved while one
@@ -7020,39 +7148,55 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     // the supplier. Counted in the same pass that hatches them -- the loop
     // already has each tile's real (z, col, row) in hand, and a second walk to
     // work out the same thing would be a second walk for nothing.
-    uint32_t fetchable = 0;
+    // Collected, not recorded: MISSING_TILES is a lock-free std::vector the main
+    // task erases from and serialises on ordinary loop ticks, and those ticks now
+    // run while this frame is being composed. recordHatchedTiles() does the
+    // recording from loop(), once the panel is idle (MapActivity.h).
+    hatchedThisFrameCount_ = 0;
     for (uint32_t index = 0; index < range.count() && index < 32; ++index) {
       if ((missing & (1u << index)) == 0) continue;
       const uint32_t col = range.colAt(index);
       const uint32_t row = range.rowAt(index);
       MapHatch::drawTile(canvas, proj_, range.z, col, row);
-      // Before record(), never after: record() adds the tile at count 1 with
-      // refused false, so asking afterwards would count a tile the supplier
-      // refused ten minutes ago as fresh and beg for it again.
-      // Refusals expire on a per-tile schedule, so this is a question about now,
-      // not a permanent verdict: a tile the CDN has built since the phone said
-      // `skip` counts as fetchable again (MissingTilesStore, `refusals`).
-      if (!MISSING_TILES.isRefused(range.z, col, row, millis())) ++fetchable;
-      MISSING_TILES.record(range.z, col, row);
+      if (hatchedThisFrameCount_ < MapViewport::kMaxTiles) {
+        hatchedThisFrame_[hatchedThisFrameCount_++] = HatchedTile{range.z, col, row};
+      }
     }
-    // Published, not acted on here: the ask goes out from loop(), which is
-    // where the rate cap and the link state live. A render must not start a
-    // BLE conversation half-way through drawing a frame.
-    autoSyncWantCount_ = fetchable;
     // No marker restore here: the caller draws the marker after this returns, so
     // the hatch cannot bury it. Drawing the style's puck here as well would only
     // leave it peeking out from under a smaller mode marker.
 
-    // Arm only once: a re-hatch of tiles already on the list leaves isDirty()
-    // false (MissingTilesStore's own account of a count-only change), and
-    // re-arming on every one of those would mean a coverage gap the rider
-    // sits in for ten minutes never actually saves. The first genuinely new
-    // tile starts the clock; it is not pushed out further after that.
-    if (MISSING_TILES.isDirty() && missingTilesSaveDueMs_ == 0) {
-      missingTilesSaveDueMs_ = millis() + kMissingTilesSaveIntervalMs;
-    }
   }
   return missing;
+}
+
+void MapActivity::recordHatchedTiles() {
+  if (hatchedThisFrameCount_ == 0) return;
+  uint32_t fetchable = 0;
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < hatchedThisFrameCount_; ++i) {
+    const HatchedTile& tile = hatchedThisFrame_[i];
+    // Before record(), never after: record() adds the tile at count 1 with
+    // refused false, so asking afterwards would count a tile the supplier
+    // refused ten minutes ago as fresh and beg for it again.
+    // Refusals expire on a per-tile schedule, so this is a question about now,
+    // not a permanent verdict: a tile the CDN has built since the phone said
+    // `skip` counts as fetchable again (MissingTilesStore, `refusals`).
+    if (!MISSING_TILES.isRefused(tile.z, tile.col, tile.row, now)) ++fetchable;
+    MISSING_TILES.record(tile.z, tile.col, tile.row);
+  }
+  hatchedThisFrameCount_ = 0;
+  // Published, not acted on here: the ask goes out from maybeAutoSyncTiles(),
+  // which is where the rate cap and the link state live.
+  autoSyncWantCount_ = fetchable;
+  // Arm only once: a re-hatch of tiles already on the list leaves isDirty()
+  // false (MissingTilesStore's own account of a count-only change), and
+  // re-arming on every one of those would mean a coverage gap the rider
+  // sits in for ten minutes never actually saves. The first genuinely new
+  // tile starts the clock; it is not pushed out further after that.
+  if (MISSING_TILES.isDirty() && missingTilesSaveDueMs_ == 0) {
+    missingTilesSaveDueMs_ = millis() + kMissingTilesSaveIntervalMs;
+  }
 }
 
 uint8_t MapActivity::frameHeadingFor(uint8_t fixHeadingStep) const {

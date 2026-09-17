@@ -529,10 +529,46 @@ Three different answers, depending on what the paint is for:
   `captureMenuBackdrop()`, `restoreMenuBackdrop()`. Reading the framebuffer
   mid-compose captures half a frame; writing to it tears one. Every caller
   already has a full-render fallback for "no snapshot".
-- **Defer into `render()`.** The pin notice and the option popup, because both
-  belong *on top* of the frame. Four call sites read
+- **Defer to the next main-task tick.** The pin notice and the option popup,
+  because both belong *on top* of the frame. Five call sites read
   `renderCurrent(); showPinNotice(...)`, an ordering that only worked while the
-  render was synchronous.
+  render was synchronous. `serviceDeferredInput()` paints them once the frame has
+  landed -- **on the main task, never from `render()`**: `OptionPopup` rebuilds a
+  layout cache and owns vectors that `handleInput()` can replace, and the
+  notice's patch is a `unique_ptr` the main task also resets. Painting either
+  from the render task is a cross-task write to a container, which is a heap bug
+  rather than a torn pixel.
+
+### One owner per piece of state, and the compose is not it
+
+The rule the first cut of this change got wrong: **moving the frame to another
+task moves everything the frame touches.** Three things the compose used to do
+came back to the main task afterwards.
+
+- **The missing-tiles store.** `drawMapLayers()` called `MISSING_TILES.record()`
+  per hatched tile. That store is a bare `std::vector` with no lock
+  (`MissingTilesStore.h`), and `loop()` erases from it, walks it and serialises
+  it to the card -- on ticks that now run *during* a compose. A `push_back` that
+  reallocates under the main task's iterator is heap corruption discovered hours
+  later, nowhere near its cause. The frame now only **collects** what it hatched
+  into a fixed array (`hatchedThisFrame_`, at most `kMaxTiles` entries) and
+  `recordHatchedTiles()` does the recording from `loop()`, with the whole autosync
+  block standing aside while a frame is in flight.
+- **The map console.** `pin set` rewrites the pin store `drawPins()` is walking,
+  `zoom` and `mode` move the ladder the projection reads, `pos` moves the anchor
+  -- and a command cannot be deferred the way a button can, because it is already
+  parsed and its reply is owed. So `serial_.poll()` and `ble_.poll()` are simply
+  not called while a frame is in flight. The bytes wait in the transport for one
+  frame. Locking inside `MapCommandConsole` is not an option: host tests compile
+  that file and it must stay free of firmware-only headers.
+- **An arriving fix.** `applyFix()` projects through `proj_` and reads the
+  marker's drawn position, both rewritten by the compose. It now holds the fix
+  whole and re-applies it when the panel is idle. Holding rather than dropping
+  matters at the end of a leg: a parked phone stops advancing `seq`, so a fix
+  dropped here would be the last word.
+
+The pin-store writes the menu makes still take a `RenderLock` and wait out the
+frame -- rare, rider-initiated, and a pin must not be lost.
 
 ### Presses that arrive mid-frame are held, not dropped
 
@@ -542,9 +578,18 @@ can land while the frame is being drawn. The zoom rung, the marker rung and
 draw one frame out of two states. `serviceDeferredInput()` holds them and
 applies them once the panel is idle:
 
-- **Zoom and marker accumulate into one delta.** Three presses, one redraw.
+- **Zoom and marker accumulate into one delta**, and the drain applies it **one
+  rung at a time**. Both ladders refuse an out-of-range result outright instead of
+  clamping it, so feeding back an accumulated `-3` from rung 2 would have moved
+  nothing at all and swallowed three presses. The settle timer still collapses
+  them into one redraw.
 - **Pans queue in order, four deep.** Each step projects through the frame the
   previous step drew, so they cannot be summed.
+- **A held press is dropped when its context is gone.** A queued pan applied after
+  the rider returned to Follow would anchor the frame 30 % off the rider and leave
+  a marker claiming to be where they are not; a ladder press applied after the
+  rider opened the route overview would replace the picture they just asked for.
+  The drain checks both.
 
 Nothing is dropped. That is the difference between this and ignoring input while
 busy.
@@ -615,6 +660,26 @@ active CPU time, bounded by the loop's own duty cycle. The bench meter settles
 it (parent `docs/usb-power-meter.md`) with the same redraw sequence either side
 of the merge, both in the same hour.
 
+### Reviewed, and what the review found
+
+Four independent reviews were run over the finished branch before any merge was
+proposed: one on races, one on call-site ordering, one on adversarial event
+sequences, one on lifecycle and stack. They found nine things. The crash-grade
+one was the missing-tiles store above; the rest were the route overview being
+lost to a fix that arrived between the request and the first pixel (the same
+failure the anchor had, fixed the same way -- `overviewShown_` is decided at
+request time now), a menu backdrop kept after a refused capture and blitted onto
+a later frame, presses swallowed at the ladder ends, the menu's zoom row
+composing the old rung, deferred input draining into a context the rider had
+left, the notice and popup being painted from the render task, and
+`composeCurrent()` reading the anchor pair unlocked. All are fixed above.
+
+The lesson worth keeping: **the hardware pass passed before any of this was
+found.** Every one of these needs two tasks to interleave inside a window of a
+few milliseconds, and a session of hand-testing does not open those windows.
+Code review is not a substitute for the device here, and the device is not a
+substitute for review.
+
 ### Known, and left open
 
 A rung change *inside* a compose is deferred, but `composeViewport()` still
@@ -622,3 +687,15 @@ reads `zoomStep()` several times rather than snapshotting it once at the top.
 Nothing can move it mid-frame today (that is what the deferral is for), so this
 is a latent trap rather than a bug: the fix is a per-frame snapshot, and it is
 the natural next step if any other writer of that rung appears.
+
+Two more, both dormant rather than wrong:
+
+- **A popped activity does not repaint the map.** `ActivityManager`'s Pop path
+  relies on `requestUpdate()` to redraw whatever is underneath, and this screen's
+  `render()` paints nothing when no frame kind is pending. Nothing pushes an
+  activity over the map today, so nothing hits it; the day something does, the
+  child's last frame stays on the panel.
+- **A frame composed across a menu row or a console command can be half one state
+  and half another** -- the ride mode, the rotation setting, the heading mode.
+  Buttons are deferred and the console is gated, so only a menu row can still do
+  it, and a corrective frame is always already on the way.

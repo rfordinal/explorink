@@ -268,15 +268,40 @@ class MapActivity final : public Activity,
   uint8_t pendingFrameHeading_ = 0;
   uint8_t pendingFrameSeq_ = 0;
   // A notice asked for while a frame was still pending. It has to be drawn
-  // *after* that frame or the frame paints over it -- the four call sites read
+  // *after* that frame or the frame paints over it -- the five call sites read
   // `renderCurrent(); showPinNotice(...)`, which was an ordering that only
-  // worked while the render was synchronous.
+  // worked while the render was synchronous. Painted by serviceDeferredInput()
+  // on the main task, never by the render task: the patch under it is a
+  // unique_ptr the main task also resets.
   char pendingNotice_[64] = {0};
   // True while a frame is requested or being composed. Every partial paint that
   // still runs on the main task asks this first.
   bool frameInFlight() const;
-  // Draws the open OptionPopup, or defers it to render() when a frame is being
-  // composed -- a popup painted under a compose is a menu the rider never sees.
+  // The tiles the last frame hatched, handed over for the main task to record.
+  //
+  // MISSING_TILES is a bare std::vector with no lock of any kind
+  // (../../MissingTilesStore.h), and the main task erases from it
+  // (drainTransferredTiles), walks it (recheckHatchedTiles) and serialises it to
+  // the card (flushIfDirty) on ordinary loop ticks -- which now run *during* a
+  // compose. A record() from the render task could therefore reallocate the
+  // vector under the main task's iterator, which is heap corruption hours away
+  // from its cause. So the frame only collects; loop() records.
+  struct HatchedTile {
+    uint8_t z;
+    uint32_t col;
+    uint32_t row;
+  };
+  HatchedTile hatchedThisFrame_[MapViewport::kMaxTiles];
+  uint8_t hatchedThisFrameCount_ = 0;
+  // Main task only, and only when no frame is in flight: reads what the last
+  // compose collected into MISSING_TILES, and publishes what autosync should ask
+  // for.
+  void recordHatchedTiles();
+  // Draws the open OptionPopup, or hands it to serviceDeferredInput() when a
+  // frame is being composed -- a popup painted under a compose is a menu the
+  // rider never sees. Always on the main task: OptionPopup rebuilds a layout
+  // cache and owns vectors that handleInput() can replace, so drawing it from
+  // the render task is a cross-task write to a container.
   void paintPopup();
   bool pendingPopupRepaint_ = false;
   // Presses that arrived while a frame was being composed. Every one of them
@@ -294,6 +319,17 @@ class MapActivity final : public Activity,
   int8_t pendingMarkerDelta_ = 0;
   uint8_t pendingPan_[4] = {0, 0, 0, 0};
   uint8_t pendingPanCount_ = 0;
+  // A fix that arrived while a frame was being composed. applyFix() projects
+  // through proj_ and reads the marker's drawn position -- both of which the
+  // compose rewrites -- so the decision cannot be taken mid-frame. Held whole
+  // and re-applied when the panel is idle, rather than dropped: the last fix
+  // before a rider parks is often the only one left, and the phone stops sending
+  // new sequence numbers once it stops moving.
+  bool hasPendingFix_ = false;
+  int32_t pendingFixLatE7_ = 0;
+  int32_t pendingFixLonE7_ = 0;
+  uint8_t pendingFixHeading_ = 0;
+  uint8_t pendingFixSeq_ = 0;
   void serviceDeferredInput();
 
   void renderWaiting();
