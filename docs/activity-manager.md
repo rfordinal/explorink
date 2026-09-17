@@ -635,7 +635,28 @@ What the simulator cannot show: the panel's own refresh, the real 2.80 s compose
 cost, the render task's true stack use (the fork stubs the high-water mark at a
 flat 2,048 bytes), or anything about power.
 
-### What the hardware pass measured
+### What the hardware passes measured
+
+Three passes on an X4 Pro, 2026-09-17. **The first pass is the one to read
+carefully: it passed, and nine defects were still there** -- every one needs two
+tasks to interleave inside a few milliseconds, and hand-testing does not open
+those windows. The review found them; the third pass confirmed the fixes.
+
+**Pass 3** (build `x4pro-map-render-task-69cb49fd-good`), after the review fixes:
+
+- A **menu asked for during a compose** now appears by itself the moment the
+  frame lands. In pass 2 it did not appear at all until an unrelated press
+  repainted it -- the bug that `servicePendingPaints()` exists for, found by hand
+  and reproduced twice.
+- A **pin notice lands on top of the frame**, not under it.
+- A **menu opened on an idle panel** still takes its backdrop (14,280 bytes) and
+  closes instantly, with no full redraw. The cheap path is intact; only a menu
+  opened *during* a compose pays a full redraw on close, deliberately.
+- A **zoom press held through a 1.8 s compose** was applied 4 ms after the frame.
+- Render-task stack: lowest `stack free` **4,640 bytes of 8,192**, unchanged by
+  the fix pass.
+
+### What the first hardware pass measured
 
 X4 Pro, build `x4pro-map-render-task-1c606edb` (archived in the parent repo's
 `docs/firmware-builds/`), 2026-09-17. Map used by hand: entry, zoom and marker
