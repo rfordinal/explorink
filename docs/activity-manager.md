@@ -266,6 +266,8 @@ There are two tasks relevant to the activity system:
 
 Both tasks run at priority 1. Since the ESP32-C3 is single-core, they alternate execution: the main task runs `loop()`, then at the end of the loop iteration, notifies the render task if an update was requested. The render task wakes, acquires the mutex, calls `render()`, releases the mutex, and blocks again.
 
+The X4 Pro and the T5 S3 Pro are dual-core S3s, and the reasoning does not change on them: `ActivityManager::begin()` pins the render task to core 1 and `CONFIG_ARDUINO_RUNNING_CORE=1` puts `loopTask` on core 1 as well, so the two still share one core and still alternate. Nothing in this firmware runs a render in parallel with `loop()`.
+
 Do not use `xTaskCreate` inside activities. If you have a use case that seems to require a background task, open a discussion to propose a lifecycle-aware `Worker` abstraction first.
 
 ### The Render Mutex and RenderLock
@@ -442,6 +444,8 @@ Child calls: setResult(MyResult{...}); finish();
 
 **Modifying shared state without `RenderLock`**: If `render()` reads a variable and `loop()` writes it, the write must be under a `RenderLock`. Without it, `render()` could see a half-written value (e.g., a partially updated string or struct).
 
+The map screen departs from this rule deliberately, and the departure is the whole subject of the T-2024 section below: it gates its own writes on `frameInFlight()` instead of taking a `RenderLock` for them, because a `RenderLock` in `loop()` would wait out a frame that takes seconds, which is the stall the change exists to remove. That trade is only available to a writer that can afford to postpone itself. Anything that cannot -- a write whose result must be visible now -- still takes the lock, and the map's pin-store writes do.
+
 **Creating background tasks that outlive the activity**: Any FreeRTOS task created in `onEnter()` must be deleted in `onExit()` before the activity is destroyed. The `ActivityManager` does not track or clean up background tasks.
 
 **Holding `RenderLock` across blocking calls**: The render task is blocked on the mutex while you hold the lock. Keep critical sections short — acquire, mutate state, release, then do blocking work.
@@ -475,21 +479,44 @@ void MyActivity::doNetworkStuff() {
 
 `MapActivity` was the last activity outside this model. It had no
 `render(RenderLock&&)` override at all: about thirty call sites drew straight
-into the framebuffer from `loop()`, on the main task. That was history, not a
-decision -- the screen predates the centralized manager and was never migrated.
+into the framebuffer from `loop()`, on the main task. That is history rather
+than a decision -- the screen predates the centralized manager and was never
+migrated.
 
-**What it cost.** A plain redraw blocked `loop()` for **2.80 s** and opening the
-map for **4.34 s** (X4 Pro, measured 2026-09-14, `input-gestures.md`). Nothing
-else in the firmware ran inside that window: no button edge, no GNSS drain, no
-LoRa poll (T-2023 measured 12 of 20 packets lost across render windows), no
-console line. The busy badge (`busy-feedback.md`) exists only because of it.
+**What it cost.** A plain redraw blocked the input sampler (`gpio.update()`) for
+**2.80 s** and opening the map for **4.34 s** (X4 Pro, measured 2026-09-14 with
+`CMD:LOOPGAP`, `input-gestures.md` -- that instrument times the gap between
+sampler calls, which is what a rider feels). Nothing else in the firmware ran
+inside that window: no button edge, no GNSS drain, no LoRa poll, no console
+line. The busy badge (`busy-feedback.md`) answers the same wait and stays, since
+a frame is no faster now.
 
-**What it is not.** Not parallelism. The render task is pinned to core 1
-(`ActivityManager::begin()`) and the Arduino `loopTask` is on core 1 too
-(`CONFIG_ARDUINO_RUNNING_CORE=1` in the prebuilt Arduino libs; the C3 has one
-core anyway). Both tasks share a core, so the win is **preemption**: `loop()`
-gets its slice every tick instead of waiting out the frame. A frame does not
-compose any faster, and it loses the cycles `loop()` takes back.
+**What it is not.** Not parallelism. The render task and the Arduino `loopTask`
+share one core on every board here. On the S3 the render task is pinned to core
+1 (`ActivityManager::begin()`) and `CONFIG_ARDUINO_RUNNING_CORE=1` puts
+`loopTask` there too; on the C3 that setting is `0`, the pinning is compiled out
+(`#if configNUM_CORES > 1`), and there is one core anyway. (Read from
+`~/.platformio/packages/framework-arduinoespressif32-libs/{esp32s3,esp32c3}/sdkconfig`
+on 2026-09-18; that directory is rewritten by whichever build ran last, so the
+claim carries its date.) The win is **preemption**: `loop()` gets its slice every
+tick instead of waiting out the frame. A frame does not compose faster, and it
+loses the cycles `loop()` takes back.
+
+### The invariant the whole design rests on
+
+**Every frame request comes from the task that runs `loop()`.**
+
+Twenty-one places on this screen check `frameInFlight()` and then paint. That is
+a check-then-paint, and it is race-free only because a compose cannot *start*
+between the check and the paint: a request sets a deferred flag that
+`ActivityManager::loop()` turns into a task notification at the tail of the
+iteration, after `MapActivity::loop()` has returned. One `requestUpdate(true)`
+from a BLE, web or GNSS callback would turn all twenty-one into silent TOCTOU
+races.
+
+So `requestFrame()` checks the calling task against the one that ran `onEnter()`,
+logs at `ERR` and asserts. The assert is compiled out of a release build; the log
+line is not.
 
 ### render*() asks, compose*() paints
 
@@ -497,7 +524,7 @@ The seam is a naming rule, and it is the whole design:
 
 | | who may call it | what it does |
 |---|---|---|
-| `renderCurrent()`, `renderViewport()`, `renderWaiting()`, `renderLoadingTiles()`, `renderRouteOverview()` | anyone, any task | records the request, wakes the render task |
+| `renderCurrent()`, `renderViewport()`, `renderWaiting()`, `renderLoadingTiles()`, `renderRouteOverview()` | the main task only | records the request, wakes the render task |
 | `composeCurrent()`, `composeViewport()`, ... | `render(RenderLock&&)` only | paints the frame |
 
 The request is one small struct behind a `portMUX` spinlock, not a `RenderLock`:
@@ -523,19 +550,19 @@ answer the second question, because `render()` clears it before composing.
 Three different answers, depending on what the paint is for:
 
 - **Skip it.** The badge, the marker move, the header and debug repaints. The
-  frame being composed says the same thing or draws the same values, and the
-  next fix moves the marker again a second later.
+  frame being composed says the same thing or draws the same values.
 - **Refuse and let the caller re-render.** `swapChrome()`,
   `captureMenuBackdrop()`, `restoreMenuBackdrop()`. Reading the framebuffer
-  mid-compose captures half a frame; writing to it tears one. Every caller
-  already has a full-render fallback for "no snapshot".
-- **Paint on the next main-task tick, from `servicePendingPaints()`.** The pin notice and the option popup,
-  because both belong *on top* of the frame. Five call sites read
-  `renderCurrent(); showPinNotice(...)`, an ordering that only worked while the
-  render was synchronous. `serviceDeferredInput()` paints them once the frame has
-  landed -- **on the main task, never from `render()`**: `OptionPopup` rebuilds a
-  layout cache and owns vectors that `handleInput()` can replace, and the
-  notice's patch is a `unique_ptr` the main task also resets. Painting either
+  mid-compose captures half a frame; writing to it tears one. Every caller has a
+  full-render fallback -- including the touch dismiss, which used to treat a held
+  backdrop as proof that the map was underneath. A refusal made that false, and
+  for a while a menu dismissed by a tap outside stayed on the glass.
+- **Paint on the next main-task tick, from `servicePendingPaints()`.** The pin
+  notice and the option popup, because both belong *on top* of the frame. Five
+  call sites read `renderCurrent(); showPinNotice(...)`, an ordering that only
+  worked while the render was synchronous. Never from `render()`: `OptionPopup`
+  rebuilds a layout cache and owns vectors that `handleInput()` can replace, and
+  the notice's patch is a `unique_ptr` the main task also resets. Painting either
   from the render task is a cross-task write to a container, which is a heap bug
   rather than a torn pixel.
 
@@ -545,13 +572,13 @@ Three different answers, depending on what the paint is for:
   during a compose stashed the repaint, the menu became active, and every tick
   from then on returned before the drain: the frame landed and **the menu never
   appeared**, until some unrelated press made the popup repaint itself.
-  Reproduced twice by hand on an X4 Pro, 2026-09-17. The paints now run from
-  `servicePendingPaints()`, called above the popup block.
+  Reproduced twice by hand on an X4 Pro, 2026-09-17. `servicePendingPaints()` is
+  called above the popup block.
 
-### One owner per piece of state, and the compose is not it
+### One task per piece of state, for everything with a size
 
 The rule the first cut of this change got wrong: **moving the frame to another
-task moves everything the frame touches.** Three things the compose used to do
+task moves everything the frame touches.** Four things the compose used to do
 came back to the main task afterwards.
 
 - **The missing-tiles store.** `drawMapLayers()` called `MISSING_TILES.record()`
@@ -559,27 +586,41 @@ came back to the main task afterwards.
   (`MissingTilesStore.h`), and `loop()` erases from it, walks it and serialises
   it to the card -- on ticks that now run *during* a compose. A `push_back` that
   reallocates under the main task's iterator is heap corruption discovered hours
-  later, nowhere near its cause. The frame now only **collects** what it hatched
-  into a fixed array (`hatchedThisFrame_`, at most `kMaxTiles` entries) and
-  `recordHatchedTiles()` does the recording from `loop()`, with the whole autosync
-  block standing aside while a frame is in flight.
-- **The map console.** `pin set` rewrites the pin store `drawPins()` is walking,
-  `zoom` and `mode` move the ladder the projection reads, `pos` moves the anchor
-  -- and a command cannot be deferred the way a button can, because it is already
-  parsed and its reply is owed. So `serial_.poll()` and `ble_.poll()` are simply
-  not called while a frame is in flight. The bytes wait in the transport for one
-  frame. Locking inside `MapCommandConsole` is not an option: host tests compile
-  that file and it must stay free of firmware-only headers.
-- **An arriving fix.** `applyFix()` projects through `proj_` and reads the
-  marker's drawn position, both rewritten by the compose. It now holds the fix
-  whole and re-applies it when the panel is idle. Holding rather than dropping
-  matters at the end of a leg: a parked phone stops advancing `seq`, so a fix
-  dropped here would be the last word.
+  later, nowhere near its cause. The frame now **collects** what it hatched into
+  a fixed array and `recordHatchedTiles()` records from `loop()`.
+- **The held-tiles store**, `g_heldTiles`, for the same reason and with the same
+  shape: a fixed array whose `record()` rewrites entries in place, read by
+  `maybeCheckTileFreshness()` on ordinary ticks. The first fix pass applied the
+  rule to one store and missed its sibling.
+- **The BLE reply that carries the viewport diagonal.**
+  `sendViewportDiagonalIfChanged()` indicates over BLE and then waits up to
+  **3 s** for the phone's confirm (`BlePositionServer::sendCommandChunk`). Called
+  from the compose, that wait happens with the `RenderLock` held: every partial
+  paint refused, every held press stalled, and a `Back` press blocking
+  `ActivityManager` itself. The frame sets a flag; `loop()` sends.
+- **An arriving fix.** Not only because `applyFix()` projects through `proj_`,
+  which the compose rewrites, but because the BLE and GNSS branches write
+  `trust_`, the altitude and `lastDrawnSeq_` *before* `applyFix()` decides
+  anything, and the compose reads all three. Holding inside `applyFix()` was not
+  enough -- a live marker style could be drawn on the previous position. Both
+  branches are gated on `frameInFlight()` instead; `getLatest()` does not
+  consume, so the packet is still there on the next idle tick.
 
 The pin-store writes the menu makes still take a `RenderLock` and wait out the
 frame -- rare, rider-initiated, and a pin must not be lost.
 
-### Presses that arrive mid-frame are held, not dropped
+**What this rule does not cover.** `overviewShown_`, `busyShown_`,
+`headerRowDrawn_` and `markerPatchValid_` are still written from both tasks.
+They are single bytes and every main-task reader sits behind `frameInFlight()`,
+so they are safe for that reason and not because they have one owner. The
+compose also reads live main-task state unlocked -- `zoomStep()`, `mode_`,
+`screenMode_`, `SETTINGS.*`, the pin store -- so a menu row or a fix that lands
+mid-frame can produce one frame that is half one state and half another, always
+followed by a correct one. The design that closes that class by construction is
+a per-frame immutable input snapshot, and it is the natural follow-up rather
+than part of this change.
+
+### Presses that arrive mid-frame are held
 
 `loop()` now runs during a compose, which is the point -- and it means a press
 can land while the frame is being drawn. The zoom rung, the marker rung and
@@ -588,144 +629,141 @@ draw one frame out of two states. `serviceDeferredInput()` holds them and
 applies them once the panel is idle:
 
 - **Zoom and marker accumulate into one delta**, and the drain applies it **one
-  rung at a time**. Both ladders refuse an out-of-range result outright instead of
-  clamping it, so feeding back an accumulated `-3` from rung 2 would have moved
-  nothing at all and swallowed three presses. The settle timer still collapses
-  them into one redraw.
+  rung at a time**. Both ladders refuse an out-of-range result outright instead
+  of clamping it, so feeding back an accumulated `-3` from rung 2 would have
+  moved nothing at all and swallowed three presses. The settle timer still
+  collapses them into one redraw.
 - **Pans queue in order, four deep.** Each step projects through the frame the
   previous step drew, so they cannot be summed.
-- **A held press is dropped when its context is gone.** A queued pan applied after
-  the rider returned to Follow would anchor the frame 30 % off the rider and leave
-  a marker claiming to be where they are not; a ladder press applied after the
-  rider opened the route overview would replace the picture they just asked for.
-  The drain checks both.
 
-Nothing is dropped. That is the difference between this and ignoring input while
-busy.
+**Only two things drop a press, and both log it at `INF`**: a pan queue already
+four deep, and a context the rider has left -- a held ladder press once the route
+overview is up, a held pan once Observe is over. A queued pan applied after the
+rider returned to Follow would anchor the frame 30 % off the rider and leave a
+marker claiming to be where they are not.
 
-### What the simulator already proved
+### What the console pays
 
-Three checks, host-side, with the map seeded from a persisted fix and the local
-CDN mirror symlinked under `fs_/` (see `simulator.md`):
+`serial_.poll()` and `ble_.poll()` are skipped while a frame is in flight, so a
+console command waits up to one frame. Deliberate: `pin set` rewrites the store
+`drawPins()` is walking and a command cannot be deferred the way a button can,
+because it is already parsed and its reply is owed. Locking inside
+`MapCommandConsole` is not an option -- host tests compile that file and it must
+stay free of firmware-only headers. So of the old block's four casualties, the
+console is the one this change does not give back.
 
-- **The output did not change.** Same input script on this branch and on
-  `develop`, three states each (zoomed map, menu open, map after the menu
-  closed): **0 of 384,000 pixels differ** in all three. Reseeded before every
-  run, because the simulator writes settings back.
-- **Closing the menu still restores the map exactly.** The frame after a Back is
-  byte-identical to the frame before the menu opened, so the backdrop capture
-  and restore survive their new `frameInFlight()` refusals.
-- **Six states, not three.** Repeated with one run per state, same key script on
-  both sides: map entry, two zoom steps, a marker step, the menu open, the menu
-  closed again, and a menu row activated. **0 of 384,000 pixels differ in all
-  six.** A sleep/wake run produced no capture on either side (the scripted QUIT
-  never took after `SLEEP`), so it says nothing either way -- and the map
-  console, which would have driven the pin-notice and `goto` paths, cannot be
-  reached in the simulator at all (parent `docs/TODO.md` T-154, broken on
-  `develop` too).
-- **`loop()` really does run during a compose.** The host composes in ~20 ms, so
-  nothing lands mid-frame there naturally; a throwaway build with `delay(2500)`
-  at the top of `composeViewport()` made it panel-slow. Two zoom presses at
-  3.006 s and 3.600 s, inside a compose running from ~1.6 s to 4.1 s, were both
-  seen by `loop()`, both held, and applied as one accumulated step afterwards
-  (one redraw, not two). That is the whole point of the change, demonstrated:
-  before it, `loop()` could not have seen either press.
+### Why the frame's wall clock stays bounded
 
-What the simulator cannot show: the panel's own refresh, the real 2.80 s compose
-cost, the render task's true stack use (the fork stubs the high-water mark at a
-flat 2,048 bytes), or anything about power.
+`main.cpp` drops the CPU clock after a few seconds of inactivity, but
+`setPowerSaving()` is a no-op while a power lock is held, and the render task
+holds `HalPowerManager::Lock` for the whole of `render()`
+(`ActivityManager::renderTaskLoop()`). A compose therefore always runs at full
+clock, however long the rider has been staring at the screen.
+
+### What the simulator proves, and how to re-run it
+
+Host-side, with the map seeded from a persisted fix and the local CDN mirror
+symlinked under `fs_/` (`simulator.md`). Re-run on the tip after every fix round,
+most recently on `582017f5`, against a baseline worktree checked out at the same
+`develop` commit the branch has merged:
+
+```bash
+echo '{"mapHasLastFix": true, "mapLastLatE7": 483770000,
+       "mapLastLonE7": 175880000, "mapLastHeading": 0}' > fs_/.crosspoint/settings.json
+SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software \
+  CROSSPOINT_SIM_INPUT_SCRIPT='1500:ENTER;4000:UP;5000:UP;12000:QUIT' \
+  CROSSPOINT_SIM_SCREENSHOTS='10000:./qa-artifacts/zoomin.bmp' \
+  ./.pio/build/simulator/program
+```
+
+Six states, one run each, reseeded every time because the simulator writes
+settings back: map entry, two zoom steps, a marker step, the menu open, the menu
+closed again, a menu row activated. **0 of 384,000 pixels differ from `develop`
+in all six.** The frame after a Back is byte-identical to the frame before the
+menu opened, so the backdrop capture and restore survive their `frameInFlight()`
+refusals.
+
+**And `loop()` really does run during a compose.** The host composes in ~20 ms,
+so nothing lands mid-frame there naturally; a throwaway build with `delay(2500)`
+at the top of `composeViewport()` makes it panel-slow. Two zoom presses inside
+that window are both seen by `loop()`, both held, and applied one rung at a time
+afterwards -- one redraw, not two. The same trick reproduced the invisible-menu
+bug and confirmed its fix.
+
+What the simulator cannot show: the panel's own refresh, the real compose cost,
+the render task's stack (the fork stubs the high-water mark at a flat 2,048
+bytes), the console paths (parent `docs/TODO.md` T-155, the shim is unreachable
+on `develop` too), or anything about power.
 
 ### What the hardware passes measured
 
-Three passes on an X4 Pro, 2026-09-17. **The first pass is the one to read
-carefully: it passed, and nine defects were still there** -- every one needs two
-tasks to interleave inside a few milliseconds, and hand-testing does not open
-those windows. The review found them; the third pass confirmed the fixes.
+X4 Pro, 2026-09-17, three passes. Every number below is a `LOG_DBG` line read off
+a serial capture taken with `scripts/debugging_monitor.py`; the captures
+themselves were not archived.
 
-**Pass 3** (build `x4pro-map-render-task-69cb49fd-good`), after the review fixes:
+| pass | build | what changed since | what it showed |
+|---|---|---|---|
+| 1 | `1c606edb` | first hardware run of the branch | 13 frames on the render task, lowest `stack free` **4,548 of 8,192 bytes**; frames 0.6-2.2 s while the worst loop iteration stayed 656 ms; a zoom press held 1.6 s and applied 5 ms after the frame; a 329 kB tile fetched over BLE through it all |
+| 2 | `a46734d4` | the nine review fixes, plus a merge of `develop` | **a menu asked for during a compose never appeared** until an unrelated press repainted it |
+| 3 | `69cb49fd` | the menu fix | the menu appears by itself the moment the frame lands; a pin notice lands on top of the frame; a menu opened on an idle panel still takes its backdrop (14,280 bytes) and closes instantly; a zoom press held through a 1.8 s compose applied 4 ms after it; lowest `stack free` **4,640 of 8,192 bytes** |
 
-- A **menu asked for during a compose** now appears by itself the moment the
-  frame lands. In pass 2 it did not appear at all until an unrelated press
-  repainted it -- the bug that `servicePendingPaints()` exists for, found by hand
-  and reproduced twice.
-- A **pin notice lands on top of the frame**, not under it.
-- A **menu opened on an idle panel** still takes its backdrop (14,280 bytes) and
-  closes instantly, with no full redraw. The cheap path is intact; only a menu
-  opened *during* a compose pays a full redraw on close, deliberately.
-- A **zoom press held through a 1.8 s compose** was applied 4 ms after the frame.
-- Render-task stack: lowest `stack free` **4,640 bytes of 8,192**, unchanged by
-  the fix pass.
+The 656 ms worst iteration is `onEnter()`'s synchronous loading frame, painted on
+the main task on purpose so it reaches the panel before the expensive one starts.
+A 3,596 ms spike in pass 1 belongs to a BLE reply timeout on the main task -- the
+same 3 s wait that, found inside the compose, became the worst defect of the
+second audit.
 
-### What the first hardware pass measured
+**Read pass 1 carefully: it passed, and nine defects were still there.** Every one
+needs two tasks to interleave inside a few milliseconds, and a session of
+hand-testing does not open those windows. Code review is not a substitute for the
+device here, and the device is not a substitute for review.
 
-X4 Pro, build `x4pro-map-render-task-1c606edb` (archived in the parent repo's
-`docs/firmware-builds/`), 2026-09-17. Map used by hand: entry, zoom and marker
-steps, the menu opened and closed, one tile fetched over BLE.
+Two caveats on the numbers. The stack figures are per-session minima over
+different frame sets -- 4,640 against 4,548 is not growth, and neither covers the
+deepest paths (point layer on, Hike, a route loaded, the debug overlay), where
+`Cluster clusters[40]` alone is 640 bytes. And the tile transfer was measured
+before `ble_.poll()` was gated; it has not been repeated since.
 
-- **The render task's stack holds it.** Thirteen composed frames, lowest
-  `stack free` **4,548 bytes of 8,192**. Peak compose use is therefore about
-  3.6 KB with 4.5 KB spare, so the stack does not need to grow. This was the one
-  thing the move could have broken silently.
-- **`loop()` is no longer blocked by a frame.** Frames took 0.6 s to 2.2 s
-  (`render 2241 ms` at the worst), while the main loop's worst iteration across
-  the whole session was **656 ms** -- and that one is the synchronous loading
-  frame in `onEnter()`, which is deliberately painted on the main task so it
-  reaches the panel before the expensive frame starts. A later 3,596 ms spike
-  belongs to a BLE reply timeout (`[BLEPOS] reply unconfirmed after 3000 ms`),
-  not to a render. Before this change a 2.2 s frame *was* the loop iteration.
-- **A press during a compose is held and then honoured.** Two quick zoom presses:
-  the first landed on an idle panel and rendered, the second arrived 1.6 s into
-  that compose and was applied **5 ms after the frame finished** -- the first
-  `serviceDeferredInput()` tick after it. Nothing dropped, nothing applied
-  mid-frame.
-- **The transfer path survives a slow frame.** `autosync: asked for 1 tiles`, a
-  329 kB tile over BLE in 43 s, `tiles arrived, redrawing`. A 2 s compose no
-  longer starves it.
-- **Menu, hints and ordinary interaction** were exercised by the maintainer and
-  behaved as before.
+### Reviewed twice, and what the reviews found
 
-Still unmeasured: **power**. `loop()` used to do nothing for the length of a
-frame and now runs its ordinary ticks there instead, so there is some added
-active CPU time, bounded by the loop's own duty cycle. The bench meter settles
-it (parent `docs/usb-power-meter.md`) with the same redraw sequence either side
-of the merge, both in the same hour.
-
-### Reviewed, and what the review found
-
-Four independent reviews were run over the finished branch before any merge was
-proposed: one on races, one on call-site ordering, one on adversarial event
-sequences, one on lifecycle and stack. They found nine things. The crash-grade
-one was the missing-tiles store above; the rest were the route overview being
-lost to a fix that arrived between the request and the first pixel (the same
-failure the anchor had, fixed the same way -- `overviewShown_` is decided at
-request time now), a menu backdrop kept after a refused capture and blitted onto
-a later frame, presses swallowed at the ladder ends, the menu's zoom row
-composing the old rung, deferred input draining into a context the rider had
-left, the notice and popup being painted from the render task, and
-`composeCurrent()` reading the anchor pair unlocked. All are fixed above.
-
-The lesson worth keeping: **the hardware pass passed before any of this was
-found.** Every one of these needs two tasks to interleave inside a window of a
-few milliseconds, and a session of hand-testing does not open those windows.
-Code review is not a substitute for the device here, and the device is not a
-substitute for review.
+Eight independent read-only reviews ran over the finished branch before any merge
+was proposed: four on races, ordering, adversarial sequences and lifecycle, then
+four more on concurrency, design and the docs. Between them they found the
+missing-tiles heap bug, the BLE indication inside the compose, the held-tiles
+sibling, the fix branches' ungated side effects, the route overview lost to a
+fix, a menu backdrop kept after a refused capture, presses swallowed at the
+ladder ends, the menu's zoom row composing the old rung, deferred input draining
+into a context the rider had left, the notice and popup painted from the render
+task, a dismissed menu left on the glass, and an unstated invariant carrying
+twenty-one gates. All are fixed above; the two design follow-ups are named in
+"left open".
 
 ### Known, and left open
 
-A rung change *inside* a compose is deferred, but `composeViewport()` still
-reads `zoomStep()` several times rather than snapshotting it once at the top.
-Nothing can move it mid-frame today (that is what the deferral is for), so this
-is a latent trap rather than a bug: the fix is a per-frame snapshot, and it is
-the natural next step if any other writer of that rung appears.
-
-Two more, both dormant rather than wrong:
-
+- **Power.** `loop()` used to do nothing for the length of a frame and now runs
+  its ordinary ticks there. Bounded by the loop's own duty cycle, but unmeasured
+  -- the bench meter settles it (parent `docs/usb-power-meter.md`) with the same
+  redraw sequence either side, both in the same hour.
+- **No C3 board has run this branch at all.** The X3 left for field testing on
+  2026-09-17. The C3 is the tightest RAM target in the line and the one board
+  where the render task is not pinned at all.
+- **A frame can still be half one state and half another** when a menu row or a
+  fix lands mid-compose. Self-healing, one frame; closed properly only by the
+  per-frame input snapshot above.
+- **`composeViewport()` reads `zoomStep()` several times** rather than
+  snapshotting it once. Nothing can move the rung mid-frame today -- that is what
+  the deferral is for -- so this is a latent trap rather than a bug.
 - **A popped activity does not repaint the map.** `ActivityManager`'s Pop path
-  relies on `requestUpdate()` to redraw whatever is underneath, and this screen's
-  `render()` paints nothing when no frame kind is pending. Nothing pushes an
-  activity over the map today, so nothing hits it; the day something does, the
-  child's last frame stays on the panel.
-- **A frame composed across a menu row or a console command can be half one state
-  and half another** -- the ride mode, the rotation setting, the heading mode.
-  Buttons are deferred and the console is gated, so only a menu row can still do
-  it, and a corrective frame is always already on the way.
+  relies on `requestUpdate()`, and this screen paints nothing when no frame kind
+  is pending. Nothing pushes an activity over the map today.
+- **The transfer path has not been re-measured** on the tip (see the caveat
+  above), and the fifth queued pan is dropped by design.
+
+**How this compares to the usual arrangement.** LVGL runs its handler in one task
+and requires everyone else to take `lvgl_port_lock()` before touching a widget;
+LVGL 9's parallel draw units consume an already-built, immutable draw-task list.
+The common shape is: the renderer consumes a snapshot, so state can change freely
+while the frame is drawn. This screen does the inversion -- the main task owns the
+state, the render task reads it live, and the owner defers its own writes while a
+frame is in flight. It works, and it matches the rest of this firmware, but it is
+unusual enough that the invariant carrying it had to be written down.
