@@ -123,6 +123,21 @@ Derived answers, each a subtraction of two rows:
 - **Every row names the device and the build.** T5 S3 Pro, `TRAILINK_VERSION`
   from the row itself.
 
+## A VBUS reading exists for L5 - L4, and it is not an L leg
+
+**Measured 2026-09-17**: continuous receive costs **+5.3 and +5.5 mA of VBUS**
+against an initialised idle chip on `t5s3pro`, charger switched off for the run,
+two pairs plus an earlier +4.9 mA. Scaled through the buck that is about
++6.6 mA of board current, inside prediction P2's 4 to 6 mA.
+[`lora-bringup.md`](lora-bringup.md), "What listening costs", has the table and
+the two caveats.
+
+**It does not close L5 - L4.** The legs in this plan run on the battery with USB
+out, read through the BQ27220, precisely because VBUS is the board plus the
+charger; this measurement suppresses the charge term instead of removing the
+instrument, and it cannot see the sub-milliamp end at all. Treat it as the
+first real number for the price of listening, and leave the leg open.
+
 ## Predictions, written before the run
 
 Recorded so the run can refute them rather than confirm a feeling.

@@ -14,6 +14,7 @@ struct LoraRadio::Impl {
   Module module;
   SX1262 radio;
   bool listening = false;
+  bool transmitting = false;
 
   Impl(const LoraPins& boardPins)
       // The fourth pin is RadioLib's "gpio", which for an SX126x is BUSY.
@@ -28,7 +29,14 @@ struct LoraRadio::Impl {
 };
 
 bool LoraRadio::begin(const LoraPins& pins, const LoraConfig& config) {
-  if (impl_ != nullptr) end();
+  // clearPacketAction() first: end() parks the chip by driving NRESET low, and
+  // that line moving with a handler still attached to DIO1 is a wake for a
+  // packet that does not exist. Every caller in main.cpp detaches already, so
+  // this is the guard for the next one that does not.
+  if (impl_ != nullptr) {
+    clearPacketAction();
+    end();
+  }
 
   // Nothrow, because a bare `new` that fails on ESP32 calls abort() rather than
   // returning null (CLAUDE.md, rule 9) -- and "the radio could not start" has to
@@ -118,6 +126,7 @@ bool LoraRadio::transmit(const uint8_t* data, size_t length) {
 
   const int16_t sent = impl_->radio.transmit(data, length);
   lastError_ = sent;
+  impl_->transmitting = false;
 
   // Re-arm only after a send that worked: after a failure the chip's state is
   // not known, and startReceive() on top of that hides the original error.
@@ -130,6 +139,49 @@ bool LoraRadio::transmit(const uint8_t* data, size_t length) {
 }
 
 bool LoraRadio::transmit(const char* text) { return transmit(reinterpret_cast<const uint8_t*>(text), strlen(text)); }
+
+bool LoraRadio::startTransmit(const uint8_t* data, size_t length) {
+  if (!ready_) return false;
+
+  // Same reason the blocking version clears it: startTransmit() takes the chip
+  // out of receive immediately, so a listening flag that outlived the call
+  // would report a deaf radio as healthy.
+  impl_->listening = false;
+
+  lastError_ = impl_->radio.startTransmit(const_cast<uint8_t*>(data), length);
+  impl_->transmitting = lastError_ == RADIOLIB_ERR_NONE;
+  return impl_->transmitting;
+}
+
+bool LoraRadio::startTransmit(const char* text) {
+  return startTransmit(reinterpret_cast<const uint8_t*>(text), strlen(text));
+}
+
+bool LoraRadio::transmitting() const { return impl_ != nullptr && impl_->transmitting; }
+
+int LoraRadio::finishTransmit() {
+  if (!ready_ || !impl_->transmitting) return 0;
+
+  // DIO1 is the only thing read here. While transmitting, the chip raises it
+  // for TxDone and for nothing else (RadioLib enables that interrupt alone,
+  // SX126x.cpp's transmit loop reads the same pin), so the pin answers "done"
+  // without spending an SPI transaction on the IRQ register.
+  if (digitalRead(impl_->pins.irq) == LOW) return 0;
+
+  impl_->transmitting = false;
+  lastError_ = impl_->radio.finishTransmit();
+  return lastError_ == RADIOLIB_ERR_NONE ? 1 : -1;
+}
+
+void LoraRadio::abortTransmit() {
+  if (!ready_ || !impl_->transmitting) return;
+  impl_->transmitting = false;
+
+  // finishTransmit() rather than a bare standby: it is what clears the IRQ and
+  // puts the chip back in a state the next command can use, and a send that
+  // timed out has left both of those wrong.
+  impl_->radio.finishTransmit();
+}
 
 bool LoraRadio::startListening() {
   if (!ready_) return false;
@@ -193,6 +245,22 @@ int LoraRadio::poll(uint8_t* buffer, size_t bufferSize) {
   return static_cast<int>(wanted);
 }
 
+bool LoraRadio::setPacketAction(void (*handler)()) {
+  if (!ready_ || handler == nullptr) return false;
+  impl_->radio.setPacketReceivedAction(handler);
+  return true;
+}
+
+void LoraRadio::clearPacketAction() {
+  if (impl_ == nullptr) return;
+
+  // Not gated on ready_, unlike setPacketAction(). park() clears ready_ while
+  // the interrupt is still attached to a live GPIO, so a gate here would leave
+  // the handler armed on a pin whose radio is being held in reset -- and the
+  // reset itself moves that line.
+  impl_->radio.clearPacketReceivedAction();
+}
+
 float LoraRadio::frequencyError() {
   if (!ready_) return 0.0f;
   return impl_->radio.getFrequencyError();
@@ -221,9 +289,17 @@ bool LoraRadio::oscillatorStarts(uint16_t* errorsOut) {
   const uint16_t errors = impl_->radio.getDeviceErrors();
   if (errorsOut != nullptr) *errorsOut = errors;
 
-  // Back to the cheap standby whatever happened, so this leaves the radio the
-  // way it found it.
+  // Back to the cheap standby whatever happened.
   impl_->radio.standby();
+
+  // **This does not leave a listening radio listening**, and an earlier version
+  // of this comment claimed it did. Both standby calls above abort continuous
+  // receive, so the flag has to follow -- otherwise listening() reports a deaf
+  // radio as healthy, which is the one failure this class must never produce
+  // (poll() gates on the flag, so even a caller polling hard would read
+  // nothing and see no error). The caller re-arms; it is the only one that
+  // knows whether it wanted to listen.
+  impl_->listening = false;
 
   return (errors & RADIOLIB_SX126X_XOSC_START_ERR) == 0;
 }
@@ -281,6 +357,7 @@ void LoraRadio::park() {
     impl_->radio.standby();
     impl_->radio.sleep();
     impl_->listening = false;
+    impl_->transmitting = false;
   }
 
   // ready_ drops here, not only in end(). A parked chip is held in reset, so
