@@ -54,13 +54,15 @@ drawn as the same 1 px hairline. And a `natural=cliff` at 2 px was the same line
 an index contour, where one says "a hundred metres of height" and the other says
 "you fall here".
 
-Three patterns, all per class, all off unless a style asks:
+Four patterns, all per class, all off unless a style asks:
 
 ```json
 { "pattern": "dash_mark", "mark": "comb", "mark_px": 7,
   "dash_px": 10, "gap_px": 10, "width": 1 }
 
 { "pattern": "hachured", "tick_px": 3, "gap_px": 8, "width": 2 }
+
+{ "pattern": "ladder", "tick_px": 3, "gap_px": 8, "width": 1, "casing_px": 0 }
 
 { "pattern": "none" }
 ```
@@ -79,6 +81,24 @@ Three patterns, all per class, all off unless a style asks:
   order. `uphill` exists because a convention is a convention: a feature that is
   not a cliff can want the other side, and a region whose mappers put it the other
   way round is a thing a style should be able to answer without a rebuild.
+- **`ladder`** -- the same tooth as `hachured`, but crossing the line instead of
+  hanging off it: the standard topographic railway. `tick_px` is the reach **on
+  each side**, so a rung is twice that long; `gap_px` the spacing, `tick_width_px`
+  the thickness. `tick_side` is refused -- a rung reaching both ways has no side
+  to choose. Roads layer only: a relief class wants `hachured` (a rock face has a
+  downhill side), and a water class has no use for rungs.
+
+  It exists because `ticked` is loud. `ticked` on the 4 px cased stroke railway
+  carried until 2026-09-16 is a heavy black band, and on a ride sheet it announces
+  something a driver cannot act on -- not a road they may take, not a junction
+  they may turn at. Maintainer's call the same day: suppress it to a hairline with
+  rungs, per mode, which is what a `when` block on `modes: ["ride"]` now does.
+
+  **`dash_px` is not the reach here, unlike `hachured` on a road.** A `when` block
+  resolves by merging over its base rule, so a railway whose base is `ticked`
+  hands its `dash_px` down to a ladder override. The generator therefore takes
+  `tick_px` when it is given and refuses the rule when it is not -- an inherited
+  dash silently becoming the reach is the failure this rejects.
 - **`none`** -- no line at all; see "A toned watercourse".
 
 The marks: `dot`, `square`, `circle`, `diamond`, `cross`, `u`, `comb`.
@@ -107,9 +127,9 @@ and every rock face on the map claims the drop is uphill.
 drop side, the escarpment hachure every topographic sheet uses. `u` is the same
 idea with two, lighter at small sizes. Reference: the Prosiecka dolina sheet.
 
-**A relief class refuses `dashed` and `ticked`.** A broken contour reads as a
-footpath and a cliff wants combs rather than a railway's sleepers, so the generator
-refuses both rather than drawing a wrong mark.
+**A relief class refuses `dashed`, `ticked` and `ladder`.** A broken contour reads
+as a footpath, and a cliff wants combs rather than a railway's sleepers or rungs,
+so the generator refuses all three rather than drawing a wrong mark.
 
 **None of this has been on a panel.** Which mark survives on glass, at what size,
 is exactly the question a host render cannot answer.
@@ -330,6 +350,11 @@ confuse:
 - **`Ticked`** leaves the stroke whole -- casing and all -- and lays blocks
   across it. A railway: it must still read as one continuous line, because it
   is continuous, and it is a barrier crossed only at a level crossing.
+- **`Ladder`** is the third one, added 2026-09-16, and it is the same railway said
+  quietly: a hairline with rungs crossing it, reaching past the line on both
+  sides. `Ticked` spends a 4 px cased stroke to say "barrier"; `Ladder` says it at
+  1 px. Which one a mode wants is a judgement about the reader, not about the
+  track -- a rider cannot act on a railway at all, so `ride` takes the quiet one.
 
 They also want opposite rhythms, which is why `dash_px` and `gap_px` are
 separate numbers rather than one period. The railway's proportions were read
