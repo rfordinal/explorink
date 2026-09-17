@@ -448,11 +448,24 @@ deaf, and it is now visible instead of hidden.
 
 ### Cost
 
-`env:t5s3pro` only -- `ENABLE_LORA_CMD` is in no release env. Against the same
-build one commit earlier, both built in the same hour from PlatformIO's own
-link-time size report: **+1.4 kB of flash and +24 B of static RAM**. The heap
-figure is arithmetic rather than a measurement -- a 4 kB task stack, 8 queue
-slots of 88 B, a task control block and two semaphores, so about 5.2 kB.
+`env:t5s3pro` only -- `ENABLE_LORA_CMD` is in no release env.
+
+Measured 2026-09-17 against `a92aee49`, the commit this branch forked from.
+Both builds ran on the T15 build machine within the same hour, from PlatformIO's
+own link-time size report, so the two numbers share a toolchain and a prebuilt
+framework directory -- which matters, because that directory is rewritten by
+whichever build ran last on a machine, and a figure taken half here and half
+there would not be a comparison.
+
+| | base `a92aee49` | with the task | delta |
+|---|---|---|---|
+| flash | 3,982,699 B | 3,984,975 B | **+2.2 kB** |
+| static RAM | 72,768 B | 72,872 B | **+104 B** |
+
+Heap is arithmetic rather than a measurement -- a 4 kB task stack, 8 queue slots
+of 88 B, a task control block and two semaphores, so about 5.2 kB. The stack
+half of that is an estimate until a hardware run reports `stack=` from
+`LORA_STATE`.
 
 ### What a hardware pass has to check
 
