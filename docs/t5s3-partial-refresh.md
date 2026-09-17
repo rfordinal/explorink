@@ -1131,7 +1131,51 @@ and calls its extreme levels "well into saturation" (section 4), so 7 is
 generous rather than marginal there. Its pass is a padded 15 ms against our
 34 ms, so dose per pass is not directly comparable and ours may need fewer.
 
-**T-273 fast half: DONE 2026-09-09, measured and confirmed on the panel.**
+**T-273, settled 2026-09-17 on two boards.** A second T5 S3 Pro made the
+comparison that one panel cannot: same firmware, same four z13 tiles, every
+command written to both ports before either reply was read.
+
+| fast table | opposite pre-drive | passes | on the glass |
+|---|---|---|---|
+| `kFastLut` | 2 | 11 | clean |
+| library `lut_fastest` | 1 | 8 | **indistinguishable from 11** |
+| `kFast1bitLut` | 0 | 7 | visible ghosting, acceptable but a quality drop |
+
+Forty marker moves, never leaving the map. **One pre-drive pass is necessary
+and sufficient**, so the answer is the 8-pass table: ~100 ms off every marker
+move at no visible cost.
+
+**The 2026-09-09 ordering was right about the mechanism and wrong about the
+threshold.** It had 8 as "unpleasant", from judging one panel after another --
+a harsher test than side by side, as the same tables showed today.
+
+**And the idle tail is not a residue lever at all.** 4 against 19 is
+indistinguishable on every surface tried, including after the dirtiest 7-pass
+soak. That follows from the table: an idle row is all-`3`, it drives no pixel.
+Erasure is the eraser prefix plus the twelve drive rows, so a longer tail waits
+and erases nothing extra. The 2026-09-09 claim that `idle=4` and `idle=6`
+failed is **withdrawn** -- those runs carried the no-pre-drive table underneath,
+and that is what left residue one clean could not lift. The tail's ~575 ms is
+pure settle, and a residue test cannot price it.
+
+**A defect fell out of it, `BUG-204` in the parent repo**: one clean does not
+fully erase Home. Walk the Home menu, take the single clean into tilesync, and
+the menu items, the logo and the bottom buttons come through -- faintly at stock
+settings, pronounced with the 7-pass table.
+
+**Three protocols that return a false clean**, each of which cost hours here:
+
+- **Cycling two screens** only asks whether a clean tidies up after another
+  clean. It passes all the way down to `idle=4` and proves nothing.
+- **`CMD:GOTO_MAP` is two cleans**, with a tile-loading screen between them, so
+  nothing survives it. Anything measured through that transition comes back
+  spotless.
+- **Judging on Home** hides faint residue against its flat white.
+
+The single-clean paths are `map -> CMD:BUTTON back` and
+`Home -> CMD:GOTO_TILESYNC`. Use those.
+
+**Superseded, kept for its numbers: T-273 fast half, 2026-09-09.**
 `kFast1bitLut` -- four passes of pure drive, no opposite pre-drive, greys inert
 -- is the default for the marker-move path. Seven passes against eleven.
 
