@@ -279,6 +279,22 @@ class MapActivity final : public Activity,
   // composed -- a popup painted under a compose is a menu the rider never sees.
   void paintPopup();
   bool pendingPopupRepaint_ = false;
+  // Presses that arrived while a frame was being composed. Every one of them
+  // mutates state the compose reads -- the zoom rung, the marker rung, proj_ for
+  // a pan -- so applying them mid-frame would draw a frame that is half one
+  // thing and half another. They are held here and applied by
+  // serviceDeferredInput() once the panel is idle: nothing is dropped, which is
+  // the whole difference between this and ignoring input while busy (T-2018).
+  //
+  // Zoom and marker accumulate into one delta on purpose, so three quick presses
+  // still cost one redraw. A pan cannot: each step is projected through the frame
+  // the previous step drew (panBy()), so the order matters and each needs its own
+  // frame -- hence a queue rather than a sum.
+  int8_t pendingZoomDelta_ = 0;
+  int8_t pendingMarkerDelta_ = 0;
+  uint8_t pendingPan_[4] = {0, 0, 0, 0};
+  uint8_t pendingPanCount_ = 0;
+  void serviceDeferredInput();
 
   void renderWaiting();
   // A frame that says the tiles are being read, refreshed before the read

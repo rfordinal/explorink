@@ -470,3 +470,107 @@ void MyActivity::doNetworkStuff() {
   requestUpdate();
 }
 ```
+
+## The map screen: how it joined the model (T-2024)
+
+`MapActivity` was the last activity outside this model. It had no
+`render(RenderLock&&)` override at all: about thirty call sites drew straight
+into the framebuffer from `loop()`, on the main task. That was history, not a
+decision -- the screen predates the centralized manager and was never migrated.
+
+**What it cost.** A plain redraw blocked `loop()` for **2.80 s** and opening the
+map for **4.34 s** (X4 Pro, measured 2026-09-14, `input-gestures.md`). Nothing
+else in the firmware ran inside that window: no button edge, no GNSS drain, no
+LoRa poll (T-2023 measured 12 of 20 packets lost across render windows), no
+console line. The busy badge (`busy-feedback.md`) exists only because of it.
+
+**What it is not.** Not parallelism. The render task is pinned to core 1
+(`ActivityManager::begin()`) and the Arduino `loopTask` is on core 1 too
+(`CONFIG_ARDUINO_RUNNING_CORE=1` in the prebuilt Arduino libs; the C3 has one
+core anyway). Both tasks share a core, so the win is **preemption**: `loop()`
+gets its slice every tick instead of waiting out the frame. A frame does not
+compose any faster, and it loses the cycles `loop()` takes back.
+
+### render*() asks, compose*() paints
+
+The seam is a naming rule, and it is the whole design:
+
+| | who may call it | what it does |
+|---|---|---|
+| `renderCurrent()`, `renderViewport()`, `renderWaiting()`, `renderLoadingTiles()`, `renderRouteOverview()` | anyone, any task | records the request, wakes the render task |
+| `composeCurrent()`, `composeViewport()`, ... | `render(RenderLock&&)` only | paints the frame |
+
+The request is one small struct behind a `portMUX` spinlock, not a `RenderLock`:
+asking for a frame must never block, and a `RenderLock` there would make every
+requester wait out the frame already being composed -- which is the stall this
+change removes. **Last request wins**, so three quick presses coalesce into the
+one frame the rider is waiting for.
+
+A `compose*()` that needs a different frame (no tile source, a route fit that
+read short) calls its `compose*()` sibling directly. It is already inside the
+render; requesting would bounce the work to the next tick.
+
+### What still runs on the main task, and how it stays safe
+
+Small paints stay where they were, because routing a 40x40 marker patch through
+a task switch buys nothing: the busy badge, the marker move, the chrome swap,
+the menu backdrop, the pin notice, the option popup. Each one asks
+`frameInFlight()` first -- `pendingFrame_` for a frame that is queued, and
+`RenderLock::peek()` for one already being composed, the same non-blocking test
+`EpubReaderActivity` uses for its background build. `pendingFrame_` alone cannot
+answer the second question, because `render()` clears it before composing.
+
+Three different answers, depending on what the paint is for:
+
+- **Skip it.** The badge, the marker move, the header and debug repaints. The
+  frame being composed says the same thing or draws the same values, and the
+  next fix moves the marker again a second later.
+- **Refuse and let the caller re-render.** `swapChrome()`,
+  `captureMenuBackdrop()`, `restoreMenuBackdrop()`. Reading the framebuffer
+  mid-compose captures half a frame; writing to it tears one. Every caller
+  already has a full-render fallback for "no snapshot".
+- **Defer into `render()`.** The pin notice and the option popup, because both
+  belong *on top* of the frame. Four call sites read
+  `renderCurrent(); showPinNotice(...)`, an ordering that only worked while the
+  render was synchronous.
+
+### Presses that arrive mid-frame are held, not dropped
+
+`loop()` now runs during a compose, which is the point -- and it means a press
+can land while the frame is being drawn. The zoom rung, the marker rung and
+`proj_` are all read throughout a compose, so applying a press immediately would
+draw one frame out of two states. `serviceDeferredInput()` holds them and
+applies them once the panel is idle:
+
+- **Zoom and marker accumulate into one delta.** Three presses, one redraw.
+- **Pans queue in order, four deep.** Each step projects through the frame the
+  previous step drew, so they cannot be summed.
+
+Nothing is dropped. That is the difference between this and ignoring input while
+busy.
+
+### What a hardware pass has to check
+
+- **The render task's stack.** The map moved onto a task with an 8,192-byte
+  stack, and the label pass alone wants ~3.8 KB (`MapLabels.h`). Every composed
+  frame logs `stack free` at debug level; if that number gets close to zero the
+  stack has to grow, and the cost is permanent RAM.
+- **A press during a redraw is answered.** Same bench as the 2.80 s / 4.34 s
+  numbers above.
+- **The menu, the pin notice and the badge still land in the right order** --
+  they are the three paths whose ordering the synchronous render used to
+  guarantee for free.
+- **Wall clock.** A frame should be slightly slower now, bounded by `loop()`'s
+  own duty cycle (`delay(10)` at its tail, `POWER_TELEMETRY.onLoop()` reports
+  it). Unmeasured.
+- **Power.** `loop()` used to do nothing for 2.80 s and now runs ~280 iterations
+  in that window. Expected small, unmeasured -- the bench meter settles it
+  (parent `docs/usb-power-meter.md`).
+
+### Known, and left open
+
+A rung change *inside* a compose is deferred, but `composeViewport()` still
+reads `zoomStep()` several times rather than snapshotting it once at the top.
+Nothing can move it mid-frame today (that is what the deferral is for), so this
+is a latent trap rather than a bug: the fix is a per-frame snapshot, and it is
+the natural next step if any other writer of that rung appears.

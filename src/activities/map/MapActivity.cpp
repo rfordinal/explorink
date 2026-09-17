@@ -3556,6 +3556,9 @@ void MapActivity::loop() {
   // never opened.
   if (bleInUse_) freeink::BlePositionServer::getInstance().flushTransferStatus();
 
+  // Presses taken while the panel was busy, now that it is not (T-2024).
+  serviceDeferredInput();
+
   const uint32_t now = millis();
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
     redrawDueMs_ = 0;
@@ -4761,7 +4764,15 @@ void MapActivity::setNearbyDestination(uint8_t hitIndex) {
   // provenance field: a pin record has nowhere to put "this was a spring", and
   // adding one means a v2 line that an older build skips whole, losing the pin
   // (../../../docs/safety-concept.md, "Set destination").
-  const bool wrote = pins_.pinSet("dest", hit.latE7, hit.lonE7, MapPins::utcNowOrZero());
+  // drawPins() reads the pin set on the render task, so a frame already being
+  // composed has to finish before the set changes under it. One of the few
+  // places that waits rather than skipping: a pin the rider asked for cannot be
+  // dropped, and the wait is paid once per press.
+  bool wrote;
+  {
+    RenderLock lock;
+    wrote = pins_.pinSet("dest", hit.latE7, hit.lonE7, MapPins::utcNowOrZero());
+  }
 
   // The header row now means something different, which is one of the two
   // exceptions to the 30 s repaint floor: setting and clearing a destination
@@ -5062,7 +5073,16 @@ void MapActivity::savePin(const char* key, const char* label) {
   }
 
   char notice[64];
-  if (!pins_.pinSet(key, riderLatE7(), riderLonE7(), MapPins::utcNowOrZero())) {
+  // drawPins() reads the pin set on the render task, so a frame already being
+  // composed has to finish before the set changes under it. One of the few
+  // places that waits rather than skipping: a pin the rider asked for cannot be
+  // dropped, and the wait is paid once per press.
+  bool wrote;
+  {
+    RenderLock lock;
+    wrote = pins_.pinSet(key, riderLatE7(), riderLonE7(), MapPins::utcNowOrZero());
+  }
+  if (!wrote) {
     snprintf(notice, sizeof(notice), "%s", tr(STR_PIN_WRITE_FAILED));
   } else {
     snprintf(notice, sizeof(notice), tr(STR_PIN_SAVED), label);
@@ -5082,7 +5102,15 @@ void MapActivity::deletePin(size_t slot) {
   // foreign key's label lives in the entry that just went away.
   char label[kPinKeyBytes + 16];
   snprintf(label, sizeof(label), "%s", pinEntryLabel(pins_.store().at(slot)));
-  const bool ok = pins_.pinDelete(pins_.store().at(slot).key);
+  // drawPins() reads the pin set on the render task, so a frame already being
+  // composed has to finish before the set changes under it. One of the few
+  // places that waits rather than skipping: a pin the rider asked for cannot be
+  // dropped, and the wait is paid once per press.
+  bool ok;
+  {
+    RenderLock lock;
+    ok = pins_.pinDelete(pins_.store().at(slot).key);
+  }
 
   char notice[64];
   snprintf(notice, sizeof(notice), ok ? tr(STR_PIN_DELETED) : tr(STR_PIN_WRITE_FAILED), label);
@@ -5777,6 +5805,18 @@ void MapActivity::toggleObserveMode() {
 }
 
 void MapActivity::panBy(PanDirection direction) {
+  if (frameInFlight()) {
+    // proj_ is rebuilt by the compose, and this function's whole job is to read
+    // it. A press landing mid-frame would project through half a reset. Queued in
+    // order, one frame each, because a pan step means "one step from where I am
+    // looking now" and that place is whatever the previous step drew.
+    if (pendingPanCount_ < sizeof(pendingPan_)) {
+      pendingPan_[pendingPanCount_++] = static_cast<uint8_t>(direction);
+    } else {
+      LOG_DBG(kLogTag, "pan queue full, press dropped");
+    }
+    return;
+  }
   // Guards renderViewport()'s own OOM fallback (renderWaiting() when
   // source_ is null) rather than viewportDrawn_: that flag is about whether
   // an *incoming fix* may move the marker incrementally, not about whether a
@@ -5821,9 +5861,9 @@ void MapActivity::panBy(PanDirection direction) {
   // Not coalesced on the settle timer stepZoom/stepMarker use: a pan step's
   // target is computed from the frame the *previous* step drew (proj_), which
   // does not exist until that render actually runs, so batching bursts would
-  // either collapse them onto the same target or need its own accumulator for
-  // no real benefit -- loop() cannot poll another press until this blocking
-  // render returns anyway (single-threaded, no coalescing to be had).
+  // collapse them onto the same target. Until T-2024 the render was synchronous
+  // and loop() could not even see a second press before it returned; now it can,
+  // and the queue at the top of this function is where those presses wait.
   renderViewport(static_cast<int32_t>(lat * 1e7), static_cast<int32_t>(lon * 1e7), anchorHeading_, lastDrawnSeq_);
 }
 
@@ -5840,6 +5880,13 @@ void MapActivity::switchMode(MapRideMode newMode) {
 }
 
 void MapActivity::stepZoom(int delta) {
+  if (frameInFlight()) {
+    // The rung is read all through a compose (the projection, the tile range, the
+    // marker's size), so moving it now would draw one frame out of two rungs.
+    // Held instead, and applied whole by serviceDeferredInput().
+    pendingZoomDelta_ = static_cast<int8_t>(pendingZoomDelta_ + delta);
+    return;
+  }
   const int next = static_cast<int>(zoomStep()) + delta;
   // Ends of the ladder are hard stops, not wraps. A press that changes
   // nothing must also cost nothing: no redraw, no SD write.
@@ -5853,6 +5900,12 @@ void MapActivity::stepZoom(int delta) {
 }
 
 void MapActivity::stepMarker(int delta) {
+  if (frameInFlight()) {
+    // Same reason as stepZoom(): the rung decides the marker's screen row and the
+    // space reserved above it, both read during the compose.
+    pendingMarkerDelta_ = static_cast<int8_t>(pendingMarkerDelta_ + delta);
+    return;
+  }
   const int next = static_cast<int>(markerStep()) + delta;
   if (next < 0 || next >= MapViewport::kMarkerStepCount) return;
   // A rest position inside the keep-in margin can never settle: decide()
@@ -5873,6 +5926,33 @@ void MapActivity::stepMarker(int delta) {
   publishLadders();
   armRedraw();
   armSave();
+}
+
+void MapActivity::serviceDeferredInput() {
+  // One action per tick, each one getting its own frame: the next tick sees that
+  // frame in flight and comes back later. Zoom before marker before pan is an
+  // arbitrary order between three things the rider cannot press at the same
+  // instant anyway.
+  if (frameInFlight()) return;
+  if (pendingZoomDelta_ != 0) {
+    const int delta = pendingZoomDelta_;
+    pendingZoomDelta_ = 0;
+    stepZoom(delta);
+    return;
+  }
+  if (pendingMarkerDelta_ != 0) {
+    const int delta = pendingMarkerDelta_;
+    pendingMarkerDelta_ = 0;
+    stepMarker(delta);
+    return;
+  }
+  if (pendingPanCount_ > 0) {
+    const PanDirection dir = static_cast<PanDirection>(pendingPan_[0]);
+    for (uint8_t i = 1; i < pendingPanCount_; ++i) pendingPan_[i - 1] = pendingPan_[i];
+    --pendingPanCount_;
+    panBy(dir);
+    return;
+  }
 }
 
 void MapActivity::armRedraw() {
