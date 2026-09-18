@@ -282,9 +282,9 @@ and is 28 commits behind `develop`. So:
 
 - **The numbers stand for the build they were taken on.** 8 of 20 against 20 of
   20 is what those two binaries did on 2026-09-17.
-- **The 8-of-20 baseline probably does not reproduce on `develop`.** If `loop()`
-  runs during a redraw, the loop-serviced poll is reached during one, and the
-  loss this task was built to remove may already be gone.
+- **The 8-of-20 baseline was expected not to reproduce on `develop`. It does.**
+  Measured 2026-09-18 on the sync merge: `loop()` still goes unserviced for up
+  to 3.25 s during a rung 6 compose. See the section below.
 - **What still stands on its own**, independent of who composes frames: an
   SX126x holds exactly one packet, so any `loop()` stall costs traffic -- a
   console line, an SD write, a GNSS drain; the 100 ms tick bounds servicing
@@ -297,6 +297,53 @@ and is 28 commits behind `develop`. So:
 
 Not rewritten below, deliberately. The reasoning that produced the task is the
 evidence for it, and deleting it would leave the design with no stated cause.
+
+### Re-measured on develop's async map, 2026-09-18 `[measured]`
+
+The section above asked for exactly this run: the same twenty-packet bench on a
+`feat/lora` synced with `develop`, plus `CMD:LOOPGAP` to see whether the stall
+that justified this task survived their T-2024. Both boards on `18c8927f`.
+
+**The task still earns its place, and the stall is still there.** `CMD:LOOPGAP`
+times the interval between input-sampler calls, which is the same interval in
+which nothing else on the main task runs -- no console line, no GNSS drain, and
+on the old design no radio poll. Across the twenty-ping burst with a redraw
+every two seconds:
+
+| gap | count |
+|---|---|
+| 50 to 100 ms | 102 |
+| 200 to 500 ms | 3 |
+| 0.5 to 1 s | 1 |
+| 1 to 2 s | 4 |
+| **over 2 s** | **5** |
+
+Worst gap **3.25 s**. The gaps line up with the compose windows to the
+millisecond: a render finishing at device ms 127,945 after 3,341 ms has the
+3.25 s gap stamped at 127,834. An idle map in the same run shows a flat 57 ms
+sampler cadence and no gap above that, so the gaps belong to rendering and not
+to the console driving it.
+
+**Delivery held.** `rx=20 tx=20` on both boards -- twenty heard, twenty
+answered, no `LORA_RX_ERR`, no `LORA_RX_UNPRINTED`, `tx_timeout=0`. The console
+printed only 12 of the 20 `LORA_RX:` lines, which is host-side capture loss on a
+log carrying thousands of map debug lines; **the device's counters are the
+authority and the drop counter is what would have said otherwise.**
+
+**What this changes in the reasoning above.** The premise as written -- "a map
+render owns the Arduino loop task because `MapActivity` composes there" -- is no
+longer the mechanism: composition moved to the render task. The *consequence*
+survives unchanged, and that is what the task was built against. Something in
+the main-task path still waits out a frame.
+
+**What it does not say** is which path that is. `activity-manager.md` explains
+the win as preemption -- both tasks sit at priority 1 on core 1, so `loop()`
+should get a slice every tick -- and a 3.25 s gap is not a scheduling slice, it
+is a wait on something the frame holds. Candidates, none checked here: a
+`RenderLock` taken on the main task, the storage mutex during tile reads, or
+work still done in `MapActivity::loop()` before the request goes out. Their
+figure was measured on an X4 Pro and this one is a T5 S3 Pro, so the boards
+differ too. Filed as T-2032 rather than guessed at.
 
 ### Why `loop()` was the wrong place
 
