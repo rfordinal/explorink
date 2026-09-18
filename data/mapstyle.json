@@ -35,6 +35,11 @@
             5,
             6
           ]
+        },
+        {
+          "enabled": false,
+          "modes": ["hike"],
+          "steps": [0]
         }
       ]
     },
@@ -617,7 +622,7 @@
               "casing_px": 1
             },
             {
-              "steps": [2],
+              "steps": [2,3,4,5],
               "modes": ["hike"],
               "hidden": true
             }
@@ -637,6 +642,7 @@
           "pattern": "solid",
           "width": 1
         },
+
         {
           "casing_px": 0,
           "color": "#888888",
