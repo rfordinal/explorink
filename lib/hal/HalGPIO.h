@@ -95,17 +95,12 @@ class HalGPIO {
   // Only ever true on a board whose key carries a double tap, i.e. one whose
   // gesture spec was given a non-zero window. See InputManager::HomeKeyGestureSpec.
   bool wasHomeKeyDoubleTapped() const;
-  // Start the GT911's own sampling task, so the controller is read on a
-  // schedule a panel refresh cannot stall. No-op without a GT911.
-  void beginGt911Task();
   // Tell the key's recogniser what to look for. Re-applied when touch policy
   // flips, which it does once during boot as the controller comes up.
   void setHomeKeyDoubleTapWindow(uint16_t windowMs);
-  // How old a completed glass contact may be before its tap is refused; 0 never.
+  // How long the sampler may have been blocked before a completed glass
+  // contact's tap is refused; 0 never. See InputManager::setTouchStaleMs.
   void setTouchStaleMs(uint16_t ms);
-  // What the GT911 sampler managed, so a passing test can be told apart from a
-  // lucky one. See InputManager::Gt911TaskStats.
-  InputManager::Gt911TaskStats gt911TaskStats(bool reset);
   // When this frame's key event actually happened, in millis(); 0 if none.
   unsigned long homeKeyEventAtMs() const;
   InputManager::HomeKeyCounters homeKeyCounters(bool reset);

@@ -399,22 +399,19 @@ void reportGaps(Print& out) {
     if (worstUs[i] == 0) break;
     out.printf("%u,%u\n", static_cast<unsigned>(worstUs[i]), static_cast<unsigned>(worstAtMs[i]));
   }
-  // The sampler's own cadence, beside the loop's. Without it a passing double
-  // tap during a render proves nothing: the loop is SUPPOSED to stall, so the
-  // claim being tested is that the task did not. `cancels` is the honest
-  // failure count -- the gap rule firing means a gesture was dropped rather than
-  // mistimed, which is the intended degradation and not a success.
-  const auto task = gpio.gt911TaskStats(true);
-  out.printf("TASKGAP:ticks=%u,max_gap_us=%u,gaps_over_limit=%u,cancels=%u,frame_overflows=%u\n",
-             static_cast<unsigned>(task.ticks), static_cast<unsigned>(task.maxGapUs),
-             static_cast<unsigned>(task.gapsOverLimit), static_cast<unsigned>(task.cancels),
-             static_cast<unsigned>(task.frameOverflows));
+  // The recogniser's own tally, beside the loop's cadence. The gaps above say
+  // how long the sampler went unread; these say what the key made of it.
+  //
+  // `cancels` is the honest failure count -- the gap rule firing means a gesture
+  // was dropped rather than mistimed, which is the intended degradation and not
+  // a success. Non-zero is expected: the sampler runs in the loop and the loop
+  // stops for a windowed panel refresh.
   const auto keys = gpio.homeKeyCounters(true);
-  out.printf("KEYGESTURES:produced=%u,delivered=%u,queue_drops=%u,stale_taps=%u,tap=%u,double=%u,long=%u\n",
-             static_cast<unsigned>(keys.produced), static_cast<unsigned>(keys.delivered),
-             static_cast<unsigned>(keys.queueDrops), static_cast<unsigned>(MappedInputManager::staleTapsDropped),
-             static_cast<unsigned>(keys.taps), static_cast<unsigned>(keys.doubleTaps),
-             static_cast<unsigned>(keys.longPresses));
+  out.printf("KEYGESTURES:produced=%u,tap=%u,double=%u,long=%u,cancels=%u,stale_taps=%u\n",
+             static_cast<unsigned>(keys.produced), static_cast<unsigned>(keys.taps),
+             static_cast<unsigned>(keys.doubleTaps), static_cast<unsigned>(keys.longPresses),
+             static_cast<unsigned>(keys.cancels),
+             static_cast<unsigned>(MappedInputManager::staleTapsDropped));
   MappedInputManager::staleTapsDropped = 0;
   out.printf("LOOPGAP_END\n");
 
