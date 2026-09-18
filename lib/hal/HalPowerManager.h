@@ -86,11 +86,6 @@ class HalPowerManager {
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 
-  // True when the battery is actively charging. Delegates to BatteryMonitor,
-  // which picks the right source per board (charge-status pin, charger IC, or
-  // gauge current sign) -- see BatteryMonitor::isCharging().
-  bool isCharging() const;
-
   // Raw battery voltage in millivolts, averaged over `samples` reads. 0 when
   // the board has no battery backend.
   //

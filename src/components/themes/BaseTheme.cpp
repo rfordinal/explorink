@@ -126,12 +126,7 @@ void BaseTheme::drawBatteryLightningBolt(const GfxRenderer& renderer, int boltX,
 }
 
 void BaseTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const {
-  // Two independent sources, OR'd: gpio.isUsbConnected() (X4/X3's usbDetect
-  // GPIO) and powerManager.isCharging() (BatteryMonitor's charge-status pin --
-  // the only signal X4 Pro has, since its usbDetect is PIN_UNASSIGNED and its
-  // CW2017 gauge cannot observe charging). Neither is configured on every
-  // board, so OR-ing costs nothing where a source is absent.
-  const bool charging = gpio.isUsbConnected() || powerManager.isCharging();
+  const bool charging = gpio.isUsbConnected();
 
   const int maxFillWidth = rect.width - 5;
   const int fillHeight = rect.height - 4;

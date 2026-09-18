@@ -1,4 +1,5 @@
 #include <HalGPIO.h>
+#include <BatteryMonitor.h>
 #include <Logging.h>
 #include <PowerManager.h>
 #include <Preferences.h>
@@ -311,10 +312,22 @@ bool HalGPIO::isUsbConnected() const {
     }
     return false;
   }
-  if (BoardConfig::ACTIVE.usbDetect < 0) {
-    return false;
+  if (BoardConfig::ACTIVE.usbDetect >= 0) {
+    return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
   }
-  return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
+  // No digital USB-detect line (X4 Pro, T5 S3 Pro: usbDetect is
+  // PIN_UNASSIGNED). Infer external power from charging state instead.
+  // BatteryMonitor picks the board's best source -- charger IC status, gauge
+  // current sign, or a /STAT pin (X4 Pro GPIO21) -- and reports false on
+  // boards with no battery telemetry at all.
+  //
+  // Caveat, same one CrossPoint upstream documents for this exact fallback
+  // (HalGPIO.cpp, isUsbConnected()): charge termination at 100% reads as "not
+  // connected", because the STAT/charger-IC signal means "actively charging",
+  // not "USB present". Confirmed on X4 Pro hardware 2026-09-18: at 100% SoC
+  // the bolt does not show, which is expected charger behavior, not a bug.
+  static const BatteryMonitor battery;
+  return battery.isCharging();
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
