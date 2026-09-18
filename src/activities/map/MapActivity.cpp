@@ -1,6 +1,7 @@
 #include "MapActivity.h"
 
 #include <BlePositionServer.h>
+#include <HalGPIO.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -1672,6 +1673,13 @@ void MapActivity::updateHeaderStatus() {
   // the interval rather than the MTU.
   const bool connected = bleInUse_ && ble.connIntervalMs() != 0;
   const int bars = connected ? resolveBleBars(ble.rssi()) : 0;
+  // A plug/unplug is instantaneous, unlike the SoC percentage the minute tick
+  // was sized for -- see drawnCharging_'s comment (MapActivity.h). Grouped
+  // with destAppeared below rather than with structural: it belongs to the
+  // battery, which only the whole-row path (drawHeaderStatus()) draws, and
+  // structural changes alone do not trigger that path.
+  const bool charging = gpio.isUsbConnected();
+  const bool chargingChanged = charging != drawnCharging_;
 
   // Two classes of change, and they earn different urgency.
   //
@@ -1735,12 +1743,15 @@ void MapActivity::updateHeaderStatus() {
   const bool destMoved = destPresent && drawnDestPresent_ &&
                          (destQuantisedDistance() != drawnDestDistance_ || destSector() != drawnDestSector_);
 
-  if (!structural && !barsMoved && !minuteMoved && !destAppeared && !destMoved) return;
-  if (!structural && !minuteMoved && !destAppeared && !destMoved && now < nextBarsRepaintMs_) return;
+  if (!structural && !barsMoved && !minuteMoved && !destAppeared && !destMoved && !chargingChanged) return;
+  if (!structural && !minuteMoved && !destAppeared && !destMoved && !chargingChanged && now < nextBarsRepaintMs_) return;
   // The quantised value moved and nothing more urgent did: hold the row until
   // the floor is up. This is the whole cap -- without it a rider at road speed
   // repaints the header every second or two.
-  if (!structural && !barsMoved && !minuteMoved && !destAppeared && destMoved && now < nextDestRepaintMs_) return;
+  if (!structural && !barsMoved && !minuteMoved && !destAppeared && destMoved && !chargingChanged &&
+      now < nextDestRepaintMs_) {
+    return;
+  }
   if (barsMoved) nextBarsRepaintMs_ = now + kHeaderBarsRepaintMs;
   if (destMoved || destAppeared) nextDestRepaintMs_ = now + kDestRepaintMs;
 
@@ -1771,7 +1782,7 @@ void MapActivity::updateHeaderStatus() {
   // A destination change is a change to the place-name slot, and
   // drawHeaderStatusStrip() does not draw that slot -- only the whole-row path
   // does (and it is the one that gets the clear-then-draw order right).
-  if (minuteMoved || destAppeared || destMoved) {
+  if (minuteMoved || destAppeared || destMoved || chargingChanged) {
     drawHeaderStatus();  // clear, battery, strip, place name, separator
     x = 0;
     y = 0;
@@ -2024,6 +2035,9 @@ void MapActivity::drawHeaderStatus() {
   // title/subtitle -- those draw nothing when null, leaving just the icon and
   // (setting-permitting) the percentage text this screen never had before.
   GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}, nullptr, nullptr);
+  // This is the only path that draws the battery, so it is the only place
+  // that can honestly say what charging state is now on the panel.
+  drawnCharging_ = gpio.isUsbConnected();
 
   drawHeaderStatusStrip();
   drawHeaderPlaceName();
