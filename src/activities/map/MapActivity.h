@@ -368,6 +368,11 @@ class MapActivity final : public Activity,
   // and re-applied when the panel is idle, rather than dropped: the last fix
   // before a rider parks is often the only one left, and the phone stops sending
   // new sequence numbers once it stops moving.
+  // A console command changed the ladders while a frame was being composed. The
+  // bytes are read immediately (the drain in main.cpp eats anything left
+  // unconsumed for five seconds), but the rungs the compose is reading are not
+  // moved until it is done.
+  bool pendingLadderSync_ = false;
   bool hasPendingFix_ = false;
   int32_t pendingFixLatE7_ = 0;
   int32_t pendingFixLonE7_ = 0;
@@ -1640,6 +1645,29 @@ class MapActivity final : public Activity,
   MapConsoleState consoleState_;
   MapSerialConsole serial_{consoleState_};
   MapBleConsole ble_{consoleState_};
+
+  // What the console writes pins through, so a console `pin set` cannot rewrite
+  // the store while drawPins() walks it on the render task. The menu's own pin
+  // paths take the same lock inline; the console cannot, because
+  // MapCommandConsole is compiled by host tests and must stay free of
+  // firmware-only headers. So the lock lives here, on the way in.
+  class LockedPins : public IMapPinsSource {
+   public:
+    explicit LockedPins(MapPins& pins) : pins_(pins) {}
+    bool pinSet(std::string_view key, int32_t latE7, int32_t lonE7, uint32_t utc) override;
+    bool pinDelete(std::string_view key) override;
+    // Reads pass straight through: the compose only ever reads the store too, and
+    // a torn read of a POD entry costs one frame, not a heap.
+    size_t pinCount() const override { return pins_.pinCount(); }
+    PinEntry pinAt(size_t index) const override { return pins_.pinAt(index); }
+    uint32_t pinLogPage(uint32_t offset, uint32_t maxCount, IPinLogVisitor& visitor) override {
+      return pins_.pinLogPage(offset, maxCount, visitor);
+    }
+
+   private:
+    MapPins& pins_;
+  };
+  LockedPins lockedPins_{pins_};
 
   // The rider's pins: the active set replayed off the card in onEnter(), and the
   // append-only history behind it (MapPins.h, ../../../docs/pins-plan.md).

@@ -642,15 +642,34 @@ overview is up, a held pan once Observe is over. A queued pan applied after the
 rider returned to Follow would anchor the frame 30 % off the rider and leave a
 marker claiming to be where they are not.
 
-### What the console pays
+### The console is never gated, and the reason is a five-second timer
 
-`serial_.poll()` and `ble_.poll()` are skipped while a frame is in flight, so a
-console command waits up to one frame. Deliberate: `pin set` rewrites the store
-`drawPins()` is walking and a command cannot be deferred the way a button can,
-because it is already parsed and its reply is owed. Locking inside
-`MapCommandConsole` is not an option -- host tests compile that file and it must
-stay free of firmware-only headers. So of the old block's four casualties, the
-console is the one this change does not give back.
+The first cut of this change skipped `serial_.poll()` and `ble_.poll()` while a
+frame was in flight, to keep console writes away from the compose. **It lost
+commands.** `main.cpp` drains a serial head byte that nothing has consumed for
+five seconds -- a guard against a stray byte wedging the `CMD:` parser -- so
+pausing the console, which is the only consumer of anything that does not start
+with `C`, fed the pending lines to that drain one byte at a time.
+
+Measured on a T5 S3 Pro, 2026-09-18: twelve `redraw` commands at 8 s spacing got
+**4 replies and 3 frames**, against 12 and 12 on `develop`. A phone would have
+lost commands the same way, silently.
+
+So the bytes are always read, and each thing that needed protecting is protected
+where it lives:
+
+- **Pin writes** go through a small locking adapter on this screen
+  (`LockedPins`), which takes a `RenderLock` around `pinSet`/`pinDelete`. The
+  console class itself stays free of firmware headers, because host tests compile
+  it.
+- **Ladder changes** (`zoom`, `marker`, `mode`) are applied by this screen, so
+  they wait for the panel to be idle like any held press.
+- **A `pos`** goes through `applyFix()`, which holds a fix that arrives
+  mid-frame anyway.
+
+The lesson generalises past this screen: **a task that stops reading a shared
+input is not neutral**, because something else may be watching that input for
+signs of a stall.
 
 ### Why the frame's wall clock stays bounded
 

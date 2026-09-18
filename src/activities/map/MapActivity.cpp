@@ -2909,7 +2909,7 @@ void MapActivity::onEnter() {
   // replay leaves the set empty *and* refuses every save, rather than appending
   // onto a history it never read (MapPins::pinSet).
   pins_.begin();
-  consoleState_.setPinsSource(&pins_);
+  consoleState_.setPinsSource(&lockedPins_);
   // `points`/`gone`/point-shard `skip` -- wired only when the rider has
   // turned the point layer on. Same revision as TileSyncActivity's, and the
   // same reason: `gone` is an unauthenticated delete, and this repo's
@@ -3447,21 +3447,25 @@ void MapActivity::loop() {
   // returns true only for a command that changed something, so every true
   // here is a real redraw request.
   //
-  // Not while a frame is in flight. A console command is the one input that
-  // reaches straight into state the compose is reading -- `pin set` rewrites the
-  // pin store drawPins() is walking, `zoom`/`mode` move the ladder the
-  // projection reads, `pos` moves the anchor -- and unlike a button it cannot be
-  // deferred by serviceDeferredInput(), because the command has already been
-  // parsed and its reply is owed. Holding the bytes in the transport for one
-  // frame costs a script a couple of seconds and keeps every console write on
-  // the same task as the rest of the main loop. Locking inside
-  // MapCommandConsole is not an option: host tests compile it
-  // (test/pins/CMakeLists.txt) and it must stay free of firmware-only headers.
-  const bool consoleIdle = !frameInFlight();
-  const bool serialWants = consoleIdle && serial_.poll();
-  const bool bleWants = consoleIdle && ble_.poll();
+  // **Always polled, never gated.** An earlier version of this skipped the polls
+  // while a frame was in flight, to keep console writes away from the compose.
+  // It lost commands: main.cpp drains a serial head byte that nothing has
+  // consumed for five seconds ("unconsumed for 5 s -- draining it"), so pausing
+  // the only consumer for the length of a frame fed the pending lines to that
+  // drain one byte at a time. Measured on a T5 S3 Pro 2026-09-18: 12 `redraw`
+  // commands at 8 s spacing, 4 replies. On `develop`, 12 of 12.
+  //
+  // So the bytes are always read, and what needs protecting is protected where
+  // it lives: pin writes go through lockedPins_ (MapActivity.h), and the state
+  // this screen changes in response is deferred below when a frame is in flight.
+  const bool serialWants = serial_.poll();
+  const bool bleWants = ble_.poll();
   if (serialWants || bleWants) {
-    syncLaddersFromConsole();
+    if (frameInFlight()) {
+      pendingLadderSync_ = true;
+    } else {
+      syncLaddersFromConsole();
+    }
     // Console commands redraw immediately rather than through the button
     // coalescer: they arrive one at a time from a script that is waiting for
     // the reply, so there is nothing to coalesce and a delay would only make
@@ -6034,6 +6038,11 @@ void MapActivity::serviceDeferredInput() {
   // flight and comes back later.
   if (frameInFlight()) return;
 
+  if (pendingLadderSync_) {
+    pendingLadderSync_ = false;
+    syncLaddersFromConsole();
+  }
+
   // A fix beats a ladder press: it is the answer to "where am I", and it is the
   // one thing here that goes stale on its own.
   if (hasPendingFix_) {
@@ -6204,6 +6213,20 @@ bool MapActivity::preventThrottle() {
   return redrawDueMs_ != 0 || arrivalRedrawDueMs_ != 0 || transfer_.status().active;
 }
 
+
+bool MapActivity::LockedPins::pinSet(std::string_view key, int32_t latE7, int32_t lonE7, uint32_t utc) {
+  // drawPins() walks this store on the render task. A console `pin set` is the
+  // one console command that rewrites it, and unlike a button press it cannot be
+  // deferred -- its reply is owed. So it waits out the frame, exactly as the
+  // menu's own pin paths do.
+  RenderLock lock;
+  return pins_.pinSet(key, latE7, lonE7, utc);
+}
+
+bool MapActivity::LockedPins::pinDelete(std::string_view key) {
+  RenderLock lock;
+  return pins_.pinDelete(key);
+}
 
 void MapActivity::requestFrame(FrameRequest kind, int32_t latE7, int32_t lonE7, uint8_t headingStep, uint8_t seq) {
   // The invariant, made observable. Every frameInFlight() gate on this screen is
