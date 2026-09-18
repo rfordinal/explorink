@@ -1163,10 +1163,12 @@ only ever true of the paths tried, and the 2026-09-09 claim that `idle=4` and
 `idle=6` failed was withdrawn on 2026-09-17 on that same incomplete evidence.
 Both the claim and its withdrawal outran what had been looked at.
 
-What settle buys is still unpriced, and now there is a surface that reacts to
-it. **Open**: whether the ghost is the tail's length or the 8-pass fast table
-underneath it. The idle-19 build is on board B, board A stays at `idle=6` as the
-failing reference, and one sleep-to-Home on each answers it.
+**Settled the same day, and the tail is not the cause.** Board B at the stock
+`idle=19` with the 8-pass fast table still carried the watermark; the same board
+with every table back to stock did not. So the tail is innocent after all and
+the mechanism holds: an idle row drives no pixel, on this surface as on the
+others. What the sleep path did was expose the **fast** table, which no earlier
+test had loaded with a full-screen solid.
 
 **A defect fell out of it, `BUG-204` in the parent repo**: one clean does not
 fully erase Home. Walk the Home menu, take the single clean into tilesync, and
@@ -1185,6 +1187,44 @@ settings, pronounced with the 7-pass table.
   screen is a full-screen solid and the Home menu that replaces it is mostly
   white, so it is the widest area one clean ever has to lift. Every idle-tail
   conclusion before 2026-09-18 was drawn without it.
+
+## Sleep to Home: why the fast table decides a clean frame's result
+
+**Measured 2026-09-18, three builds on two boards.**
+
+| board | fast mode | idle tail | sleep to Home |
+|---|---|---|---|
+| A | `epd_fastest`, 5 drive rows | 6 | logo watermark |
+| B | `epd_fastest`, 5 drive rows | 19, stock | logo watermark |
+| B | `epd_fast`, 8 drive rows, stock tables | 19, stock | **clean** |
+| A | stock firmware, another session's build | stock | clean |
+
+The surprise is that the draw which leaves the ghost happens **before** the
+sleep, not after the wake. Three facts make that the only reading available:
+
+- **Sleep is a real `esp_deep_sleep_start`** (`src/main.cpp`, `enterDeepSleep`).
+  The wake is a reboot.
+- **A reboot loses the framebuffer**, so `Panel_EPD`'s per-pixel diff -- which
+  keys on pixel + (lut_offset << 8) -- has nothing to compare the new frame
+  against and cannot know what is on the glass.
+- **The sleep screen's own draw goes down the fast path.** Five drive rows leave
+  a full-screen solid part-driven; eight land it. The clean frame after the wake
+  does not recover the difference.
+
+So a fast table is not only a marker-move decision. It decides what the next
+clean frame inherits, and the worst case is the widest solid the device ever
+shows.
+
+**What this costs the T-273 fast half: all of it.** The 8-pass table saves
+~100 ms a marker move and is indistinguishable from 11 on the map, and none of
+that survives the one surface that matters. `kFastLut` goes too: it is the same
+eleven passes as the library's `lut_fast`, so it was never a saving, and its two
+grey-driving pre-drive rows have never been judged against stock here.
+
+**Reachable, not shipping**: `CMD:EPDLUT 1` for `epd_fastest`, `kFastLut` still
+in `LilyGoT5S3LgfxConfig.cpp`. Neither can be tested across a sleep from a
+serial line, because the wake reboots past whatever it set. Trying either again
+costs a build.
 
 The single-clean paths are `map -> CMD:BUTTON back` and
 `Home -> CMD:GOTO_TILESYNC`. Use those.
