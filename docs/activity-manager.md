@@ -707,6 +707,17 @@ themselves were not archived.
 | 2 | `a46734d4` | the nine review fixes, plus a merge of `develop` | **a menu asked for during a compose never appeared** until an unrelated press repainted it |
 | 3 | `69cb49fd` | the menu fix | the menu appears by itself the moment the frame lands; a pin notice lands on top of the frame; a menu opened on an idle panel still takes its backdrop (14,280 bytes) and closes instantly; a zoom press held through a 1.8 s compose applied 4 ms after it; lowest `stack free` **4,640 of 8,192 bytes** |
 
+A fourth pass, build `fe46e7e8`, added the second audit's fixes and the menu
+settle: the map, the menu during a compose, the tap-outside dismiss and a pin
+notice all behaved, and `requestFrame()`'s new off-the-loop-task check stayed
+quiet.
+
+**The T5 S3 Pro has now run it too** (board B, same build, `t5s3pro-b-map-render-task-fe46e7e8-good`):
+lowest `stack free` **4,584 of 8,192 bytes**, a compose of 1,983 ms against a
+worst loop iteration of 756 ms, the menu backdrop taken normally (19,100 bytes,
+382x388, 122 kB free heap), and the tap-outside dismiss repainting as designed.
+Two taps of Up moved two rows there as well.
+
 The 656 ms worst iteration is `onEnter()`'s synchronous loading frame, painted on
 the main task on purpose so it reaches the panel before the expensive one starts.
 A 3,596 ms spike in pass 1 belongs to a BLE reply timeout on the main task -- the
@@ -723,6 +734,28 @@ different frame sets -- 4,640 against 4,548 is not growth, and neither covers th
 deepest paths (point layer on, Hike, a route loaded, the debug overlay), where
 `Cluster clusters[40]` alone is 640 bytes. And the tile transfer was measured
 before `ble_.poll()` was gated; it has not been repeated since.
+
+### The menu's own repaint, which async rendering did not fix
+
+Reported from the device 2026-09-18, and worth separating from everything above:
+**two quick taps of Up in the map menu moved the selection once.** Nothing to do
+with the compose. `OptionPopup::processRender()` ends in a whole-panel
+`displayBuffer()` -- the better part of a second on an X4 Pro, about twice that on
+the T5 S3 Pro -- and it runs on the main task, so `gpio.update()` does not run
+inside it and a press landing in that window is never sampled at all.
+
+Handling the input is free; only the picture is expensive. So `paintPopup()` now
+arms a 150 ms settle and `servicePendingPaints()` draws the settled result: a
+burst moves the selection several times and costs one refresh. Every other screen
+gets this for nothing by passing `requestUpdate()` as the popup's redraw callback
+(`SettingsActivity` and friends), which `ActivityManager` coalesces once per
+loop; the map paints its own popup and needed its own settle.
+
+**Two taps land, three usually do not**, and the arithmetic says why: the third
+arrives 200-250 ms after the first, by which time the settle has expired and the
+refresh has started. Removing that properly means the refresh not blocking input
+sampling -- a driver or input-task question, not a map one. Confirmed on both
+touch boards with the settle at 150 ms.
 
 ### Reviewed twice, and what the reviews found
 
@@ -746,7 +779,10 @@ twenty-one gates. All are fixed above; the two design follow-ups are named in
   redraw sequence either side, both in the same hour.
 - **No C3 board has run this branch at all.** The X3 left for field testing on
   2026-09-17. The C3 is the tightest RAM target in the line and the one board
-  where the render task is not pinned at all.
+  where the render task is not pinned at all. Both S3 boards have run it.
+- **The menu still drops the third tap of a burst**, because the refresh blocks
+  the input sampler. The settle is 150 ms; raising it trades single-press latency
+  for burst length, and the real fix is elsewhere (see the menu section above).
 - **A frame can still be half one state and half another** when a menu row or a
   fix lands mid-compose. Self-healing, one frame; closed properly only by the
   per-frame input snapshot above.
