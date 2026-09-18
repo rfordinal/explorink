@@ -595,6 +595,64 @@ second known state, and compute the 5 V-to-cell factor from each.
 
 Until that test has been run, a USB-side number in this file is labelled as such.
 
+## The header's charging bolt: X4 Pro and T5 S3 Pro read a status pin, not VBUS
+
+**Read off the code and confirmed on X4 Pro hardware, 2026-09-18.** The header
+battery icon's lightning bolt (`BaseTheme::fillBatteryIcon`,
+`src/components/themes/BaseTheme.cpp:128-153`) is driven by
+`HalGPIO::isUsbConnected()`. Before this date, `isUsbConnected()`
+(`lib/hal/HalGPIO.cpp:301-318`) returned `false` unconditionally whenever
+`BoardConfig::ACTIVE.usbDetect` was `PIN_UNASSIGNED` -- true for both X4 Pro
+(`BoardConfig.h:1537`, "GPIO10 is a candidate, unconfirmed") and T5 S3 Pro
+(`BoardConfig.h:1199`). So the bolt never showed on either board, on any
+charge state, ever.
+
+**Fix**: when `usbDetect < 0`, fall back to `BatteryMonitor::isCharging()`
+(`lib/hal/HalGPIO.cpp:312-333`), which already picks the right per-board
+source -- a charger IC's status register, a gauge's `Current()` sign, or a
+`/STAT` pin. On X4 Pro that source is GPIO21, the CW2017 gauge board's
+charge-status line (`BoardConfig.h:1530-1535`: "Charger STAT on GPIO21,
+ACTIVE-HIGH ... stock's `Cw2017PowerHal` ... reports the raw level as
+'charging'"). This is the same fallback CrossPoint upstream already ships in
+its own `isUsbConnected()` (read at their current `main`, not our pin, per
+the read-upstream-at-main rule) -- reimplemented against our
+`BoardConfig`/`BatteryMonitor` shapes, not copied.
+
+**The caveat, confirmed on X4 Pro hardware the same day.** A charge-status
+pin answers "actively charging", not "USB present" -- the two differ whenever
+the charger stops charging while USB stays attached. Two real cases:
+
+- **Charge termination at 100 %.** Flashed and screenshotted on X4 Pro
+  (`docs/device-shots/2026-09-18-x4pro-charging-icon-v2-check.png`, parent
+  repo) at 100 % SoC, USB attached: the bolt does not show. This is the
+  charger correctly reporting charge-complete, not a bug -- and it is
+  electrically indistinguishable from USB being physically absent, so no
+  bolt is provable at 100 % without genuinely discharging first. A 2-minute
+  and a 7-minute softAP load test (File Transfer -> Create Hotspot, forcing
+  extra draw) both failed to move the SoC or the bolt -- the charger + cell
+  absorb that load without dropping below float, so a positive read needs a
+  real drop in cell voltage, not a brief extra load.
+- **T5 S3 Pro's dev workflow of disabling the charger on purpose**, to
+  measure battery-only current draw with USB still attached for a serial
+  link. Same electrical shape, different cause. **Not a regression**: T5 S3
+  Pro's `usbDetect` was already `PIN_UNASSIGNED`, so `isUsbConnected()` was
+  already unconditionally `false` in this exact scenario before the
+  fallback existed. The fallback only turns the genuinely-charging case from
+  a false negative into a correct positive; it does not change the
+  charging-disabled-for-dev case at all.
+
+**Verified**: code path traced end to end
+(`readGaugeCharging()`, `freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:269-292`,
+confirms X4 Pro's CW2017 always reports `known=false`, so `isCharging()`
+falls through to the GPIO21 read at `BatteryMonitor.cpp:501-506`). Flashed
+and boots clean on X4 Pro, no crash, no regression (before/after screenshots
+at 100 % are pixel-identical modulo the fix itself, which is a no-op at
+100 %). T5 S3 Pro: compiles clean (`env:t5s3pro`), not yet flashed to
+hardware. **Open**: a genuine positive read (bolt visible while actively
+charging) on either board -- needs a real SoC drop below 100 % first, which
+this session could not force in minutes. `fix/x4pro-charging-icon` branch,
+commit `65403ac7`.
+
 ## First real-draw numbers: two rides
 
 **Measured on hardware, 2026-08-07, real rides, not a bench measurement.**
