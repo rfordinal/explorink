@@ -641,17 +641,45 @@ the charger stops charging while USB stays attached. Two real cases:
   a false negative into a correct positive; it does not change the
   charging-disabled-for-dev case at all.
 
-**Verified**: code path traced end to end
-(`readGaugeCharging()`, `freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:269-292`,
+**Verified, both directions, both boards, 2026-09-18.** Code path traced end
+to end (`readGaugeCharging()`,
+`freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:269-292`,
 confirms X4 Pro's CW2017 always reports `known=false`, so `isCharging()`
-falls through to the GPIO21 read at `BatteryMonitor.cpp:501-506`). Flashed
-and boots clean on X4 Pro, no crash, no regression (before/after screenshots
-at 100 % are pixel-identical modulo the fix itself, which is a no-op at
-100 %). T5 S3 Pro: compiles clean (`env:t5s3pro`), not yet flashed to
-hardware. **Open**: a genuine positive read (bolt visible while actively
-charging) on either board -- needs a real SoC drop below 100 % first, which
-this session could not force in minutes. `fix/x4pro-charging-icon` branch,
-commit `65403ac7`.
+falls through to the GPIO21 read at `BatteryMonitor.cpp:501-506`).
+
+- **X4 Pro, negative case**: flashed, boots clean, no regression. **Positive
+  case confirmed by the maintainer**: unplugging USB on the Home screen
+  changed the icon at once. The 100 %-plugged-in case above stayed
+  unprovable by design (charge-complete and USB-absent are the same
+  electrical signal), so this is the real test the caveat called for.
+- **T5 S3 Pro, both cases, confirmed against the raw register.**
+  `CMD:CHARGE` reads the BQ25896 directly (`main.cpp`, gated
+  `ENABLE_BATT_CMD`/`ENABLE_CHARGE_CMD`, devel-only). At 89 % SoC, USB
+  attached, it read `chrg_stat=3` ("charge termination done") and the icon
+  showed no bolt -- register and icon agree. `CMD:CHARGE OFF` then
+  `CMD:CHARGE ON` restarted the charge cycle (a documented use of that
+  command, meant for bench measurement): `chrg_stat` moved to `2` ("fast
+  charging"), and the very next screenshot
+  (`docs/device-shots/2026-09-18-t5s3prob-charging-positive-zoom.png`,
+  parent repo) shows the bolt lit inside the battery outline. This is a
+  register-level positive, not an inference from a screenshot alone.
+- **Map screen repaint gap, found by the maintainer testing X4 Pro's
+  positive case.** The map's `updateHeaderStatus()`
+  (`src/activities/map/MapActivity.cpp:1640-1789`) only repainted the
+  battery on the minute tick or a destination change --
+  `"charge moves slowly enough that it has never earned a repaint of its
+  own"` was true only because `isCharging()` had been hardcoded `false` on
+  these boards until this fix, so the state never actually flipped while
+  the map was up. Home already repaints every frame, so it looked fine
+  there and stale on the map. Fixed by adding `chargingChanged` as an
+  immediate whole-row trigger, same class as a destination appearing/
+  disappearing, rather than folding it into the rate-capped BLE
+  `structural` bucket (which does not reach the battery). Confirmed by the
+  maintainer on X4 Pro hardware after the fix: "perfektne, funguje."
+
+`fix/x4pro-charging-icon` branch, commits `65403ac7` (the fallback),
+`664808f6` (the map repaint fix). Flashed and confirmed on X4 Pro and T5 S3
+Pro (board B).
 
 ## First real-draw numbers: two rides
 
