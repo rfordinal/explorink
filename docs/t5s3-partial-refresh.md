@@ -1199,27 +1199,54 @@ settings, pronounced with the 7-pass table.
 | B | `epd_fast`, 8 drive rows, stock tables | 19, stock | **clean** |
 | A | stock firmware, another session's build | stock | clean |
 
-The surprise is that the draw which leaves the ghost happens **before** the
-sleep, not after the wake. Three facts make that the only reading available:
+**The sleep screen is laid down by the strongest path and lifted by the
+weakest.** Four facts, each read out of the code:
 
-- **Sleep is a real `esp_deep_sleep_start`** (`src/main.cpp`, `enterDeepSleep`).
-  The wake is a reboot.
+- **The sleep screen is drawn HALF, not fast.**
+  `SleepActivity::renderDefaultSleepScreen()` calls
+  `displayBuffer(HalDisplay::HALF_REFRESH)`, and `renderer.invertScreen()` runs
+  right above it unless the LIGHT sleep screen is chosen. So what sits on the
+  glass through the whole sleep is a near-full-screen **dark** field, driven by
+  `epd_text`'s twelve drive rows
+  (`src/activities/boot_sleep/SleepActivity.cpp`, "Sleep screens paint with a
+  single HALF refresh").
+- **The wake is a reboot.** `enterDeepSleep()` ends in
+  `powerManager.startDeepSleep()` (`lib/hal/HalPowerManager.cpp`), and its own
+  comment says so: "Wake from deep sleep is effectively a chip reset".
 - **A reboot loses the framebuffer**, so `Panel_EPD`'s per-pixel diff -- which
-  keys on pixel + (lut_offset << 8) -- has nothing to compare the new frame
-  against and cannot know what is on the glass.
-- **The sleep screen's own draw goes down the fast path.** Five drive rows leave
-  a full-screen solid part-driven; eight land it. The clean frame after the wake
-  does not recover the difference.
+  keys on pixel + (lut_offset << 8) -- has nothing to compare against and every
+  pixel is re-driven.
+- **What re-drives it is the fast path.** `BootActivity` and `HomeActivity` both
+  call `renderer.displayBuffer()` with no argument, and the default is
+  `RefreshMode::FAST_REFRESH` (`lib/hal/HalDisplay.h`).
 
-So a fast table is not only a marker-move decision. It decides what the next
-clean frame inherits, and the worst case is the widest solid the device ever
-shows.
+Five drive rows do not lift that dark field. Eight do.
+
+**So a fast table must be able to erase what the clean path can lay down**, and
+the worst case is not a marker move. It is the inverted full-screen splash the
+device leaves on the glass every single time it sleeps.
+
+**This was written backwards first**, on the morning of 2026-09-18: the first
+version said the sleep screen's own draw goes down the fast path. It does not.
+That sentence was inferred from the fix working rather than read out of
+`SleepActivity`, and it was already committed into three docs before anyone
+opened the file. A fix that works narrows the cause to what the change touched.
+It never supplies the mechanism.
 
 **What this costs the T-273 fast half: all of it.** The 8-pass table saves
 ~100 ms a marker move and is indistinguishable from 11 on the map, and none of
 that survives the one surface that matters. `kFastLut` goes too: it is the same
 eleven passes as the library's `lut_fast`, so it was never a saving, and its two
 grey-driving pre-drive rows have never been judged against stock here.
+
+**The two tables were diffed, not assumed.** Parsed entry by entry out of both
+files on 2026-09-18: `kTextLut` at `EXPLORINK_TEXT_LUT_IDLE=19` is identical to
+LovyanGFX's `lut_text` -- 12 drive rows, 19 idle, terminator, every entry equal
+-- which is why keeping it costs nothing and keeps `CMD:EPDIDLE` working.
+`kFastLut` matches `lut_fast` in shape (8 drive rows, 1 idle, terminator) and
+differs at exactly entries 0 and 1, the two opposite pre-drive rows, where ours
+drives the greys and the library drives only black and white. Same pass count,
+so `kFastLut` was never a saving.
 
 **Reachable, not shipping**: `CMD:EPDLUT 1` for `epd_fastest`, `kFastLut` still
 in `LilyGoT5S3LgfxConfig.cpp`. Neither can be tested across a sleep from a
