@@ -130,8 +130,9 @@ class MapPointQuery {
   //
   // - `nearestPerCategory()` produces numbers for the menu's rows. A corrupt
   //   record there can only make one distance wrong, and the per-record checks
-  //   nextRecord() already applies (inside the declared bbox, reserved half-word
-  //   zero, the name inside the pool) refuse anything grossly broken.
+  //   nextRecord() already applies (inside the declared bbox, the version's
+  //   trailing padding zero, the name inside the pool) refuse anything grossly
+  //   broken.
   // - `listCategory()` produces what reaches the screen: names, and the
   //   coordinate `Set destination` writes into the pin log. That is where a
   //   silently wrong record would become a claim the rider acts on, so the crc

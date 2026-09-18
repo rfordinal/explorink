@@ -241,6 +241,11 @@ The docs under [`docs/`](./docs) are inherited and still accurate for the parts
 this fork has not touched — firmware internals, the activity manager, file
 formats, i18n and the contributing guide all came from CrossPoint.
 
+[`docs/activity-manager.md`](./docs/activity-manager.md) is the task and locking
+model every screen lives in: one render task, `RenderLock`, and since T-2024 the
+map screen too -- which is where the rules for touching state from two tasks are
+written down, along with what a hardware pass could not see.
+
 [`docs/optimization/`](./docs/optimization) is this fork's own: a full code
 review of the map, BLE and tile paths (2026-08-06), one plan per area, with a
 measurement gate for each. Start at its

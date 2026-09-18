@@ -714,7 +714,16 @@
             ]
           },
           "pattern": "solid",
-          "width": 1
+          "width": 1,
+          "when": [
+            {
+              "modes": [
+                "hike"
+              ],
+              "width": 1,
+              "pattern": "dashed"
+            }
+          ]
         },
         {
           "casing_px": 0,
@@ -796,7 +805,7 @@
         {
           "casing_px": 0,
           "color": "#000000",
-          "hidden": false,
+          "hidden": true,
           "major": false,
           "match": {
             "class": [
@@ -836,7 +845,19 @@
               "hidden": true,
               "width": 2,
               "casing_px": 0
+            },
+
+            {
+              "modes": ["ride"],
+              "pattern": "ladder",
+              "width": 1,
+              "casing_px": 0,
+              "tick_px": 3,
+              "gap_px": 8,
+              "tick_width_px": 1
             }
+
+
           ]
         },
         {
