@@ -49,6 +49,17 @@
 
 #include <cstring>
 
+#ifdef ENABLE_EPDLUT_CMD
+#include <driver/LgfxEpdDriver.h>  // setLgfxFastLut, the CMD:EPDLUT bench hook
+// Lives in a scratch edit of .pio/libdeps' Panel_EPD.cpp, which is a third-party
+// file and not tracked, so it is absent from a clean checkout. **Weak on
+// purpose**: an undefined weak symbol links as null instead of failing the
+// build, so the tracked tree still compiles and CMD:EPDIDLE simply reports that
+// this build has no instrument. Removing it outright once cost the measurement
+// exactly when the question got harder; a landmine in the build would cost
+// more. docs/t5s3-partial-refresh.md carries the patch to re-apply.
+extern "C" int explorink_set_text_idle(int idle) __attribute__((weak));
+#endif
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DebugInput.h"
@@ -1759,6 +1770,70 @@ void loop() {
           logSerial.printf("BUTTON_OK:%s:%ld\n", DebugInput::kButtonNames[button], holdMs);
         }
 #endif  // ENABLE_BUTTON_CMD
+#ifdef ENABLE_EPDLUT_CMD
+      } else if (cmd == "EPDLUT" || cmd.startsWith("EPDLUT ")) {
+        // Pick the waveform table the non-clean refresh path uses, so the two
+        // can be compared on the glass without a reflash.
+        //
+        //   CMD:EPDLUT        ->  EPDLUT_OK:0        (report)
+        //   CMD:EPDLUT 1      ->  EPDLUT_OK:1        (the library's 8-pass table)
+        //   CMD:EPDLUT 2      ->  EPDLUT_ERR:range:0,1
+        //
+        // Slot 0 is kFastLut, 11 passes with two opposite pre-drive passes.
+        // Slot 1 is LovyanGFX's lut_fastest, 8 passes with one. It carried a
+        // 7-pass table with no pre-drive until 2026-09-09, when the panel
+        // showed residue tracks pre-drive count and the default went back to
+        // slot 0.
+        //
+        // Why it exists: T-269 measured a pass at 34 ms and the marker-move
+        // table at 11 passes, and Panel_EPD's fast branch thresholds every
+        // pixel to pure black or white, so the table can be written for 1 bit
+        // and made shorter. What that costs is dose -- whether four drive
+        // passes still land a solid black without residue -- and dose does not
+        // show up in CMD:SCREENSHOT, which reads the framebuffer rather than
+        // the glass. It needs an eye on the device, so it needs a switch.
+        //
+        // Devel builds only. It is a bench instrument and it degrades the image
+        // by design; same gate shape as CMD:BUTTON above.
+        //
+        // Note: switching re-arms every pixel (Panel_EPD stores the LUT offset
+        // per pixel), so the frame straight after a switch flashes and is not a
+        // valid timing sample. Move the marker twice before believing a number.
+        String rest = cmd.length() > 6 ? cmd.substring(7) : String("");
+        rest.trim();
+        if (rest.isEmpty()) {
+          logSerial.printf("EPDLUT_OK:%d\n", freeink::getLgfxFastLut());
+        } else if (freeink::setLgfxFastLut(rest.toInt())) {
+          logSerial.printf("EPDLUT_OK:%d\n", freeink::getLgfxFastLut());
+        } else {
+          logSerial.println("EPDLUT_ERR:range:0,1");
+        }
+      } else if (cmd == "EPDIDLE" || cmd.startsWith("EPDIDLE ")) {
+        // Set how many idle passes trail the clean frame's drive rows, 0-19.
+        //
+        //   CMD:EPDIDLE 8   ->  EPDIDLE_OK:8
+        //   CMD:EPDIDLE     ->  EPDIDLE_ERR:need a number 0-19
+        //
+        // An idle pass drives no pixel -- it is settle time -- but costs a full
+        // 34 ms here (measured), so LovyanGFX's 19 is ~646 ms of the 1,249 ms
+        // clean frame. Whether the glass needs all of it is a question only an
+        // eye answers, and a rebuild per trial costs five minutes, so this
+        // makes it a serial command.
+        //
+        // Two results worth knowing before turning it: 4 fails outright (Home
+        // carries the map through a clean) and 6 fails on Home into tilesync.
+        // The number that has passed every path so far is the stock 19.
+        String rest = cmd.length() > 7 ? cmd.substring(8) : String("");
+        rest.trim();
+        if (explorink_set_text_idle == nullptr) {
+          logSerial.println("EPDIDLE_ERR:no instrument in this build");
+        } else if (rest.isEmpty()) {
+          logSerial.println("EPDIDLE_ERR:need a number 0-19");
+        } else {
+          const int applied = explorink_set_text_idle(rest.toInt());
+          logSerial.printf(applied < 0 ? "EPDIDLE_ERR:range\n" : "EPDIDLE_OK:%d\n", applied);
+        }
+#endif  // ENABLE_EPDLUT_CMD
 #ifdef ENABLE_TOUCHLOG_CMD
       } else if (cmd == "TOUCHLOG" || cmd.startsWith("TOUCHLOG ")) {
         // Raw GT911 status register, timestamped, with the loop deliberately

@@ -25,6 +25,25 @@ constexpr const char* kLogTag = "PWRLOG";
 constexpr const char* kHeader =
     "uptime_s,batt_mv,batt_pct,cpu_mhz,full_clock_ms,throttled_ms,loops,loop_busy_ms,loop_max_ms,"
     "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build"
+    // Appended after `build`, never inserted, for the reason above. Two
+    // questions these answer and panel_busy_ms cannot:
+    //
+    // busy_*_ms -- per-waveform time. One merged total made a window and a
+    // whole-panel push indistinguishable whenever both landed in the same
+    // minute. Recovering them by hand on 2026-09-09 meant keeping only rows
+    // where exactly one counter moved, which left the whole-panel population
+    // at n=1 inside the one walk that mattered.
+    //
+    // win_* -- window requests by call site. ref_window merged a per-frame
+    // marker move with the debug overlay's 5 s timer, a status strip and
+    // closing chrome, so its mean described no operation that exists (T-277).
+    //
+    // async_inline -- how often an "async" refresh finished inside the call
+    // that started it, which is panel time the log used to drop. Expected 0 on
+    // a deferring driver and equal to the async call count on every
+    // LgfxEpdDriver board.
+    ",busy_full_ms,busy_half_ms,busy_fast_ms,busy_win_ms"
+    ",win_marker,win_overlay,win_status,win_chrome,win_other,async_inline"
 #ifdef ENABLE_GNSS_CMD
     // Appended, not inserted, so `build` keeps the position every earlier script
     // reads it at. Only on a build that has a receiver: powercsv.py maps fields
@@ -119,6 +138,16 @@ void PowerLog::tick() {
               static_cast<unsigned long>(s.refreshWindow), static_cast<unsigned long>(s.panelBusyMs),
               static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
               static_cast<unsigned>(bleState()), TRAILINK_VERSION);
+
+  file.printf(",%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu", static_cast<unsigned long>(s.busyFullMs),
+              static_cast<unsigned long>(s.busyHalfMs), static_cast<unsigned long>(s.busyFastMs),
+              static_cast<unsigned long>(s.busyWindowMs),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Marker)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Overlay)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Status)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Chrome)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Other)]),
+              static_cast<unsigned long>(s.asyncCompletedInline));
 
 #ifdef ENABLE_GNSS_CMD
   // gnss_run first, because every other column here is meaningless without it:
