@@ -309,3 +309,78 @@ base class dispatched through a base-typed reference) that wants a
 per-override default value has this exposure. A default argument can only
 safely vary by override if every override's caller reaches it through that
 override's own static type -- never true for anything called via `GUI`.
+
+## Finding: the zoom side hints never checked the ladder ends, and were weaker than the pan hints
+
+**Verified on hardware (X4 Pro), 2026-09-19.** `drawZoomSideHints()` drew
+`"+"`/`"--"` at `SMALL_FONT_ID` (this file's default), unconditionally --
+unlike the pan hints just above, it had no bounds check at all. Three
+rider-visible gaps, all against a box that stays plausible-looking while
+lying:
+
+- **Weak glyphs, two ways.** `SMALL_FONT_ID` has no bold face (`main.cpp`'s
+  single-glyph constructor) and is two points smaller than the pan hints'
+  `UI_10_FONT_ID` -- the doubled `"--"` (this file's own note above, and
+  `MapActivity.cpp`'s `drawZoomSideHints()` comment) was already compensating
+  for a thin hyphen at that size. Switching the font to `UI_10_FONT_ID` alone
+  was not enough: `drawTextRotated90CW()`'s `style` parameter defaults to
+  `EpdFontFamily::REGULAR` and no caller of `drawSideButtonHints()` had ever
+  passed anything else, pan hints included -- harmless for the arrows, whose
+  U+2190-U+2193 glyph data is identical in both cuts of `ubuntu_10` (neither
+  Ubuntu face supplies them; both cuts borrow the same bitmap from
+  `OpenDyslexic-Bold`, this file's finding above), but `+`/`-` really do
+  differ between `ubuntu_10`'s regular and bold cuts. `drawSideButtonHints()`
+  gained a `bold` parameter (a plain `bool`, not `EpdFontFamily::Style` --
+  `BaseTheme.h` only forward-declares `GfxRenderer` and has no reason to pull
+  in that type), and `MapActivity::drawZoomSideHints()` is the one caller
+  that passes `true`.
+- **No hard stop.** `stepZoom()` (`MapActivity.cpp`) already refuses past
+  `zoomStep() == 0` or `zoomStep() + 1 == MapViewport::kZoomStepCount`, and
+  `openMapMenu()`'s Zoom In/Out rows already hide at those exact bounds
+  (this file's "Zoom while observing" section) -- the side-hint box was the
+  one place on the same screen that still let a rider press a button that
+  does nothing.
+
+**First fix attempt was wrong and was caught by the maintainer watching the
+live device, not by review.** The first cut dimmed the disabled box with
+`BaseTheme::dimDisabledRow()` (the every-2nd-row line screen `OptionPopup`
+uses for a disabled list row) drawn *over* the box's own border -- on glass
+this read as the border partially vanishing, not as a button, because a
+1-2 px rounded-rect outline and a 2 px line screen collide directly. The
+actual established convention for "this control still exists here but can't
+fire right now", already shipping on the *same screen* for the front hint
+band, is `LyraTheme::drawButtonHints()`'s SMALL-sized button (`LyraTheme.cpp`,
+`smallButtonHeight = HintGeometry::scaleMetricY(15)` vs the active
+`buttonHeight` of 40): an empty front label shrinks that box to a stub
+anchored at the bottom edge rather than removing it or dimming it. Side
+hints had never needed this before, so no equivalent existed there --
+`dimDisabledRow()` was a plausible-sounding but invented substitute, not a
+reuse of anything already on screen.
+
+Fixed for real by giving the side-hint box the same treatment, along its own
+anchor edge: `LyraTheme::drawSideButtonHints()` shrinks a `topDisabled`/
+`bottomDisabled` box to `kSideBoxSmallWidth` (11 px, the same 15/40 ratio
+`drawButtonHints()` uses, applied to `sideButtonHintsWidth`'s 30 instead of
+`buttonHintsHeight`'s 40) while keeping the edge it's anchored to flush --
+the screen's right edge on X4 (`x + width` constant), the left/right screen
+edges on X3 -- exactly mirroring how the front box keeps its bottom edge
+flush while its top edge sinks. No text, no fill difference otherwise. `Base`
+theme (Classic) has no such stub in its own front hints either, so its
+`drawSideButtonHints()` just treats `topDisabled`/`bottomDisabled` as an
+empty label -- consistent with itself, not a second convention.
+`topDisabled`/`bottomDisabled` take priority over a non-empty label at each
+call site (`MapActivity` always passes `"+"`/`"--"` literally and lets the
+flag decide the box's shape, the same division of responsibility `fontId`
+already has between caller and theme).
+
+**Does not re-trip the default-argument trap two sections above.** All three
+new parameters (`topDisabled`, `bottomDisabled`, `bold`) default to `false`
+in `BaseTheme.h` *and* in `LyraTheme.h`'s override -- unlike `fontId`, where
+`BaseTheme`'s and `LyraTheme`'s declared defaults actually disagreed, every
+existing `GUI.drawSideButtonHints(...)` call that omits these arguments
+(`OptionPopup.h`, `KeyboardEntryActivity.cpp`, `drawPanSideHints()`) resolves
+the omitted value against `BaseTheme`'s static type and gets `false` baked in
+at compile time -- which is also what every override's own default would
+have produced, so there is no value to diverge from. Safe only because the
+values happen to agree everywhere; a future default that must differ per
+theme needs the `fontId = 0` sentinel pattern instead, not a plain default.
