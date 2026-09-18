@@ -1769,7 +1769,8 @@ void MapActivity::updateHeaderStatus() {
                          (destQuantisedDistance() != drawnDestDistance_ || destSector() != drawnDestSector_);
 
   if (!structural && !barsMoved && !minuteMoved && !destAppeared && !destMoved && !chargingChanged) return;
-  if (!structural && !minuteMoved && !destAppeared && !destMoved && !chargingChanged && now < nextBarsRepaintMs_) return;
+  if (!structural && !minuteMoved && !destAppeared && !destMoved && !chargingChanged && now < nextBarsRepaintMs_)
+    return;
   // The quantised value moved and nothing more urgent did: hold the row until
   // the floor is up. This is the whole cap -- without it a rider at road speed
   // repaints the header every second or two.
@@ -6016,10 +6017,19 @@ void MapActivity::stepMarker(int delta) {
   // fix, moving or standing still. That is the "map keeps refreshing" bug
   // reported 2026-08-15: kMarkerLadder's last rung (760, MapViewport.h:181)
   // sits past the margin at every zoom rung (720-741 px, MapMarkerMetrics.h's
-  // per-rung ring + MapFollow::kKeepInSlackPx). Checked against the full-size
-  // marker's margin -- the largest one, rungs 0-4 -- so the step is refused
+  // per-rung ring + MapFollow::kKeepInSlackPx). Checked against the biggest
+  // ring this mode can ever draw -- normally rung 0's (markerScale8 is
+  // monotonically non-increasing along the ladder), but found by the same
+  // loop MapMarkerMetrics.h's own compile-time check uses rather than assumed,
+  // now that data/mapstyle.json's `when` could in principle make a coarser
+  // rung's ring the bigger one for this mode. So the step is refused
   // regardless of which rung is on screen now or chosen later.
-  const int16_t worstCaseMarginPx = static_cast<int16_t>(kMarkerMetricsFull.ring + MapFollow::kKeepInSlackPx);
+  int worstCaseRing = 0;
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    const MarkerMetrics m = markerMetricsFor(mapStyleFor(mode_, step), MapViewport::kZoomLadder[step].markerScale8);
+    worstCaseRing = std::max(worstCaseRing, m.ring);
+  }
+  const int16_t worstCaseMarginPx = static_cast<int16_t>(worstCaseRing + MapFollow::kKeepInSlackPx);
   if (MapViewport::markerYForStep(next) >= renderer.getScreenHeight() - worstCaseMarginPx) return;
   markerStep_[static_cast<uint8_t>(mode_)] = static_cast<uint8_t>(next);
   LOG_DBG(kLogTag, "marker step %u (y=%d)", static_cast<unsigned>(markerStep()),
@@ -6235,7 +6245,6 @@ bool MapActivity::preventThrottle() {
   return redrawDueMs_ != 0 || arrivalRedrawDueMs_ != 0 || transfer_.status().active;
 }
 
-
 bool MapActivity::LockedPins::pinSet(std::string_view key, int32_t latE7, int32_t lonE7, uint32_t utc) {
   // drawPins() walks this store on the render task. A console `pin set` is the
   // one console command that rewrites it, and unlike a button press it cannot be
@@ -6391,7 +6400,6 @@ void MapActivity::render(RenderLock&&) {
     LOG_DBG(kLogTag, "frame composed on the render task, stack free %u bytes",
             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   }
-
 }
 
 void MapActivity::composeWaiting() {
@@ -6500,7 +6508,11 @@ void MapActivity::composeCurrent() {
 }
 
 MarkerMetrics MapActivity::markerMetrics() const {
-  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8);
+  // mapStyleFor(mode_, ...) rather than a bare style constant: data/
+  // mapstyle.json's layers.marker can now differ per mode via `when`
+  // (docs/device-preview.md, "The position marker"), so which numbers this
+  // rung's marker draws with depends on which mode is live.
+  return markerMetricsFor(mapStyleFor(mode_, zoomStep()), MapViewport::zoomStepAt(zoomStep()).markerScale8);
 }
 
 void MapActivity::markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const {
@@ -7266,7 +7278,6 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     // No marker restore here: the caller draws the marker after this returns, so
     // the hatch cannot bury it. Drawing the style's puck here as well would only
     // leave it peeking out from under a smaller mode marker.
-
   }
   return missing;
 }

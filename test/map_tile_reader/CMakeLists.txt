@@ -4,6 +4,7 @@ add_executable(MapTileReaderGoldenTest
   ${REPO_ROOT}/test/map_preview/HeapProbe.cpp
   ${REPO_ROOT}/test/map_preview/PpmCanvas.cpp
   ${REPO_ROOT}/test/map_preview/PreviewFont.cpp
+  ${REPO_ROOT}/test/map_preview/PreviewMarker.cpp
   ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp

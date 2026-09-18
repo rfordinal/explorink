@@ -63,6 +63,7 @@
 #include "MapRenderer.h"
 #include "MapRideMode.h"
 #include "MapStyleDefaults.h"
+#include "MapStyleTable.h"
 #include "MapViewport.h"
 #include "PpmCanvas.h"
 #include "ReplayEngine.h"
@@ -861,8 +862,9 @@ int main(int argc, char** argv) {
         staticHeading = step.frameHeadingStep;
       } else if (std::strcmp(step.action, "move") == 0) {
         ++partialRefreshes;
+        const int zoomStep = zoomStepFor[static_cast<int>(mode)];
         const int box =
-            markerMetricsFor(MapViewport::kZoomLadder[zoomStepFor[static_cast<int>(mode)]].markerScale8).box;
+            markerMetricsFor(mapStyleFor(mode, zoomStep), MapViewport::kZoomLadder[zoomStep].markerScale8).box;
         rectX = step.x - box / 2;
         rectY = step.y - box / 2;
         rectW = box;

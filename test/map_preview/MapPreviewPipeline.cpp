@@ -8,8 +8,10 @@
 #include <memory>
 
 #include "HeapProbe.h"
+#include "MapFixTrust.h"
 #include "MapHatch.h"
 #include "MapLabels.h"
+#include "MapMarkerMetrics.h"
 #include "MapPointMarks.h"
 #include "MapPointShards.h"
 #include "MapPointSource.h"
@@ -22,6 +24,7 @@
 #include "MapTileGrid.h"
 #include "MapTileSource.h"
 #include "MapViewport.h"
+#include "PreviewMarker.h"
 #include "StdioFileSource.h"
 
 namespace {
@@ -220,13 +223,25 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // like, this frame just does not draw one.
   MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr,
                       request.drawLabels ? &labels : nullptr, points.get());
-  // render() does not draw the marker (MapActivity draws its own mode-specific
-  // one). This preview has no travel mode, so it draws the style's puck
-  // explicitly -- except in a route overview, which is framed on the route and
-  // has no fix in it. A puck at the screen centre there would claim the rider is
-  // standing in the middle of their own route.
-  const bool drawPuck = !result.routeFitRan && request.drawMarker;
-  if (drawPuck) MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
+  // render() does not draw the marker -- the device draws its own mode-aware
+  // one afterward (MapActivity::drawPositionMarker). This preview mirrors that
+  // exact shape (PreviewMarker.h) instead of MapRenderer::drawMarker's generic
+  // puck, at the real size the current mode and rung would show (docs/
+  // device-preview.md, "The position marker") -- except in a route overview,
+  // which is framed on the route and has no fix in it. A marker at the screen
+  // centre there would claim the rider is standing in the middle of their own
+  // route.
+  //
+  // Drawn with a plain confident fix (no broken ring, no wedge): this pane
+  // exists to judge the marker's SIZE against mapstyle.json's layers.marker,
+  // and the fix-trust degradations are a separate, orthogonal concern
+  // (MapFixTrust.h) that would only make the shape harder to measure here.
+  const bool drawMarker = !result.routeFitRan && request.drawMarker;
+  if (drawMarker) {
+    const MarkerMetrics metrics = markerMetricsFor(style, lod.markerScale8);
+    PreviewMarker::draw(canvas, view.markerX, view.markerY, static_cast<uint8_t>(view.heading), request.mode,
+                        MapFixTrust::MarkerStyle{}, metrics);
+  }
   result.peakHeapDuringRender = HeapProbe::peakBytes();
   result.allocsDuringRender = HeapProbe::allocCount();
 
@@ -265,7 +280,11 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
       if ((result.missingMask & (1u << index)) == 0) continue;
       MapHatch::drawTile(canvas, proj, range.z, range.colAt(index), range.rowAt(index));
     }
-    if (drawPuck) MapRenderer::drawMarker(canvas, view.markerX, view.markerY, view.heading, style);
+    if (drawMarker) {
+      const MarkerMetrics metrics = markerMetricsFor(style, lod.markerScale8);
+      PreviewMarker::draw(canvas, view.markerX, view.markerY, static_cast<uint8_t>(view.heading), request.mode,
+                          MapFixTrust::MarkerStyle{}, metrics);
+    }
   }
 
   return result;

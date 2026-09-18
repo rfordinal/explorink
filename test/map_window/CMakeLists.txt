@@ -25,6 +25,7 @@ add_executable(map_window
   ${PREVIEW_DIR}/HeapProbe.cpp
   ${PREVIEW_DIR}/PpmCanvas.cpp
   ${PREVIEW_DIR}/PreviewFont.cpp
+  ${PREVIEW_DIR}/PreviewMarker.cpp
   ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/JsonParser/StreamingJsonParser.cpp

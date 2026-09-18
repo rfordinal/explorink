@@ -90,6 +90,18 @@ constexpr MapStyle kGoldenStyle = {
     .puckRadiusPx = 0,  // arrow only, no disc
     .puckRingPx = 0,
     .puckArrowPx = 28,
+    // The real marker (PreviewMarker.h) reads these instead of the puck
+    // fields above since 2026-09-19 -- data/mapstyle.json's layers.marker
+    // defaults, spelled out here so an omitted field cannot zero-initialise
+    // into a degenerate near-invisible marker and so this fixture keeps
+    // meaning "the marker mapstyle.json actually ships", not an arbitrary one.
+    .markerRingPx = 54,
+    .markerRingWidthPx = 3,
+    .markerHikeDotPx = 18,
+    .markerHikeHandHalfWidthPx = 2,
+    .markerCycleTipLenPx = 16,
+    .markerRideTipLenPx = 25,
+    .markerHaloMarginPx = 5,
 };
 
 std::string fixturesDir() { return std::string(MAP_TILE_READER_FIXTURES_DIR); }
@@ -700,11 +712,10 @@ TEST(MapBuildingsPerRung, OnlyTheClosestRungDrawsThemAndSkippingThemSkipsTheRead
     for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
       const MapStyle& style = mapStyleFor(mode, step);
       const int builtUp = static_cast<int>(MapLanduseClass::BuiltUp);
-      const bool washDrawn = style.landuseTone[builtUp] != MapAreaTone::None ||
-                             style.landuseHatch[builtUp] != MapAreaFill::Pattern::None;
-      EXPECT_NE(style.buildingsEnabled, washDrawn)
-          << mapRideModeName(mode) << " step " << step
-          << " must draw buildings or the wash, never neither and never both";
+      const bool washDrawn =
+          style.landuseTone[builtUp] != MapAreaTone::None || style.landuseHatch[builtUp] != MapAreaFill::Pattern::None;
+      EXPECT_NE(style.buildingsEnabled, washDrawn) << mapRideModeName(mode) << " step " << step
+                                                   << " must draw buildings or the wash, never neither and never both";
     }
   }
 
@@ -790,7 +801,12 @@ TEST(MapZoomLadder, CoarseRungsShrinkTheMarkerAndTightenTheMoveFloor) {
 TEST(MapZoomLadder, MarkerMetricsScaleWithTheRungAndStayDrawable) {
   int previousRing = 1 << 30;
   for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
-    const MarkerMetrics m = markerMetricsFor(MapViewport::kZoomLadder[step].markerScale8);
+    // kDefaultMapStyle: the layers.marker fields with no `when` applied, i.e.
+    // ride's numbers. The exhaustive per-(mode, rung) check lives in
+    // MapMarkerMetrics.h's markerFitsEveryStyleVariant() static_assert now
+    // that the full size is data, not a single global constant -- this test
+    // stays as a runtime smoke check of the same arithmetic.
+    const MarkerMetrics m = markerMetricsFor(kDefaultMapStyle, MapViewport::kZoomLadder[step].markerScale8);
     // Nothing may round away to nothing: a 0 px stroke or half-width draws no
     // marker at all, which is the one state the map screen must never reach.
     EXPECT_GT(m.ring, 0) << "step " << step;
@@ -804,12 +820,13 @@ TEST(MapZoomLadder, MarkerMetricsScaleWithTheRungAndStayDrawable) {
     // header static_asserts; here it is checked as a value, not a compile.
     EXPECT_LE(m.hikeHandReach + m.hikeHandHalfW, m.box / 2) << "step " << step;
     EXPECT_LE(m.rideTipLen, m.box / 2) << "step " << step;
-    EXPECT_LE(m.box, kMarkerMetricsFull.box) << "step " << step << ": the patch buffer is sized for the full marker";
+    EXPECT_LE(m.box, kMarkerBoxSize) << "step " << step << ": the patch buffer is sized for the full marker";
     EXPECT_LE(m.ring, previousRing) << "step " << step;
     previousRing = m.ring;
   }
-  EXPECT_EQ(markerMetricsFor(8).ring, 54) << "rung 0 must still draw exactly the marker it always drew";
-  EXPECT_EQ(markerMetricsFor(8).box, 64);
+  EXPECT_EQ(markerMetricsFor(kDefaultMapStyle, 8).ring, 54)
+      << "rung 0 must still draw exactly the marker it always drew";
+  EXPECT_EQ(markerMetricsFor(kDefaultMapStyle, 8).box, 64);
 }
 
 TEST(MapZoomLadder, ZoomStepAtClampsLikeMarkerYForStep) {

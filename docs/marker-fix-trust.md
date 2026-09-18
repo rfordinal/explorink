@@ -58,7 +58,9 @@ a ring that has stopped pretending. Not by a second circle.
 ## Where the numbers come from
 
 **25 m, the position line.** The ring's radius is 27 px
-(`kMarkerRingDiameter / 2`) and the finest rung draws 1 m per pixel
+(half of `layers.marker.ring_px` in `data/mapstyle.json`, 54 -- moved out of a
+`kMarkerRingDiameter` constant on 2026-09-19, see `MapMarkerMetrics.h`) and the
+finest rung draws 1 m per pixel
 (`MapViewport::kZoomLadder[0]`). So a 27 m error is exactly the error that
 still fits *inside the drawn marker* at the closest the device ever zooms --
 the true position is somewhere under the glyph, and drawing the ring whole is

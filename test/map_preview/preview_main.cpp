@@ -33,10 +33,13 @@
 // --hatch draws the missing-tile hatch the device always draws (P4). It is
 // opt-in here so the committed golden PPM stays byte-identical.
 //
-// --no-marker skips the puck this tool normally draws in place of a real
-// mode marker (MapPreviewPipeline.h's MapPreviewRequest::drawMarker). For a
-// consumer that draws its own marker afterward at a position/heading this
-// call has no way to know -- see marker_stamp in this same directory.
+// --no-marker skips the real mode marker this tool normally draws
+// (PreviewMarker.h, the same ring + Hike dot/hand or Cycle/Ride arrow
+// MapActivity draws on the device -- MapPreviewPipeline.h's
+// MapPreviewRequest::drawMarker). For a consumer that draws its own marker
+// afterward at a position/heading this call has no way to know -- see
+// marker_stamp in this same directory, which still stamps the older generic
+// puck (MapRenderer::drawMarker) for its own reasons.
 //
 // --route draws a .tir route file over the tiles
 // (../../../docs/route-file-spec.md in the parent xteink repo). --fit-route then

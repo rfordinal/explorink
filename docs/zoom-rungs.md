@@ -220,8 +220,10 @@ in `platformio.ini` for both the firmware and simulator envs, same pattern as
 `gen_mapstyle.py`). `MapActivity::drawPositionMarker` scales those permille
 ratios by its runtime `tipLen` and rotates them with `kMarkerHeadingDir` --
 same transform the old 3-point triangle used, just looped over more vertices.
-Only `tipLen` is still a free per-mode knob (`kMarkerCycleTipLen`,
-`kMarkerRideTipLen`); `baseHalfW` is gone, since the whole shape's proportions
+Only `tipLen` is still a free per-mode knob (`data/mapstyle.json`'s
+`layers.marker.cycle_tip_len_px`/`ride_tip_len_px` since 2026-09-19, formerly
+the constants `kMarkerCycleTipLen`/`kMarkerRideTipLen`); `baseHalfW` is gone,
+since the whole shape's proportions
 now come from the SVG.
 
 This keeps the arrow hand-drawn rather than a baked icon, per

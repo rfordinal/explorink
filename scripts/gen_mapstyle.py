@@ -374,6 +374,38 @@ def puck(style):
     return radius, ring, arrow
 
 
+def marker(style):
+    """(ring, ring_width, hike_dot, hike_hand_half_width, cycle_tip, ride_tip,
+    halo_margin) for layers.marker, in px -- full size, at rung 0.
+
+    This is the device's REAL marker (MapMarkerMetrics.h, MapMarkerDraw.cpp),
+    not the puck() above. Range-checked here the same way every other style
+    number is; the box-fit check against the on-device patch buffer
+    (kMarkerBoxSize) happens in C++ instead, at compile time -- it depends on
+    which rung and mode a `when` block ends up applying to, and this module
+    never resolves variants itself (mapstyle_variants.resolve() does, once
+    per (mode, rung) pair, before compile_style() ever sees this block).
+    """
+    marker_cfg = style.get("layers", {}).get("marker", {})
+    ring = _round_px(marker_cfg.get("ring_px", 0), "layers.marker.ring_px")
+    ring_width = _round_px(marker_cfg.get("ring_width_px", 0), "layers.marker.ring_width_px")
+    hike_dot = _round_px(marker_cfg.get("hike_dot_px", 0), "layers.marker.hike_dot_px")
+    hike_hand_half_width = _round_px(marker_cfg.get("hike_hand_half_width_px", 0),
+                                     "layers.marker.hike_hand_half_width_px")
+    cycle_tip = _round_px(marker_cfg.get("cycle_tip_len_px", 0), "layers.marker.cycle_tip_len_px")
+    ride_tip = _round_px(marker_cfg.get("ride_tip_len_px", 0), "layers.marker.ride_tip_len_px")
+    halo_margin = _round_px(marker_cfg.get("halo_margin_px", 0), "layers.marker.halo_margin_px")
+    if ring_width * 2 >= ring:
+        sys.exit(f"gen_mapstyle.py: layers.marker.ring_width_px {ring_width} leaves no interior inside "
+                 f"ring_px {ring}")
+    for name, value in (("ring_px", ring), ("ring_width_px", ring_width), ("hike_dot_px", hike_dot),
+                        ("hike_hand_half_width_px", hike_hand_half_width), ("cycle_tip_len_px", cycle_tip),
+                        ("ride_tip_len_px", ride_tip), ("halo_margin_px", halo_margin)):
+        if value <= 0 or value > 255:
+            sys.exit(f"gen_mapstyle.py: layers.marker.{name} {value}px must be 1..255")
+    return ring, ring_width, hike_dot, hike_hand_half_width, cycle_tip, ride_tip, halo_margin
+
+
 # mapstyle.json's hatch strings are matplotlib's. Only the character matters
 # here; the repeat count ("XXXX") is a matplotlib density knob, and density on
 # the device comes from hatch_spacing_px, in device pixels like every other
@@ -1104,7 +1136,7 @@ def _style_literal(bundle):
     21 structs.
     """
     (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths, tones, flag_rules, buildings_px, water_px, landuse_px,
-     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
+     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px, marker_px) = bundle
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
         "{",
@@ -1322,6 +1354,13 @@ def _style_literal(bundle):
         f"    .puckRadiusPx = {radius},",
         f"    .puckRingPx = {ring},",
         f"    .puckArrowPx = {arrow},",
+        f"    .markerRingPx = {marker_px[0]},",
+        f"    .markerRingWidthPx = {marker_px[1]},",
+        f"    .markerHikeDotPx = {marker_px[2]},",
+        f"    .markerHikeHandHalfWidthPx = {marker_px[3]},",
+        f"    .markerCycleTipLenPx = {marker_px[4]},",
+        f"    .markerRideTipLenPx = {marker_px[5]},",
+        f"    .markerHaloMarginPx = {marker_px[6]},",
         "}",
     ]
     return lines
@@ -1429,17 +1468,18 @@ def compile_style(style):
             buildings(style), water(style), landuse(style), contours(style),
             place_dot_diameter(style),
             place_labels(style), points_style(style), route(style),
-            *marker_anchor(style), puck(style))
+            *marker_anchor(style), puck(style), marker(style))
 
 
 def _print_summary(bundle, what):
     (widths, casings, _patterns, _dashes, _gaps, _marks, _mark_pxs, _tick_sides, _tick_widths, _tones, flag_rules, buildings_px, water_px, landuse_px,
-     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
+     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px, marker_px) = bundle
     drawn = sum(1 for w in widths if w)
     cased = sum(1 for c in casings if c)
     print(f"gen_mapstyle.py: {what}: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
           f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
-          f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
+          f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}, "
+          f"marker ring{marker_px[0]}/hikeDot{marker_px[2]}/cycleTip{marker_px[4]}/rideTip{marker_px[5]}")
     print(f"gen_mapstyle.py: {what}: POI marks {'safety' if points_px[0] else '-'}"
           f"{'+landmark' if points_px[1] else ''} square {points_px[2]}px, glyph {points_px[4]}px, "
           f"flag {points_px[5]}px, cluster radius {points_px[6]}px cell {points_px[7]}px")

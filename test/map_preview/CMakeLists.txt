@@ -4,6 +4,7 @@ add_executable(map_preview
   HeapProbe.cpp
   PpmCanvas.cpp
   PreviewFont.cpp
+  PreviewMarker.cpp
   ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp

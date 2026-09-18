@@ -147,7 +147,9 @@ With the frame frozen that reasoning expires -- nothing would have carried it. S
 hike now gets **a thin hand off the dot to the ring's inner edge**, a watch hand
 against a bezel rather than a second arrow (`drawPositionMarker()`).
 
-Its reach is `kMarkerRingDiameter / 2 - kMarkerRingWidth`, and that is a
+Its reach is `style.markerRingPx / 2 - ringWidth` (`MarkerMetrics::hikeHandReach`,
+`MapMarkerMetrics.h` -- `layers.marker.ring_px`/`ring_width_px` in
+`data/mapstyle.json` since 2026-09-19), and that is a
 correctness bound, not a style choice: anything drawn past `kMarkerBoxSize / 2`
 falls outside the box `saveMarkerPatch()` stores, so a marker move would not
 restore what it covered and would smear a trail across the map. A `static_assert`
