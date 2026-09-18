@@ -198,7 +198,10 @@ File uploaded successfully: mybook.epub
 
 Notes:
 
-- Existing files with the same name are overwritten.
+- **An existing file is refused, not overwritten.** The reply is
+  `File already exists: <name>` and nothing is written -- measured 2026-09-17,
+  four uploads out of four onto occupied paths. To replace a file, `POST
+  /rename` it aside or `POST /delete` it first.
 - EPUB cache data for the uploaded path is cleared after a successful upload.
 - HTTP upload uses a 4 KB write buffer before flushing to the SD card.
 

@@ -95,6 +95,7 @@ not a pull request.
 | Marker follows the fix without redrawing the map | exists, **verified on hardware 2026-08-05** by replaying a recorded ride — 117 fixes cost 31 skips, 71 windowed marker refreshes and 14 full redraws, ~160 s against the ~1,040 s all-redraws would have cost, heap flat. A fix moves the marker and refreshes one 64x64 rectangle; the map is redrawn only when the marker nears an edge, the rider turns 90°, or the ghosting budget runs out. See [`docs/map-follow.md`](./docs/map-follow.md) |
 | Track-up map | exists — the fix's heading is up on screen and the north indicator rotates to match |
 | Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots and place names, the route line, marker anchor. Confirmed on the panel, not only in the preview. Junction dots and off-screen place markers: **not implemented**. See [`docs/place-labels.md`](./docs/place-labels.md) and [`docs/route-layer.md`](./docs/route-layer.md) |
+| The device says it is working | partly — the map stamps an hourglass before a redraw the rider started, and nothing anywhere else does. Extending it was refused 2026-09-16: a badge costs one windowed refresh, 500 ms on the X4 and X3 and ~1,030 ms on the T5 S3 Pro. See [`docs/busy-feedback.md`](./docs/busy-feedback.md) |
 | Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
 | Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |
 | Pressing the buttons from the host | exists, **verified on the T5 S3 Pro 2026-09-08** (from `release/lilygo-t5-s3-pro`, not from a C3) — `CMD:BUTTON <name> [holdMs]` injects a real press, so a laptop walks the whole UI: Home selection, the map menu, Look around, and a 1500 ms hold that zooms where a tap pans. Devel builds only. See [`docs/serial-button-injection.md`](./docs/serial-button-injection.md) |
@@ -236,6 +237,11 @@ pixel-accurate against the device.
 The docs under [`docs/`](./docs) are inherited and still accurate for the parts
 this fork has not touched — firmware internals, the activity manager, file
 formats, i18n and the contributing guide all came from CrossPoint.
+
+[`docs/activity-manager.md`](./docs/activity-manager.md) is the task and locking
+model every screen lives in: one render task, `RenderLock`, and since T-2024 the
+map screen too -- which is where the rules for touching state from two tasks are
+written down, along with what a hardware pass could not see.
 
 [`docs/optimization/`](./docs/optimization) is this fork's own: a full code
 review of the map, BLE and tile paths (2026-08-06), one plan per area, with a

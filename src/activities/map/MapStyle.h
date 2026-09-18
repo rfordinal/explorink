@@ -35,7 +35,26 @@
 //
 // Only the water pass reads it. The generator refuses it on a road, where a class
 // that draws nothing is what `hidden: true` already says.
-enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked, None, DashMark, Hachured };
+enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked, None, DashMark, Hachured, Ladder };
+
+// **`Ladder` is `Hachured` with the tooth crossing the line instead of hanging
+// off it**, and it is the third railway mark, not a second one. Same arc-length
+// walk, same `tick_px` reach and `gap_px` spacing; the rung is simply drawn from
+// `-tick` to `+tick` about the line rather than from 0 to `+tick`, so it sticks
+// out on both sides. That is the standard topographic railway symbol -- a thin
+// axis with periodic cross-ticks -- as against `Ticked`, which keeps its marks
+// inside the stroke's own width.
+//
+// The point of having both is loudness, not taste. `Ticked` on a 4 px cased
+// stroke is what this style drew for `railway` until 2026-09-16, and on a ride
+// sheet that is a heavy black band announcing something a driver cannot act on:
+// a railway is not a road they may take and not a junction they may turn at.
+// `Ladder` on a hairline says the same thing quietly. Maintainer's call,
+// 2026-09-16: "upozornuje na seba a pritom pre mna ako jazdca nema absolutne
+// ziadnu informacnu hodnotu".
+//
+// `tick_side` has no meaning here and the generator refuses it: a mark that
+// reaches both ways has no side to choose.
 
 // **`Hachured` is the rock-face mark, and it is not `Ticked`.** Ticked lays its
 // marks *across* a whole line -- a railway's sleepers. Hachured leaves the line

@@ -144,7 +144,16 @@ Two ways, and the fast one needs no client at all.
 draws real tiles on the first frame. No socket, no client, no timing to get
 right.
 
-**Write the packet over BLE.** Since 2026-08-23 the real `BlePositionServer`
+**Write the packet over BLE.** **Broken since some time between 2026-09-12 and
+2026-09-17: the client cannot reach the shim at all.** `mapcmd.py --sim` and
+`blepos.py --sim` die with `ConnectionResetError: Connection lost` in
+`tools/simble.py`'s `drain()`, with the port listening -- on `develop` as well, so
+it is the shim or the client and not a branch. Parent `docs/TODO.md` T-155 has
+the evidence and what would settle it. Everything in the rest of this section
+describes the path as it worked and as it should work again; until then, key
+scripts (`CROSSPOINT_SIM_INPUT_SCRIPT`) are the only way to drive the simulator.
+
+Since 2026-08-23 the real `BlePositionServer`
 runs here, so `tools/blepos.py --sim <host>:<port>` writes the same 21-byte
 packet a phone writes, and the whole ingest path runs -- length check, field
 copies, the redraw gate, the viewport re-anchor. Use this one when the packet

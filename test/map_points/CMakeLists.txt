@@ -20,7 +20,13 @@ target_compile_definitions(MapPointTest PRIVATE
 # MapPointTypes.h is generated from point_spec.py in the tile generator repo and
 # is committed here, so nothing to depend on -- unlike MapStyleDefaults.h, which
 # is generated at build time. Regenerate with
-# mapbuilder/tilegen/gen_point_enum.py --cpp-out.
+# mapbuilder/tilegen/gen_point_enum.py --cpp-out <path>, then clang-format -i the
+# result -- the generator emits 4-space bodies and this repo's .clang-format
+# uses 2, so skipping that step puts a whole-file reindent in the next diff.
+#
+# The .tip fixtures beside this file are regenerated the same way, by
+# fixtures/make_fixtures.py, and for the same reason: the bytes must be the
+# tile generator's own output, not something hand-built here.
 target_link_libraries(MapPointTest PRIVATE
   crosspoint_test_common
   GTest::gtest_main
