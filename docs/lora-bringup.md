@@ -267,10 +267,42 @@ Written 2026-09-16 against the 8-of-20 measurement above, on branch
 16 of them read inside a render window.** "The bench" below has the numbers,
 including the three criteria it did not settle.
 
+### The ground moved under this on 2026-09-18 `[read, not re-measured]`
+
+**`develop` now composes map frames on the render task** -- "the map composes on
+the render task", firmware `c24cb625`, their T-2024 (parent `docs/TODO.md`).
+`MapActivity`'s comment says it plainly: "The main task does not compose frames
+any more ... Every render*() entry records what the panel should show next and
+wakes ActivityManager's render task". They measured the same stall this section
+measured, from the other end: a redraw blocking the input sampler for 2.80 s,
+"no button edge, no GNSS drain, **no radio poll**, no console line".
+
+Everything below was measured on `feat/lora`, which does not carry that change
+and is 28 commits behind `develop`. So:
+
+- **The numbers stand for the build they were taken on.** 8 of 20 against 20 of
+  20 is what those two binaries did on 2026-09-17.
+- **The 8-of-20 baseline probably does not reproduce on `develop`.** If `loop()`
+  runs during a redraw, the loop-serviced poll is reached during one, and the
+  loss this task was built to remove may already be gone.
+- **What still stands on its own**, independent of who composes frames: an
+  SX126x holds exactly one packet, so any `loop()` stall costs traffic -- a
+  console line, an SD write, a GNSS drain; the 100 ms tick bounds servicing
+  latency whatever `loop()` is doing; and the non-blocking transmit and the
+  re-arm watchdog fix defects that have nothing to do with rendering.
+- **What has to be re-measured before this feature merges up**: the same
+  twenty-packet bench on a `feat/lora` synced with `develop`, against that
+  merge's own first parent. A benefit measured against a base the tree has since
+  moved past is dead (parent `CLAUDE.md`, the research rules).
+
+Not rewritten below, deliberately. The reasoning that produced the task is the
+evidence for it, and deleting it would leave the design with no stated cause.
+
 ### Why `loop()` was the wrong place
 
-A map render is not on the render task. `MapActivity` paints from its own
-`loop()` (`src/activities/map/MapActivity.cpp`, `renderCurrent()`, and the note
+A map render was not on the render task when this was written (see the note
+above -- `develop` changed that on 2026-09-18). `MapActivity` painted from its
+own `loop()` (`src/activities/map/MapActivity.cpp`, `renderCurrent()`, and the note
 at the top of its `loop()` about painting outside `Activity::render()`), so a
 rung 6 redraw owns the Arduino loop task for 3 to 3.9 s -- and
 `activityManager.loop()`, where that happens, is in the same `loop()` as the
@@ -419,7 +451,7 @@ a radio whose rail the GNSS receiver held through sleep comes back out of reset.
 The card is safe -- `t5s3DeselectLoraRadio()` runs before `Storage.begin()`, and
 deselection is what the 2026-09-03 measurement showed matters -- but the state
 is not what the deep-sleep comment says it is. That is the sleep latch's
-problem, not this task's: parent `docs/TODO.md`, T-2024.
+problem, not this task's: parent `docs/TODO.md`, T-2029.
 
 ### Two things the console now reports differently
 
