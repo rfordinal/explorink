@@ -119,6 +119,14 @@ class HalGPIO {
   // Check if USB is connected
   bool isUsbConnected() const;
 
+  // Digital USB-presence only -- never the isCharging() fallback. Used by
+  // getWakeupReason(), which needs "is USB physically present", not "is
+  // actively charging"; the two differ once a charger tops off (see
+  // isUsbConnected()'s comment), and getWakeupReason() answering "charging"
+  // for a device that is merely plugged in and full would misroute a
+  // power-button boot into startDeepSleep() via WakeupReason::AfterUSBPower.
+  bool usbDetectPinHigh() const;
+
   // Returns true once per edge (plug or unplug) since the last update()
   bool wasUsbStateChanged() const;
 

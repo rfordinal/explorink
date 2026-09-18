@@ -1,4 +1,5 @@
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <Logging.h>
 #include <PowerManager.h>
 #include <Preferences.h>
@@ -311,10 +312,13 @@ bool HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPre
   return true;
 }
 
-bool HalGPIO::isUsbConnected() const {
+bool HalGPIO::usbDetectPinHigh() const {
   if (deviceIsX3()) {
     // X3: infer USB/charging via BQ27220 Current() register (0x0C, signed mA).
-    // Positive current means charging.
+    // Positive current means charging. Kept here (not just in
+    // isUsbConnected()) because this reading is correct for both callers --
+    // unlike the PIN_UNASSIGNED fallback below, X3 never went through a
+    // "hardcoded false" state that getWakeupReason() depended on.
     for (uint8_t attempt = 0; attempt < 2; ++attempt) {
       int16_t currentMa = 0;
       if (X3GPIO::readBQ27220CurrentMA(&currentMa)) {
@@ -324,17 +328,50 @@ bool HalGPIO::isUsbConnected() const {
     }
     return false;
   }
-  if (BoardConfig::ACTIVE.usbDetect < 0) {
-    return false;
+  if (BoardConfig::ACTIVE.usbDetect >= 0) {
+    return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
   }
-  return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
+  return false;
+}
+
+bool HalGPIO::isUsbConnected() const {
+  if (deviceIsX3() || BoardConfig::ACTIVE.usbDetect >= 0) {
+    return usbDetectPinHigh();
+  }
+  // No digital USB-detect line (X4 Pro, T5 S3 Pro, and others: usbDetect is
+  // PIN_UNASSIGNED). Infer external power from charging state instead.
+  // HalPowerManager::isCharging() picks the board's best source -- charger IC
+  // status, gauge current sign, or a /STAT pin (X4 Pro GPIO21) -- and reports
+  // false on boards with no battery telemetry at all.
+  //
+  // Caveat, same one CrossPoint upstream documents for this exact fallback
+  // (HalGPIO.cpp, isUsbConnected()): this answers "actively charging", not
+  // "USB present" -- the two differ whenever a charger stops charging while
+  // USB stays connected. Two real cases on our own boards: charge
+  // termination at 100% (confirmed on X4 Pro hardware 2026-09-18: at 100%
+  // SoC the icon's bolt does not show, which is expected charger behaviour,
+  // not a bug), and T5 S3 Pro's dev workflow of disabling the charger on
+  // purpose to measure battery-only current draw with USB still attached.
+  //
+  // This fallback is ONLY safe for UI/icon purposes. getWakeupReason() calls
+  // usbDetectPinHigh() instead of this function precisely because
+  // "unconditionally false" on these boards used to be load-bearing there:
+  // it kept a power-button boot from being misread as WakeupReason::
+  // AfterUSBPower (-> immediate startDeepSleep()) just because the device
+  // happened to be charging. Found in code review 2026-09-18, before it ever
+  // reached a device -- see docs/power-management.md, "The header's charging
+  // bolt".
+  return powerManager.isCharging();
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
 
-  const bool usbConnected = isUsbConnected();
+  // usbDetectPinHigh(), not isUsbConnected(): this needs "is USB physically
+  // present", and isUsbConnected()'s isCharging() fallback answers a
+  // different question once a charger tops off -- see its comment.
+  const bool usbConnected = usbDetectPinHigh();
 
   if (resetReason == ESP_RST_DEEPSLEEP &&
       (wakeupCause == ESP_SLEEP_WAKEUP_GPIO || wakeupCause == ESP_SLEEP_WAKEUP_EXT1)) {

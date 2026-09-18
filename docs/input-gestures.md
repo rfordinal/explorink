@@ -11,6 +11,17 @@ built. Every claim carries how it is known.
 `docs/touch-modes.md` is the touch-mode feature this analysis came out of. This
 file is about the input layer underneath it.
 
+**Premise changed 2026-09-17, and one branch is stranded by it.** T-2024 moved
+the map compose to the render task, so `loop()` no longer stalls for seconds and
+the frame-latch problem this file measures is largely gone. What is still broken
+is double-tap and long-press recognition. The unmerged `t266-gt911-task` branch
+contains both a sampling task (now probably unnecessary) and a recogniser (still
+needed), and
+[`input-gestures-handover-2026-09-17.md`](input-gestures-handover-2026-09-17.md)
+says which findings belong to which half, what ran on hardware, and the one
+measurement that should be taken before deleting anything. **Read it before
+touching that branch.**
+
 ## What is wrong: gesture recognition is not a layer
 
 `[read]` Tap / double tap / hold / auto-repeat are re-implemented in **six

@@ -1540,6 +1540,12 @@ class MapActivity final : public Activity,
   bool drawnLinkConnected_ = false;
   // -1 means "never drawn", which is not the same as 0 bars.
   int drawnBleBars_ = -1;
+  // What the battery icon last painted was charging or not. A flip here used
+  // to be impossible to observe on X4 Pro/T5 S3 Pro (isUsbConnected() was
+  // hardcoded false, see HalGPIO.cpp), so nothing needed to repaint faster
+  // than the minute tick. Now it can genuinely flip (plug/unplug), and a
+  // rider unplugging expects the bolt gone at once, not up to a minute late.
+  bool drawnCharging_ = false;
   // Minute-of-day last painted into the clock slot, 0..1439. -1 means no time
   // is known (no packet has carried a non-zero utc yet) and the slot is blank
   // -- so the transition into or out of "no clock" moves this value and
