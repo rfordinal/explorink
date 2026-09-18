@@ -126,16 +126,31 @@ constexpr float TOP_EDGE_MENU_GESTURE_FRAC_Y = 0.14f;
 constexpr unsigned long TOUCH_DOWN_SELECT_DELAY_MS = 90;
 constexpr unsigned long TOUCH_HELD_OVERRIDE_WINDOW_MS = 250;
 // How long the home key's single tap waits to find out whether a second one is
-// coming, now that the recogniser sees the finger's own timing.
+// coming. **500 ms, and narrowing it has already been tried and reverted.**
 //
-// It was 500 ms, because a deliberate double tap kept landing outside 300 ms --
-// but that window was measuring POLL LATENCY, not the finger: the events it
-// timed were stamped when the loop got round to reading them. With the
-// recogniser next to the read, Android's number applies as Android means it
-// (ViewConfiguration DOUBLE_TAP_TIMEOUT, 300 ms against event timestamps), and
-// 500 ms would now fuse two deliberate single taps -- free tapping on this key
-// was measured at intervals down to 240 ms.
-constexpr uint16_t kHomeKeyDoubleTapWindowMs = 300;
+// The argument for 300 was that the old 500 was compensating for POLL LATENCY --
+// events stamped when the loop got round to reading them rather than when the
+// finger moved -- and that with the recogniser next to the read, Android's
+// number applies as Android means it (ViewConfiguration DOUBLE_TAP_TIMEOUT,
+// 300 ms against event timestamps).
+//
+// That argument was half right, and the missing half is the whole point.
+// Measured A/B on an X4 Pro, 2026-09-15, same map, same render cadence, twenty
+// double taps during redraws each way:
+//
+//   old build, 500 ms window:  15/20 locked, ZERO spurious menus
+//   new build, 300 ms window:  spurious menus, often
+//
+// 500 ms was compensating for poll latency AND for the finger. During a render
+// the rider has no feedback at all -- nothing on the panel says the device is
+// working (parent T-2018) -- so the two presses drift to 350-450 ms apart, which
+// 500 ms catches and 300 ms resolves as a single tap. On the map a single tap
+// from this key is Confirm, so the miss does not merely fail: it OPENS A MENU
+// nobody asked for, and on e-ink that costs a refresh each way.
+//
+// Removing the latency did not remove the imprecision. Narrow this again only
+// once T-2018 gives the rider something to aim at, and measure the same A/B.
+constexpr uint16_t kHomeKeyDoubleTapWindowMs = 500;
 // How old a TAP may be when it is delivered. See pumpHomeKey() for why only the
 // tap expires.
 constexpr unsigned long kHomeKeyTapStaleMs = 2000;

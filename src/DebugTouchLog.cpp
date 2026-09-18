@@ -410,9 +410,11 @@ void reportGaps(Print& out) {
              static_cast<unsigned>(task.gapsOverLimit), static_cast<unsigned>(task.cancels),
              static_cast<unsigned>(task.frameOverflows));
   const auto keys = gpio.homeKeyCounters(true);
-  out.printf("KEYGESTURES:produced=%u,delivered=%u,queue_drops=%u,stale_taps=%u\n",
+  out.printf("KEYGESTURES:produced=%u,delivered=%u,queue_drops=%u,stale_taps=%u,tap=%u,double=%u,long=%u\n",
              static_cast<unsigned>(keys.produced), static_cast<unsigned>(keys.delivered),
-             static_cast<unsigned>(keys.queueDrops), static_cast<unsigned>(MappedInputManager::staleTapsDropped));
+             static_cast<unsigned>(keys.queueDrops), static_cast<unsigned>(MappedInputManager::staleTapsDropped),
+             static_cast<unsigned>(keys.taps), static_cast<unsigned>(keys.doubleTaps),
+             static_cast<unsigned>(keys.longPresses));
   MappedInputManager::staleTapsDropped = 0;
   out.printf("LOOPGAP_END\n");
 
