@@ -322,10 +322,17 @@ bool HalGPIO::isUsbConnected() const {
   // boards with no battery telemetry at all.
   //
   // Caveat, same one CrossPoint upstream documents for this exact fallback
-  // (HalGPIO.cpp, isUsbConnected()): charge termination at 100% reads as "not
-  // connected", because the STAT/charger-IC signal means "actively charging",
-  // not "USB present". Confirmed on X4 Pro hardware 2026-09-18: at 100% SoC
-  // the bolt does not show, which is expected charger behavior, not a bug.
+  // (HalGPIO.cpp, isUsbConnected()): this answers "actively charging", not
+  // "USB present" -- the two differ whenever a charger stops charging while
+  // USB stays connected. Two real cases on our own boards: charge
+  // termination at 100% (confirmed on X4 Pro hardware 2026-09-18: at 100%
+  // SoC the icon's bolt does not show, which is expected charger behaviour,
+  // not a bug), and T5 S3 Pro's dev workflow of disabling the charger on
+  // purpose to measure battery-only current draw with USB still attached.
+  // Neither is a regression here: T5 S3 Pro's usbDetect was already
+  // PIN_UNASSIGNED before this fallback existed, so isUsbConnected() was
+  // already unconditionally false in both cases -- this fallback only turns
+  // the true-charging case from a false negative into a correct positive.
   static const BatteryMonitor battery;
   return battery.isCharging();
 }
