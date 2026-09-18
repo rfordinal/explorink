@@ -1149,14 +1149,24 @@ move at no visible cost.
 threshold.** It had 8 as "unpleasant", from judging one panel after another --
 a harsher test than side by side, as the same tables showed today.
 
-**And the idle tail is not a residue lever at all.** 4 against 19 is
-indistinguishable on every surface tried, including after the dirtiest 7-pass
-soak. That follows from the table: an idle row is all-`3`, it drives no pixel.
-Erasure is the eraser prefix plus the twelve drive rows, so a longer tail waits
-and erases nothing extra. The 2026-09-09 claim that `idle=4` and `idle=6`
-failed is **withdrawn** -- those runs carried the no-pre-drive table underneath,
-and that is what left residue one clean could not lift. The tail's ~575 ms is
-pure settle, and a residue test cannot price it.
+**The idle tail is a residue lever after all, on one surface.** Shipped at
+`idle=6` on 2026-09-17, board A woke from the sleep screen and carried its logo
+as a ghost over the Home menu. A second T5 S3 Pro running the stock waveform
+beside it did not. Put back to the stock 19 on 2026-09-18.
+
+The mechanism was never wrong. An idle row is all-`3` and drives no pixel, so a
+longer tail still erases nothing: erasure is the eraser prefix plus the twelve
+drive rows, and the tail is settle. **The test was wrong.** Every residue trial
+ran the map and the menu and none ran sleep to Home, which is the one path where
+a full-screen solid has to be lifted. So "4 against 19 is indistinguishable" was
+only ever true of the paths tried, and the 2026-09-09 claim that `idle=4` and
+`idle=6` failed was withdrawn on 2026-09-17 on that same incomplete evidence.
+Both the claim and its withdrawal outran what had been looked at.
+
+What settle buys is still unpriced, and now there is a surface that reacts to
+it. **Open**: whether the ghost is the tail's length or the 8-pass fast table
+underneath it. The idle-19 build is on board B, board A stays at `idle=6` as the
+failing reference, and one sleep-to-Home on each answers it.
 
 **A defect fell out of it, `BUG-204` in the parent repo**: one clean does not
 fully erase Home. Walk the Home menu, take the single clean into tilesync, and
@@ -1171,6 +1181,10 @@ settings, pronounced with the 7-pass table.
   nothing survives it. Anything measured through that transition comes back
   spotless.
 - **Judging on Home** hides faint residue against its flat white.
+- **Never running sleep to Home** leaves the hardest surface untested. The sleep
+  screen is a full-screen solid and the Home menu that replaces it is mostly
+  white, so it is the widest area one clean ever has to lift. Every idle-tail
+  conclusion before 2026-09-18 was drawn without it.
 
 The single-clean paths are `map -> CMD:BUTTON back` and
 `Home -> CMD:GOTO_TILESYNC`. Use those.
