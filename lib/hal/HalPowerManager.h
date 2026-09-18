@@ -21,6 +21,9 @@ class HalPowerManager {
   mutable int _batteryCachedPercent = 0;         // Last read battery percentage (0-100)
   mutable unsigned long _batteryLastPollMs = 0;  // Timestamp of last battery read in milliseconds
 
+  mutable bool _chargingCached = false;
+  mutable unsigned long _chargingLastPollMs = 0;
+
   enum LockMode { None, NormalSpeed };
   LockMode currentLockMode = None;
   SemaphoreHandle_t modeMutex = nullptr;  // Protect access to currentLockMode
@@ -85,6 +88,21 @@ class HalPowerManager {
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
+
+  // True when the battery is actively charging. Cached for CHARGING_POLL_MS:
+  // HalGPIO::update() calls this (via isUsbConnected()) on every main-loop
+  // iteration, ~100 Hz on the map screen, and on boards with no usbDetect pin
+  // (T5 S3 Pro, Sticky) the uncached read is a real I2C transaction on a bus
+  // shared with the GT911 touch controller. Found in code review 2026-09-18,
+  // before it shipped -- see docs/power-management.md, "The header's
+  // charging bolt".
+  //
+  // Also guards against a transient I2C read failure: a dropped read keeps
+  // the last known-good value instead of reporting "not charging", so one
+  // bad transaction cannot look like an unplug/replug and cost two spurious
+  // e-ink repaints.
+  bool isCharging() const;
+  static constexpr unsigned long CHARGING_POLL_MS = 500;  // ms
 
   // Raw battery voltage in millivolts, averaged over `samples` reads. 0 when
   // the board has no battery backend.

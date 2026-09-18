@@ -2031,13 +2031,21 @@ void MapActivity::drawHeaderStatus() {
   // [0, kHeaderBarHeight) is wiped before anything is drawn.
   renderer.fillRect(0, 0, screenWidth, kHeaderBarHeight, false);
 
+  // Read before drawing, not after: GUI.drawHeader() below does its own
+  // isUsbConnected() read internally (BaseTheme.cpp) to paint the bolt. Two
+  // separate reads race if the state flips between them; reading first means
+  // a flip in that window is recorded as the *old* value, so the next poll
+  // still sees a change and self-corrects with one extra repaint, rather
+  // than latching a value that was never actually painted and leaving the
+  // stale bolt stuck until the minute tick -- the exact failure this
+  // mechanism exists to fix. Found in code review 2026-09-18, before it
+  // shipped.
+  drawnCharging_ = gpio.isUsbConnected();
+
   // Battery: same call every other screen makes (BaseTheme.cpp:363), with no
   // title/subtitle -- those draw nothing when null, leaving just the icon and
   // (setting-permitting) the percentage text this screen never had before.
   GUI.drawHeader(renderer, Rect{0, kHeaderMarginTop, screenWidth, kHeaderRowHeight}, nullptr, nullptr);
-  // This is the only path that draws the battery, so it is the only place
-  // that can honestly say what charging state is now on the panel.
-  drawnCharging_ = gpio.isUsbConnected();
 
   drawHeaderStatusStrip();
   drawHeaderPlaceName();
