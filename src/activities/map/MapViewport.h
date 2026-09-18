@@ -80,12 +80,25 @@ inline constexpr int kZoomStepCount = kMapZoomStepCount;
 // and 5/8 already read fine. One step of 1/8 at rungs 3-4 closes that gap
 // without touching the two rungs already confirmed, and keeps the ladder a
 // gradual taper instead of a flat run into a sudden drop.
+// Step 3 reads z12 (regional), not z11, since 2026-09-18. The "overview" LOD
+// (z11)'s road_classes is an include-list of the major network only
+// (mapbuilder/tilegen/build_config.json, "overview") -- no residential, no
+// living_street -- so a town with no motorway/trunk/primary running through it
+// (Trnava, on the host preview) rendered as an empty page at rung 3. z12's
+// road_classes is an EXCLUDE-list of just service/pedestrian/construction, so
+// residential comes back, at the cost of more and heavier tiles per screen
+// (half the ground edge per tile, and "regional" is the heavier LOD by content
+// -- mapbuilder/tilegen/build_config.json's own "regional" comment: 789 kB vs
+// 181 kB for a four-tile viewport). kMaxTiles=16 already covers this rung's
+// worst case at z12 (checked against the same rotated-viewport arithmetic
+// rungs 5-6 use below, not reproduced here). UNVERIFIED on hardware -- host
+// preview only.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
     //  mpp   z  marker/8  minMove
     {1.0, 13, 8, 12},   // step 0, detail
     {3.0, 13, 8, 10},   // step 1, detail
     {6.0, 12, 8, 8},    // step 2, regional
-    {12.0, 11, 7, 8},   // step 3, overview
+    {12.0, 12, 7, 8},   // step 3, regional (was z11/overview, see comment above)
     {20.0, 11, 7, 6},   // step 4, overview
     {32.0, 11, 6, 3},   // step 5, overview -- z11 past its natural range
     {45.0, 11, 5, 2},   // step 6, overview -- 24 x 40 km on the panel
