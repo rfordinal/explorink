@@ -1769,7 +1769,8 @@ void MapActivity::updateHeaderStatus() {
                          (destQuantisedDistance() != drawnDestDistance_ || destSector() != drawnDestSector_);
 
   if (!structural && !barsMoved && !minuteMoved && !destAppeared && !destMoved && !chargingChanged) return;
-  if (!structural && !minuteMoved && !destAppeared && !destMoved && !chargingChanged && now < nextBarsRepaintMs_) return;
+  if (!structural && !minuteMoved && !destAppeared && !destMoved && !chargingChanged && now < nextBarsRepaintMs_)
+    return;
   // The quantised value moved and nothing more urgent did: hold the row until
   // the floor is up. This is the whole cap -- without it a rider at road speed
   // repaints the header every second or two.
@@ -2591,9 +2592,8 @@ void MapActivity::drawZoomSideHints() {
   // layout constants here (tried 2026-08-06, reverted) drifts the moment
   // that theme's numbers change and only matches the one theme copied.
   //
-  // Symbols, not words: every override hardcodes SMALL_FONT_ID with no size
-  // parameter, and "Zoom In"/"Zoom Out" rotated into a ~30px-wide box reads
-  // as a blur. A single glyph is legible at that size and needs no font
+  // Symbols, not words: "Zoom In"/"Zoom Out" rotated into a ~30px-wide box
+  // reads as a blur. A single glyph is legible at that size and needs no font
   // control to prove it -- same "symbol over word in a tight space" call as
   // KeyboardEntryActivity.cpp:947's ">"/"<". Plain literals, not tr(): a
   // plus/minus is not language-dependent, matching that same precedent.
@@ -2601,7 +2601,29 @@ void MapActivity::drawZoomSideHints() {
   // (main.cpp:102-103, single-glyph constructor) and the hyphen is a short,
   // thin stroke even before the 90-degree rotation shrinks it further.
   // Doubled, it survives -- same glyph, twice the ink, no new font needed.
-  GUI.drawSideButtonHints(renderer, "+", "--");
+  //
+  // UI_10_FONT_ID, not the side-hint default SMALL_FONT_ID: same fix
+  // drawPanSideHints() already applies below, for the same reason -- a font
+  // two points bigger with a real regular+bold pair reads heavier than
+  // smallFontFamily's single glyph at any size. Unverified on glass as of
+  // this change; the pan hints' own legibility pass is what this borrows.
+  //
+  // Disabled at a ladder end, not hidden: this box has no row to remove, so
+  // it takes the same "still there, tucked toward the edge" treatment
+  // LyraTheme::drawButtonHints() already gives an empty front-hint label
+  // (its SMALL-sized button), via drawSideButtonHints()'s new
+  // topDisabled/bottomDisabled -- Base draws it as absent instead, matching
+  // its own front-hint convention. The menu's Zoom In/Out rows already hide
+  // at these exact bounds (openMapMenu(), zoomStep() > 0 / zoomStep() + 1 <
+  // kZoomStepCount) -- this box just didn't check them before. "+"/topBtn is
+  // Up/stepZoom(-1) (zoom in), "--"/bottomBtn is Down/stepZoom(+1) (zoom out).
+  const bool atMostZoomedIn = zoomStep() == 0;
+  const bool atMostZoomedOut = zoomStep() + 1 >= MapViewport::kZoomStepCount;
+  // bold=true: unlike the pan arrows just below, "+"/"-" actually differ
+  // between ubuntu_10's regular and bold cuts, so asking for REGULAR (every
+  // other drawSideButtonHints() caller's default) left them thin again even
+  // after the font-size fix above.
+  GUI.drawSideButtonHints(renderer, "+", "--", UI_10_FONT_ID, atMostZoomedIn, atMostZoomedOut, /*bold=*/true);
 }
 
 void MapActivity::drawPanSideHints() {
@@ -6235,7 +6257,6 @@ bool MapActivity::preventThrottle() {
   return redrawDueMs_ != 0 || arrivalRedrawDueMs_ != 0 || transfer_.status().active;
 }
 
-
 bool MapActivity::LockedPins::pinSet(std::string_view key, int32_t latE7, int32_t lonE7, uint32_t utc) {
   // drawPins() walks this store on the render task. A console `pin set` is the
   // one console command that rewrites it, and unlike a button press it cannot be
@@ -6391,7 +6412,6 @@ void MapActivity::render(RenderLock&&) {
     LOG_DBG(kLogTag, "frame composed on the render task, stack free %u bytes",
             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   }
-
 }
 
 void MapActivity::composeWaiting() {
@@ -7266,7 +7286,6 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     // No marker restore here: the caller draws the marker after this returns, so
     // the hatch cannot bury it. Drawing the style's puck here as well would only
     // leave it peeking out from under a smaller mode marker.
-
   }
   return missing;
 }

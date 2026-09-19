@@ -97,10 +97,11 @@ class LyraTheme : public BaseTheme {
   // 0 means "use this theme's own font" -- see BaseTheme.h's declaration for
   // why this can't just be a normal per-class default argument. Same for
   // btn3FontId/btn4FontId (0 means "same as fontId").
-  void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                       const char* btn4, int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const override;
+  void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3, const char* btn4,
+                       int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const override;
   void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
-                           int fontId = SMALL_FONT_ID) const override;
+                           int fontId = SMALL_FONT_ID, bool topDisabled = false, bool bottomDisabled = false,
+                           bool bold = false) const override;
   void drawTouchLockBox(GfxRenderer& renderer, Rect box) const override;
   bool frontHintBox(int index, int portraitWidth, int portraitHeight, Rect& out) const override;
   bool sideHintBox(int index, int portraitWidth, int portraitHeight, Rect& out) const override;
