@@ -364,11 +364,8 @@ same either way, but the sentence was false.)
 
 Every reference port already answers this the same way, and **none of them uses
 a packet FIFO** -- the packet is read on a task, not in an interrupt, because
-reading it means SPI. **Every row below is secondhand**: none of these projects
-is checked out on this machine, and the local prior-art notes
-(`docs/prior-art-opentrailpaper.md`, `docs/prior-art-meshcore.md`) do not carry
-these particular lines. Treat the file and line numbers as leads to re-check
-against the real repositories, not as citations:
+reading it means SPI. **Checked first-hand 2026-09-18**, after the repositories were cloned for the
+fix round below; the rows held exactly as written:
 
 | port | how |
 |---|---|
@@ -670,6 +667,77 @@ the rendering board read `rearm=20` after twenty pongs. The instrument is honest
 about what it measures and wrong about what it was documented to mean; a re-arm
 after our own transmit should be accounted separately from one that repairs
 something else.
+
+### A cold review, and what the reference ports already knew `[measured 2026-09-18]`
+
+`3cf46fb8` was reviewed by a reader who had not written it. Six findings, four
+of them new; each was re-read in the code before it was touched, and each was
+then taken to the reference ports rather than solved from scratch. Those ports
+are checked out now (`MeshCore`, `OpenTrailPaper`, `meshcore-paperui`), so the
+citations below are first-hand -- which also settles the table earlier in this
+section: `setDio1Action` really is at OpenTrailPaper's `src/lora_radio.cpp:70`,
+its mesh task really is core 0 priority 2 at `src/main.cpp:644`, and its wait
+really is a semaphore with a 250 ms timeout.
+
+**One funnel out of transmitting.** `CMD:LORA OFF` during an async pong left
+`gLoraTxInFlight` true forever: `lora.end()` destroyed the chip's own flag
+while the service task's early return on `!ready()` never reached the line that
+clears ours. The task then ticked every 100 ms for the rest of the session and
+`LORA_STATE` said `tx_air=1` on a radio that was off -- which also quietly
+broke the measured claim that the task costs nothing while the radio is off.
+MeshCore has the answer as structure: one `state` in the wrapper and one
+`idle()` that every path goes through, including a failed `startSendRaw()`, and
+`onSendFinished()` called from both the success and the timeout branch of
+`Dispatcher::loop()`. We took the principle, not the state enum -- a console
+does not need three named states -- as `loraEndRadioActivity()`.
+
+**No `wasListening` snapshot.** `loraReconfigure()` read the chip's state to
+decide what to restore, which is the conflation this whole design exists to
+avoid: during an async pong the chip is not listening, so a `POWER` or `SF`
+command mid-transmit restored "not listening" and left `pong=1` on a radio that
+had gone deaf. MeshCore keeps no such snapshot either -- every config change
+drops to `idle()` and the loop re-arms receive. The intent lives in
+`gLoraListenWanted` and the watchdog puts receive back.
+
+**The ping matches its own reply.** The pong has carried the sequence since the
+first version and nothing compared it, so a late pong for a timed-out ping, or
+one meant for another node, closed the wait with a round trip that never
+happened. MeshCore matches acks by an explicit four-byte id against a table of
+outstanding ones, and its code carries the note that the same ack can arrive
+twice. One outstanding ping is a design decision here, so a single value does
+what needs a table there.
+
+**The reply timeout is derived from time on air.** Two stamps: the round trip
+runs from the send starting, the timeout from the send finishing. The wait is
+four times the exchange's own airtime, floored at the old 10 s. MeshCore sizes
+its own timeouts off `getEstAirtimeFor()` (`src/Mesh.cpp`). T-2030, closed.
+
+**And `xosc` can answer `unknown`.** RadioLib's `getDeviceErrors()`
+zero-initialises its buffer and throws away the transport's status, so a dead
+bus reads 0 -- the same value as "no errors" (7.7.1,
+`SX126x_commands.cpp`). The verdict is a tri-state now, `clearDeviceErrors()`
+and both `standby()` calls are checked, and the second standby doubles as the
+bus-alive proof the error read cannot give. **No reference port does this**:
+MeshCore only debug-prints that register (`CustomSX1262.h`). This one is ours.
+
+One finding is left open on purpose: `rearm=` still counts the ordinary
+re-listen after our own transmit (T-2031). The regression below still reads
+`rearm=20` after twenty pongs.
+
+**What the boards said**, build `4037ad06`, both T5 S3 Pro:
+
+| check | result |
+|---|---|
+| twenty packets through rung 6 renders | 20 of 20, `rx=20 tx=20`, `tx_air=0` |
+| `OFF` caught with a pong in flight | `tx_air=1` before, 0 after, 0 across the next `ON` |
+| reply timeout at SF9/BW7.8 | `after=30592ms`, where it was a flat 10000 |
+| `POWER` landing inside a pong | `want=1` kept, receive back, next ping answered |
+| `CMD:LORA OSC` on a healthy radio | `xosc=ok` |
+
+The pong whose send the reconfigure cancelled went unanswered. That is the
+intended behaviour, not a loss: a config change mid-send ends the send.
+
+Costs 264 B of flash and 8 B of static RAM.
 
 ### What a hardware pass has to check
 
