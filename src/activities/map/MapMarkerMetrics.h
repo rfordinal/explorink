@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MapMarkerShape.generated.h"
+#include "MapRideMode.h"
 #include "MapStyle.h"
 #include "MapViewport.h"
 
@@ -182,19 +183,32 @@ constexpr bool markerFitsEveryStyleVariant() {
       const MapStyle& style = kMapStyleVariants[kMapStyleIndex[mode][step]];
       const MarkerMetrics m = markerMetricsFor(style, MapViewport::kZoomLadder[step].markerScale8);
       if (m.box > kMarkerBoxSize) return false;
+      // hikeHandReach is checked for every mode, not only Hike: it is also
+      // the uncertainty wedge's reach (MapFixTrust::MarkerStyle::Head::Wedge),
+      // which any mode can be asked to draw -- its two edges run out to
+      // hikeHandReach in the directions one heading step either side of the
+      // fix, so every vertex sits on the same circle the hand's tip does.
       if (m.hikeHandReach + m.hikeHandHalfW > m.box / 2) return false;
-      // The uncertainty wedge (MapFixTrust::MarkerStyle::Head::Wedge) needs no
-      // bound of its own: its two edges run out to hikeHandReach in the
-      // directions one heading step either side of the fix, so every vertex
-      // sits on the same circle the hand's tip does and the check above
-      // already covers it.
+      // Cycle/Ride's heading arrow, by contrast, is read only when THAT mode
+      // is the one being drawn (MapActivity::drawPositionMarker's mode
+      // branches never reach the arrow for Hike) -- so cycleTipLen is only
+      // ever combined with Cycle's own box, never Hike's or Ride's. Checking
+      // it against every mode's box the way hikeHandReach is checked would be
+      // wrong now that box varies per mode (`layers.marker`'s `when`): a
+      // hiker's `hike` block shrinking ring/halo_margin must not fail the
+      // build over a ride/cycle tip length it will never draw at that size.
       //
-      // Cycle/Ride's heading arrow: its farthest vertex
-      // (kMarkerArrowMaxReachPermille, from marker-ride.svg) scaled by tipLen
-      // must stay inside the patch box too, or a move leaves it behind on the
-      // map.
-      if (m.cycleTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
-      if (m.rideTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
+      // Its farthest vertex (kMarkerArrowMaxReachPermille, from
+      // marker-ride.svg) scaled by tipLen must stay inside the patch box, or a
+      // move leaves it behind on the map.
+      if (mode == static_cast<uint8_t>(MapRideMode::Cycle) &&
+          m.cycleTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) {
+        return false;
+      }
+      if (mode == static_cast<uint8_t>(MapRideMode::Ride) &&
+          m.rideTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) {
+        return false;
+      }
     }
   }
   return true;
