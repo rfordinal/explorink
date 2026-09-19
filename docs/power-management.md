@@ -85,9 +85,132 @@ decides how much of a slope is the discharge curve rather than the load).
 | **Map in observation mode, radio off** | X4 | **down** | **10** | **12.27 +/- 0.18** | see note | 2026-08-22 | `0b99e70e` | 4151-4047 mV, **6 h 15 min** | **[measured]**, and the only row here taken across a wide enough band to trust: 104 mV of movement, 1.5 % error. **1.76 %/h, 56.8 h on a charge.** |
 | **Map, connected, frontlight 40 %, GNSS on** | **T5 S3 Pro** | connected | **80** | -66.2 | **135** | 2026-09-03 | `0.2.0-t5s3pro` | 4048-3832 mV, **3.21 h** | **[measured]**, and the only row here whose mA is *not* a voltage conversion -- a BQ27220 coulomb count. **27 steps in 3.005 h = 134.8 +/- 1.5 mA, 11.1 h on a charge.** Was printed as 131 until 2026-09-04; that came from first-row-to-last-row, which counts a boot-entry step it did not measure. See "The T5 S3 Pro's first ride" |
 | **Map, connected, frontlight OFF, GNSS on** | **T5 S3 Pro** | connected | **80** | -40.7 | **91** | 2026-09-04 | `0.2.0-t5s3pro` | 4013-3810 mV, **5.26 h** | **[measured]**, same gauge, same build, same screen. **31 steps in 5.092 h = 91.3 +/- 0.6 mA, 16.4 h on a charge.** The longest and tightest ride row in this file. See "The frontlight is tens of milliamps, not 8" |
+| **Map, observation mode (BLE off, GNSS+LoRa rail still up)** | **T5 S3 Pro** | **BLE off, GNSS+LoRa up** | -- | -- | **~93.5 VBUS (whole-run) / ~90.9 VBUS (steady) -- NOT endurance, see note** | 2026-09-19 | unrecorded (`ENABLE_BATT_CMD` not compiled in, build string unread this run) | 7.5 h continuous, VBUS meter; battery 100%->89% over the same window | **[measured]**, but the VBUS mA is not board draw and USB stayed connected the whole run, so it is not an endurance number -- battery actually lost 11 % (21.98 mA, itself still a plugged-in figure). See "Observation mode on T5 S3 Pro is not a radio-down floor" below for the arithmetic and what is still `[open]` |
 | Tile sync, transfer running | X4 | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
 | Light sleep, radio up | X4 | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
 | Deep sleep, latch held | X4 | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
+
+### Observation mode on T5 S3 Pro is not a radio-down floor
+
+**Measured 2026-09-19, USB inline meter (JT-UM120/FNB58), T5 S3 Pro board A,
+overnight, 00:48-08:20.** 18 chunks of exactly 1500 s each, no meter deaths, no
+manual intervention. Full log: `tools/usbmeter_read.py`, one chunk per
+invocation (the meter's own USB-port reset on each start is what makes chunking
+survive its documented death mode -- `docs/usb-power-meter.md`, "One reader per
+run").
+
+Raw VBUS current fell into two phases:
+
+- **Chunks 1-2 (50 min): a settling tail.** Three burst events, ~80 s each,
+  peaking 350-480 mA, at roughly 0s/272s/638s into the run, then nothing.
+- **Chunks 3-18 (6 h 40 min): dead flat.** 90.35-91.0 mA on every single chunk,
+  zero events above 0.2 A.
+
+Aggregate over all 18 chunks: 701.283 mAh, 3664.284 mWh, 27000.1 s (7.500 h) ->
+**93.5 mA whole-run average**. Chunks 3-18 alone (16 chunks, 6.667 h): 605.745
+mAh -> **90.86 mA steady-state average**.
+
+**Why it is this high.** X4's observation-mode row above is 12.27 mV/h, about
+11-13 mA equivalent, because observation mode on X4 means the radio is down and
+the CPU floors at 10 MHz -- there is nothing else on that board to keep running.
+T5 S3 Pro has GNSS and LoRa, and neither is gated by observation mode:
+
+- `MapActivity.cpp:2809-2822` -- the GNSS receiver (and LoRa, which shares the
+  same power rail through `gnssPowerEnable()` in `main.cpp`) starts when the map
+  screen opens and is deliberately **not** tied to which screen mode is active:
+  "The receiver comes up with the map and goes down with it, when the rider
+  asked for it... not something to leave on behind a screen that is not using a
+  position." It only stops in `onExit()` (`MapActivity.cpp:3160`, `gnss.end()`),
+  i.e. when the map activity itself is left.
+- `docs/map-observation-mode.md` and `ble-advertising.md` ("Observe mode: no
+  radio when there is nothing to send or receive") describe exactly one radio
+  being gated by observation mode: BLE advertising. GNSS and LoRa are not
+  mentioned because they are not touched.
+
+So this run measured "map open, BLE off, GNSS+LoRa rail fully powered" -- a
+real and useful number, just not the radio-down floor the row name implies on
+X4. The settling tail in chunks 1-2 is consistent with a GNSS acquisition
+finishing and the receiver moving from search to steady tracking, though that
+mechanism is **[assumed]**, not traced in code this session.
+
+**The first version of this section computed endurance straight off the VBUS
+average (93.5 mA -> "13.6 h") and it was wrong, caught by the maintainer the
+same morning: the phone's own battery read 100 % at the start of the run and
+89 % at the end.** 11 % of the 1500 mAh nameplate is 165 mAh over the run's
+7.508 h wall clock (00:48:45-08:20:14) -- **21.98 mA actually left the
+battery**, a quarter of what the meter read at VBUS. The reason is method,
+not arithmetic: **the meter can only read anything with USB connected**, and
+with USB connected the system runs substantially off VBUS directly, not off
+the battery. VBUS current and battery discharge current are two different
+things whenever a charger sits between them, which is exactly what
+`docs/usb-power-meter.md` already says ("VBUS milliamps are not board
+milliamps") and what this whole campaign's method (c) already leans on
+(difference two VBUS states, never read one VBUS number as absolute
+consumption). Computing an absolute endurance figure directly from one VBUS
+average broke that rule.
+
+**What the two numbers together do support:** since the battery net
+*discharged* the whole night despite being plugged in, charging was not doing
+anything material -- if it had been, the battery would have gained charge, not
+lost 11 %. So essentially all of the ~476-489 mW pulled from the wall went
+either straight to powering the system or was lost in the charger's own
+conversion, and only the shortfall the wall could not cover (the 21.98 mA)
+had to come from the cell. That overhead -- the "cable's own consumption",
+arithmetically -- is a power-domain subtraction:
+
+```
+P_vbus = V_bus_avg * I_vbus_avg  = 5.23 V * 93.5 mA  ~= 489.0 mW  (measured)
+P_batt = V_batt_avg * I_batt_avg = 4.10 V * 21.98 mA ~=  90.1 mW  (V_batt [assumed],
+                                                            no gauge this run;
+                                                            high-SoC band, 100->89%)
+base_sum (charger/cable overhead, invisible to the battery ledger)
+        = P_vbus - P_batt ~= 398.9 mW  (~82 % of what the meter read)
+```
+
+`base_sum` is not waste in the everyday sense -- most of it is the system's
+real, useful power draw, just delivered by the cable instead of the cell. It
+answers "how much of the meter's number never touched the battery", not "how
+much power this state truly costs."
+
+**What none of this answers, and stays `[open]`:** the actual unplugged,
+battery-only draw in this state. **21.98 mA is not that number either** -- it
+is "how fast the battery drains while a charger is also feeding the system",
+which is a different, easier state than running on the cell alone (no free
+489 mW subsidy from the wall). Pull the cable entirely and the whole system
+load falls on the battery; the honest way to that number is the same one the
+two T5 S3 Pro rows above already use -- an unplugged run against the BQ27220
+gauge (`CMD:BATT`), not this meter. That command was unavailable on this run's
+build (see below), so this remains the next thing to measure, not something
+derivable from tonight's data.
+
+**What this run could not check, and why:**
+
+- **No BQ27220 gauge cross-check.** `CMD:BATT` answered `ERR unknown_command`
+  on the build running that night -- `ENABLE_BATT_CMD` was not compiled in, so
+  there was no coulomb-count second opinion the way the two rows above have.
+- **Charging-terminated status was not queried** (`CMD:CHARGE` timed out rather
+  than answering during setup, and it was not retried with a DTR/RTS pulse
+  because that risks resetting the S3 mid-run -- `CLAUDE.md`, "Never reset the
+  device to observe it"). **Resolved indirectly by the battery reading**,
+  though: a cell that was materially charging would have gained percentage
+  overnight, not lost 11 %, so charging was not doing anything significant
+  during this run even though the command never confirmed it. **The net-loss
+  argument alone cannot rule out a small charge current running at the same
+  time as a larger system draw** -- the cell nets negative either way, and
+  `base_sum` cannot be split into "charger overhead", "system power fed
+  straight from VBUS" and "a trickle still going into the cell" from this
+  data alone. **The clean way to settle it: run the same state with the USB
+  cable unplugged entirely** -- no VBUS, no charger in the loop, battery
+  percentage or the BQ27220 gauge as the only instrument. That also is the
+  only way to get the true unplugged endurance number (see above), so it
+  closes both open questions in one run.
+- **Build identity unread.** The running build's version string was not
+  captured (same reason as above -- no serial command was retried after the
+  first two timed out, to avoid disturbing the state being measured).
+
+Raw per-chunk logs (18 files, ~4-7 MB each) are not committed; they live in the
+session's scratchpad from the run that produced this section, available to
+reprocess if the exact per-sample trace is ever needed.
 
 ### What each feature costs
 
