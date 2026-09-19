@@ -31,6 +31,23 @@ Why it is a trade rather than a bug, and what else it costs:
 [`map-header-status.md`](map-header-status.md), "One radio per session, so one
 set of icons".
 
+## Observe fetches too, since 2026-09-19
+
+Autosync used to be Follow-only in two places at once: `recheckHatchedTiles()`
+returned 0 outside Follow, and `MapActivity::loop()` stopped the BLE server
+while observing. Together they meant a rider who jumped to a pin over an
+unmapped area -- which enters Observe -- could not get those tiles at all.
+
+Both were lifted for the one case that pays for itself: tiles hatched on the
+frame in front of the rider. `recheckHatchedTiles()` now gates on
+`overviewShown_` alone (a whole-route overview still has no autosync, and
+`lastTileRange_` really is stale there -- `renderRouteOverview()` never writes
+it, while an Observe pan does, through `renderViewport()`), and the radio stays
+up while that count is non-zero. `ble-advertising.md`, "Observe mode", has the
+radio half and what it costs.
+
+Unverified on hardware as of 2026-09-19.
+
 ## A tile that is out of date is a different list
 
 This store is about tiles the device **does not have**. A tile that opens fine

@@ -1064,8 +1064,17 @@ void MapActivity::maybeAutoSyncTiles() {
     // for the next full re-render -- see recheckHatchedTiles() for why that
     // wait can run to 15+ minutes on a straight leg with a route loaded.
     want = recheckHatchedTiles();
-    if (want == 0) return;
   }
+
+  // Published for the BLE block in loop(), which asks the same question this
+  // method just answered -- is there anything on this screen a phone could
+  // supply -- and must not walk the mask a second time to get it.
+  // Zero while autosync is off: the rider turned the ask off, so nothing will
+  // be asked for, and a radio kept up for an ask that never goes out is the
+  // "no radio when there is nothing to send or receive" rule broken
+  // (docs/ble-advertising.md).
+  fetchableOnScreen_ = SETTINGS.mapAutoSyncTiles == 0 ? 0 : want;
+  if (want == 0) return;
 
   // Stale tiles are NOT counted here, and that is the design rather than an
   // omission. A stale tile is one the phone found by reading the index, so the
@@ -1092,11 +1101,20 @@ void MapActivity::maybeAutoSyncTiles() {
 }
 
 uint32_t MapActivity::recheckHatchedTiles() const {
-  // Same scope as a fresh hatch: an overview or the observation screen has no
-  // autosync, and lastTileRange_ is left stale rather than cleared while
-  // either is up (only renderViewport() writes it), so it must not be trusted
-  // here just because valid is still true.
-  if (screenMode_ != MapScreenMode::Follow || overviewShown_) return 0;
+  // Same scope as a fresh hatch: the whole-route overview has no autosync, and
+  // lastTileRange_ is left stale rather than cleared while it is up (only
+  // renderViewport() writes it), so it must not be trusted here just because
+  // valid is still true.
+  //
+  // **Observe counts, since 2026-09-19.** It used to be excluded with the
+  // overview, on the reasoning that an observing rider is not riding into the
+  // gap. A pin's Show and Nearby's View on map both land in Observe
+  // (docs/map-observation-mode.md), so the rider is looking at exactly the
+  // area they want tiles for -- and Observe does re-render through
+  // renderViewport() on every pan, so this mask is the frame on screen rather
+  // than a stale one. Excluding it meant the ask went out once at most, from
+  // the fresh hatch, and never again.
+  if (overviewShown_) return 0;
   if (!lastTileRange_.valid || lastTileRange_.unavailableMask == 0) return 0;
 
   const MapViewport::TileRange range{lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0, lastTileRange_.col1,
@@ -2881,6 +2899,7 @@ void MapActivity::onEnter() {
   // back is asking for the picture again, and making them wait out a cap armed
   // before they left would look like the feature is off.
   autoSyncWantCount_ = 0;
+  fetchableOnScreen_ = 0;
   autoSyncPending_ = 0;
   autoSyncArrived_ = false;
   autoSyncNextAskMs_ = 0;
@@ -3625,7 +3644,16 @@ void MapActivity::loop() {
   // rider would get an advertising device the moment they entered Follow.
   if (bleInUse_) {
     const bool transferActive = transfer_.status().active;
-    const bool needBle = screenMode_ == MapScreenMode::Follow || transferActive;
+    // The third term is Observe with tiles a phone could still supply
+    // (fetchableOnScreen_, published by maybeAutoSyncTiles() above). A pin's
+    // Show or Nearby's View on map lands in Observe over an area the card does
+    // not have, and dropping the radio there is precisely what makes those
+    // tiles unreachable -- the rider is looking at the gap they need filled.
+    // It falls back to 0 on its own and the radio goes down again: an arrival
+    // arms a redraw (arrivalRedrawDueMs_), that redraw re-derives the mask, and
+    // a tile the supplier refused stops counting until its refusal expires
+    // (MissingTilesStore).
+    const bool needBle = screenMode_ == MapScreenMode::Follow || transferActive || fetchableOnScreen_ > 0;
     auto& ble = freeink::BlePositionServer::getInstance();
     if (needBle) {
       if (!ble.isRunning() && !bleStartFailed_) {

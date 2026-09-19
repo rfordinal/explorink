@@ -72,6 +72,13 @@ The same "no fix reaches the screen while observing" fact is also why
 Observe is active and no transfer is moving bytes -- `ble-advertising.md`,
 "Observe mode: no radio when there is nothing to send or receive".
 
+**One exception since 2026-09-19: hatched tiles.** A fix has nothing to deliver
+to this screen, but a missing tile does, and Observe is where the rider lands
+after a pin's `Show` or Nearby's `View on map` -- often on an area the card
+does not cover. So the radio stays up while the frame is hatching tiles the
+supplier has not refused, and drops again once they have arrived. Same doc,
+same section.
+
 The live position marker is not drawn on the pan anchor while observing
 (`renderViewport()`'s `if (screenMode_ != MapScreenMode::Observe)` guard
 around `drawPositionMarker()`): the anchor is a pan target the rider chose to

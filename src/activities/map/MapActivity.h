@@ -608,6 +608,11 @@ class MapActivity final : public Activity,
   // Falls back to recheckHatchedTiles() when nothing was freshly hatched this
   // tick -- see that method for why a full re-render is not what this waits
   // for.
+  //
+  // Also publishes fetchableOnScreen_ for loop()'s BLE block, before any of
+  // its own early returns: whether the radio is worth keeping up is a
+  // different decision from whether an ask goes out now, and only the ask is
+  // rate-capped.
   void maybeAutoSyncTiles();
   // Re-derives autoSyncWantCount_ from the last reset's own tile range and
   // missing mask (lastTileRange_), instead of a fresh hatch.
@@ -1462,12 +1467,21 @@ class MapActivity final : public Activity,
   // already refused by the supplier. 0 means there is nothing to ask for.
   // Written by drawMapLayers(), consumed and cleared by maybeAutoSyncTiles().
   uint32_t autoSyncWantCount_ = 0;
+  // The same count, published rather than consumed: what maybeAutoSyncTiles()
+  // worked out this tick, left standing for loop()'s BLE block to read. It is
+  // the answer to "could the radio still fetch something for this screen",
+  // which is why Observe keeps the radio up over a gap instead of dropping it
+  // (docs/ble-advertising.md, "Observe mode"). 0 whenever autosync is off, so
+  // the radio decision cannot outlive the setting that feeds it.
+  uint32_t fetchableOnScreen_ = 0;
   // The last reset's own tile range and missing mask, kept for
   // recheckHatchedTiles() to re-scan between resets. Written only by
   // renderViewport() (never by renderRouteOverview() -- an overview has no
-  // autosync), so it is stale, on purpose, while the overview or observation
-  // screen is up; recheckHatchedTiles() gates on screenMode_/overviewShown_
-  // rather than trusting valid alone for that reason. A field-for-field copy
+  // autosync), so it is stale, on purpose, while the overview is up;
+  // recheckHatchedTiles() gates on overviewShown_ rather than trusting valid
+  // alone for that reason. Observe is **not** in that group: a pan renders
+  // through renderViewport() like any other frame, so the mask is current
+  // there. A field-for-field copy
   // of what renderViewport() already builds for consoleState_.setTileRange()
   // (MapCommandConsole.h, MapTileRangeSnapshot), not a second convention.
   MapTileRangeSnapshot lastTileRange_;

@@ -32,8 +32,45 @@ the app's bridge service when it appears (`../../docs/ble-app-wake.md`).
 MapScreenMode::Observe` (`MapActivity.h:649`) **and** no file transfer is
 moving bytes (`transfer_.status().active`). It comes back the moment either
 condition flips: returning to Follow, or a transfer starting while still
-observing (autosync itself is Follow-only, `recheckHatchedTiles()`, but a
-transfer already in flight when Observe was entered is not interrupted).
+observing (a transfer already in flight when Observe was entered is not
+interrupted).
+
+**A third condition since 2026-09-19: tiles the screen is hatching.** The two
+above answer "is anything moving"; this one answers "is there anything the
+radio could still fetch for what is on the panel". `needBle` is now
+`Follow || transferActive || fetchableOnScreen_ > 0`, where
+`fetchableOnScreen_` is the count `maybeAutoSyncTiles()` already works out each
+tick -- tiles hatched on the current frame and not refused by the supplier
+(`MapActivity.h`). Unverified on hardware as of this writing.
+
+Why it had to change: a pin's `Show` and Nearby's `View on map` both enter
+Observe (`docs/map-observation-mode.md`), and they enter it on an area the
+rider chose precisely because they want to look at it. When the card has no
+tiles there, the old rule dropped the radio over the one screen with the most
+to fetch, so the hatch stayed for as long as the rider looked at it. Two halves
+were needed, not one: the radio, and `recheckHatchedTiles()`, which was
+Follow-only and so never repeated the ask in Observe.
+
+It goes back down on its own, which is the property that keeps the rule
+honest -- no timer, no new state:
+
+- A tile arrives, `drainTransferredTiles()` arms `arrivalRedrawDueMs_`, the
+  redraw re-derives the mask, and the count falls.
+- The supplier answers `skip`, `MISSING_TILES.isRefused()` starts returning
+  true for that tile, and it stops counting until its refusal expires.
+- All tiles land or are refused: the count is 0, `ble.end()` runs on the next
+  tick.
+
+`fetchableOnScreen_` is held at 0 while `mapAutoSyncTiles` is off. With the ask
+off nothing would be asked for, so a radio kept up for it would be exactly the
+case this section's title rules out.
+
+**Open, and the cost of the change:** `preventAutoSleep()` reads
+`isRunning()`, so Observe over a gap now blocks idle sleep the way Follow
+always has -- including when no phone is in range to answer, where the radio
+advertises until the rider leaves the area or the screen. Whether that wants a
+deadline (keep the radio for N minutes after the last arrival, then give up) is
+undecided; it needs a real ride to say whether the case happens.
 
 Why Observe specifically: a fix received while observing does not redraw at
 all -- `applyFix()` just records it into `observeReturnLatE7_`/`Lon_` and
