@@ -723,8 +723,27 @@ static bool gLoraPingWaiting = false;
 
 // A pong that never comes has to expire, or the next reply -- minutes later,
 // to a different ping -- would be reported with a round trip measured from the
-// wrong send. 10 s is far past the ~500 ms a working link takes.
-static constexpr unsigned long kLoraPongWaitMs = 10000;
+// wrong send.
+//
+// **The wait is derived from the packet's own time on air, not fixed.** A
+// constant is wrong at both ends of the rung ladder: 10 s is an age at
+// SF8/BW62.5, and at SF12 it had already expired before the packet left the
+// antenna -- measured 2026-09-17, a ping with 20,067 ms of air printed
+// LORA_PING_TIMEOUT 55 ms after LORA_OK:ping (T-2030). MeshCore sizes its own
+// timeouts off getEstAirtimeFor() for the same reason.
+//
+// Four times the round trip's own airtime, floored at 10 s so a fast rung keeps
+// the behaviour the bench is used to: the reply is a different, longer packet,
+// and the far end needs a moment to build it.
+static constexpr unsigned long kLoraPongWaitFloorMs = 10000;
+static unsigned long gLoraPongWaitMs = kLoraPongWaitFloorMs;
+
+// Two stamps, because they answer different questions. The round trip is
+// measured from when the send started -- that is what a link test means by
+// "how long did the exchange take". The timeout runs from when the send
+// *finished*, because until then the far end has not heard anything and
+// counting against it is counting our own airtime as their silence.
+static unsigned long gLoraPingDoneMs = 0;
 
 static const LoraPins kT5S3LoraPins = {
     static_cast<int8_t>(T5S3_LORA_CS),    // NSS 46, also the panel's pin_oe/pin_pwr
@@ -898,6 +917,40 @@ static void IRAM_ATTR loraDio1Isr() {
   if (higherPriorityWoken == pdTRUE) portYIELD_FROM_ISR();
 }
 
+// Three words for three answers. `unknown` is the one that matters: it means
+// the test could not be run, not that it failed, and a bench that reads it as
+// a pass or a fail is reading a number nobody measured.
+static const char* loraOscText(LoraRadio::OscillatorVerdict v) {
+  switch (v) {
+    case LoraRadio::OscillatorVerdict::Started:
+      return "ok";
+    case LoraRadio::OscillatorVerdict::Failed:
+      return "FAILED";
+    default:
+      return "unknown";
+  }
+}
+
+// Ends whatever the radio was doing, in one place.
+//
+// **Every path out of transmitting goes through here**, which is the shape
+// MeshCore's `RadioLibWrapper::idle()` has for the same reason: a stop, a
+// reconfigure and a failed start each leave the chip somewhere, and a state
+// that is cleared on only some of those paths is the bug. Reviewed
+// 2026-09-18, before this existed: `CMD:LORA OFF` during an async pong left
+// `gLoraTxInFlight` true forever, because `lora.end()` destroyed the chip's
+// own flag while the service task's early return on `!ready()` never reached
+// the line that clears ours. The task then ticked every 100 ms for the rest of
+// the session and `LORA_STATE` reported `tx_air=1` on a radio that was off.
+//
+// It deliberately does NOT touch gLoraListenWanted. That is the caller's
+// intent, not the chip's state, and the service task's watchdog is what puts
+// receive back -- see loraServiceStep().
+static void loraEndRadioActivity() {
+  if (lora.ready() && lora.transmitting()) lora.abortTransmit();
+  gLoraTxInFlight = false;
+}
+
 // Records what the caller wants the radio to be doing and kicks the task, so a
 // radio that just started listening is serviced now rather than at the end of
 // the previous wait.
@@ -961,6 +1014,7 @@ static bool loraStart() {
 static void loraStop() {
   LoraLock lock;
   loraWantListening(false);
+  loraEndRadioActivity();
 
   // Before end(), because end() parks the chip by holding NRESET low -- and
   // that line moving with an interrupt still armed on DIO1 is a wake for a
@@ -1000,7 +1054,15 @@ static bool loraReconfigure() {
   LoraLock lock;
   if (!lora.ready()) return true;  // nothing running; the new value applies at the next ON
 
-  const bool wasListening = lora.listening();
+  // **No `wasListening` snapshot.** An earlier version took one here and used
+  // it to decide what to restore, which is reading the chip's state to find
+  // the caller's intent -- the exact conflation this design exists to avoid.
+  // Found in review 2026-09-18: during an async pong the chip is not
+  // listening, so a POWER or SF command mid-transmit restored "not listening"
+  // and left `pong=1` on a radio that had gone deaf. MeshCore does not keep
+  // such a snapshot either; every config change there drops to `idle()` and
+  // the loop re-arms receive.
+  loraEndRadioActivity();
   lora.clearPacketAction();
   lora.end();
   if (!lora.begin(kT5S3LoraPins, gLoraConfig)) {
@@ -1013,12 +1075,12 @@ static bool loraReconfigure() {
   // every console command and never reports a packet until the next tick.
   lora.setPacketAction(loraDio1Isr);
   if (!gLoraIsrWanted) lora.clearPacketAction();
-  if (wasListening && !lora.startListening()) {
-    gLoraPongMode = false;
-    loraWantListening(false);
-    return false;
-  }
-  loraWantListening(wasListening);
+
+  // The intent is untouched, so the watchdog in loraServiceStep() puts receive
+  // back on its next pass -- within one tick. Re-arming here as well only
+  // closes that tick, and its failure is not fatal: the watchdog retries and
+  // counts, which is more than this return value could say.
+  if (gLoraListenWanted) lora.startListening();
   return true;
 }
 
@@ -1184,10 +1246,12 @@ static void loraServiceBegin() {
 static void loraDrain() {
   if (gLoraRxQueue == nullptr) return;
 
-  if (gLoraPingWaiting && (millis() - gLoraPingSentMs) > kLoraPongWaitMs) {
+  // From gLoraPingDoneMs, not gLoraPingSentMs: the wait starts when our packet
+  // is off the antenna. See the two stamps above.
+  if (gLoraPingWaiting && (millis() - gLoraPingDoneMs) > gLoraPongWaitMs) {
     gLoraPingWaiting = false;
     logSerial.printf("LORA_PING_TIMEOUT:seq=%lu after=%lums\n", static_cast<unsigned long>(gLoraPingSeq),
-                     kLoraPongWaitMs);
+                     gLoraPongWaitMs);
   }
 
   const uint32_t dropped = __atomic_exchange_n(&gLoraRxQueueDrops, 0, __ATOMIC_RELAXED);
@@ -1226,7 +1290,18 @@ static void loraDrain() {
       continue;
     }
 
-    if (gLoraPingWaiting && strncmp(text, "PONG ", 5) == 0) {
+    if (gLoraPingWaiting && strncmp(text, "PONG ", 5) == 0 && strtoul(text + 5, nullptr, 10) == gLoraPingSeq) {
+      // **The sequence is compared, not just the word.** The reply has carried
+      // it since the first version and nothing read it, so a late pong for a
+      // ping that had already timed out -- or a pong meant for another node --
+      // closed the current wait and printed a round trip that never happened.
+      // MeshCore matches its acks by an explicit 4-byte id for the same reason,
+      // and its code carries the note that the same ack can arrive more than
+      // once.
+      //
+      // One outstanding ping by design (see the seq bookkeeping above), so a
+      // single value is enough where MeshCore needs a table.
+      //
       // Measured from the task's arrival stamp, not from now: the console may
       // be several seconds behind a render and a round trip timed here would
       // report the panel's latency as the link's.
@@ -2629,10 +2704,9 @@ void loop() {
             // the TCXO never started, because RadioLib falls back to the
             // crystal without telling anyone.
             uint16_t oscErrors = 0;
-            const bool osc = lora.oscillatorStarts(&oscErrors);
             logSerial.printf("LORA_OK:on chip=%s tcxo=%.1fV xosc=%s errors=0x%04X\n", lora.chipVersion(),
-                             static_cast<double>(gLoraConfig.tcxoVoltage), osc ? "ok" : "FAILED",
-                             static_cast<unsigned>(oscErrors));
+                             static_cast<double>(gLoraConfig.tcxoVoltage),
+                             loraOscText(lora.oscillatorStarts(&oscErrors)), static_cast<unsigned>(oscErrors));
           } else {
             logSerial.printf("LORA_ERR:begin failed err=%d (rail, reset, tcxo or not an SX1262)\n", lora.lastError());
           }
@@ -2691,6 +2765,13 @@ void loop() {
               if (lora.transmit(payload)) {
                 gLoraTxCount++;
                 gLoraPingSentMs = before;
+                // The reply clock starts here, after the packet is off the
+                // antenna, and its length is this exchange's own airtime.
+                gLoraPingDoneMs = millis();
+                const uint32_t outMs = lora.timeOnAirMs(strlen(payload));
+                const uint32_t replyMs = lora.timeOnAirMs(sizeof("PONG 4294967295 -128.0 -99.9") - 1);
+                const unsigned long wait = static_cast<unsigned long>(outMs + replyMs) * 4UL;
+                gLoraPongWaitMs = wait > kLoraPongWaitFloorMs ? wait : kLoraPongWaitFloorMs;
                 gLoraPingWaiting = true;
                 logSerial.printf("LORA_OK:ping=%lu air=%lums\n", static_cast<unsigned long>(gLoraPingSeq),
                                  millis() - before);
@@ -2741,9 +2822,9 @@ void loop() {
                                  static_cast<double>(volts));
               } else {
                 uint16_t oscErrors = 0;
-                const bool osc = lora.oscillatorStarts(&oscErrors);
-                logSerial.printf("LORA_OK:tcxo=%.1f xosc=%s errors=0x%04X\n", static_cast<double>(volts),
-                                 osc ? "ok" : "FAILED", static_cast<unsigned>(oscErrors));
+                const char* osc = loraOscText(lora.oscillatorStarts(&oscErrors));
+                logSerial.printf("LORA_OK:tcxo=%.1f xosc=%s errors=0x%04X\n", static_cast<double>(volts), osc,
+                                 static_cast<unsigned>(oscErrors));
               }
             } else {
               logSerial.printf("LORA_ERR:reconfigure failed err=%d\n", lora.lastError());
@@ -2754,10 +2835,9 @@ void loop() {
           if (!lora.ready()) {
             logSerial.printf("LORA_ERR:radio not up\n");
           } else {
-            const bool osc = lora.oscillatorStarts(&oscErrors);
+            const char* osc = loraOscText(lora.oscillatorStarts(&oscErrors));
             logSerial.printf("LORA_OSC:tcxo=%.1fV xosc=%s errors=0x%04X\n",
-                             static_cast<double>(gLoraConfig.tcxoVoltage), osc ? "ok" : "FAILED",
-                             static_cast<unsigned>(oscErrors));
+                             static_cast<double>(gLoraConfig.tcxoVoltage), osc, static_cast<unsigned>(oscErrors));
           }
         } else if (upper.startsWith("SF ")) {
           const long sf = argument.substring(3).toInt();

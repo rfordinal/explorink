@@ -169,6 +169,30 @@ class LoraRadio {
   // enter into it, so it is answerable on a desk.
   float frequencyError();
 
+  // Milliseconds this radio would spend on air for a payload of `length`, at
+  // the settings it is configured with. RadioLib computes it from the modem
+  // parameters; it is not a measurement, but it reproduced our own measured
+  // six-byte PING to a third of a millisecond.
+  //
+  // Here because a reply timeout has to scale with it. A fixed wait is wrong at
+  // both ends of the rung ladder -- 10 s is forever at SF8/BW62.5 and already
+  // expired before a SF12 packet leaves the antenna. MeshCore derives its own
+  // timeouts the same way (`Mesh.cpp`, getEstAirtimeFor).
+  uint32_t timeOnAirMs(size_t length);
+
+  // What oscillatorStarts() answers. Three values, not two, because the test
+  // reads a register over the shared SPI bus and **a failed read is not a
+  // pass**: RadioLib's getDeviceErrors() zero-initialises its buffer, ignores
+  // the transport's return, and hands back 0 -- which is the same value as "no
+  // errors" (SX126x_commands.cpp, checked against the pinned 7.7.1). An
+  // instrument whose whole job is a yes/no about hardware must not answer
+  // "yes" when it failed to ask.
+  enum class OscillatorVerdict {
+    Started,  // the external oscillator came up, errors read clean
+    Failed,   // the chip reported XOSC_START_ERR
+    Unknown,  // a command or a register read failed; the question is unanswered
+  };
+
   // The chip's own error register, and a test that provokes it.
   //
   // **A successful begin() does not mean the TCXO is running.** When the
@@ -179,7 +203,7 @@ class LoraRadio {
   // XOSC_START_ERR (bit 0x20) means the part this board actually has did not
   // start at the voltage we configured.
   uint16_t deviceErrors();
-  bool oscillatorStarts(uint16_t* errorsOut);
+  OscillatorVerdict oscillatorStarts(uint16_t* errorsOut);
 
   // An unmodulated carrier, for measuring what the power amplifier draws.
   // RSSI at desk distance cannot separate an SX1261 from an SX1262 -- the two

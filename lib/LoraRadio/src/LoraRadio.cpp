@@ -271,26 +271,48 @@ uint16_t LoraRadio::deviceErrors() {
   return impl_->radio.getDeviceErrors();
 }
 
-bool LoraRadio::oscillatorStarts(uint16_t* errorsOut) {
-  if (errorsOut != nullptr) *errorsOut = 0;
-  if (!ready_) return false;
+uint32_t LoraRadio::timeOnAirMs(size_t length) {
+  if (!ready_) return 0;
+  // RadioLib answers in microseconds.
+  return static_cast<uint32_t>((impl_->radio.getTimeOnAir(length) + 999) / 1000);
+}
 
-  impl_->radio.clearDeviceErrors();
+LoraRadio::OscillatorVerdict LoraRadio::oscillatorStarts(uint16_t* errorsOut) {
+  if (errorsOut != nullptr) *errorsOut = 0;
+  if (!ready_) return OscillatorVerdict::Unknown;
+
+  // Checked, unlike the first version of this: every step here talks to the
+  // chip over a bus shared with the SD card, and a step that failed makes the
+  // reading below meaningless rather than negative.
+  lastError_ = impl_->radio.clearDeviceErrors();
+  if (lastError_ != RADIOLIB_ERR_NONE) return OscillatorVerdict::Unknown;
 
   // Standby on the external oscillator is what forces the question: in
   // STANDBY_RC the chip runs off its internal RC and never touches the TCXO,
   // so the error can only appear once something asks for the real clock.
   lastError_ = impl_->radio.standby(RADIOLIB_SX126X_STANDBY_XOSC);
+  if (lastError_ != RADIOLIB_ERR_NONE) {
+    impl_->radio.standby();
+    impl_->listening = false;
+    return OscillatorVerdict::Unknown;
+  }
 
   // The SX126x datasheet's TCXO startup delay is set by begin() as 16 ms; give
   // it more than that before reading the verdict.
   delay(50);
 
+  // **getDeviceErrors() cannot fail loudly.** It zero-initialises its buffer
+  // and throws away SPIreadStream()'s status, so a dead bus reads as 0, which
+  // is also the value for "no errors" (RadioLib 7.7.1,
+  // SX126x_commands.cpp). Bracketing it with a command that does report status
+  // is the only way to tell the two apart from out here: if the chip answers
+  // the standby below, the bus was alive across the read.
   const uint16_t errors = impl_->radio.getDeviceErrors();
   if (errorsOut != nullptr) *errorsOut = errors;
 
-  // Back to the cheap standby whatever happened.
-  impl_->radio.standby();
+  // Back to the cheap standby whatever happened, and its status is the
+  // bus-alive check the error read could not give.
+  const int16_t back = impl_->radio.standby();
 
   // **This does not leave a listening radio listening**, and an earlier version
   // of this comment claimed it did. Both standby calls above abort continuous
@@ -301,7 +323,11 @@ bool LoraRadio::oscillatorStarts(uint16_t* errorsOut) {
   // knows whether it wanted to listen.
   impl_->listening = false;
 
-  return (errors & RADIOLIB_SX126X_XOSC_START_ERR) == 0;
+  if (back != RADIOLIB_ERR_NONE) {
+    lastError_ = back;
+    return OscillatorVerdict::Unknown;
+  }
+  return (errors & RADIOLIB_SX126X_XOSC_START_ERR) == 0 ? OscillatorVerdict::Started : OscillatorVerdict::Failed;
 }
 
 bool LoraRadio::carrier(bool on) {
