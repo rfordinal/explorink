@@ -116,10 +116,17 @@ numbers free to drift. `MapViewState` lost `drawBuildings`, `drawBuiltUp` and
 `maxLabels` with them and gained one `zoomStep`, which the caller uses to pick
 the style and the renderer never reads.
 
-`markerScale8` and `minMovePx` stayed. They are refresh policy — how big the
-saved patch box is, and how far the marker must move before a waveform is worth
-it — not appearance, and the maintainer's call was to keep them out of the
-style.
+`markerScale8` followed on 2026-09-19, into `data/mapstyle.json`'s
+`layers.marker.scale8` -- reversing the "refresh policy, not appearance, keep
+it out of the style" call this section used to record here. The trigger was
+tuning the marker's size in `style_watch.py` and finding the shrink curve
+itself untunable, sitting in a second table this one always argued against.
+`markerMetricsFor()` (`MapMarkerMetrics.h`) takes the already-resolved style
+alone now, no separate scale argument.
+
+`minMovePx` stayed. It is genuinely refresh policy with nothing to render --
+how far the marker must move before a waveform is worth it -- and no `when`
+block would make it one.
 
 ## Where each piece lives
 

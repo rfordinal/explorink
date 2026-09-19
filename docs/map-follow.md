@@ -1125,8 +1125,9 @@ make.
 **What it shows that `--frames` and `--track` cannot.** A `MoveMarker` is a real
 partial refresh here: the held background is kept, the marker is stamped onto a
 copy of it, and the sidebar outlines the actual patch box -- `markerMetricsFor(
-kZoomLadder[step].markerScale8).box` (`MapMarkerMetrics.h`), 64 px at full
-scale, smaller at the coarse rungs. So "this stretch costs 6 partials and one
+mapStyleFor(mode, step)).box` (`MapMarkerMetrics.h`), 64 px at full scale,
+smaller at the coarse rungs (the scale itself is `data/mapstyle.json`'s
+`layers.marker.scale8` since 2026-09-19, not a separate argument any more). So "this stretch costs 6 partials and one
 redraw" is something you watch happen rather than count afterwards.
 
 Sidebar totals: `FULL`, `PARTIAL`, `SKIP`, the last action and its reason, tiles

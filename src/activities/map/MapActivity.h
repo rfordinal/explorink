@@ -424,7 +424,7 @@ class MapActivity final : public Activity,
   // them, which is why the saved patch is taken after all of them are drawn.
   void moveMarker(int16_t sx, int16_t sy, uint8_t headingStep);
   // The marker's dimensions at the rung on the panel now
-  // (MapViewport::ZoomStep::markerScale8). Never full-size constants directly:
+  // (MapStyle::markerScale8). Never full-size constants directly:
   // rungs 5 and 6 draw a smaller marker, because a fixed pixel object covers
   // more ground the further out the rung is.
   MarkerMetrics markerMetrics() const;

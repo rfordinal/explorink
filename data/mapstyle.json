@@ -319,7 +319,7 @@
       "ring_px": 3
     },
     "marker": {
-      "_comment": "The device's REAL position marker -- MapActivity::drawPositionMarker (src/activities/map/MapActivity.cpp, geometry in MapMarkerMetrics.h): a ring around a Hike dot+hand or a Cycle/Ride heading arrow. Moved here from hardcoded C++ constants so it can be tuned without touching code -- test/map_preview draws this exact shape now too (test/map_preview/PreviewMarker.cpp, docs/device-preview.md \"The position marker\"), instead of the generic puck below. Sizes are FULL SIZE, at rung 0 (markerScale8 == 8 out of 8) -- MapMarkerMetrics.h's markerScaled() shrinks every value below by the current rung's scale (MapViewport.h's kZoomLadder), same as it always has. `ring_width_px` is the one exception: below rung 3 the stroke is hardcoded to 2px regardless of this value (never judged on a panel, see the comment in MapMarkerMetrics.h). `hike_hand_half_width_px` does not scale with the rung either -- it never did. `when` works here like anywhere else: `{\"modes\": [\"hike\"], \"hike_dot_px\": 12}` is how a hiker's dot gets smaller without touching ride or cycle. Every combination this file can produce is checked at firmware build time against the on-device patch buffer (MapMarkerMetrics.h's kMarkerBoxSize, 64px) -- a style that would need a bigger buffer fails the build rather than corrupting one at runtime.",
+      "_comment": "The device's REAL position marker -- MapActivity::drawPositionMarker (src/activities/map/MapActivity.cpp, geometry in MapMarkerMetrics.h): a ring around a Hike dot+hand or a Cycle/Ride heading arrow. Moved here from hardcoded C++ constants so it can be tuned without touching code -- test/map_preview draws this exact shape now too (test/map_preview/PreviewMarker.cpp, docs/device-preview.md \"The position marker\"), instead of the generic puck below. Sizes below are FULL SIZE, at `scale8` 8 (out of 8) -- MapMarkerMetrics.h's markerScaled() shrinks every value by whichever rung's resolved `scale8` applies (see `when` below), same math as before, just no longer a fixed C++ ladder. `ring_width_px` is the one exception: below scale8 8 the stroke is hardcoded to 2px regardless of this value (never judged on a panel, see the comment in MapMarkerMetrics.h). `hike_hand_half_width_px` does not scale with `scale8` either -- it never did. `when` works here like anywhere else, on ANY field including `scale8` itself: `{\"modes\": [\"hike\"], \"hike_dot_px\": 12}` is how a hiker's dot gets smaller without touching ride or cycle, and `{\"steps\": [6], \"scale8\": 5}` is how the whole marker shrinks at the coarsest rung. Every combination this file can produce is checked at firmware build time against the on-device patch buffer (MapMarkerMetrics.h's kMarkerBoxSize, 64px) -- a style that would need a bigger buffer fails the build rather than corrupting one at runtime.",
       "ring_px": 54,
       "ring_width_px": 3,
       "hike_dot_px": 18,
@@ -327,6 +327,7 @@
       "cycle_tip_len_px": 16,
       "ride_tip_len_px": 25,
       "halo_margin_px": 5,
+      "scale8": 8,
       "when": [
         {
           "modes": ["hike"],
@@ -334,6 +335,19 @@
           "ring_px": 40,
           "ring_width_px": 2,
           "halo_margin_px": 2
+        },
+        {
+          "_comment": "Per-rung shrink, moved here from MapViewport.h's kZoomLadder on 2026-09-19 (it was a second table keyed by the same rung number, for the same reason buildings/builtUp/maxLabels left that table on 2026-08-25). scale8 is eighths of the full size above -- 8 draws it whole, 5 draws five eighths. This reproduces the schedule judged on a real phone (org.explorink.simulator, Samsung S10, 2026-08-24): rungs 0-2 read fine at full size, 3-4 read too big at full size, 5-6 already read fine at 6/8 and 5/8. `modes` can be added here per entry to give one travel mode its own shrink curve; today every mode shares this one.",
+          "steps": [3, 4],
+          "scale8": 7
+        },
+        {
+          "steps": [5],
+          "scale8": 6
+        },
+        {
+          "steps": [6],
+          "scale8": 5
         }
       ]
     },

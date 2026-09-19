@@ -102,6 +102,7 @@ constexpr MapStyle kGoldenStyle = {
     .markerCycleTipLenPx = 16,
     .markerRideTipLenPx = 25,
     .markerHaloMarginPx = 5,
+    .markerScale8 = 8,
 };
 
 std::string fixturesDir() { return std::string(MAP_TILE_READER_FIXTURES_DIR); }
@@ -774,18 +775,17 @@ TEST(MapZoomLadder, CoarseRungsShrinkTheMarkerAndTightenTheMoveFloor) {
   //
   //   the marker never grows as the ladder goes out (it covers more ground), and
   //   the move floor never grows either (a fix moves fewer pixels).
+  //
+  // The marker half lives in data/mapstyle.json's layers.marker.scale8 since
+  // 2026-09-19 (MapZoomLadder.MarkerMetricsScaleWithTheRungAndStayDrawable
+  // checks it there, resolved per style); ZoomStep itself only still owns the
+  // move floor.
   for (int step = 1; step < MapViewport::kZoomStepCount; ++step) {
     const MapViewport::ZoomStep& rung = MapViewport::kZoomLadder[step];
     const MapViewport::ZoomStep& prev = MapViewport::kZoomLadder[step - 1];
-    EXPECT_LE(rung.markerScale8, prev.markerScale8) << "step " << step;
     EXPECT_LE(rung.minMovePx, prev.minMovePx) << "step " << step;
-    EXPECT_GT(rung.markerScale8, 0) << "step " << step;
     EXPECT_GT(rung.minMovePx, 0) << "step " << step;
-    EXPECT_LE(rung.markerScale8, 8) << "step " << step << ": 8 is full size, not a scale to exceed";
   }
-  // The coarse rungs are the ones that asked for this: at 45 m/px a full-size
-  // 54 px ring covers 2.4 km of map.
-  EXPECT_LT(MapViewport::kZoomLadder[MapViewport::kZoomStepCount - 1].markerScale8, 8);
 
   // And the ground a fix must cover before the panel is touched stays in the
   // same order of magnitude across the ladder, which is the point of making the
@@ -799,14 +799,23 @@ TEST(MapZoomLadder, CoarseRungsShrinkTheMarkerAndTightenTheMoveFloor) {
 }
 
 TEST(MapZoomLadder, MarkerMetricsScaleWithTheRungAndStayDrawable) {
+  // Ride's own resolved style at each rung: data/mapstyle.json's
+  // layers.marker.scale8 `when` schedule (8,8,8,7,7,6,5) is shared by every
+  // mode today, so any one mode exercises it. The exhaustive per-(mode, rung)
+  // fit check lives in MapMarkerMetrics.h's markerFitsEveryStyleVariant()
+  // static_assert; this test stays as a runtime smoke check of the same
+  // arithmetic, and the one place that still watches the scale itself shrink
+  // monotonically toward the coarse rungs.
   int previousRing = 1 << 30;
+  int previousScale8 = 9;  // one above the ceiling, so step 0 always passes
   for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
-    // kDefaultMapStyle: the layers.marker fields with no `when` applied, i.e.
-    // ride's numbers. The exhaustive per-(mode, rung) check lives in
-    // MapMarkerMetrics.h's markerFitsEveryStyleVariant() static_assert now
-    // that the full size is data, not a single global constant -- this test
-    // stays as a runtime smoke check of the same arithmetic.
-    const MarkerMetrics m = markerMetricsFor(kDefaultMapStyle, MapViewport::kZoomLadder[step].markerScale8);
+    const MapStyle& style = mapStyleFor(MapRideMode::Ride, step);
+    EXPECT_GT(style.markerScale8, 0) << "step " << step;
+    EXPECT_LE(style.markerScale8, 8) << "step " << step << ": 8 is full size, not a scale to exceed";
+    EXPECT_LE(style.markerScale8, previousScale8) << "step " << step;
+    previousScale8 = style.markerScale8;
+
+    const MarkerMetrics m = markerMetricsFor(style);
     // Nothing may round away to nothing: a 0 px stroke or half-width draws no
     // marker at all, which is the one state the map screen must never reach.
     EXPECT_GT(m.ring, 0) << "step " << step;
@@ -824,9 +833,12 @@ TEST(MapZoomLadder, MarkerMetricsScaleWithTheRungAndStayDrawable) {
     EXPECT_LE(m.ring, previousRing) << "step " << step;
     previousRing = m.ring;
   }
-  EXPECT_EQ(markerMetricsFor(kDefaultMapStyle, 8).ring, 54)
-      << "rung 0 must still draw exactly the marker it always drew";
-  EXPECT_EQ(markerMetricsFor(kDefaultMapStyle, 8).box, 64);
+  // The coarse rungs are the ones that asked for a shrink at all: at 45 m/px
+  // a full-size 54 px ring covers 2.4 km of map.
+  EXPECT_LT(mapStyleFor(MapRideMode::Ride, MapViewport::kZoomStepCount - 1).markerScale8, 8);
+
+  EXPECT_EQ(markerMetricsFor(kDefaultMapStyle).ring, 54) << "rung 0 must still draw exactly the marker it always drew";
+  EXPECT_EQ(markerMetricsFor(kDefaultMapStyle).box, 64);
 }
 
 TEST(MapZoomLadder, ZoomStepAtClampsLikeMarkerYForStep) {

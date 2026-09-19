@@ -376,15 +376,21 @@ def puck(style):
 
 def marker(style):
     """(ring, ring_width, hike_dot, hike_hand_half_width, cycle_tip, ride_tip,
-    halo_margin) for layers.marker, in px -- full size, at rung 0.
+    halo_margin, scale8) for layers.marker, in px -- full size, at scale8 8.
 
-    This is the device's REAL marker (MapMarkerMetrics.h, MapMarkerDraw.cpp),
-    not the puck() above. Range-checked here the same way every other style
-    number is; the box-fit check against the on-device patch buffer
-    (kMarkerBoxSize) happens in C++ instead, at compile time -- it depends on
-    which rung and mode a `when` block ends up applying to, and this module
-    never resolves variants itself (mapstyle_variants.resolve() does, once
-    per (mode, rung) pair, before compile_style() ever sees this block).
+    This is the device's REAL marker (MapActivity::drawPositionMarker,
+    MapMarkerMetrics.h), not the puck() above. Range-checked here the same way
+    every other style number is; the box-fit check against the on-device patch
+    buffer (kMarkerBoxSize) happens in C++ instead, at compile time -- it
+    depends on which rung and mode a `when` block ends up applying to, and
+    this module never resolves variants itself (mapstyle_variants.resolve()
+    does, once per (mode, rung) pair, before compile_style() ever sees this
+    block).
+
+    `scale8` moved here from MapViewport::ZoomStep on 2026-09-19 -- it used to
+    be a fixed ladder keyed by rung alone; now `when` can vary it per mode too.
+    8 is full size and the ceiling: a marker style is never asked to draw
+    *bigger* than its own full size, only shrink toward the coarse rungs.
     """
     marker_cfg = style.get("layers", {}).get("marker", {})
     ring = _round_px(marker_cfg.get("ring_px", 0), "layers.marker.ring_px")
@@ -395,6 +401,7 @@ def marker(style):
     cycle_tip = _round_px(marker_cfg.get("cycle_tip_len_px", 0), "layers.marker.cycle_tip_len_px")
     ride_tip = _round_px(marker_cfg.get("ride_tip_len_px", 0), "layers.marker.ride_tip_len_px")
     halo_margin = _round_px(marker_cfg.get("halo_margin_px", 0), "layers.marker.halo_margin_px")
+    scale8 = _round_px(marker_cfg.get("scale8", 8), "layers.marker.scale8")
     if ring_width * 2 >= ring:
         sys.exit(f"gen_mapstyle.py: layers.marker.ring_width_px {ring_width} leaves no interior inside "
                  f"ring_px {ring}")
@@ -403,7 +410,10 @@ def marker(style):
                         ("ride_tip_len_px", ride_tip), ("halo_margin_px", halo_margin)):
         if value <= 0 or value > 255:
             sys.exit(f"gen_mapstyle.py: layers.marker.{name} {value}px must be 1..255")
-    return ring, ring_width, hike_dot, hike_hand_half_width, cycle_tip, ride_tip, halo_margin
+    if not 1 <= scale8 <= 8:
+        sys.exit(f"gen_mapstyle.py: layers.marker.scale8 {scale8} must be 1..8 -- 8 is full size, "
+                 f"not a scale to exceed")
+    return ring, ring_width, hike_dot, hike_hand_half_width, cycle_tip, ride_tip, halo_margin, scale8
 
 
 # mapstyle.json's hatch strings are matplotlib's. Only the character matters
@@ -1361,6 +1371,7 @@ def _style_literal(bundle):
         f"    .markerCycleTipLenPx = {marker_px[4]},",
         f"    .markerRideTipLenPx = {marker_px[5]},",
         f"    .markerHaloMarginPx = {marker_px[6]},",
+        f"    .markerScale8 = {marker_px[7]},",
         "}",
     ]
     return lines
@@ -1479,7 +1490,8 @@ def _print_summary(bundle, what):
     print(f"gen_mapstyle.py: {what}: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
           f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
           f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}, "
-          f"marker ring{marker_px[0]}/hikeDot{marker_px[2]}/cycleTip{marker_px[4]}/rideTip{marker_px[5]}")
+          f"marker ring{marker_px[0]}/hikeDot{marker_px[2]}/cycleTip{marker_px[4]}/rideTip{marker_px[5]}/"
+          f"scale{marker_px[7]}of8")
     print(f"gen_mapstyle.py: {what}: POI marks {'safety' if points_px[0] else '-'}"
           f"{'+landmark' if points_px[1] else ''} square {points_px[2]}px, glyph {points_px[4]}px, "
           f"flag {points_px[5]}px, cluster radius {points_px[6]}px cell {points_px[7]}px")

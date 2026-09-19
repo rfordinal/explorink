@@ -134,12 +134,16 @@ All three for the same reason, read in two directions: **a screen pixel is worth
 more ground the further out the rung is** (1 m at rung 0, 45 m at rung 6), and a
 fixed pixel object covers more ground the same way.
 
-### 1. Marker size -- `ZoomStep::markerScale8`
+### 1. Marker size -- `layers.marker.scale8`, `data/mapstyle.json`
 
 `src/activities/map/MapMarkerMetrics.h` scales every marker length from the
-full-size numbers. Full size is a 54 px ring, which covers 54 m at rung 0 and
-2.4 km at rung 6 -- at that point the marker stops pointing at a place and
-starts hiding one.
+full-size numbers by `MapStyle::markerScale8`. Both the full-size numbers and
+the per-rung scale live in `data/mapstyle.json`'s `layers.marker` since
+2026-09-19 -- `scale8` moved out of a fixed `ZoomStep::markerScale8` ladder in
+`MapViewport.h`, the same move `buildings`/`builtUp`/`maxLabels` made out of
+that same struct on 2026-08-25. Full size is a 54 px ring, which covers 54 m
+at rung 0 and 2.4 km at rung 6 -- at that point the marker stops pointing at a
+place and starts hiding one.
 
 The ladder tapers 8,8,8,7,7,6,5 eighths (54,54,54,47,47,40,33 px rings) --
 rungs 0-2 stay full size, 3-4 draw 7/8, 5-6 draw 6/8 and 5/8. It used to be a

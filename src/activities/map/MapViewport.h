@@ -27,22 +27,17 @@ struct ZoomStep {
   // than in it, which meant two places to look and two places to edit.
   //
   // What stays here is what is not a style: the ground scale, the LOD, and the
-  // two numbers below that are refresh policy rather than appearance.
-  // Marker size at this rung, in eighths of the full marker (8 = the 54 px ring
-  // MapActivity has always drawn). A per-rung *drawing* decision, same kind as
-  // the two above and in this table for the same reason: one row per rung, no
-  // second table to keep in step.
+  // one number below that is refresh policy rather than appearance.
   //
-  // Why it varies at all: the marker is a fixed pixel object over ground that
-  // shrinks under it. At 1 m/px the 54 px ring covers 54 m and is a marker; at
-  // 45 m/px it covers 2.4 km, which is most of a valley -- it stops pointing at
-  // a place and starts hiding one. The coarse rungs get a smaller one
-  // (maintainer's call 2026-08-12, "pri z5 a z6 mi bude stačiť menší").
+  // The marker's own per-rung shrink (eighths of its full size) lived here as
+  // `markerScale8` until 2026-09-19, on the same "one row per rung" reasoning
+  // this comment used to make. It moved out to data/mapstyle.json's
+  // `layers.marker.scale8` for the same reason `buildings`/`builtUp`/
+  // `maxLabels` left this struct on 2026-08-25: a drawing decision that
+  // belongs beside the rest of the style it scales, not in a second table a
+  // maintainer has to find first. See MapStyle::markerScale8,
+  // MapMarkerMetrics.h.
   //
-  // It also pays for itself twice over: the marker's saved patch box scales
-  // with it, so a move at rung 6 saves, restores and refreshes a quarter of the
-  // pixels a move at rung 0 does.
-  uint8_t markerScale8;
   // How far the marker must move, in screen pixels, before a partial refresh is
   // worth a waveform at this rung (MapFollow::Request::minMovePx).
   //
@@ -74,21 +69,22 @@ inline constexpr int kZoomStepCount = kMapZoomStepCount;
 // format cannot address yet (int16 tile-local offsets, 39 km tile) -- these two
 // rungs deliberately ship before that work, because the renders held up and the
 // only number still missing is how long the reset takes on the panel.
-// Marker scale steps down 8,8,8,7,7,6,5 -- judged on a real phone running the
-// firmware (org.explorink.simulator on a Samsung S10, 2026-08-24): rungs 0-2
-// at full size read fine, 3-4 at full size read too big, 5-6's existing 6/8
-// and 5/8 already read fine. One step of 1/8 at rungs 3-4 closes that gap
-// without touching the two rungs already confirmed, and keeps the ladder a
-// gradual taper instead of a flat run into a sudden drop.
+// The marker's own scale-per-rung used to live in this table too (8,8,8,7,7,
+// 6,5, judged on a real phone running the firmware -- org.explorink.simulator
+// on a Samsung S10, 2026-08-24: rungs 0-2 at full size read fine, 3-4 at full
+// size read too big, 5-6's existing 6/8 and 5/8 already read fine). It moved
+// to data/mapstyle.json's layers.marker.scale8 on 2026-09-19 -- the same
+// numbers, reproduced there as the default `when` schedule, now editable
+// without touching this file.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
-    //  mpp   z  marker/8  minMove
-    {1.0, 13, 8, 12},   // step 0, detail
-    {3.0, 13, 8, 10},   // step 1, detail
-    {6.0, 12, 8, 8},    // step 2, regional
-    {12.0, 11, 7, 8},   // step 3, overview
-    {20.0, 11, 7, 6},   // step 4, overview
-    {32.0, 11, 6, 3},   // step 5, overview -- z11 past its natural range
-    {45.0, 11, 5, 2},   // step 6, overview -- 24 x 40 km on the panel
+    //  mpp   z  minMove
+    {1.0, 13, 12},  // step 0, detail
+    {3.0, 13, 10},  // step 1, detail
+    {6.0, 12, 8},   // step 2, regional
+    {12.0, 11, 8},  // step 3, overview
+    {20.0, 11, 6},  // step 4, overview
+    {32.0, 11, 3},  // step 5, overview -- z11 past its natural range
+    {45.0, 11, 2},  // step 6, overview -- 24 x 40 km on the panel
 };
 
 // The ladder rung for a step, clamped -- same contract as markerYForStep(): a

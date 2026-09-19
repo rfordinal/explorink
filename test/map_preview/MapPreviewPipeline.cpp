@@ -238,7 +238,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // (MapFixTrust.h) that would only make the shape harder to measure here.
   const bool drawMarker = !result.routeFitRan && request.drawMarker;
   if (drawMarker) {
-    const MarkerMetrics metrics = markerMetricsFor(style, lod.markerScale8);
+    const MarkerMetrics metrics = markerMetricsFor(style);
     PreviewMarker::draw(canvas, view.markerX, view.markerY, static_cast<uint8_t>(view.heading), request.mode,
                         MapFixTrust::MarkerStyle{}, metrics);
   }
@@ -281,7 +281,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
       MapHatch::drawTile(canvas, proj, range.z, range.colAt(index), range.rowAt(index));
     }
     if (drawMarker) {
-      const MarkerMetrics metrics = markerMetricsFor(style, lod.markerScale8);
+      const MarkerMetrics metrics = markerMetricsFor(style);
       PreviewMarker::draw(canvas, view.markerX, view.markerY, static_cast<uint8_t>(view.heading), request.mode,
                           MapFixTrust::MarkerStyle{}, metrics);
     }

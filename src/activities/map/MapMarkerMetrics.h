@@ -13,12 +13,14 @@
 //
 // The full-size numbers (ring, hike dot, hand half-width, cycle/ride tip
 // length, halo margin) moved out of this file and into data/mapstyle.json's
-// `layers.marker` on <date> -- see MapStyle.h's markerRingPx and friends --
-// so a maintainer can retune "hike's marker is too big" from the style file
-// mapbuilder/tools/style_watch.py already watches, instead of editing this
-// header and rebuilding. markerMetricsFor() below scales whatever the style
-// says by the current rung exactly the way it always scaled the old
-// constants; only where the numbers come from changed.
+// `layers.marker` on 2026-09-19 -- see MapStyle.h's markerRingPx and friends
+// -- so a maintainer can retune "hike's marker is too big" from the style
+// file mapbuilder/tools/style_watch.py already watches, instead of editing
+// this header and rebuilding. The per-rung shrink (`scale8`) followed the
+// same day, out of MapViewport::ZoomStep's own fixed ladder. markerMetricsFor()
+// below scales whatever the style says by that same style's own scale8,
+// exactly the arithmetic that ran before; only where the numbers come from
+// changed.
 
 // A ring that is not claiming to know where the rider is gets broken into arcs
 // instead of drawn whole (MapFixTrust::MarkerStyle::ringBroken). Eight gaps,
@@ -72,9 +74,10 @@ constexpr int kSleepMarkerHalo = 5;
 // The marker, at one rung's scale. Every length the marker draws with, so that
 // nothing reads a style field directly and quietly ignores the scale.
 //
-// Why the marker shrinks at all is in MapViewport::ZoomStep::markerScale8: it
-// is a fixed pixel object over ground that shrinks under it, and at 45 m/px the
-// full-size ring covers 2.4 km of map.
+// Why the marker shrinks at all is in MapStyle::markerScale8 (data/
+// mapstyle.json's layers.marker.scale8): it is a fixed pixel object over
+// ground that shrinks under it, and at 45 m/px the full-size ring covers
+// 2.4 km of map.
 //
 // What it does *not* buy is a cheaper refresh. Measured on the X4 2026-08-05: a
 // windowed refresh costs the same 500 ms whatever its area (see moveMarker()).
@@ -110,9 +113,13 @@ constexpr int markerScaled(int fullSize, uint8_t scale8) {
 
 // `style` is the already-resolved MapStyle for the mode and rung being drawn
 // (MapStyleTable.h's mapStyleFor()) -- its markerRingPx/markerHikeDotPx/etc.
-// are data/mapstyle.json's `layers.marker`, patched by any `when` that
-// matched. `scale8` is that rung's own MapViewport::ZoomStep::markerScale8.
-constexpr MarkerMetrics markerMetricsFor(const MapStyle& style, uint8_t scale8) {
+// and its markerScale8 are all data/mapstyle.json's `layers.marker`, patched
+// by whichever `when` matched this (mode, rung). One argument, not two: scale8
+// used to come from a separate table (MapViewport::ZoomStep) keyed by rung
+// alone, until 2026-09-19 -- now it is resolved into the same style struct as
+// everything else it scales, so there is nothing left to keep in step by hand.
+constexpr MarkerMetrics markerMetricsFor(const MapStyle& style) {
+  const uint8_t scale8 = style.markerScale8;
   MarkerMetrics m{};
   m.ring = markerScaled(style.markerRingPx, scale8);
   // Strokes do not scale with the shape, and the two values below are a
@@ -166,22 +173,20 @@ constexpr int kMarkerBoxSize = 64;
 // inside kMarkerBoxSize, or a move smears a trail across the map (the patch
 // save/restore only ever covers that box) -- and past a certain size it would
 // overrun the fixed-size patch buffer itself. This used to be true by
-// construction, because scaling only ever shrinks a single global full size.
-// Since 2026-09-19 the full size is data (`layers.marker`, with `when`
-// overrides per mode), so a maintainer could set hike_dot_px past what fits --
-// this loop is what turns that into a build failure naming the exact
-// (mode, rung) instead of a runtime memory corruption on the device.
-//
-// Only rung 0-2's scale8 (8, the ladder's max -- MapViewport.h's kZoomLadder)
-// can produce the biggest box for a given mode, since markerScale8 is
-// monotonically non-increasing along the ladder; every rung is still checked
-// rather than assuming that, because a future ladder edit should not have to
-// remember this proof.
+// construction, because scaling only ever shrunk a single global full size by
+// a fixed, monotonically-shrinking C++ ladder. Since 2026-09-19 both the full
+// size AND the per-rung scale are data (`layers.marker`, with `when` overrides
+// per mode and per rung), so nothing guarantees a coarser rung draws smaller
+// any more -- a maintainer could set `scale8` past 8, or non-monotonically, or
+// set hike_dot_px past what any scale leaves room for. Every one of the 21
+// variants is checked here rather than reasoned about, for exactly that
+// reason: a build failure naming the exact (mode, rung) beats a runtime memory
+// corruption on the device.
 constexpr bool markerFitsEveryStyleVariant() {
   for (uint8_t mode = 0; mode < kMapRideModeCount; ++mode) {
     for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
       const MapStyle& style = kMapStyleVariants[kMapStyleIndex[mode][step]];
-      const MarkerMetrics m = markerMetricsFor(style, MapViewport::kZoomLadder[step].markerScale8);
+      const MarkerMetrics m = markerMetricsFor(style);
       if (m.box > kMarkerBoxSize) return false;
       // hikeHandReach is checked for every mode, not only Hike: it is also
       // the uncertainty wedge's reach (MapFixTrust::MarkerStyle::Head::Wedge),

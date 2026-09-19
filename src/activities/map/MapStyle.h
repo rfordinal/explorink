@@ -581,9 +581,9 @@ struct MapStyle {
   // The real position marker, layers.marker -- MapActivity's own mode-aware
   // ring + Hike dot/hand or Cycle/Ride arrow (MapActivity::drawPositionMarker,
   // MapMarkerMetrics.h), distinct from the generic puck above. Full size, at
-  // rung 0 (markerScale8 == 8); MapMarkerMetrics.h's markerScaled() shrinks
-  // these per rung the same way it always did when they were C++ constants.
-  // `hikeHandHalfWidthPx` is the one field that never scales with the rung.
+  // markerScale8 == 8; MapMarkerMetrics.h's markerScaled() shrinks these by
+  // this variant's own markerScale8. `hikeHandHalfWidthPx` is the one field
+  // that never scales.
   uint8_t markerRingPx;
   uint8_t markerRingWidthPx;
   uint8_t markerHikeDotPx;
@@ -591,6 +591,11 @@ struct MapStyle {
   uint8_t markerCycleTipLenPx;
   uint8_t markerRideTipLenPx;
   uint8_t markerHaloMarginPx;
+  // Eighths of the marker's full size this (mode, rung) variant draws at --
+  // moved here from MapViewport::ZoomStep on 2026-09-19, which kept a fixed
+  // C++ ladder of these keyed by rung. 8 draws the marker whole; a coarser
+  // rung's `when` shrinks it (data/mapstyle.json's layers.marker.scale8).
+  uint8_t markerScale8;
 };
 
 // The widest stroke this style can draw around a way's own geometry, in device

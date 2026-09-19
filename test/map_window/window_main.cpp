@@ -863,8 +863,7 @@ int main(int argc, char** argv) {
       } else if (std::strcmp(step.action, "move") == 0) {
         ++partialRefreshes;
         const int zoomStep = zoomStepFor[static_cast<int>(mode)];
-        const int box =
-            markerMetricsFor(mapStyleFor(mode, zoomStep), MapViewport::kZoomLadder[zoomStep].markerScale8).box;
+        const int box = markerMetricsFor(mapStyleFor(mode, zoomStep)).box;
         rectX = step.x - box / 2;
         rectY = step.y - box / 2;
         rectW = box;

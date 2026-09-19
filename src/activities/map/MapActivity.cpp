@@ -635,9 +635,9 @@ constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HI
 
 void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRideMode mode,
                                      MapFixTrust::MarkerStyle style) {
-  // Sized for the rung on the panel right now -- MapViewport::ZoomStep::
-  // markerScale8. markerRect() reads the same metrics, so the patch box the
-  // move path saves always matches what this paints.
+  // Sized for the rung on the panel right now -- MapStyle::markerScale8.
+  // markerRect() reads the same metrics, so the patch box the move path saves
+  // always matches what this paints.
   const MarkerMetrics m = markerMetrics();
   // The box every partial operation is sized by from here on: recorded at the
   // moment the marker is painted, so markerRect() erases exactly what was drawn
@@ -6018,15 +6018,14 @@ void MapActivity::stepMarker(int delta) {
   // reported 2026-08-15: kMarkerLadder's last rung (760, MapViewport.h:181)
   // sits past the margin at every zoom rung (720-741 px, MapMarkerMetrics.h's
   // per-rung ring + MapFollow::kKeepInSlackPx). Checked against the biggest
-  // ring this mode can ever draw -- normally rung 0's (markerScale8 is
-  // monotonically non-increasing along the ladder), but found by the same
-  // loop MapMarkerMetrics.h's own compile-time check uses rather than assumed,
-  // now that data/mapstyle.json's `when` could in principle make a coarser
-  // rung's ring the bigger one for this mode. So the step is refused
-  // regardless of which rung is on screen now or chosen later.
+  // ring this mode can ever draw -- found by the same loop MapMarkerMetrics.h's
+  // own compile-time check uses rather than assumed, since data/mapstyle.json's
+  // `when` (both ring_px and scale8 since 2026-09-19) could in principle make
+  // a coarser rung's ring the bigger one for this mode. So the step is
+  // refused regardless of which rung is on screen now or chosen later.
   int worstCaseRing = 0;
   for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
-    const MarkerMetrics m = markerMetricsFor(mapStyleFor(mode_, step), MapViewport::kZoomLadder[step].markerScale8);
+    const MarkerMetrics m = markerMetricsFor(mapStyleFor(mode_, step));
     worstCaseRing = std::max(worstCaseRing, m.ring);
   }
   const int16_t worstCaseMarginPx = static_cast<int16_t>(worstCaseRing + MapFollow::kKeepInSlackPx);
@@ -6512,7 +6511,7 @@ MarkerMetrics MapActivity::markerMetrics() const {
   // mapstyle.json's layers.marker can now differ per mode via `when`
   // (docs/device-preview.md, "The position marker"), so which numbers this
   // rung's marker draws with depends on which mode is live.
-  return markerMetricsFor(mapStyleFor(mode_, zoomStep()), MapViewport::zoomStepAt(zoomStep()).markerScale8);
+  return markerMetricsFor(mapStyleFor(mode_, zoomStep()));
 }
 
 void MapActivity::markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const {

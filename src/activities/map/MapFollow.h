@@ -27,8 +27,9 @@ namespace MapFollow {
 // the edge, and there is still real map ahead of the rider to look at.
 //
 // **Also the fallback since 2026-08-12.** The marker is not one size any more
-// (MapViewport::ZoomStep::markerScale8), and this margin is derived from the
-// marker, so it follows the rung: MapActivity fills Request::keepInMarginPx
+// (MapStyle::markerScale8, data/mapstyle.json's layers.marker.scale8), and
+// this margin is derived from the marker, so it follows the rung: MapActivity
+// fills Request::keepInMarginPx
 // with `ring + kKeepInSlackPx` for the rung on the panel. Keeping 80 px at a
 // rung whose marker is 34 px would fence off screen the rider can see the
 // marker on -- and the reason for the number is the marker, not the panel.
