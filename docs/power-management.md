@@ -194,7 +194,16 @@ derivable from tonight's data.
   device to observe it"). **Resolved indirectly by the battery reading**,
   though: a cell that was materially charging would have gained percentage
   overnight, not lost 11 %, so charging was not doing anything significant
-  during this run even though the command never confirmed it.
+  during this run even though the command never confirmed it. **The net-loss
+  argument alone cannot rule out a small charge current running at the same
+  time as a larger system draw** -- the cell nets negative either way, and
+  `base_sum` cannot be split into "charger overhead", "system power fed
+  straight from VBUS" and "a trickle still going into the cell" from this
+  data alone. **The clean way to settle it: run the same state with the USB
+  cable unplugged entirely** -- no VBUS, no charger in the loop, battery
+  percentage or the BQ27220 gauge as the only instrument. That also is the
+  only way to get the true unplugged endurance number (see above), so it
+  closes both open questions in one run.
 - **Build identity unread.** The running build's version string was not
   captured (same reason as above -- no serial command was retried after the
   first two timed out, to avoid disturbing the state being measured).
