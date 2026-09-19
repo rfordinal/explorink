@@ -85,7 +85,7 @@ decides how much of a slope is the discharge curve rather than the load).
 | **Map in observation mode, radio off** | X4 | **down** | **10** | **12.27 +/- 0.18** | see note | 2026-08-22 | `0b99e70e` | 4151-4047 mV, **6 h 15 min** | **[measured]**, and the only row here taken across a wide enough band to trust: 104 mV of movement, 1.5 % error. **1.76 %/h, 56.8 h on a charge.** |
 | **Map, connected, frontlight 40 %, GNSS on** | **T5 S3 Pro** | connected | **80** | -66.2 | **135** | 2026-09-03 | `0.2.0-t5s3pro` | 4048-3832 mV, **3.21 h** | **[measured]**, and the only row here whose mA is *not* a voltage conversion -- a BQ27220 coulomb count. **27 steps in 3.005 h = 134.8 +/- 1.5 mA, 11.1 h on a charge.** Was printed as 131 until 2026-09-04; that came from first-row-to-last-row, which counts a boot-entry step it did not measure. See "The T5 S3 Pro's first ride" |
 | **Map, connected, frontlight OFF, GNSS on** | **T5 S3 Pro** | connected | **80** | -40.7 | **91** | 2026-09-04 | `0.2.0-t5s3pro` | 4013-3810 mV, **5.26 h** | **[measured]**, same gauge, same build, same screen. **31 steps in 5.092 h = 91.3 +/- 0.6 mA, 16.4 h on a charge.** The longest and tightest ride row in this file. See "The frontlight is tens of milliamps, not 8" |
-| **Map, observation mode (BLE off, GNSS+LoRa rail still up)** | **T5 S3 Pro** | **BLE off, GNSS+LoRa up** | -- | -- | **~93.5 whole-run / ~90.9 steady** | 2026-09-19 | unrecorded (`ENABLE_BATT_CMD` not compiled in, build string unread this run) | 7.5 h continuous, VBUS meter | **[measured]**, VBUS only, single instrument, no BQ27220 gauge cross-check, charge-terminated status unverified. See "Observation mode on T5 S3 Pro is not a radio-down floor" below |
+| **Map, observation mode (BLE off, GNSS+LoRa rail still up)** | **T5 S3 Pro** | **BLE off, GNSS+LoRa up** | -- | -- | **~93.5 VBUS (whole-run) / ~90.9 VBUS (steady) -- NOT endurance, see note** | 2026-09-19 | unrecorded (`ENABLE_BATT_CMD` not compiled in, build string unread this run) | 7.5 h continuous, VBUS meter; battery 100%->89% over the same window | **[measured]**, but the VBUS mA is not board draw and USB stayed connected the whole run, so it is not an endurance number -- battery actually lost 11 % (21.98 mA, itself still a plugged-in figure). See "Observation mode on T5 S3 Pro is not a radio-down floor" below for the arithmetic and what is still `[open]` |
 | Tile sync, transfer running | X4 | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
 | Light sleep, radio up | X4 | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
 | Deep sleep, latch held | X4 | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
@@ -133,34 +133,68 @@ X4. The settling tail in chunks 1-2 is consistent with a GNSS acquisition
 finishing and the receiver moving from search to steady tracking, though that
 mechanism is **[assumed]**, not traced in code this session.
 
-**Endurance, at the 1500 mAh nameplate cell (see "SoC, BQ27220" below), 85 %
-usable = 1275 mAh:**
+**The first version of this section computed endurance straight off the VBUS
+average (93.5 mA -> "13.6 h") and it was wrong, caught by the maintainer the
+same morning: the phone's own battery read 100 % at the start of the run and
+89 % at the end.** 11 % of the 1500 mAh nameplate is 165 mAh over the run's
+7.508 h wall clock (00:48:45-08:20:14) -- **21.98 mA actually left the
+battery**, a quarter of what the meter read at VBUS. The reason is method,
+not arithmetic: **the meter can only read anything with USB connected**, and
+with USB connected the system runs substantially off VBUS directly, not off
+the battery. VBUS current and battery discharge current are two different
+things whenever a charger sits between them, which is exactly what
+`docs/usb-power-meter.md` already says ("VBUS milliamps are not board
+milliamps") and what this whole campaign's method (c) already leans on
+(difference two VBUS states, never read one VBUS number as absolute
+consumption). Computing an absolute endurance figure directly from one VBUS
+average broke that rule.
 
-| Basis | Avg current | Hours | Days |
-|---|---|---|---|
-| Whole-run, raw VBUS | 93.5 mA | 13.6 h | 0.57 |
-| Whole-run, board-draw-adjusted (VBUS / 0.8) | 116.9 mA | 10.9 h | 0.45 |
-| Steady-state, raw VBUS | 90.9 mA | 14.0 h | 0.58 |
-| Steady-state, board-draw-adjusted (VBUS / 0.8) | 113.6 mA | 11.2 h | 0.47 |
+**What the two numbers together do support:** since the battery net
+*discharged* the whole night despite being plugged in, charging was not doing
+anything material -- if it had been, the battery would have gained charge, not
+lost 11 %. So essentially all of the ~476-489 mW pulled from the wall went
+either straight to powering the system or was lost in the charger's own
+conversion, and only the shortfall the wall could not cover (the 21.98 mA)
+had to come from the cell. That overhead -- the "cable's own consumption",
+arithmetically -- is a power-domain subtraction:
 
-The /0.8 adjustment is **not a calibration of this run** -- it borrows the
-approximate buck-efficiency scale factor from `docs/usb-power-meter.md`, "VBUS
-milliamps are not board milliamps" (measured in a different state, a different
-night). Treat the VBUS row as the number and the board-draw row as a rough
-upper-bound-on-the-true-cost estimate, not a second measurement.
+```
+P_vbus = V_bus_avg * I_vbus_avg  = 5.23 V * 93.5 mA  ~= 489.0 mW  (measured)
+P_batt = V_batt_avg * I_batt_avg = 4.10 V * 21.98 mA ~=  90.1 mW  (V_batt [assumed],
+                                                            no gauge this run;
+                                                            high-SoC band, 100->89%)
+base_sum (charger/cable overhead, invisible to the battery ledger)
+        = P_vbus - P_batt ~= 398.9 mW  (~82 % of what the meter read)
+```
+
+`base_sum` is not waste in the everyday sense -- most of it is the system's
+real, useful power draw, just delivered by the cable instead of the cell. It
+answers "how much of the meter's number never touched the battery", not "how
+much power this state truly costs."
+
+**What none of this answers, and stays `[open]`:** the actual unplugged,
+battery-only draw in this state. **21.98 mA is not that number either** -- it
+is "how fast the battery drains while a charger is also feeding the system",
+which is a different, easier state than running on the cell alone (no free
+489 mW subsidy from the wall). Pull the cable entirely and the whole system
+load falls on the battery; the honest way to that number is the same one the
+two T5 S3 Pro rows above already use -- an unplugged run against the BQ27220
+gauge (`CMD:BATT`), not this meter. That command was unavailable on this run's
+build (see below), so this remains the next thing to measure, not something
+derivable from tonight's data.
 
 **What this run could not check, and why:**
 
 - **No BQ27220 gauge cross-check.** `CMD:BATT` answered `ERR unknown_command`
   on the build running that night -- `ENABLE_BATT_CMD` was not compiled in, so
   there was no coulomb-count second opinion the way the two rows above have.
-- **Charging-terminated status is unknown.** `CMD:CHARGE` timed out rather than
-  answering during setup. It was not retried with a DTR/RTS pulse, because that
-  risks resetting the S3 mid-run (`CLAUDE.md`, "Never reset the device to
-  observe it") and this was an unattended overnight run with nobody able to
-  recover a bad reset. If the charger was still topping off the cell at all
-  during the night, that current is inside the 90-91 mA number and the true
-  board floor could be lower than measured here.
+- **Charging-terminated status was not queried** (`CMD:CHARGE` timed out rather
+  than answering during setup, and it was not retried with a DTR/RTS pulse
+  because that risks resetting the S3 mid-run -- `CLAUDE.md`, "Never reset the
+  device to observe it"). **Resolved indirectly by the battery reading**,
+  though: a cell that was materially charging would have gained percentage
+  overnight, not lost 11 %, so charging was not doing anything significant
+  during this run even though the command never confirmed it.
 - **Build identity unread.** The running build's version string was not
   captured (same reason as above -- no serial command was retried after the
   first two timed out, to avoid disturbing the state being measured).
