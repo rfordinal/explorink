@@ -316,6 +316,15 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     // X3 layout: Up on left side, Down on right side, positioned higher
     constexpr int x3ButtonY = kSideHintX3Y;
 
+    // White backing first, same reason as the X4 branch below: drawRect
+    // strokes only the outline, so without this the live map shows through.
+    if (topBtn != nullptr && topBtn[0] != '\0') {
+      renderer.fillRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, false);
+    }
+    if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
+      renderer.fillRect(screenWidth - buttonMargin - buttonWidth, x3ButtonY, buttonWidth, buttonHeight, false);
+    }
+
     if (topBtn != nullptr && topBtn[0] != '\0') {
       const int leftX = buttonMargin;
       renderer.drawRect(leftX, x3ButtonY, buttonWidth, buttonHeight);

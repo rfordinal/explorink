@@ -469,15 +469,21 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     // X3 layout: Up on left side, Down on right side, positioned higher
     constexpr int x3ButtonY = kSideBoxX3Y;
 
+    // White backing first, same reason as the X4 branch below: drawRoundedRect
+    // strokes only the outline, so without this the live map shows through.
     if (topDisabled) {
       // Shrunk to a stub against the left edge it's anchored to -- same
       // corners, no text, same "still there, can't fire" look
       // drawButtonHints() gives an empty front label (kSideBoxSmallWidth).
       // Checked first, ahead of hasTop: a disabled caller (MapActivity's
       // zoom hints) still passes its glyph, and the stub must win over it.
+      renderer.fillRoundedRect(buttonMargin, x3ButtonY, kSideBoxSmallWidth, buttonHeight, cornerRadius, false, true,
+                               false, true, Color::White);
       renderer.drawRoundedRect(buttonMargin, x3ButtonY, kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, false, true,
                                false, true, true);
     } else if (hasTop) {
+      renderer.fillRoundedRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, cornerRadius, false, true, false,
+                               true, Color::White);
       renderer.drawRoundedRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, false, true, false,
                                true, true);
       const int textWidth = renderer.getTextWidth(fontId, topBtn);
@@ -487,10 +493,14 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
 
     if (bottomDisabled) {
       const int rightX = screenWidth - kSideBoxSmallWidth;
+      renderer.fillRoundedRect(rightX, x3ButtonY, kSideBoxSmallWidth, buttonHeight, cornerRadius, true, false, true,
+                               false, Color::White);
       renderer.drawRoundedRect(rightX, x3ButtonY, kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, true, false, true,
                                false, true);
     } else if (hasBottom) {
       const int rightX = screenWidth - buttonWidth;
+      renderer.fillRoundedRect(rightX, x3ButtonY, buttonWidth, buttonHeight, cornerRadius, true, false, true, false,
+                               Color::White);
       renderer.drawRoundedRect(rightX, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false,
                                true);
       const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
