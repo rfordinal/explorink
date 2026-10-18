@@ -461,6 +461,31 @@ exists anywhere. The two CDN ones carry different rules again. A freshness check
 against that board will call all eighteen stale the first time the real CDN
 serves the same ground, and that is correct rather than a bug.
 
+## Measured: 2026-10-17, X3 after `release/xteink-x3` synced to `develop`
+
+Taken right after flashing `release/xteink-x3` merged forward 48 commits to
+`develop`'s tip (commit `22dff53a`), same instrument as the sections above
+(`stats` over USB serial, `INFO heap` / `INFO min_heap`), map screen up,
+persisted fix 48.1576632/17.0477747, no phone connected:
+
+| | 2026-09-13, X3, gated | 2026-10-17, X3, `22dff53a` | delta |
+|---|---|---|---|
+| free heap | 33,828 B | 32,780 B | -1,048 B |
+| min free since boot | 20,604 B | 20,528 B | -76 B |
+
+**Within the noise this doc already established.** The 2026-09-13 section
+above measured up to 72 B of idle jitter on `free heap` with `min_heap`
+untouched across six zoom ladders and 90 s idle -- a 1,048 B / 76 B drift
+across five weeks and 48 commits does not clear that bar, and nothing in
+those commits (zoom-hint glyph change, map-render-task work, charging-icon
+fix, chrome register corrections) touches the BLE or tile-source allocations
+this doc attributes the floor to. Not chased further.
+
+**Zoom/pan reconfirmed static, same as the coarse-rung finding above.** Seven
+`zoom` steps (0 through 6) and five `pos` jumps to un-cached ground, each
+followed by a `stats` read: `min_heap` held at 20,528 B through every one,
+`heap` moved by at most 64 B.
+
 ## What is still unmeasured
 
 - **A real phone sending positions on the trimmed build** (above).

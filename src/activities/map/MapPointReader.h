@@ -21,16 +21,16 @@
 // Same rule MapTileReader and MapRouteReader follow. Records stream through a
 // fixed kStreamBufferSize buffer; nothing accumulates.
 //
-// The buffer is 64 records, and that is 64 reads for the densest shard measured
-// (Bratislava, 2,602 points -- ../../../docs/point-file-spec.md's table). A
-// rural shard is one or two reads. Sizing it for the city instead would cost
-// 41 kB of DRAM for a screen that has 380 kB in total, so the read count is the
-// right thing to pay.
+// The buffer is 1 KB -- 51 version-2 records, so 51 reads for the densest shard
+// measured (Bratislava, 2,602 points -- ../../../docs/point-file-spec.md's
+// table). A rural shard is one or two reads. Sizing it for the city instead
+// would cost 52 kB of DRAM for a screen that has 380 kB in total, so the read
+// count is the right thing to pay.
 //
 // ## Names are a second read, on purpose
 //
-// A record is 16 bytes with a `name_off` into a pool that follows the array.
-// The nearest-per-category pass reads only the array -- 100 points is 1.6 kB --
+// A record is 20 bytes with a `name_off` into a pool that follows the array.
+// The nearest-per-category pass reads only the array -- 100 points is 2 kB --
 // and calls readName() for the handful of rows a screen actually prints. A
 // reader that inlined names would make the distance pass carry every string it
 // will not show.
@@ -49,31 +49,59 @@
 // no byte swap is ever needed here -- do not add one.
 class MapPointReader {
  public:
-  // 64 records, 1 KB, held only while a shard is open -- shards are opened one
-  // at a time, not all nine at once. Enough for a whole rural shard in one read
-  // and 64 reads for the densest city one; see the class comment.
+  // 1 KB, held only while a shard is open -- shards are opened one at a time,
+  // not all nine at once. 51 version-2 records per read, so a whole rural shard
+  // in one read and 51 reads for the densest city one; see the class comment. A
+  // record may straddle two fills and readRaw() stitches it, so the size does
+  // not have to divide the stride.
   static constexpr size_t kStreamBufferSize = 1024;
 
   static constexpr size_t kHeaderBytes = 48;
-  static constexpr size_t kRecordBytes = 16;
-  static constexpr uint16_t kFormatVersion = 1;
+
+  // The highest version this reader writes into NEED_POINTS and the lowest it
+  // still walks. Version 2 widened `name_off` to u32 -- a u16 capped a shard's
+  // name pool at 64 kB and central Barcelona passes that, so two areas
+  // published no shard at all (../../../docs/BUGS.md, BUG-203) -- and added
+  // `ele` and `rank`.
+  //
+  // Reading version 1 as well is not politeness. Every shard on every card and
+  // on the CDN today is version 1, and a reader that refused them would blank
+  // the point layer on the walk from the flash to the rebuild.
+  static constexpr uint16_t kFormatVersion = 2;
+  static constexpr uint16_t kMinFormatVersion = 1;
+
+  // Stride per version, keyed off the header's version field and never off this
+  // reader's own newest constant: walking version-1 records with a 20-byte
+  // stride decodes into records that look plausible and fail no check, because
+  // the crc is over bytes and not over meaning.
+  static constexpr size_t kRecordBytesV1 = 16;
+  static constexpr size_t kRecordBytesV2 = 20;
+  static constexpr size_t kRecordBytes = kRecordBytesV2;  // the widest, for sizing a buffer
+
   static constexpr size_t kMaxNameBytes = kPointNameMaxBytes;
 
   // One record, decoded. Coordinates are absolute Mercator metres; the name is
   // not here -- readName() fetches it, because most records never need one.
+  //
+  // A version-1 shard has no `ele` and no `rank`, so they come back as
+  // kPointEleUnknown and kPointRankNone -- the same values a version-2 record
+  // that has neither carries, which is what lets a caller treat both the same.
   struct Record {
     int32_t x = 0;
     int32_t y = 0;
+    uint32_t nameOffset = 0;
     MapPointKind kind = MapPointKind::Unknown;
     uint8_t category = 0;
     uint8_t flags = 0;
     uint8_t nameLen = 0;
-    uint16_t nameOffset = 0;
+    int16_t ele = kPointEleUnknown;
+    uint8_t rank = kPointRankNone;
   };
 
   // Parses the header and validates header_crc32. Returns false and leaves the
-  // file closed on bad magic, a wrong version, a short read, a non-zero
-  // reserved byte, an inconsistent size or a crc mismatch. `file` must outlive
+  // file closed on bad magic, a version outside kMinFormatVersion..
+  // kFormatVersion, a short read, a non-zero reserved byte, an inconsistent
+  // size or a crc mismatch. `file` must outlive
   // this reader; it stays open so records and names can both be read.
   bool open(IFileSource& file, const char* path);
   void close();
@@ -81,6 +109,10 @@ class MapPointReader {
 
   uint32_t pointCount() const { return pointCount_; }
   uint32_t buildEpoch() const { return buildEpoch_; }
+  // The shard's own version, not this reader's. A caller that reports what is
+  // on the card -- a diagnostic screen, a sync decision -- wants this one.
+  uint16_t formatVersion() const { return formatVersion_; }
+  size_t recordBytes() const { return recordBytes_; }
   // Bitmask of MapPointKind values present, straight out of the header: bit N
   // set means kind N is in this file. Lets a caller skip a whole shard when it
   // is drawing safety only and the shard holds landmarks only.
@@ -129,6 +161,8 @@ class MapPointReader {
   uint32_t namesLen_ = 0;
   uint32_t bodyCrc32_ = 0;
   uint32_t buildEpoch_ = 0;
+  uint16_t formatVersion_ = 0;
+  size_t recordBytes_ = kRecordBytesV2;
   uint8_t kindsPresent_ = 0;
   int32_t bboxMinX_ = 0;
   int32_t bboxMinY_ = 0;

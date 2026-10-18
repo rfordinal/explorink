@@ -12,13 +12,13 @@
 #include <string>
 
 #include "HintGeometry.h"
-#include "components/icons/touch_lock_icon.h"
 #include "I18n.h"
 #include "RecentBooksStore.h"
 #include "TouchPolicy.h"
 #include "components/UITheme.h"
 #include "components/icons/bookmark.h"
 #include "components/icons/home_icons.h"
+#include "components/icons/touch_lock_icon.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -248,12 +248,11 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
 
   const int pageHeight = renderer.getScreenHeight();
   const int buttonHeight = UITheme::getInstance().getMetrics().buttonHintsHeight;
-  const int buttonY = buttonHeight;  // Distance from bottom
+  const int buttonY = buttonHeight;                      // Distance from bottom
   const int textYOffset = HintGeometry::scaleMetric(7);  // Distance from top of button to text baseline
   int buttonPositions[4] = {0, 0, 0, 0};
-  const int buttonWidth =
-      HintGeometry::frontRow(renderer.getScreenWidth(), kX4FrontPositions, kX3FrontPositions, kFrontBoxWidth,
-                             buttonPositions);
+  const int buttonWidth = HintGeometry::frontRow(renderer.getScreenWidth(), kX4FrontPositions, kX3FrontPositions,
+                                                 kFrontBoxWidth, buttonPositions);
   const char* labels[] = {btn1, btn2, btn3, btn4};
   const int fontIds[] = {fontId, fontId, btn3FontId, btn4FontId};
 
@@ -294,11 +293,18 @@ Rect BaseTheme::sideButtonHintsRect(const GfxRenderer& renderer) const {
               sideHintHeight() * 2};
 }
 
-void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
-                                    int fontId) const {
+void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn, int fontId,
+                                    const bool topDisabled, const bool bottomDisabled, const bool bold) const {
   if (!TouchPolicy::hintsVisible()) {
     return;
   }
+  const EpdFontFamily::Style style = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+  // No stub style of its own (unlike LyraTheme, which overrides this to
+  // shrink the box) -- a disabled box draws exactly like an absent one here,
+  // consistent with this theme's own drawButtonHints(), which never drew a
+  // stub for an empty front label either.
+  if (topDisabled) topBtn = "";
+  if (bottomDisabled) bottomBtn = "";
   rememberSideLabels(topBtn, bottomBtn);
 
   const int screenWidth = renderer.getScreenWidth();
@@ -317,7 +323,7 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       const int textHeight = renderer.getTextHeight(fontId);
       const int textX = leftX + (buttonWidth - textHeight) / 2;
       const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, topBtn);
+      renderer.drawTextRotated90CW(fontId, textX, textY, topBtn, true, style);
     }
 
     if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
@@ -327,7 +333,7 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       const int textHeight = renderer.getTextHeight(fontId);
       const int textX = rightX + (buttonWidth - textHeight) / 2;
       const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn);
+      renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn, true, style);
     }
   } else {
     // X4 layout: Both buttons stacked on right side
@@ -371,7 +377,7 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
         const int textHeight = renderer.getTextHeight(fontId);
         const int textX = x + (buttonWidth - textHeight) / 2;
         const int textY = y + (buttonHeight + textWidth) / 2;
-        renderer.drawTextRotated90CW(fontId, textX, textY, labels[i]);
+        renderer.drawTextRotated90CW(fontId, textX, textY, labels[i], true, style);
       }
     }
   }
@@ -391,9 +397,7 @@ void BaseTheme::rememberSideLabels(const char* topBtn, const char* bottomBtn) co
   sideLabelDrawn[1] = labelPresent(bottomBtn);
 }
 
-bool BaseTheme::frontBoxActive(const int index) const {
-  return index >= 0 && index <= 3 && frontLabelDrawn[index];
-}
+bool BaseTheme::frontBoxActive(const int index) const { return index >= 0 && index <= 3 && frontLabelDrawn[index]; }
 
 bool BaseTheme::sideBoxActive(const int index) const { return index >= 0 && index <= 1 && sideLabelDrawn[index]; }
 
@@ -1302,9 +1306,9 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
     snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
     counterReserve = renderer.getTextWidth(UI_10_FONT_ID, counter) + spacing.itemSpacing;
   }
-  int titleMaxWidth = fixed ? fixedBox.width - spacing.innerPadding * 2 - counterReserve
-                            : pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2 -
-                                  counterReserve;
+  int titleMaxWidth =
+      fixed ? fixedBox.width - spacing.innerPadding * 2 - counterReserve
+            : pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2 - counterReserve;
   const std::vector<std::string> titleLines =
       spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
   const int titleLineCount = static_cast<int>(std::max<size_t>(1, titleLines.size()));

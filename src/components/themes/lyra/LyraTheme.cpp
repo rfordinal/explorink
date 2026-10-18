@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "TouchPolicy.h"
 #include "components/UITheme.h"
 #include "components/icons/bluetooth.h"
 #include "components/icons/book.h"
@@ -29,7 +30,6 @@
 #include "components/icons/text24.h"
 #include "components/icons/transfer.h"
 #include "components/icons/wifi.h"
-#include "TouchPolicy.h"
 #include "components/themes/HintGeometry.h"
 #include "fontIds.h"
 
@@ -47,6 +47,12 @@ constexpr int kX3FrontPositions[4] = {65, 157, 291, 383};
 constexpr int kSideBoxHeight = 78;
 constexpr int kSideBoxGap = 5;
 constexpr int kSideBoxX3Y = 155;  // X3: one box per side, higher up
+// A disabled side box shrinks toward the edge it's anchored to, same "sink
+// into the edge" look drawButtonHints()'s SMALL-sized button already gives a
+// front box with no label (LyraTheme.cpp, smallButtonHeight vs buttonHeight
+// below) -- 15/40 of that box's edge-touching dimension, applied here to
+// sideButtonHintsWidth (30) instead of buttonHintsHeight (40).
+constexpr int kSideBoxSmallWidth = 11;
 constexpr int maxListValueWidth = 200;
 constexpr int mainMenuIconSize = 32;
 constexpr int listIconSize = 24;
@@ -442,66 +448,99 @@ bool LyraTheme::sideHintBox(const int index, const int portraitWidth, const int 
   return true;
 }
 
-void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
-                                    int fontId) const {
+void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn, int fontId,
+                                    const bool topDisabled, const bool bottomDisabled, const bool bold) const {
   if (!TouchPolicy::hintsVisible()) {
     return;
   }
+  const EpdFontFamily::Style style = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
   rememberSideLabels(topBtn, bottomBtn);
 
   const int screenWidth = renderer.getScreenWidth();
   const int buttonWidth =
-      UITheme::getInstance().getMetrics().sideButtonHintsWidth;      // Width on screen (height when rotated)
+      UITheme::getInstance().getMetrics().sideButtonHintsWidth;         // Width on screen (height when rotated)
   const int buttonHeight = HintGeometry::scaleMetricY(kSideBoxHeight);  // Height on screen (width when rotated)
   constexpr int buttonMargin = 0;
+
+  const bool hasTop = topBtn != nullptr && topBtn[0] != '\0';
+  const bool hasBottom = bottomBtn != nullptr && bottomBtn[0] != '\0';
 
   if (gpio.deviceIsX3()) {
     // X3 layout: Up on left side, Down on right side, positioned higher
     constexpr int x3ButtonY = kSideBoxX3Y;
 
-    if (topBtn != nullptr && topBtn[0] != '\0') {
+    if (topDisabled) {
+      // Shrunk to a stub against the left edge it's anchored to -- same
+      // corners, no text, same "still there, can't fire" look
+      // drawButtonHints() gives an empty front label (kSideBoxSmallWidth).
+      // Checked first, ahead of hasTop: a disabled caller (MapActivity's
+      // zoom hints) still passes its glyph, and the stub must win over it.
+      renderer.drawRoundedRect(buttonMargin, x3ButtonY, kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, false, true,
+                               false, true, true);
+    } else if (hasTop) {
       renderer.drawRoundedRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, false, true, false,
                                true, true);
       const int textWidth = renderer.getTextWidth(fontId, topBtn);
-      renderer.drawTextRotated90CW(fontId, buttonMargin, x3ButtonY + (buttonHeight + textWidth) / 2, topBtn);
+      renderer.drawTextRotated90CW(fontId, buttonMargin, x3ButtonY + (buttonHeight + textWidth) / 2, topBtn, true,
+                                   style);
     }
 
-    if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
+    if (bottomDisabled) {
+      const int rightX = screenWidth - kSideBoxSmallWidth;
+      renderer.drawRoundedRect(rightX, x3ButtonY, kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, true, false, true,
+                               false, true);
+    } else if (hasBottom) {
       const int rightX = screenWidth - buttonWidth;
       renderer.drawRoundedRect(rightX, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false,
                                true);
       const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
-      renderer.drawTextRotated90CW(fontId, rightX, x3ButtonY + (buttonHeight + textWidth) / 2, bottomBtn);
+      renderer.drawTextRotated90CW(fontId, rightX, x3ButtonY + (buttonHeight + textWidth) / 2, bottomBtn, true, style);
     }
   } else {
     // X4 layout: Both buttons stacked on right side
     const char* labels[] = {topBtn, bottomBtn};
     const int x = screenWidth - buttonWidth;
+    const int smallX = screenWidth - kSideBoxSmallWidth;
     const int topY = HintGeometry::scaleMetricY(topHintButtonY);
+    const int boxY[] = {topY, topY + buttonHeight + kSideBoxGap};
 
     // White backing first, same pairing drawButtonHints() uses just above
     // (fillRoundedRect then drawRoundedRect) -- this call draws no fill of
     // its own otherwise, so a caller over live content (a map, a rendered
-    // page) shows through it.
-    if (topBtn != nullptr && topBtn[0] != '\0') {
+    // page) shows through it. Right edge (x+width / smallX+kSideBoxSmallWidth)
+    // stays flush with the screen edge in both sizes -- same anchor
+    // drawButtonHints() keeps against the bottom edge when it shrinks a box.
+    if (topDisabled) {
+      // Checked first, ahead of hasTop -- same reason as the X3 branch above.
+      renderer.fillRoundedRect(smallX, topY, kSideBoxSmallWidth, buttonHeight, cornerRadius, true, false, true, false,
+                               Color::White);
+      renderer.drawRoundedRect(smallX, topY, kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, true, false, true,
+                               false, true);
+    } else if (hasTop) {
       renderer.fillRoundedRect(x, topY, buttonWidth, buttonHeight, cornerRadius, true, false, true, false,
                                Color::White);
-      renderer.drawRoundedRect(x, topY, buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false,
-                               true);
+      renderer.drawRoundedRect(x, topY, buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false, true);
     }
 
-    if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
-      renderer.fillRoundedRect(x, topY + buttonHeight + kSideBoxGap, buttonWidth, buttonHeight, cornerRadius, true,
-                               false, true, false, Color::White);
-      renderer.drawRoundedRect(x, topY + buttonHeight + kSideBoxGap, buttonWidth, buttonHeight, 1, cornerRadius, true,
-                               false, true, false, true);
+    if (bottomDisabled) {
+      renderer.fillRoundedRect(smallX, boxY[1], kSideBoxSmallWidth, buttonHeight, cornerRadius, true, false, true,
+                               false, Color::White);
+      renderer.drawRoundedRect(smallX, boxY[1], kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, true, false, true,
+                               false, true);
+    } else if (hasBottom) {
+      renderer.fillRoundedRect(x, boxY[1], buttonWidth, buttonHeight, cornerRadius, true, false, true, false,
+                               Color::White);
+      renderer.drawRoundedRect(x, boxY[1], buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false, true);
     }
 
+    const bool disabled[] = {topDisabled, bottomDisabled};
     for (int i = 0; i < 2; i++) {
-      if (labels[i] != nullptr && labels[i][0] != '\0') {
+      // Disabled beats a non-empty label here too -- MapActivity always
+      // passes "+"/"--", and the stub box above must show no text.
+      if (!disabled[i] && labels[i] != nullptr && labels[i][0] != '\0') {
         const int y = topY + (i * buttonHeight) + kSideBoxGap;
         const int textWidth = renderer.getTextWidth(fontId, labels[i]);
-        renderer.drawTextRotated90CW(fontId, x, y + (buttonHeight + textWidth) / 2, labels[i]);
+        renderer.drawTextRotated90CW(fontId, x, y + (buttonHeight + textWidth) / 2, labels[i], true, style);
       }
     }
   }

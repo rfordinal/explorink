@@ -635,6 +635,13 @@ call returns when the panel is done. So on the T5 S3 Pro, where a windowed
 refresh costs ~1,081 ms ([`refresh-modes.md`](refresh-modes.md)), **every marker
 move takes the main loop out of service for about a second.**
 
+**Still true after T-2024, and now the biggest remaining block.** That change
+moved the map's *compose* to the render task, so a full frame no longer stops
+`loop()` -- but a marker move is a main-task partial paint and its refresh is as
+synchronous as it ever was. The worst loop iterations measured on the tip, 656 ms
+on an X4 Pro and 756 ms on a T5 S3 Pro, are exactly these
+([`activity-manager.md`](activity-manager.md)).
+
 Measured over one 4 h 36 min walk, 2026-09-05, from the device's own
 `power.csv`:
 

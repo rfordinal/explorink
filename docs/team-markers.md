@@ -470,6 +470,25 @@ off, is the half of T-2020 that remains.
 `env:x4pro` with both flags on links at 3,908,118 B flash (59.6 %) and 69,780 B
 static RAM (21.3 %), clean, no warnings from any of the new files.
 
+## The compose runs on the render task, so the writes take the lock
+
+`develop` moved the frame's compose onto the render task (T-2024), and the pins
+got `MapActivity::LockedPins` for it: the console can rewrite the store while
+`drawPins()` is walking it. **This layer has the same shape and takes the same
+answer.** `drawTeam()` reads the roster and the store on the render task; a
+position arriving over a radio or a cable rewrites both from the activity task.
+
+`MapActivity::LockedTeam` wraps the four writes -- a position, an add, a remove,
+a reload -- in a `RenderLock`, and lets the reads through. A write here is rarer
+than a pin's and carries a card write anyway, so the wait costs nothing it was
+not already paying. `teamReload()` is the heavy one: it holds the lock across
+rereading the roster and replaying the black box, which is the trade against a
+reload renumbering slots mid-compose and drawing one member's marker under
+another's letters.
+
+Merged from `develop` 2026-09-16, 48 commits, one conflict (this line) and this
+wrapper as the real integration.
+
 ## Where this lives
 
 **Branch `team-markers`, and it does not go to `develop` yet.** Maintainer's
