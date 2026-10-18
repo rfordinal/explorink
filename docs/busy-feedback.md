@@ -41,7 +41,9 @@ A redraw the rider did not ask for carries no badge:
   rider is only looking at it.
 - **No activity outside the map has a badge at all.** Every other screen renders
   through the render task (`src/activities/ActivityManager.cpp:55-65`), which
-  knows nothing about this.
+  knows nothing about this. **Since T-2024 the map renders there too**, and the
+  badge stayed: the frame is no faster, so the wait it answers is unchanged
+  (`activity-manager.md`, "The map screen: how it joined the model").
 
 ## What it costs, and why it was not extended
 
@@ -51,8 +53,9 @@ whole-panel one: the waveform is a fixed price and the area does not enter into
 it. The take-down is free, so the price of a badge is one refresh per redraw,
 not two.
 
-Against it: a plain map redraw blocks the loop for **2.80 s**, and opening the
-map for **4.34 s** (`input-gestures.md`, measured on an X4 Pro 2026-09-14).
+Against it: a plain map redraw blocked the loop for **2.80 s**, and opening the
+map for **4.34 s** -- measured before T-2024 moved the compose to the render
+task. The panel still takes that long; `loop()` no longer waits for it (`input-gestures.md`, measured on an X4 Pro 2026-09-14).
 
 So on a redraw the rider started, 500 ms buys feedback on a 2,800 ms wait, and
 that trade was taken in 2026-08. On a redraw the device started, the same

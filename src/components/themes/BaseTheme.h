@@ -248,8 +248,25 @@ class BaseTheme {
   // glyph it always had. A caller with its own larger/bolder use for this
   // box (MapActivity's pan hints, which need real arrow glyphs no shared
   // hint font carries at readable size) passes a different one explicitly.
+  //
+  // topDisabled/bottomDisabled: that one box still exists but its action
+  // can't fire right now (a caller at a hard stop, e.g. MapActivity's zoom
+  // ladder ends) -- distinct from a null/empty label, which means the box
+  // doesn't apply to this screen at all. Base draws it exactly like an empty
+  // label (nothing); LyraTheme overrides this to shrink it to a stub instead,
+  // matching its own drawButtonHints()'s SMALL-sized button for the same
+  // "still there, tucked toward the edge" case.
+  //
+  // bold: a `bool`, not `EpdFontFamily::Style`, so this header does not need
+  // that type -- GfxRenderer is only forward-declared here. Every existing
+  // caller (the pan arrows included -- their glyph data is identical in both
+  // cuts, borrowed once from OpenDyslexic-Bold, see
+  // docs/map-observation-mode.md) keeps `false`; only a caller whose glyph
+  // actually has a distinct bold cut and needs it (MapActivity's zoom "+"/"--")
+  // passes `true`.
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
-                                   int fontId = SMALL_FONT_ID) const;
+                                   int fontId = SMALL_FONT_ID, bool topDisabled = false, bool bottomDisabled = false,
+                                   bool bold = false) const;
   // The four-box hint band along the bottom. Empty on a touch panel, where
   // drawButtonHints() draws nothing. Same purpose as sideButtonHintsRect(): a
   // caller placing something near an edge has to know what is already there.

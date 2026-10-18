@@ -186,6 +186,21 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
   return _batteryCachedPercent / 10;
 }
 
+bool HalPowerManager::isCharging() const {
+  const BatteryMonitor& battery = batteryMonitor();
+  const unsigned long now = millis();
+  if (_chargingLastPollMs != 0 && (now - _chargingLastPollMs) < CHARGING_POLL_MS) {
+    return _chargingCached;
+  }
+  _chargingLastPollMs = now;
+  const BatteryMonitor::Status status = battery.readStatus();
+  if (status.chargingKnown) {
+    _chargingCached = status.charging;
+  }
+  // else: keep _chargingCached as it was -- see the header comment.
+  return _chargingCached;
+}
+
 HalPowerManager::Lock::Lock() {
   xSemaphoreTake(powerManager.modeMutex, portMAX_DELAY);
   // Current limitation: only one lock at a time

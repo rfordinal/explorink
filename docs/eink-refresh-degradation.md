@@ -35,6 +35,13 @@ suspect is the X4's GDEQ0426T82 and whether its pixels carry light-shielding
 gates** (see "A patent describes it in an EPD" below). Two panels, two
 behaviours, and only one of them measured on nothing.
 
+**Report 4, 2026-09-18, X4 Pro and X3: same as report 3, no daylight problem.**
+Maintainer, ordinary use, both boards -- no sun-refresh failure noticed on
+either. **Observed, not measured**, same caveat as report 3: no thumb stencil,
+no light level recorded. So all three replacement panels (T5 S3 Pro, X4 Pro, X3)
+are reported clean and the only device that ever showed the failure is the
+plain X4 (lost 2026-08-22, GDEQ0426T82).
+
 Consequences, both already tracked:
 
 - **Panel choice is a device-selection criterion**, T-514 in the parent repo.

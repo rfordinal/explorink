@@ -11,6 +11,19 @@
 // seasonal+fee, an unnamed hospital, a restricted pharmacy and a transport
 // point. Chosen so the flag mask, the name pool and the sort order all have
 // something to prove.
+//
+// Three fixtures, and the third one is the load-bearing one:
+//
+//   shard.tip      the six points, version 2
+//   landmarks.tip  two landmarks in another shard, carrying ele and rank
+//   shard_v1.tip   the same six points as a *released* version-1 writer wrote
+//                  them, byte for byte
+//
+// shard_v1.tip is never regenerated (fixtures/make_fixtures.py says so and
+// skips it). Every shard on every card and on the CDN is version 1 today, so
+// this reader walking those exact bytes is what keeps the point layer alive
+// between the flash and the rebuild. Rewriting the file from a current writer
+// would turn that test into the writer agreeing with itself.
 
 #include <gtest/gtest.h>
 
@@ -42,16 +55,14 @@ struct Expected {
 // (kind, category, x, y), which is why pharmacy (7) comes before transport (10)
 // and the unnamed hospital sits between the huts and the pharmacy.
 const std::vector<Expected> kExpected = {
-    {1925827, 6207260, 1, 1, 0x01, "Spring"},
-    {1926940, 6208944, 1, 1, 0x00, "Drinking water"},
-    {1928054, 6210628, 1, 3, 0x0c, "Chata Vrátna"},
-    {1924714, 6205577, 1, 6, 0x00, ""},
-    {1926384, 6209786, 1, 7, 0x02, "Lekáreň"},
-    {1925271, 6208102, 1, 10, 0x00, "Sološnica, obec"},
+    {1925827, 6207260, 1, 1, 0x01, "Spring"},       {1926940, 6208944, 1, 1, 0x00, "Drinking water"},
+    {1928054, 6210628, 1, 3, 0x0c, "Chata Vrátna"}, {1924714, 6205577, 1, 6, 0x00, ""},
+    {1926384, 6209786, 1, 7, 0x02, "Lekáreň"},      {1925271, 6208102, 1, 10, 0x00, "Sološnica, obec"},
 };
 
 constexpr uint32_t kBuildEpoch = 1755800000;
-constexpr size_t kFixtureBytes = 202;
+constexpr size_t kFixtureBytes = 226;    // 48 + 6 * 20 + 58
+constexpr size_t kFixtureV1Bytes = 202;  // 48 + 6 * 16 + 58
 
 std::vector<uint8_t> readFile(const std::string& path) {
   std::FILE* f = std::fopen(path.c_str(), "rb");
@@ -197,7 +208,11 @@ TEST(MapPointReader, RefusesACorruptShard) {
   };
 
   EXPECT_FALSE(opens(mutated(3, '0'), "magic.tip")) << "bad magic";
-  EXPECT_FALSE(opens(mutated(4, 2), "version.tip")) << "a version-2 file must be refused whole";
+  // 3 rather than 2: this reader walks 1 and 2, so the refused version has to
+  // be one it has never heard of. A version it does not know sizes a record it
+  // cannot size, which is why this is refused at open() and not later.
+  EXPECT_FALSE(opens(mutated(4, 3), "version.tip")) << "a version from the future must be refused whole";
+  EXPECT_FALSE(opens(mutated(4, 0), "version0.tip")) << "version 0 is not a version";
   EXPECT_FALSE(opens(mutated(7, 1), "reserved.tip")) << "reserved byte set";
   EXPECT_FALSE(opens(mutated(40, 1), "pad.tip")) << "header pad is not zero";
   EXPECT_FALSE(opens(mutated(12, 0xFF), "bbox.tip")) << "header crc covers the bbox";
@@ -217,6 +232,115 @@ TEST(MapPointReader, RefusesACorruptShard) {
   EXPECT_FALSE(reader.verifyBody());
 }
 
+TEST(MapPointReader, ReportsTheShardsOwnVersionAndStride) {
+  StdioFileSource file;
+  MapPointReader reader;
+  ASSERT_TRUE(reader.open(file, fixturePath("shard.tip").c_str()));
+  EXPECT_EQ(reader.formatVersion(), 2u);
+  EXPECT_EQ(reader.recordBytes(), MapPointReader::kRecordBytesV2);
+  reader.close();
+
+  ASSERT_TRUE(reader.open(file, fixturePath("shard_v1.tip").c_str()));
+  EXPECT_EQ(reader.formatVersion(), 1u);
+  EXPECT_EQ(reader.recordBytes(), MapPointReader::kRecordBytesV1);
+  reader.close();
+
+  // The stride has to be a multiple of four in both versions or every second
+  // record puts `x` on an odd 4-byte boundary, and the ESP32-C3 faults on an
+  // unaligned multi-byte load.
+  EXPECT_EQ(MapPointReader::kRecordBytesV1 % 4, 0u);
+  EXPECT_EQ(MapPointReader::kRecordBytesV2 % 4, 0u);
+}
+
+TEST(MapPointReader, WalksAVersion1ShardWithTheOldStride) {
+  // The published shards are all version 1. A reader that refused them, or
+  // walked them at the version-2 stride, would blank the point layer for every
+  // card between the flash and the CDN rebuild -- and the wrong stride would do
+  // it while passing the crc, because the crc is over bytes, not over meaning.
+  const std::vector<uint8_t> v1 = readFile(fixturePath("shard_v1.tip"));
+  ASSERT_EQ(v1.size(), kFixtureV1Bytes);
+
+  StdioFileSource file;
+  MapPointReader reader;
+  ASSERT_TRUE(reader.open(file, fixturePath("shard_v1.tip").c_str()));
+  ASSERT_TRUE(reader.verifyBody());
+  ASSERT_TRUE(reader.beginRecords());
+  EXPECT_EQ(reader.pointCount(), kExpected.size());
+  EXPECT_EQ(reader.buildEpoch(), kBuildEpoch);
+
+  for (size_t i = 0; i < kExpected.size(); ++i) {
+    MapPointReader::Record record;
+    ASSERT_TRUE(reader.nextRecord(record)) << "record " << i;
+    const Expected& e = kExpected[i];
+    EXPECT_EQ(record.x, e.x) << "record " << i;
+    EXPECT_EQ(record.y, e.y) << "record " << i;
+    EXPECT_EQ(record.category, e.category) << "record " << i;
+    EXPECT_EQ(record.flags, e.flags) << "record " << i;
+    // Version 1 has no room for either, so both read as absent -- the same
+    // values a version-2 record without them carries.
+    EXPECT_EQ(record.ele, kPointEleUnknown) << "record " << i;
+    EXPECT_EQ(record.rank, kPointRankNone) << "record " << i;
+
+    char name[MapPointReader::kMaxNameBytes + 1] = {};
+    ASSERT_TRUE(reader.readName(record, name, sizeof(name))) << "record " << i;
+    EXPECT_STREQ(name, e.name) << "record " << i;
+  }
+  MapPointReader::Record past;
+  EXPECT_FALSE(reader.nextRecord(past));
+}
+
+TEST(MapPointReader, CarriesElevationAndRank) {
+  StdioFileSource file;
+  MapPointReader reader;
+  ASSERT_TRUE(reader.open(file, fixturePath("landmarks.tip").c_str()));
+  ASSERT_TRUE(reader.verifyBody());
+  ASSERT_TRUE(reader.beginRecords());
+
+  // Landmarks only, so a safety-only walk may skip this shard without reading a
+  // record -- the whole point of the kinds bitmask.
+  EXPECT_EQ(reader.kindsPresent(), 1u << static_cast<uint8_t>(MapPointKind::Landmark));
+
+  int withHeight = 0;
+  int withoutHeight = 0;
+  MapPointReader::Record record;
+  while (reader.nextRecord(record)) {
+    EXPECT_EQ(record.kind, MapPointKind::Landmark);
+    char name[MapPointReader::kMaxNameBytes + 1] = {};
+    ASSERT_TRUE(reader.readName(record, name, sizeof(name)));
+    if (std::strcmp(name, "Gerlachovský štít") == 0) {
+      ++withHeight;
+      EXPECT_EQ(record.ele, 2655);  // metres above the EGM96 geoid, not the ellipsoid
+      EXPECT_EQ(record.rank, 0u);
+    } else {
+      ++withoutHeight;
+      // The sentinel, and it must never be treated as a height: -32768 m
+      // averaged into an elevation profile is wrong by kilometres and plots
+      // plausibly (../../../docs/point-file-spec.md).
+      EXPECT_EQ(record.ele, kPointEleUnknown);
+      EXPECT_EQ(record.rank, 3u);
+    }
+  }
+  EXPECT_EQ(withHeight, 1);
+  EXPECT_EQ(withoutHeight, 1);
+}
+
+TEST(MapPointReader, RefusesARecordWhosePadByteIsSet) {
+  // The pad byte is alignment padding, not headroom. It is validated against
+  // zero exactly as version 1's reserved half-word was, which is what makes a
+  // field placed there later cost a version 3 rather than being free.
+  std::vector<uint8_t> bytes = readFile(fixturePath("shard.tip"));
+  ASSERT_EQ(bytes.size(), kFixtureBytes);
+  bytes[MapPointReader::kHeaderBytes + 19] = 1;
+
+  const std::string path = writeTemp(bytes, "recpad.tip");
+  StdioFileSource file;
+  MapPointReader reader;
+  ASSERT_TRUE(reader.open(file, path.c_str())) << "the header is untouched";
+  ASSERT_TRUE(reader.beginRecords());
+  MapPointReader::Record record;
+  EXPECT_FALSE(reader.nextRecord(record));
+}
+
 TEST(MapPointShardGrid, ShardHoldsItsOwnPointsAndTheRadiusFitsThreeAcross) {
   // The fixture's own shard, from point_file.py: 561/353 at z10.
   const MapPointShards::Range one =
@@ -227,8 +351,8 @@ TEST(MapPointShardGrid, ShardHoldsItsOwnPointsAndTheRadiusFitsThreeAcross) {
 
   // Why z10 exists: a 25 km radius search opens 3x3 files worst case. At z11 it
   // would be 5x5, which is the read storm the grid was chosen to avoid.
-  const MapPointShards::Range radius = MapPointShards::rangeForRadius(
-      kExpected[0].x, kExpected[0].y, MapPointShards::kSearchRadiusM);
+  const MapPointShards::Range radius =
+      MapPointShards::rangeForRadius(kExpected[0].x, kExpected[0].y, MapPointShards::kSearchRadiusM);
   EXPECT_LE(radius.col1 - radius.col0 + 1, 3u);
   EXPECT_LE(radius.row1 - radius.row0 + 1, 3u);
 
@@ -295,8 +419,8 @@ TEST(MapPointQuery, ListsOneCategoryNearestFirstWithNamesAndSectors) {
   query.begin(queryConfig());
 
   MapPointQuery::Hit hits[MapPointQuery::kMaxHits];
-  const size_t count = query.listCategory(static_cast<uint8_t>(MapSafetyCategory::Water), hits,
-                                          MapPointQuery::kMaxHits);
+  const size_t count =
+      query.listCategory(static_cast<uint8_t>(MapSafetyCategory::Water), hits, MapPointQuery::kMaxHits);
   ASSERT_EQ(count, 2u);
 
   // Nearest first, and no clever reordering: the unverified spring at 0 m stays
@@ -329,8 +453,6 @@ TEST(MapPointQuery, SectorsAreEightAndNeverDegrees) {
   // degree steps are NOT 45 degrees. The one that is scaled to be equal on the
   // ground must come out NE.
   const int32_t lonStepEqualGround = static_cast<int32_t>(step * 1.51);
-  EXPECT_STREQ(MapPointQuery::sectorName(MapPointQuery::sector8(lat, lon, lat + step, lon + lonStepEqualGround)),
-               "NE");
-  EXPECT_STREQ(MapPointQuery::sectorName(MapPointQuery::sector8(lat, lon, lat - step, lon - lonStepEqualGround)),
-               "SW");
+  EXPECT_STREQ(MapPointQuery::sectorName(MapPointQuery::sector8(lat, lon, lat + step, lon + lonStepEqualGround)), "NE");
+  EXPECT_STREQ(MapPointQuery::sectorName(MapPointQuery::sector8(lat, lon, lat - step, lon - lonStepEqualGround)), "SW");
 }

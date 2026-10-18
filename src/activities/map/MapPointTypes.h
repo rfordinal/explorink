@@ -9,6 +9,16 @@
 static constexpr uint16_t kPointSpecVersion = 1;
 static constexpr uint8_t kPointNameMaxBytes = 63;
 
+// A record's `ele` in metres above the EGM96 geoid, or this when the record
+// has no height at all. A sentinel, never a low summit: it must be filtered
+// out before any arithmetic, not fed to it (docs/point-file-spec.md).
+static constexpr int16_t kPointEleUnknown = -32768;
+
+// `rank` 0 is most important, and it is what a safety point always writes --
+// there, it means "no rank". The level-of-detail cutoff that thins landmarks
+// must not be applied to a safety record.
+static constexpr uint8_t kPointRankNone = 0;
+
 enum class MapPointKind : uint8_t {
   Unknown = 0,
   Safety = 1,

@@ -174,9 +174,18 @@ void stampMark(IMapCanvas& canvas, const int cx, const int cy, const MapLineMark
 // (dx, dy) -> (-dy, dx) -- lands on the right-hand side: facing east, that is
 // south, which is right. Get the sign wrong and every cliff on the map claims the
 // drop is uphill.
+//
+// `bothSides` turns the comb into a ladder: the same tooth, drawn from `-tick` to
+// `+tick` about the line instead of from the line to `+tick`, which is the
+// topographic railway symbol (MapStyle.h, MapLinePattern::Ladder). It shares this
+// walk rather than getting its own so the two marks cannot drift apart in
+// spacing -- the rung rhythm and the comb rhythm are the same arithmetic, and a
+// second copy is a second place for the phase carry across segment boundaries to
+// be got wrong. `side` is ignored when it is set: a mark reaching both ways has
+// no side to choose.
 void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int tickPx,
                        const int gapPx, const MapInk ink, const MapTickSide side = MapTickSide::Downhill,
-                       const int tickWidth = 1) {
+                       const int tickWidth = 1, const bool bothSides = false) {
   if (lineWidth <= 0 || way.pointCount < 2) return;
   // The line itself, unbroken. A cliff is continuous ground; only the combs are
   // periodic.
@@ -206,7 +215,12 @@ void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineW
         const int sign = side == MapTickSide::Uphill ? -1 : 1;
         const int tx = sign * -dy * tickPx / len;
         const int ty = sign * dx * tickPx / len;
-        canvas.drawLine(px, py, px + tx, py + ty, tickWidth < 1 ? 1 : tickWidth, ink);
+        // A ladder rung starts on the far side and crosses; a comb starts on the
+        // line. Same end point either way, so the reach a style asks for is the
+        // reach it gets on each side rather than half of one.
+        const int sx = bothSides ? px - tx : px;
+        const int sy = bothSides ? py - ty : py;
+        canvas.drawLine(sx, sy, px + tx, py + ty, tickWidth < 1 ? 1 : tickWidth, ink);
         phase = 0;
       } else {
         phase += step;
@@ -970,6 +984,13 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         // a road, since a hachured line has no dash of its own.
         strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black, stroke.tickSide,
                           stroke.tickWidth);
+      } else if (stroke.pattern == MapLinePattern::Ladder) {
+        // Rungs across the line: the quiet railway (MapStyle.h, MapLinePattern::Ladder).
+        // `dash` carries the reach here for the same reason it does for Hachured on a
+        // road -- the road stroke has no per-class tick slot of its own, and the
+        // generator spells the style-facing name `tick_px` either way.
+        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black,
+                          MapTickSide::Downhill, stroke.tickWidth, /*bothSides=*/true);
       } else if (stroke.pattern != MapLinePattern::None) {
         strokeWay(canvas, way, stroke.width, MapInk::Black);
       }

@@ -11,6 +11,17 @@ built. Every claim carries how it is known.
 `docs/touch-modes.md` is the touch-mode feature this analysis came out of. This
 file is about the input layer underneath it.
 
+**Premise changed 2026-09-17, and one branch is stranded by it.** T-2024 moved
+the map compose to the render task, so `loop()` no longer stalls for seconds and
+the frame-latch problem this file measures is largely gone. What is still broken
+is double-tap and long-press recognition. The unmerged `t266-gt911-task` branch
+contains both a sampling task (now probably unnecessary) and a recogniser (still
+needed), and
+[`input-gestures-handover-2026-09-17.md`](input-gestures-handover-2026-09-17.md)
+says which findings belong to which half, what ran on hardware, and the one
+measurement that should be taken before deleting anything. **Read it before
+touching that branch.**
+
 ## What is wrong: gesture recognition is not a layer
 
 `[read]` Tap / double tap / hold / auto-repeat are re-implemented in **six
@@ -169,6 +180,13 @@ concluding from. 384 is the honest number.
 `[measured]` `CMD:LOOPGAP` records the interval between successive
 `gpio.update()` calls -- the sampler, not `loop()`.
 
+**Measured 2026-09-14, before T-2024.** The map's compose then ran on the main
+task, so a frame and a sampler gap were the same thing. Since T-2024 the compose
+runs on the render task and the sampler keeps running through it -- the worst gaps
+on the map are now the main task's own windowed refreshes (measured 656 to 756 ms
+on the two S3 boards, `activity-manager.md`). The numbers below still describe the
+panel's cost; they no longer describe the sampler's.
+
 | screen | typical gap | worst single gap |
 |---|---|---|
 | Home, idle | ~15 ms (265 of 284 in the 10-20 ms bucket) | 78 ms |
@@ -186,7 +204,9 @@ data carries.** Steps 1-4 are measured. Step 5 was an assumption stated as fact,
 and it is the step that decides the outcome.
 
 1. `[measured]` The loop's last poll cleared `0x814E`, so the controller is free.
-2. `[measured]` The map render blocks the sampler for 2.8 to 4.3 s.
+2. `[measured]` The map render blocks the sampler for 2.8 to 4.3 s. **True for
+   the build measured, not for the tip: T-2024 moved the compose off the main
+   task, and what blocks the sampler now is a windowed refresh, not a frame.**
 3. `[measured]` The first edge in that window -- the first tap's `0x90` --
    latches. `cap12` is that capture: the key-press frame sat in the register
    unchanged for 402 samples, 2.01 s, with the finger long gone.
