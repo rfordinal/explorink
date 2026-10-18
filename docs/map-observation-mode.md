@@ -384,3 +384,41 @@ at compile time -- which is also what every override's own default would
 have produced, so there is no value to diverge from. Safe only because the
 values happen to agree everywhere; a future default that must differ per
 theme needs the `fontId = 0` sentinel pattern instead, not a plain default.
+
+## Finding: the X3 side-hint boxes were transparent -- the X4 fix for the same bug never reached the X3 branch
+
+**Verified on hardware (X3), 2026-10-18.** `57157ce8` (2026-08-06) backed the
+X4 branch of `drawSideButtonHints()` with a white fill before the outline, in
+both `BaseTheme.cpp` and `LyraTheme.cpp` -- `drawRect`/`drawRoundedRect` only
+stroke a border, so without a fill first, whatever the map already drew at
+that spot shows straight through the box. The commit's own message said "both
+themes", meaning `BaseTheme` and `LyraTheme`; it did not mean both device
+layouts. Each file's `gpio.deviceIsX3()` branch was left exactly as it was
+before the fix -- outline and text only -- so the X3 side-hint boxes kept
+showing map ink through them, for over two months, on the one board the
+original report never ran on.
+
+Fixed by adding the matching `fillRect(..., false)` (`BaseTheme.cpp:315-345`)
+and `fillRoundedRect(..., Color::White)` (`LyraTheme.cpp:468-510`) calls
+ahead of each existing outline call, inside the `gpio.deviceIsX3()` branch,
+sized to that branch's own one-box-per-side geometry (not copied from the
+X4 branch's stacked two-box footprint, which does not apply to X3's layout).
+
+**Caught by the maintainer looking at the device, not by review or a host
+test** -- there is no host-side rendering check that would catch a missing
+fill call, because the bug produces a syntactically ordinary draw sequence
+that merely omits one call. Confirmed fixed with
+`tools/device_map_shot.py --width 792 --height 528`: the Follow-mode `+`/`--`
+boxes sit on an opaque white tag with no map lines showing through, at
+`kSideHintX3Y = 155` (landscape).
+
+**A verification trap while chasing this**: the first screenshot attempt
+showed neither hints nor the header -- not a transparency bug, a mid-render
+capture. The console's `zoom` command had just loaded a dense tile area
+(16,595 ways, 1.42 MB read), and `device_map_shot.py`'s 4 s `SETTLE_S` is not
+long enough for every area -- `composeViewport()` draws the header and
+`drawMapButtonHints()` only after the layer pass finishes, so a screenshot
+taken too early catches tiles with no chrome at all, which looks like chrome
+is missing rather than like a slow frame. Re-grabbing the same frame a few
+seconds later (no new `zoom` command, so no new render) showed the finished
+frame with both boxes present and opaque.
