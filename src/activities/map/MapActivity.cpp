@@ -2243,6 +2243,12 @@ void MapActivity::drawHikeElevationLine() {
   // measured 2026-08-17). This icon sits over the plain white backing this
   // function already filled, not over live map lines, so the single ink pass
   // below is enough -- no silhouette-then-outline mask needed.
+  //
+  // Holds even when a neighboring call in the same function uses its own
+  // extra rotation (drawTextRotated90CW()) for an unrelated, glyph-specific
+  // reason -- do not reason from that to drawIcon() being safe nearby.
+  // docs/map-observation-mode.md's zoom-icon finding, 2026-10-20, is the exact
+  // way that reasoning went wrong for the side-hint box's "+"/"-" icons.
   renderer.drawMono1bpp(icon_mountain_16.bits, iconX, iconY, iconSize, iconSize, true);
   renderer.drawText(SMALL_FONT_ID, iconX + iconSize, textY, altStr, true);
 }
