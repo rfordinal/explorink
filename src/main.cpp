@@ -1211,6 +1211,14 @@ static bool meshStart(bool& persisted) {
     snprintf(gMeshNodeName, sizeof(gMeshNodeName), "EI-%02x%02x", gMesh.self_id.pub_key[0], gMesh.self_id.pub_key[1]);
   }
 
+  // Seed the clock from the receiver when it already knows the time. Without
+  // this the timestamp our adverts carry counts from MeshCore's own arbitrary
+  // epoch, which is a number no other node can date -- and the board has a
+  // GNSS receiver that supplies wall clock before it has a fix (docs/gnss.md).
+  // It is not required for the mesh to work; it is required for the timestamp
+  // to mean anything.
+  if (gnss.fix().utc != 0) gMeshRtc.setCurrentTime(gnss.fix().utc);
+
   // The saved cadence, and the first advert goes out now rather than one full
   // interval from now: a rider who turns the beacon on wants the other boards
   // to know within seconds, not in seventy.
@@ -1478,6 +1486,22 @@ static void loraDrain() {
   if (gLoraRxQueue == nullptr) return;
 
 #ifdef ENABLE_LORA_MESH
+  // **MeshCore's clock only advances when somebody ticks it**, and nothing else
+  // in this firmware does. Their own examples call this from loop() and it
+  // looks like boilerplate; it is not.
+  //
+  // An advert carries that clock's value as its timestamp, and a receiver
+  // discards a packet whose hash it has already seen (`MeshTables::wasSeen`,
+  // Mesh.cpp). A frozen clock therefore makes every advert byte-identical to
+  // the last one, so the *first* one is received and every one after it is
+  // silently dropped at the far end -- with nothing wrong on the sending side
+  // and no error anywhere to read.
+  //
+  // Measured 2026-10-20: board B logged `adv=1 age=206s` while board A had
+  // been beaconing for three minutes. An hour went into the sender before the
+  // receiver's dedup was suspected.
+  gMeshRtc.tick();
+
   // The beacon clock. Here rather than on the radio task because the position
   // it sends comes from the GNSS receiver, which is polled from loop() -- and
   // because an advert is queued, not transmitted, so this costs no radio time.
@@ -2953,7 +2977,16 @@ void loop() {
         } else if (argument.length() == 0) {
           logSerial.printf(
               "LORA_STATE:ready=%d listening=%d pong=%d rail=%d isr=%d want=%d tx_air=%d rearm=%lu "
-              "tx_timeout=%lu stack=%u freq=%.3f bw=%.1f sf=%u cr=%u power=%d rx=%lu tx=%lu\n",
+              "tx_timeout=%lu stack=%u freq=%.3f bw=%.1f sf=%u cr=%u power=%d rx=%lu tx=%lu"
+#ifdef ENABLE_LORA_MESH
+              // The beacon's own state, because "it never transmits" has three
+              // possible causes -- the mesh is off, the cadence is 0, or the
+              // next-due stamp is in the future -- and from the outside they
+              // look identical. Added 2026-10-20 after that exact question
+              // cost an hour of guessing.
+              " mesh=%d beacon=%lus due_in=%ldms"
+#endif
+              "\n",
               lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
               gLoraIsrWanted ? 1 : 0, gLoraListenWanted ? 1 : 0, gLoraTxInFlight ? 1 : 0,
               static_cast<unsigned long>(gLoraRearmCount), static_cast<unsigned long>(gLoraTxTimeouts),
@@ -2962,7 +2995,13 @@ void loop() {
               static_cast<unsigned>(uxTaskGetStackHighWaterMark(gLoraServiceTask)), gLoraConfig.freqMhz,
               gLoraConfig.bandwidthKhz, static_cast<unsigned>(gLoraConfig.spreadingFactor),
               static_cast<unsigned>(gLoraConfig.codingRate), static_cast<int>(gLoraConfig.txPowerDbm),
-              static_cast<unsigned long>(gLoraRxCount), static_cast<unsigned long>(gLoraTxCount));
+              static_cast<unsigned long>(gLoraRxCount), static_cast<unsigned long>(gLoraTxCount)
+#ifdef ENABLE_LORA_MESH
+                                                            ,
+              gMeshRunning ? 1 : 0, static_cast<unsigned long>(gMeshBeaconSec),
+              static_cast<long>(gMeshNextBeaconMs - millis())
+#endif
+          );
         } else if (upper == "ON") {
           if (loraStart()) {
             // The version string says a radio is there; it cannot say which

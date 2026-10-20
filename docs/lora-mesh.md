@@ -125,6 +125,41 @@ Written through `HalStorage`, not through MeshCore's `IdentityStore`: that one
 is built on `fs::FS` and every file in this firmware goes through HalStorage,
 which is the mutex that makes SdFat thread-safe.
 
+## The clock has to be ticked, or only the first advert is ever heard
+
+**`VolatileRTCClock::tick()` is not boilerplate.** MeshCore's examples call it
+from `loop()` next to `the_mesh.loop()`, it looks like housekeeping, and
+leaving it out produces a failure that points at entirely the wrong end of the
+link.
+
+The chain: an advert carries the clock's value as its timestamp; a frozen
+clock makes every advert byte-identical to the last; a receiver discards a
+packet whose hash it has already seen (`MeshTables::wasSeen`, `Mesh.cpp`). So
+the **first** advert is received normally and every one after it is dropped
+silently at the far end. The sender sees a successful send, the receiver logs
+nothing, and no counter anywhere moves.
+
+**Measured 2026-10-20, and it cost an hour.** Board A was beaconing every
+120 s; board B reported `LORA_PEER:0 key=3e8f8e75 name=RF-alfa ... age=206s
+adv=1`. The search went through the sender first -- the beacon timer, the
+`loop()` call chain, MeshCore's airtime budget (which starts at 1.8 million ms
+and was never the limit) -- before the receiver's duplicate table was
+suspected at all. The symptom "my radio does not transmit" was the wrong
+sentence: it transmitted every time.
+
+Two consequences, both in `loraDrain()` and `meshStart()`:
+
+- The clock is ticked once per `loop()` iteration.
+- It is seeded from the GNSS receiver at mesh start when the receiver already
+  knows the time, which it does before it has a fix (`gnss.md`). Not required
+  for the mesh to work -- required for the timestamp to mean anything to
+  anybody else.
+
+**And `LORA_STATE` now prints the beacon's own state** -- `mesh=`, `beacon=`,
+`due_in=` -- because "it never transmits" has three possible causes that look
+identical from outside: the mesh is off, the cadence is 0, or the next-due
+stamp is in the future. Guessing between them is what the hour went on.
+
 ## The beacon is off by default
 
 An advert is a plaintext broadcast of this device's name and position to anyone
