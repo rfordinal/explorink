@@ -1,0 +1,931 @@
+# LoRa bring-up on the T5 S3 Pro
+
+The SX1262 console: what it does, what it proves, and what it deliberately
+does not solve yet. Written 2026-09-16 and **run on two boards the same day**: the link works.
+The measured run is in "The first contact" below. Claims are marked
+`[measured]` on hardware, `[repo]` (read off code) or `[secondhand]` (read off
+another project).
+
+The assessment that scoped this work is the parent repo's `docs/lora.md`.
+
+## What exists
+
+`lib/LoraRadio` wraps RadioLib's SX1262 driver. It is thin on purpose: one
+packet out, one packet in, and the wire settings in one place. No mesh, no
+routing, no protocol. MeshCore comes later and would be impossible to debug on
+top of an unproven radio, because **every wrong wire setting fails as silence**
+-- a radio that hears nothing and is heard by nobody -- rather than as an
+error.
+
+`CMD:LORA` in `src/main.cpp` drives it. Devel-only: `-DENABLE_LORA_CMD` lives
+in `env:t5s3pro` and in no release env.
+
+```
+CMD:LORA              LORA_STATE:ready= listening= pong= rail= freq= bw= sf= cr= power= rx= tx=
+CMD:LORA ON           rail up, chip up, prints the version string off silicon
+CMD:LORA OFF          radio to sleep, NRESET low, rail released
+CMD:LORA RX ON|OFF    continuous receive; packets print as LORA_RX:
+CMD:LORA TX <text>    one packet
+CMD:LORA PING         one PING, waits for the far end's PONG
+CMD:LORA PONG ON|OFF  answer every PING heard
+CMD:LORA POWER <dbm>  -9..22
+CMD:LORA FREQ <mhz>   150..960
+```
+
+### The two-board link test
+
+`CMD:LORA PONG ON` on one board, `CMD:LORA PING` on the other. One exchange
+reports **both directions**, which is why the reply carries numbers rather
+than being a bare acknowledgement:
+
+```
+LORA_PONG:rtt=434ms here_rssi=-33.0 here_snr=11.8 there=1 -33.0 12.0
+```
+
+`here_*` is how this board heard the reply. `there=` is the sequence number
+plus how the far end heard the ping. A one-sided report would hide an
+asymmetric link, which is the normal failure at range.
+
+## The wire settings, and why these
+
+| setting | value | why |
+|---|---|---|
+| frequency | 869.618 MHz | MeshCore's own EU default |
+| bandwidth | 62.5 kHz | MeshCore default |
+| spreading factor | 8 | MeshCore default |
+| coding rate | 5 | MeshCore default |
+| sync word | 0x12 (private) | MeshCore default |
+| preamble | 16 symbols | what MeshCore's `std_init` passes -- **but see below** |
+| TX power | 14 dBm | bench default, not MeshCore's 22 |
+
+They are MeshCore's defaults (its `platformio.ini`: `LORA_FREQ=869.618`,
+`LORA_BW=62.5`, `LORA_SF=8`, plus `LORA_CR=5` in every variant) `[secondhand]`
+so that a bring-up board and a MeshCore node share a channel and each is
+evidence about the other. **Changing one of these changes which radios can hear
+us**, which is the reason they live in one struct with the reasoning next to
+them rather than being scattered as call arguments.
+
+**The preamble is where "same channel as MeshCore" stops being true, found in
+review 2026-09-16.** `CustomSX1262::std_init()` does pass 16
+(`src/helpers/radiolib/CustomSX1262.h:57`), but every MeshCore node then calls
+`RadioLibWrapper::setParams()`, which overrides it with
+`preambleLengthForSF(sf)` -- and that is **32 for any SF of 8 or below**
+(`src/helpers/radiolib/RadioLibWrappers.h:56`, `CustomSX1262Wrapper.h:20`).
+At MeshCore's own default SF8, a real node transmits a 32-symbol preamble and
+we transmit 16. Two of our own boards are unaffected, which is why the link
+test passed; joining a MeshCore mesh is not, and T-2020 has to pin 32 rather
+than 16.
+
+TX power is the one deliberate difference: 14 dBm on a bench, raised by hand
+for a range test. What is legal is narrower than what the chip allows, and the
+EU 868 sub-band and duty cycle are still open questions (parent `docs/TODO.md`,
+T-285).
+
+## Three board facts that are not preferences
+
+```
+tcxoVoltage    = 1.8 V   SX126X_DIO3_TCXO_VOLTAGE
+dio2AsRfSwitch = true    SX126X_DIO2_AS_RF_SWITCH
+currentLimit   = 140 mA  SX126X_CURRENT_LIMIT
+```
+
+All three are read off `dz0ny/meshcore-paperui`, which runs MeshCore on this
+exact board -- its `platformio.ini` `env:t5-epaper` also lists our four pins
+unchanged (NSS 46, DIO1 10, NRESET 1, BUSY 47) `[secondhand]`.
+
+**Only two of the three are actually deltas**, found in review: RadioLib's own
+`begin()` already sets `setDio2AsRfSwitch(true)` and `setCurrentLimit(60.0)`
+(`SX126x.cpp:54,57`). So the DIO2 line restates what the library does, the
+current limit raises 60 mA to 140, and the TCXO voltage is the one setting that
+would otherwise be wrong (RadioLib defaults to 1.6 V).
+
+**The TCXO voltage is the first suspect if the radio answers SPI and never
+hears anything**: without a stable clock the chip does everything except work,
+and every call still reports success.
+
+`useRegulatorLDO` stays false, i.e. the DC-DC converter. The LDO roughly
+doubles receive current. `[assumed]` for this board.
+
+## The first contact, 2026-09-16 `[measured]`
+
+Two T5 S3 Pro boards on one desk, both on this build, `PONG ON` on one and
+`PING` on the other. Four exchanges, **four replies, nothing lost**:
+
+```
+board A (pinging)                             board B (answering)
+LORA_OK:ping=1 air=170ms                      LORA_RX:len=6 rssi=-33.0 snr=12.0 text=PING 1
+LORA_PONG:rtt=434ms here_rssi=-33.0           LORA_OK:pong=1 -33.0 12.0
+          here_snr=11.8 there=1 -33.0 12.0
+```
+
+| | value |
+|---|---|
+| RSSI, both directions | -32 to -33 dBm |
+| SNR, both directions | 11.2 to 12.2 dB |
+| transmit call, one 6-byte packet | 169-170 ms wall time |
+| round trip, ping to pong | 434, 485, 485, 436 ms |
+| packets lost | 0 of 4 |
+
+**The boards were side by side, so -33 dBm says the radios work and says
+nothing about range.** Range is bring-up step 4 and needs a bike, not a bench
+(parent `docs/lora.md`).
+
+**The 170 ms is the transmit call, not the airtime**, and the doc said
+otherwise until review caught it: `air=` is `millis()` around a blocking
+`LoraRadio::transmit()`, so it includes the SPI traffic, the BUSY waits and the
+re-arm afterwards. Computed time on air for this packet is **157 ms**
+(4.096 ms per symbol at SF8 / 62.5 kHz; 20.25 preamble symbols = 82.9 ms plus
+18 payload symbols = 73.7 ms), which leaves about 13 ms of call overhead.
+
+157 ms for six bytes is the budget every protocol decision above this layer
+spends from, and it is why an advert cadence is a real design question rather
+than a constant. The arithmetic also confirms the wire settings independently:
+a 32-symbol preamble would have taken 222 ms, so these boards really did
+transmit with 16.
+
+The round trip is roughly two airtimes plus the far end's turnaround, which
+means it is dominated by the radio and not by our loop.
+
+## What the console proves, and what it cannot
+
+**That a radio is there, powered and out of reset.** `CMD:LORA ON` prints the
+16-byte version string from register 0x0320. Both boards answer
+`SX1261 V2D 2D02` `[measured]`.
+
+**It does not say which part is fitted, and an earlier version of this section
+claimed it did.** RadioLib expects the string `SX1261` from an SX1262 as well
+(`SX1262.h:16`, `RADIOLIB_SX1262_CHIP_TYPE`), so the two models answer
+identically and `RADIOLIB_ERR_CHIP_NOT_FOUND` only separates "something
+answers" from "nothing does". The SX1262 identity stays `[open]` in parent
+`docs/lora.md`. What would settle it: the vendor schematic, or a measured
+output sweep -- an SX1261 stops at +15 dBm where an SX1262 reaches +22.
+
+The string is read with our own SPI transaction (opcode `0x1D`, the 16-bit
+address, one dummy byte) because RadioLib's `readRegister()` is protected
+behind `#if !RADIOLIB_GODMODE && !RADIOLIB_LOW_LEVEL` (`SX126x.h:849`), and
+both are library-wide switches -- a strange price for one string.
+
+## The three hazards this shares a board with
+
+### 1. One rail, two radios
+
+`PCA9535_IO00_LORA_GPS_EN` powers the GNSS receiver and the SX1262 together
+(`BoardT5S3Pins.h:70`). So `CMD:GNSS OFF` must not kill a listening radio, and
+`CMD:LORA OFF` must not blind a map following a fix.
+
+`t5s3RailHold(user, on)` in `src/main.cpp` holds the rail for a **bitmask of
+users**, not a counter: a counter drifts the first time a caller asks twice,
+and `Gnss::begin()` treats a second call as a no-op by design. The rail drops
+when the last user lets go.
+
+### 2. The SD card is on the same SPI bus
+
+`SCLK14 MISO21 MOSI13`, with `SD_CS12` against `LORA_CS46`. A radio out of
+reset drives MISO and corrupts card transfers -- measured 2026-09-03, nine runs
+(`src/main.cpp`, `t5s3DeselectLoraRadio()`).
+
+Every exit from `LoraRadio` therefore ends in `park()`, which sleeps the chip
+**and holds NRESET low**. The reset is the part the card needs; the sleep is
+only power.
+
+### 3. `LORA_CS` also reaches the panel's i80 bus
+
+GPIO46 is handed to LovyanGFX as `pinPwr`, which becomes the i80 driver's
+`dc_gpio_num` -- the IDF rejects a negative one and this board has no spare
+GPIO to give instead (`LilyGoT5S3LgfxConfig.cpp`, the `pinPwr` comment).
+`pinOe` is `-1` since the SDK fix of 2026-09-03; it used to carry `LORA_CS` as
+a placeholder, which is what put the radio's chip select on an EPD pin and
+killed the SD card (BUG-037).
+
+**An earlier version of this section said the panel bus holds GPIO46 LOW from
+display init onward, and that a listening radio is therefore impossible. That
+was a stale reading** of the pre-fix file, caught in review 2026-09-16.
+`prepareEpdPower()` drives the pin HIGH before the bus is built, and
+`lgfx::pinMode()` writes no level, so it stays HIGH: an ordinary refresh does
+not select the radio.
+
+What is genuinely open is narrower, and still unmeasured:
+
+- the microsecond window during i80 bus setup where the peripheral drives DC on
+  that pad, named in the SDK's own comment as the one case it does not cover;
+- whether anything re-initialises the display bus while the radio is up, which
+  would re-claim the pad for LCD_CAM;
+- whether continuous receive survives a full map redraw at all, with tile reads
+  on the same SPI bus.
+
+Both users bracket the bus in `SPI.beginTransaction()`, so transfers serialise
+on the Arduino bus lock. **Serialised is not the same as tested** -- T-2019, and
+the reason `CMD:LORA` is a console rather than a background service.
+
+**First look, 2026-09-16, and then the run that actually asked the question.**
+
+The first attempt used zoom rungs 2 and 3, where a render takes 49 to 909 ms,
+and packets two seconds apart: 10 of 10 delivered in both a control phase and a
+rendering phase, with the card genuinely in use. It proved nothing, because
+**no packet ever arrived while a render was running**.
+
+Rung 6 renders for 3 to 3.9 seconds, so the second run forced exactly that
+window. Twenty pings 1.2 s apart at the rendering board, which also answered
+each one, so radio transmits landed in the same window as the card reads:
+
+| | result |
+|---|---|
+| pings heard by the rendering board | **8 of 20** |
+| pongs that reached the sender back | 4 of 20 |
+| render windows, from the board's own log | 8, up to 3904 ms |
+| packets reported inside a render window | **0** |
+| card errors, CRC failures, radio errors | **0** |
+
+**Integrity is fine and throughput is not.** Nothing was corrupted: no tile read
+failed, no CRC mismatch, no `LORA_RX_ERR`. What happened is that traffic
+arriving during a render is lost.
+
+**The mechanism, inferred rather than measured**: `loraPoll()` runs from
+`loop()`, and an SX126x holds exactly one received packet. If `loop()` does not
+run for three seconds, everything that arrives after the first packet of that
+window is lost -- whether the chip overwrites the buffer or refuses the packet
+is not established here, and the count lands near one per window either way,
+which is what 8 heard across 8 windows looks like. The zero-inside-a-window column
+says the same thing from the other side: nothing was *reported* during a
+render.
+
+**What this costs the design.** A device that listens while it draws cannot
+service the radio from `loop()`. That is a real constraint on any always-on
+mesh, and it is not the constraint this task was opened for: the bus hazard did
+not appear at all. What was built in answer is "The radio has its own task now"
+below -- written, not yet exercised.
+
+**Answered 2026-09-17**: a radio transmit does not corrupt a card read.
+Seventeen CRC32-checked reads of a 26 kB tile while the board both received and
+transmitted came back byte-identical, zero errors ("The bench"). The four
+missing pongs were starvation, as suspected.
+
+## The radio has its own task now `[measured 2026-09-17]`
+
+Written 2026-09-16 against the 8-of-20 measurement above, on branch
+`lora/rx-task` off `feat/lora`; run on two boards 2026-09-17. **20 of 20, and
+16 of them read inside a render window.** "The bench" below has the numbers,
+including the three criteria it did not settle.
+
+### The ground moved under this on 2026-09-18 `[read, not re-measured]`
+
+**`develop` now composes map frames on the render task** -- "the map composes on
+the render task", firmware `c24cb625`, their T-2024 (parent `docs/TODO.md`).
+`MapActivity`'s comment says it plainly: "The main task does not compose frames
+any more ... Every render*() entry records what the panel should show next and
+wakes ActivityManager's render task". They measured the same stall this section
+measured, from the other end: a redraw blocking the input sampler for 2.80 s,
+"no button edge, no GNSS drain, **no radio poll**, no console line".
+
+Everything below was measured on `feat/lora`, which does not carry that change
+and is 28 commits behind `develop`. So:
+
+- **The numbers stand for the build they were taken on.** 8 of 20 against 20 of
+  20 is what those two binaries did on 2026-09-17.
+- **The 8-of-20 baseline was expected not to reproduce on `develop`. It does.**
+  Measured 2026-09-18 on the sync merge: `loop()` still goes unserviced for up
+  to 3.25 s during a rung 6 compose. See the section below.
+- **What still stands on its own**, independent of who composes frames: an
+  SX126x holds exactly one packet, so any `loop()` stall costs traffic -- a
+  console line, an SD write, a GNSS drain; the 100 ms tick bounds servicing
+  latency whatever `loop()` is doing; and the non-blocking transmit and the
+  re-arm watchdog fix defects that have nothing to do with rendering.
+- **What has to be re-measured before this feature merges up**: the same
+  twenty-packet bench on a `feat/lora` synced with `develop`, against that
+  merge's own first parent. A benefit measured against a base the tree has since
+  moved past is dead (parent `CLAUDE.md`, the research rules).
+
+Not rewritten below, deliberately. The reasoning that produced the task is the
+evidence for it, and deleting it would leave the design with no stated cause.
+
+### Re-measured on develop's async map, 2026-09-18 `[measured]`
+
+The section above asked for exactly this run: the same twenty-packet bench on a
+`feat/lora` synced with `develop`, plus `CMD:LOOPGAP` to see whether the stall
+that justified this task survived their T-2024. Both boards on `18c8927f`.
+
+**The task still earns its place, and the stall is still there.** `CMD:LOOPGAP`
+times the interval between input-sampler calls, which is the same interval in
+which nothing else on the main task runs -- no console line, no GNSS drain, and
+on the old design no radio poll. Across the twenty-ping burst with a redraw
+every two seconds:
+
+| gap | count |
+|---|---|
+| 50 to 100 ms | 102 |
+| 200 to 500 ms | 3 |
+| 0.5 to 1 s | 1 |
+| 1 to 2 s | 4 |
+| **over 2 s** | **5** |
+
+Worst gap **3.25 s**. The gaps line up with the compose windows to the
+millisecond: a render finishing at device ms 127,945 after 3,341 ms has the
+3.25 s gap stamped at 127,834. An idle map in the same run shows a flat 57 ms
+sampler cadence and no gap above that, so the gaps belong to rendering and not
+to the console driving it.
+
+**Delivery held.** `rx=20 tx=20` on both boards -- twenty heard, twenty
+answered, no `LORA_RX_ERR`, no `LORA_RX_UNPRINTED`, `tx_timeout=0`. The console
+printed only 12 of the 20 `LORA_RX:` lines, which is host-side capture loss on a
+log carrying thousands of map debug lines; **the device's counters are the
+authority and the drop counter is what would have said otherwise.**
+
+**What this changes in the reasoning above.** The premise as written -- "a map
+render owns the Arduino loop task because `MapActivity` composes there" -- is no
+longer the mechanism: composition moved to the render task. The *consequence*
+survives unchanged, and that is what the task was built against. Something in
+the main-task path still waits out a frame.
+
+**What it does not say** is which path that is. `activity-manager.md` explains
+the win as preemption -- both tasks sit at priority 1 on core 1, so `loop()`
+should get a slice every tick -- and a 3.25 s gap is not a scheduling slice, it
+is a wait on something the frame holds. Candidates, none checked here: a
+`RenderLock` taken on the main task, the storage mutex during tile reads, or
+work still done in `MapActivity::loop()` before the request goes out. Their
+figure was measured on an X4 Pro and this one is a T5 S3 Pro, so the boards
+differ too. Filed as T-2032 rather than guessed at.
+
+### Why `loop()` was the wrong place
+
+A map render was not on the render task when this was written (see the note
+above -- `develop` changed that on 2026-09-18). `MapActivity` painted from its
+own `loop()` (`src/activities/map/MapActivity.cpp`, `renderCurrent()`, and the note
+at the top of its `loop()` about painting outside `Activity::render()`), so a
+rung 6 redraw owns the Arduino loop task for 3 to 3.9 s -- and
+`activityManager.loop()`, where that happens, is in the same `loop()` as the
+radio's `loraPoll()` was. One poll per iteration, an iteration that can take
+3.9 s, and an SX126x that holds exactly one packet: that multiplies into one
+packet per render window, which is what 8 of 20 was.
+
+(An earlier version of this paragraph said `loraPoll()` was "the last call in
+`loop()`". It was not -- at the parent commit it sat at line 1735 of a `loop()`
+that ran to 3632, with `activityManager.loop()` at 3596. The arithmetic is the
+same either way, but the sentence was false.)
+
+Every reference port already answers this the same way, and **none of them uses
+a packet FIFO** -- the packet is read on a task, not in an interrupt, because
+reading it means SPI. **Checked first-hand 2026-09-18**, after the repositories were cloned for the
+fix round below; the rows held exactly as written:
+
+| port | how |
+|---|---|
+| OpenTrailPaper | `setDio1Action` ISR (`src/lora_radio.cpp:70`), mesh on a core-0 task at priority 2 (`src/main.cpp:644`), semaphore with a 250 ms timeout |
+| `dz0ny/meshcore-paperui`, our board | `xTaskCreatePinnedToCore(mesh_task_fn, "mesh", 8192, NULL, 5, NULL, 0)`, `the_mesh_ptr->loop()` under a mutex |
+| LilyGo factory firmware | `lora_task`, suspended when the radio is not wanted (`examples/factory/main/peri_lora.cpp:174`) |
+
+MeshCore assumes it: `Dispatcher::loop()` carries a watchdog for a radio stuck
+out of receive (`src/Dispatcher.cpp:74`), which only makes sense if something
+calls it often -- secondhand in the same way, and the pattern we copied from it
+is the re-arm watchdog below.
+
+### What was decided, and against what
+
+**Core 0, priority 3.** `ActivityManager` pins its render task to core 1
+(`src/activities/ActivityManager.cpp:40`) and the Arduino loop task runs there
+too, both at priority 1. A radio task on core 0 is behind neither of them, and
+3 is far below the BLE host's tasks, which must not wait for a radio read.
+
+**Woken by a DIO1 interrupt, but never waiting on it alone.** `LoraRadio` gained
+`setPacketAction()` / `clearPacketAction()`, thin pass-throughs to RadioLib's
+`setPacketReceivedAction()`. The handler gives a semaphore and returns: SPI
+needs a mutex and a mutex may not be taken in an ISR. The task's wait carries a
+**100 ms tick** on top, because a missed edge would leave a listening radio deaf
+while `LORA_STATE` still reported `listening=1`, and nothing downstream could
+tell that from quiet air. With the radio off the wait is `portMAX_DELAY`, so the
+task costs nothing until somebody turns the radio on.
+
+**No new SPI bus lock, and that is a finding rather than an omission.** On this
+board the SD card and the radio share the *global* `SPI` object --
+`BoardConfig.h`'s `LILYGO_T5S3` profile sets `separateSpi = false`, so
+`SDCardManager::begin()` takes the `SPI.begin()` branch rather than the
+dedicated-HSPI one. Arduino's SPI takes a real mutex for the length of a
+transaction: `SPIClass::beginTransaction()` calls `spiTransaction()`, which
+takes `SPI_MUTEX_LOCK()` and **returns still holding it** until
+`spiEndTransaction()` (`esp32-hal-spi.c`). That lock is real only because
+`CONFIG_DISABLE_HAL_LOCKS` is not set -- read on 2026-09-16 from
+`framework-arduinoespressif32-libs/esp32s3/sdkconfig` for `env:t5s3pro`, a
+directory every build in any session rewrites, so it is a dated reading rather
+than a standing fact. And the card is **configured** `SHARED_SPI` at runtime --
+`SDCardManager` calls `sd.begin(cs, hz)`, which is `SdSpiConfig(cs, SHARED_SPI,
+hz)` -- so it releases the chip select at the end of every operation
+(`SdSpiCard.cpp`, `readSectors()` -> `readStop()` -> `spiStop()`). The
+dedicated-SPI code is compiled in; only that runtime option keeps CS from
+staying asserted across two SdFat calls. So the two users' byte traffic already
+serialises across tasks. What no part of that
+protects is RadioLib's own chip state and `LoraRadio`'s `rssi_`/`snr_` members,
+so **one recursive mutex owns the chip**: the service task takes it around a
+read, and `CMD:LORA` takes it across its whole body.
+
+Recursive for the reason `HalStorage`'s is (`lib/hal/HalStorage.cpp`). The
+entry points lock themselves so a caller cannot forget, and **the re-entry is
+the console's**: `CMD:LORA OFF` holds the lock across its whole body and then
+calls `loraStop()`, which takes it again. The deep-sleep and restart paths call
+`loraStop()` without holding it and would not deadlock on a plain mutex -- an
+earlier version of this paragraph named them, which was wrong.
+
+**The task touches the chip and nothing else.** It reads the packet, answers a
+`PING` if pong mode is on, and queues the bytes. `loop()` prints. SdFat is not
+thread-safe and neither is an activity, so storage, the panel and the console
+stay on the side they were already on -- and the "a received payload is
+attacker-controlled text" sanitising stays in one place.
+
+**The queue is 8 deep and never blocks the task.** By the time anything is
+queued the chip is already listening again, so a full queue costs a console
+line, not a packet -- counted and printed as `LORA_RX_UNPRINTED:<n>`, because on
+a bench that counts packets the difference between "not heard" and "heard but
+not printed" is the whole finding.
+
+### What three reviews changed, before any of it ran
+
+The first version of this task was reviewed cold by three readers on
+2026-09-16, one for concurrency, one for the state machine, one fact-checking
+the prose. Two of their findings changed the design rather than the wording.
+
+**The task may not use RadioLib's blocking send.** `SX126x::transmit()` waits
+for TxDone in a spin that calls the platform's `yield()`, which on ESP32
+Arduino is `vPortYield()` (`esp32-hal-misc.c`, `__yield`) -- it hands the CPU
+to equal-or-higher priority work only. A priority-3 task on core 0 therefore
+starves core 0's idle task for the whole time on air, and this build watches
+exactly that task: `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y`,
+`CONFIG_ESP_TASK_WDT_PANIC=y`, `CONFIG_ESP_TASK_WDT_TIMEOUT_S=5`
+(`sdkconfig.t5s3pro`, read 2026-09-16). Seconds of air are not exotic here --
+a slow spreading factor on a narrow bandwidth is what a range test reaches
+for -- so the pong reply would have rebooted the responder. The obvious patch,
+a custom RadioLib HAL whose `yield()` calls `vTaskDelay(1)`, was rejected after
+reading where `yield()` is called: it is also inside the BUSY wait around
+**every** SPI command (`Module.cpp`), so it would put a millisecond on each one.
+The task now uses `startTransmit()` and learns of TxDone from the same DIO1 wake
+that brings it packets. The blocking call stays for the console, which runs on
+the loop task on core 1, whose idle task nothing watches.
+
+**One flag could not mean both "we want to listen" and "the radio is
+listening".** The reviewers found four paths that separate the two: a failed
+re-arm inside `transmit()` (which returns success anyway), `CMD:LORA CW`,
+`oscillatorStarts()` from `ON` / `OSC` / `TCXO`, and a failed re-arm inside
+`poll()`. Each leaves a radio that hears nothing while `listening()` -- and so
+`LORA_STATE` -- reports health. That is the failure this class is least able to
+detect, because `poll()` gates on the same flag.
+
+So the flag is now **intent**, and the service task closes the gap: every pass,
+if the intent says listen and the chip is not listening, it re-arms and counts
+it. `LORA_STATE` reports the count as `rearm=`. A non-zero value on the bench is
+a finding -- it names a path that stops reception without restoring it -- rather
+than something to tune away. This is the watchdog MeshCore's `Dispatcher::loop()`
+carries, and the reason the tick exists at all.
+
+Three smaller fixes came out of the same round, each a real defect:
+`oscillatorStarts()` now clears the listening flag it was quietly invalidating,
+and its comment no longer claims it "leaves the radio the way it found it";
+`CMD:LORA CW` checks the result of turning the carrier **off**, because the
+failure is an unmodulated carrier left in a licensed band while the console
+prints `off`; and `CMD:LORA PING` checks that the radio is listening before it
+sends, instead of guaranteeing a phantom `LORA_PING_TIMEOUT` ten seconds later.
+
+The reviews also confirmed what the locking claims: every call into `LoraRadio`
+is under the mutex, the ISR follows this repo's own rules for interrupt context,
+teardown detaches the interrupt before `park()` moves NRESET, and there is no
+lock-ordering cycle with `HalStorage` or the render task. The one hole they
+found was `CMD:SDBUS CS|RST`, which drives the radio's pins behind its back;
+before this change both instruments shared the loop task and could not
+interleave, so it now takes the same lock.
+
+**One finding was left alone deliberately.** On the wake side of deep sleep,
+`setup()` releases the reset latch with `gpio_hold_dis()` and drives nothing, so
+a radio whose rail the GNSS receiver held through sleep comes back out of reset.
+The card is safe -- `t5s3DeselectLoraRadio()` runs before `Storage.begin()`, and
+deselection is what the 2026-09-03 measurement showed matters -- but the state
+is not what the deep-sleep comment says it is. That is the sleep latch's
+problem, not this task's: parent `docs/TODO.md`, T-2029.
+
+### Two things the console now reports differently
+
+`LORA_RX:` gained `at=<ms>`, the service task's own `millis()`. A render can
+hold the console for seconds after the packet was read and answered, so a bench
+that timed arrivals by when they printed would be measuring the panel. `rssi`,
+`snr` and `ferr` are captured with the packet for the same reason. Round-trip
+time is computed from that stamp too.
+
+`CMD:LORA ISR OFF` detaches the interrupt and leaves the tick as the only way a
+packet gets read. It exists because the tick is the thing standing between a
+missed edge and a silent deafness, and a fallback nobody exercises is a wish.
+
+`LORA_STATE` gained five fields, and each is an instrument rather than
+decoration:
+
+| field | what a bad value means |
+|---|---|
+| `isr=` | the interrupt is detached, so only the tick delivers |
+| `want=` | somebody asked the radio to listen; compare against `listening=` |
+| `tx_air=` | a send the task started has not reported TxDone yet |
+| `rearm=` | how often the watchdog had to put the radio back into receive -- non-zero names a path that stops reception without restoring it |
+| `tx_timeout=` | sends abandoned after 30 s, i.e. a chip that missed its own TxDone |
+| `stack=` | the service task's stack high-water mark, because 4 kB was an estimate and the hardware pass is what turns it into a number |
+
+`want=1 listening=0` for more than a tick is the shape of a radio that has gone
+deaf, and it is now visible instead of hidden.
+
+### Cost
+
+`env:t5s3pro` only -- `ENABLE_LORA_CMD` is in no release env.
+
+Measured 2026-09-17 against `a92aee49`, the commit this branch forked from.
+Both builds ran on the T15 build machine within the same hour, from PlatformIO's
+own link-time size report, so the two numbers share a toolchain and a prebuilt
+framework directory -- which matters, because that directory is rewritten by
+whichever build ran last on a machine, and a figure taken half here and half
+there would not be a comparison.
+
+| | base `a92aee49` | with the task | delta |
+|---|---|---|---|
+| flash | 3,982,699 B | 3,984,975 B | **+2.2 kB** |
+| static RAM | 72,768 B | 72,872 B | **+104 B** |
+
+Heap is arithmetic rather than a measurement -- a 4 kB task stack, 8 queue slots
+of 88 B, a task control block and two semaphores, so about 5.2 kB. The stack
+half of that is an estimate until a hardware run reports `stack=` from
+`LORA_STATE`.
+
+### The bench, 2026-09-17 `[measured]`
+
+Two T5 S3 Pro boards, both flashed with `48b9defb`. One renders a map at zoom
+rung 6 and answers every ping (`CMD:LORA PONG ON`, `pos 48.2889 17.2669`,
+`zoom 6`, a `redraw` every 2 s); the other sends twenty pings 1.2 s apart. The
+same bench that produced 8 of 20.
+
+| | loop()-serviced | with the task |
+|---|---|---|
+| pings heard by the rendering board | 8 of 20 | **20 of 20** |
+| packets read **inside** a render window | 0 | **16 of 20** |
+| pongs that reached the sender back | 4 of 20 | **20 of 20** |
+| `LORA_RX_ERR`, card errors | 0 | 0 |
+| `LORA_RX_UNPRINTED` | n/a | 0 |
+
+Ten render windows, 3,119 to 3,369 ms each, so rung 6 behaved as before. The
+`at=` stamps are what settle it: three packets were read at device ms 98,581,
+99,752 and 100,981 inside a window that ran 98,128 to 101,493, and they printed
+only after it ended. The radio is serviced while the panel is busy, which is
+the whole claim.
+
+Round trip during rendering: twenty of twenty, **406 to 444 ms, median 430**.
+The idle figure from first contact was about 500 ms, so answering from the
+service task cost no latency -- it removed some, because the reply no longer
+waits for `loop()`.
+
+`rearm=0` and `tx_timeout=0` across the run, and the service task's stack
+high-water mark left 3,120 bytes free of 4,096 -- about 1 kB used on the receive
+path.
+
+**The tick alone delivers.** With `CMD:LORA ISR OFF`, six of six pings were
+heard and six of six pongs came back. The 100 ms tick is not a fallback nobody
+has exercised.
+
+**A card read survives a radio that is both receiving and transmitting.**
+Seventeen `CMD:SDBUS READ` of a 26,239-byte tile during that traffic, all
+`crc32=3a467adf`, zero read errors, with pong mode on so the board transmitted
+inside its own card reads. **This closes the last open case of T-2019** -- the
+one the 8-of-20 run could not separate from starvation.
+
+### What listening costs `[measured 2026-09-17]`
+
+VBUS, on `t5s3pro`, with the charger switched off for the run (`CMD:CHARGE
+OFF`, back on after) so no charge current sits in the reading. Three states,
+each held twice, alternating:
+
+| state | VBUS |
+|---|---|
+| radio off, shared GNSS/LoRa rail released | 163.7 and 163.7 mA |
+| rail up, SX1262 initialised, idle | 161.0 and 161.1 mA |
+| rail up, continuous receive, service task ticking | 166.3 and 166.6 mA |
+
+**Listening costs +5.3 and +5.5 mA of VBUS** against an idle initialised chip.
+An earlier run on the same board gave +4.9 mA, so three readings agree. VBUS
+milliamps are not board milliamps -- the buck makes the meter read about 0.8x
+the board's current (`../../docs/usb-power-meter.md`) -- so the board pays
+roughly **+6.6 mA**, which lands in the 4 to 6 mA that `lora-idle-power.md`
+predicted from Semtech's figure before anything was run.
+
+Two things this does not say, both worth more than the number.
+
+**Absolute VBUS is not comparable between runs.** The same three states
+measured earlier the same day sat at 90 to 97 mA rather than 161 to 167.
+Only differences inside one run mean anything here, which is the method the
+meter doc calls (c) and the only one this instrument supports.
+
+**The rail up with an idle chip read 2.6 mA *lower* than the radio fully off**,
+twice, with a per-leg spread of 1.8 mA. That is reproducible and unexplained.
+It is recorded as a measurement, not as a finding: the obvious reading -- that
+turning a rail on saves power -- is not credible, so something about the two
+states differs in a way this instrument sees and this text cannot name.
+
+**The service task's own cost does not appear.** With the radio off the task
+blocks on `portMAX_DELAY`, and the two radio-off legs agree to 0.0 mA. That is
+consistent with the task being free when nothing is wanted, and it is not proof
+of it: a tick that cost a fraction of a milliamp would be invisible here, and
+the comparison that would settle it -- this build against the one before the
+task existed -- was not run.
+
+### What the bench did not settle
+
+**The panic case was never exercised.** Criterion 5c wanted a pong whose time on
+air exceeds the 5 s watchdog, which is what the old blocking send would have
+starved core 0's idle task through. No rung that links between these two boards
+produces one: SF12 at BW 7.8 and BW 15.6 and SF10 at BW 7.8 all delivered
+nothing at all, and the slowest working rung, SF9 at BW 7.8, gave a pong of
+about 3.7 s. No reset was seen in any of those runs, but a 3.7 s send does not
+test a 5 s threshold. The hazard is still argued from the code and the
+`sdkconfig`, not from a board.
+
+**SF10 and above do not link between these boards at narrow bandwidth**, while
+SF8 and SF9 do, and SF8 at BW 62.5 carried 20 of 20 in the same hour. Four runs,
+2026-09-17: SF12/BW7.8, SF12/BW15.6 and SF10/BW7.8 delivered zero packets;
+SF8/BW7.8 and SF9/BW7.8 delivered and were answered. A wire-settings question
+rather than a servicing one -- it belongs with T-2020, and it contradicts
+nothing measured before, because nobody had tried a high spreading factor here.
+
+**Render cost is unmeasured as a comparison.** Renders came in at 3,077 to
+3,369 ms, inside the 3 to 3.9 s the earlier run reported, but no controlled
+before-and-after was taken on the same board in the same hour, so "within 5 %"
+is consistent-with rather than shown.
+
+**Not run at all**: the 30-minute soak. The idle-power question was
+answered separately -- see "What listening costs" above -- except for the one
+part that needs the pre-task build flashed for a comparison.
+
+### Two defects the bench exposed
+
+**`CMD:LORA PING` starts its reply timer before the send, not after it.**
+`gLoraPingSentMs` is stamped ahead of a blocking `transmit()`, so at a slow rung
+the 10 s wait has already expired by the time the packet leaves: a ping with
+20,067 ms of air reported `LORA_PING_TIMEOUT` 55 ms after `LORA_OK:ping`. On the
+default rung the airtime is 157 ms and nobody noticed. Pre-existing; exposed by
+the slow-rung runs.
+
+**`rearm=` counts the ordinary post-transmit re-listen.** The service task
+restores reception through the watchdog after finishing a send, so the counter
+tracks the number of pongs rather than the anomaly it was introduced to name --
+the rendering board read `rearm=20` after twenty pongs. The instrument is honest
+about what it measures and wrong about what it was documented to mean; a re-arm
+after our own transmit should be accounted separately from one that repairs
+something else.
+
+### A cold review, and what the reference ports already knew `[measured 2026-09-18]`
+
+`3cf46fb8` was reviewed by a reader who had not written it. Six findings, four
+of them new; each was re-read in the code before it was touched, and each was
+then taken to the reference ports rather than solved from scratch. Those ports
+are checked out now (`MeshCore`, `OpenTrailPaper`, `meshcore-paperui`), so the
+citations below are first-hand -- which also settles the table earlier in this
+section: `setDio1Action` really is at OpenTrailPaper's `src/lora_radio.cpp:70`,
+its mesh task really is core 0 priority 2 at `src/main.cpp:644`, and its wait
+really is a semaphore with a 250 ms timeout.
+
+**One funnel out of transmitting.** `CMD:LORA OFF` during an async pong left
+`gLoraTxInFlight` true forever: `lora.end()` destroyed the chip's own flag
+while the service task's early return on `!ready()` never reached the line that
+clears ours. The task then ticked every 100 ms for the rest of the session and
+`LORA_STATE` said `tx_air=1` on a radio that was off -- which also quietly
+broke the measured claim that the task costs nothing while the radio is off.
+MeshCore has the answer as structure: one `state` in the wrapper and one
+`idle()` that every path goes through, including a failed `startSendRaw()`, and
+`onSendFinished()` called from both the success and the timeout branch of
+`Dispatcher::loop()`. We took the principle, not the state enum -- a console
+does not need three named states -- as `loraEndRadioActivity()`.
+
+**No `wasListening` snapshot.** `loraReconfigure()` read the chip's state to
+decide what to restore, which is the conflation this whole design exists to
+avoid: during an async pong the chip is not listening, so a `POWER` or `SF`
+command mid-transmit restored "not listening" and left `pong=1` on a radio that
+had gone deaf. MeshCore keeps no such snapshot either -- every config change
+drops to `idle()` and the loop re-arms receive. The intent lives in
+`gLoraListenWanted` and the watchdog puts receive back.
+
+**The ping matches its own reply.** The pong has carried the sequence since the
+first version and nothing compared it, so a late pong for a timed-out ping, or
+one meant for another node, closed the wait with a round trip that never
+happened. MeshCore matches acks by an explicit four-byte id against a table of
+outstanding ones, and its code carries the note that the same ack can arrive
+twice. One outstanding ping is a design decision here, so a single value does
+what needs a table there.
+
+**The reply timeout is derived from time on air.** Two stamps: the round trip
+runs from the send starting, the timeout from the send finishing. The wait is
+four times the exchange's own airtime, floored at the old 10 s. MeshCore sizes
+its own timeouts off `getEstAirtimeFor()` (`src/Mesh.cpp`). T-2030, closed.
+
+**And `xosc` can answer `unknown`.** RadioLib's `getDeviceErrors()`
+zero-initialises its buffer and throws away the transport's status, so a dead
+bus reads 0 -- the same value as "no errors" (7.7.1,
+`SX126x_commands.cpp`). The verdict is a tri-state now, `clearDeviceErrors()`
+and both `standby()` calls are checked, and the second standby doubles as the
+bus-alive proof the error read cannot give. **No reference port does this**:
+MeshCore only debug-prints that register (`CustomSX1262.h`). This one is ours.
+
+One finding is left open on purpose: `rearm=` still counts the ordinary
+re-listen after our own transmit (T-2031). The regression below still reads
+`rearm=20` after twenty pongs.
+
+**What the boards said**, build `4037ad06`, both T5 S3 Pro:
+
+| check | result |
+|---|---|
+| twenty packets through rung 6 renders | 20 of 20, `rx=20 tx=20`, `tx_air=0` |
+| `OFF` caught with a pong in flight | `tx_air=1` before, 0 after, 0 across the next `ON` |
+| reply timeout at SF9/BW7.8 | `after=30592ms`, where it was a flat 10000 |
+| `POWER` landing inside a pong | `want=1` kept, receive back, next ping answered |
+| `CMD:LORA OSC` on a healthy radio | `xosc=ok` |
+
+The pong whose send the reconfigure cancelled went unanswered. That is the
+intended behaviour, not a loss: a config change mid-send ends the send.
+
+Costs 264 B of flash and 8 B of static RAM.
+
+### What a hardware pass has to check
+
+The bench is the one that produced the 8 of 20: two boards, twenty pings 1.2 s
+apart, the receiving board rendering continuously at zoom rung 6 and answering
+each ping.
+
+1. **Throughput.** 20 of 20 heard, no `LORA_RX_ERR`, no `LORA_RX_UNPRINTED`.
+   This is the done-condition of T-2023 and the reason the branch exists.
+2. **Service latency.** The gap between a packet's `at=` stamp and the ping's
+   send time stays under 100 ms with a render running.
+3. **Round trip.** Pong RTT during rendering within about 100 ms of the idle
+   figure (the first contact measured ~500 ms).
+4. **The render does not pay for it.** Rung 6 redraw times from the board's own
+   log stay within 5 % of the pre-change build.
+5. **The tick alone works.** Repeat a short run with `CMD:LORA ISR OFF`. Packets
+   must still arrive.
+5b. **The watchdog is not covering for something.** `rearm=` after the run is
+   expected to be small; a steady climb means some path is stopping reception
+   every time and being repaired, which is a defect wearing a fix. Record the
+   number either way. Same for `tx_timeout=`, which should be 0.
+5c. **A pong at a slow rung does not reboot the board.** `SF 12`, `BW 7.8`,
+   `PONG ON`, one ping from the other board. This is the case that would have
+   panicked the responder through core 0's idle watchdog before the task
+   stopped using the blocking send; it has to survive now. Record `stack=`
+   after it.
+6. **It stays up.** 30 minutes of receive plus rendering, ending with
+   `LORA_STATE` still `ready=1 listening=1`, no watchdog reset and no
+   `crash_report.txt` on the card.
+7. **The card is not hurt by a radio on another task.** `CMD:SDBUS READ <path>`
+   in a loop during traffic, CRC32 stable. This is also the one case T-2019 left
+   open -- whether a radio *transmit* can corrupt a card read -- so run it with
+   pong mode on, where the board transmits inside its own card reads.
+8. **Idle power did not move.** With the radio off the task must never run: a
+   VBUS reading against the pre-change build, both in the same hour, same board.
+   With the radio listening and no traffic, the tick costs ten trivial wakes a
+   second; measure it rather than assume it.
+
+## The oscillator, answered on the desk 2026-09-16 `[measured]`
+
+A review argued that our TCXO supply of 1.8 V was the most suspicious number in
+the configuration, because LilyGo's examples use 2.4 or 3.0 V. **The argument
+was wrong twice and the measurement settled it.**
+
+Wrong first because those examples call `radio.begin()` before `setTCXO()`, and
+RadioLib's default is 1.6 V -- so the vendor's own firmware initialises this
+module *below* the value being called underfed, and its three different values
+(1.6, 2.4, 3.0) say nobody there tuned it either.
+
+Wrong second because the failure mode is not a slow loss of sensitivity.
+**RadioLib hides a dead oscillator**: on `XOSC_START_ERR` it sets the TCXO
+voltage to zero and retries in crystal mode (`SX126x.cpp:1444-1450`), so
+`begin()` succeeds either way and proves nothing. `CMD:LORA OSC` asks the chip
+instead -- clear the errors, force `STANDBY_XOSC`, read them back.
+
+| | result |
+|---|---|
+| oscillator at 1.6 / 1.8 / 2.2 / 2.4 / 3.0 V | starts, `errors=0x0000`, every one |
+| oscillator at 0 V (no DIO3 supply) | `begin()` fails, `-707 SPI_CMD_FAILED` |
+| frequency error, board A / board B | **+641 to +657 Hz / -645 to -661 Hz** |
+| link at BW 7.8 kHz | works, 1430 ms airtime, SNR 11-12 dB |
+
+The 0 V row is the one that says this module **has** a TCXO fed from DIO3: take
+the supply away and the radio does not come up at all.
+
+The frequency error is equal and opposite at the two ends, which makes it a
+real relative offset between the boards rather than an artefact: about 650 Hz
+at 869.618 MHz is **0.75 ppm**, a TCXO figure. The narrow-bandwidth link is the
+independent check -- at 7.8 kHz a sick oscillator does not get a packet through,
+and both directions worked.
+
+**So 1.8 V stays.** The setting is now measured rather than inherited.
+
+## What the power amplifier draws `[measured]`
+
+`CMD:LORA CW <seconds>` puts an unmodulated carrier up so a USB meter can read
+the PA. Board A through the meter, whole-board VBUS at 5.25 V, one reader per
+run, all in one session on 2026-09-16:
+
+| commanded power | idle | carrier | PA delta |
+|---|---|---|---|
+| +10 dBm | 89.2 mA | 133.2 mA | **44.0 mA** |
+| +14 dBm | 89.7 mA | 158.5 mA | **68.8 mA** |
+| +17 dBm | 89.1 mA | 183.8 mA | **94.8 mA** |
+| +20 dBm | 88.9 mA | 210.7 mA | **121.7 mA** |
+| +22 dBm | 89.2 mA | 228.0 mA | **138.9 mA** |
+
+The idle row is the same to within 0.8 mA across every run, and +22 dBm
+measured twice in the session came back 137.2 and 138.9 mA -- about 1 %. Those
+two are the reason the ladder can be read as a ladder rather than as five
+separate numbers.
+
+**This settles the part.** An SX1261 stops at +15 dBm; this radio keeps
+climbing through 17, 20 and 22, and draws 139 mA of VBUS doing it. It is an
+SX1262, which is also what LilyGo's product README says for this board.
+The chip's own version register cannot say so -- see above.
+
+**It is VBUS, not chip current.** The number includes the 5 V to 3.3 V
+conversion and whatever else the board does while transmitting, so it is not
+comparable to a datasheet's PA figure. What it is good for is exactly what it
+was used for: a ratio between power settings, and a class of amplifier.
+
+### The first two runs were charging current, not radio current
+
+The 10 and 14 dBm runs were taken first and read an **idle of 356 mA**, four
+times the settled figure, which swamped a 44 mA PA delta and produced an
+inverted ladder. The cause is in the instrument's own caveat: VBUS is the board
+**plus the charger**, and the cell was still taking a charge.
+
+The rule this leaves: **a PA ladder is only readable once the idle row repeats**.
+Take idle first, wait for it to stop moving, and re-run any step whose idle
+disagrees with the others -- the ladder's whole value is the difference between
+rows, and a drifting baseline destroys it silently.
+
+## Deep sleep needs a latch, not just a park `[written, not exercised]`
+
+`loraStop()` is not enough on its own, and the gap is not obvious.
+
+It releases the **LoRa** user of the shared rail. With the GNSS receiver
+holding the other one (`CMD:GNSS ON`, or the map following a fix), the rail
+stays up through deep sleep -- the PCA9535 is an external chip and keeps its
+output register. Meanwhile GPIO1 goes hi-Z as the SoC sleeps, the SX126x's
+reset pull-up releases the chip, and the radio wakes powered, out of reset, on
+the SD card's SPI bus. That is the exact state `t5s3DeselectLoraRadio()` exists
+to prevent, arrived at from the other direction.
+
+The fix is the vendor's own sequence (LilyGo `T5S3-4.7-e-paper-PRO`,
+`examples/factory/main/ui_port.cpp`): sleep the radio, drive NRESET low, hold
+the pad, then cut the rail.
+
+```
+lora.sleep + NRESET low        enterDeepSleep()
+gpio_hold_en(T5S3_LORA_RST)    latch, or the pad floats while the SoC sleeps
+gpio_deep_sleep_hold_en()
+rail down (if nobody holds it)
+```
+
+**Both halves are required.** A held pad ignores `digitalWrite()`, so
+`setup()` calls `gpio_deep_sleep_hold_dis()` and `gpio_hold_dis()` before
+anything touches the radio -- without that, the next boot could not reset it
+and `begin()` would answer `CHIP_NOT_FOUND` until the power was pulled. The
+vendor does both; copying only the sleep half converts a rare SD hazard into a
+certain radio outage.
+
+**Not exercised on hardware.** The code is on both boards, but nothing has
+deep-slept with the GNSS receiver holding the rail and then checked the card.
+That run is what would confirm it.
+
+## The first boot after a flash lands in download mode, twice over
+
+Flashing this board and then wondering why it is silent cost an hour on
+2026-09-16, and the same thing happened on the first board in August. The
+sequence, so the next session skips it:
+
+1. `pio run -t upload` succeeds, every image verified. The board then boots
+   into the ROM loader, not into the app: `rst:0x15 (USB_UART_CHIP_RESET)`,
+   `boot:0x23 (DOWNLOAD(USB/UART0))`, `waiting for download` `[measured]`. On
+   this board **DTR drives GPIO0**, so a reset caused by the host -- esptool's
+   own, or merely closing a serial capture -- re-enters the loader
+   (parent `docs/PROGRESS.md`, 2026-09-06 and the browser-flasher entry).
+2. Left alone, it then drops off USB entirely. That is **deep sleep**, not an
+   unplug, and it looks exactly like a dead board.
+3. The way out is the board's own power button: **hold BOOT (left, top) for
+   about two seconds**. A tap does not do it -- the wake check subtracts boot
+   time (`lib/hal/HalGPIO.cpp`).
+
+The e-paper panel makes this worse than it needs to be: it keeps the last
+stock frame with no power, so "the old firmware is still on screen" is not
+evidence of anything.
+
+## What is not done
+
+- **Range is unmeasured.** The link works at desk distance; that is all.
+  Bring-up step 4 is a moving bike.
+- **No host test pinning the wire bytes.** Parent `docs/lora.md` bring-up step
+  3 asks for one, after OpenTrailPaper's `tools/mesh_test/`: sync word,
+  preamble, channel hash and slot numbers checked against known-good bytes,
+  because each of them fails as silence. The settings live in one struct now,
+  which is the precondition for such a test, not a substitute for it.
+- **The slow-rung link.** SF10 and above deliver nothing between our two boards
+  at narrow bandwidth, while SF8 and SF9 do (measured 2026-09-17, "The bench").
+  Unexplained, and it bounds every range test to the faster rungs until it is.
+- **The service task's panic case is unexercised.** The task no longer blocks on
+  a send, which is what would have starved core 0's idle task past the 5 s
+  watchdog -- but no rung that links produces a send long enough to prove it on
+  a board.
+- **No duty-cycle accounting.** The console will transmit as often as it is
+  told to.
+- **No power figure.** The L series in `lora-idle-power.md` prices the radio's
+  states; `CMD:LORA` is the instrument it needs (`L4` sleep, `L5` receive, `L6`
+  transmit) and those legs can run as soon as a board and a meter are free.
