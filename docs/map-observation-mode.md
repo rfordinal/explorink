@@ -422,3 +422,45 @@ taken too early catches tiles with no chrome at all, which looks like chrome
 is missing rather than like a slow frame. Re-grabbing the same frame a few
 seconds later (no new `zoom` command, so no new render) showed the finished
 frame with both boxes present and opaque.
+
+## Finding: zoom side hints moved from text to icons, and the first icon rotation guess was wrong
+
+**Maintainer's call, 2026-10-18.** `drawZoomSideHints()`'s plain-text `"+"`/
+`"--"` read too faint on the X3 to be sure which box did what -- the doubled
+hyphen (this file's earlier finding, above) was already a workaround for a
+legibility problem, not a design choice. Replaced with Lucide `plus`/`minus`
+icons, rasterized bold (`scripts/gen_side_hint_icons.py`, stroke-width bumped
+from Lucide's default 2 to 3.2) into `src/components/icons/side_hint_icons.h`.
+`drawSideButtonHints()` (`BaseTheme.cpp`, `LyraTheme.cpp`) gained optional
+`topIcon`/`bottomIcon` parameters: when set, the box's fill/border/
+disabled-stub logic is unchanged and only the content step swaps from rotated
+text to a plain icon draw.
+
+**First cut used `GfxRenderer::drawIcon()`, and that was wrong -- caught on
+hardware, 2026-10-20.** The reasoning seemed solid: this box's TEXT already
+goes through `drawTextRotated90CW()` because the box sits sideways on the
+screen edge, so an icon should go through the matching rotation
+(`drawIcon()`'s baked-in quarter turn) to read right-side-up the same way.
+Flashed it, screenshotted the Follow screen: the plus looked fine (a plus is
+rotation-symmetric, so the mistake was invisible there), but the minus came
+out as a **vertical bar**, not horizontal.
+
+The reasoning's flaw: `drawTextRotated90CW()`'s rotation is not a convention
+this box's content is supposed to read correctly through -- it is *why* the
+plain-text `-` was already thin and `--` had to be doubled. Rotating a
+horizontal stroke into a box like this one turns it into a near-vertical
+sliver; that is the bug drawMono1bpp/drawIcon's existing doc comments already
+warn about for the map's *other* icons (`MapActivity.cpp:2239`, `:2457`), and
+it applies here too even though the bug was first noticed as "the text is
+thin" rather than "the icon is rotated". The box's own border is drawn in
+plain, unrotated coordinates and always read correctly; an icon drawn with
+`drawMono1bpp()` (no extra rotation -- the ordinary map-screen convention)
+reads correctly for the same reason, and was the fix.
+
+**Lesson for the next sideways-box icon**: this box's established "the text
+goes through a special rotation" is local plumbing for how fonts render
+glyphs upright at this position, not a reusable orientation contract. A new
+element in the same box should default to the *unrotated* coordinate frame
+(same as the box's own border) and only add a transform if a screenshot shows
+it is actually needed -- not because a neighboring text call happens to use
+one, for an unrelated reason.
