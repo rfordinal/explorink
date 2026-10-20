@@ -403,6 +403,37 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // under it (TeamFiles.h).
   uint8_t mapTeamKeepDays = 14;
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // ## The LoRa mesh node (../docs/lora-mesh.md)
+  //
+  // Whether the node comes up with the device. **Off by default**, and it is
+  // the rider's switch rather than a default because it costs: a listening
+  // SX1262 draws 5.4 mA continuously, and on this board the radio's power rail
+  // is shared with the GNSS receiver, so there is no way to pay for one and not
+  // the other (../docs/lora-bringup.md, ../../docs/lora.md constraint 2).
+  //
+  // Persisted because the alternative is worse: a rider who turned the radio on
+  // for a ride would have to turn it on again at every boot, and a group
+  // feature that silently stops after a battery change is a group feature
+  // nobody trusts.
+  uint8_t loraMeshOn = 0;
+  // Seconds between automatic adverts, 0 = never. **Off by default and a
+  // separate switch from the one above**, because they are different consent:
+  // listening tells nobody anything, while an advert is a plaintext broadcast
+  // of this device's name and position to anyone in range
+  // (../../docs/lora.md, "Security of the mesh channel").
+  //
+  // Refused below 70 s rather than clamped -- see kMeshBeaconMinSec in
+  // main.cpp for where that number comes from.
+  uint16_t loraBeaconSec = 0;
+  // What our advert calls us. Empty means "derive it from the public key at
+  // startup", which is what makes two boards on one bench distinguishable
+  // without anybody naming them.
+  //
+  // Longer than a team acronym on purpose: this is what another MeshCore node
+  // shows in a contact list, where two letters mean nothing.
+  char loraNodeName[21] = "";
+#endif
   // The GPS/tile/BLE readout in the map's top-left corner. Off by default: it
   // is diagnostic text, not something a rider needs on screen. Toggled from
   // the Settings screen (category Map) or live from the map's own menu

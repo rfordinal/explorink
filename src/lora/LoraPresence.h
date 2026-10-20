@@ -38,4 +38,35 @@ LoraPresenceStatus loraPresenceStatus();
 // row.
 size_t loraPresenceSnapshot(LoraPeer* out, size_t max);
 
+// The four controls, so the node can be driven from the panel and not only
+// from a USB cable. Each one takes the chip mutex, writes the matching
+// CrossPointSettings field and saves it, so the screen and the `CMD:LORA`
+// console are two faces of one state and cannot disagree about it -- the same
+// rule the map menu and the Settings screen already follow for the fields they
+// share.
+//
+// A rider holding the device is the whole reason these exist: before them the
+// radio could only be switched on over the serial console, which is not a
+// thing a device on a handlebar has.
+
+// Returns false when the radio would not come up at all (rail, reset, TCXO).
+// `persisted` says whether the identity reached the card.
+bool loraPresenceSetMesh(bool on, bool& persisted);
+
+// 0 turns the beacon off. Any other value below the 70 s floor is refused and
+// returns false, leaving the cadence untouched -- a clamp would report success
+// for a number the device did not use.
+bool loraPresenceSetBeacon(uint32_t seconds);
+
+// Empty restores the key-derived default. Takes effect on the next advert.
+void loraPresenceSetName(const char* name);
+
+// One advert now. False when the mesh is off or the packet pool is empty.
+bool loraPresenceAdvertNow();
+
+// The cadences the screen cycles through, lowest first after "off". Here
+// rather than in the screen because the floor they respect is a radio fact,
+// not a UI one.
+inline constexpr uint32_t kLoraBeaconChoices[] = {0, 70, 120, 300, 900};
+
 #endif  // ENABLE_LORA_MESH

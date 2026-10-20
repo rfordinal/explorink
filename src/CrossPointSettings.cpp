@@ -113,6 +113,14 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["mapTeamHideMin"] = mapTeamHideMin;
   doc["mapTeamKeepDays"] = mapTeamKeepDays;
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Not in SettingsList either: the LoRa node is a bench feature gated out of
+  // every release build, and its three controls live on its own screen
+  // (Home > LoRa nodes) rather than in a rider's Settings list.
+  doc["loraMeshOn"] = loraMeshOn;
+  doc["loraBeaconSec"] = loraBeaconSec;
+  doc["loraNodeName"] = loraNodeName;
+#endif
   doc["mapGnssPosition"] = mapGnssPosition;
   doc["frontlightOn"] = frontlightOn;
   doc["frontlightBrightness"] = frontlightBrightness;
@@ -247,6 +255,15 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   mapTeamStaleMin = doc["mapTeamStaleMin"] | (uint8_t)5;
   mapTeamHideMin = doc["mapTeamHideMin"] | (uint8_t)30;
   mapTeamKeepDays = doc["mapTeamKeepDays"] | (uint8_t)14;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  loraMeshOn = (doc["loraMeshOn"] | (uint8_t)0) ? 1 : 0;
+  loraBeaconSec = doc["loraBeaconSec"] | (uint16_t)0;
+  {
+    const char* name = doc["loraNodeName"].is<const char*>() ? doc["loraNodeName"].as<const char*>() : "";
+    strncpy(loraNodeName, name, sizeof(loraNodeName) - 1);
+    loraNodeName[sizeof(loraNodeName) - 1] = '\0';
+  }
 #endif
   mapGnssPosition = doc["mapGnssPosition"] | (uint8_t)0;
   frontlightOn = (doc["frontlightOn"] | (uint8_t)0) ? 1 : 0;

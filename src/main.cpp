@@ -1175,6 +1175,50 @@ static bool meshSendAdvert() {
                               static_cast<int32_t>(fix.longitude * 1e6));
 }
 
+// Brings the node up: radio first, then identity, then the Dispatcher.
+//
+// One function because there are three callers -- the console, the LoRa nodes
+// screen and boot -- and three copies of this sequence is three places for the
+// identity load to be forgotten. `persisted` reports whether the key reached
+// the card, which the caller shows rather than swallows: a node whose key dies
+// at the next boot still works today and is a different thing from one that
+// does not.
+static bool meshStart(bool& persisted) {
+  LoraLock lock;
+  persisted = false;
+  if (gMeshRunning) {
+    persisted = gMesh.identityPersisted();
+    return true;
+  }
+  if (!loraStart()) return false;
+
+  persisted = gMesh.beginIdentity();
+  gMeshRadio.setSpreadingFactor(gLoraConfig.spreadingFactor);
+  gMesh.begin();
+  gMeshRunning = true;
+
+  // The console's own receive intent is dropped, so the watchdog in
+  // loraServiceStep() cannot fight the Dispatcher over the chip once the mesh
+  // hands it back at MESH OFF.
+  loraWantListening(false);
+
+  // The rider's name if they set one, otherwise derived from the key -- which
+  // is the one thing that already differs between two boards on a bench, so
+  // neither is ever nameless and they are never both called the same thing.
+  if (SETTINGS.loraNodeName[0] != '\0') {
+    snprintf(gMeshNodeName, sizeof(gMeshNodeName), "%s", SETTINGS.loraNodeName);
+  } else {
+    snprintf(gMeshNodeName, sizeof(gMeshNodeName), "EI-%02x%02x", gMesh.self_id.pub_key[0], gMesh.self_id.pub_key[1]);
+  }
+
+  // The saved cadence, and the first advert goes out now rather than one full
+  // interval from now: a rider who turns the beacon on wants the other boards
+  // to know within seconds, not in seventy.
+  gMeshBeaconSec = SETTINGS.loraBeaconSec;
+  gMeshNextBeaconMs = millis();
+  return true;
+}
+
 // The screen's view of the node. See src/lora/LoraPresence.h for why these
 // copy rather than hand out a reference.
 LoraPresenceStatus loraPresenceStatus() {
@@ -1197,6 +1241,45 @@ size_t loraPresenceSnapshot(LoraPeer* out, size_t max) {
   for (size_t i = 0; i < n; ++i) out[i] = peers.at(i);
   return n;
 }
+
+bool loraPresenceSetMesh(bool on, bool& persisted) {
+  persisted = false;
+  if (!on) {
+    meshStop();
+    SETTINGS.loraMeshOn = 0;
+    SETTINGS.saveToFile();
+    return true;
+  }
+  if (!meshStart(persisted)) return false;
+  SETTINGS.loraMeshOn = 1;
+  SETTINGS.saveToFile();
+  return true;
+}
+
+bool loraPresenceSetBeacon(uint32_t seconds) {
+  if (seconds != 0 && seconds < kMeshBeaconMinSec) return false;
+  LoraLock lock;
+  gMeshBeaconSec = seconds;
+  gMeshNextBeaconMs = millis();
+  SETTINGS.loraBeaconSec = static_cast<uint16_t>(seconds);
+  SETTINGS.saveToFile();
+  return true;
+}
+
+void loraPresenceSetName(const char* name) {
+  LoraLock lock;
+  snprintf(SETTINGS.loraNodeName, sizeof(SETTINGS.loraNodeName), "%s", name != nullptr ? name : "");
+  SETTINGS.saveToFile();
+  if (SETTINGS.loraNodeName[0] != '\0') {
+    snprintf(gMeshNodeName, sizeof(gMeshNodeName), "%s", SETTINGS.loraNodeName);
+  } else if (gMeshRunning) {
+    // Cleared, so fall back to the key-derived default rather than going
+    // nameless -- a blank name on the air is a row nobody can tell apart.
+    snprintf(gMeshNodeName, sizeof(gMeshNodeName), "EI-%02x%02x", gMesh.self_id.pub_key[0], gMesh.self_id.pub_key[1]);
+  }
+}
+
+bool loraPresenceAdvertNow() { return meshSendAdvert(); }
 
 static void meshStop() {
   LoraLock lock;
@@ -2065,6 +2148,29 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+
+#ifdef ENABLE_LORA_MESH
+  // The rider's saved choice, honoured at boot. Immediately after the settings
+  // are read, because that is the first moment the choice is known -- and after
+  // storage is up, which the identity file needs.
+  //
+  // Not a default: loraMeshOn is 0
+  // out of the box, because a listening radio costs 5.4 mA continuously and
+  // drags the shared GNSS rail up with it (CrossPointSettings::loraMeshOn).
+  //
+  // Here rather than lazily on the first screen entry, because the point of a
+  // group radio is to be listening before anybody opens a list -- a node that
+  // only hears people while its own screen is showing is not a node.
+  if (SETTINGS.loraMeshOn != 0) {
+    bool persisted = false;
+    if (!meshStart(persisted)) {
+      LOG_ERR("LORA", "mesh was on in settings and did not start: err=%d", lora.lastError());
+    } else {
+      LOG_INF("LORA", "mesh up from settings: name=%s stored=%d beacon=%lus", gMeshNodeName, persisted ? 1 : 0,
+              static_cast<unsigned long>(gMeshBeaconSec));
+    }
+  }
+#endif
   // Restore the light the rider left on. Deliberately after loadFromFile() and
   // not next to frontlight.begin(): the settings file is not read until here.
   // setBrightness() first in both branches, because that is what seeds the
@@ -3119,34 +3225,24 @@ void loop() {
         } else if (upper == "MESH" || upper == "MESH ON") {
           if (gMeshRunning) {
             logSerial.printf("LORA_OK:mesh=1 already running\n");
-          } else if (!loraStart()) {
-            logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
           } else {
-            // The identity first: Mesh::begin() does not need it, but an advert
-            // signed with a key that changed at boot is an advert nobody can
-            // tie to the node they met yesterday.
-            const bool persisted = gMesh.beginIdentity();
-            gMeshRadio.setSpreadingFactor(gLoraConfig.spreadingFactor);
-            gMesh.begin();
-            gMeshRunning = true;
-
-            // The console's own receive intent is dropped, so the watchdog in
-            // loraServiceStep() cannot fight the Dispatcher over the chip once
-            // the mesh hands it back at MESH OFF.
-            loraWantListening(false);
-
-            if (gMeshNodeName[0] == '\0') {
-              // Two boards on one bench must not both be called the same
-              // thing, and the key is the one thing that is already different.
-              snprintf(gMeshNodeName, sizeof(gMeshNodeName), "EI-%02x%02x", gMesh.self_id.pub_key[0],
-                       gMesh.self_id.pub_key[1]);
+            bool persisted = false;
+            if (!meshStart(persisted)) {
+              logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
+            } else {
+              // Persisted, so the console and the screen agree and the choice
+              // survives a reboot -- the same field the screen's Mesh row sets.
+              SETTINGS.loraMeshOn = 1;
+              SETTINGS.saveToFile();
+              logSerial.printf("LORA_OK:mesh=1 name=%s key=%02x%02x%02x%02x stored=%d\n", gMeshNodeName,
+                               gMesh.self_id.pub_key[0], gMesh.self_id.pub_key[1], gMesh.self_id.pub_key[2],
+                               gMesh.self_id.pub_key[3], persisted ? 1 : 0);
             }
-            logSerial.printf("LORA_OK:mesh=1 name=%s key=%02x%02x%02x%02x stored=%d\n", gMeshNodeName,
-                             gMesh.self_id.pub_key[0], gMesh.self_id.pub_key[1], gMesh.self_id.pub_key[2],
-                             gMesh.self_id.pub_key[3], persisted ? 1 : 0);
           }
         } else if (upper == "MESH OFF") {
           meshStop();
+          SETTINGS.loraMeshOn = 0;
+          SETTINGS.saveToFile();
           logSerial.printf("LORA_OK:mesh=0\n");
         } else if (upper == "ADVERT") {
           // "started", not "sent", for the same reason PONG says it: this
@@ -3158,6 +3254,8 @@ void loop() {
               (upper == "BEACON" || upper == "BEACON OFF") ? 0 : strtol(argument.c_str() + 6, nullptr, 10);
           if (seconds == 0) {
             gMeshBeaconSec = 0;
+            SETTINGS.loraBeaconSec = 0;
+            SETTINGS.saveToFile();
             logSerial.printf("LORA_OK:beacon=0\n");
           } else if (seconds < static_cast<long>(kMeshBeaconMinSec)) {
             // Refused rather than clamped. A clamp would answer OK to a number
@@ -3168,11 +3266,15 @@ void loop() {
           } else {
             gMeshBeaconSec = static_cast<uint32_t>(seconds);
             gMeshNextBeaconMs = millis();  // first one immediately, so a bench test says something at once
+            SETTINGS.loraBeaconSec = static_cast<uint16_t>(seconds);
+            SETTINGS.saveToFile();
             logSerial.printf("LORA_OK:beacon=%lus\n", static_cast<unsigned long>(gMeshBeaconSec));
           }
         } else if (upper.startsWith("NAME ")) {
           // `argument`, not `upper`: the name goes out on the air as typed.
           snprintf(gMeshNodeName, sizeof(gMeshNodeName), "%s", argument.c_str() + 5);
+          snprintf(SETTINGS.loraNodeName, sizeof(SETTINGS.loraNodeName), "%s", gMeshNodeName);
+          SETTINGS.saveToFile();
           logSerial.printf("LORA_OK:name=%s\n", gMeshNodeName);
         } else if (upper == "PEERS") {
           const LoraPeerTable& peers = gMesh.peers();
