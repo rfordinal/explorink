@@ -6,6 +6,11 @@ The measured run is in "The first contact" below. Claims are marked
 `[measured]` on hardware, `[repo]` (read off code) or `[secondhand]` (read off
 another project).
 
+**The protocol that now runs on top of this is in
+[`lora-mesh.md`](lora-mesh.md)**: MeshCore, signed adverts and the node list.
+This file stays the raw layer -- and it stays the instrument, because a mesh
+cannot tell you whether the radio is alive.
+
 The assessment that scoped this work is the parent repo's `docs/lora.md`.
 
 ## What exists

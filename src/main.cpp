@@ -38,6 +38,10 @@
 #ifdef ENABLE_LORA_CMD
 #include <LoraRadio.h>
 #endif
+#ifdef ENABLE_LORA_MESH
+#include "lora/LoraPresence.h"
+#include "lora/PresenceMesh.h"
+#endif
 
 #if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
 #include <Wire.h>  // the charger and the gauge sit on the same I2C bus
@@ -985,6 +989,12 @@ static void loraPrintPayload(const LoraRxEvent& event) {
                    static_cast<double>(event.freqErrorHz), text);
 }
 
+#ifdef ENABLE_LORA_MESH
+// Defined further down, with the rest of the mesh node -- it needs `lora` and
+// loraStop() needs it, so one of the two has to be forward declared.
+static void meshStop();
+#endif
+
 // Starts the radio: rail first, then the chip. Kept apart from the rail call
 // because the rail is shared with the GNSS receiver and this must not be the
 // thing that turns that off (t5s3RailHold above).
@@ -1013,6 +1023,10 @@ static bool loraStart() {
 
 static void loraStop() {
   LoraLock lock;
+#ifdef ENABLE_LORA_MESH
+  // Before the chip goes away under it.
+  meshStop();
+#endif
   loraWantListening(false);
   loraEndRadioActivity();
 
@@ -1084,6 +1098,121 @@ static bool loraReconfigure() {
   return true;
 }
 
+#ifdef ENABLE_LORA_MESH
+// The mesh node, and everything MeshCore needs handed to it.
+//
+// **Mesh mode and the bring-up console are exclusive, and that is deliberate.**
+// An SX126x holds one received packet; two owners polling it is two readers of
+// a one-slot buffer. So `CMD:LORA MESH ON` hands the chip to the Dispatcher for
+// the duration and the PING/PONG path is refused meanwhile, rather than both
+// being half-available. The raw console stays because it is the instrument that
+// answers "is this radio alive at all", which a protocol cannot answer.
+static LoraMeshRadio gMeshRadio(lora);
+static ArduinoMillis gMeshMillis;
+static StdRNG gMeshRng;
+
+// A clock that counts from an arbitrary epoch until something sets it. The
+// board has a PCF85063 and a GNSS receiver that both know better, and wiring
+// either into this is a later pass -- what it costs today is that our own
+// adverts carry a timestamp nobody can date. It is *our* adverts only: a peer's
+// timestamp is theirs, and the age this device shows is computed from its own
+// uptime for exactly this reason (src/lora/LoraPeerTable.h, heardUptimeMs).
+static VolatileRTCClock gMeshRtc;
+
+// Sixteen packets. MeshCore's own companion builds use 16 to 32; this node
+// originates one advert at a time and forwards nothing, so the pool only has to
+// absorb a burst of inbound. Static, not heap: a pool a stranger in radio range
+// can drive is a pool that must not be able to grow.
+static StaticPoolPacketManager gMeshPackets(16);
+static SimpleMeshTables gMeshTables;
+static PresenceMesh gMesh(gMeshRadio, gMeshMillis, gMeshRng, gMeshRtc, gMeshPackets, gMeshTables);
+
+static bool gMeshRunning = false;
+
+// What our advert calls us. Two or three letters is what the map markers use;
+// this is longer because it is what another MeshCore node shows in a contact
+// list, where an acronym means nothing. Defaults from the public key at
+// MESH ON, so two boards on a bench are never both called the same thing.
+static char gMeshNodeName[21] = {0};
+
+// Seconds between automatic adverts, 0 = off.
+//
+// **Off is the default and that is a security decision, not a stub.** An advert
+// is a plaintext broadcast of this device's name and position to anyone in
+// range, readable by any MeshCore node; a lost or stolen device that beacons is
+// a rider's track handed to whoever holds it (parent docs/lora.md, "Security of
+// the mesh channel"). The rider turns it on, the same rule tile freshness
+// follows.
+static uint32_t gMeshBeaconSec = 0;
+static unsigned long gMeshNextBeaconMs = 0;
+
+// The floor under that interval, in seconds.
+//
+// 70 is not a round number: a ~100-byte MeshCore packet at this channel's
+// settings (SF8, BW 62.5 kHz) is 615 to 714 ms of airtime depending on the
+// preamble, so one packet a minute is 1.1 % duty cycle and one every 70 seconds
+// is the first cadence that fits under a 1 % sub-band. Which sub-band 869.618
+// MHz actually sits in is still open -- Meshtastic's own region table puts
+// EU_868 at 10 %, which would make this very conservative, and no primary ETSI
+// reading has been done (parent docs/TODO.md, T-285). So the floor is set by
+// the stricter of the two candidates until somebody reads the standard.
+static constexpr uint32_t kMeshBeaconMinSec = 70;
+
+// Sends one advert, with the receiver's position when it has one.
+//
+// **No fix means no coordinate, never a zero.** 0,0 is a place in the Atlantic,
+// and the difference between "has not told us" and "is at 0,0" is one this
+// whole layer keeps (docs/team-markers.md). Takes the chip mutex because it
+// touches Dispatcher state the service task also walks; it starts no transmit
+// itself -- the packet is queued and the service task puts it on the air.
+static bool meshSendAdvert() {
+  LoraLock lock;
+  if (!gMeshRunning) return false;
+
+  const GnssFix& fix = gnss.fix();
+  const bool hasLoc = fix.valid && fix.quality != 0;
+  return gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, static_cast<int32_t>(fix.latitude * 1e6),
+                              static_cast<int32_t>(fix.longitude * 1e6));
+}
+
+// The screen's view of the node. See src/lora/LoraPresence.h for why these
+// copy rather than hand out a reference.
+LoraPresenceStatus loraPresenceStatus() {
+  LoraLock lock;
+  LoraPresenceStatus out{};
+  out.meshRunning = gMeshRunning;
+  out.beaconSec = gMeshBeaconSec;
+  out.advertsRejected = gMesh.advertsRejected();
+  out.peerCount = gMesh.peers().count();
+  out.identityPersisted = gMesh.identityPersisted();
+  snprintf(out.nodeName, sizeof(out.nodeName), "%s", gMeshNodeName);
+  out.nowUptimeMs = millis();
+  return out;
+}
+
+size_t loraPresenceSnapshot(LoraPeer* out, size_t max) {
+  LoraLock lock;
+  const LoraPeerTable& peers = gMesh.peers();
+  const size_t n = peers.count() < max ? peers.count() : max;
+  for (size_t i = 0; i < n; ++i) out[i] = peers.at(i);
+  return n;
+}
+
+static void meshStop() {
+  LoraLock lock;
+  if (!gMeshRunning) return;
+  gMeshRunning = false;
+  gMeshBeaconSec = 0;
+
+  // The chip is left listening otherwise, and nothing would put it down: the
+  // console's own re-arm watchdog is driven by gLoraListenWanted, which MESH ON
+  // cleared. A radio nobody is reading still costs 5.4 mA continuously
+  // (docs/lora-bringup.md), which on a device this size is a real share of the
+  // idle budget and would read as a mystery.
+  lora.stopListening();
+}
+#endif  // ENABLE_LORA_MESH
+
 // One servicing step. Runs on the radio task, under the chip mutex.
 //
 // Four things in order, and the order is the design: finish a send that is on
@@ -1093,6 +1222,18 @@ static bool loraReconfigure() {
 static bool loraServiceStep(LoraRxEvent& event) {
   LoraLock lock;
   if (!lora.ready()) return false;
+
+#ifdef ENABLE_LORA_MESH
+  // The mesh owns the chip when it is running, and takes the whole step: its
+  // Dispatcher finishes its own sends, re-arms its own receive and reads its
+  // own packets. Running the console's version of those three underneath it is
+  // two owners of a one-packet buffer. Nothing is queued for printing either --
+  // what a mesh packet means is a job for onAdvertRecv(), not for a hex dump.
+  if (gMeshRunning) {
+    gMesh.loop();
+    return false;
+  }
+#endif
 
   // A send in flight owns the chip. Nothing else may run until TxDone, and the
   // radio is not listening meanwhile -- which is why this is first.
@@ -1197,7 +1338,14 @@ static bool loraServiceStep(LoraRxEvent& event) {
 // so this task costs nothing on a board whose radio was never turned on.
 static void loraServiceTaskFn(void*) {
   for (;;) {
+#ifdef ENABLE_LORA_MESH
+    // A running mesh always ticks: its Dispatcher has outbound scheduling, a
+    // duty-cycle budget and a receive watchdog, and all three are driven by
+    // loop() being called rather than by an interrupt.
+    const bool ticking = gLoraListenWanted || gLoraTxInFlight || gMeshRunning;
+#else
     const bool ticking = gLoraListenWanted || gLoraTxInFlight;
+#endif
     xSemaphoreTake(gLoraWake, ticking ? pdMS_TO_TICKS(kLoraServiceTickMs) : portMAX_DELAY);
 
     LoraRxEvent event;
@@ -1245,6 +1393,19 @@ static void loraServiceBegin() {
 // packet.
 static void loraDrain() {
   if (gLoraRxQueue == nullptr) return;
+
+#ifdef ENABLE_LORA_MESH
+  // The beacon clock. Here rather than on the radio task because the position
+  // it sends comes from the GNSS receiver, which is polled from loop() -- and
+  // because an advert is queued, not transmitted, so this costs no radio time.
+  if (gMeshRunning && gMeshBeaconSec != 0 && (long)(millis() - gMeshNextBeaconMs) >= 0) {
+    // Rescheduled before the send, not after: a failed advert must not stop the
+    // clock, or one empty packet pool silences the node for the rest of the
+    // ride.
+    gMeshNextBeaconMs = millis() + gMeshBeaconSec * 1000UL;
+    if (!meshSendAdvert()) logSerial.printf("LORA_ERR:beacon advert not sent\n");
+  }
+#endif
 
   // From gLoraPingDoneMs, not gLoraPingSentMs: the wait starts when our packet
   // is off the antenna. See the two stamps above.
@@ -2954,8 +3115,97 @@ void loop() {
           }
           logSerial.printf("LORA_OK:isr=%d tick=%lums\n", gLoraIsrWanted ? 1 : 0,
                            static_cast<unsigned long>(kLoraServiceTickMs));
+#ifdef ENABLE_LORA_MESH
+        } else if (upper == "MESH" || upper == "MESH ON") {
+          if (gMeshRunning) {
+            logSerial.printf("LORA_OK:mesh=1 already running\n");
+          } else if (!loraStart()) {
+            logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
+          } else {
+            // The identity first: Mesh::begin() does not need it, but an advert
+            // signed with a key that changed at boot is an advert nobody can
+            // tie to the node they met yesterday.
+            const bool persisted = gMesh.beginIdentity();
+            gMeshRadio.setSpreadingFactor(gLoraConfig.spreadingFactor);
+            gMesh.begin();
+            gMeshRunning = true;
+
+            // The console's own receive intent is dropped, so the watchdog in
+            // loraServiceStep() cannot fight the Dispatcher over the chip once
+            // the mesh hands it back at MESH OFF.
+            loraWantListening(false);
+
+            if (gMeshNodeName[0] == '\0') {
+              // Two boards on one bench must not both be called the same
+              // thing, and the key is the one thing that is already different.
+              snprintf(gMeshNodeName, sizeof(gMeshNodeName), "EI-%02x%02x", gMesh.self_id.pub_key[0],
+                       gMesh.self_id.pub_key[1]);
+            }
+            logSerial.printf("LORA_OK:mesh=1 name=%s key=%02x%02x%02x%02x stored=%d\n", gMeshNodeName,
+                             gMesh.self_id.pub_key[0], gMesh.self_id.pub_key[1], gMesh.self_id.pub_key[2],
+                             gMesh.self_id.pub_key[3], persisted ? 1 : 0);
+          }
+        } else if (upper == "MESH OFF") {
+          meshStop();
+          logSerial.printf("LORA_OK:mesh=0\n");
+        } else if (upper == "ADVERT") {
+          // "started", not "sent", for the same reason PONG says it: this
+          // queues a packet and the service task puts it on the air later.
+          logSerial.printf(meshSendAdvert() ? "LORA_OK:advert started\n"
+                                            : "LORA_ERR:advert not sent (mesh off, or packet pool empty)\n");
+        } else if (upper.startsWith("BEACON")) {
+          const long seconds =
+              (upper == "BEACON" || upper == "BEACON OFF") ? 0 : strtol(argument.c_str() + 6, nullptr, 10);
+          if (seconds == 0) {
+            gMeshBeaconSec = 0;
+            logSerial.printf("LORA_OK:beacon=0\n");
+          } else if (seconds < static_cast<long>(kMeshBeaconMinSec)) {
+            // Refused rather than clamped. A clamp would answer OK to a number
+            // the device did not use, and the next person reads the cadence off
+            // the command they typed.
+            logSerial.printf("LORA_ERR:beacon minimum is %lus -- below it this channel's duty cycle is over 1%%\n",
+                             static_cast<unsigned long>(kMeshBeaconMinSec));
+          } else {
+            gMeshBeaconSec = static_cast<uint32_t>(seconds);
+            gMeshNextBeaconMs = millis();  // first one immediately, so a bench test says something at once
+            logSerial.printf("LORA_OK:beacon=%lus\n", static_cast<unsigned long>(gMeshBeaconSec));
+          }
+        } else if (upper.startsWith("NAME ")) {
+          // `argument`, not `upper`: the name goes out on the air as typed.
+          snprintf(gMeshNodeName, sizeof(gMeshNodeName), "%s", argument.c_str() + 5);
+          logSerial.printf("LORA_OK:name=%s\n", gMeshNodeName);
+        } else if (upper == "PEERS") {
+          const LoraPeerTable& peers = gMesh.peers();
+          logSerial.printf("LORA_PEERS:count=%u rejected=%lu mesh=%d\n", static_cast<unsigned>(peers.count()),
+                           static_cast<unsigned long>(gMesh.advertsRejected()), gMeshRunning ? 1 : 0);
+          const uint32_t nowMs = millis();
+          for (size_t i = 0; i < peers.count(); ++i) {
+            const LoraPeer& peer = peers.at(i);
+            // The age is ours, from our own uptime. The sender's own timestamp
+            // is printed beside it and believed about nothing: a node with no
+            // clock stamps a number that means nothing at all.
+            logSerial.printf(
+                "LORA_PEER:%u key=%02x%02x%02x%02x name=%s rssi=%d snr=%d age=%lus adv=%u", static_cast<unsigned>(i),
+                peer.pubKey[0], peer.pubKey[1], peer.pubKey[2], peer.pubKey[3], peer.name[0] != '\0' ? peer.name : "-",
+                static_cast<int>(peer.rssiDbm), static_cast<int>(peer.snrDb),
+                static_cast<unsigned long>((nowMs - peer.heardUptimeMs) / 1000), static_cast<unsigned>(peer.adverts));
+            if (peer.hasLoc) {
+              logSerial.printf(" loc=%.6f,%.6f\n", static_cast<double>(peer.latE6) / 1e6,
+                               static_cast<double>(peer.lonE6) / 1e6);
+            } else {
+              // Not 0,0. Nothing printed at all, because the two are different
+              // statements and only one of them is true.
+              logSerial.printf(" loc=-\n");
+            }
+          }
+#endif  // ENABLE_LORA_MESH
         } else {
-          logSerial.printf("LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ SF BW TCXO OSC CW ISR\n");
+          logSerial.printf(
+              "LORA_ERR:unknown -- ON OFF RX TX PING PONG POWER FREQ SF BW TCXO OSC CW ISR"
+#ifdef ENABLE_LORA_MESH
+              " MESH ADVERT BEACON NAME PEERS"
+#endif
+              "\n");
         }
 #endif
 #ifdef ENABLE_GNSS_CMD
