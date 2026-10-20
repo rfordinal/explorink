@@ -4,9 +4,10 @@ The first thing on this radio that is a protocol rather than a byte stream.
 `lora-bringup.md` is the layer under it -- the SX1262, the console, the service
 task -- and it stays the instrument that answers "is the radio alive at all".
 
-Built 2026-10-20 on `feat/lora-presence`. **Nothing here has run on hardware.**
-Everything below is read off the code or measured by a host build; "The
-hardware pass" at the end says what has to be checked and in what order.
+Built 2026-10-20 on `feat/lora-presence` and **run on two T5 S3 Pro boards the
+same day: the link works**. Steps 1 and 3 of the hardware pass at the end are
+done and marked there; the rest is still read off the code or measured by a
+host build.
 
 ## What it does
 
@@ -293,19 +294,53 @@ the code and not off a device.
 
 ## The hardware pass
 
-In this order. Each step can kill the next.
+In this order. Each step can kill the next. Build `638e7b27`, archived in the
+parent repo as `docs/firmware-builds/t5s3pro-{a,b}-lora-presence-638e7b27-link-verified.*`
+-- two archives, because `-t upload` relinks and the two boards therefore carry
+different bytes of the same commit.
 
 1. **One board.** `CMD:LORA ON`, `CMD:LORA MESH ON`. The reply must carry a key
    and `stored=1`. Reboot, `MESH ON` again: the same key, or the identity file
    is not surviving.
+   **Done 2026-10-20, half.** Both boards came up clean:
+   `LORA_OK:on chip=SX1261 V2D 2D02. tcxo=1.8V xosc=ok errors=0x0000`, then
+   `LORA_OK:mesh=1 name=EI-3e8f key=3e8f8e75 stored=1` on board A and
+   `name=EI-c6c2 key=c6c28a10 stored=1` on board B -- two distinct keys, both
+   written to the card, the default name derived from the key as intended.
+   **The reboot half is not done**: nothing has yet confirmed the same key
+   comes back after a power cycle, which is the part that matters.
 2. **The card is still safe.** With the mesh running, open the map and pan.
    `lora-bringup.md`'s SD-bus question is about a radio *listening* while tiles
-   stream, and the mesh listens continuously.
+   stream, and the mesh listens continuously. **Not done.**
 3. **Two boards.** `MESH ON` on both, `ADVERT` on one, `PEERS` on the other.
    One row, the right key, a plausible RSSI.
+   **Done 2026-10-20, both directions.** A to B:
+   `LORA_PEER:0 key=3e8f8e75 name=EI-3e8f rssi=-13 snr=12 age=7s adv=1 loc=-`.
+   B to A: the same shape with `key=c6c28a10` and `snr=13`. `rejected=0` on
+   both. Desk distance, so -13 dBm says nothing about range -- what it says is
+   that a signed advert was built, sent, received, verified and parsed, and
+   that the table keyed it correctly. `loc=-` is the no-fix path printing
+   nothing rather than 0,0, which is the rule it was written for.
 4. **The screen.** Home > LoRa nodes on the listening board, same row.
+   **Not done** -- it needs eyes on the panel.
 5. **The beacon.** `BEACON 70` on one, leave both. Rows must keep arriving and
    the age must keep resetting; `LORA_PEERS` `rejected=` must stay 0.
+   **Not done.**
 6. **Then, and only then, range.** Two boards, a walk, `PEERS` on each at
    intervals. This is bring-up step 4 in parent `docs/lora.md` and the thing
-   every protocol decision above it is waiting on.
+   every protocol decision above it is waiting on. **Not done.**
+
+### Flashing these two boards needs `/dev/serial/by-id/`, not `/dev/ttyACM*`
+
+Both boards were flashed on 2026-10-20 and **the first two uploads hit the same
+board**, because `/dev/ttyACM0` and `/dev/ttyACM1` swapped between the
+`udevadm` check and esptool opening the port. The check passed, the flash
+verified its hash, and the wrong board took both images. It was caught only by
+`esp_app_desc`: the board that should have been updated still reported
+`project_name: t5s3-sync-develop`, linked two days earlier.
+
+`/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<MAC>-if00` carries
+the MAC in the path and follows the device across renumbering, so the race
+cannot happen. And esptool prints the MAC it actually talked to -- read that
+line after every flash, because it is the only statement about which board
+received the bytes.
