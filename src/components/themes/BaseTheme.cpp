@@ -294,7 +294,8 @@ Rect BaseTheme::sideButtonHintsRect(const GfxRenderer& renderer) const {
 }
 
 void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn, int fontId,
-                                    const bool topDisabled, const bool bottomDisabled, const bool bold) const {
+                                    const bool topDisabled, const bool bottomDisabled, const bool bold,
+                                    const freeink::Icon* topIcon, const freeink::Icon* bottomIcon) const {
   if (!TouchPolicy::hintsVisible()) {
     return;
   }
@@ -316,24 +317,49 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     // X3 layout: Up on left side, Down on right side, positioned higher
     constexpr int x3ButtonY = kSideHintX3Y;
 
+    // White backing first, same reason as the X4 branch below: drawRect
+    // strokes only the outline, so without this the live map shows through.
+    if (topBtn != nullptr && topBtn[0] != '\0') {
+      renderer.fillRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, false);
+    }
+    if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
+      renderer.fillRect(screenWidth - buttonMargin - buttonWidth, x3ButtonY, buttonWidth, buttonHeight, false);
+    }
+
     if (topBtn != nullptr && topBtn[0] != '\0') {
       const int leftX = buttonMargin;
       renderer.drawRect(leftX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(fontId, topBtn);
-      const int textHeight = renderer.getTextHeight(fontId);
-      const int textX = leftX + (buttonWidth - textHeight) / 2;
-      const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, topBtn, true, style);
+      if (topIcon != nullptr) {
+        // drawMono1bpp(), not drawIcon(): confirmed on hardware 2026-10-20 --
+        // drawIcon()'s quarter turn is the same rotation that already made
+        // this box's TEXT illegible (a horizontal glyph read as a thin
+        // vertical sliver, side_hint_icons.h's docstring), not a convention
+        // to match. The box's own border above is drawn in plain, unrotated
+        // coordinates and reads correctly, so a plain icon does too.
+        renderer.drawMono1bpp(topIcon->bits, leftX + (buttonWidth - topIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w, topIcon->h, true);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, topBtn);
+        const int textHeight = renderer.getTextHeight(fontId);
+        const int textX = leftX + (buttonWidth - textHeight) / 2;
+        const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
+        renderer.drawTextRotated90CW(fontId, textX, textY, topBtn, true, style);
+      }
     }
 
     if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
       const int rightX = screenWidth - buttonMargin - buttonWidth;
       renderer.drawRect(rightX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
-      const int textHeight = renderer.getTextHeight(fontId);
-      const int textX = rightX + (buttonWidth - textHeight) / 2;
-      const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn, true, style);
+      if (bottomIcon != nullptr) {
+        renderer.drawMono1bpp(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w, bottomIcon->h, true);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
+        const int textHeight = renderer.getTextHeight(fontId);
+        const int textX = rightX + (buttonWidth - textHeight) / 2;
+        const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
+        renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn, true, style);
+      }
     }
   } else {
     // X4 layout: Both buttons stacked on right side
@@ -370,9 +396,15 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       renderer.drawLine(x, topButtonY + 2 * buttonHeight - 1, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
     }
 
+    const freeink::Icon* icons[] = {topIcon, bottomIcon};
     for (int i = 0; i < 2; i++) {
       if (labels[i] != nullptr && labels[i][0] != '\0') {
         const int y = topButtonY + i * buttonHeight;
+        if (icons[i] != nullptr) {
+          renderer.drawMono1bpp(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2,
+                                y + (buttonHeight - icons[i]->h) / 2, icons[i]->w, icons[i]->h, true);
+          continue;
+        }
         const int textWidth = renderer.getTextWidth(fontId, labels[i]);
         const int textHeight = renderer.getTextHeight(fontId);
         const int textX = x + (buttonWidth - textHeight) / 2;

@@ -264,9 +264,20 @@ class BaseTheme {
   // docs/map-observation-mode.md) keeps `false`; only a caller whose glyph
   // actually has a distinct bold cut and needs it (MapActivity's zoom "+"/"--")
   // passes `true`.
+  //
+  // topIcon/bottomIcon: an icon drawn in place of topBtn/bottomBtn's rotated
+  // text, non-null only for MapActivity's zoom hints (side_hint_icons.h). The
+  // box, its fill, and the disabled-stub shrink are unchanged either way --
+  // only the content glyph differs -- so passing an icon alongside a non-empty
+  // topBtn/bottomBtn draws the icon and ignores the text; every other existing
+  // caller (the pan arrows, OptionPopup, KeyboardEntryActivity) omits both and
+  // keeps drawing text exactly as before. Both default to `nullptr` in this
+  // class and in every override -- see "default arguments do not virtualize"
+  // above for why that agreement has to be exact.
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
                                    int fontId = SMALL_FONT_ID, bool topDisabled = false, bool bottomDisabled = false,
-                                   bool bold = false) const;
+                                   bool bold = false, const freeink::Icon* topIcon = nullptr,
+                                   const freeink::Icon* bottomIcon = nullptr) const;
   // The four-box hint band along the bottom. Empty on a touch panel, where
   // drawButtonHints() draws nothing. Same purpose as sideButtonHintsRect(): a
   // caller placing something near an edge has to know what is already there.

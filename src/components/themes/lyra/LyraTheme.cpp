@@ -449,7 +449,8 @@ bool LyraTheme::sideHintBox(const int index, const int portraitWidth, const int 
 }
 
 void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn, int fontId,
-                                    const bool topDisabled, const bool bottomDisabled, const bool bold) const {
+                                    const bool topDisabled, const bool bottomDisabled, const bool bold,
+                                    const freeink::Icon* topIcon, const freeink::Icon* bottomIcon) const {
   if (!TouchPolicy::hintsVisible()) {
     return;
   }
@@ -469,32 +470,57 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     // X3 layout: Up on left side, Down on right side, positioned higher
     constexpr int x3ButtonY = kSideBoxX3Y;
 
+    // White backing first, same reason as the X4 branch below: drawRoundedRect
+    // strokes only the outline, so without this the live map shows through.
     if (topDisabled) {
       // Shrunk to a stub against the left edge it's anchored to -- same
       // corners, no text, same "still there, can't fire" look
       // drawButtonHints() gives an empty front label (kSideBoxSmallWidth).
       // Checked first, ahead of hasTop: a disabled caller (MapActivity's
       // zoom hints) still passes its glyph, and the stub must win over it.
+      renderer.fillRoundedRect(buttonMargin, x3ButtonY, kSideBoxSmallWidth, buttonHeight, cornerRadius, false, true,
+                               false, true, Color::White);
       renderer.drawRoundedRect(buttonMargin, x3ButtonY, kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, false, true,
                                false, true, true);
     } else if (hasTop) {
+      renderer.fillRoundedRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, cornerRadius, false, true, false,
+                               true, Color::White);
       renderer.drawRoundedRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, false, true, false,
                                true, true);
-      const int textWidth = renderer.getTextWidth(fontId, topBtn);
-      renderer.drawTextRotated90CW(fontId, buttonMargin, x3ButtonY + (buttonHeight + textWidth) / 2, topBtn, true,
-                                   style);
+      if (topIcon != nullptr) {
+        // drawMono1bpp(), not drawIcon(): confirmed on hardware 2026-10-20 --
+        // drawIcon()'s quarter turn is the same rotation that already made
+        // this box's TEXT illegible (side_hint_icons.h's docstring), not a
+        // convention to match.
+        renderer.drawMono1bpp(topIcon->bits, buttonMargin + (buttonWidth - topIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w, topIcon->h, true);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, topBtn);
+        renderer.drawTextRotated90CW(fontId, buttonMargin, x3ButtonY + (buttonHeight + textWidth) / 2, topBtn, true,
+                                     style);
+      }
     }
 
     if (bottomDisabled) {
       const int rightX = screenWidth - kSideBoxSmallWidth;
+      renderer.fillRoundedRect(rightX, x3ButtonY, kSideBoxSmallWidth, buttonHeight, cornerRadius, true, false, true,
+                               false, Color::White);
       renderer.drawRoundedRect(rightX, x3ButtonY, kSideBoxSmallWidth, buttonHeight, 1, cornerRadius, true, false, true,
                                false, true);
     } else if (hasBottom) {
       const int rightX = screenWidth - buttonWidth;
+      renderer.fillRoundedRect(rightX, x3ButtonY, buttonWidth, buttonHeight, cornerRadius, true, false, true, false,
+                               Color::White);
       renderer.drawRoundedRect(rightX, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false,
                                true);
-      const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
-      renderer.drawTextRotated90CW(fontId, rightX, x3ButtonY + (buttonHeight + textWidth) / 2, bottomBtn, true, style);
+      if (bottomIcon != nullptr) {
+        renderer.drawMono1bpp(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w, bottomIcon->h, true);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
+        renderer.drawTextRotated90CW(fontId, rightX, x3ButtonY + (buttonHeight + textWidth) / 2, bottomBtn, true,
+                                     style);
+      }
     }
   } else {
     // X4 layout: Both buttons stacked on right side
@@ -534,11 +560,17 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     }
 
     const bool disabled[] = {topDisabled, bottomDisabled};
+    const freeink::Icon* icons[] = {topIcon, bottomIcon};
     for (int i = 0; i < 2; i++) {
       // Disabled beats a non-empty label here too -- MapActivity always
       // passes "+"/"--", and the stub box above must show no text.
       if (!disabled[i] && labels[i] != nullptr && labels[i][0] != '\0') {
         const int y = topY + (i * buttonHeight) + kSideBoxGap;
+        if (icons[i] != nullptr) {
+          renderer.drawMono1bpp(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2,
+                                y + (buttonHeight - icons[i]->h) / 2, icons[i]->w, icons[i]->h, true);
+          continue;
+        }
         const int textWidth = renderer.getTextWidth(fontId, labels[i]);
         renderer.drawTextRotated90CW(fontId, x, y + (buttonHeight + textWidth) / 2, labels[i], true, style);
       }
