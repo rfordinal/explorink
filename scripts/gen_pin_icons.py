@@ -368,16 +368,34 @@ def main():
         # Clear radius only, from the old per-frame scan -- only step 0's is ever
         # used (for the glyph size), and changing that number is not part of this
         # fix.
-        _, _, clear = head_circle(grid, mask)
-        return mask, grid, tip, head, clear
+        circle_x, circle_y, clear = head_circle(grid, mask)
+        # The body: the silhouette with no halo around it. A team marker paints
+        # this solid black and puts the member's initials on it in white, so a
+        # person and a place are told apart by the fill and not by a glyph
+        # (docs/team-markers.md). Only the upright frame is emitted -- a team
+        # marker never rotates, and sixteen more arrays would be ~6 kB of flash
+        # for nothing.
+        body = silhouette(grid)
+        # The head disc's *outer* radius, measured on the silhouette at the
+        # circle's own centre row. A filled marker may use all of it: the outline
+        # and the fill are the same ink there, so the only thing a letter has to
+        # stay clear of is the silhouette's edge.
+        centre_row = body[int(round(circle_y))]
+        run = [x for x, v in enumerate(centre_row) if v]
+        outer = (run[-1] - run[0] + 1) // 2 if run else 0
+        return mask, grid, tip, head, clear, body, (circle_x, circle_y, outer)
 
     frames = []
     clear0 = 0
+    body0 = None
+    circle0 = (0, 0)
     for step in range(args.steps):
         angle = 360.0 * step / args.steps
-        mask, ink, tip, head, clear = bake(angle)
+        mask, ink, tip, head, clear, body, circle = bake(angle)
         if step == 0:
             clear0 = clear
+            body0 = body
+            circle0 = circle
         frames.append((mask, ink, tip, head))
         print(
             f"step {step:2d} ({angle:5.1f} deg): {len(ink[0])}x{len(ink)}, "
@@ -404,12 +422,33 @@ def main():
         "//   mask -- the silhouette plus its halo, painted white first so neither the map",
         "//           nor a road line shows through the pin",
         "//   ink  -- the outline",
+        "//   body -- the silhouette with no halo, upright only: a team marker fills it",
+        "//           solid and writes the member's initials on it in white",
         "//",
         "// `tipX`/`tipY` locate the point inside the frame: draw at (x - tipX, y - tipY)",
         "// and the point lands exactly on the coordinate the pin means.",
         "",
         f"inline constexpr int kPinShapeSteps = {args.steps};",
         f"inline constexpr int kPinGlyphPx = {glyph};",
+        "// How far below the head's real centre `headY` sits. The baked glyphs are",
+        "// drawn there because a Lucide icon's optical centre reads high inside the",
+        "// head; text has its own metrics and wants the real centre, so a caller",
+        "// drawing letters subtracts this.",
+        f"inline constexpr int kPinShapeGlyphDy = {args.glyph_dy};",
+        "// The head circle's own centre in the upright frame, with no --glyph-dy in it.",
+        "// Text is centred on this: letters carry their own metrics and want the real",
+        "// circle, while `headY` is where a baked glyph reads best.",
+        f"inline constexpr int kPinShapeHead0X = {round(circle0[0])};",
+        f"inline constexpr int kPinShapeHead0Y = {round(circle0[1])};",
+        "// The head's clear radius, measured off the upright silhouette: how far from",
+        "// that centre a mark can reach and still be inside the head. Text uses it to",
+        "// work out the chord at its own cap height, which is shorter than the",
+        "// diameter and is what actually bounds a word.",
+        f"inline constexpr int kPinShapeHeadRadius = {clear0};",
+        "// The head disc's outer radius. A **filled** marker may use all of it --",
+        "// outline and fill are the same ink -- while a glyph drawn inside a hollow",
+        "// head has to stay within kPinShapeHeadRadius above.",
+        f"inline constexpr int kPinShapeHeadOuterRadius = {circle0[2]};",
         "",
         "struct PinShapeFrame {",
         "  const uint8_t* mask;",
@@ -427,6 +466,7 @@ def main():
     for step, (mask, ink, tip, head) in enumerate(frames):
         lines.append(carray(f"kPinShapeMask{step}Bits", pack(mask)))
         lines.append(carray(f"kPinShapeInk{step}Bits", pack(ink)))
+    lines.append(carray("kPinShapeBody0Bits", pack(body0)))
     lines.append("")
     lines.append("inline constexpr PinShapeFrame kPinShapeFrames[kPinShapeSteps] = {")
     for step, (mask, ink, tip, head) in enumerate(frames):

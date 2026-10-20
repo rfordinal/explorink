@@ -2,6 +2,9 @@
 
 #include "MapPointShards.h"
 #include "MapViewport.h"
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+#include "TeamRecord.h"
+#endif
 
 namespace {
 
@@ -488,6 +491,150 @@ MapCommand parseBare(const Tokens& tokens, MapCommandType type) {
   return cmd;
 }
 
+
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+// Copies a token into a fixed field. False when it does not fit -- truncating an
+// id would address a different member, and truncating an acronym would draw the
+// wrong letters on the panel.
+bool copyToken(std::string_view token, char* out, size_t outBytes) {
+  if (token.size() >= outBytes) return false;
+  for (size_t i = 0; i < token.size(); ++i) out[i] = token[i];
+  out[token.size()] = '\0';
+  return true;
+}
+
+// The name is the rest of the line, so it may hold spaces. Rebuilt from the
+// tokens with single spaces rather than sliced out of the line: the tokenizer
+// has already dropped tabs and runs of spaces, and a name is a label, not data.
+bool joinName(const Tokens& tokens, size_t first, char* out, size_t outBytes) {
+  size_t len = 0;
+  for (size_t i = first; i < tokens.n; ++i) {
+    if (len != 0) {
+      if (len + 1 >= outBytes) return false;
+      out[len++] = ' ';
+    }
+    if (len + tokens.t[i].size() >= outBytes) return false;
+    for (const char c : tokens.t[i]) out[len++] = c;
+  }
+  out[len] = '\0';
+  return isValidTeamName(std::string_view(out, len));
+}
+
+MapCommand parseTeam(const Tokens& tokens) {
+  if (tokens.n < 2) return fail(MapCommandError::BadArity);
+
+  MapCommand cmd;
+  cmd.type = MapCommandType::Team;
+  const std::string_view verb = tokens.t[1];
+
+  if (verb == "list" || verb == "reload") {
+    if (tokens.n != 2) return fail(MapCommandError::BadArity);
+    cmd.teamVerb = verb == "list" ? MapTeamVerb::List : MapTeamVerb::Reload;
+    return cmd;
+  }
+
+  if (verb == "log") {
+    if (tokens.n > 3) return fail(MapCommandError::BadArity);
+    cmd.teamVerb = MapTeamVerb::Log;
+    if (tokens.n == 3) {
+      uint32_t value = 0;
+      if (!parseUint(tokens.t[2], value)) return fail(MapCommandError::BadNumber);
+      if (value > 0xFFFFu) return fail(MapCommandError::OutOfRange);
+      cmd.teamLogOffset = static_cast<uint16_t>(value);
+    }
+    return cmd;
+  }
+
+  if (verb == "del") {
+    if (tokens.n != 3) return fail(MapCommandError::BadArity);
+    cmd.teamVerb = MapTeamVerb::Del;
+    // Either handle: a person types the acronym, a script that learned an id
+    // from `team list` passes that. Which one this is, is the roster's question
+    // and not the grammar's.
+    if (isValidTeamAcr(tokens.t[2])) {
+      if (!copyToken(tokens.t[2], cmd.teamAcr, sizeof(cmd.teamAcr))) return fail(MapCommandError::BadMember);
+      return cmd;
+    }
+    if (!isValidTeamId(tokens.t[2])) return fail(MapCommandError::BadMember);
+    if (!copyToken(tokens.t[2], cmd.teamId, sizeof(cmd.teamId))) return fail(MapCommandError::BadMember);
+    return cmd;
+  }
+
+  if (verb == "add") {
+    if (tokens.n < 4) return fail(MapCommandError::BadArity);
+    if (!isValidTeamAcr(tokens.t[2]) || !isValidTeamId(tokens.t[3])) return fail(MapCommandError::BadMember);
+    cmd.teamVerb = MapTeamVerb::Add;
+    if (!copyToken(tokens.t[2], cmd.teamAcr, sizeof(cmd.teamAcr))) return fail(MapCommandError::BadMember);
+    if (!copyToken(tokens.t[3], cmd.teamId, sizeof(cmd.teamId))) return fail(MapCommandError::BadMember);
+    if (tokens.n > 4 && !joinName(tokens, 4, cmd.teamName, sizeof(cmd.teamName))) {
+      return fail(MapCommandError::BadMember);
+    }
+    return cmd;
+  }
+
+  if (verb == "pos") {
+    if (tokens.n < 5) return fail(MapCommandError::BadArity);
+    if (isValidTeamAcr(tokens.t[2])) {
+      if (!copyToken(tokens.t[2], cmd.teamAcr, sizeof(cmd.teamAcr))) return fail(MapCommandError::BadMember);
+    } else if (isValidTeamId(tokens.t[2])) {
+      if (!copyToken(tokens.t[2], cmd.teamId, sizeof(cmd.teamId))) return fail(MapCommandError::BadMember);
+    } else {
+      return fail(MapCommandError::BadMember);
+    }
+
+    int64_t lat = 0;
+    int64_t lon = 0;
+    if (!parseDegrees(tokens.t[3], lat) || !parseDegrees(tokens.t[4], lon)) return fail(MapCommandError::BadNumber);
+    if (lat < -kLatMaxE7 || lat > kLatMaxE7) return fail(MapCommandError::OutOfRange);
+    if (lon < -kLonMaxE7 || lon > kLonMaxE7) return fail(MapCommandError::OutOfRange);
+
+    cmd.teamVerb = MapTeamVerb::Pos;
+    cmd.latE7 = static_cast<int32_t>(lat);
+    cmd.lonE7 = static_cast<int32_t>(lon);
+
+    // Keyword-only tail. A bare number after the coordinate would be as likely a
+    // unix time as a heading, and guessing wrong puts a member on the panel with
+    // an age that is off by years.
+    for (size_t i = 5; i < tokens.n; i += 2) {
+      if (i + 1 >= tokens.n) return fail(MapCommandError::BadArity);
+      const std::string_view key = tokens.t[i];
+      const std::string_view value = tokens.t[i + 1];
+      if (key == "utc") {
+        if (!parseUint(value, cmd.teamUtc)) return fail(MapCommandError::BadNumber);
+        continue;
+      }
+      if (key == "heading") {
+        uint32_t heading = 0;
+        if (!parseUint(value, heading)) return fail(MapCommandError::BadNumber);
+        if (heading > kMaxHeading) return fail(MapCommandError::OutOfRange);
+        cmd.heading = static_cast<uint8_t>(heading);
+        cmd.hasHeading = true;
+        continue;
+      }
+      if (key == "speed") {
+        uint32_t speed = 0;
+        if (!parseUint(value, speed)) return fail(MapCommandError::BadNumber);
+        if (speed > kMaxSpeedKmh) return fail(MapCommandError::OutOfRange);
+        cmd.speedKmh = static_cast<uint16_t>(speed);
+        cmd.hasSpeed = true;
+        continue;
+      }
+      if (key == "src") {
+        // The transport the position claims to have come from, for the black
+        // box's `src` column. Claimed, not proven: on this channel it is a
+        // console typing it, which is exactly why the channel is devel-only.
+        if (!teamSourceFromText(value, cmd.teamSource)) return fail(MapCommandError::BadMember);
+        continue;
+      }
+      return fail(MapCommandError::UnknownCommand);
+    }
+    return cmd;
+  }
+
+  return fail(MapCommandError::UnknownCommand);
+}
+#endif  // ENABLE_TEAM_CMD
+
 }  // namespace
 
 MapCommand parseMapCommand(std::string_view line) {
@@ -515,6 +662,9 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "points") return parseBare(tokens, MapCommandType::Points);
   if (name == "gone") return parseGone(tokens);
   if (name == "pin") return parsePin(tokens);
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+  if (name == "team") return parseTeam(tokens);
+#endif
   return fail(MapCommandError::UnknownCommand);
 }
 
@@ -534,6 +684,8 @@ const char* mapCommandErrorText(MapCommandError error) {
       return "bad_mode";
     case MapCommandError::UnknownPin:
       return "unknown_pin";
+    case MapCommandError::BadMember:
+      return "bad_member";
     case MapCommandError::LineTooLong:
       return "line_too_long";
   }
