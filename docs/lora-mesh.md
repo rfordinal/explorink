@@ -381,13 +381,15 @@ different bytes of the same commit.
 1. **One board.** `CMD:LORA ON`, `CMD:LORA MESH ON`. The reply must carry a key
    and `stored=1`. Reboot, `MESH ON` again: the same key, or the identity file
    is not surviving.
-   **Done 2026-10-20, half.** Both boards came up clean:
+   **Done 2026-10-20, in full.** Both boards came up clean:
    `LORA_OK:on chip=SX1261 V2D 2D02. tcxo=1.8V xosc=ok errors=0x0000`, then
    `LORA_OK:mesh=1 name=EI-3e8f key=3e8f8e75 stored=1` on board A and
    `name=EI-c6c2 key=c6c28a10 stored=1` on board B -- two distinct keys, both
    written to the card, the default name derived from the key as intended.
-   **The reboot half is not done**: nothing has yet confirmed the same key
-   comes back after a power cycle, which is the part that matters.
+   **And the key survives.** Board A was reset and reflashed twice afterwards
+   and came back as `identity loaded from /trailink/lora/identity.bin` with
+   the same `key=3e8f8e75` each time -- so the file outlives a power cycle and
+   a firmware replacement, which is the part that matters.
 2. **The card is still safe.** With the mesh running, open the map and pan.
    `lora-bringup.md`'s SD-bus question is about a radio *listening* while tiles
    stream, and the mesh listens continuously. **Not done.**
@@ -404,7 +406,13 @@ different bytes of the same commit.
    **Not done** -- it needs eyes on the panel.
 5. **The beacon.** `BEACON 70` on one, leave both. Rows must keep arriving and
    the age must keep resetting; `LORA_PEERS` `rejected=` must stay 0.
-   **Not done.**
+   **Done 2026-10-20, on build `3b656d2a`, and it failed first on `5f7f7d40`**
+   -- that failure is the frozen-clock section above and is the reason this
+   step exists separately from step 3. After the fix: board A beaconing at
+   70 s, board B went from `adv=1` to `adv=3` across 160 s with `rejected=0`,
+   which is the two adverts that interval owes. The persisted switch was
+   exercised at the same time: A came up from its settings file after the
+   reflash with `mesh=1 beacon=70s due_in=58053ms`, no console command given.
 6. **Then, and only then, range.** Two boards, a walk, `PEERS` on each at
    intervals. This is bring-up step 4 in parent `docs/lora.md` and the thing
    every protocol decision above it is waiting on. **Not done.**
