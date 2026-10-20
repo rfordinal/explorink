@@ -172,7 +172,51 @@ means nothing at all. A node that has sent no coordinate prints `loc=-`, never
 The two-board test is `MESH ON` on both, then `ADVERT` on one and `PEERS` on
 the other.
 
-## The screen
+## The screen, and the four controls on it
+
+**The first version of this screen listed peers and nothing else**, and that
+was the defect: `CMD:LORA MESH ON` over a USB cable was then the only way to
+start the node. A device on a handlebar has no serial console, so the feature
+was unreachable on the thing it was built for. Written down because it is a
+shape worth recognising -- a bench instrument built console-first reads as
+complete from the diff and is unusable in the hand.
+
+Four rows sit above the heard nodes:
+
+| row | value | Confirm does |
+|---|---|---|
+| Radio | Listening / Off | starts or stops the node |
+| Broadcast my position | Never / Every 70 s / 2 min / 5 min / 15 min | cycles the ring |
+| This device's name | the current name | opens the keyboard |
+| Announce me now | -- | sends one advert; dimmed with the radio off |
+
+"Listening", not "On", because that is what the radio is doing and it is the
+honest word: the node hears everybody whether or not the beacon is telling
+anybody about us.
+
+**Each row writes the same `CrossPointSettings` field the console writes**, so
+the screen and `CMD:LORA` are two faces of one state and cannot disagree --
+the pattern the map menu and the Settings screen already follow for the fields
+they share. `loraMeshOn`, `loraBeaconSec` and `loraNodeName` are not in
+`SettingsList`: this is a bench feature gated out of every release build, and
+its controls belong on its own screen rather than in a rider's Settings list
+(same call `team-markers.md` made for its three numbers).
+
+**The radio choice is honoured at boot**, immediately after the settings are
+read. Not a default -- `loraMeshOn` is 0 out of the box, because a listening
+SX1262 costs 5.4 mA continuously and drags the shared GNSS rail up with it --
+but once a rider has turned it on it stays on, because re-arming a group radio
+at every power cycle is how a group feature stops being trusted. The beacon
+keeps its own switch and its own default of off, because listening and
+transmitting are different consent.
+
+**A control that failed says so in the header.** A switch that silently does
+nothing is the worst thing a switch can do: a radio that refuses to start looks
+exactly like a radio nobody has pressed. Two messages, and the second is not an
+error -- a key that did not reach the card still works today, and the rider has
+to know that every reboot will make this a new node to everyone who heard it.
+
+## The list
 
 Home > **LoRa nodes**, one row per heard node: name (or four bytes of the key
 when the advert carried none), and under it RSSI, SNR, age and how many adverts
