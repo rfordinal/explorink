@@ -294,7 +294,8 @@ Rect BaseTheme::sideButtonHintsRect(const GfxRenderer& renderer) const {
 }
 
 void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn, int fontId,
-                                    const bool topDisabled, const bool bottomDisabled, const bool bold) const {
+                                    const bool topDisabled, const bool bottomDisabled, const bool bold,
+                                    const freeink::Icon* topIcon, const freeink::Icon* bottomIcon) const {
   if (!TouchPolicy::hintsVisible()) {
     return;
   }
@@ -328,21 +329,33 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
     if (topBtn != nullptr && topBtn[0] != '\0') {
       const int leftX = buttonMargin;
       renderer.drawRect(leftX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(fontId, topBtn);
-      const int textHeight = renderer.getTextHeight(fontId);
-      const int textX = leftX + (buttonWidth - textHeight) / 2;
-      const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, topBtn, true, style);
+      if (topIcon != nullptr) {
+        // drawIcon(), not drawMono1bpp(): see side_hint_icons.h's generator
+        // docstring for why this one spot wants the quarter turn.
+        renderer.drawIcon(topIcon->bits, leftX + (buttonWidth - topIcon->w) / 2,
+                          x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, topBtn);
+        const int textHeight = renderer.getTextHeight(fontId);
+        const int textX = leftX + (buttonWidth - textHeight) / 2;
+        const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
+        renderer.drawTextRotated90CW(fontId, textX, textY, topBtn, true, style);
+      }
     }
 
     if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
       const int rightX = screenWidth - buttonMargin - buttonWidth;
       renderer.drawRect(rightX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
-      const int textHeight = renderer.getTextHeight(fontId);
-      const int textX = rightX + (buttonWidth - textHeight) / 2;
-      const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn, true, style);
+      if (bottomIcon != nullptr) {
+        renderer.drawIcon(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
+                          x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
+        const int textHeight = renderer.getTextHeight(fontId);
+        const int textX = rightX + (buttonWidth - textHeight) / 2;
+        const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
+        renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn, true, style);
+      }
     }
   } else {
     // X4 layout: Both buttons stacked on right side
@@ -379,9 +392,15 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       renderer.drawLine(x, topButtonY + 2 * buttonHeight - 1, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
     }
 
+    const freeink::Icon* icons[] = {topIcon, bottomIcon};
     for (int i = 0; i < 2; i++) {
       if (labels[i] != nullptr && labels[i][0] != '\0') {
         const int y = topButtonY + i * buttonHeight;
+        if (icons[i] != nullptr) {
+          renderer.drawIcon(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2, y + (buttonHeight - icons[i]->h) / 2,
+                            icons[i]->w);
+          continue;
+        }
         const int textWidth = renderer.getTextWidth(fontId, labels[i]);
         const int textHeight = renderer.getTextHeight(fontId);
         const int textX = x + (buttonWidth - textHeight) / 2;

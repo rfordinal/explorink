@@ -53,6 +53,7 @@
 #include "components/UITheme.h"
 #include "components/icons/map_header_icons.h"
 #include "components/icons/poi_icons.h"
+#include "components/icons/side_hint_icons.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 
@@ -2595,18 +2596,26 @@ void MapActivity::drawZoomSideHints() {
   // Symbols, not words: "Zoom In"/"Zoom Out" rotated into a ~30px-wide box
   // reads as a blur. A single glyph is legible at that size and needs no font
   // control to prove it -- same "symbol over word in a tight space" call as
-  // KeyboardEntryActivity.cpp:947's ">"/"<". Plain literals, not tr(): a
-  // plus/minus is not language-dependent, matching that same precedent.
-  // "-" alone rendered as barely a dot: smallFontFamily has no bold face
-  // (main.cpp:102-103, single-glyph constructor) and the hyphen is a short,
-  // thin stroke even before the 90-degree rotation shrinks it further.
-  // Doubled, it survives -- same glyph, twice the ink, no new font needed.
+  // KeyboardEntryActivity.cpp:947's ">"/"<".
   //
-  // UI_10_FONT_ID, not the side-hint default SMALL_FONT_ID: same fix
-  // drawPanSideHints() already applies below, for the same reason -- a font
-  // two points bigger with a real regular+bold pair reads heavier than
-  // smallFontFamily's single glyph at any size. Unverified on glass as of
-  // this change; the pan hints' own legibility pass is what this borrows.
+  // Icons (side_hint_icons.h), not text, as of 2026-10-18 -- maintainer's
+  // call. The original plain-text "+"/"--" read too faint on the glass to be
+  // sure which box did what, and "--" (two ASCII hyphens, doubled because a
+  // single one rendered as barely a dot through this box's rotation -- see
+  // docs/map-observation-mode.md's "zoom side hints" finding) was a
+  // workaround for that, not a design choice. `icon_plus`/`icon_minus` are
+  // Lucide glyphs baked bold (scripts/gen_side_hint_icons.py, stroke-width
+  // bumped from Lucide's default 2) specifically to read clearly at this
+  // box's size. topBtn/bottomBtn below still carry the plain "+"/"-"
+  // characters -- unused for display once an icon is given (BaseTheme.cpp/
+  // LyraTheme.cpp's drawSideButtonHints() draws the icon instead and ignores
+  // the text), but still read by rememberSideLabels() and the
+  // present/disabled checks the box's border and fill rely on.
+  //
+  // UI_10_FONT_ID stays the fontId argument: it is unused for a drawn icon,
+  // but drawSideButtonHints() still takes one (every other caller still
+  // needs it), and the pan arrows below show it is the box's established
+  // size regardless.
   //
   // Disabled at a ladder end, not hidden: this box has no row to remove, so
   // it takes the same "still there, tucked toward the edge" treatment
@@ -2615,15 +2624,12 @@ void MapActivity::drawZoomSideHints() {
   // topDisabled/bottomDisabled -- Base draws it as absent instead, matching
   // its own front-hint convention. The menu's Zoom In/Out rows already hide
   // at these exact bounds (openMapMenu(), zoomStep() > 0 / zoomStep() + 1 <
-  // kZoomStepCount) -- this box just didn't check them before. "+"/topBtn is
-  // Up/stepZoom(-1) (zoom in), "--"/bottomBtn is Down/stepZoom(+1) (zoom out).
+  // kZoomStepCount) -- this box just didn't check them before. topBtn is
+  // Up/stepZoom(-1) (zoom in), bottomBtn is Down/stepZoom(+1) (zoom out).
   const bool atMostZoomedIn = zoomStep() == 0;
   const bool atMostZoomedOut = zoomStep() + 1 >= MapViewport::kZoomStepCount;
-  // bold=true: unlike the pan arrows just below, "+"/"-" actually differ
-  // between ubuntu_10's regular and bold cuts, so asking for REGULAR (every
-  // other drawSideButtonHints() caller's default) left them thin again even
-  // after the font-size fix above.
-  GUI.drawSideButtonHints(renderer, "+", "--", UI_10_FONT_ID, atMostZoomedIn, atMostZoomedOut, /*bold=*/true);
+  GUI.drawSideButtonHints(renderer, "+", "-", UI_10_FONT_ID, atMostZoomedIn, atMostZoomedOut, /*bold=*/true, &icon_plus,
+                          &icon_minus);
 }
 
 void MapActivity::drawPanSideHints() {
