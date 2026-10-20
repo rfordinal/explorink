@@ -488,10 +488,12 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       renderer.drawRoundedRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, false, true, false,
                                true, true);
       if (topIcon != nullptr) {
-        // drawIcon(), not drawMono1bpp(): see side_hint_icons.h's generator
-        // docstring for why this one spot wants the quarter turn.
-        renderer.drawIcon(topIcon->bits, buttonMargin + (buttonWidth - topIcon->w) / 2,
-                          x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w);
+        // drawMono1bpp(), not drawIcon(): confirmed on hardware 2026-10-20 --
+        // drawIcon()'s quarter turn is the same rotation that already made
+        // this box's TEXT illegible (side_hint_icons.h's docstring), not a
+        // convention to match.
+        renderer.drawMono1bpp(topIcon->bits, buttonMargin + (buttonWidth - topIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w, topIcon->h, true);
       } else {
         const int textWidth = renderer.getTextWidth(fontId, topBtn);
         renderer.drawTextRotated90CW(fontId, buttonMargin, x3ButtonY + (buttonHeight + textWidth) / 2, topBtn, true,
@@ -512,8 +514,8 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       renderer.drawRoundedRect(rightX, x3ButtonY, buttonWidth, buttonHeight, 1, cornerRadius, true, false, true, false,
                                true);
       if (bottomIcon != nullptr) {
-        renderer.drawIcon(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
-                          x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w);
+        renderer.drawMono1bpp(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w, bottomIcon->h, true);
       } else {
         const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
         renderer.drawTextRotated90CW(fontId, rightX, x3ButtonY + (buttonHeight + textWidth) / 2, bottomBtn, true,
@@ -565,8 +567,8 @@ void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       if (!disabled[i] && labels[i] != nullptr && labels[i][0] != '\0') {
         const int y = topY + (i * buttonHeight) + kSideBoxGap;
         if (icons[i] != nullptr) {
-          renderer.drawIcon(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2, y + (buttonHeight - icons[i]->h) / 2,
-                            icons[i]->w);
+          renderer.drawMono1bpp(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2,
+                                y + (buttonHeight - icons[i]->h) / 2, icons[i]->w, icons[i]->h, true);
           continue;
         }
         const int textWidth = renderer.getTextWidth(fontId, labels[i]);

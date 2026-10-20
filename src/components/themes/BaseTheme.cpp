@@ -330,10 +330,14 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       const int leftX = buttonMargin;
       renderer.drawRect(leftX, x3ButtonY, buttonWidth, buttonHeight);
       if (topIcon != nullptr) {
-        // drawIcon(), not drawMono1bpp(): see side_hint_icons.h's generator
-        // docstring for why this one spot wants the quarter turn.
-        renderer.drawIcon(topIcon->bits, leftX + (buttonWidth - topIcon->w) / 2,
-                          x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w);
+        // drawMono1bpp(), not drawIcon(): confirmed on hardware 2026-10-20 --
+        // drawIcon()'s quarter turn is the same rotation that already made
+        // this box's TEXT illegible (a horizontal glyph read as a thin
+        // vertical sliver, side_hint_icons.h's docstring), not a convention
+        // to match. The box's own border above is drawn in plain, unrotated
+        // coordinates and reads correctly, so a plain icon does too.
+        renderer.drawMono1bpp(topIcon->bits, leftX + (buttonWidth - topIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w, topIcon->h, true);
       } else {
         const int textWidth = renderer.getTextWidth(fontId, topBtn);
         const int textHeight = renderer.getTextHeight(fontId);
@@ -347,8 +351,8 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       const int rightX = screenWidth - buttonMargin - buttonWidth;
       renderer.drawRect(rightX, x3ButtonY, buttonWidth, buttonHeight);
       if (bottomIcon != nullptr) {
-        renderer.drawIcon(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
-                          x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w);
+        renderer.drawMono1bpp(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w, bottomIcon->h, true);
       } else {
         const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
         const int textHeight = renderer.getTextHeight(fontId);
@@ -397,8 +401,8 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       if (labels[i] != nullptr && labels[i][0] != '\0') {
         const int y = topButtonY + i * buttonHeight;
         if (icons[i] != nullptr) {
-          renderer.drawIcon(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2, y + (buttonHeight - icons[i]->h) / 2,
-                            icons[i]->w);
+          renderer.drawMono1bpp(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2,
+                                y + (buttonHeight - icons[i]->h) / 2, icons[i]->w, icons[i]->h, true);
           continue;
         }
         const int textWidth = renderer.getTextWidth(fontId, labels[i]);
