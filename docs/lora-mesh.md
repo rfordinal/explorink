@@ -454,6 +454,17 @@ different bytes of the same commit.
    which is the two adverts that interval owes. The persisted switch was
    exercised at the same time: A came up from its settings file after the
    reflash with `mesh=1 beacon=70s due_in=58053ms`, no console command given.
+
+   **Both boards beacon since 2026-10-21**, 70 s each, which is what the range
+   walk needs -- one-way tells you nothing about the return path. A hears B at
+   -8 dBm and B hears A at -9 dBm on the desk.
+
+   **The cadence was measured rather than assumed**, because the cumulative
+   counter looked wrong at a glance: B reported `adv=547` for A, which is
+   10.6 h of 70-second adverts and read as far too many. Two readings 140 s
+   apart gave **+2**, exactly the interval, and B's own uptime of 11.10 h
+   reconciles the total. A counter that spans a run is not a rate; the delta
+   is.
 6. **Then, and only then, range.** Two boards, a walk, `PEERS` on each at
    intervals. This is bring-up step 4 in parent `docs/lora.md` and the thing
    every protocol decision above it is waiting on. **Not done.**
