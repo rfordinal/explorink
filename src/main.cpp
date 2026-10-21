@@ -3098,7 +3098,11 @@ void loop() {
               static_cast<unsigned long>(gLoraRxCount), static_cast<unsigned long>(gLoraTxCount)
 #ifdef ENABLE_LORA_MESH
                                                             ,
-              gMeshRunning ? 1 : 0, gMeshScreenHold ? 1 : 0, static_cast<unsigned long>(gMeshBeaconSec),
+              // The *setting*, not the live cache: the cache is only loaded at
+              // meshStart(), so off the two radio screens it reads 0 and says
+              // "the beacon is off" about a device whose row says 70 s. Same
+              // shape of trap as the one that cost an hour on 2026-10-20.
+              gMeshRunning ? 1 : 0, gMeshScreenHold ? 1 : 0, static_cast<unsigned long>(SETTINGS.loraBeaconSec),
               gMeshBeaconEverSent ? static_cast<long>((millis() - gMeshLastSentMs) / 1000) : -1,
               (gnss.fix().valid && gnss.fix().quality != 0) ? 1 : 0
 #endif
