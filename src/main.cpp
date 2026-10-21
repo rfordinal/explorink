@@ -1171,9 +1171,24 @@ static int32_t gMeshLastSentLatE7 = 0;
 static int32_t gMeshLastSentLonE7 = 0;
 static bool gMeshLastSentHadFix = false;
 
-// True while a screen that is allowed to use the radio is open. **The radio
-// runs only then** -- see loraPresenceHoldRadio().
-static bool gMeshScreenHold = false;
+// Who currently wants the radio up. The radio runs while this is non-zero and
+// is parked the moment it reaches zero.
+//
+// **Two holders, and they are deliberately not equal.** The screen holder is
+// the product rule: the map or the LoRa list is open, and the rider has
+// allowed the radio at all (`loraMeshOn`). The console holder is the bench
+// instrument: `CMD:LORA MESH ON` forces the radio up on any screen and
+// **ignores `loraMeshOn`**, because bring-up on a fresh card has to be
+// possible before anything has been enabled through a UI.
+//
+// That asymmetry is written down rather than left to be discovered: the devel
+// console can do a thing the product cannot, which is the whole point of it
+// being compiled out of every release build.
+enum : uint8_t {
+  kMeshHolderScreen = 1 << 0,
+  kMeshHolderConsole = 1 << 1,
+};
+static uint8_t gMeshHolders = 0;
 
 // The floor under that interval, in seconds.
 //
@@ -1283,15 +1298,15 @@ size_t loraPresenceSnapshot(LoraPeer* out, size_t max) {
 
 bool loraPresenceSetMesh(bool on, bool& persisted) {
   persisted = false;
-  if (!on) {
-    meshStop();
-    SETTINGS.loraMeshOn = 0;
-    SETTINGS.saveToFile();
-    return true;
-  }
-  if (!meshStart(persisted)) return false;
-  SETTINGS.loraMeshOn = 1;
+  SETTINGS.loraMeshOn = on ? 1 : 0;
   SETTINGS.saveToFile();
+
+  // Only this row's own screen can call it, so the screen holder follows the
+  // switch directly: turning the radio on from the list means it is wanted
+  // now, and turning it off means it is not.
+  loraPresenceHoldRadio(on);
+  if (on && !gMeshRunning) return false;
+  persisted = gMesh.identityPersisted();
   return true;
 }
 
@@ -1389,9 +1404,9 @@ static void meshBeaconTick() {
 //
 // `loraMeshOn` therefore means "the radio may be used", not "the radio is
 // running". This decides when.
-void loraPresenceHoldRadio(bool wanted) {
-  if (gMeshScreenHold == wanted) return;
-  gMeshScreenHold = wanted;
+static void meshApplyHolders() {
+  const bool wanted = gMeshHolders != 0;
+  if (wanted == gMeshRunning) return;
 
   if (!wanted) {
     // loraStop() stops the mesh, parks the chip with NRESET low so the card
@@ -1400,12 +1415,24 @@ void loraPresenceHoldRadio(bool wanted) {
     loraStop();
     return;
   }
-  if (SETTINGS.loraMeshOn == 0) return;
-
   bool persisted = false;
   if (!meshStart(persisted)) {
-    LOG_ERR("LORA", "screen wanted the radio and it did not start: err=%d", lora.lastError());
+    LOG_ERR("LORA", "the radio was wanted and did not start: err=%d", lora.lastError());
+    gMeshHolders = 0;  // nothing is holding a radio that is not there
   }
+}
+
+void loraPresenceHoldRadio(bool wanted) {
+  // The rider's switch gates the screens and only the screens. A console hold
+  // is a bench override and goes around it -- see the holder enum.
+  if (wanted && SETTINGS.loraMeshOn == 0) wanted = false;
+
+  if (wanted) {
+    gMeshHolders |= kMeshHolderScreen;
+  } else {
+    gMeshHolders &= static_cast<uint8_t>(~kMeshHolderScreen);
+  }
+  meshApplyHolders();
 }
 
 static void meshStop() {
@@ -1413,6 +1440,9 @@ static void meshStop() {
   if (!gMeshRunning) return;
   gMeshRunning = false;
   gMeshBeaconSec = 0;
+  // Nothing can still be holding a radio that is down -- a stale holder would
+  // mean the next screen exit decides nothing and the mask lies about why.
+  gMeshHolders = 0;
 
   // The chip is left listening otherwise, and nothing would put it down: the
   // console's own re-arm watchdog is driven by gLoraListenWanted, which MESH ON
@@ -3084,7 +3114,7 @@ void loop() {
               // floor has not expired, or there is nothing new to say. Added
               // 2026-10-20 after the first of those cost an hour of guessing.
               // `sent_ago` is -1 when nothing has ever been sent.
-              " mesh=%d hold=%d beacon=%lus sent_ago=%lds fix=%d"
+              " mesh=%d hold=0x%x beacon=%lus sent_ago=%lds fix=%d"
 #endif
               "\n",
               lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
@@ -3102,7 +3132,8 @@ void loop() {
               // meshStart(), so off the two radio screens it reads 0 and says
               // "the beacon is off" about a device whose row says 70 s. Same
               // shape of trap as the one that cost an hour on 2026-10-20.
-              gMeshRunning ? 1 : 0, gMeshScreenHold ? 1 : 0, static_cast<unsigned long>(SETTINGS.loraBeaconSec),
+              gMeshRunning ? 1 : 0, static_cast<unsigned>(gMeshHolders),
+              static_cast<unsigned long>(SETTINGS.loraBeaconSec),
               gMeshBeaconEverSent ? static_cast<long>((millis() - gMeshLastSentMs) / 1000) : -1,
               (gnss.fix().valid && gnss.fix().quality != 0) ? 1 : 0
 #endif
@@ -3370,24 +3401,27 @@ void loop() {
           if (gMeshRunning) {
             logSerial.printf("LORA_OK:mesh=1 already running\n");
           } else {
-            bool persisted = false;
-            if (!meshStart(persisted)) {
+            // **A bench hold, not the rider's switch.** This forces the radio
+            // up on whatever screen is showing and does not write
+            // `loraMeshOn`, so a console session cannot silently leave a
+            // device enabled for its owner. The screens obey the gate; this
+            // deliberately does not (see the holder enum).
+            gMeshHolders |= kMeshHolderConsole;
+            meshApplyHolders();
+            if (!gMeshRunning) {
               logSerial.printf("LORA_ERR:radio not up err=%d\n", lora.lastError());
             } else {
-              // Persisted, so the console and the screen agree and the choice
-              // survives a reboot -- the same field the screen's Mesh row sets.
-              SETTINGS.loraMeshOn = 1;
-              SETTINGS.saveToFile();
-              logSerial.printf("LORA_OK:mesh=1 name=%s key=%02x%02x%02x%02x stored=%d\n", gMeshNodeName,
+              logSerial.printf("LORA_OK:mesh=1 hold=console name=%s key=%02x%02x%02x%02x stored=%d\n", gMeshNodeName,
                                gMesh.self_id.pub_key[0], gMesh.self_id.pub_key[1], gMesh.self_id.pub_key[2],
-                               gMesh.self_id.pub_key[3], persisted ? 1 : 0);
+                               gMesh.self_id.pub_key[3], gMesh.identityPersisted() ? 1 : 0);
             }
           }
         } else if (upper == "MESH OFF") {
-          meshStop();
-          SETTINGS.loraMeshOn = 0;
-          SETTINGS.saveToFile();
-          logSerial.printf("LORA_OK:mesh=0\n");
+          // Drops the console's hold only. A screen that still wants the radio
+          // keeps it, which is the whole reason holders are a mask.
+          gMeshHolders &= static_cast<uint8_t>(~kMeshHolderConsole);
+          meshApplyHolders();
+          logSerial.printf("LORA_OK:mesh=%d hold=0x%x\n", gMeshRunning ? 1 : 0, static_cast<unsigned>(gMeshHolders));
         } else if (upper == "ADVERT") {
           // "started", not "sent", for the same reason PONG says it: this
           // queues a packet and the service task puts it on the air later.

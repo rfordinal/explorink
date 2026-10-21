@@ -184,6 +184,29 @@ worth keeping separate.
 running. `loraPresenceHoldRadio()` decides when, called from
 `MapActivity::onEnter/onExit` and the LoRa list's own.
 
+### Two holders, and they are not equal
+
+The radio runs while any holder wants it and is parked the moment none do.
+There are two, and the difference is deliberate:
+
+| holder | set by | obeys `loraMeshOn`? |
+|---|---|---|
+| screen | the map and the LoRa list, on enter and exit | **yes** |
+| console | `CMD:LORA MESH ON` / `OFF` | **no** |
+
+The console holder is a bench override: it forces the radio up on any screen
+and ignores the rider's switch, because bring-up on a fresh card has to be
+possible before anything has been enabled through a UI. It also does **not**
+write `loraMeshOn`, so a console session cannot quietly leave a device enabled
+for its owner.
+
+**This asymmetry is written down rather than left to be found.** It was found
+the hard way on 2026-10-21: the gate had just been built and documented, and
+one `CMD:LORA MESH ON` typed on the Home screen brought the radio straight up
+-- the console was going around the rule the doc had just finished asserting.
+A devel console doing what the product cannot is correct; a doc that does not
+say so is not.
+
 Two consequences a reader should expect rather than report as bugs:
 
 - **The node list is much emptier than a continuously listening one.**
