@@ -245,6 +245,75 @@ rearm anything: the floor is measured from the last advert actually sent, not
 from the last time a screen opened. Without that, flipping between Home and
 the map would be a transmitter.
 
+## There is no certificate, and what the identity actually rests on
+
+Worth stating plainly because the word invites the wrong model: **there is no
+certificate, no authority and no PKI here.** Nothing is signed on this
+device's behalf by anybody. The identity is an Ed25519 keypair and **the
+public key is the name that matters** -- a signature proves possession of the
+private key and says nothing about who that is.
+
+### What makes the key unique
+
+`PresenceMesh::beginIdentity()` builds it with `mesh::LocalIdentity(getRNG())`,
+and the RNG is MeshCore's `StdRNG`, which is `random(0, 256)` per byte.
+
+**We never call `gMeshRng.begin()`, and that is deliberate rather than an
+omission.** Read in the pinned Arduino core (`cores/esp32/WMath.cpp:36-61`):
+`random()` uses `esp_random()`, the hardware generator, *until* somebody calls
+`randomSeed()` -- which sets `s_useRandomHW = false` and drops the whole
+process to `srand()/rand()`. MeshCore's own example does exactly that
+(`fast_rng.begin(radio_driver.getRngSeed())`), so **following their example on
+ESP32 would make our keys weaker, not stronger.**
+
+So today the key comes from the hardware RNG. Measured consequence: two boards
+flashed from one image produced `3e8f8e75` and `c6c28a10`.
+
+### The entropy caveat, and it is open
+
+The pinned ESP-IDF 5.5.2.260206 says it in its own header
+(`components/esp_hw_support/include/esp_random.h`): *"If Wi-Fi or Bluetooth
+are enabled, this function returns true random numbers. In other situations,
+if true random numbers are required then consult the ESP-IDF Programming
+Guide."*
+
+The identity is created at `meshStart()`, which the screen gate means happens
+on one of two screens:
+
+- **from the map** -- `BlePositionServer.begin()` has run, BLE is up, the
+  guarantee holds;
+- **from the LoRa list** -- BLE is very likely down, and the guarantee does
+  not hold.
+
+A key is generated **once per device, ever**, so the one path that can be
+weak is the one that matters most. MeshCore already ships the right tool for
+exactly this job: `RadioNoiseListener`, whose own comment says it is very slow
+and to use it *only* for creating a `LocalIdentity`. T-2035.
+
+### Where it lives, and who else can be you
+
+`/trailink/lora/identity.bin`, 96 bytes: 64 of private key then 32 of public,
+in that order, raw. **Plaintext, on a removable SD card.** No passphrase, no
+secure element, no flash encryption.
+
+So the threat `CLAUDE.md` asks about has a blunt answer: **anyone who takes
+the card out can copy the file and become that rider.** They can sign adverts
+under that key and put a false position on every panel in the group, and the
+signature will verify, because a signature only ever proved possession.
+Nothing in this design detects a copied key. T-2036.
+
+### The name is not an identity and is not unique
+
+Two things are easy to conflate here. The default name is
+`EI-%02x%02x` of the first two key bytes -- 65,536 values, so two devices in a
+group of a few hundred collide by birthday, and a rider can type whatever they
+like over it with nothing checking.
+
+That is not a defect as long as nobody treats it as identity: `LoraPeerTable`
+matches on the **whole 32-byte key** and never on the name, so two nodes
+called the same thing are still two rows. What it does mean is that **a name
+on the panel is a label, not proof**, and no UI may ever imply otherwise.
+
 ## The beacon is off by default
 
 An advert is a plaintext broadcast of this device's name and position to anyone
