@@ -8,6 +8,8 @@
 
 #include <cstring>
 
+#include "IdentityLoadRule.h"
+
 namespace {
 
 constexpr const char* kLog = "LORAMESH";
@@ -20,6 +22,23 @@ constexpr const char* kLog = "LORAMESH";
 // safe and HalStorage is the mutex that makes it so (CLAUDE.md, "Hardware
 // Abstraction Layer").
 constexpr size_t kIdentityBytes = PRV_KEY_SIZE + PUB_KEY_SIZE;
+
+// Wipes a stack buffer that held private key bytes.
+//
+// **Not for RAM pressure -- 96 bytes is nothing -- but for what a coredump
+// carries.** This firmware writes coredumps to flash and archives them
+// (../../docs/crashes/README.md), and the pinned ESP-IDF captures task stacks
+// while `CONFIG_ESP_COREDUMP_CAPTURE_DRAM` stays unset
+// (sdkconfig.defaults:1868), so `.bss` -- where the loaded key lives -- is
+// never in one. A buffer on the stack is the exception, and this is that
+// buffer.
+//
+// Written through a volatile pointer because a plain memset() on a local that
+// is dead afterwards is exactly what a compiler is allowed to delete.
+void scrub(uint8_t* p, size_t n) {
+  volatile uint8_t* v = p;
+  while (n-- > 0) *v++ = 0;
+}
 
 }  // namespace
 
@@ -40,29 +59,44 @@ bool PresenceMesh::beginIdentity() {
   // destroyed the rider's identity and handed the group a stranger. Existence
   // is therefore asked separately, and a file that exists is never replaced
   // by this function.
-  if (Storage.exists(PresenceMesh::kIdentityPath)) {
-    HalFile in;
-    if (!Storage.openFileForRead(kLog, PresenceMesh::kIdentityPath, in)) {
-      LOG_ERR(kLog, "%s exists and will not open -- refusing to replace it, the mesh stays down",
-              PresenceMesh::kIdentityPath);
-      return false;
+  const bool exists = Storage.exists(PresenceMesh::kIdentityPath);
+  bool opened = false;
+  int n = -1;
+  HalFile in;
+  if (exists) {
+    opened = Storage.openFileForRead(kLog, PresenceMesh::kIdentityPath, in);
+    if (opened) {
+      // The size is checked before the read, because a read can only ever
+      // return at most sizeof(blob) and would therefore accept the first 96
+      // bytes of a larger file as an identity. A file of the wrong size is a
+      // different format, and using part of it is a guess.
+      const size_t fileBytes = in.size();
+      n = fileBytes == sizeof(blob) ? in.read(blob, sizeof(blob)) : static_cast<int>(fileBytes);
     }
-    const int n = in.read(blob, sizeof(blob));
-    if (n != static_cast<int>(sizeof(blob))) {
-      // Could be a truncated write from a card pulled mid-save, could be a
-      // short read off a busy bus, and from here the two are
-      // indistinguishable. Refuse either way: a wrong guess costs the rider
-      // their identity, and the recovery -- delete the file -- is one the
-      // human can make deliberately once they know.
-      LOG_ERR(kLog, "%s is %d bytes, expected %u -- refusing to replace it, the mesh stays down",
-              PresenceMesh::kIdentityPath, n, static_cast<unsigned>(sizeof(blob)));
+  }
+
+  switch (identityLoadAction(exists, opened, n, sizeof(blob))) {
+    case IdentityLoadAction::UseExisting:
+      self_id.readFrom(blob, sizeof(blob));
+      identityLoaded_ = true;
+      identityPersisted_ = true;
+      scrub(blob, sizeof(blob));
+      LOG_INF(kLog, "identity loaded from %s", PresenceMesh::kIdentityPath);
+      return true;
+
+    case IdentityLoadAction::Refuse:
+      // Either the file would not open or it read short, and from here those
+      // are indistinguishable -- a truncated write and a busy bus look the
+      // same. Refuse both: a wrong guess costs the rider a key that cannot be
+      // recreated, and the recovery is one a human makes deliberately once
+      // they know (delete the file).
+      scrub(blob, sizeof(blob));
+      LOG_ERR(kLog, "%s is there and did not read whole (opened=%d, %d of %u bytes) -- refusing to replace it",
+              PresenceMesh::kIdentityPath, opened ? 1 : 0, n, static_cast<unsigned>(sizeof(blob)));
       return false;
-    }
-    self_id.readFrom(blob, sizeof(blob));
-    identityLoaded_ = true;
-    identityPersisted_ = true;
-    LOG_INF(kLog, "identity loaded from %s", PresenceMesh::kIdentityPath);
-    return true;
+
+    case IdentityLoadAction::Create:
+      break;  // the only path that makes a key; below
   }
 
   // Genuinely absent. This is the only path that ever creates a key, and it
@@ -78,6 +112,7 @@ bool PresenceMesh::beginIdentity() {
     written = Storage.openFileForWrite(kLog, PresenceMesh::kIdentityPath, out) && out.write(blob, len) == len;
   }
 
+  scrub(blob, sizeof(blob));
   if (!written) {
     // **Leave no half-written file behind.** The read path above now refuses a
     // short one forever, so a failed first write that left 40 bytes on the
@@ -89,6 +124,7 @@ bool PresenceMesh::beginIdentity() {
   }
 
   identityPersisted_ = true;
+  scrub(blob, sizeof(blob));
   LOG_INF(kLog, "new identity written to %s", PresenceMesh::kIdentityPath);
   return true;
 }

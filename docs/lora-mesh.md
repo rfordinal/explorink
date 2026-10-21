@@ -316,10 +316,49 @@ rules close that, all in `PresenceMesh::beginIdentity()`:
    refused forever, so a failed first write deletes what it managed to put
    down rather than bricking the feature on that device.
 
+A fourth rule fell out of writing the test: **a file of the wrong size is
+refused in both directions.** A read can only ever return at most 96 bytes,
+so an oversize file would have had its first 96 taken as an identity -- a
+guess about a format that is not this one. The size is checked before the
+read.
+
+The branch table lives in `src/lora/IdentityLoadRule.h` as a pure function and
+is proved by `test/lora_identity/`, separately from the card. The I/O around
+it is ordinary; the branch table is the part where a mistake is
+unrecoverable, so that is the part with a test.
+
 The one case that still runs without a card is the one that cannot be
 confused with anything: the file is genuinely absent and the write fails too.
 The node works for this session and `identityPersisted()` is false, which the
 `MESH ON` reply reports as `stored=0` and the screen shows as an error line.
+
+### The key in RAM, and why it stays there
+
+96 bytes -- 64 private, 32 public -- so this is not a memory question and
+sizing it as one would miss what matters. The question worth asking is what
+else can read those bytes.
+
+**A coredump cannot.** This firmware writes coredumps to flash and archives
+them into the repository (`../../docs/crashes/README.md`), which would be a
+fine way to publish a private key. It does not happen: the pinned ESP-IDF
+captures task stacks, and `CONFIG_ESP_COREDUMP_CAPTURE_DRAM` -- *"Include
+whole .bss and .data sections and heap data into core dump file"* -- is unset
+in `sdkconfig.defaults:1868`. The loaded key lives in `.bss`, inside the
+static `PresenceMesh`, so it is not in a dump. **If anybody ever turns that
+option on, this paragraph stops being true**, which is the reason it names the
+line.
+
+What a dump *does* carry is stacks, so the 96-byte buffer that holds the key
+while it is read from or written to the card is scrubbed through a volatile
+pointer before those functions return. A plain `memset()` on a local that is
+dead afterwards is exactly what a compiler may delete.
+
+**The key is deliberately not wiped when the radio stops.** It would mean a
+card read on every map entry, on a bus that is streaming tiles at that
+moment, and it buys very little: `.bss` is not in a dump, and anyone who can
+read this device's RAM can also take the card, where the same bytes sit in
+plaintext. Recorded as a decision so the next reader does not redo the
+analysis.
 
 ### Where it lives, and who else can be you
 
