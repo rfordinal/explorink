@@ -24,36 +24,70 @@ constexpr size_t kIdentityBytes = PRV_KEY_SIZE + PUB_KEY_SIZE;
 }  // namespace
 
 bool PresenceMesh::beginIdentity() {
+  // **Once per boot, not once per map screen.** The screen gate of 2026-10-21
+  // calls meshStart() every time the rider opens the map, so this used to run
+  // on every entry -- ten map openings were ten chances for a transient card
+  // failure to land on the path below. The key is in RAM after the first
+  // success and nothing re-reads the card for it.
+  if (identityLoaded_) return true;
+
   uint8_t blob[kIdentityBytes];
 
-  HalFile in;
-  if (Storage.openFileForRead(kLog, PresenceMesh::kIdentityPath, in)) {
-    const int n = in.read(blob, sizeof(blob));
-    if (n == static_cast<int>(sizeof(blob))) {
-      self_id.readFrom(blob, sizeof(blob));
-      identityPersisted_ = true;
-      LOG_INF(kLog, "identity loaded from %s", PresenceMesh::kIdentityPath);
-      return true;
+  // **"Cannot read it" and "it is not there" are opposites, and the first
+  // version of this treated them as the same thing.** A failed open fell
+  // straight through to generating a new key and overwriting the file, so one
+  // busy moment on a card that is also streaming map tiles would have
+  // destroyed the rider's identity and handed the group a stranger. Existence
+  // is therefore asked separately, and a file that exists is never replaced
+  // by this function.
+  if (Storage.exists(PresenceMesh::kIdentityPath)) {
+    HalFile in;
+    if (!Storage.openFileForRead(kLog, PresenceMesh::kIdentityPath, in)) {
+      LOG_ERR(kLog, "%s exists and will not open -- refusing to replace it, the mesh stays down",
+              PresenceMesh::kIdentityPath);
+      return false;
     }
-    // A short file is a truncated write from a card pulled mid-save, not a
-    // different format. Replacing it is right; silently running on a random
-    // key while the file stays broken is not.
-    LOG_ERR(kLog, "identity file is %d bytes, expected %u -- making a new one", n, static_cast<unsigned>(sizeof(blob)));
+    const int n = in.read(blob, sizeof(blob));
+    if (n != static_cast<int>(sizeof(blob))) {
+      // Could be a truncated write from a card pulled mid-save, could be a
+      // short read off a busy bus, and from here the two are
+      // indistinguishable. Refuse either way: a wrong guess costs the rider
+      // their identity, and the recovery -- delete the file -- is one the
+      // human can make deliberately once they know.
+      LOG_ERR(kLog, "%s is %d bytes, expected %u -- refusing to replace it, the mesh stays down",
+              PresenceMesh::kIdentityPath, n, static_cast<unsigned>(sizeof(blob)));
+      return false;
+    }
+    self_id.readFrom(blob, sizeof(blob));
+    identityLoaded_ = true;
+    identityPersisted_ = true;
+    LOG_INF(kLog, "identity loaded from %s", PresenceMesh::kIdentityPath);
+    return true;
   }
 
+  // Genuinely absent. This is the only path that ever creates a key, and it
+  // runs once in a device's life.
   self_id = mesh::LocalIdentity(getRNG());
+  identityLoaded_ = true;
 
   Storage.mkdir(PresenceMesh::kIdentityDir);
-  HalFile out;
-  if (!Storage.openFileForWrite(kLog, PresenceMesh::kIdentityPath, out)) {
-    LOG_ERR(kLog, "no card for %s -- this node's key dies at reboot", PresenceMesh::kIdentityPath);
-    return false;
-  }
   const size_t len = self_id.writeTo(blob, sizeof(blob));
-  if (len != sizeof(blob) || out.write(blob, len) != len) {
-    LOG_ERR(kLog, "identity write failed -- this node's key dies at reboot");
-    return false;
+  bool written = len == sizeof(blob);
+  if (written) {
+    HalFile out;
+    written = Storage.openFileForWrite(kLog, PresenceMesh::kIdentityPath, out) && out.write(blob, len) == len;
   }
+
+  if (!written) {
+    // **Leave no half-written file behind.** The read path above now refuses a
+    // short one forever, so a failed first write that left 40 bytes on the
+    // card would brick this feature on that device until somebody deleted the
+    // file by hand.
+    Storage.remove(PresenceMesh::kIdentityPath);
+    LOG_ERR(kLog, "could not write %s -- running on a key that dies at reboot", PresenceMesh::kIdentityPath);
+    return true;  // the node still works today; identityPersisted() says it will not tomorrow
+  }
+
   identityPersisted_ = true;
   LOG_INF(kLog, "new identity written to %s", PresenceMesh::kIdentityPath);
   return true;

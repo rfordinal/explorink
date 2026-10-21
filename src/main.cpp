@@ -1236,7 +1236,16 @@ static bool meshStart(bool& persisted) {
   }
   if (!loraStart()) return false;
 
-  persisted = gMesh.beginIdentity();
+  // **False here means do not run**, not "running without a card". The card
+  // holds a key this device cannot re-derive, so a read that fails against a
+  // file which exists is a reason to stay silent rather than to invent a new
+  // identity on top of a good one (PresenceMesh::beginIdentity()).
+  if (!gMesh.beginIdentity()) {
+    loraStop();  // give the rail and the chip back; we took them just above
+    return false;
+  }
+  persisted = gMesh.identityPersisted();
+
   gMeshRadio.setSpreadingFactor(gLoraConfig.spreadingFactor);
   gMesh.begin();
   gMeshRunning = true;

@@ -61,6 +61,8 @@ class PresenceMesh : public mesh::Mesh {
   bool beginIdentity();
 
   // True when beginIdentity() got its key off the card, or put one there.
+  // False means the node is running on a key that dies at the next boot, which
+  // is a thing the rider has to be told rather than a reason to refuse.
   bool identityPersisted() const { return identityPersisted_; }
 
   // Broadcasts one advert at zero hops: to whoever can hear us directly, with
@@ -103,6 +105,8 @@ class PresenceMesh : public mesh::Mesh {
   LoraPeerTable peers_;
   uint32_t advertsRejected_ = 0;
   bool identityPersisted_ = false;
+  // The key is read from the card once per boot and kept. See beginIdentity().
+  bool identityLoaded_ = false;
   int16_t lastRxRssiDbm_ = 0;
 };
 

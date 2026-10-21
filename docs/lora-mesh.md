@@ -290,6 +290,37 @@ weak is the one that matters most. MeshCore already ships the right tool for
 exactly this job: `RadioNoiseListener`, whose own comment says it is very slow
 and to use it *only* for creating a `LocalIdentity`. T-2035.
 
+### Keeping the same key across reboots, and across the tenth map screen
+
+Persistence is the easy half and it is measured: board A reloaded
+`key=3e8f8e75` across two reflashes and several reboots, board B kept
+`c6c28a10` (2026-10-21).
+
+**The hard half is what the screen gate changed.** `meshStart()` now runs
+every time the rider opens the map, so `beginIdentity()` used to run on every
+entry -- ten map openings were ten chances for a bad moment on the card. Three
+rules close that, all in `PresenceMesh::beginIdentity()`:
+
+1. **Read the card once per boot.** The key lives in RAM afterwards and the
+   tenth map screen touches no file at all.
+2. **"Cannot read it" and "it is not there" are opposites.** The first version
+   treated them as the same thing: a failed open fell straight through to
+   generating a new key and overwriting the file. One busy moment on a card
+   that is also streaming map tiles -- which is exactly what the map does --
+   would have destroyed the rider's identity and handed the group a stranger.
+   Existence is now asked separately, and **a file that exists is never
+   replaced by this function**. If it exists and will not read, or reads
+   short, the mesh stays down and says so; deleting the file is a decision a
+   human makes once they know.
+3. **Leave no half-written file.** Because of rule 2 a short file is now
+   refused forever, so a failed first write deletes what it managed to put
+   down rather than bricking the feature on that device.
+
+The one case that still runs without a card is the one that cannot be
+confused with anything: the file is genuinely absent and the write fails too.
+The node works for this session and `identityPersisted()` is false, which the
+`MESH ON` reply reports as `stored=0` and the screen shows as an error line.
+
 ### Where it lives, and who else can be you
 
 `/trailink/lora/identity.bin`, 96 bytes: 64 of private key then 32 of public,
