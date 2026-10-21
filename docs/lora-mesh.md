@@ -354,6 +354,28 @@ the peer table and the mesh tables are all static arrays, by design, because
 the thing filling them is a radio anyone in range can talk to. That is read off
 the code and not off a device.
 
+## A busy channel fills the table with strangers
+
+**Measured 2026-10-21 in Bratislava, and it is the first thing real traffic
+taught this feature.** Within about an hour of listening on MeshCore's default
+channel the sixteen-slot table was **full, all sixteen of them strangers** --
+`SK-BA-Pribisova`, `AT-ST-GRAZ-Geidorf`, `Core-PlavStvrtok`, `AT-WL-RS01` and
+twelve more, between -92 and -103 dBm, several of them over 100 km away.
+
+The public mesh here is busy, which is good news for the radio and bad news
+for the table: **eviction is by age heard, so a group member who has been
+quiet for ten minutes is dropped to make room for a stranger who shouted once
+from Graz.** For a feature whose whole job is finding the people you came
+with, that is backwards.
+
+Nothing is broken today, because nothing feeds the roster yet. But the fix
+belongs with that wiring and not after it: a roster member must outrank a
+stranger for a slot, whatever the ages say. T-2034.
+
+A second, smaller thing the same screenshot showed: ages run to `4009s ago`,
+which nobody reads as an hour. Seconds are right for a bench and wrong for a
+list somebody uses.
+
 ## What is open
 
 - **Everything on hardware.** No board has run this. See below.
@@ -392,7 +414,17 @@ different bytes of the same commit.
    a firmware replacement, which is the part that matters.
 2. **The card is still safe.** With the mesh running, open the map and pan.
    `lora-bringup.md`'s SD-bus question is about a radio *listening* while tiles
-   stream, and the mesh listens continuously. **Not done.**
+   stream, and the mesh listens continuously.
+   **Done 2026-10-21.** `CMD:GOTO_MAP`, then six pans over 55 s with the mesh
+   up and the beacon armed: every redraw reported `tiles ok, 0 missing`, about
+   5.2 MB read off the card in total, no `[SD]` error, no CRC failure and no
+   corrupt tile. **Stronger than the 2026-08-31 run, and still not a proof.**
+   That run could not have failed because the card reads finished before the
+   panel bus ran; here tile loading (about 2.5 s in the card per frame) and
+   panel refreshes interleave repeatedly with the radio armed, so the window is
+   far more likely to have opened -- but nothing instruments whether a refresh
+   ever actually overlapped a transfer in flight, so this is evidence and not a
+   closed question.
 3. **Two boards.** `MESH ON` on both, `ADVERT` on one, `PEERS` on the other.
    One row, the right key, a plausible RSSI.
    **Done 2026-10-20, both directions.** A to B:
@@ -403,7 +435,16 @@ different bytes of the same commit.
    that the table keyed it correctly. `loc=-` is the no-fix path printing
    nothing rather than 0,0, which is the rule it was written for.
 4. **The screen.** Home > LoRa nodes on the listening board, same row.
-   **Not done** -- it needs eyes on the panel.
+   **Done 2026-10-21**, and with no eyes on the panel: `tools/press.py` walked
+   Home to the row and `CMD:SCREENSHOT` read the framebuffer back. The header
+   showed `LoRa nodes` / `RF-alfa beacon 70s bad 0`, the four control rows
+   carried their values, and eight heard nodes sat below them.
+
+   **The grab needs its own decoder on this board.** `tools/screenshot_gate.py`
+   reports success and writes a garbled BMP, because it assumes the X4's
+   800x480 framebuffer while this panel is 960x540 and returns 64,800 bytes.
+   The byte count in `SCREENSHOT_START:` is right; only the geometry the tool
+   then imposes is wrong.
 5. **The beacon.** `BEACON 70` on one, leave both. Rows must keep arriving and
    the age must keep resetting; `LORA_PEERS` `rejected=` must stay 0.
    **Done 2026-10-20, on build `3b656d2a`, and it failed first on `5f7f7d40`**
