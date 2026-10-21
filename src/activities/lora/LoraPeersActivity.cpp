@@ -35,9 +35,20 @@ uint32_t nextBeaconChoice(uint32_t current) {
 
 void LoraPeersActivity::onEnter() {
   Activity::onEnter();
+
+  // The other screen the radio may run under. Without this the list would be
+  // the one place you cannot watch the radio work, which is the opposite of
+  // what it is for.
+  loraPresenceHoldRadio(true);
+
   selectedIndex = 0;
   refresh();
   requestUpdate();
+}
+
+void LoraPeersActivity::onExit() {
+  loraPresenceHoldRadio(false);
+  Activity::onExit();
 }
 
 void LoraPeersActivity::refresh() {

@@ -39,6 +39,7 @@
 #include <LoraRadio.h>
 #endif
 #ifdef ENABLE_LORA_MESH
+#include "activities/map/PinGeo.h"
 #include "lora/LoraPresence.h"
 #include "lora/PresenceMesh.h"
 #endif
@@ -1144,7 +1145,35 @@ static char gMeshNodeName[21] = {0};
 // the mesh channel"). The rider turns it on, the same rule tile freshness
 // follows.
 static uint32_t gMeshBeaconSec = 0;
-static unsigned long gMeshNextBeaconMs = 0;
+
+// What the cadence row means, and it is a floor rather than a period: **no
+// faster than this**, not "exactly this often". Three states share one
+// mechanism (../../docs/lora-mesh.md, "When a position goes out"):
+//
+//   moving with a fix   -> a position every kMeshMoveMetres, never faster
+//                          than the floor
+//   parked with a fix   -> the same position again once the silence cap
+//                          expires, because an hour in a pub still has to say
+//                          where the pub is
+//   no fix              -> a nameplate with no coordinate, same cap
+//
+// The numbers are OpenTrailPaper's, not ours: 100 m and an hourly heartbeat,
+// from a project that has run groups on this band for years
+// (../../docs/lora.md, "And their cadence is the precedent our own guess was
+// missing"). Ours start there and have to say what they buy before moving.
+static constexpr uint32_t kMeshMoveMetres = 100;
+static constexpr uint32_t kMeshMaxSilenceSec = 3600;
+
+// What the last advert said, so the next one can decide whether it has news.
+static bool gMeshBeaconEverSent = false;
+static unsigned long gMeshLastSentMs = 0;
+static int32_t gMeshLastSentLatE7 = 0;
+static int32_t gMeshLastSentLonE7 = 0;
+static bool gMeshLastSentHadFix = false;
+
+// True while a screen that is allowed to use the radio is open. **The radio
+// runs only then** -- see loraPresenceHoldRadio().
+static bool gMeshScreenHold = false;
 
 // The floor under that interval, in seconds.
 //
@@ -1219,11 +1248,13 @@ static bool meshStart(bool& persisted) {
   // to mean anything.
   if (gnss.fix().utc != 0) gMeshRtc.setCurrentTime(gnss.fix().utc);
 
-  // The saved cadence, and the first advert goes out now rather than one full
-  // interval from now: a rider who turns the beacon on wants the other boards
-  // to know within seconds, not in seventy.
   gMeshBeaconSec = SETTINGS.loraBeaconSec;
-  gMeshNextBeaconMs = millis();
+
+  // **The send schedule is deliberately not reset here.** The radio now starts
+  // and stops every time the rider opens and leaves the map, and an advert on
+  // every entry would turn flipping between screens into a transmitter. What
+  // carries across is gMeshLastSentMs: the floor is measured from the last
+  // thing actually sent, not from the last time a screen opened.
   return true;
 }
 
@@ -1268,7 +1299,6 @@ bool loraPresenceSetBeacon(uint32_t seconds) {
   if (seconds != 0 && seconds < kMeshBeaconMinSec) return false;
   LoraLock lock;
   gMeshBeaconSec = seconds;
-  gMeshNextBeaconMs = millis();
   SETTINGS.loraBeaconSec = static_cast<uint16_t>(seconds);
   SETTINGS.saveToFile();
   return true;
@@ -1288,6 +1318,95 @@ void loraPresenceSetName(const char* name) {
 }
 
 bool loraPresenceAdvertNow() { return meshSendAdvert(); }
+
+// Decides whether this node has anything to say, and says it.
+//
+// **The floor is absolute and everything else is a reason to break silence.**
+// Nothing goes out faster than the rider's cadence row, whatever happens; past
+// that, three things earn an advert and nothing else does:
+//
+//   - the rider moved kMeshMoveMetres since the last one,
+//   - kMeshMaxSilenceSec has passed with nothing sent, which is the parked
+//     case -- an hour in a pub on a hike still has to tell the group where the
+//     pub is,
+//   - the fix appeared or disappeared, because "I can see the sky again" is
+//     news and the next advert would otherwise wait out the whole cap.
+//
+// A node with no fix sends its nameplate instead of a position, never 0,0.
+// That is the same distinction the peer table keeps and the panel prints as
+// `loc=-`.
+//
+// Runs on the loop task, under the chip mutex taken inside meshSendAdvert().
+static void meshBeaconTick() {
+  if (!gMeshRunning || gMeshBeaconSec == 0) return;
+
+  const unsigned long now = millis();
+  if (gMeshBeaconEverSent && (now - gMeshLastSentMs) < gMeshBeaconSec * 1000UL) return;
+
+  const GnssFix& fix = gnss.fix();
+  const bool hasFix = fix.valid && fix.quality != 0;
+  const int32_t latE7 = static_cast<int32_t>(fix.latitude * 1e7);
+  const int32_t lonE7 = static_cast<int32_t>(fix.longitude * 1e7);
+
+  if (gMeshBeaconEverSent) {
+    const bool silentTooLong = (now - gMeshLastSentMs) >= kMeshMaxSilenceSec * 1000UL;
+    const bool fixChanged = hasFix != gMeshLastSentHadFix;
+    // Only comparable when both ends of the comparison are real positions.
+    const bool moved = hasFix && gMeshLastSentHadFix &&
+                       PinGeo::distanceM(gMeshLastSentLatE7, gMeshLastSentLonE7, latE7, lonE7) >= kMeshMoveMetres;
+    if (!silentTooLong && !fixChanged && !moved) return;
+  }
+
+  if (!meshSendAdvert()) {
+    // Said out loud rather than retried on the next loop: a pool that cannot
+    // give out a packet will not give one out 10 ms later either, and a silent
+    // beacon is the failure this whole section exists to make visible.
+    logSerial.printf("LORA_ERR:beacon advert not sent\n");
+    return;
+  }
+
+  gMeshLastSentMs = now;
+  gMeshLastSentHadFix = hasFix;
+  gMeshLastSentLatE7 = latE7;
+  gMeshLastSentLonE7 = lonE7;
+  gMeshBeaconEverSent = true;
+}
+
+// The radio runs only while a screen that may use it is open.
+//
+// **Maintainer's rule, 2026-10-21, and it corrects an assumption in the first
+// version.** On this device an open map is not "somebody is looking at the
+// screen" -- it is the state the device lives in during a ride, pocket
+// included. So the map (and this feature's own list) are exactly the times the
+// radio is wanted, and everywhere else -- Home, settings, the browser -- it is
+// not wanted at all: no transmit *and no receive*.
+//
+// That second half is the one that pays. A listening SX1262 costs 5.4 mA
+// continuously against roughly 3 mA that a 30-second beacon adds
+// (../../docs/lora.md, "What a beacon cadence costs"), so gating receive is
+// most of the saving and gating transmit is almost none of it. The reason to
+// gate transmit is airtime and privacy, not battery.
+//
+// `loraMeshOn` therefore means "the radio may be used", not "the radio is
+// running". This decides when.
+void loraPresenceHoldRadio(bool wanted) {
+  if (gMeshScreenHold == wanted) return;
+  gMeshScreenHold = wanted;
+
+  if (!wanted) {
+    // loraStop() stops the mesh, parks the chip with NRESET low so the card
+    // gets its MISO back, and releases this user's claim on the shared
+    // GNSS/LoRa rail -- the receiver keeps the rail up if it still wants it.
+    loraStop();
+    return;
+  }
+  if (SETTINGS.loraMeshOn == 0) return;
+
+  bool persisted = false;
+  if (!meshStart(persisted)) {
+    LOG_ERR("LORA", "screen wanted the radio and it did not start: err=%d", lora.lastError());
+  }
+}
 
 static void meshStop() {
   LoraLock lock;
@@ -1502,16 +1621,10 @@ static void loraDrain() {
   // receiver's dedup was suspected.
   gMeshRtc.tick();
 
-  // The beacon clock. Here rather than on the radio task because the position
-  // it sends comes from the GNSS receiver, which is polled from loop() -- and
+  // The beacon. Here rather than on the radio task because the position it
+  // sends comes from the GNSS receiver, which is polled from loop() -- and
   // because an advert is queued, not transmitted, so this costs no radio time.
-  if (gMeshRunning && gMeshBeaconSec != 0 && (long)(millis() - gMeshNextBeaconMs) >= 0) {
-    // Rescheduled before the send, not after: a failed advert must not stop the
-    // clock, or one empty packet pool silences the node for the rest of the
-    // ride.
-    gMeshNextBeaconMs = millis() + gMeshBeaconSec * 1000UL;
-    if (!meshSendAdvert()) logSerial.printf("LORA_ERR:beacon advert not sent\n");
-  }
+  meshBeaconTick();
 #endif
 
   // From gLoraPingDoneMs, not gLoraPingSentMs: the wait starts when our packet
@@ -2174,26 +2287,12 @@ void setup() {
   SETTINGS.loadFromFile();
 
 #ifdef ENABLE_LORA_MESH
-  // The rider's saved choice, honoured at boot. Immediately after the settings
-  // are read, because that is the first moment the choice is known -- and after
-  // storage is up, which the identity file needs.
-  //
-  // Not a default: loraMeshOn is 0
-  // out of the box, because a listening radio costs 5.4 mA continuously and
-  // drags the shared GNSS rail up with it (CrossPointSettings::loraMeshOn).
-  //
-  // Here rather than lazily on the first screen entry, because the point of a
-  // group radio is to be listening before anybody opens a list -- a node that
-  // only hears people while its own screen is showing is not a node.
-  if (SETTINGS.loraMeshOn != 0) {
-    bool persisted = false;
-    if (!meshStart(persisted)) {
-      LOG_ERR("LORA", "mesh was on in settings and did not start: err=%d", lora.lastError());
-    } else {
-      LOG_INF("LORA", "mesh up from settings: name=%s stored=%d beacon=%lus", gMeshNodeName, persisted ? 1 : 0,
-              static_cast<unsigned long>(gMeshBeaconSec));
-    }
-  }
+  // **Nothing starts the radio here any more.** It used to come up at boot
+  // from `loraMeshOn`, which the screen gate of 2026-10-21 replaced: the radio
+  // runs while the map or the LoRa list is open and at no other time, so boot
+  // -- which lands on Home -- is one of the times it must stay down. The
+  // setting still decides whether it may be used at all;
+  // loraPresenceHoldRadio() decides when.
 #endif
   // Restore the light the rider left on. Deliberately after loadFromFile() and
   // not next to frontlight.begin(): the settings file is not read until here.
@@ -2979,12 +3078,13 @@ void loop() {
               "LORA_STATE:ready=%d listening=%d pong=%d rail=%d isr=%d want=%d tx_air=%d rearm=%lu "
               "tx_timeout=%lu stack=%u freq=%.3f bw=%.1f sf=%u cr=%u power=%d rx=%lu tx=%lu"
 #ifdef ENABLE_LORA_MESH
-              // The beacon's own state, because "it never transmits" has three
-              // possible causes -- the mesh is off, the cadence is 0, or the
-              // next-due stamp is in the future -- and from the outside they
-              // look identical. Added 2026-10-20 after that exact question
-              // cost an hour of guessing.
-              " mesh=%d beacon=%lus due_in=%ldms"
+              // The beacon's own state, because "it never transmits" has
+              // several causes that look identical from outside: the mesh is
+              // off, no screen is holding the radio up, the cadence is 0, the
+              // floor has not expired, or there is nothing new to say. Added
+              // 2026-10-20 after the first of those cost an hour of guessing.
+              // `sent_ago` is -1 when nothing has ever been sent.
+              " mesh=%d hold=%d beacon=%lus sent_ago=%lds fix=%d"
 #endif
               "\n",
               lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
@@ -2998,8 +3098,9 @@ void loop() {
               static_cast<unsigned long>(gLoraRxCount), static_cast<unsigned long>(gLoraTxCount)
 #ifdef ENABLE_LORA_MESH
                                                             ,
-              gMeshRunning ? 1 : 0, static_cast<unsigned long>(gMeshBeaconSec),
-              static_cast<long>(gMeshNextBeaconMs - millis())
+              gMeshRunning ? 1 : 0, gMeshScreenHold ? 1 : 0, static_cast<unsigned long>(gMeshBeaconSec),
+              gMeshBeaconEverSent ? static_cast<long>((millis() - gMeshLastSentMs) / 1000) : -1,
+              (gnss.fix().valid && gnss.fix().quality != 0) ? 1 : 0
 #endif
           );
         } else if (upper == "ON") {
@@ -3304,7 +3405,6 @@ void loop() {
                              static_cast<unsigned long>(kMeshBeaconMinSec));
           } else {
             gMeshBeaconSec = static_cast<uint32_t>(seconds);
-            gMeshNextBeaconMs = millis();  // first one immediately, so a bench test says something at once
             SETTINGS.loraBeaconSec = static_cast<uint16_t>(seconds);
             SETTINGS.saveToFile();
             logSerial.printf("LORA_OK:beacon=%lus\n", static_cast<unsigned long>(gMeshBeaconSec));

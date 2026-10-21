@@ -49,6 +49,14 @@ size_t loraPresenceSnapshot(LoraPeer* out, size_t max);
 // radio could only be switched on over the serial console, which is not a
 // thing a device on a handlebar has.
 
+// Called by a screen that may use the radio, on the way in and on the way
+// out. **The radio runs only between those two calls**: an open map is the
+// state this device rides in, pocket included, and everywhere else the radio
+// neither transmits nor listens. Gating receive is where the battery saving
+// is -- listening costs 5.4 mA continuously and a beacon adds about 3 mA.
+// See the definition in main.cpp for the rest of the reasoning.
+void loraPresenceHoldRadio(bool wanted);
+
 // Returns false when the radio would not come up at all (rail, reset, TCXO).
 // `persisted` says whether the identity reached the card.
 bool loraPresenceSetMesh(bool on, bool& persisted);

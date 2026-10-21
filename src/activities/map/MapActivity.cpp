@@ -1,5 +1,9 @@
 #include "MapActivity.h"
 
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+#include "lora/LoraPresence.h"
+#endif
+
 #include <BlePositionServer.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -2804,6 +2808,15 @@ void MapActivity::onEnter() {
   Activity::onEnter();
   LOG_DBG(kLogTag, "onEnter start");
 
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // **An open map is the ride, pocket included**, so this is one of the two
+  // screens the LoRa node is allowed to run under. Everywhere else it neither
+  // transmits nor listens -- maintainer's rule, 2026-10-21. Costs nothing when
+  // the rider has not enabled the radio: the call checks that itself
+  // (src/lora/LoraPresence.h).
+  loraPresenceHoldRadio(true);
+#endif
+
   // NimBLEDevice::init() hangs at a low clock, and this screen can be entered
   // from an idle Home screen that is already throttled (verified 2026-08-04,
   // docs/power-management.md). HalPowerManager's BLE_SAFE_FREQ floor only
@@ -3140,6 +3153,12 @@ void MapActivity::onEnter() {
 
 void MapActivity::onExit() {
   Activity::onExit();
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Radio down, rail released, chip parked with NRESET low so the SD card gets
+  // its MISO line back. Leaving the map is leaving the ride.
+  loraPresenceHoldRadio(false);
+#endif
 
   // Before anything is torn down: on the way into a quick-resume sleep the frame
   // on the panel right now is the frame that sits there for the whole sleep, so
@@ -8152,8 +8171,7 @@ void MapActivity::drawTeam() {
     // once the rung is wide enough that the eye cannot judge it; age only when
     // the position has gone stale, so a group riding together draws no text at
     // all (TeamFix.h, teamMarkerLabel).
-    const uint32_t metres =
-        hasReceivedAny_ ? PinGeo::distanceM(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7) : 0;
+    const uint32_t metres = hasReceivedAny_ ? PinGeo::distanceM(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7) : 0;
     char label[kTeamLabelBytes];
     if (teamMarkerLabel(wantDistance && hasReceivedAny_, metres, stale,
                         teamFixAge(fix, MapTeam::utcNowOrZero(), millis()), label, sizeof(label)) != 0 &&

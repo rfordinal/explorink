@@ -160,6 +160,68 @@ Two consequences, both in `loraDrain()` and `meshStart()`:
 identical from outside: the mesh is off, the cadence is 0, or the next-due
 stamp is in the future. Guessing between them is what the hour went on.
 
+## The radio runs on two screens and nowhere else
+
+**Maintainer's rule, 2026-10-21, and it corrected an assumption this feature
+was built on.** The first version ran the node from boot, on every screen. The
+argument for that was that a group has to find you when you are not looking at
+the device -- which sounds right and misreads this device: **an open map is
+not somebody staring at a screen, it is the state the device lives in during a
+ride, pocket included.** Nobody closes the map to put it away.
+
+So the radio is up while the map or the LoRa list is open, and everywhere else
+-- Home, settings, the browser, asleep -- it **neither transmits nor
+listens**.
+
+**The second half is the one that pays.** A listening SX1262 costs 5.4 mA
+continuously; a 30-second beacon adds about 3 mA on top
+(`../../docs/lora.md`, "What a beacon cadence costs"). Gating receive is
+almost all of the battery saving and gating transmit is almost none of it --
+transmit is gated for airtime and privacy, which are different reasons and
+worth keeping separate.
+
+`loraMeshOn` therefore means **the radio may be used**, not the radio is
+running. `loraPresenceHoldRadio()` decides when, called from
+`MapActivity::onEnter/onExit` and the LoRa list's own.
+
+Two consequences a reader should expect rather than report as bugs:
+
+- **The node list is much emptier than a continuously listening one.**
+  Strangers are only heard during a map session.
+- **Two riders hear each other only when both have the map open** inside the
+  same window. On a ride that is the normal state; sitting at a table with the
+  device on Home, both are silent, by design.
+
+## When a position goes out
+
+One mechanism, three states, all of them inside the gate above. **The cadence
+row is a floor, not a period** -- no faster than this, not exactly this often.
+
+| state | what goes out | how often |
+|---|---|---|
+| moving, fix | the position | every 100 m, never faster than the floor |
+| parked, fix | the same position again | once an hour |
+| no fix | the name, no coordinate | once an hour |
+
+The parked case is the one that is easy to get wrong: **an hour in a pub on a
+hike still has to tell the group where the pub is**, so silence is capped
+rather than left to the movement test. And a fix appearing or disappearing
+sends immediately, because "I can see the sky again" is news that should not
+wait out the cap.
+
+A node with no fix sends its nameplate and never 0,0 -- the same distinction
+the peer table keeps and the panel prints as `loc=-`.
+
+**The numbers are OpenTrailPaper's, not ours**: 100 m, and an hourly heartbeat
+when parked, from a project that has run groups on this band for years
+(`../../docs/lora.md`, "And their cadence is the precedent our own guess was
+missing"). Ours start there, and moving them has to say what it buys.
+
+**The schedule survives the screen gate.** `meshStart()` deliberately does not
+rearm anything: the floor is measured from the last advert actually sent, not
+from the last time a screen opened. Without that, flipping between Home and
+the map would be a transmitter.
+
 ## The beacon is off by default
 
 An advert is a plaintext broadcast of this device's name and position to anyone

@@ -39,6 +39,7 @@ class LoraPeersActivity final : public Activity {
       : Activity("LoraPeers", renderer, mappedInput) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 
