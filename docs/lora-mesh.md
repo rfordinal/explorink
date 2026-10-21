@@ -617,6 +617,51 @@ list somebody uses.
   whether we ever agreed to listen to them.
 - **The 70-second beacon floor rests on an unread standard** (T-285).
 
+## The bench pass for the gate and the send rules
+
+Everything above the range walk, re-verified on both boards against build
+`06eed316` on 2026-10-21 -- because the screen gate and the send rules
+replaced the whole transmit path after the first pass, and the first pass no
+longer describes this firmware.
+
+**The gate, through real button presses.** `CMD:BUTTON` walked the UI rather
+than the console driving the radio directly. On the LoRa list:
+`mesh=1 hold=0x1`. One Back: `mesh=0 hold=0x0`. The map holds it the same
+way -- board B sat on the map for the whole session at `hold=0x1` and heard
+six strangers while it was there, so the gate bounds the listening window
+without making the node deaf inside it.
+
+**An advert still crosses.** `ADVERT` on A, and B went from six peers to
+seven with `key=3e8f8e75 name=RF-alfa rssi=-12 snr=11 adv=1 loc=-`. The
+`loc=-` is the no-fix nameplate path, indoors, doing what it is supposed to
+instead of claiming 0,0.
+
+**The hourly cap, observed rather than argued.** Both boards sat on holding
+screens with `fix=0` and did not transmit for **36 minutes**
+(`sent_ago=2150s`). The build before this one would have sent about twenty
+adverts in that time. One advert on entry, then silence until something is
+worth saying.
+
+**Three screen entries are not three transmissions.** Into the list, out to
+Home, three times: `hold=0x1` each time, and `sent_ago` grew 2073 -> 2098 ->
+2123 -> 2150 instead of resetting. B's row for `RF-alfa` read `adv=1` before
+and `adv=1` after. The schedule survived three radio stop/starts, which is
+the property `meshStart()` deliberately does not reset.
+
+### What the bench cannot answer
+
+Honest list, because the four above are easy to read as "the send rules are
+verified" and they are not, as a set:
+
+- **The 100 m movement trigger** and **the fix-appears trigger** both need a
+  GNSS fix, and there is none indoors. Untested on hardware.
+- **The hourly cap expiring.** 36 minutes of silence were observed; the
+  advert at the far end of the hour was not.
+- **The `Refuse` path** for an identity file that exists and will not read.
+  Host-tested (`test/lora_identity/`), never provoked on a card -- doing so
+  means damaging a real identity file, which is the rider's data.
+- **Range.** Step 6 below, and nothing on a desk substitutes for it.
+
 ## The hardware pass
 
 In this order. Each step can kill the next. Build `638e7b27`, archived in the
