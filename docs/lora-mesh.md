@@ -311,10 +311,35 @@ on one of two screens:
 - **from the LoRa list** -- BLE is very likely down, and the guarantee does
   not hold.
 
-A key is generated **once per device, ever**, so the one path that can be
-weak is the one that matters most. MeshCore already ships the right tool for
-exactly this job: `RadioNoiseListener`, whose own comment says it is very slow
-and to use it *only* for creating a `LocalIdentity`. T-2035.
+**Closed 2026-10-22 by mixing in the radio's own noise.** The mechanism, read
+out of the pinned IDF rather than its header: `WDEV_RANDOM` is a PRNG that
+receives two bits of hardware entropy per APB cycle *"provided WiFi or BT are
+enabled"* (`hw_random.c`). With the radios off it keeps producing values and
+stops being reseeded. And this chip has no alternative -- the ESP32-S3's
+`soc_caps.h` declares `SOC_RNG_SUPPORTED` and none of the
+`SOC_RNG_*_ENTROPY_SOURCE` flags that newer parts (the C5) carry.
+
+So the seed is now `esp_random()` **XORed with** `SX126x::randomByte()`, which
+enables the LNA and mixer RNG registers, puts the chip in continuous receive,
+waits 10 ms for the RSSI to settle and samples its lowest bit eight times.
+Thermal noise off the front end, available whether or not BLE is up.
+
+Three things make this safe rather than clever:
+
+- **XOR, never replace.** The result is at least as good as the better of the
+  two sources, so the change cannot make a key worse than it was.
+- **The radio is already up.** `meshStart()` calls `loraStart()` before
+  `beginIdentity()`, so the noise source exists exactly when the key is made.
+  The opposite order would have made this impossible.
+- **It is paid once.** 32 seed bytes at about 10 ms each is roughly 350 ms, in
+  a device's whole life, during a deliberate "turn the radio on". Nothing else
+  here may call `randomByte()`.
+
+**And the trap that looks like the fix: do not call `StdRNG::begin()`.**
+`randomSeed()` sets `s_useRandomHW = false` and drops Arduino's `random()` to
+`srand()/rand()` (`cores/esp32/WMath.cpp:44-61`). MeshCore's own example seeds
+it that way, so following their example on this chip would weaken the key
+rather than strengthen it.
 
 ### Keeping the same key across reboots, and across the tenth map screen
 

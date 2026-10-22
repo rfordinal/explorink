@@ -169,6 +169,25 @@ class LoraRadio {
   // enter into it, so it is answerable on a desk.
   float frequencyError();
 
+  // One byte of noise off the radio's own front end, for seeding a keypair.
+  //
+  // **The only entropy on this board that does not depend on a radio being
+  // enabled.** `esp_random()` feeds a PRNG that gets hardware entropy only
+  // while Wi-Fi or BT is on (pinned ESP-IDF `hw_random.c`), and the ESP32-S3
+  // declares no independent source -- its `soc_caps.h` has `SOC_RNG_SUPPORTED`
+  // and none of the `SOC_RNG_*_ENTROPY_SOURCE` flags the newer parts carry.
+  // The SX1262 has thermal noise whatever the other radios are doing.
+  //
+  // **Slow and state-changing, so it is for one job only.** RadioLib enables
+  // the LNA and mixer RNG registers, puts the chip in continuous receive,
+  // waits 10 ms for the RSSI to settle and samples its lowest bit eight times
+  // (`SX126x::randomByte()`). About 10 ms a byte, and it leaves the chip in
+  // receive. Use it to create an identity -- once in a device's life -- and
+  // never in a loop.
+  //
+  // Caller holds the chip mutex, like everything else here.
+  uint8_t randomByte();
+
   // Milliseconds this radio would spend on air for a payload of `length`, at
   // the settings it is configured with. RadioLib computes it from the modem
   // parameters; it is not a measurement, but it reproduced our own measured

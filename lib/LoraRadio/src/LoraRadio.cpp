@@ -266,6 +266,11 @@ float LoraRadio::frequencyError() {
   return impl_->radio.getFrequencyError();
 }
 
+uint8_t LoraRadio::randomByte() {
+  if (!ready_) return 0;
+  return impl_->radio.randomByte();
+}
+
 uint16_t LoraRadio::deviceErrors() {
   if (!ready_) return 0;
   return impl_->radio.getDeviceErrors();

@@ -53,6 +53,12 @@ class LoraMeshRadio : public mesh::Radio {
   float getLastRSSI() const override { return radio_->rssi(); }
   float getLastSNR() const override { return radio_->snr(); }
 
+  // One byte of front-end noise, for seeding a keypair. Forwarded rather than
+  // exposing the RadioLib object, which this class exists to keep behind a
+  // thin surface. See LoraRadio::randomByte() for the cost and the state it
+  // leaves the chip in.
+  uint8_t noiseByte() { return radio_->randomByte(); }
+
   // The spreading factor the score table is read at. Set from the same
   // LoraConfig the radio was brought up with, because a score computed at the
   // wrong SF is a wrong collision-avoidance delay, not an error anybody sees.

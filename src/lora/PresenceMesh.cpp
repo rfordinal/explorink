@@ -40,6 +40,39 @@ void scrub(uint8_t* p, size_t n) {
   while (n-- > 0) *v++ = 0;
 }
 
+// The entropy a keypair is made from, and it is a mix rather than a choice.
+//
+// **`esp_random()` alone is not guaranteed here.** The pinned ESP-IDF says the
+// WDEV_RANDOM PRNG is fed two bits of hardware entropy per APB cycle *only
+// while Wi-Fi or BT is enabled* (`hw_random.c`), and the ESP32-S3 declares no
+// independent source -- `soc_caps.h` has `SOC_RNG_SUPPORTED` and none of the
+// `SOC_RNG_*_ENTROPY_SOURCE` flags newer parts carry. A key created from the
+// LoRa screen, where BLE is usually down, would be made from a generator
+// nobody is reseeding. A key is made once in a device's life, so that one
+// path is the one that matters.
+//
+// **XOR, never replace.** The radio's noise is mixed into whatever
+// `esp_random()` gave, so the result is at least as good as the better of the
+// two and this change cannot make anything worse. Same shape as MeshCore's
+// own `RadioNoiseListener`, whose comment says to use it only for creating a
+// LocalIdentity.
+//
+// A radio that is not up yields 0 and the mix degrades to exactly today's
+// behaviour rather than to a buffer of zeroes.
+class SeedRng : public mesh::RNG {
+ public:
+  SeedRng(LoraMeshRadio& radio, mesh::RNG& base) : radio_(&radio), base_(&base) {}
+
+  void random(uint8_t* dest, size_t sz) override {
+    base_->random(dest, sz);
+    for (size_t i = 0; i < sz; ++i) dest[i] ^= radio_->noiseByte();
+  }
+
+ private:
+  LoraMeshRadio* radio_;
+  mesh::RNG* base_;
+};
+
 }  // namespace
 
 bool PresenceMesh::beginIdentity() {
@@ -100,8 +133,16 @@ bool PresenceMesh::beginIdentity() {
   }
 
   // Genuinely absent. This is the only path that ever creates a key, and it
-  // runs once in a device's life.
-  self_id = mesh::LocalIdentity(getRNG());
+  // runs once in a device's life -- which is why it pays about 350 ms for
+  // radio noise (32 seed bytes at roughly 10 ms each) that no other call here
+  // would be allowed to spend. meshStart() brings the chip up before calling
+  // this, so the noise source exists by the time it is wanted.
+  if (radio_ != nullptr) {
+    SeedRng seed(*radio_, *getRNG());
+    self_id = mesh::LocalIdentity(&seed);
+  } else {
+    self_id = mesh::LocalIdentity(getRNG());
+  }
   identityLoaded_ = true;
 
   Storage.mkdir(PresenceMesh::kIdentityDir);

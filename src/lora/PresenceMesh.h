@@ -48,7 +48,7 @@ class PresenceMesh : public mesh::Mesh {
  public:
   PresenceMesh(LoraMeshRadio& radio, mesh::MillisecondClock& ms, mesh::RNG& rng, mesh::RTCClock& rtc,
                mesh::PacketManager& mgr, mesh::MeshTables& tables)
-      : mesh::Mesh(radio, ms, rng, rtc, mgr, tables) {}
+      : mesh::Mesh(radio, ms, rng, rtc, mgr, tables), radio_(&radio) {}
 
   // Loads this device's keypair from the card, or makes one and saves it.
   //
@@ -123,6 +123,8 @@ class PresenceMesh : public mesh::Mesh {
   bool identityLoaded_ = false;
   int16_t lastRxRssiDbm_ = 0;
   PositionHook positionHook_ = nullptr;
+  // Kept for its noise, which seeds the keypair. See beginIdentity().
+  LoraMeshRadio* radio_ = nullptr;
 };
 
 #endif  // ENABLE_LORA_MESH
