@@ -1339,6 +1339,11 @@ LoraPresenceStatus loraPresenceStatus() {
   return out;
 }
 
+LoraPresenceIndicator loraPresenceIndicator() {
+  // Deliberately unlocked -- see the declaration for why.
+  return LoraPresenceIndicator{gMeshRunning, gMeshBeaconSec != 0};
+}
+
 size_t loraPresenceSnapshot(LoraPeer* out, size_t max) {
   LoraLock lock;
   const LoraPeerTable& peers = gMesh.peers();

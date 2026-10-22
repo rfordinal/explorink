@@ -32,6 +32,20 @@ struct LoraPresenceStatus {
 
 LoraPresenceStatus loraPresenceStatus();
 
+// The two bits the map header needs, read **without taking the chip mutex**.
+//
+// The header's structural-change test runs on every loop tick, and
+// loraPresenceStatus() takes the radio's lock -- which would put the UI task
+// behind whatever the radio task is doing, every tick, to decide whether an
+// icon changed. These two are a plain bool and a plain integer written by the
+// loop and UI tasks; reading them torn is not possible on this architecture
+// and would cost one stale repaint if it were.
+struct LoraPresenceIndicator {
+  bool running;
+  bool beaconing;
+};
+LoraPresenceIndicator loraPresenceIndicator();
+
 // Copies at most `max` peers, newest heard first, and returns how many were
 // written. Costs one memcpy of about 1.2 kB at sixteen peers, under the chip
 // mutex -- which is why a screen calls it once per repaint and not once per

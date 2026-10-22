@@ -1733,6 +1733,17 @@ void MapActivity::updateHeaderStatus() {
   // the bars on the panel until something else forced a redraw. Reported from a
   // real session, 2026-08-07.
   bool structural = transferIconVisible != transferIconShown_ || connected != drawnLinkConnected_;
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Structural for the same reason the GNSS glyph is: the radio moves between
+  // its three states a handful of times a ride, and each move is exactly the
+  // moment the rider should be told -- most of all the one into Beaconing,
+  // which is when this device starts putting its position on the air.
+  //
+  // Unguarded, unlike the GNSS line below: the LoRa glyph is drawn on any
+  // session, and Off means nothing is painted, so the recorded state and the
+  // live one always describe the same slot.
+  structural = structural || loraHeaderState() != drawnLoraState_;
+#endif
 #ifdef ENABLE_GNSS_CMD
   // Structural, not rate-capped: the receiver moves between three states a
   // handful of times a ride (start, first fix, sky lost), so there is nothing
@@ -1855,6 +1866,14 @@ Rect MapActivity::compassRect() const {
   const int haloRadius = kCompassGlyphRadius + kCompassHaloMargin;
   return Rect{centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2};
 }
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+MapActivity::LoraHeaderState MapActivity::loraHeaderState() {
+  const LoraPresenceIndicator lora = loraPresenceIndicator();
+  if (!lora.running) return LoraHeaderState::Off;
+  return lora.beaconing ? LoraHeaderState::Beaconing : LoraHeaderState::Listening;
+}
+#endif
 
 Rect MapActivity::headerRect() const {
   // mapContentTop(), not headerBarHeight(): the separator row belongs to the
@@ -2512,21 +2531,27 @@ void MapActivity::drawHeaderStatusStrip() {
   // counter staying zero.
   const bool showTransferIcon = bleInUse_ && autoSyncPending_ > 0;
   if (showTransferIcon) {
-#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-    if (loraStatus.meshRunning) {
-      // Which of the two says what the rider needs to know: the antenna means
-      // the node is listening and telling nobody anything, the tower means a
-      // beacon is armed and this device is putting its name and position on the
-      // air. Those are different consents and they get different glyphs.
-      const freeink::Icon& loraGlyph = loraStatus.beaconSec != 0 ? icon_loraBeaconing : icon_loraListening;
-      renderer.drawMono1bpp(loraGlyph.bits, loraIconLeft, iconTop, loraGlyph.w, loraGlyph.h, true);
-    }
-#endif
-
     renderer.drawMono1bpp(icon_transferBle.bits, transferIconLeft, iconTop, icon_transferBle.w, icon_transferBle.h,
                           true);
   }
   transferIconShown_ = showTransferIcon;
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // **Its own block, not inside the transfer icon's.** It lived in there for
+  // one build and drew only when a BLE tile transfer happened to be running,
+  // which is almost never -- a screenshot caught it and the compiler could
+  // not. The two icons share a row and nothing else.
+  //
+  // Which of the two glyphs says what the rider needs to know: the antenna
+  // means the node is listening and telling nobody anything, the tower means a
+  // beacon is armed and this device is putting its name and position on the
+  // air. Those are different consents and they get different pictures.
+  if (loraStatus.meshRunning) {
+    const freeink::Icon& loraGlyph = loraStatus.beaconSec != 0 ? icon_loraBeaconing : icon_loraListening;
+    renderer.drawMono1bpp(loraGlyph.bits, loraIconLeft, iconTop, loraGlyph.w, loraGlyph.h, true);
+  }
+  drawnLoraState_ = loraHeaderState();
+#endif
 
 #ifdef ENABLE_GNSS_CMD
   // The receiver's state, whenever the receiver is what this session uses.

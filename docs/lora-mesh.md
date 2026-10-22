@@ -286,6 +286,31 @@ Adding the link turned the chain in `headerStatusRect()` into a running
 cursor. Two optional links would otherwise have needed four spellings of the
 same arithmetic, and the `#else` the GNSS flag already had is gone with it.
 
+**The icon has repaint tracking, and it needed it.** `drawnLoraState_` joins
+`drawnGnssState_` and `transferIconShown_` in the header's structural-change
+test. Without it, arming the beacon left the antenna glyph on the panel for
+25 s with no press, and would have left it until something unrelated forced a
+redraw -- measured 2026-10-22. The state is read through
+`loraPresenceIndicator()`, which does **not** take the chip mutex: that test
+runs every loop tick, and putting the UI task behind the radio task once a
+tick to decide whether an icon changed is a bad trade for two plain values.
+
+**Verified on the panel, 2026-10-22**, build `22a9722c` plus the two fixes
+below: antenna while listening, tower once `BEACON 70` was set, antenna again
+when it went back to 0 -- each transition appearing on its own, with no button
+pressed.
+
+Two defects were found doing it, and neither was visible to the compiler:
+
+- the glyph was first written **inside `if (showTransferIcon)`**, so it drew
+  only when a BLE tile transfer happened to be running -- almost never;
+- and then it drew at the right moment but never repainted, which is the
+  tracking above.
+
+A header slot is three separate things -- a reserved rect, a draw, and a
+reason to repaint -- and getting two of them right looks exactly like getting
+all three right until somebody photographs the panel.
+
 ## When a position goes out
 
 One mechanism, three states, all of them inside the gate above. **The cadence

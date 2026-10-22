@@ -1617,6 +1617,18 @@ class MapActivity final : public Activity,
   // what was last *drawn*, so updateHeaderStatus() can tell a real change from
   // a poll. All of them are written by drawHeaderStatusStrip(), on every path
   // that draws the row, including full frames.
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // What the LoRa slot last painted, for the same reason drawnGnssState_ and
+  // transferIconShown_ exist: the header repaints on change, so a state
+  // nobody records is a state nobody notices.
+  //
+  // **Measured 2026-10-22**: without this, arming the beacon left the antenna
+  // glyph on the panel for 25 s with no press, and would have left it until
+  // something unrelated forced a redraw.
+  enum class LoraHeaderState : uint8_t { Off, Listening, Beaconing };
+  LoraHeaderState drawnLoraState_ = LoraHeaderState::Off;
+  static LoraHeaderState loraHeaderState();
+#endif
   bool transferIconShown_ = false;
   bool drawnLinkConnected_ = false;
   // -1 means "never drawn", which is not the same as 0 bars.
