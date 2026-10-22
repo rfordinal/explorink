@@ -696,8 +696,43 @@ initials. The periodic check created that: before it the list only changed
 when the rider pressed something, so a row index was as good as an identity.
 The cursor is anchored to the item now (`51f7c62b`).
 
-The position ingest is **not** exercised here: it needs an advert carrying a
-coordinate, and neither board has a fix indoors.
+### The position ingest, end to end
+
+**Done 2026-10-22, and only because the boards sit a metre from a window.**
+The receiver on one of them reached a 3D fix in 272 ms from warm ephemeris
+(`q=1 used=6 inview=12`), which is what made the last untested link testable
+at a desk.
+
+The chain, each step observed:
+
+1. `LORA_STATE` reported `fix=1`, and the advert that followed carried a
+   coordinate instead of a bare nameplate.
+2. The far board listed the sender with that coordinate in the value column of
+   its node list -- the position reached the panel.
+3. Adding the sender there wrote the roster entry
+   `lora-3e8f8e75a6b20bd0`, the eight-byte prefix form.
+4. The next advert went through `teamPosition()`, and the far board's map
+   console answered:
+
+   ```
+   INFO team_total=1
+   INFO team_RFA=lora-3e8f8e75a6b20bd0,on,<lat>,<lon>,<utc>,lora
+   ```
+
+   Stored at 1e7, dated, and tagged `lora` -- `TeamFixSource::Lora`, the value
+   the group layer reserved for this transport before the radio existed.
+
+**What this does not cover** is the trigger logic around it. The advert above
+was forced by hand; the 100 m movement rule and the cap expiring still need a
+rider who moves and an hour that passes.
+
+**And a note on what a test like this leaves behind.** Running it put a real
+position on the air from a device with a beacon armed, on MeshCore's public
+channel where strangers hundreds of kilometres away are listening, and wrote
+that position into the other board's black box on its card. Both were turned
+off afterwards. Worth saying out loud because the feature works: a position
+test is a position disclosure, and the beacon's default-off is not a
+formality.
 
 ### What the bench cannot answer
 
