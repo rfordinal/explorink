@@ -674,6 +674,31 @@ Home, three times: `hold=0x1` each time, and `sent_ago` grew 2073 -> 2098 ->
 and `adv=1` after. The schedule survived three radio stop/starts, which is
 the property `meshStart()` deliberately does not reset.
 
+### The group rows, driven through the panel
+
+Walked end to end on 2026-10-22 with `CMD:BUTTON` and `CMD:SCREENSHOT`, build
+`51f7c62b`, no hands:
+
+- board B announced itself and board A listed it as `RF-bravo`,
+  `-38 dBm  SNR 11  35s ago  x2` -- the coarse age format in place of the old
+  raw seconds;
+- Select on that row opened the keyboard headed *Short name on the map*,
+  pre-filled with **RFB**, derived from `RF-bravo` and editable;
+- accepting marked the row `[RFB] RF-bravo`;
+- **a reboot of A proved the write**: the heard table was empty and the member
+  came back in the third section, value column `Not on LoRa`.
+
+**And the walk found a defect of its own, which is why it was worth doing.** A
+stranger was heard while the screen was open, the heard section grew by one
+row, and a Select aimed at the member opened the *add* dialog for the node
+that had just arrived -- keyboard up, pre-filled with somebody else's
+initials. The periodic check created that: before it the list only changed
+when the rider pressed something, so a row index was as good as an identity.
+The cursor is anchored to the item now (`51f7c62b`).
+
+The position ingest is **not** exercised here: it needs an advert carrying a
+coordinate, and neither board has a fix indoors.
+
 ### What the bench cannot answer
 
 Honest list, because the four above are easy to read as "the send rules are
