@@ -119,6 +119,32 @@ class LoraPeersActivity final : public Activity {
   uint32_t drawnSignature_ = 0;
   static constexpr uint32_t kCheckIntervalMs = 20000;
 
+  // What the cursor is on, as an identity rather than a row number.
+  //
+  // **Found on hardware, 2026-10-22, and it is a defect the periodic check
+  // created.** A stranger was heard while the screen was open, the heard
+  // section grew by a row, and a Select aimed at a group member landed on the
+  // new node instead -- offering to *add* somebody who had just walked into
+  // range. On a screen where one button both joins and removes people, a row
+  // that moves under the cursor is not a cosmetic problem.
+  //
+  // So the selection is anchored to the thing selected: eight key bytes for a
+  // heard node, the acronym for a member, the row number only for the fixed
+  // controls. refresh() puts the cursor back on the same item wherever it
+  // moved to, and falls back to the first row when it is gone entirely.
+  struct Anchor {
+    RowKind kind = RowKind::Control;
+    int controlRow = 0;
+    uint8_t key[8] = {};
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+    char acr[kTeamAcrBytes] = {};
+#endif
+  };
+  Anchor anchor_;
+
+  void captureAnchor();
+  void restoreAnchor();
+
   uint32_t listSignature() const;
 
   RowKind rowKind(int index) const;

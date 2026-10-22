@@ -74,6 +74,7 @@ void LoraPeersActivity::onEnter() {
 #endif
 
   selectedIndex = 0;
+  anchor_ = Anchor{};
   lastCheckMs_ = millis();
   refresh();
   drawnSignature_ = listSignature();
@@ -138,7 +139,65 @@ void LoraPeersActivity::refresh() {
   }
 #endif
 
-  if (selectedIndex >= itemCount()) selectedIndex = 0;
+  restoreAnchor();
+}
+
+void LoraPeersActivity::captureAnchor() {
+  anchor_ = Anchor{};
+  anchor_.kind = rowKind(selectedIndex);
+  switch (anchor_.kind) {
+    case RowKind::Control:
+      anchor_.controlRow = selectedIndex;
+      break;
+    case RowKind::HeardPeer:
+      memcpy(anchor_.key, peers_[static_cast<size_t>(selectedIndex - kControlRowCount)].pubKey, sizeof(anchor_.key));
+      break;
+    case RowKind::RosterOnly:
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+      snprintf(anchor_.acr, sizeof(anchor_.acr), "%s",
+               MapTeam::getInstance().teamMemberAt(rosterOnly_[static_cast<size_t>(selectedIndex - rosterBase())]).acr);
+#endif
+      break;
+  }
+}
+
+void LoraPeersActivity::restoreAnchor() {
+  switch (anchor_.kind) {
+    case RowKind::Control:
+      selectedIndex = anchor_.controlRow;
+      return;
+
+    case RowKind::HeardPeer:
+      for (size_t i = 0; i < peerCount_; ++i) {
+        if (memcmp(peers_[i].pubKey, anchor_.key, sizeof(anchor_.key)) == 0) {
+          selectedIndex = kControlRowCount + static_cast<int>(i);
+          return;
+        }
+      }
+      // Adding a node does not move it out of the heard section -- it stays
+      // where it is and gains an acronym -- so a miss here means it genuinely
+      // stopped being heard, and the fallback below is the honest answer.
+      break;
+
+    case RowKind::RosterOnly:
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+      for (size_t i = 0; i < rosterOnlyCount_; ++i) {
+        const TeamMember m = MapTeam::getInstance().teamMemberAt(rosterOnly_[i]);
+        if (strncmp(m.acr, anchor_.acr, sizeof(anchor_.acr)) == 0) {
+          selectedIndex = rosterBase() + static_cast<int>(i);
+          return;
+        }
+      }
+#endif
+      break;
+  }
+
+  // The anchored item is gone -- removed, or stopped being heard and is not a
+  // member either. The cursor goes somewhere harmless rather than to whatever
+  // slid into that row number.
+  selectedIndex = 0;
+  anchor_.kind = RowKind::Control;
+  anchor_.controlRow = 0;
 }
 
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
@@ -304,10 +363,12 @@ void LoraPeersActivity::loop() {
   const int count = itemCount();
   buttonNavigator.onNext([this, count] {
     selectedIndex = ButtonNavigator::nextIndex(selectedIndex, count);
+    captureAnchor();
     requestUpdate();
   });
   buttonNavigator.onPrevious([this, count] {
     selectedIndex = ButtonNavigator::previousIndex(selectedIndex, count);
+    captureAnchor();
     requestUpdate();
   });
 }
