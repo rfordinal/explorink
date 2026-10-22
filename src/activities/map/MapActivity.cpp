@@ -1,6 +1,7 @@
 #include "MapActivity.h"
 
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+#include "components/icons/map_header_icons.h"
 #include "lora/LoraPresence.h"
 #endif
 
@@ -344,6 +345,19 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 // Always drawn, unlike the transfer icon next to it: "off" is one of the three
 // states, not the absence of the icon. A rider who cannot tell "no receiver
 // running" from "no icon yet" learns nothing from the row.
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// The LoRa radio, and it is two glyphs rather than one on purpose: an antenna
+// while the node only listens, a tower with waves leaving it once the beacon
+// is armed. ../../../docs/lora.md's security section asks that the rider can
+// see when they are *transmitting*, and "a radio is on" does not answer that.
+//
+// Drawn only while the radio is up, unlike the GNSS glyph next to it. The
+// radio is off on most screens and in most sessions, and a permanent "LoRa
+// off" icon would spend a slot of the place name's width to say nothing.
+constexpr int kHeaderLoraIconSize = kHeaderIconHeight;
+constexpr int kHeaderLoraIconToGnssGap = 6;
+#endif
+
 constexpr int kHeaderGnssIconSize = kHeaderIconHeight;
 constexpr int kHeaderGnssIconToBtGap = 6;
 // The suffix the clock carries on a GNSS session while it really is UTC, drawn
@@ -1989,16 +2003,24 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+  // The right-to-left chain, as a running cursor rather than one expression
+  // per build flag. Everything left of a link (the transfer icon, the clock,
+  // and the place name that truncates against the clock) shifts by itself,
+  // which is why these are links and not hardcoded x values -- and a cursor
+  // because two optional links would otherwise need four spellings of the
+  // same arithmetic.
+  //
+  // Reserved unconditionally, both of them: this rect is the widest layout, so
+  // the backing drawn from it clears the slots a narrower row leaves empty.
+  // See the comment at the top of this function.
+  int chainLeft = logoLeft;
 #ifdef ENABLE_GNSS_CMD
-  // One more link in the right-to-left chain, between the Bluetooth logo and
-  // the transfer icon. Everything left of it (the transfer icon, the clock, and
-  // the place name that truncates against the clock) shifts left by itself,
-  // which is why this is a link and not a hardcoded x.
-  const int gnssIconLeft = logoLeft - kHeaderGnssIconToBtGap - kHeaderGnssIconSize;
-  const int transferIconLeft = gnssIconLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
-#else
-  const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+  chainLeft -= kHeaderGnssIconToBtGap + kHeaderGnssIconSize;
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  chainLeft -= kHeaderLoraIconToGnssGap + kHeaderLoraIconSize;
+#endif
+  const int transferIconLeft = chainLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
 #ifdef ENABLE_GNSS_CMD
   // The "UTC" label is part of the widest layout too, so it is reserved here
   // unconditionally -- including on BLE sessions, which never draw it.
@@ -2374,6 +2396,20 @@ void MapActivity::drawHeaderStatusStrip() {
     clockShowsUtc_ = SETTINGS.clockUtcOffsetQ == 48;
   }
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // The LoRa glyph takes its slot only while the radio is actually up, which
+  // on this screen means the map is holding it (src/lora/LoraPresence.h). An
+  // icon for a radio nobody started would invite exactly the wrong reading --
+  // "the link is merely down" -- which is the argument the transfer icon above
+  // already makes for itself.
+  const LoraPresenceStatus loraStatus = loraPresenceStatus();
+  int loraIconLeft = 0;
+  if (loraStatus.meshRunning) {
+    loraIconLeft = chainRight - kHeaderLoraIconSize;
+    chainRight = loraIconLeft - kHeaderLoraIconToGnssGap;
+  }
+#endif
+
   // The transfer icon's slot leaves the chain with the icon. Leaving it reserved
   // on a GNSS session is what put 14 px of nothing between the clock and the
   // UTC label, so the label read as belonging to the glyph on its other side
@@ -2476,6 +2512,17 @@ void MapActivity::drawHeaderStatusStrip() {
   // counter staying zero.
   const bool showTransferIcon = bleInUse_ && autoSyncPending_ > 0;
   if (showTransferIcon) {
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+    if (loraStatus.meshRunning) {
+      // Which of the two says what the rider needs to know: the antenna means
+      // the node is listening and telling nobody anything, the tower means a
+      // beacon is armed and this device is putting its name and position on the
+      // air. Those are different consents and they get different glyphs.
+      const freeink::Icon& loraGlyph = loraStatus.beaconSec != 0 ? icon_loraBeaconing : icon_loraListening;
+      renderer.drawMono1bpp(loraGlyph.bits, loraIconLeft, iconTop, loraGlyph.w, loraGlyph.h, true);
+    }
+#endif
+
     renderer.drawMono1bpp(icon_transferBle.bits, transferIconLeft, iconTop, icon_transferBle.w, icon_transferBle.h,
                           true);
   }
@@ -4288,6 +4335,19 @@ void MapActivity::openMapMenu() {
   options.push_back(tr(STR_REFRESH));
   values.emplace_back();
   const int debugInfoIdx = static_cast<int>(options.size());
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // The radio, flipped from the ride rather than from a bench screen. It is
+  // the same CrossPointSettings field the LoRa node list and the Settings
+  // screen write, so the three can never disagree -- the pattern the rotation
+  // and zoom rows above already follow.
+  //
+  // The value says what the radio is doing, not what the switch is set to:
+  // with the map open the two are the same thing, because this screen is one
+  // of the two that hold the radio up (src/lora/LoraPresence.h).
+  const int loraIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_LORA));
+  values.push_back(I18N.get(loraPresenceStatus().meshRunning ? StrId::STR_LORA_RADIO_ON : StrId::STR_LORA_RADIO_OFF));
+#endif
   options.push_back(tr(STR_MAP_DEBUG_INFO));
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
@@ -4295,6 +4355,9 @@ void MapActivity::openMapMenu() {
       [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, pinsIdx,
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
        teamIdx,
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+       loraIdx,
 #endif
        nearbyIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx, debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
@@ -4312,6 +4375,14 @@ void MapActivity::openMapMenu() {
         if (!keepsBackdrop) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+        } else if (idx == loraIdx) {
+          // Takes effect now, not on the next screen: the map is holding the
+          // radio, so the setter brings it up or parks it immediately. The
+          // header gains or loses its glyph on the repaint that follows.
+          bool persisted = false;
+          loraPresenceSetMesh(!loraPresenceStatus().meshRunning, persisted);
+#endif
         } else if (idx == pinsIdx) {
           // Recorded, not opened: this callback is running *inside* the popup's
           // own handleInput(), and show()ing from here reassigns the

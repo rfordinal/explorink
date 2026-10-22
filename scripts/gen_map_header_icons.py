@@ -40,6 +40,12 @@ LUCIDE_ICONS = [
     ("gnssOff", "locate-off", ROW_SIZE),
     ("gnssSearching", "locate", ROW_SIZE),
     ("gnssFixed", "locate-fixed", ROW_SIZE),
+    # The LoRa radio, and it is two glyphs rather than one because
+    # ../../docs/lora.md's security section asks that the rider can see when
+    # they are *transmitting*, not merely that a radio is on. An antenna
+    # receives; a tower with waves leaving it does not.
+    ("loraListening", "antenna", ROW_SIZE),
+    ("loraBeaconing", "radio-tower", ROW_SIZE),
 ]
 
 

@@ -241,6 +241,51 @@ Two consequences a reader should expect rather than report as bugs:
   same window. On a ride that is the normal state; sitting at a table with the
   device on Home, both are silent, by design.
 
+## Three places switch the radio, and they are one field
+
+Added 2026-10-22 on the maintainer's ask: the LoRa node list was the only way
+to turn the radio on, and it is a bench screen nobody opens mid-ride.
+
+| where | what it is for |
+|---|---|
+| Settings > Map > **LoRa radio** | the setting, set once and forgotten |
+| the map menu > **LoRa radio** | flipped from the ride, without leaving the map |
+| the LoRa node list > **Radio** | the bench, next to the things it affects |
+
+All three write `CrossPointSettings::loraMeshOn` and nothing else, which is
+the pattern the rotation, heading and zoom rows already follow -- three
+switches that disagree about one radio would be worse than one switch in an
+awkward place.
+
+The map menu's row takes effect immediately rather than on the next screen,
+because the map is one of the two screens that hold the radio up: flipping it
+there starts or parks the chip on the spot.
+
+### The header says which, and the difference matters
+
+Two glyphs, both Lucide, in the header's right-to-left chain between the GNSS
+icon and the transfer icon:
+
+- **antenna** -- the node is listening and telling nobody anything;
+- **radio tower** -- a beacon is armed, so this device is putting its name and
+  position on the air.
+
+`docs/lora.md`'s security section asks that the rider can see when they are
+*transmitting*, and a single "radio on" icon does not answer that. Those are
+two different consents, so they get two different pictures.
+
+**The glyph is drawn only while the radio is actually up**, unlike the GNSS
+icon beside it which always shows one of three states. The radio is off on
+most screens and in most sessions, and a permanent "LoRa off" icon would
+spend a slot of the place name's width to say nothing. The *slot* is still
+reserved unconditionally in `headerStatusRect()` -- that rect is the widest
+layout, so the backing drawn from it clears whatever a narrower row leaves
+empty.
+
+Adding the link turned the chain in `headerStatusRect()` into a running
+cursor. Two optional links would otherwise have needed four spellings of the
+same arithmetic, and the `#else` the GNSS flag already had is gone with it.
+
 ## When a position goes out
 
 One mechanism, three states, all of them inside the gate above. **The cadence

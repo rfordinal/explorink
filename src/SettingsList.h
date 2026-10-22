@@ -352,9 +352,17 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_MAP_TEAM_LOG_SELF, &CrossPointSettings::mapTeamLogSelf, "mapTeamLogSelf",
                             StrId::STR_CAT_MAP),
 #endif
-        // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
-        // something a rider needs. Same field the map's own menu toggles live
-        // (MapActivity::openMapMenu()).
+    // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
+    // something a rider needs. Same field the map's own menu toggles live
+    // (MapActivity::openMapMenu()).
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+        // The LoRa radio. Off out of the box: a listening SX1262 costs 5.4 mA
+        // continuously and drags the shared GNSS rail up with it
+        // (CrossPointSettings::loraMeshOn). This row only says the radio *may*
+        // be used -- it runs while the map or the LoRa node list is open and
+        // at no other time.
+        SettingInfo::Toggle(StrId::STR_MAP_LORA, &CrossPointSettings::loraMeshOn, "loraMeshOn", StrId::STR_CAT_MAP),
+#endif
         SettingInfo::Toggle(StrId::STR_MAP_DEBUG_INFO, &CrossPointSettings::mapDebugInfo, "mapDebugInfo",
                             StrId::STR_CAT_MAP),
         // Manual (default): zoom is the button ladder, unchanged. Auto
