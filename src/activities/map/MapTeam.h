@@ -32,6 +32,27 @@
 // fixed by kTeamMaxMembers and cannot grow at runtime.
 class MapTeam final : public IMapTeamSource {
  public:
+  // **The roster outlives the map screen, since 2026-10-22.**
+  //
+  // It used to be a member of MapActivity, which heap-allocates and deletes
+  // every activity, so the roster was loaded and the black box replayed on
+  // every single map entry -- and no other screen could reach it at all. The
+  // LoRa node list needs to add and remove members
+  // (../../../docs/lora-mesh.md), and two owners of one roster file is how a
+  // group ends up with two answers about who is in it.
+  //
+  // Same singleton shape as SETTINGS, Storage and GUI, because this codebase
+  // already has one and a third mechanism would be a third thing to learn.
+  //
+  // Costs about 950 bytes of DRAM permanently rather than only while the map
+  // is open -- twelve roster slots and twelve fixes, no heap. What it buys
+  // beyond reachability: a member's last known position survives leaving the
+  // map, which is what somebody looking for that person actually wants.
+  static MapTeam& getInstance() {
+    static MapTeam instance;
+    return instance;
+  }
+
   // Loads the roster, rotates the black box and rebuilds every member's last
   // known position from it. False when the card could not be read -- the roster
   // is then empty, which refuses every incoming position rather than letting

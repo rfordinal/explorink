@@ -931,7 +931,9 @@ class MapActivity final : public Activity,
   void teamRowText(size_t slot, char* buf, size_t bufLen) const;
   TeamVisibility teamSlotVisibility(size_t slot) const;
 
-  MapTeam team_;
+  // A reference, not an instance: the roster is shared with the LoRa node list
+  // now (MapTeam::getInstance()). Every `team_.` call below is unchanged.
+  MapTeam& team_ = MapTeam::getInstance();
 #endif
 
   enum class NearbyPopup : uint8_t { None, Menu, Category, Detail };
