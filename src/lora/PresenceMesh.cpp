@@ -178,6 +178,13 @@ void PresenceMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
   const bool isNew = peers_.heard(id.pub_key, parser.hasName() ? parser.getName() : nullptr, parser.hasLatLon(),
                                   parser.getIntLat(), parser.getIntLon(), timestamp, lastRxRssiDbm_, snrDb, millis());
 
+  // Only a position goes on: an advert with no coordinate says the sender is
+  // alive, which the table above already recorded, and there is nothing for a
+  // marker to be placed at.
+  if (parser.hasLatLon() && positionHook_ != nullptr) {
+    positionHook_(id.pub_key, parser.getIntLat(), parser.getIntLon(), timestamp);
+  }
+
   if (isNew) {
     LOG_INF(kLog, "new node %02x%02x%02x%02x '%s' rssi=%d snr=%d", id.pub_key[0], id.pub_key[1], id.pub_key[2],
             id.pub_key[3], parser.hasName() ? parser.getName() : "", static_cast<int>(lastRxRssiDbm_),

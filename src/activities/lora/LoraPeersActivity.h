@@ -36,9 +36,19 @@
 //   1. the four radio controls
 //   2. nodes heard on the air, each marked with its acronym when it is already
 //      a member
-//   3. members nobody is hearing -- the section exists so somebody who left
-//      the group can still be removed, which is impossible from a list of
-//      only what the antenna can reach
+//   3. members this radio is not hearing -- the section exists so somebody
+//      who left the group can still be removed, which is impossible from a
+//      list of only what the antenna can reach
+//
+// **Section three says "not on LoRa", not "not heard", and the distinction is
+// the roster's whole design.** `MapTeam` is transport-neutral: a position
+// reaches it from this radio, from a phone relay over BLE, or from the devel
+// console, and a member carries one id per transport that has ever named them
+// (docs/team-markers.md, "One person can be heard on more than one radio").
+// This screen can only see the LoRa half, so it must not claim the other
+// halves are silent. Answering "heard on anything" means asking the team layer
+// for a last-position age rather than this radio's table, and that is a
+// different question than this screen asks today.
 //
 // Select does the one thing that fits the row: a heard stranger is added (the
 // acronym is guessed and then offered for editing), and a member is removed

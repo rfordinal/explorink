@@ -41,6 +41,10 @@
 #ifdef ENABLE_LORA_MESH
 #include "activities/map/PinGeo.h"
 #include "lora/LoraPresence.h"
+#include "lora/LoraTeamId.h"
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#include "activities/map/MapTeam.h"
+#endif
 #include "lora/PresenceMesh.h"
 #endif
 
@@ -1171,6 +1175,39 @@ static int32_t gMeshLastSentLatE7 = 0;
 static int32_t gMeshLastSentLonE7 = 0;
 static bool gMeshLastSentHadFix = false;
 
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+// One heard position on its way to the group layer.
+//
+// **It goes through a queue because of which task is which.** onAdvertRecv()
+// runs on the radio task, and MapTeam::teamPosition() writes a black box row
+// to the SD card and reads a roster the UI task edits. A card write inside the
+// radio service loop costs packets -- an SX126x holds exactly one -- and
+// touching the roster from two tasks is a race. So the radio task copies four
+// numbers and returns; loop() does the rest, which is the same split the
+// console's receive path already uses.
+struct MeshPositionEvent {
+  uint8_t pubKey[32];
+  int32_t latE6;
+  int32_t lonE6;
+  uint32_t advertUtc;
+};
+static QueueHandle_t gMeshPosQueue = nullptr;
+static uint32_t gMeshPosDrops = 0;
+
+// Runs on the radio task. Copies and leaves.
+static void meshPositionHook(const uint8_t pubKey[32], int32_t latE6, int32_t lonE6, uint32_t advertUtc) {
+  if (gMeshPosQueue == nullptr) return;
+  MeshPositionEvent ev;
+  memcpy(ev.pubKey, pubKey, sizeof(ev.pubKey));
+  ev.latE6 = latE6;
+  ev.lonE6 = lonE6;
+  ev.advertUtc = advertUtc;
+  // Never blocks: a full queue costs one position, and a radio task waiting
+  // here would cost packets, which is the thing the queue exists to avoid.
+  if (xQueueSend(gMeshPosQueue, &ev, 0) != pdTRUE) ++gMeshPosDrops;
+}
+#endif  // ENABLE_TEAM_MARKERS
+
 // Who currently wants the radio up. The radio runs while this is non-zero and
 // is parked the moment it reaches zero.
 //
@@ -1271,6 +1308,11 @@ static bool meshStart(bool& persisted) {
   // It is not required for the mesh to work; it is required for the timestamp
   // to mean anything.
   if (gnss.fix().utc != 0) gMeshRtc.setCurrentTime(gnss.fix().utc);
+
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  if (gMeshPosQueue == nullptr) gMeshPosQueue = xQueueCreate(8, sizeof(MeshPositionEvent));
+  gMesh.setPositionHook(gMeshPosQueue != nullptr ? &meshPositionHook : nullptr);
+#endif
 
   gMeshBeaconSec = SETTINGS.loraBeaconSec;
 
@@ -1664,6 +1706,41 @@ static void loraDrain() {
   // sends comes from the GNSS receiver, which is polled from loop() -- and
   // because an advert is queued, not transmitted, so this costs no radio time.
   meshBeaconTick();
+
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // Heard positions into the group layer. This is the seam docs/lora.md
+  // promised before any radio existed: a LoRa frame, a BLE relay and a console
+  // line all arrive at teamPosition(), and nothing above it knows which spoke.
+  if (gMeshPosQueue != nullptr) {
+    MeshPositionEvent ev;
+    while (xQueueReceive(gMeshPosQueue, &ev, 0) == pdTRUE) {
+      char id[kLoraTeamIdBytes];
+      loraTeamId(ev.pubKey, id, sizeof(id));
+
+      // **Membership is checked here, on this task, and never on the radio
+      // task.** It also keeps strangersRefused() meaningful: on a public
+      // channel most adverts are strangers, and counting every passing node
+      // from Graz would drown the number that says somebody is talking *at*
+      // this group.
+      MapTeam& team = MapTeam::getInstance();
+      if (team.roster().findId(id) >= TeamRoster::kSlotCount) continue;
+
+      TeamFix fix;
+      fix.present = true;
+      // MeshCore's advert carries 1e6 degrees and TeamFix stores 1e7, so the
+      // last digit is always zero. That is a unit conversion and not extra
+      // precision -- about 11 cm either way, which is far finer than anything
+      // this feature should be read as promising.
+      fix.latE7 = static_cast<int32_t>(static_cast<int64_t>(ev.latE6) * 10);
+      fix.lonE7 = static_cast<int32_t>(static_cast<int64_t>(ev.lonE6) * 10);
+      fix.utc = ev.advertUtc;  // their clock, believed about nothing
+      fix.recvUtc = MapTeam::utcNowOrZero();
+      fix.recvUptimeMs = millis();
+      fix.source = TeamFixSource::Lora;
+      team.teamPosition(id, fix);
+    }
+  }
+#endif
 #endif
 
   // From gLoraPingDoneMs, not gLoraPingSentMs: the wait starts when our packet

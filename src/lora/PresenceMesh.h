@@ -75,6 +75,20 @@ class PresenceMesh : public mesh::Mesh {
   // Returns false when the packet pool is empty.
   bool sendSelfAdvert(const char* name, bool hasLoc, int32_t latE6, int32_t lonE6);
 
+  // Where a heard position goes next, when somebody wants one.
+  //
+  // **A plain function pointer, and the hook is the whole point.** This class
+  // must not know the group layer exists: `MapTeam` lives in the map's own
+  // directory, writes the black box to the SD card and is edited by the UI
+  // task, and none of that belongs inside a radio receive path. main.cpp owns
+  // both and joins them.
+  //
+  // **Called on the radio task**, so the hook may not touch the card, the
+  // roster or anything the UI writes. The one in main.cpp queues and returns;
+  // the work happens on loop().
+  using PositionHook = void (*)(const uint8_t pubKey[32], int32_t latE6, int32_t lonE6, uint32_t advertUtc);
+  void setPositionHook(PositionHook hook) { positionHook_ = hook; }
+
   const LoraPeerTable& peers() const { return peers_; }
   LoraPeerTable& peers() { return peers_; }
 
@@ -108,6 +122,7 @@ class PresenceMesh : public mesh::Mesh {
   // The key is read from the card once per boot and kept. See beginIdentity().
   bool identityLoaded_ = false;
   int16_t lastRxRssiDbm_ = 0;
+  PositionHook positionHook_ = nullptr;
 };
 
 #endif  // ENABLE_LORA_MESH

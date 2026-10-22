@@ -39,12 +39,38 @@ is trying to hear.
 Nothing on the node list reaches the map. Making a heard node a group member is
 `team add <acr> <key>` with its key, typed on purpose.
 
-**The seam between the two already exists and is not wired yet.**
+### A heard position reaches the map, since 2026-10-22
+
 `MapTeam::teamPosition()` is the transport-independent ingest that a LoRa frame
 was always going to arrive through (`team-markers.md`, "The layer does not know
-which radio spoke"). Feeding it from `onAdvertRecv()` for roster members is the
-next pass, not this one: it needs the roster to hold MeshCore keys as
-identifiers, and it needs a hardware pass behind it first.
+which radio spoke"), and it is wired now: an advert that carries a coordinate
+and belongs to a roster member moves that member's marker.
+
+**It is wired through a queue, and which task does what is the reason.**
+`onAdvertRecv()` runs on the radio task; `teamPosition()` writes a black box
+row to the SD card and reads a roster the UI task edits. A card write inside
+the radio service loop costs packets -- an SX126x holds exactly one -- and
+touching the roster from two tasks is a race. So the radio task copies four
+numbers into a queue and returns, and `loop()` does the roster lookup, builds
+the `TeamFix` and calls the ingest. Same split the console's receive path
+already uses.
+
+**Membership is checked on the loop task, before the ingest is called.** Not
+only to keep roster reads on one task: on a public channel most adverts are
+strangers, and letting `teamPosition()` refuse each one would bury
+`strangersRefused()` -- the number that is supposed to say somebody is talking
+*at* this group -- under every passing node from Graz.
+
+The advert carries 1e6 degrees and `TeamFix` stores 1e7, so the last digit is
+always zero. That is a unit conversion, not precision.
+
+**The layer stays transport-neutral and this must not erode it.** A position
+reaches `MapTeam` from this radio, from a phone relay over BLE, or from the
+console, and a member holds one id per transport that has ever named them --
+which is why the id written here is `lora-`-prefixed rather than bare. The one
+place that slipped and was corrected the same day: the node list's third
+section says **"not on LoRa"** and not "not heard", because this screen can
+only see one transport and must not report the others as silent.
 
 ## Why `mesh::Mesh` and not `BaseChatMesh`
 
