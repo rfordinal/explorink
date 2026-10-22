@@ -76,6 +76,20 @@ class LoraPeersActivity final : public Activity {
   StrId lastError_ = StrId::STR_LORA_PEERS;
   bool hasError_ = false;
 
+  // When the list was last re-read, and a fingerprint of what it drew.
+  //
+  // **The first version had no timer at all and that was the defect**: the one
+  // screen whose job is "who is out there" could not show somebody arriving
+  // while the rider watched it. The stated reason -- an e-ink screen must not
+  // repaint every few seconds -- was right about the cost and wrong about the
+  // answer, which is a slow check that repaints only when the drawn text would
+  // actually differ. Same shape the map already uses for team marker ages.
+  uint32_t lastCheckMs_ = 0;
+  uint32_t drawnSignature_ = 0;
+  static constexpr uint32_t kCheckIntervalMs = 20000;
+
+  uint32_t listSignature() const;
+
   int itemCount() const { return kControlRowCount + static_cast<int>(peerCount_); }
   void refresh();
   void activate(int index);

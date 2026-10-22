@@ -31,6 +31,27 @@ uint32_t nextBeaconChoice(uint32_t current) {
   return 0;
 }
 
+// How old, in the words the row actually prints.
+//
+// **Coarse on purpose, and it is what makes the periodic check affordable.**
+// A row that prints raw seconds changes every second, so a repaint-when-it
+// changed rule would repaint every tick. Seconds while a node is fresh --
+// which is when the rider wants to watch it -- then whole minutes, then fives,
+// the same quantisation the map applies to team marker ages and for the same
+// reason. It also fixes a readability complaint of its own: `4009s ago` is an
+// hour and nobody reads it as one.
+void formatAge(uint32_t seconds, char* buf, size_t bufLen) {
+  if (seconds < 60) {
+    snprintf(buf, bufLen, "%lus", static_cast<unsigned long>(seconds));
+  } else if (seconds < 600) {
+    snprintf(buf, bufLen, "%lum", static_cast<unsigned long>(seconds / 60));
+  } else if (seconds < 3600) {
+    snprintf(buf, bufLen, "%lum", static_cast<unsigned long>((seconds / 300) * 5));
+  } else {
+    snprintf(buf, bufLen, "%luh", static_cast<unsigned long>(seconds / 3600));
+  }
+}
+
 }  // namespace
 
 void LoraPeersActivity::onEnter() {
@@ -42,7 +63,9 @@ void LoraPeersActivity::onEnter() {
   loraPresenceHoldRadio(true);
 
   selectedIndex = 0;
+  lastCheckMs_ = millis();
   refresh();
+  drawnSignature_ = listSignature();
   requestUpdate();
 }
 
@@ -134,6 +157,21 @@ void LoraPeersActivity::loop() {
     return;
   }
 
+  // The periodic check. Re-reads the radio and repaints only when the drawn
+  // text would differ -- a node arriving while the rider watches is the whole
+  // point, and an age ticking over is not worth a panel refresh.
+  const uint32_t now = millis();
+  if (now - lastCheckMs_ >= kCheckIntervalMs) {
+    lastCheckMs_ = now;
+    refresh();
+    const uint32_t sig = listSignature();
+    if (sig != drawnSignature_) {
+      drawnSignature_ = sig;
+      requestUpdate();
+      return;
+    }
+  }
+
   const int count = itemCount();
   buttonNavigator.onNext([this, count] {
     selectedIndex = ButtonNavigator::nextIndex(selectedIndex, count);
@@ -205,14 +243,43 @@ std::string LoraPeersActivity::rowValue(int index) const {
   return std::string(buf);
 }
 
+uint32_t LoraPeersActivity::listSignature() const {
+  // FNV-1a over what is drawn, not over what is stored: the question this
+  // answers is "would the panel look different", and anything the rider cannot
+  // see must not be allowed to cost a refresh.
+  uint32_t h = 2166136261u;
+  auto mix = [&h](uint32_t v) {
+    for (int i = 0; i < 4; ++i) {
+      h ^= (v >> (i * 8)) & 0xFF;
+      h *= 16777619u;
+    }
+  };
+  mix(static_cast<uint32_t>(peerCount_));
+  mix(meshRunning_ ? 1u : 0u);
+  mix(beaconSec_);
+  mix(rejected_);
+  for (size_t i = 0; i < peerCount_; ++i) {
+    const LoraPeer& p = peers_[i];
+    mix(static_cast<uint32_t>(p.pubKey[0]) | (static_cast<uint32_t>(p.pubKey[1]) << 8) |
+        (static_cast<uint32_t>(p.pubKey[2]) << 16) | (static_cast<uint32_t>(p.pubKey[3]) << 24));
+    mix(p.adverts);
+    mix(static_cast<uint32_t>(p.rssiDbm));
+    char age[16];
+    formatAge((snapshotMs_ - p.heardUptimeMs) / 1000, age, sizeof(age));
+    for (const char* c = age; *c != '\0'; ++c) mix(static_cast<uint32_t>(*c));
+  }
+  return h;
+}
+
 std::string LoraPeersActivity::rowSubtitle(int index) const {
   if (index < kControlRowCount) return std::string("");
 
   const LoraPeer& peer = peers_[index - kControlRowCount];
+  char age[16];
+  formatAge((snapshotMs_ - peer.heardUptimeMs) / 1000, age, sizeof(age));
   char sub[64];
   snprintf(sub, sizeof(sub), tr(STR_LORA_PEERS_SUB_FORMAT), static_cast<int>(peer.rssiDbm),
-           static_cast<int>(peer.snrDb), static_cast<unsigned long>((snapshotMs_ - peer.heardUptimeMs) / 1000),
-           static_cast<unsigned>(peer.adverts));
+           static_cast<int>(peer.snrDb), age, static_cast<unsigned>(peer.adverts));
   return std::string(sub);
 }
 
