@@ -5,6 +5,9 @@ add_executable(TeamTest
   ${REPO_ROOT}/src/activities/map/TeamFix.cpp
   ${REPO_ROOT}/src/activities/map/TeamStore.cpp
   ${REPO_ROOT}/src/activities/map/TeamRecord.cpp
+  # Day-file naming moved out of TeamRecord.cpp when the radio's event log
+  # became the second caller (src/DayFile.h).
+  ${REPO_ROOT}/src/DayFile.cpp
   ${REPO_ROOT}/src/activities/map/MapCommandParser.cpp
   ${REPO_ROOT}/src/activities/map/MapCommandConsole.cpp
   ${REPO_ROOT}/src/activities/map/HeldTilesStore.cpp

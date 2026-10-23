@@ -40,6 +40,8 @@
 #endif
 #ifdef ENABLE_LORA_MESH
 #include "activities/map/PinGeo.h"
+#include "lora/LoraEventLine.h"
+#include "lora/LoraEventLog.h"
 #include "lora/LoraPresence.h"
 #include "lora/LoraTeamId.h"
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
@@ -1175,6 +1177,13 @@ static int32_t gMeshLastSentLatE7 = 0;
 static int32_t gMeshLastSentLonE7 = 0;
 static bool gMeshLastSentHadFix = false;
 
+// When the file log last recorded a declined transmit. **Deliberately not
+// `gMeshLastSentMs`**: that one anchors the hourly silence cap, and writing a
+// log stamp into it would postpone the parked heartbeat for as long as the
+// rider stood still. One number per question.
+static bool gMeshDeclineLogged = false;
+static unsigned long gMeshLastDeclineLogMs = 0;
+
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
 // One heard position on its way to the group layer.
 //
@@ -1207,6 +1216,73 @@ static void meshPositionHook(const uint8_t pubKey[32], int32_t latE6, int32_t lo
   if (xQueueSend(gMeshPosQueue, &ev, 0) != pdTRUE) ++gMeshPosDrops;
 }
 #endif  // ENABLE_TEAM_MARKERS
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// The radio's own file log. Same split as the position queue above and for a
+// harder reason: an SD write takes HalStorage's mutex, the card shares the SPI
+// bus with the radio, and the radio task is inside the chip mutex when it
+// notices anything worth writing. Writing from there would put a card
+// transaction inside a radio critical section on one bus -- so the radio task
+// copies and the loop task writes (`lora/LoraEventLog.h`).
+static QueueHandle_t gLoraLogQueue = nullptr;
+static uint32_t gLoraLogDrops = 0;
+
+// Callable from either task. Never blocks: a full queue costs a diagnostic
+// line, and a radio task waiting here would cost packets.
+static void loraLogPost(const LoraLogEvent& ev) {
+  if (gLoraLogQueue == nullptr) return;
+  if (xQueueSend(gLoraLogQueue, &ev, 0) != pdTRUE) ++gLoraLogDrops;
+}
+
+// Convenience for the rows that carry nothing but a kind.
+static void loraLogSimple(LoraLogKind kind, uint32_t cadenceSec = 0, LoraTxDecline decline = LoraTxDecline::None) {
+  LoraLogEvent ev{};
+  ev.kind = kind;
+  ev.cadenceSec = cadenceSec;
+  ev.decline = decline;
+  ev.uptimeMs = millis();
+  loraLogPost(ev);
+}
+
+// The same two sources in the same order as MapTeam::utcNowOrZero(), spelled
+// again because the radio's log has to work on a build with the team layer
+// compiled out. If these two ever disagree, one advert would be dated
+// differently in the event log and in the black box.
+static uint32_t loraLogUtcOrZero() {
+  uint32_t utc = 0;
+  if (freeink::BlePositionServer::getInstance().utcNow(utc)) return utc;
+#ifdef ENABLE_GNSS_CMD
+  if (gnss.running()) {
+    const uint32_t gnssUtc = gnss.fix().utc;
+    if (gnssUtc != 0) return gnssUtc;
+  }
+#endif
+  return 0;
+}
+
+// This run's identity, so a row can be told from one written before the last
+// reboot.
+//
+// **The team layer's id when it exists, and that is the point**: the black box
+// stamps the same number, so a row in one file joins a row in the other by
+// eye. Without that layer the radio still needs an id, and the fallback is the
+// same recipe for the same reason (MapTeam::bootId() has it in full): never
+// zero, and the low bits of micros() mixed upward so two boots a millisecond
+// apart cannot collide.
+static uint32_t loraLogBootId() {
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  return MapTeam::bootId();
+#else
+  static uint32_t id = 0;
+  if (id == 0) {
+    const uint32_t us = static_cast<uint32_t>(micros());
+    id = (us << 11) ^ (us >> 7) ^ 0x9e3779b9u;
+    if (id == 0) id = 1;
+  }
+  return id;
+#endif
+}
+#endif  // ENABLE_LORA_MESH
 
 // Who currently wants the radio up. The radio runs while this is non-zero and
 // is parked the moment it reaches zero.
@@ -1252,8 +1328,27 @@ static bool meshSendAdvert() {
 
   const GnssFix& fix = gnss.fix();
   const bool hasLoc = fix.valid && fix.quality != 0;
-  return gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, static_cast<int32_t>(fix.latitude * 1e6),
-                              static_cast<int32_t>(fix.longitude * 1e6));
+  const int32_t latE6 = static_cast<int32_t>(fix.latitude * 1e6);
+  const int32_t lonE6 = static_cast<int32_t>(fix.longitude * 1e6);
+  const bool sent = gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, latE6, lonE6);
+
+  // Logged here rather than at the callers, because there are three of them --
+  // the console, the screen's "announce me now" and the beacon -- and a
+  // transmit that is not in the file is the one thing this log must never
+  // miss. What it carries is what actually went out, position included: on a
+  // walk the question "did my own coordinate ever leave the device" is as
+  // common as "did I hear anybody".
+  LoraLogEvent ev{};
+  ev.kind = sent ? LoraLogKind::AdvertTx : LoraLogKind::TxDeclined;
+  ev.decline = sent ? LoraTxDecline::None : LoraTxDecline::PoolEmpty;
+  snprintf(ev.name, sizeof(ev.name), "%s", gMeshNodeName);
+  ev.hasLoc = sent && hasLoc;
+  ev.latE6 = latE6;
+  ev.lonE6 = lonE6;
+  ev.uptimeMs = millis();
+  loraLogPost(ev);
+
+  return sent;
 }
 
 // Brings the node up: radio first, then identity, then the Dispatcher.
@@ -1315,6 +1410,21 @@ static bool meshStart(bool& persisted) {
 #endif
 
   gMeshBeaconSec = SETTINGS.loraBeaconSec;
+
+  if (gLoraLogQueue == nullptr) {
+    gLoraLogQueue = xQueueCreate(12, sizeof(LoraLogEvent));
+    // Once per boot, at the first time the radio comes up, and not in setup():
+    // a device whose radio is never switched on has nothing to rotate, and
+    // the clock is more likely to be set by now than it was at boot.
+    LoraEventLog::rotate(loraLogUtcOrZero(), LoraEventLog::kKeepDays);
+  }
+  gMesh.setEventHook(gLoraLogQueue != nullptr ? &loraLogPost : nullptr);
+  // **The first row of every session, and the one that makes the rest
+  // readable.** Every silence below it is explained by the cadence this row
+  // carries, which is why declines do not need a row of their own per tick.
+  loraLogSimple(LoraLogKind::RadioUp, gMeshBeaconSec);
+  // A decline only counts against the cadence inside one session.
+  gMeshDeclineLogged = false;
 
   // **The send schedule is deliberately not reset here.** The radio now starts
   // and stops every time the rider opens and leaves the map, and an advert on
@@ -1425,7 +1535,26 @@ static void meshBeaconTick() {
     // Only comparable when both ends of the comparison are real positions.
     const bool moved = hasFix && gMeshLastSentHadFix &&
                        PinGeo::distanceM(gMeshLastSentLatE7, gMeshLastSentLonE7, latE7, lonE7) >= kMeshMoveMetres;
-    if (!silentTooLong && !fixChanged && !moved) return;
+    if (!silentTooLong && !fixChanged && !moved) {
+      // **The cadence had elapsed and the device chose not to speak**, which
+      // is a decision with a reason and therefore a row. Every earlier
+      // `return` in this function is the timer doing its job, happens
+      // thousands of times an hour, and is not logged -- the `up` row carries
+      // the cadence, which is what makes those silences readable
+      // (`lora/LoraEventLine.h`, "What is an event and what is not").
+      // **Its own stamp, and `gMeshLastSentMs` must not be touched here.**
+      // That one is what the hourly silence cap is measured from, so moving
+      // it forward on a decline would postpone the parked heartbeat for as
+      // long as the rider stood still -- which is exactly the case the
+      // heartbeat exists for (an hour in a pub on a hike). Caught while
+      // writing this, not by a test.
+      if (!gMeshDeclineLogged || (now - gMeshLastDeclineLogMs) >= gMeshBeaconSec * 1000UL) {
+        loraLogSimple(LoraLogKind::TxDeclined, 0, LoraTxDecline::NoNews);
+        gMeshLastDeclineLogMs = now;
+        gMeshDeclineLogged = true;
+      }
+      return;
+    }
   }
 
   if (!meshSendAdvert()) {
@@ -1465,6 +1594,10 @@ static void meshApplyHolders() {
   if (wanted == gMeshRunning) return;
 
   if (!wanted) {
+    // Before loraStop(), so the row is posted while the radio is still the
+    // thing that was running. The queue is drained on the loop task either
+    // way, but the ordering in the file should read as it happened.
+    loraLogSimple(LoraLogKind::RadioDown);
     // loraStop() stops the mesh, parks the chip with NRESET low so the card
     // gets its MISO back, and releases this user's claim on the shared
     // GNSS/LoRa rail -- the receiver keeps the rail up if it still wants it.
@@ -1728,7 +1861,23 @@ static void loraDrain() {
       // from Graz would drown the number that says somebody is talking *at*
       // this group.
       MapTeam& team = MapTeam::getInstance();
-      if (team.roster().findId(id) >= TeamRoster::kSlotCount) continue;
+      if (team.roster().findId(id) >= TeamRoster::kSlotCount) {
+        // **The row that explains an empty map while the radio is busy.**
+        // The advert parsed, the signature verified, and the position was
+        // still thrown away because nobody added this node -- which looks
+        // from the panel exactly like hearing nothing at all. Logged with the
+        // key so the id can be pasted straight into the roster.
+        LoraLogEvent refused{};
+        refused.kind = LoraLogKind::PosRefused;
+        memcpy(refused.key, ev.pubKey, sizeof(refused.key));
+        refused.hasKey = true;
+        refused.hasLoc = true;
+        refused.latE6 = ev.latE6;
+        refused.lonE6 = ev.lonE6;
+        refused.uptimeMs = millis();
+        loraLogPost(refused);
+        continue;
+      }
 
       TeamFix fix;
       fix.present = true;
@@ -1746,6 +1895,25 @@ static void loraDrain() {
     }
   }
 #endif
+
+  // The event log, drained last so a position refused above is already in the
+  // queue and lands in file order. **Bounded per tick**: a card write is
+  // milliseconds and the loop also drives the panel, so a burst that arrived
+  // while the UI was busy is spread over ticks rather than stalling one.
+  if (gLoraLogQueue != nullptr) {
+    const uint32_t utc = loraLogUtcOrZero();
+    const uint32_t boot = loraLogBootId();
+    LoraLogEvent ev;
+    for (int i = 0; i < 4 && xQueueReceive(gLoraLogQueue, &ev, 0) == pdTRUE; ++i) {
+      LoraEventLog::append(ev, utc, boot);
+    }
+  }
+  if (gLoraLogDrops != 0) {
+    // Said out loud: a gap in a file whose job is explaining gaps would be
+    // read as the radio having been quiet.
+    logSerial.printf("LORA_LOG_DROPPED:%lu\n", static_cast<unsigned long>(gLoraLogDrops));
+    gLoraLogDrops = 0;
+  }
 #endif
 
   // From gLoraPingDoneMs, not gLoraPingSentMs: the wait starts when our packet

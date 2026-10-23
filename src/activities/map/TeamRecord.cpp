@@ -5,9 +5,9 @@
 #include <cstdio>
 #include <cstring>
 
-namespace {
+#include "../../DayFile.h"
 
-constexpr uint32_t kSecondsPerDay = 86400u;
+namespace {
 
 // int32 scaled by 1e7 back to plain decimal degrees. Integer only -- the device
 // has no FPU, and a printf("%f") on a soft-float double is both slow and a chunk
@@ -91,24 +91,6 @@ bool nextField(std::string_view& rest, std::string_view& field, bool last) {
   return true;
 }
 
-// Civil date from days since the epoch (Howard Hinnant's algorithm). Integer
-// only and no <ctime>: the device's own clock helpers are not available to a
-// pure translation unit, and gmtime_r on this toolchain pulls in locale code.
-void civilFromDays(uint32_t days, uint32_t& year, uint32_t& month, uint32_t& day) {
-  int64_t z = static_cast<int64_t>(days) + 719468;
-  const int64_t era = z / 146097;
-  const int64_t doe = z - era * 146097;                                     // [0, 146096]
-  const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-  const int64_t y = yoe + era * 400;
-  const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);               // [0, 365]
-  const int64_t mp = (5 * doy + 2) / 153;                                    // [0, 11]
-  const int64_t d = doy - (153 * mp + 2) / 5 + 1;                            // [1, 31]
-  const int64_t m = mp < 10 ? mp + 3 : mp - 9;                               // [1, 12]
-  year = static_cast<uint32_t>(y + (m <= 2 ? 1 : 0));
-  month = static_cast<uint32_t>(m);
-  day = static_cast<uint32_t>(d);
-}
-
 }  // namespace
 
 const char* teamSourceText(TeamFixSource source) {
@@ -128,12 +110,18 @@ const char* teamSourceText(TeamFixSource source) {
 }
 
 bool teamSourceFromText(std::string_view text, TeamFixSource& out) {
-  if (text == "cmd") out = TeamFixSource::Cmd;
-  else if (text == "ble") out = TeamFixSource::Ble;
-  else if (text == "lora") out = TeamFixSource::Lora;
-  else if (text == "gnss") out = TeamFixSource::Gnss;
-  else if (text == "unknown") out = TeamFixSource::Unknown;
-  else return false;
+  if (text == "cmd")
+    out = TeamFixSource::Cmd;
+  else if (text == "ble")
+    out = TeamFixSource::Ble;
+  else if (text == "lora")
+    out = TeamFixSource::Lora;
+  else if (text == "gnss")
+    out = TeamFixSource::Gnss;
+  else if (text == "unknown")
+    out = TeamFixSource::Unknown;
+  else
+    return false;
   return true;
 }
 
@@ -152,11 +140,10 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen) {
   char speed[8] = {};
   if (rec.hasSpeed) snprintf(speed, sizeof(speed), "%u", static_cast<unsigned>(rec.speedKmh));
 
-  const int written =
-      snprintf(buf, bufLen, "%lu,%lu,%lu,%lu,%s,%s,%s,%s,%s,%s,%s", static_cast<unsigned long>(rec.utc),
-               static_cast<unsigned long>(rec.recvUtc), static_cast<unsigned long>(rec.uptimeMs),
-               static_cast<unsigned long>(rec.boot), rec.who, rec.id, lat, lon, heading, speed,
-               teamSourceText(rec.source));
+  const int written = snprintf(buf, bufLen, "%lu,%lu,%lu,%lu,%s,%s,%s,%s,%s,%s,%s", static_cast<unsigned long>(rec.utc),
+                               static_cast<unsigned long>(rec.recvUtc), static_cast<unsigned long>(rec.uptimeMs),
+                               static_cast<unsigned long>(rec.boot), rec.who, rec.id, lat, lon, heading, speed,
+                               teamSourceText(rec.source));
   if (written < 0 || static_cast<size_t>(written) >= bufLen) return 0;
   return static_cast<size_t>(written);
 }
@@ -184,8 +171,8 @@ bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
   if (hasBoot && !nextField(rest, boot, false)) return false;
   if (!nextField(rest, who, false)) return false;
   if (hasId && !nextField(rest, id, false)) return false;
-  if (!nextField(rest, lat, false) || !nextField(rest, lon, false) ||
-      !nextField(rest, heading, false) || !nextField(rest, speed, false) || !nextField(rest, src, true)) {
+  if (!nextField(rest, lat, false) || !nextField(rest, lon, false) || !nextField(rest, heading, false) ||
+      !nextField(rest, speed, false) || !nextField(rest, src, true)) {
     return false;
   }
 
@@ -222,21 +209,11 @@ bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
   return true;
 }
 
-uint32_t teamDayNumber(uint32_t utc) { return utc / kSecondsPerDay; }
+uint32_t teamDayNumber(uint32_t utc) { return dayNumberFromUtc(utc); }
 
-bool teamDayFileName(uint32_t utc, char* out, size_t outBytes) {
-  if (out == nullptr || outBytes < 20) return false;
-  if (utc == 0) {
-    snprintf(out, outBytes, "bb-noclock.csv");
-    return true;
-  }
-  uint32_t year = 0;
-  uint32_t month = 0;
-  uint32_t day = 0;
-  civilFromDays(teamDayNumber(utc), year, month, day);
-  snprintf(out, outBytes, "bb-%04lu%02lu%02lu.csv", static_cast<unsigned long>(year), static_cast<unsigned long>(month),
-           static_cast<unsigned long>(day));
-  return true;
-}
+// The `bb-` prefix is this log's own; everything else about naming a day file
+// is shared with the radio's event log (`../../DayFile.h`), because two copies
+// of a calendar is the shape that drifts.
+bool teamDayFileName(uint32_t utc, char* out, size_t outBytes) { return dayFileName("bb", utc, out, outBytes); }
 
 #endif  // ENABLE_TEAM_MARKERS

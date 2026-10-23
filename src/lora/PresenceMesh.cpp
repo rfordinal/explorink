@@ -204,6 +204,18 @@ void PresenceMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
   AdvertDataParser parser(appData, static_cast<uint8_t>(appDataLen));
   if (!parser.isValid()) {
     ++advertsRejected_;
+    if (eventHook_ != nullptr) {
+      // No key: the payload is what failed, so nothing in it can be trusted to
+      // name a sender. Only the signal survives, and on a shared band that is
+      // still the useful half -- a strong unparseable frame is somebody else's
+      // protocol, a weak one is the edge of our own range.
+      LoraLogEvent ev{};
+      ev.kind = LoraLogKind::AdvertBad;
+      ev.rssiDbm = lastRxRssiDbm_;
+      ev.snrDb = static_cast<int8_t>(packet->getSNR());
+      ev.uptimeMs = millis();
+      eventHook_(ev);
+    }
     return;
   }
 
@@ -224,6 +236,25 @@ void PresenceMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
   // marker to be placed at.
   if (parser.hasLatLon() && positionHook_ != nullptr) {
     positionHook_(id.pub_key, parser.getIntLat(), parser.getIntLon(), timestamp);
+  }
+
+  // **Every advert, not only a new node.** The serial line below says "new",
+  // because a log of the same neighbour every 70 s is noise to a human
+  // watching a console. The file is the opposite: a walk is made of repeats,
+  // and the row that matters is the last one before the signal went away.
+  if (eventHook_ != nullptr) {
+    LoraLogEvent ev{};
+    ev.kind = LoraLogKind::AdvertRx;
+    memcpy(ev.key, id.pub_key, sizeof(ev.key));
+    ev.hasKey = true;
+    if (parser.hasName()) snprintf(ev.name, sizeof(ev.name), "%s", parser.getName());
+    ev.rssiDbm = lastRxRssiDbm_;
+    ev.snrDb = snrDb;
+    ev.hasLoc = parser.hasLatLon();
+    ev.latE6 = parser.getIntLat();
+    ev.lonE6 = parser.getIntLon();
+    ev.uptimeMs = millis();
+    eventHook_(ev);
   }
 
   if (isNew) {

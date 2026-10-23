@@ -738,6 +738,90 @@ fails on `RadioLib.h: No such file or directory`. `base.lib_ignore` now carries
 `base.lib_deps`, which would compile a radio library into three boards that
 have no radio.
 
+## The event log: what was heard, what went out, and what did not
+
+**Built 2026-10-23, on a maintainer's ask.** The panel says what the radio is
+doing right now; this says what it did. One CSV per day at
+`/trailink/lora/ev-YYYYMMDD.csv`, or `ev-noclock.csv` on a device whose clock
+nobody has set.
+
+```
+utc,uptime_ms,boot,kind,key,name,rssi,snr,lat,lon,detail
+1761200000,123456,7,up,,,,,,,bcn70s
+1761200061,184512,7,rx,3e8f8e75a6b20bd0,RF-bravo,-92,-11,48.123456,17.654321,
+1761200074,197800,7,rxbad,,,-103,-14,,,
+1761200131,254900,7,tx,,RF-alfa,,,48.123400,17.654300,
+1761200201,324900,7,txskip,,,,,,,no_news
+1761200245,368100,7,refused,c6c28a1000112233,,,,48.100000,17.600000,
+1761200400,523400,7,down,,,,,,,
+```
+
+Seven kinds, and the three that answer "why is my screen empty" are the point:
+
+| kind | what it says |
+|---|---|
+| `up` / `down` | the radio started or stopped; `detail` carries the cadence |
+| `rx` | a signed advert parsed -- key, name, signal, position if it had one |
+| `rxbad` | a frame arrived and did not parse; signal only, no identity to print |
+| `refused` | a valid advert from a node **the roster does not know**, which looks from the panel exactly like hearing nothing |
+| `tx` | we transmitted; `lat`/`lon` are filled only if our own position went out |
+| `txskip` | the cadence was due and we chose not to; `detail` says `no_news` or `pool_empty` |
+
+**It is not the black box, and the difference is the reason it exists.**
+`TeamBlackBox` records positions that were *accepted* (`team-markers.md`).
+Every row above except `rx`-with-a-position produces no position at all, so
+none of them reach that file -- and each one is a different diagnosis.
+
+### State changes get a row; the timer working does not
+
+`meshBeaconTick()` declines to transmit on nearly every loop tick, and a row
+per decline would be thousands an hour saying the cadence has not elapsed.
+So a `txskip` is written **only once the floor has already passed** -- at
+that point the device was willing to speak and chose not to -- and at most
+once per cadence after that. The `up` row's cadence is what makes every
+silence below it readable without a row of its own.
+
+**The decline stamp is its own, and that is not tidiness.** Writing it into
+`gMeshLastSentMs` would have postponed the hourly silence cap for as long as
+the rider stood still, which is exactly the case the parked heartbeat exists
+for -- an hour in a pub on a hike. Caught while writing the code, not by a
+test.
+
+### Who writes it, and why not the task that noticed
+
+A card write takes `HalStorage`'s mutex, the card shares the SPI bus with the
+radio, and the radio task is **inside the chip mutex** when it notices
+anything worth writing. So the radio task fills a twelve-deep queue and
+returns; `loop()` drains at most four rows a tick, because the same loop
+drives the panel. A full queue drops the row and says so on serial
+(`LORA_LOG_DROPPED:`) -- a silent gap in the file that explains gaps would
+read as the radio having been quiet.
+
+`encodeLoraLogEvent()` is pure and lives in `LoraEventLine.{h,cpp}`, split
+from the writer exactly the way `TeamRecord` is split from `TeamFiles`:
+`test/lora_log/` proves every column with no card attached, including that a
+hostile node name full of commas and newlines cannot break a row.
+
+### What it leaks
+
+A row carries another person's node name, their key prefix and, when their
+advert had one, **their exact position** -- plain text, removable card, no
+passphrase. That is the black box's exposure widened from the roster to
+*everyone in radio range*, and on a public channel most of what this hears
+belongs to strangers who never agreed to be written down: sixteen of them
+filled the node table in an hour in Bratislava. Acceptable while the whole
+radio is dev-only; not fit to ship as it stands. **T-2039** is the decision
+about what ships.
+
+Rotation keeps seven days and deletes whole days, never lines, so a file
+being read on a laptop does not change under it. `ev-noclock.csv` is never
+deleted: a day that cannot be named cannot be judged old.
+
+**Built clean on `env:t5s3pro` and `env:default`, 591 host tests green.
+Unverified on hardware** -- a pass has to check that a file appears after a
+map session with the radio on, that a `txskip no_news` shows up while the
+board sits still, and that `refused` appears for a stranger.
+
 ## What it costs
 
 `env:t5s3pro`, same tree, the only difference being `-DENABLE_LORA_MESH=1`.

@@ -8,6 +8,7 @@
 #include <helpers/SimpleMeshTables.h>
 #include <helpers/StaticPoolPacketManager.h>
 
+#include "LoraEventLine.h"
 #include "LoraMeshRadio.h"
 #include "LoraPeerTable.h"
 
@@ -89,6 +90,22 @@ class PresenceMesh : public mesh::Mesh {
   using PositionHook = void (*)(const uint8_t pubKey[32], int32_t latE6, int32_t lonE6, uint32_t advertUtc);
   void setPositionHook(PositionHook hook) { positionHook_ = hook; }
 
+  // Everything heard, whether or not it carried a position and whether or not
+  // it parsed at all.
+  //
+  // **A separate hook from the one above, because they answer different
+  // questions.** The position hook feeds the map and therefore fires only for
+  // an advert with a coordinate from a node somebody approved. This one feeds
+  // the file somebody reads after a walk that found nothing, so it has to fire
+  // for the advert that had no position and for the frame that did not parse
+  // -- those are the rows that say why the screen is empty
+  // (`LoraEventLine.h`).
+  //
+  // **Called on the radio task**, same contract as the position hook: copy and
+  // return, touch no card and nothing the UI writes.
+  using EventHook = void (*)(const LoraLogEvent& ev);
+  void setEventHook(EventHook hook) { eventHook_ = hook; }
+
   const LoraPeerTable& peers() const { return peers_; }
   LoraPeerTable& peers() { return peers_; }
 
@@ -123,6 +140,7 @@ class PresenceMesh : public mesh::Mesh {
   bool identityLoaded_ = false;
   int16_t lastRxRssiDbm_ = 0;
   PositionHook positionHook_ = nullptr;
+  EventHook eventHook_ = nullptr;
   // Kept for its noise, which seeds the keypair. See beginIdentity().
   LoraMeshRadio* radio_ = nullptr;
 };
