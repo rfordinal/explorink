@@ -505,6 +505,12 @@ class MapActivity final : public Activity,
   // feature's own loop reaches the panel here, and only when its text
   // actually changed.
   void updateDebugOverlay();
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Writes the radio's debug row, at most once a second. Separate from
+  // updateDebugOverlay() because it is the only slot writer that has to take
+  // the radio's chip mutex to answer.
+  void updateLoraDebugRow();
+#endif
   // Top-right north indicator. The map is drawn track-up, so this rotates: the
   // whole glyph turns about its own centre by the frame's heading, which is
   // what makes it point at true north instead of up the screen. Not static
@@ -1694,8 +1700,9 @@ class MapActivity final : public Activity,
   // ## The debug window (SETTINGS.mapDebugInfo)
   //
   // One managed box below the header, with one row per feature that reserved
-  // one. Reservation happens once, in onEnter(), and the ids below are how a
-  // feature finds its own row afterwards -- see MapDebugOverlay.h for why
+  // one. Reservation happens once, **in the constructor** -- onEnter() runs
+  // again on every return to the map and would burn the table -- and the ids
+  // below are how a feature finds its own row afterwards -- see MapDebugOverlay.h for why
   // this replaced a `line1Y`/`line2Y`/... ladder duplicated across two frame
   // paths.
   //
@@ -1732,6 +1739,16 @@ class MapActivity final : public Activity,
   uint8_t debugRouteRefusedSlot_ = MapDebugOverlay::kInvalidSlot;
   // A file push happened; did it land (MapTransferReceiver::formatStatus()).
   uint8_t debugTransferSlot_ = MapDebugOverlay::kInvalidSlot;
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // The radio: on or off, the cadence, how many nodes are in the table, and
+  // the last advert's RSSI and SNR. Reserved only where the radio exists, and
+  // it is the eighth of MapDebugOverlay::kMaxSlots -- see the reserve() block.
+  uint8_t debugLoraSlot_ = MapDebugOverlay::kInvalidSlot;
+  // Its own deadline rather than the debug window's, because the window's
+  // poll decides when to *repaint* and this decides when to pay the chip
+  // mutex. See updateLoraDebugRow().
+  uint32_t nextLoraDebugMs_ = 0;
+#endif
   // millis() deadlines, same shape as the header row's above: the poll
   // interval bounds how often the window is even compared, the repaint
   // interval is the floor between two panel refreshes it may cause.

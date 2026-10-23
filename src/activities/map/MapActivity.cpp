@@ -223,6 +223,14 @@ constexpr uint32_t kHikeLineRepaintMs = 10 * 1000;
 constexpr uint32_t kDebugPollMs = 1000;
 constexpr uint32_t kDebugRepaintMs = 5 * 1000;
 
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// How often the radio's own row is recomputed. The same second as the window
+// poll above, deliberately -- a faster one would only pay the chip mutex more
+// often for a row the window will not repaint sooner anyway
+// (updateLoraDebugRow()).
+constexpr uint32_t kLoraDebugPollMs = kDebugPollMs;
+#endif
+
 // Observe mode's clock granularity, in minutes. The minute tick is the only
 // thing that repaints the header while nothing else on the device is happening,
 // and run 5 priced it: 60 windowed refreshes an hour, 9.4 s/h of panel time, in
@@ -2767,6 +2775,58 @@ void MapActivity::layoutDebugOverlay() {
 // shape as updateHeaderStatus() and updateHikeElevationLine(): the panel is
 // only spent when a slot's text actually differs from what is on it.
 //
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// What the radio is doing, in the one window a walker can see it from.
+//
+// **Rate limited to the debug window's own poll, and that is not tidiness.**
+// `loraPresenceStatus()` and `loraPresenceSnapshot()` both take the chip
+// mutex, which is held by the radio task for the whole of a serviced receive
+// -- so calling either one per `loop()` tick would put the UI task behind the
+// radio several hundred times a second to decide whether a text row changed.
+// That is the exact cost `loraPresenceIndicator()` exists to avoid for the
+// header glyph (`LoraPresence.h`); the glyph needs no lock and this row does,
+// so this one pays for it once a second instead of never.
+//
+// Only one peer is copied. The snapshot is newest-heard-first, so peer zero
+// is the last node that spoke, and a `max` of one costs a single record
+// rather than the 1.2 kB a full table copy would move under that lock.
+void MapActivity::updateLoraDebugRow() {
+  if (!SETTINGS.mapDebugInfo) return;
+  const uint32_t now = millis();
+  if (nextLoraDebugMs_ != 0 && now < nextLoraDebugMs_) return;
+  nextLoraDebugMs_ = now + kLoraDebugPollMs;
+
+  const LoraPresenceStatus st = loraPresenceStatus();
+  if (!st.meshRunning) {
+    // Not cleared: "off" is a finding. A walker who sees nothing cannot tell
+    // a quiet channel from a radio that never came up, and that is the first
+    // thing to rule out when a peer stops arriving.
+    debug_.set(debugLoraSlot_, "lora off");
+    return;
+  }
+
+  char beacon[16];
+  if (st.beaconSec == 0) {
+    snprintf(beacon, sizeof(beacon), "rx");
+  } else {
+    snprintf(beacon, sizeof(beacon), "bcn%us", static_cast<unsigned>(st.beaconSec));
+  }
+
+  LoraPeer last{};
+  const bool haveLast = loraPresenceSnapshot(&last, 1) == 1;
+  if (!haveLast) {
+    debug_.set(debugLoraSlot_, "lora on %s peers=0 bad=%u", beacon, static_cast<unsigned>(st.advertsRejected));
+    return;
+  }
+
+  // Wrap-safe, same as everywhere else that subtracts two millis() stamps.
+  const uint32_t ageS = (st.nowUptimeMs - last.heardUptimeMs) / 1000;
+  debug_.set(debugLoraSlot_, "lora on %s peers=%u last %d/%d %us bad=%u", beacon, static_cast<unsigned>(st.peerCount),
+             static_cast<int>(last.rssiDbm), static_cast<int>(last.snrDb), static_cast<unsigned>(ageS),
+             static_cast<unsigned>(st.advertsRejected));
+}
+#endif  // ENABLE_LORA_MESH
+
 // This is what makes reserve()/set() worth having. A feature writing its slot
 // once a second from its own loop -- a GNSS fix count, a transfer byte
 // counter -- reaches the panel through here without triggering a frame and
@@ -2839,6 +2899,18 @@ MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
   debugRouteFitSlot_ = debug_.reserve("routefit");
   debugRouteRefusedSlot_ = debug_.reserve("routeerr");
   debugTransferSlot_ = debug_.reserve("transfer");
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Last, and only on a board whose radio exists. **This row is the
+  // instrument the range walk is made of** (`lora-mesh.md`, the hardware
+  // pass, step 6): the walk happens with the map open, because the map is
+  // what holds the radio up, so the only place a walker can read RSSI is
+  // here. The LoRa nodes screen has the same numbers and the radio does not
+  // stay up on the way between the two.
+  //
+  // That fills the table: kMaxSlots is 8 and this is the eighth. The next
+  // feature that wants a row raises the limit rather than sharing one.
+  debugLoraSlot_ = debug_.reserve("lora");
+#endif
 }
 
 // The fix off the card, as this session's opening picture.
@@ -3609,6 +3681,10 @@ void MapActivity::loop() {
                static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
                static_cast<unsigned>(gnss.bestSnr()));
   }
+#endif
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  updateLoraDebugRow();
 #endif
 
   // The command console, over both channels. Same parser, same state, same

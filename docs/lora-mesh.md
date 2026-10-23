@@ -316,6 +316,49 @@ A header slot is three separate things -- a reserved rect, a draw, and a
 reason to repaint -- and getting two of them right looks exactly like getting
 all three right until somebody photographs the panel.
 
+### And the numbers go in the map's debug window
+
+The glyph says on or beaconing and nothing else, which is right for a rider
+and useless for a range walk. So the radio also reserves a row in the map's
+existing debug window (`SETTINGS.mapDebugInfo`, off by default,
+`MapActivity.h`, "The debug window"):
+
+```
+lora off
+lora on rx peers=0 bad=0
+lora on bcn70s peers=3 last -92/-11 18s bad=0
+```
+
+`last` is the most recently heard node's RSSI and SNR in dB, then how long
+ago it was heard; `bad` is adverts that did not parse. **Not cleared when the
+radio is off** -- a walker who sees nothing cannot otherwise tell a quiet
+channel from a radio that never came up, and that is the first thing to rule
+out when a peer stops arriving.
+
+**This window is the range walk's instrument, which is why the row is here
+and not only on the LoRa nodes screen.** The walk happens with the map open,
+because the map is one of the two screens that hold the radio up, and the
+radio drops on the way to any other screen. A walker reading RSSI had nowhere
+to read it from.
+
+**Written at most once a second, and the rate limit is the point.**
+`loraPresenceStatus()` and `loraPresenceSnapshot()` both take the chip mutex,
+which the radio task holds for a whole serviced receive -- so a per-tick call
+would put the UI task behind the radio hundreds of times a second to decide
+whether a text row changed. That is the cost `loraPresenceIndicator()` avoids
+for the glyph by needing no lock; this row cannot avoid it, so it pays once a
+second instead. Only one peer is copied (`max` of 1), which is one record
+rather than the 1.2 kB a full table copy moves under that lock.
+
+**It is the eighth of `MapDebugOverlay::kMaxSlots`, so the window is full.**
+The next feature that wants a row raises the limit rather than sharing one.
+
+Built 2026-10-23, `env:t5s3pro` and `env:default` both clean, 575 host tests
+green. **Not yet seen on a panel** -- what a hardware pass has to check is
+that the row appears with `mapDebugInfo` on, that it tracks the radio being
+switched from the map menu, and that it does not appear at all on a C3 build
+where `ENABLE_LORA_MESH` is off.
+
 ## When a position goes out
 
 One mechanism, three states, all of them inside the gate above. **The cadence
