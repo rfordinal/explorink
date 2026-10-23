@@ -390,6 +390,45 @@ wait out the cap.
 A node with no fix sends its nameplate and never 0,0 -- the same distinction
 the peer table keeps and the panel prints as `loc=-`.
 
+### "Fix" is not "GNSS fix"
+
+**Both the advert and the movement test used to read `gnss.fix()` and nothing
+else, and that was wrong on every default board.** `mapGnssPosition` defaults
+to 0, which means the map takes its position from the phone over BLE -- so on
+a stock device the receiver has no fix, the advert carried no coordinate, and
+the beacon then concluded it had no news and dropped to one nameplate an
+hour. Found by the maintainer on 2026-10-23, immediately after a bench run
+where board A sent twice in four minutes with a 70 s cadence armed and the
+whole thing was written off as the news rule working correctly. It was
+working correctly on an input that was never the right one.
+
+`meshSelfPosition()` now answers both, from one source, **chosen the way the
+map chooses it**: the group must not be told something different from what
+the rider is looking at. One deliberate difference -- the acquisition
+screen's `forcePhonePosition_` is not read here. It is per-session UI state,
+this code runs outside any activity, and a beacon whose source depended on
+which screen was last open would be a third rule nobody could predict.
+
+**A BLE position carries no receive time, so this stamps its own.**
+`getLatest()` hands back the last packet ever received, which for a phone
+that walked out of range is a position that will sit there for the rest of
+the boot -- broadcasting it would be the device claiming a position fresher
+than it is, the one thing the group layer promises never to do. The
+connection flag cannot stand in for a timestamp either: `connIntervalMs()`
+is cleared only by NimBLE's disconnect callback, and a link that died
+without one read as connected for hours (firmware `CLAUDE.md`, "Before
+acting on a telemetry counter"). So the sequence number and the phone's own
+clock are watched for a change, `millis()` is stamped when one appears, and
+a position older than **30 s** stops being usable. Thirty missed writes at
+the phone's 1 Hz: long enough to ride out a hiccup, short enough that a
+phone left in a hut stops speaking for its owner within half a minute. Read
+off the phone's cadence, not measured.
+
+Built clean on `env:t5s3pro` and `env:default`. **Unverified on hardware** --
+a pass has to show an advert carrying a coordinate on a board with a phone
+connected and the receiver off, and the 100 m rule firing from a BLE
+position.
+
 **The numbers are OpenTrailPaper's, not ours**: 100 m, and an hourly heartbeat
 when parked, from a project that has run groups on this band for years
 (`../../docs/lora.md`, "And their cadence is the precedent our own guess was
@@ -1070,11 +1109,19 @@ board's slot holds the other board's image.
    advert conditional on having news, and a board with no fix has none. Rerun
    2026-10-23 on `0ea6cf91`: board A, `BEACON 70`, GNSS off, one forced
    `ADVERT` and then **nothing for 264 s and counting** -- B read
-   `adv=2 age=264s` with `rejected=0`. That is the rule working, not a
-   regression: with no fix the next advert is due at the hourly silence cap.
-   Left here with its own date rather than deleted, because "the beacon
-   repeats every 70 s" is the thing a reader would otherwise carry into a
-   range walk.
+   `adv=2 age=264s` with `rejected=0`. Left here with its own date rather
+   than deleted, because "the beacon repeats every 70 s" is the thing a
+   reader would otherwise carry into a range walk.
+
+   **And the first reading of that run was wrong.** It was written up the
+   same hour as "the rule working, not a regression: with no fix the next
+   advert is due at the hourly cap", which is true of the code and misses
+   that the code was asking the wrong receiver. The maintainer pointed out
+   within minutes that a position also arrives over BLE, and it does: on a
+   default board that is *the* source. See "Fix is not GNSS fix" above. The
+   silence was a defect wearing a correct-looking explanation, which is the
+   most expensive kind -- a plausible cause had already been written into
+   this file.
 
    **So a range walk needs a fix on both boards before it starts.** Without
    one each board speaks once an hour, and a walk measuring that measures

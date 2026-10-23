@@ -1170,6 +1170,14 @@ static uint32_t gMeshBeaconSec = 0;
 static constexpr uint32_t kMeshMoveMetres = 100;
 static constexpr uint32_t kMeshMaxSilenceSec = 3600;
 
+// How long a BLE position stays usable after the last packet that changed it.
+//
+// The phone writes at 1 Hz, so thirty seconds is thirty missed writes -- long
+// enough that a hiccup in the link does not blank the beacon, short enough
+// that a phone left behind in a hut stops speaking for its owner within half
+// a minute. Read off the phone's own cadence, not measured.
+static constexpr uint32_t kMeshBlePosMaxAgeMs = 30000;
+
 // What the last advert said, so the next one can decide whether it has news.
 static bool gMeshBeaconEverSent = false;
 static unsigned long gMeshLastSentMs = 0;
@@ -1322,14 +1330,79 @@ static constexpr uint32_t kMeshBeaconMinSec = 70;
 // whole layer keeps (docs/team-markers.md). Takes the chip mutex because it
 // touches Dispatcher state the service task also walks; it starts no transmit
 // itself -- the packet is queued and the service task puts it on the air.
+// Where this device thinks it is, from whichever radio is supplying it.
+//
+// **The advert used to read `gnss.fix()` and nothing else, which was wrong on
+// every default board.** `mapGnssPosition` defaults to 0, meaning the map
+// takes its position from the phone over BLE -- so on a stock device the
+// receiver has no fix, the advert carried no coordinate, and the beacon then
+// decided it had no news and fell back to one nameplate an hour. Spotted by
+// the maintainer 2026-10-23, after a bench run where board A sent twice in
+// four minutes with a 70 s cadence armed.
+//
+// **One source, chosen the way the map chooses it**, because the group must
+// not be told something different from what the rider is looking at. The map
+// can additionally be pushed to BLE by the acquisition screen
+// (`forcePhonePosition_`); that is a per-session UI state and is deliberately
+// not read here -- this runs outside any activity, and a beacon that changed
+// source depending on which screen was open would be a third rule nobody
+// could predict.
+//
+// Returns degrees * 1e7, the scale everything else on this device stores.
+static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7) {
+#ifdef ENABLE_GNSS_CMD
+  if (SETTINGS.mapGnssPosition != 0) {
+    const GnssFix& fix = gnss.fix();
+    if (!fix.valid || fix.quality == 0) return false;
+    latE7 = static_cast<int32_t>(fix.latitude * 1e7);
+    lonE7 = static_cast<int32_t>(fix.longitude * 1e7);
+    return true;
+  }
+#endif
+
+  freeink::PositionUpdate update;
+  if (!freeink::BlePositionServer::getInstance().getLatest(update)) return false;
+
+  // **`getLatest()` answers with the last packet ever received, not with a
+  // current one.** A phone that walked out of range leaves its last position
+  // sitting there for the rest of the boot, and broadcasting that as our own
+  // would be the device claiming a position fresher than it is -- the one
+  // thing the group layer promises never to do (`team-markers.md`). There is
+  // no receive timestamp in the packet, and the connection flag cannot stand
+  // in for one: `connIntervalMs()` is cleared only by NimBLE's disconnect
+  // callback, and a link that died without it read as connected for hours
+  // (firmware CLAUDE.md, "Before acting on a telemetry counter"). So this
+  // stamps its own clock the first time it sees a packet it has not seen
+  // before, exactly like MapTeam stamps `recvUtc`.
+  static uint8_t lastSeq = 0;
+  static uint32_t lastUtc = 0;
+  static uint32_t lastChangeMs = 0;
+  static bool everSeen = false;
+  if (!everSeen || update.seq != lastSeq || update.utc != lastUtc) {
+    lastSeq = update.seq;
+    lastUtc = update.utc;
+    lastChangeMs = millis();
+    everSeen = true;
+  }
+  if ((millis() - lastChangeMs) > kMeshBlePosMaxAgeMs) return false;
+
+  latE7 = update.lat;
+  lonE7 = update.lon;
+  return true;
+}
+
 static bool meshSendAdvert() {
   LoraLock lock;
   if (!gMeshRunning) return false;
 
-  const GnssFix& fix = gnss.fix();
-  const bool hasLoc = fix.valid && fix.quality != 0;
-  const int32_t latE6 = static_cast<int32_t>(fix.latitude * 1e6);
-  const int32_t lonE6 = static_cast<int32_t>(fix.longitude * 1e6);
+  int32_t latE7 = 0;
+  int32_t lonE7 = 0;
+  const bool hasLoc = meshSelfPosition(latE7, lonE7);
+  // MeshCore's advert carries 1e6 degrees. The conversion lives here and
+  // nowhere else, so the beacon's movement test and the packet can never be
+  // comparing two different roundings of one position.
+  const int32_t latE6 = latE7 / 10;
+  const int32_t lonE6 = lonE7 / 10;
   const bool sent = gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, latE6, lonE6);
 
   // Logged here rather than at the callers, because there are three of them --
@@ -1524,10 +1597,13 @@ static void meshBeaconTick() {
   const unsigned long now = millis();
   if (gMeshBeaconEverSent && (now - gMeshLastSentMs) < gMeshBeaconSec * 1000UL) return;
 
-  const GnssFix& fix = gnss.fix();
-  const bool hasFix = fix.valid && fix.quality != 0;
-  const int32_t latE7 = static_cast<int32_t>(fix.latitude * 1e7);
-  const int32_t lonE7 = static_cast<int32_t>(fix.longitude * 1e7);
+  // The same source the advert will carry, asked once. **Not `gnss.fix()`:**
+  // on a default board the position comes from the phone, and reading the
+  // receiver here would decide "nothing has changed" about a number the
+  // packet was never going to contain (meshSelfPosition()).
+  int32_t latE7 = 0;
+  int32_t lonE7 = 0;
+  const bool hasFix = meshSelfPosition(latE7, lonE7);
 
   if (gMeshBeaconEverSent) {
     const bool silentTooLong = (now - gMeshLastSentMs) >= kMeshMaxSilenceSec * 1000UL;
