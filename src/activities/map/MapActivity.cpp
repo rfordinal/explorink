@@ -2829,8 +2829,14 @@ void MapActivity::updateLoraDebugRow() {
     return;
   }
 
+  // **No clock outranks the cadence, because it overrides it.** An armed
+  // beacon on a node that cannot transmit is the state that reads as a broken
+  // radio, and printing `bcn70s` there would be the panel claiming something
+  // the node is refusing to do (src/lora/LoraPresence.h).
   char beacon[16];
-  if (st.beaconSec == 0) {
+  if (!st.hasWallClock) {
+    snprintf(beacon, sizeof(beacon), "noclock");
+  } else if (st.beaconSec == 0) {
     snprintf(beacon, sizeof(beacon), "rx");
   } else {
     snprintf(beacon, sizeof(beacon), "bcn%us", static_cast<unsigned>(st.beaconSec));

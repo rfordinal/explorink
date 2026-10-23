@@ -390,6 +390,64 @@ wait out the cap.
 A node with no fix sends its nameplate and never 0,0 -- the same distinction
 the peer table keeps and the panel prints as `loc=-`.
 
+### No wall clock, no transmit
+
+**Maintainer's rule, 2026-10-23, and it is the reason the first bench run
+looked like it worked and did not.** A real time reaches this device from BLE
+or from GNSS and from nowhere else; from that moment it counts on. Without
+one the node **must not transmit at all**.
+
+Why it is a refusal and not a best-effort send: MeshCore stamps every advert
+with `_rtc->getCurrentTime()` (`Mesh.cpp`, `createAdvert`), and an unseeded
+`VolatileRTCClock` counts from its own arbitrary epoch. The receiver dates
+the marker by that stamp. So an advert sent without a clock arrives as a
+position **two and a half years old and is hidden on arrival** --
+`teamFixAge()` trusts the sender's `utc` above our own receive time
+(`TeamFix.cpp`), and `teamFixVisibility()` then hides anything past
+`mapTeamHideMin`.
+
+Measured exactly that way, 2026-10-23, and it is worth keeping because every
+instrument said the opposite. Two boards, fed synthetic positions over BLE,
+GNSS off. `team list` on A: `team_RFB=...,on,48.3770620,17.5900000,`
+**`1715770612`**`,lora` -- May 2024. `CMD:LORA PEERS` on both: a peer, a
+plausible RSSI, `rejected=0`. The LoRa debug row: `lora on bcn70s peers=1
+last -18/11 54s bad=0`. **And the panel drew no bubble at all**, with the
+other board 297 m from screen centre and the scale bar showing 100 m across
+a fifth of the width. The radio, the signature, the roster and the ingest
+were all working; the one thing being tested was not. A serial reading is
+not the product.
+
+The alternatives were weighed and all of them lie somewhere. Dating a marker
+by our own receive time makes it look fresher than it actually is; dropping
+the sender's timestamp throws away the column the black box is read by;
+branching the age rule on `source` makes the panel's meaning depend on which
+radio spoke. **Not transmitting is the only answer that misrepresents
+nothing**, and a mesh of nodes that cannot date themselves was never worth
+having.
+
+So:
+
+- `meshWallClockUtc()` is the single accessor -- BLE first, then GNSS, the
+  same order and the same two sources as `MapTeam::utcNowOrZero()`.
+- `meshSendAdvert()` refuses when it answers 0, which covers the cadence, the
+  console and the screen's "announce me now" alike: a bench advert with a
+  bogus stamp poisons a receiver exactly as thoroughly as an automatic one.
+- It also **re-stamps the RTC before every packet** rather than seeding once
+  at `meshStart()`. The clock usually arrives after the radio does -- a phone
+  connects, a receiver gets its date sentence -- and MeshCore only ever
+  counts on from whatever it was last told.
+- The beacon checks the clock before anything else and throttles the refusal
+  to one row per cadence: with `gMeshBeaconEverSent` still false the cadence
+  gate passes on every loop tick, so an unthrottled refusal would write a row
+  per tick.
+- The event log gets a `txskip` row with `no_clock`, and the map's debug row
+  prints `lora on noclock ...` in place of the cadence -- an armed beacon on
+  a node that cannot speak is the state that otherwise reads as a broken
+  radio.
+
+**Unverified on hardware.** A pass has to show the marker appearing once a
+clock exists, and `noclock` on the debug row before it does.
+
 ### "Fix" is not "GNSS fix"
 
 **Both the advert and the movement test used to read `gnss.fix()` and nothing

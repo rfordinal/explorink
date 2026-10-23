@@ -70,6 +70,11 @@ enum class LoraTxDecline : uint8_t {
   None,
   NoNews,     // fix unchanged, under the movement threshold, not silent too long
   PoolEmpty,  // MeshCore had no packet to give out
+  // No wall clock, from BLE or GNSS, so every advert we could build would
+  // carry MeshCore's arbitrary epoch and be hidden on arrival. See
+  // meshWallClockUtc() in main.cpp for why this is a refusal and not a
+  // best-effort send.
+  NoClock,
 };
 
 // One row, as it leaves whichever task noticed it.

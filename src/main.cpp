@@ -1252,11 +1252,29 @@ static void loraLogSimple(LoraLogKind kind, uint32_t cadenceSec = 0, LoraTxDecli
   loraLogPost(ev);
 }
 
-// The same two sources in the same order as MapTeam::utcNowOrZero(), spelled
-// again because the radio's log has to work on a build with the team layer
-// compiled out. If these two ever disagree, one advert would be dated
-// differently in the event log and in the black box.
-static uint32_t loraLogUtcOrZero() {
+// The device's wall clock, and **the only thing that makes meshing mean
+// anything.**
+//
+// Maintainer's rule, 2026-10-23: a real time arrives from BLE or from GNSS and
+// from nowhere else, and from that moment the device counts on. Without one we
+// are in a black hole -- and a node in a black hole must not transmit, because
+// MeshCore stamps every advert with `_rtc->getCurrentTime()` and an unset RTC
+// counts from its own arbitrary epoch. That is not a cosmetic flaw: the
+// receiver dates the marker by that stamp, so an advert sent without a clock
+// arrives as a position two and a half years old and is hidden on arrival.
+// Measured exactly that way on 2026-10-23 -- board B's advert reached A with
+// `utc=1715770612` (May 2024) and A drew nothing, while every serial command
+// reported success.
+//
+// The alternatives were all worse, and that is the point of the rule rather
+// than an aside: dating a marker by our own receive time makes it look fresher
+// than it is, and dropping the sender's timestamp throws away the one thing
+// the black box is read by. Not transmitting is the only answer that lies
+// about nothing.
+//
+// Same two sources in the same order as MapTeam::utcNowOrZero(), spelled again
+// because this has to work on a build with the team layer compiled out.
+static uint32_t meshWallClockUtc() {
   uint32_t utc = 0;
   if (freeink::BlePositionServer::getInstance().utcNow(utc)) return utc;
 #ifdef ENABLE_GNSS_CMD
@@ -1395,6 +1413,28 @@ static bool meshSendAdvert() {
   LoraLock lock;
   if (!gMeshRunning) return false;
 
+  // **No wall clock, no transmit.** Checked here rather than only at the
+  // beacon because there are three callers -- the console, the screen's
+  // "announce me now" and the cadence -- and a bench advert with a bogus
+  // timestamp poisons a real receiver exactly as thoroughly as an automatic
+  // one. See meshWallClockUtc().
+  const uint32_t wallUtc = meshWallClockUtc();
+  if (wallUtc == 0) {
+    LoraLogEvent noclock{};
+    noclock.kind = LoraLogKind::TxDeclined;
+    noclock.decline = LoraTxDecline::NoClock;
+    noclock.uptimeMs = millis();
+    loraLogPost(noclock);
+    return false;
+  }
+  // Re-stamped on every send rather than seeded once at meshStart(). The
+  // clock can arrive long after the radio did -- a phone connects, or the
+  // receiver gets its date sentence -- and MeshCore's own tick() only counts
+  // on from whatever it was last told. Setting it from the true clock here
+  // costs nothing and is always right, including across the moment it first
+  // appears.
+  gMeshRtc.setCurrentTime(wallUtc);
+
   int32_t latE7 = 0;
   int32_t lonE7 = 0;
   const bool hasLoc = meshSelfPosition(latE7, lonE7);
@@ -1475,7 +1515,11 @@ static bool meshStart(bool& persisted) {
   // GNSS receiver that supplies wall clock before it has a fix (docs/gnss.md).
   // It is not required for the mesh to work; it is required for the timestamp
   // to mean anything.
-  if (gnss.fix().utc != 0) gMeshRtc.setCurrentTime(gnss.fix().utc);
+  // Seeded from whichever source has a real time, not from the receiver only:
+  // on a default board the clock arrives over BLE with the position. Kept
+  // correct afterwards by meshSendAdvert(), which re-stamps before every
+  // packet -- this one only makes the node's first moments dateable.
+  if (const uint32_t wallUtc = meshWallClockUtc(); wallUtc != 0) gMeshRtc.setCurrentTime(wallUtc);
 
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
   if (gMeshPosQueue == nullptr) gMeshPosQueue = xQueueCreate(8, sizeof(MeshPositionEvent));
@@ -1489,7 +1533,7 @@ static bool meshStart(bool& persisted) {
     // Once per boot, at the first time the radio comes up, and not in setup():
     // a device whose radio is never switched on has nothing to rotate, and
     // the clock is more likely to be set by now than it was at boot.
-    LoraEventLog::rotate(loraLogUtcOrZero(), LoraEventLog::kKeepDays);
+    LoraEventLog::rotate(meshWallClockUtc(), LoraEventLog::kKeepDays);
   }
   gMesh.setEventHook(gLoraLogQueue != nullptr ? &loraLogPost : nullptr);
   // **The first row of every session, and the one that makes the rest
@@ -1517,6 +1561,7 @@ LoraPresenceStatus loraPresenceStatus() {
   out.advertsRejected = gMesh.advertsRejected();
   out.peerCount = gMesh.peers().count();
   out.identityPersisted = gMesh.identityPersisted();
+  out.hasWallClock = meshWallClockUtc() != 0;
   snprintf(out.nodeName, sizeof(out.nodeName), "%s", gMeshNodeName);
   out.nowUptimeMs = millis();
   return out;
@@ -1596,6 +1641,20 @@ static void meshBeaconTick() {
 
   const unsigned long now = millis();
   if (gMeshBeaconEverSent && (now - gMeshLastSentMs) < gMeshBeaconSec * 1000UL) return;
+
+  // **Clock first, and throttled.** Without a wall clock nothing below this
+  // matters: meshSendAdvert() will refuse, and with gMeshBeaconEverSent still
+  // false the cadence check above passes on every loop tick, so an unthrottled
+  // refusal would write a row per tick. One per cadence is the same rule the
+  // no-news decline follows, and for the same reason.
+  if (meshWallClockUtc() == 0) {
+    if (!gMeshDeclineLogged || (now - gMeshLastDeclineLogMs) >= gMeshBeaconSec * 1000UL) {
+      loraLogSimple(LoraLogKind::TxDeclined, 0, LoraTxDecline::NoClock);
+      gMeshLastDeclineLogMs = now;
+      gMeshDeclineLogged = true;
+    }
+    return;
+  }
 
   // The same source the advert will carry, asked once. **Not `gnss.fix()`:**
   // on a default board the position comes from the phone, and reading the
@@ -1977,7 +2036,7 @@ static void loraDrain() {
   // milliseconds and the loop also drives the panel, so a burst that arrived
   // while the UI was busy is spread over ticks rather than stalling one.
   if (gLoraLogQueue != nullptr) {
-    const uint32_t utc = loraLogUtcOrZero();
+    const uint32_t utc = meshWallClockUtc();
     const uint32_t boot = loraLogBootId();
     LoraLogEvent ev;
     for (int i = 0; i < 4 && xQueueReceive(gLoraLogQueue, &ev, 0) == pdTRUE; ++i) {

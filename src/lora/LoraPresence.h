@@ -24,6 +24,12 @@ struct LoraPresenceStatus {
   uint32_t advertsRejected;  // adverts heard that did not parse, since boot
   size_t peerCount;
   bool identityPersisted;  // false means this node's key dies at the next boot
+  // Whether the device has a real wall clock, from BLE or GNSS. **False means
+  // the node cannot transmit at all** -- every advert would carry MeshCore's
+  // arbitrary epoch and be hidden on arrival (main.cpp, meshWallClockUtc()).
+  // Surfaced because a beacon that is armed and silent otherwise looks like a
+  // broken radio.
+  bool hasWallClock;
   char nodeName[21];
   // millis() at the moment the snapshot was taken, so an age computed against
   // a peer's heardUptimeMs is measured from the same clock that stamped it.

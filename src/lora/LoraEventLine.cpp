@@ -35,6 +35,8 @@ const char* declineText(LoraTxDecline why) {
       return "no_news";
     case LoraTxDecline::PoolEmpty:
       return "pool_empty";
+    case LoraTxDecline::NoClock:
+      return "no_clock";
   }
   return "";
 }
