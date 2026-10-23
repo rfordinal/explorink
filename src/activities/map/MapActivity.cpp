@@ -2798,10 +2798,14 @@ void MapActivity::updateLoraDebugRow() {
 
   const LoraPresenceStatus st = loraPresenceStatus();
   if (!st.meshRunning) {
-    // Not cleared: "off" is a finding. A walker who sees nothing cannot tell
-    // a quiet channel from a radio that never came up, and that is the first
-    // thing to rule out when a peer stops arriving.
-    debug_.set(debugLoraSlot_, "lora off");
+    // **Off means gone, not a row saying "off".** Maintainer's call,
+    // 2026-10-23, overriding a first version that printed `lora off` so a
+    // walker could tell a quiet channel from a radio that never came up.
+    // That reading is answered by the header glyph, which is absent for
+    // exactly the same reason, and the window is for what the radio is
+    // doing -- a switched-off radio is doing nothing and costs no ink
+    // saying so.
+    debug_.clear(debugLoraSlot_);
     return;
   }
 

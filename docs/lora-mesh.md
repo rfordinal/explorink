@@ -324,16 +324,18 @@ existing debug window (`SETTINGS.mapDebugInfo`, off by default,
 `MapActivity.h`, "The debug window"):
 
 ```
-lora off
 lora on rx peers=0 bad=0
 lora on bcn70s peers=3 last -92/-11 18s bad=0
 ```
 
 `last` is the most recently heard node's RSSI and SNR in dB, then how long
-ago it was heard; `bad` is adverts that did not parse. **Not cleared when the
-radio is off** -- a walker who sees nothing cannot otherwise tell a quiet
-channel from a radio that never came up, and that is the first thing to rule
-out when a peer stops arriving.
+ago it was heard; `bad` is adverts that did not parse.
+
+**A switched-off radio has no row at all.** Maintainer's call, 2026-10-23,
+overriding a first version that printed `lora off` so a walker could tell a
+quiet channel from a radio that never came up. Off is off: the header glyph
+is absent for the same reason, and a row that exists to say nothing is
+happening is a row spending ink to say nothing.
 
 **This window is the range walk's instrument, which is why the row is here
 and not only on the LoRa nodes screen.** The walk happens with the map open,
