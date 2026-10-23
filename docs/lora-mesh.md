@@ -1064,6 +1064,25 @@ board's slot holds the other board's image.
    apart gave **+2**, exactly the interval, and B's own uptime of 11.10 h
    reconciles the total. A counter that spans a run is not a rate; the delta
    is.
+
+   **Both measurements above predate the send rules and no longer describe
+   this firmware.** They were taken on `3b656d2a`; `730f826f` then made an
+   advert conditional on having news, and a board with no fix has none. Rerun
+   2026-10-23 on `0ea6cf91`: board A, `BEACON 70`, GNSS off, one forced
+   `ADVERT` and then **nothing for 264 s and counting** -- B read
+   `adv=2 age=264s` with `rejected=0`. That is the rule working, not a
+   regression: with no fix the next advert is due at the hourly silence cap.
+   Left here with its own date rather than deleted, because "the beacon
+   repeats every 70 s" is the thing a reader would otherwise carry into a
+   range walk.
+
+   **So a range walk needs a fix on both boards before it starts.** Without
+   one each board speaks once an hour, and a walk measuring that measures
+   nothing. Turn GNSS on, wait for a fix, then walk -- the 100 m rule is what
+   paces the adverts once moving, and the cadence is only the floor under it.
+   The event log says which of the two happened: a `txskip` row with
+   `no_news` is a board that decided, a missing row is a board that never got
+   the chance.
 6. **Then, and only then, range.** Two boards, a walk, `PEERS` on each at
    intervals. This is bring-up step 4 in parent `docs/lora.md` and the thing
    every protocol decision above it is waiting on. **Not done.**
