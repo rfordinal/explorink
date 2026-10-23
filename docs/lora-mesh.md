@@ -453,10 +453,11 @@ panels drew the other board: a solid `RFB` bubble south-east of A's own
 marker, a solid `RFA` on B, both `Fresh` rather than dithered. The debug row
 read `lora on bcn70s peers=2 last -37/12 45s bad=0`.
 
-**One half of it is still unverified: nobody has seen `noclock` on the
-panel.** It needs a board with the radio up, the beacon armed and neither
-source of time, which did not occur in this run because the fake phone
-supplies a clock with every packet.
+**`noclock` was seen on the panel too**, by the maintainer, in the window
+between the board booting onto the map and the fake phone's first packet --
+radio up, beacon armed, no time from anywhere yet. Reported rather than
+captured: this file first said nobody had seen it, which was only ever true
+of the person taking the screenshots.
 
 ### "Fix" is not "GNSS fix"
 
@@ -1216,11 +1217,21 @@ board's slot holds the other board's image.
    either one.** `team list` returning a coordinate is not the feature
    working.
 
-   One thing to carry into the walk: board B's card has no tiles for the
-   test area, so its frame was the missing-tile hatch with the markers drawn
-   on top (`0t 0w` in the debug row). The team layer does not need tiles --
-   but a range walk with no basemap tells you nothing about where the signal
-   died.
+   **And the hatched frame on board B was the test's own fault, not the
+   card's.** Both feeders ran with `--no-tiles`, documented as "do not answer
+   NEED_TILES": the board asked over BLE and the tool refused, so the frame
+   came back as the missing-tile hatch with the markers drawn on top
+   (`0t 0w`). This file first explained it as the card lacking tiles for the
+   area, which was a diagnosis with no evidence behind it about a symptom
+   the harness had caused.
+
+   The lesson outlasts the flag. **`--no-tiles` switches off half of what
+   the map does over BLE**, and it was chosen to keep the test simple -- so
+   the run proved less than it looked like it proved, and the first reading
+   of the gap blamed the device. A flag that disables part of the system
+   under test belongs in the write-up beside the result, or the result gets
+   read as being about the whole system. Drop it and pass `--source cdn` to
+   exercise the tile path too.
 
 6. **Then, and only then, range.** Two boards, a walk, `PEERS` on each at
    intervals. This is bring-up step 4 in parent `docs/lora.md` and the thing
