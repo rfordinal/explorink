@@ -228,6 +228,20 @@ same question and a false one. Six hours is a walking day's patience; the
 stale threshold stays at five minutes, so everything past that is visibly old
 rather than quietly trusted.
 
+**Verified on hardware 2026-10-23**, build `3635da57`, board A holding a
+position stored 9,544 s (2 h 39 min) earlier. It drew: grey balloon, label
+`500 m/3h` -- the age rounded up, as it always is. Under the old threshold a
+known age of 2 h 39 min was `Hidden`, so the marker being on the panel at
+all is the proof that the migration ran and the six hours are in force.
+
+Two things the same run settled, both of them states this file describes and
+nobody had photographed. With no clock the same marker read `500 m/?` and
+was still drawn -- *an unknown age is never hidden*, whatever the threshold
+says, which also means **a no-clock device cannot be used to test the
+threshold**: the first attempt did exactly that and proved nothing. And the
+map header's radio row went from `noclock` to `bcn70s` the moment a phone
+supplied a time.
+
 **A stored 30 is migrated, and without that the change would have done
 nothing.** `mapTeamHideMin` is written to `settings.json` on every save, so
 every device in existence already had the old default on its card and would
