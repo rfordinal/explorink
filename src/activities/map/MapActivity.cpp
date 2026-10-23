@@ -363,7 +363,12 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 // radio is off on most screens and in most sessions, and a permanent "LoRa
 // off" icon would spend a slot of the place name's width to say nothing.
 constexpr int kHeaderLoraIconSize = kHeaderIconHeight;
-constexpr int kHeaderLoraIconToGnssGap = 6;
+// The gap on this glyph's **right**, whatever happens to be there -- the GNSS
+// icon on a receiver session, the Bluetooth logo on a phone one. Named for
+// the side rather than for the neighbour because it has two neighbours: the
+// old name said `ToGnss` and the Bluetooth case is exactly the one that was
+// wrong (see the chain in drawHeaderStatusStrip()).
+constexpr int kHeaderLoraIconRightGap = 6;
 #endif
 
 constexpr int kHeaderGnssIconSize = kHeaderIconHeight;
@@ -2045,7 +2050,7 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   chainLeft -= kHeaderGnssIconToBtGap + kHeaderGnssIconSize;
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-  chainLeft -= kHeaderLoraIconToGnssGap + kHeaderLoraIconSize;
+  chainLeft -= kHeaderLoraIconRightGap + kHeaderLoraIconSize;
 #endif
   const int transferIconLeft = chainLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
 #ifdef ENABLE_GNSS_CMD
@@ -2432,8 +2437,23 @@ void MapActivity::drawHeaderStatusStrip() {
   const LoraPresenceStatus loraStatus = loraPresenceStatus();
   int loraIconLeft = 0;
   if (loraStatus.meshRunning) {
-    loraIconLeft = chainRight - kHeaderLoraIconSize;
-    chainRight = loraIconLeft - kHeaderLoraIconToGnssGap;
+    // **`chainRight` arrives in one of two conventions, and this is the first
+    // link that can follow either.** The Bluetooth branch leaves the logo's
+    // *left edge*, with no gap taken yet; the GNSS branch leaves its icon's
+    // left edge with the gap to its left already subtracted. Each downstream
+    // block today matches whichever predecessor can run before it, so the
+    // disagreement was invisible until a link appeared that both of them
+    // feed.
+    //
+    // Reported off the panel 2026-10-23: on a phone session the glyph sat
+    // flush against the Bluetooth logo, because this block took no gap and
+    // the branch above had not taken one either. So the gap is taken here
+    // only when nobody took it, and the convention this block received is the
+    // one it passes on -- changing either branch instead would move the clock
+    // on a session this icon is not even drawn in. Unifying the two is
+    // T-2038.
+    loraIconLeft = chainRight - (bleInUse_ ? kHeaderLoraIconRightGap : 0) - kHeaderLoraIconSize;
+    chainRight = loraIconLeft - (bleInUse_ ? 0 : kHeaderLoraIconRightGap);
   }
 #endif
 

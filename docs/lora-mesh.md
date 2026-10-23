@@ -287,6 +287,15 @@ reserved unconditionally in `headerStatusRect()` -- that rect is the widest
 layout, so the backing drawn from it clears whatever a narrower row leaves
 empty.
 
+**And the glyph sat flush against the Bluetooth logo until 2026-10-23.**
+Reported off the panel, not caught by anything else: the drawing chain's
+cursor means two different things depending on which branch filled it last,
+and this block took no gap because the Bluetooth branch had not taken one
+either. Fixed locally; the two conventions are T-2038 and the mechanism is in
+`map-header-status.md`, "The chain's cursor carries two conventions". The
+reservation in `headerStatusRect()` was right all along, which is why the
+backing never clipped anything -- it was 6 px wider than the draw needed.
+
 Adding the link turned the chain in `headerStatusRect()` into a running
 cursor. Two optional links would otherwise have needed four spellings of the
 same arithmetic, and the `#else` the GNSS flag already had is gone with it.
