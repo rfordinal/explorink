@@ -5,9 +5,14 @@ The first thing on this radio that is a protocol rather than a byte stream.
 task -- and it stays the instrument that answers "is the radio alive at all".
 
 Built 2026-10-20 on `feat/lora-presence` and **run on two T5 S3 Pro boards the
-same day: the link works**. Steps 1 and 3 of the hardware pass at the end are
-done and marked there; the rest is still read off the code or measured by a
-host build.
+same day: the link works**. Steps 1 to 5 of the hardware pass at the end are
+done and marked there; step 6, the range walk, is not, and nothing above it is
+settled until it is.
+
+**The pin is current.** `meshcore` sits at `companion-v1.18.0`, which was still
+the newest companion tag on 2026-10-22 (`git ls-remote --tags
+https://github.com/meshcore-dev/MeshCore`), so nothing upstream is waiting to
+be taken. Re-check it the same way before blaming the pin for anything.
 
 ## What it does
 
@@ -713,9 +718,10 @@ quiet for ten minutes is dropped to make room for a stranger who shouted once
 from Graz.** For a feature whose whole job is finding the people you came
 with, that is backwards.
 
-Nothing is broken today, because nothing feeds the roster yet. But the fix
-belongs with that wiring and not after it: a roster member must outrank a
-stranger for a slot, whatever the ages say. T-2034.
+**Since 2026-10-22 a heard position does reach the roster**, so this is no
+longer theoretical: a stranger from Graz can now evict a group member whose
+marker is on the map. A roster member must outrank a stranger for a slot,
+whatever the ages say. T-2034.
 
 A second, smaller thing the same screenshot showed: ages run to `4009s ago`,
 which nobody reads as an hour. Seconds are right for a bench and wrong for a
@@ -723,7 +729,9 @@ list somebody uses.
 
 ## What is open
 
-- **Everything on hardware.** No board has run this. See below.
+- **Steps 1 to 5 ran on two boards, 2026-10-20 to 10-22; step 6, the range
+  walk, has not.** See the hardware pass below for what each step actually
+  showed.
 - **The RSSI a peer row shows** is the radio's last reported frame, not the
   packet's own: MeshCore's `Packet` carries SNR and has no RSSI field. For an
   advert the Dispatcher processed straight away -- which is every advert on
@@ -845,10 +853,13 @@ verified" and they are not, as a set:
 
 ## The hardware pass
 
-In this order. Each step can kill the next. Build `638e7b27`, archived in the
-parent repo as `docs/firmware-builds/t5s3pro-{a,b}-lora-presence-638e7b27-link-verified.*`
--- two archives, because `-t upload` relinks and the two boards therefore carry
-different bytes of the same commit.
+In this order. Each step can kill the next. Builds `638e7b27`, `3b656d2a` and
+`fac82f05`, each archived in the parent repo per board -- the boards run
+`fac82f05` as of 2026-10-22, archived as
+`docs/firmware-builds/t5s3pro-{a,b}-lora-presence-fac82f05-good.*`. **The two
+files differ**, and that is correct: `-t upload` relinks, so each board's own
+upload produced its own bytes. Two archives with the same sha256 means one
+board's slot holds the other board's image.
 
 1. **One board.** `CMD:LORA ON`, `CMD:LORA MESH ON`. The reply must carry a key
    and `stored=1`. Reboot, `MESH ON` again: the same key, or the identity file

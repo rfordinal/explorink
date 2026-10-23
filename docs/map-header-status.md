@@ -494,6 +494,15 @@ Four rate limits, each for its own reason:
   and it is 30x slower than the bars' floor. It is the only condition that
   fires while nothing else on the device is happening.
 
+**A header slot is three separate things: a reserved rect, a draw, and a reason
+to repaint.** Getting two of them right looks exactly like getting all three
+right until somebody photographs the panel. The LoRa glyph of 2026-10-22 got it
+wrong twice in a row: first it was drawn inside `if (showTransferIcon)`, so it
+appeared almost never, and then it drew correctly but was not in the structural
+signature, so a radio that switched on while nobody pressed a button showed the
+old glyph for as long as the row stood. A new slot joins the `drawn*State_`
+members in the same commit that draws it.
+
 Nothing repaints before `headerRowDrawn_` (see "The waiting banner draws a
 header row too" below) -- that flag, not `viewportDrawn_`, is what gates this
 polling loop.
