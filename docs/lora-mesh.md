@@ -1207,8 +1207,10 @@ board's slot holds the other board's image.
    <ble-mac> --track ... --track-kmh 5 --no-tiles --no-serial`. Two
    instances, one per board; **`--address` is not optional** here, because
    both advertise `LilyGoT5S3Map` and a scan picks whichever answers first.
-   The BLE address is the USB serial MAC plus one -- `7C:2C:67:8A:4C:B4`
-   enumerates as `...:B5` -- which saves a scan.
+   The BLE address came out as the USB serial MAC plus one on both boards
+   (`7C:2C:67:8A:4C:B4` enumerates as `...:B5`), which saves a scan when it
+   holds. **Read off two units of one model and from no datasheet** -- scan
+   rather than assume it on a board that is not a T5 S3 Pro.
 
    It found two defects that every serial instrument called a success, and
    both are written up above: the advert read `gnss.fix()` on a board whose
