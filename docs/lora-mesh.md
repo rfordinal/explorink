@@ -445,8 +445,18 @@ So:
   a node that cannot speak is the state that otherwise reads as a broken
   radio.
 
-**Unverified on hardware.** A pass has to show the marker appearing once a
-clock exists, and `noclock` on the debug row before it does.
+**Verified on hardware 2026-10-23**, build `9302a6d2`, two boards fed
+synthetic tracks over BLE with GNSS off. A's roster then held
+`utc=1792751919` against a laptop clock of `1792751954` -- **35 seconds
+old**, where the same test an hour earlier produced May 2024 -- and both
+panels drew the other board: a solid `RFB` bubble south-east of A's own
+marker, a solid `RFA` on B, both `Fresh` rather than dithered. The debug row
+read `lora on bcn70s peers=2 last -37/12 45s bad=0`.
+
+**One half of it is still unverified: nobody has seen `noclock` on the
+panel.** It needs a board with the radio up, the beacon armed and neither
+source of time, which did not occur in this run because the fake phone
+supplies a clock with every packet.
 
 ### "Fix" is not "GNSS fix"
 
@@ -482,10 +492,12 @@ the phone's 1 Hz: long enough to ride out a hiccup, short enough that a
 phone left in a hut stops speaking for its owner within half a minute. Read
 off the phone's cadence, not measured.
 
-Built clean on `env:t5s3pro` and `env:default`. **Unverified on hardware** --
-a pass has to show an advert carrying a coordinate on a board with a phone
-connected and the receiver off, and the 100 m rule firing from a BLE
-position.
+**Verified on hardware 2026-10-23**, build `9302a6d2`: both boards had the
+receiver off and a BLE feed only, and each one's advert reached the other
+carrying a coordinate off that feed -- `loc=48.378345,17.587200` where the
+same path produced `loc=-` before the fix. The 100 m rule drove the cadence:
+at 5 km/h a synthetic track crosses 100 m in 72 s against a 70 s floor, and
+the markers kept moving.
 
 **The numbers are OpenTrailPaper's, not ours**: 100 m, and an hourly heartbeat
 when parked, from a project that has run groups on this band for years
@@ -1188,6 +1200,28 @@ board's slot holds the other board's image.
    The event log says which of the two happened: a `txskip` row with
    `no_news` is a board that decided, a missing row is a board that never got
    the chance.
+   **The two-board bench run, 2026-10-23, build `9302a6d2`.** The shape the
+   range walk will use, minus the walking: both boards on the map, receiver
+   off, each fed its own synthetic track by `tools/blefakephone.py --address
+   <ble-mac> --track ... --track-kmh 5 --no-tiles --no-serial`. Two
+   instances, one per board; **`--address` is not optional** here, because
+   both advertise `LilyGoT5S3Map` and a scan picks whichever answers first.
+   The BLE address is the USB serial MAC plus one -- `7C:2C:67:8A:4C:B4`
+   enumerates as `...:B5` -- which saves a scan.
+
+   It found two defects that every serial instrument called a success, and
+   both are written up above: the advert read `gnss.fix()` on a board whose
+   position came from the phone, and the advert carried MeshCore's arbitrary
+   epoch so the receiver hid the marker on arrival. **Only the panel showed
+   either one.** `team list` returning a coordinate is not the feature
+   working.
+
+   One thing to carry into the walk: board B's card has no tiles for the
+   test area, so its frame was the missing-tile hatch with the markers drawn
+   on top (`0t 0w` in the debug row). The team layer does not need tiles --
+   but a range walk with no basemap tells you nothing about where the signal
+   died.
+
 6. **Then, and only then, range.** Two boards, a walk, `PEERS` on each at
    intervals. This is bring-up step 4 in parent `docs/lora.md` and the thing
    every protocol decision above it is waiting on. **Not done.**
