@@ -1225,6 +1225,14 @@ board's slot holds the other board's image.
    area, which was a diagnosis with no evidence behind it about a symptom
    the harness had caused.
 
+   **Re-run with tiles, same day, same build.** `--no-tiles` dropped,
+   `--source cdn` added, everything else identical. Board B asked once --
+   `<- NEED_TILES 1 fmt 4 view`, `cdn: 1/1 tile(s) available` -- and its
+   panel came back with a real basemap, `xfer 1 ok 0 err` and `1t 1650w` in
+   the debug rows, the `RFA` bubble still solid beside it. So the hatch was
+   the harness, start to finish, and the tile path and the position exchange
+   run together over one BLE link without either starving the other.
+
    The lesson outlasts the flag. **`--no-tiles` switches off half of what
    the map does over BLE**, and it was chosen to keep the test simple -- so
    the run proved less than it looked like it proved, and the first reading
