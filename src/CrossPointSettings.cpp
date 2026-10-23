@@ -253,7 +253,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   mapPinsOffscreenMask = doc["mapPinsOffscreenMask"] | (uint16_t)0xFFFF;
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
   mapTeamStaleMin = doc["mapTeamStaleMin"] | (uint8_t)5;
-  mapTeamHideMin = doc["mapTeamHideMin"] | (uint8_t)30;
+  mapTeamHideMin = doc["mapTeamHideMin"] | (uint16_t)360;
   mapTeamKeepDays = doc["mapTeamKeepDays"] | (uint8_t)14;
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH

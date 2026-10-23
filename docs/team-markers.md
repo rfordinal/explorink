@@ -211,7 +211,22 @@ device may not have at boot.
 |---|---|---|
 | fresh | solid black balloon, white initials | younger than `mapTeamStaleMin` (5 min) |
 | stale | grey balloon, black initials | older than that |
-| hidden | not drawn | older than `mapTeamHideMin` (30 min); 0 turns hiding off |
+| hidden | not drawn | older than `mapTeamHideMin` (6 h); 0 turns hiding off |
+
+**Six hours, raised from thirty minutes on 2026-10-23.** Maintainer's call,
+and it came out of watching the thirty: two boards on the bench went idle for
+two hours and the marker was simply gone from the map, while the LoRa node
+list on the same device still reported that board heard 223 seconds ago. Two
+surfaces answering one question -- where is this member -- and disagreeing,
+because one means *heard* and the other means *positioned*, with nothing on
+the panel to say which.
+
+A two-hour-old position is still the best lead anybody has about where a
+companion went. Drawn stale with `2h` under it, that is exactly what it says.
+Drawn not at all, it says "no such person", which is a worse answer to the
+same question and a false one. Six hours is a walking day's patience; the
+stale threshold stays at five minutes, so everything past that is visibly old
+rather than quietly trusted.
 
 **Grey, not hollow.** A hollow marker is a different *shape* of thing and reads
 as a different kind of mark rather than as the same person an hour older;
@@ -405,7 +420,7 @@ between "has not told us" and "is at 0,0" is one the whole layer has to keep.
 | `mapTeamLogPeers` | on | write the group's positions to the black box |
 | `mapTeamLogSelf` | **off** | write the rider's own trace to the same file |
 | `mapTeamStaleMin` | 5 | minutes before a marker goes stale |
-| `mapTeamHideMin` | 30 | minutes before it is not drawn (0 = never hide) |
+| `mapTeamHideMin` | 360 | minutes before it is not drawn (0 = never hide). `uint16_t`: six hours does not fit a byte |
 | `mapTeamKeepDays` | 14 | days of black box kept on the card (0 keeps everything) |
 
 A member's position is theirs, sent to us on purpose. The rider's own trace is a

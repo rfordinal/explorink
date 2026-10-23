@@ -396,8 +396,26 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // A position whose age cannot be known is never hidden by these, whatever they
   // are set to (TeamFix.h): every X4 is a device with no clock, and hiding what
   // it cannot date would empty the panel at exactly the wrong moment.
+  //
+  // **Hide raised from 30 minutes to six hours on 2026-10-23**, maintainer's
+  // call, after watching it on the bench: two boards sat idle for two hours
+  // and the marker was simply gone, while the LoRa node list still reported
+  // the same board heard 223 seconds ago. Two surfaces on one device saying
+  // opposite things about one member, because they answer different questions
+  // -- heard, versus known to be somewhere -- and the map had no way to say
+  // which.
+  //
+  // Six hours is a walking day's worth of patience. A two-hour-old position
+  // is still the best lead anybody has about where a companion went, and
+  // drawing it dithered with `2h` under it says exactly that; drawing nothing
+  // says "no such person", which is a worse answer to the same question. The
+  // stale threshold is untouched at five minutes, so everything past that is
+  // visibly old rather than quietly trusted.
+  //
+  // `uint16_t` because six hours is 360 minutes and does not fit a byte. The
+  // settings file is JSON, so the width costs nothing on the card.
   uint8_t mapTeamStaleMin = 5;
-  uint8_t mapTeamHideMin = 30;
+  uint16_t mapTeamHideMin = 360;
   // Days of black box kept on the card. Rotation deletes whole day files, so the
   // oldest evidence goes first and a file a laptop is reading never changes
   // under it (TeamFiles.h).
