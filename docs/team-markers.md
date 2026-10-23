@@ -228,6 +228,14 @@ same question and a false one. Six hours is a walking day's patience; the
 stale threshold stays at five minutes, so everything past that is visibly old
 rather than quietly trusted.
 
+**A stored 30 is migrated, and without that the change would have done
+nothing.** `mapTeamHideMin` is written to `settings.json` on every save, so
+every device in existence already had the old default on its card and would
+have kept it. The migration is safe because the setting has no row in
+`SettingsList` and no console command: nothing a rider can touch could have
+produced a deliberate 30, so every 30 in the field is the default that was
+replaced. `CrossPointSettings.cpp` says when to delete it.
+
 **Grey, not hollow.** A hollow marker is a different *shape* of thing and reads
 as a different kind of mark rather than as the same person an hour older;
 fading is what everyone already reads as "older" without being told. Maintainer's

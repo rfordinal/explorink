@@ -254,6 +254,18 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 #if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
   mapTeamStaleMin = doc["mapTeamStaleMin"] | (uint8_t)5;
   mapTeamHideMin = doc["mapTeamHideMin"] | (uint16_t)360;
+  // **A stored 30 is the old default, not a choice, so it is migrated.**
+  // Raising the default alone would have changed nothing on any device that
+  // has ever saved its settings -- and every one of them has, because the
+  // value is written on every save. The migration is safe precisely because
+  // this setting has no row in SettingsList and no console command: nothing
+  // a rider can touch could have produced a deliberate 30, so the only 30s
+  // in the field are the default that was replaced on 2026-10-23.
+  //
+  // Delete this once no card in use predates that date. It costs a comment
+  // and a comparison until then, and leaving it longer is cheaper than
+  // guessing which cards are old.
+  if (mapTeamHideMin == 30) mapTeamHideMin = 360;
   mapTeamKeepDays = doc["mapTeamKeepDays"] | (uint8_t)14;
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
