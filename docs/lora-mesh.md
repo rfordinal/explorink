@@ -850,13 +850,40 @@ have no radio.
 
 **Verified on hardware, 2026-10-25: a no-radio board boots clean with this
 branch's `lib_ignore` gating.** `env:default` built for X3/X4 with 0 compile
-warnings and no `lora`/`meshcore`/`radiolib` symbol anywhere in the build log
-(`feat/lora-presence` at `0281e613`). Flashed to the X3 and watched boot over
-serial: `Boot` -> `Home` -> low-power (10 MHz) -> free heap steady at
+warnings (`feat/lora-presence` at `0281e613`). Flashed to the X3 and watched
+boot over serial: `Boot` -> `Home` -> low-power (10 MHz) -> free heap steady at
 110,248 bytes across two 10 s samples, no coredump, no watchdog reset. The gate
 in `platformio.ini` is not just a compile-time guard against a missing header --
 it is the reason a board with no SX1262 on the bus never links against a driver
 for one.
+
+**A grep of the build log for `lora` proves nothing -- check the linked ELF's
+symbol table instead.** Every `src/lora/*.cpp` is compiled for every
+environment (`build_src_filter`'s default `+<*>` covers all of `src/`), so
+`Compiling .pio/build/default/src/lora/LoraMeshRadio.cpp.o` shows up in the log
+on X3 too; that line says nothing about what ends up in the binary, only that
+the LDF found the file. `LoraMeshRadio.cpp`, `PresenceMesh.cpp`,
+`LoraPeerTable.cpp`, `LoraEventLog.cpp`, `LoraEventLine.cpp` and
+`LoraPeersActivity.cpp` each wrap their entire body in
+`#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH`, so they compile to an
+empty translation unit on X3 -- but the six `src/lora/ed25519/mc_*.c` wrappers
+carry no such guard at all; each unconditionally `#include`s the real upstream
+MeshCore source (`fe.c`, `sign.c`, `sha512.c`, ...), so the Ed25519 field
+arithmetic and signing code compiles into every environment's object files,
+X3 included.
+
+What saves it is the linker, not the preprocessor: `nm .pio/build/gh_release/
+firmware.elf | grep -iE "lora|meshcore|radiolib|mc_fe|mc_sign|ed25519"` on the
+merged `release/xteink-x3` build returns **zero** of our symbols (checked
+against `env:default` too -- the only `lora`-matching hits there are
+unrelated ESP-IDF WiFi long-range symbols, `esp_wifi_vnd_lora_enable` and
+friends). Nothing on X3 calls into the gated LoRa/mesh code, so
+`-ffunction-sections`/`--gc-sections` drops the ed25519 object code entirely
+at link time. The actual evidence for "zero flash cost on X3" is this ELF
+symbol check, not a build-log grep -- an earlier pass here claimed the build
+log itself was clean of `lora`/`meshcore`/`radiolib`, which was false (the
+compile lines are right there) and arrived at the true conclusion by the wrong
+route.
 
 **Same pass, the Map screen too.** This branch also carries the team-markers
 layer (`MapTeam`, `TeamFiles`, `TeamRecord`, `TeamRoster`, `TeamStore`, the
