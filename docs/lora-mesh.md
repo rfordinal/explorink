@@ -858,6 +858,22 @@ in `platformio.ini` is not just a compile-time guard against a missing header --
 it is the reason a board with no SX1262 on the bus never links against a driver
 for one.
 
+**Same pass, the Map screen too.** This branch also carries the team-markers
+layer (`MapTeam`, `TeamFiles`, `TeamRecord`, `TeamRoster`, `TeamStore`, the
+`team` console verb in `MapCommandConsole.cpp`) merged in from
+`lora/state-funnel`. `ENABLE_TEAM_MARKERS` and `ENABLE_TEAM_CMD` are set only
+for `env:x4pro`/`env:t5s3pro`/`env:simulator` -- `env:default` (X3/X4) carries
+neither, so every `#if defined(ENABLE_TEAM_MARKERS)` block compiles out and
+`executeTeam()` is unreachable dead code behind the gated dispatch in
+`MapCommandConsole.cpp`. Confirmed by sending `CMD:GOTO_MAP` to the flashed X3
+from Home: entered `Map`, rendered a 4-tile z11 viewport with 1 persisted pin,
+heap bottomed out at 32,812 bytes (`MapTileSource` alloc, `BlePositionServer`
+init, tile render) and climbed back, no crash, no Team/LoRa log line anywhere
+in the sequence. `mapTeamHideMin`'s settings field and its migration in
+`CrossPointSettings.cpp` are the only pieces of this branch that are NOT
+gated -- they compile for every board, cost one `uint16_t` and a one-line
+migration check, and do nothing without `ENABLE_TEAM_MARKERS` to read them.
+
 ## The event log: what was heard, what went out, and what did not
 
 **Built 2026-10-23, on a maintainer's ask.** The panel says what the radio is
