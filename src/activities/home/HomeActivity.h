@@ -10,27 +10,25 @@ class HomeActivity final : public Activity {
   int selectorIndex = 0;
   const HomeMenuItem initialMenuItem;
 
-  // The menu, in the order it is drawn. `enabled == false` draws the row dimmed
-  // and refuses selection -- Pins lives inside the map's own popup, and Wallet's
-  // activity is on the wallet-viewer branch and not on develop yet
-  // (../../../docs/home-screen.md). Trips is enabled: it opens the trip picker
-  // (onTripsOpen() -> ActivityManager::goToRouteSelect()).
+  // The menu, in the order it is drawn. Pins lives inside the map's own popup
+  // and Wallet's activity is on the wallet-viewer branch, not on develop --
+  // neither has a row here (../../../docs/home-screen.md). Trips is enabled: it
+  // opens the trip picker (onTripsOpen() -> ActivityManager::goToRouteSelect()).
   struct Row {
     HomeMenuItem item;
     StrId label;
     const freeink::Icon* icon;
-    bool enabled;
   };
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-  static constexpr int kRowCount = 8;  // + the grayscale bench row
+  static constexpr int kRowCount = 6;  // + the grayscale bench row
 #else
-  static constexpr int kRowCount = 7;
+  static constexpr int kRowCount = 5;
 #endif
   static const Row* rows();
   static int indexOf(HomeMenuItem item);
 
-  // Skip disabled rows: `step` is +1 or -1 and the walk wraps.
-  int nextSelectable(int from, int step) const;
+  // Wraps `from` by `step` (+1 or -1) within the row count.
+  static int stepRow(int from, int step);
 
   void onSettingsOpen();
   void onFileTransferOpen();

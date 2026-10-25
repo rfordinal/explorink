@@ -982,9 +982,6 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
   constexpr int kIconGap = 18;
   constexpr int kBlockRadius = 10;
   constexpr int kBlockMargin = 2;
-  // Disabled rows are dimmed by BaseTheme::dimDisabledRow(), which is where the
-  // line-screen reasoning lives -- OptionPopup draws its own disabled rows
-  // through the same helper.
 
   const int left = rect.x + metrics.contentSidePadding;
   const int width = rect.width - metrics.contentSidePadding * 2;
@@ -993,7 +990,6 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
   for (int i = 0; i < rowCount; ++i) {
     const int top = rect.y + i * rowHeight;
     const bool selected = i == selectedIndex;
-    const bool enabled = rows[i].enabled;
 
     if (selected) {
       renderer.fillRoundedRect(left, top + kBlockMargin, width, rowHeight - kBlockMargin * 2, kBlockRadius,
@@ -1012,12 +1008,7 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
     renderer.drawMono1bpp(chevron.bits, left + width - kRowInset - chevron.w, top + (rowHeight - chevron.h) / 2,
                           chevron.w, chevron.h, !selected);
 
-    if (!enabled) {
-      dimDisabledRow(renderer, left, top + kBlockMargin, width, rowHeight - kBlockMargin * 2);
-    }
-
-    // Hairline between rows, drawn after the dimming so a dimmed row does not
-    // eat the separator above it. Not above the first row and not against the
+    // Hairline between rows. Not above the first row and not against the
     // selected block, which is its own boundary.
     if (i > 0 && !selected && selectedIndex != i - 1) {
       renderer.drawLine(left + 4, top, left + width - 4, top, 1, true);
