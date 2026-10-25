@@ -848,6 +848,16 @@ fails on `RadioLib.h: No such file or directory`. `base.lib_ignore` now carries
 `base.lib_deps`, which would compile a radio library into three boards that
 have no radio.
 
+**Verified on hardware, 2026-10-25: a no-radio board boots clean with this
+branch's `lib_ignore` gating.** `env:default` built for X3/X4 with 0 compile
+warnings and no `lora`/`meshcore`/`radiolib` symbol anywhere in the build log
+(`feat/lora-presence` at `0281e613`). Flashed to the X3 and watched boot over
+serial: `Boot` -> `Home` -> low-power (10 MHz) -> free heap steady at
+110,248 bytes across two 10 s samples, no coredump, no watchdog reset. The gate
+in `platformio.ini` is not just a compile-time guard against a missing header --
+it is the reason a board with no SX1262 on the bus never links against a driver
+for one.
+
 ## The event log: what was heard, what went out, and what did not
 
 **Built 2026-10-23, on a maintainer's ask.** The panel says what the radio is
