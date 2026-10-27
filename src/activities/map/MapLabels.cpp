@@ -323,9 +323,17 @@ void MapLabels::offerLandmark(MapLabelScratch& scratch, const MapPointRef& point
 }
 
 void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style) {
-  const uint8_t maxLabels = style.placeMaxLabels;
-  if (maxLabels == 0) return;
-  if (style.placeLabelPx == 0 && style.placeLabelMinorPx == 0) return;
+  // Two budgets, never one. `placeMaxLabels` is the places' affordability
+  // ceiling and `pointMaxLabels` is the landmarks'. They used to share a
+  // single running total, so on a rung where places may draw four names the
+  // landmarks got whatever was left of those four -- measured over Sulov
+  // 2026-10-27: fourteen named landmarks on one panel, four labels drawn, and
+  // the cap that stopped it belonged to the other layer (T-305).
+  const uint8_t maxPlaceLabels = style.placeMaxLabels;
+  const uint8_t maxPointLabels = style.pointMaxLabels;
+  const bool drawsPlaceNames = maxPlaceLabels > 0 && (style.placeLabelPx != 0 || style.placeLabelMinorPx != 0);
+  const bool drawsPointNames = maxPointLabels > 0 && style.pointLabelPx != 0;
+  if (!drawsPlaceNames && !drawsPointNames) return;
 
   int drawableX = 0, drawableY = 0, drawableW = 0, drawableH = 0;
   canvas.drawableRect(drawableX, drawableY, drawableW, drawableH);
@@ -348,7 +356,10 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
   // be crowded out by a village that happened to fit first.
   int placedMajor = 0, placedMinor = 0, placedLandmark = 0;
   for (int i = 0; i < scratch.count; ++i) {
-    if (scratch.placed >= maxLabels) break;
+    // Stop only when BOTH budgets are spent. A landmark that is skipped
+    // because the places are full would be a name lost to another layer's
+    // ceiling.
+    if (placedMajor + placedMinor >= maxPlaceLabels && placedLandmark >= maxPointLabels) break;
     const MapLabelCandidate& candidate = scratch.candidates[i];
 
     // A place whose dot is off screen is not a dropped label. The tile range is
@@ -369,8 +380,9 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
     // never a candidate for this frame, the same reasoning as the off-screen
     // test above.
     if (candidate.landmark) {
-      if (placedLandmark >= style.pointMaxLabels) continue;
-    } else if (minor ? placedMinor >= style.placeMaxLabelsMinor : placedMajor >= style.placeMaxLabelsMajor) {
+      if (placedLandmark >= maxPointLabels) continue;
+    } else if (placedMajor + placedMinor >= maxPlaceLabels ||
+               (minor ? placedMinor >= style.placeMaxLabelsMinor : placedMajor >= style.placeMaxLabelsMajor)) {
       continue;
     }
     const int sizePx = candidate.landmark ? style.pointLabelPx : (minor ? style.placeLabelMinorPx : style.placeLabelPx);

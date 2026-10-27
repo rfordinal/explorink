@@ -59,9 +59,15 @@ rung too generous everywhere else. Measured on the Súľov panel 2026-10-27:
 | rung | `landmark_rank_max` | what the panel held before tightening |
 |---|---|---|
 | 0 | 3 (everything) | fine |
-| 1 | 1 | fine |
+| 1 | 3 (everything) | fine |
 | 2 | 0 | 151 marks at rank 1 |
 | 3 and wider | 0 | 527 marks at rank 1 |
+
+Rung 1 carries tier 3 because of the second measurement, against a published
+hiking map of the same ground: that sheet names guideposts and localities at
+about the rung-1 width (1.4 km), and our own panel holds fourteen named
+landmarks there. The mark count is not the only question -- what a map of this
+kind is expected to name at a given width is the other.
 
 Peaks and towers around a ridge are far denser than the regional average says,
 which is why a count over a big box cannot set a per-panel cutoff.
@@ -107,7 +113,14 @@ has to know where every other name went. Landmarks have their own text size
 (`max_labels`) next to the places' two -- a ridge full of peaks must not be
 able to spend the villages' budget.
 
-Three mechanics worth knowing:
+**Two budgets, never one.** `placeMaxLabels` is the places' ceiling and
+`pointMaxLabels` is the landmarks'; the placer stops only when both are spent.
+They shared one running total at first, and because a rung-1 style lets places
+draw four names, the landmarks got whatever was left of those four: measured
+over Súľov, a panel holding **fourteen named landmarks drew four labels**, and
+the cap that stopped it belonged to the other layer.
+
+Three more mechanics worth knowing:
 
 - **The name is read during the point walk**, which is the only moment a
   point's name is in hand: `MapPointRef::name` points into the source's own
