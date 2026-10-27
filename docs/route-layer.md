@@ -142,6 +142,52 @@ a guard on the device eventually -- the transfer path knows the destination path
 and `MapRouteSource` knows what it has open -- but nothing here is broken enough to
 justify it before the console command below exists.
 
+## Deleting one from the picker
+
+**Added 2026-10-27, verified on a T5 S3 Pro the same day.** Before it, nothing
+could delete a route: not this screen, not the console, not the phone. A card
+collected every route ever pushed to it against `MapRouteStore::kMaxRoutes`
+(24), and the 25th was unreachable.
+
+Held Select on a route row opens a confirm; Delete removes the file and the
+card is re-listed. Three decisions worth keeping:
+
+- **Held Select, not a fifth button.** The four hints (Back/Select/Up/Down) are
+  full, and this is the gesture and the hold length the reader's bookmark list
+  already uses (`EpubReaderBookmarksActivity`, 700 ms). Short press still rides
+  the route, so the destructive action is not on the press a rider makes every
+  time.
+- **`MapRouteStore::remove()` takes a file name, never a path.** Everything that
+  reaches it comes from a listed row. A path-taking version would be one BLE
+  verb away from deleting anything on the card, on a channel with no pairing
+  and no bonding.
+- **No open-route guard, and none can be needed here.** `ActivityManager`
+  replaces activities rather than stacking them, so opening the picker has
+  already destroyed any `MapActivity`: the picker and the map are never both
+  alive. The hazard the section above describes belongs to the phone's push
+  path, which *can* arrive while the map is up.
+
+Deleting the last trip leaves through `goToRouteSelect()`, which already
+chooses between the picker and `RouteEmptyActivity` -- a one-row list whose only
+row is Skip explains nothing.
+
+### Two bugs the first flash had, both about the same press
+
+Worth keeping because both are shapes that repeat on this device.
+
+**The hint line was overdrawn.** It was given a line of its own under the status
+line, and `listRect()` measures the list from a top that allows for exactly one
+line there. The list drew over it and left half a sentence showing. A second
+line of chrome on this screen means changing the geometry, not just drawing it;
+the hint is appended to the status line instead.
+
+**Cancel re-opened the prompt inside a second.** The press that picks Cancel is
+the *same press* that opened the prompt -- the button is still down when the
+popup closes, so `getHeldTime()` is already past the threshold and the next
+`loop()` opens it again. A hold that opens something must be re-armed on the
+button being physically up; a timer would re-open it for a rider who simply
+keeps a thumb down.
+
 ## Drawing
 
 `MapRenderer::drawRoute()` (`MapRenderer.cpp:80`) draws the polyline at
