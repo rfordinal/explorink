@@ -129,11 +129,28 @@ the shipped build). So `label_px: 8` drew the 12 px contour face, and every
 value from 0 to 22 renders **byte-identically** -- measured 2026-10-27 by
 sweeping 8, 10, 12, 14 and 16 and diffing the frames.
 
-The shipped value is 24, which is ubuntu_10: a bigger ascender than
-notosans_8 at 23 (20 against 18), and the only one of the two with a bold cut,
-which a tier of landmark names may want later. Landmarks also carry their own
-`label_max_width_px`, separate from the places' one, because a landmark name
-runs longer -- "Kostol sv. Michala archanjela" against "Súľov-Hradná".
+The shipped value is **23**, which is notosans_8. 24 (ubuntu_10) was tried
+first and read as too big on the panel: the two line heights differ by one
+pixel, but Noto Sans at that ppem is a narrower, lighter cut, so it reads a
+size smaller and two long names stop needing an ellipsis. What 24 has that 23
+does not is a bold cut -- `smallFontFamily` is regular only -- so a tier of
+landmark names set in bold would have to move back up.
+
+Landmarks also carry their own `label_max_width_px` (230), separate from the
+places' 170, because a landmark name runs longer: "Kostol sv. Michala
+archanjela" against "Súľov-Hradná".
+
+**The halo is 3 px and every map label gets one.** `MapLabels::draw()` paints
+the string in white eight times per ring radius before the black pass lands,
+so only the pixels the letters need are knocked out and the map keeps showing
+through between them. It was 2, which held up over white but thinned over the
+dither a field or a forest is drawn with -- and that is exactly the ground a
+locality name sits on. 3 costs one more dropped label per rung-1 panel,
+because the knockout box each name reserves grows with it. The contour numbers
+carry the same number through a different path: `drawTextRotated` grows the
+glyphs by `contourLabelHaloPx` in the opposite ink, one pass rather than
+eight, because a rotated label needs it most where it sits on the line it
+names.
 
 Three more mechanics worth knowing:
 
