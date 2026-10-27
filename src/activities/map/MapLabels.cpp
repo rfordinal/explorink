@@ -210,6 +210,29 @@ bool fitName(IMapCanvas& canvas, const char* name, const int sizePx, const bool 
 
 }  // namespace
 
+namespace {
+
+// Copies a name into a fixed buffer, cutting on a UTF-8 codepoint boundary.
+//
+// snprintf's "%s" cuts at a byte, so a name one byte too long could lose half
+// of its last character and draw a replacement glyph mid-word. Same rule the
+// writer already applies on the other side of the format
+// (mapbuilder/tilegen/point_file.py, clamp_name).
+void copyName(char* out, const int outLen, const char* name) {
+  if (outLen <= 0) return;
+  int n = 0;
+  while (name[n] != '\0' && n < outLen - 1) ++n;
+  // A continuation byte is 10xxxxxx. If the cut landed on one, walk back to
+  // the lead byte and drop the whole sequence.
+  if (name[n] != '\0') {
+    while (n > 0 && (static_cast<unsigned char>(name[n]) & 0xC0) == 0x80) --n;
+  }
+  std::memcpy(out, name, static_cast<size_t>(n));
+  out[n] = '\0';
+}
+
+}  // namespace
+
 void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const int anchorX, const int anchorY) {
   if (place.name == nullptr || place.name[0] == '\0') return;
   // A place whose dot is off the panel cannot be named -- draw() skips it -- so
@@ -225,7 +248,7 @@ void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const 
   const long dy = static_cast<long>(place.y) - anchorY;
   const long distSq = dx * dx + dy * dy;
   incoming.distSq = distSq > 0xFFFFFFFF ? 0xFFFFFFFFu : static_cast<uint32_t>(distSq);
-  std::snprintf(incoming.name, MapLabelCandidate::kNameLen, "%s", place.name);
+  copyName(incoming.name, MapLabelCandidate::kNameLen, place.name);
 
   // The cell's own quota, checked before the global one. Without it the whole
   // buffer goes to whichever part of the panel happens to be densest, which

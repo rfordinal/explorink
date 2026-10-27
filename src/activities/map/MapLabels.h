@@ -79,7 +79,21 @@ class MapOccupancyGrid {
 // and placement cannot start until the whole layer has been walked -- the
 // rank-first order is the whole point.
 struct MapLabelCandidate {
-  static constexpr int kNameLen = 32;
+  // 63 bytes of UTF-8 plus a terminator -- exactly what the point file allows
+  // a name to be (kPointNameMaxBytes, docs/point-file-spec.md) and more than a
+  // place name has ever needed.
+  //
+  // It was 32, which is fine for a village and short for a landmark: Slovak
+  // names run long ("Chranena krajinna oblast Strazovske vrchy" is 47 bytes)
+  // and the cut landed mid-name, sometimes mid-codepoint. Widening costs
+  // kMaxCandidates x 32 = 1,152 bytes of the label scratch, which MapActivity
+  // allocates once on the heap for the map screen (T-2034).
+  //
+  // A name still longer than this is cut on a codepoint boundary, never inside
+  // a UTF-8 sequence -- half a sequence draws a replacement glyph in the
+  // middle of a word. Fitting it to the panel is a separate job and belongs to
+  // fitName()'s ellipsis, which measures pixels rather than bytes.
+  static constexpr int kNameLen = 64;
   int16_t x = 0;
   int16_t y = 0;
   uint8_t rank = 0;
