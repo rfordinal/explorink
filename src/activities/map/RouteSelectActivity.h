@@ -97,6 +97,14 @@ class RouteSelectActivity final : public Activity {
   // on the row underneath it.
   OptionPopup confirmPopup_;
   bool confirming_ = false;
+  // One prompt per press of Select, not one per 700 ms of holding it.
+  //
+  // Measured on a T5 S3 Pro, 2026-10-27: picking Cancel closed the prompt and
+  // it came straight back. The button is still down when the prompt closes --
+  // the press that picked Cancel is the same press -- so getHeldTime() is
+  // already past the threshold and the next loop() opens it again. Cleared
+  // only when Select is physically up.
+  bool deleteHoldArmed_ = true;
   // Said on the next render when a delete failed: the card refused, the row is
   // still there, and a list that silently re-appeared unchanged would read as
   // "nothing happened" rather than "that did not work".

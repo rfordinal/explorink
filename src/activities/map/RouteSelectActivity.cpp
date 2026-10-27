@@ -68,6 +68,10 @@ void RouteSelectActivity::loop() {
   if (confirmPopup_.handleInput(mappedInput, [this] { renderScreen(); })) return;
   if (confirming_) return;
 
+  // Re-arm on the button being up, never on a timer: anything time-based would
+  // re-open the prompt for a rider who simply keeps their thumb down.
+  if (!mappedInput.isPressed(MappedInputManager::Button::Confirm)) deleteHoldArmed_ = true;
+
   const int rows = rowCount();
   bool moved = false;
   if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
@@ -95,8 +99,9 @@ void RouteSelectActivity::loop() {
   // Held, not released: the delete prompt opens while the button is still down,
   // so the release that follows it belongs to the prompt rather than riding the
   // route. Short press is still "ride this one".
-  if (mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
+  if (deleteHoldArmed_ && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
       mappedInput.getHeldTime() >= kDeleteHoldMs) {
+    deleteHoldArmed_ = false;
     askDeleteSelected();
     return;
   }
@@ -213,15 +218,18 @@ void RouteSelectActivity::renderScreen() {
     // Louder than the count it replaces: the row is still on the list and a
     // silent re-render reads as "nothing happened".
     snprintf(status, sizeof(status), "%s", tr(STR_ROUTE_DELETE_FAILED));
+  } else if (entryCount_ > 0) {
+    // Held Select is the only way to delete and the four button hints are full,
+    // so the status line says it. Appended to that line rather than given one
+    // of its own: listRect() measures the list from a top that allows for
+    // exactly one line here, and a second drawn line is simply overdrawn by the
+    // list -- measured on a T5 S3 Pro, 2026-10-27, which is what the first
+    // version of this screen did.
+    const size_t used = strlen(status);
+    snprintf(status + used, sizeof(status) - used, "  %s", tr(STR_ROUTE_DELETE_HINT));
   }
   renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
   y += lineHeight;
-  // Held Select is the only way to delete and nothing else on the screen says
-  // so -- the four button hints are full.
-  if (entryCount_ > 0) {
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, tr(STR_ROUTE_DELETE_HINT), true);
-    y += lineHeight;
-  }
 
   drawList();
 
