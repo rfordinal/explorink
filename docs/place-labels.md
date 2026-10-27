@@ -26,6 +26,14 @@ Read with `docs/map-render-spec.md` (parent repo) item 5, which is the contract.
   compact enough to draw several of.
 - The dot is always drawn. A place whose label was dropped still shows as a dot.
 
+## Landmark names ride this same placer
+
+Since 2026-10-27 the point layer's landmarks are named by this pass too
+(`landmarks.md`). They are offered during the point walk rather than the place
+walk, carry their own text size and their own cap, and clear their own mark
+rather than the place dot. Everything below -- the eight positions, the three
+hard tests, least-ink wins -- applies to them unchanged.
+
 ## Greedy, not a zoom table
 
 `MapLabels::offer()` is called for every place in the frame during the walk that
