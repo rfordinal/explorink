@@ -52,4 +52,20 @@ bool anyRoutes();
 // Builds "/trailink/trips/<fileName>" into `out`. False if it would not fit.
 bool buildPath(const char* fileName, char* out, uint32_t outCapacity);
 
+// Deletes one route off the card. False when the path did not fit or the card
+// refused, and the caller says so rather than re-listing as if it had worked.
+//
+// Takes a file name and never a path: everything that can reach this comes from
+// a row of list() above, and a function that accepted a path would be one BLE
+// verb away from deleting anything on the card
+// (../../../../docs/route-share-plan.md, Phase 4).
+//
+// Nothing here checks whether the map has this route open, and nothing needs
+// to: the picker and the map are never both alive. ActivityManager replaces the
+// current activity rather than stacking (ActivityManager::replaceActivity), so
+// opening the picker has already destroyed any MapActivity. The overwrite
+// hazard that rule exists for is the phone's push path, which can arrive while
+// the map is up (firmware docs/route-layer.md).
+bool remove(const char* fileName);
+
 }  // namespace MapRouteStore
