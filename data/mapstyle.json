@@ -309,6 +309,8 @@
       "label_px": 0,
       "label_bold": false,
       "max_labels": 0,
+      "label_max_width_px": 230,
+      "_comment_label_px": "label_px is a LINE-HEIGHT CAP and not a type size. The canvas picks the largest registered face whose line height fits under it, and falls back to the SMALLEST face when nothing does. Registered line heights are 12 (ubuntu_5, the contour-number face), 23 (notosans_8), 24 (ubuntu_10), 29 (ubuntu_12) and 34 (notosans_12, dropped by OMIT_FONTS in the shipped build). So every value from 0 to 22 renders byte-identically -- measured 2026-10-27, after label_px 8 silently drew the 12 px contour face and read as too small and too loose on the panel. 24 is ubuntu_10: bigger than notosans_8 at 23 (ascender 20 against 18) and the only one of the two with a bold cut, which a tier of landmark names may want later. label_max_width_px is the landmarks' own ellipsis cap, separate from the places' one because a landmark name runs longer -- 'Kostol sv. Michala archanjela'.",
       "safety_enabled": true,
       "square_px": 18,
       "_comment_landmark_dot": "EVERY landmark draws landmark_dot_px as a dot, never the square -- there is no landmark glyph sheet and an empty square says nothing (maintainer, 2026-10-27). The name beside the dot carries the meaning, so label_px and max_labels are what make this layer worth drawing at all; with label_px 0 a landmark is an anonymous dot. 0 here draws no mark and leaves only the name.", "_comment_landmarks": "Landmarks are OFF everywhere but hike, and in hike the rank cutoff tightens as the rung widens -- a rank is per record (mapbuilder/tilegen/landmark.py) and 0 is the rarest tier. The numbers come from the density measured in docs/map-landmarks.md, carried onto one panel: a rung-0 panel is 480x800 m, so Mala Fatra's 63.5 rank-0-plus-1 records per z11 tile (12.8 km square) is about 2 marks on that panel. MEASURED on the panel over Sulov 2026-10-27, twice. First against mark count: rank 1 at rung 2 put 151 marks on one screen and at rung 3 put 527, because peaks and towers are far denser around a ridge than the regional average says. Then against a published hiking map of the same ground at the same scale, which draws guidepost and locality NAMES at about the rung-1 width (1.4 km) -- so rung 1 carries tier 3 after all, and the 14 named landmarks on that panel are what the reference sheet names there too. Rung 2 and wider keep rank 0 only: a castle, a pass, a cave, a waterfall.",
@@ -319,7 +321,7 @@
           ],
           "landmark_enabled": true,
           "landmark_rank_max": 0,
-          "label_px": 8,
+          "label_px": 24,
           "max_labels": 10
         },
         {

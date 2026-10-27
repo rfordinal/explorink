@@ -947,7 +947,7 @@ def points_style(style):
     points = style.get("layers", {}).get("points")
     if points is None:
         print("gen_mapstyle.py: layers.points missing -- POI marks off")
-        return False, False, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0
+        return False, False, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0, 0
 
     safety = bool(points.get("safety_enabled", True))
     landmark = bool(points.get("landmark_enabled", False))
@@ -967,6 +967,15 @@ def points_style(style):
     max_labels = int(points.get("max_labels", 0))
     if not 0 <= max_labels <= 255:
         sys.exit(f"gen_mapstyle.py: layers.points.max_labels {max_labels} does not fit a uint8_t")
+    # Falls back to the places' cap when absent, so a style that never thought
+    # about landmark names keeps today's behaviour.
+    label_max_width = _round_px(
+        points.get("label_max_width_px",
+                   (style.get("layers", {}).get("places") or {}).get("label_max_width_px", 0)),
+        "layers.points.label_max_width_px")
+    if label_max_width > 65535:
+        sys.exit(f"gen_mapstyle.py: layers.points.label_max_width_px {label_max_width} "
+                 "does not fit a uint16_t")
     if label_px and not max_labels:
         sys.exit("gen_mapstyle.py: layers.points.label_px is set but max_labels is 0 -- "
                  "no landmark name would ever be drawn. Set max_labels, or label_px to 0.")
@@ -1004,7 +1013,8 @@ def points_style(style):
         if value > 255:
             sys.exit(f"gen_mapstyle.py: layers.points.{name} {value}px does not fit a uint8_t")
     return (safety, landmark, rank_max, landmark_dot, square, border, glyph, flag,
-            cluster_radius, cluster_cell, label_px, label_bold, max_labels)
+            cluster_radius, cluster_cell, label_px, label_bold, max_labels,
+            label_max_width)
 
 
 def place_labels(style):
@@ -1332,6 +1342,7 @@ def _style_literal(bundle):
         f"    .pointLabelPx = {points_px[10]},",
         f"    .pointLabelBold = {'true' if points_px[11] else 'false'},",
         f"    .pointMaxLabels = {points_px[12]},",
+        f"    .pointLabelMaxWidthPx = {points_px[13]},",
         f"    .pointLandmarkDotPx = {points_px[3]},",
         f"    .pointSquarePx = {points_px[4]},",
         f"    .pointBorderPx = {points_px[5]},",

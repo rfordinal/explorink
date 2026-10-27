@@ -120,6 +120,21 @@ draw four names, the landmarks got whatever was left of those four: measured
 over Súľov, a panel holding **fourteen named landmarks drew four labels**, and
 the cap that stopped it belonged to the other layer.
 
+**`label_px` is a line-height cap, not a type size, and that cost a day.** The
+canvas picks the largest registered face whose line height fits under the
+number and **falls back to the smallest face when nothing does**. The faces
+are 12 px (ubuntu_5, built for contour numbers), 23 (notosans_8), 24
+(ubuntu_10), 29 (ubuntu_12) and 34 (notosans_12, dropped by `OMIT_FONTS` in
+the shipped build). So `label_px: 8` drew the 12 px contour face, and every
+value from 0 to 22 renders **byte-identically** -- measured 2026-10-27 by
+sweeping 8, 10, 12, 14 and 16 and diffing the frames.
+
+The shipped value is 24, which is ubuntu_10: a bigger ascender than
+notosans_8 at 23 (20 against 18), and the only one of the two with a bold cut,
+which a tier of landmark names may want later. Landmarks also carry their own
+`label_max_width_px`, separate from the places' one, because a landmark name
+runs longer -- "Kostol sv. Michala archanjela" against "Súľov-Hradná".
+
 Three more mechanics worth knowing:
 
 - **The name is read during the point walk**, which is the only moment a

@@ -392,7 +392,8 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
 
     char text[MapLabelCandidate::kNameLen + 4];
     int textW = 0, textH = 0;
-    if (!fitName(canvas, candidate.name, sizePx, bold, style.placeLabelMaxWidthPx, text, sizeof(text), textW, textH)) {
+    const int maxWidth = candidate.landmark ? style.pointLabelMaxWidthPx : style.placeLabelMaxWidthPx;
+    if (!fitName(canvas, candidate.name, sizePx, bold, maxWidth, text, sizeof(text), textW, textH)) {
       ++scratch.dropped;
       continue;
     }

@@ -552,9 +552,19 @@ struct MapStyle {
   // Landmark names, drawn by the same placer as the place names and capped
   // separately so a ridge full of peaks cannot spend the villages' budget.
   // 0 px or 0 labels draws none, which is what every mode but hike does today.
+  // `pointLabelPx` is a LINE-HEIGHT CAP, not a type size: the canvas picks the
+  // largest registered face whose line height does not exceed it, and falls
+  // back to the smallest face when nothing fits. The faces are 12, 23, 24, 29
+  // and 34 px tall, so every value from 0 to 22 renders identically -- which
+  // is how `label_px: 8` drew the 12 px contour-number face for half a day
+  // (GfxRendererCanvas::fontIdForSize, test/map_preview/PreviewFont.cpp).
   uint8_t pointLabelPx;
   bool pointLabelBold;
   uint8_t pointMaxLabels;
+  // Landmarks get their own width cap rather than the places' one: a landmark
+  // name is routinely longer than a village's ("Kostol sv. Michala
+  // archanjela") and the ellipsis is what the reader pays.
+  uint16_t pointLabelMaxWidthPx;
   // Diameter of the dot EVERY landmark draws instead of a square. 0 draws no
   // mark at all, which is a legitimate setting once names are on: a landmark
   // is a name and the dot only pins it to its ground.
