@@ -216,8 +216,12 @@ TEST(MapCommandParser, HeadingZoomMarker) {
 TEST(MapCommandParser, Modes) {
   EXPECT_EQ(parseMapCommand("mode ride").mode, MapRideMode::Ride);
   EXPECT_EQ(parseMapCommand("mode hike").mode, MapRideMode::Hike);
-  EXPECT_EQ(parseMapCommand("mode cycle").mode, MapRideMode::Cycle);
-  EXPECT_EQ(parseMapCommand("mode cycle").type, MapCommandType::Mode);
+  EXPECT_EQ(parseMapCommand("mode tourist").mode, MapRideMode::Tourist);
+  EXPECT_EQ(parseMapCommand("mode tourist").type, MapCommandType::Mode);
+  // `cycle` was slot 2's name until 2026-10-27 and is NOT kept as an alias:
+  // the mode it named was never built, so answering to it would keep the
+  // promise alive on the wire after the menu stopped making it.
+  EXPECT_EQ(parseMapCommand("mode cycle").error, MapCommandError::BadMode);
 }
 
 TEST(MapCommandParser, BareCommands) {
@@ -471,8 +475,8 @@ TEST(MapCommandConsole, TwoChannelsShareOneState) {
   EXPECT_TRUE(feedLine(serial, out, "zoom 4"));
   EXPECT_EQ(ble.state().zoomStep(), 4);
 
-  EXPECT_TRUE(feedLine(ble, out, "mode cycle"));
-  EXPECT_EQ(serial.state().mode(), MapRideMode::Cycle);
+  EXPECT_TRUE(feedLine(ble, out, "mode tourist"));
+  EXPECT_EQ(serial.state().mode(), MapRideMode::Tourist);
 
   // Half a line on each channel. Neither completes, so neither runs, and
   // the halves never form one command.
@@ -491,13 +495,13 @@ TEST(MapCommandConsole, LaddersPushedBackByTheActivityAreWhatInfoReports) {
   MapCommandConsole console(state);
   CollectingWriter out;
   EXPECT_TRUE(feedLine(console, out, "zoom 1"));
-  state.setLadders(/*zoomStep=*/4, /*markerStep=*/0, MapRideMode::Cycle);
+  state.setLadders(/*zoomStep=*/4, /*markerStep=*/0, MapRideMode::Tourist);
 
   out.lines.clear();
   EXPECT_FALSE(feedLine(console, out, "info"));
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO zoom=4"), out.lines.end());
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO marker=0"), out.lines.end());
-  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO mode=cycle"), out.lines.end());
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO mode=tourist"), out.lines.end());
 }
 
 TEST(MapCommandConsole, TilesCommandBeforeAnyResetReportsNone) {

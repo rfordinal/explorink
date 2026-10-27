@@ -21,11 +21,17 @@ constexpr int kMarkerHikeDotDiameter = 18;
 // behind on the map -- see the note where it is drawn.
 constexpr int kMarkerHikeHandReach = kMarkerRingDiameter / 2 - kMarkerRingWidth;
 constexpr int kMarkerHikeHandHalfW = 2;
-// Cycle/Ride draw a heading arrow whose whole shape (base width, waist notch,
+// Tourist/Ride draw a heading arrow whose whole shape (base width, waist notch,
 // shoulders -- see MapMarkerShape.generated.h) is a fixed ratio of this one
 // center-to-tip length, generated from src/components/icons/marker-ride.svg
 // by scripts/gen_marker_shape.py. Only the tip length is a free knob per mode.
-constexpr int kMarkerCycleTipLen = 16;
+// Still the arrow cycle used, now drawn for tourist. OPEN, 2026-10-27: a
+// walker's heading comes from a phone in a pocket and an arrow is a claim
+// about direction that hike deliberately refuses to make (see the dot above).
+// Left unchanged with the rename because a marker is judged on the panel and
+// nothing has been judged yet -- changing it blind would trade one unargued
+// shape for another.
+constexpr int kMarkerTouristTipLen = 16;
 constexpr int kMarkerRideTipLen = 25;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
 
@@ -98,7 +104,7 @@ struct MarkerMetrics {
   // wider than the line it is cutting or it reads as a bruise on the ring
   // instead of a hole through it.
   int ringGap;
-  int cycleTipLen;
+  int touristTipLen;
   int rideTipLen;
   int haloMargin;
   // The marker's halo box: the unit of every partial operation. Everything the
@@ -144,7 +150,7 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8) {
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
   m.ringGap = m.ringWidth * 2 + 2;
-  m.cycleTipLen = markerScaled(kMarkerCycleTipLen, scale8);
+  m.touristTipLen = markerScaled(kMarkerTouristTipLen, scale8);
   m.rideTipLen = markerScaled(kMarkerRideTipLen, scale8);
   m.haloMargin = markerScaled(kMarkerHaloMargin, scale8);
   m.box = m.ring + 2 * m.haloMargin;
@@ -179,13 +185,13 @@ static_assert(markerHandFitsAtEveryRung(),
 // table for those two directions is what makes that true -- an arbitrary angle
 // would not land on that circle in integer arithmetic.
 
-// Same bound, for Cycle/Ride's heading arrow: its farthest vertex
+// Same bound, for Tourist/Ride's heading arrow: its farthest vertex
 // (kMarkerArrowMaxReachPermille, from marker-ride.svg) scaled by tipLen must
 // stay inside the patch box too, or a move leaves it behind on the map.
 constexpr bool markerArrowFitsAtEveryRung() {
   for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
     const MarkerMetrics m = markerMetricsFor(MapViewport::kZoomLadder[step].markerScale8);
-    if (m.cycleTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
+    if (m.touristTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
     if (m.rideTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
   }
   return true;

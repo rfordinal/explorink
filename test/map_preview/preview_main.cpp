@@ -4,7 +4,7 @@
 //
 // Usage:
 //   map_preview --tiles <dir> --lat <d> --lon <d> [--heading 0-15]
-//               [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle]
+//               [--zoom 0-4] [--marker 0-4] [--mode ride|hike|tourist]
 //               [--tile <col>/<row>] [--hatch] [--route <file.tir>]
 //               [--no-points] [--no-labels] [--point-categories water,hut,...]
 //               [--fit-route] [--no-marker] [--out <file>]
@@ -125,7 +125,7 @@ bool parseArgs(int argc, char** argv, MapPreviewRequest& request, std::string& o
       if (!v) return false;
       MapRideMode mode;
       if (!mapRideModeFromName(v, mode)) {
-        std::fprintf(stderr, "--mode wants ride, hike or cycle\n");
+        std::fprintf(stderr, "--mode wants ride, hike or tourist\n");
         return false;
       }
       // The mask is picked with the rung, so --mode must not be read before
@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
   if (!parseArgs(argc, argv, request, outPath, benchRuns)) {
     std::fprintf(stderr,
                  "usage: map_preview --tiles <dir> --lat <d> --lon <d> "
-                 "[--heading 0-15] [--zoom 0-4] [--marker 0-4] [--mode ride|hike|cycle] "
+                 "[--heading 0-15] [--zoom 0-4] [--marker 0-4] [--mode ride|hike|tourist] "
                  "[--tile <col>/<row>] [--hatch] [--route <file.tir>] [--fit-route] [--out <file>]\n"
                  "       [--no-ink-test] [--bench <runs>]\n"
                  "       map_preview --tiles <dir> --route <file.tir> --fit-route\n"
