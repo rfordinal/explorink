@@ -143,6 +143,13 @@ without competing on ink. When it is legal it is the right answer for a
 summit, and a position that puts the name beside the mark instead of around it
 is not a cheaper version of the same thing.
 
+**The height is set smaller than the name** (`label_ele_px`, 12 -- ubuntu_5,
+the face the contour numbers use). The number qualifies the summit; the name
+is what the eye is hunting for, and at the name's own size the two read as
+equals. 0 means "the name's size", so a style that never thought about it
+keeps the old behaviour. Each line carries its own size and line height in
+`FittedLabel`, which is what makes a mixed-size block measurable at all.
+
 Two rules the layout gives way on, both because the name is worth more than
 the number:
 

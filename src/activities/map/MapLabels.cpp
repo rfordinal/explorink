@@ -189,16 +189,23 @@ struct FittedLabel {
   static constexpr int kMaxLines = 2;
   char line[kMaxLines][MapLabelCandidate::kNameLen + 4] = {};
   int width[kMaxLines] = {0, 0};
+  // Per line, because a summit's height is set smaller than its name -- the
+  // number is a qualifier and the name is the thing being read.
+  int lineH[kMaxLines] = {0, 0};
+  int sizePx[kMaxLines] = {0, 0};
   int lines = 0;
-  int lineHeight = 0;
   // Pixels held open between the two lines, so the mark itself sits in the
   // middle of the block: name above, symbol on the point, height below. The
   // layout a paper map gives a summit. 0 means the lines are adjacent, which
   // is what a wrapped name wants.
   int gapPx = 0;
 
-  int height() const { return lineHeight * lines + gapPx; }
-  int width_() const { return width[0] > width[1] ? width[0] : width[1]; }
+  int height() const {
+    int h = gapPx;
+    for (int i = 0; i < lines; ++i) h += lineH[i];
+    return h;
+  }
+  int width_() const { return lines > 1 && width[1] > width[0] ? width[1] : width[0]; }
 };
 
 // U+2026, which the built-in faces carry (lib/EpdFont/builtinFonts, interval
@@ -209,7 +216,8 @@ bool measureInto(IMapCanvas& canvas, FittedLabel& fitted, const int index, const
   int height = 0;
   if (!canvas.measureText(fitted.line[index], sizePx, bold, fitted.width[index], height)) return false;
   if (fitted.width[index] <= 0 || height <= 0) return false;
-  fitted.lineHeight = height;
+  fitted.lineH[index] = height;
+  fitted.sizePx[index] = sizePx;
   return true;
 }
 
@@ -291,11 +299,12 @@ bool fitName(IMapCanvas& canvas, const char* name, const int sizePx, const bool 
 // box's own width -- a two-line name reads as one block rather than as two
 // left-aligned fragments.
 void drawFitted(IMapCanvas& canvas, const FittedLabel& fitted, const int boxX, const int boxY, const int boxW,
-                const int sizePx, const bool bold, const MapInk ink) {
+                const bool bold, const MapInk ink) {
+  int y = boxY;
   for (int i = 0; i < fitted.lines; ++i) {
+    if (i > 0) y += fitted.lineH[i - 1] + fitted.gapPx;
     const int x = boxX + (boxW - fitted.width[i]) / 2;
-    const int y = boxY + i * (fitted.lineHeight + (i > 0 ? fitted.gapPx : 0));
-    canvas.drawText(x, y, fitted.line[i], sizePx, bold, ink);
+    canvas.drawText(x, y, fitted.line[i], fitted.sizePx[i], bold, ink);
   }
 }
 
@@ -507,7 +516,10 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
     bool straddle = false;
     if (candidate.below[0] != '\0' && fitted.lines == 1) {
       std::snprintf(fitted.line[1], sizeof(fitted.line[1]), "%s", candidate.below);
-      if (measureInto(canvas, fitted, 1, sizePx, bold)) {
+      // Smaller than the name: the height qualifies the summit, it is not what
+      // the eye is looking for. 0 means "same as the name".
+      const int elePx = style.pointLabelElePx > 0 ? style.pointLabelElePx : sizePx;
+      if (measureInto(canvas, fitted, 1, elePx, bold)) {
         fitted.lines = 2;
         fitted.gapPx = candidate.markHalfPx * 2 + 2;
         straddle = true;
@@ -654,12 +666,12 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
         // than the box.
         for (int radius = 1; radius <= style.placeLabelHaloPx; ++radius) {
           for (const HaloOffset& offset : kHaloRing) {
-            drawFitted(canvas, fitted, textBox.x + offset.dx * radius, textBox.y + offset.dy * radius, textBox.w,
-                       sizePx, bold, MapInk::White);
+            drawFitted(canvas, fitted, textBox.x + offset.dx * radius, textBox.y + offset.dy * radius, textBox.w, bold,
+                       MapInk::White);
           }
         }
       }
-      drawFitted(canvas, fitted, textBox.x, textBox.y, textBox.w, sizePx, bold, MapInk::Black);
+      drawFitted(canvas, fitted, textBox.x, textBox.y, textBox.w, bold, MapInk::Black);
       scratch.taken.markRect(knockout.x, knockout.y, knockout.w, knockout.h);
       ++scratch.placed;
       if (candidate.landmark) {

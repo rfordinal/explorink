@@ -323,6 +323,7 @@
           "landmark_enabled": true,
           "landmark_rank_max": 0,
           "label_px": 23,
+          "label_ele_px": 12,
           "max_labels": 10
         },
         {

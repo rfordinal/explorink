@@ -561,6 +561,9 @@ struct MapStyle {
   uint8_t pointLabelPx;
   bool pointLabelBold;
   uint8_t pointMaxLabels;
+  // Line-height cap for a summit's height line, under its name. 0 draws it at
+  // the name's own size. Same face ladder as pointLabelPx.
+  uint8_t pointLabelElePx;
   // Landmarks get their own width cap rather than the places' one: a landmark
   // name is routinely longer than a village's ("Kostol sv. Michala
   // archanjela") and the ellipsis is what the reader pays.
