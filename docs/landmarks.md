@@ -131,6 +131,32 @@ has to know where every other name went. Landmarks have their own text size
 (`max_labels`) next to the places' two -- a ridge full of peaks must not be
 able to spend the villages' budget.
 
+### A summit is set the way a paper map sets one
+
+Name above, the triangle on the point, the height below, all three centred.
+The label block **straddles** the mark rather than sitting beside it: the two
+lines are held apart by the mark's own height (`FittedLabel::gapPx`), and the
+whole block is centred on the point.
+
+The straddle is tried **first and on its own**, before the eight positions and
+without competing on ink. When it is legal it is the right answer for a
+summit, and a position that puts the name beside the mark instead of around it
+is not a cheaper version of the same thing.
+
+Two rules the layout gives way on, both because the name is worth more than
+the number:
+
+- **Only when the name fits on one line.** A name that already wrapped has no
+  room for a third line, so it keeps the wrap and loses the height.
+- **Only when the straddle box is legal.** If there is no room around the
+  mark, the label falls back to the ordinary eight positions with the name
+  alone -- a stacked name-over-number beside the mark would read as two
+  labels.
+
+The mark is drawn by the mark pass and the label by the label pass, so a
+summit whose label is dropped still shows its triangle. That is why the
+triangle is not drawn by the label.
+
 **Two budgets, never one.** `placeMaxLabels` is the places' ceiling and
 `pointMaxLabels` is the landmarks'; the placer stops only when both are spent.
 They shared one running total at first, and because a rung-1 style lets places

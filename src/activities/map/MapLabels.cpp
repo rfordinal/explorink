@@ -191,6 +191,14 @@ struct FittedLabel {
   int width[kMaxLines] = {0, 0};
   int lines = 0;
   int lineHeight = 0;
+  // Pixels held open between the two lines, so the mark itself sits in the
+  // middle of the block: name above, symbol on the point, height below. The
+  // layout a paper map gives a summit. 0 means the lines are adjacent, which
+  // is what a wrapped name wants.
+  int gapPx = 0;
+
+  int height() const { return lineHeight * lines + gapPx; }
+  int width_() const { return width[0] > width[1] ? width[0] : width[1]; }
 };
 
 // U+2026, which the built-in faces carry (lib/EpdFont/builtinFonts, interval
@@ -286,7 +294,8 @@ void drawFitted(IMapCanvas& canvas, const FittedLabel& fitted, const int boxX, c
                 const int sizePx, const bool bold, const MapInk ink) {
   for (int i = 0; i < fitted.lines; ++i) {
     const int x = boxX + (boxW - fitted.width[i]) / 2;
-    canvas.drawText(x, boxY + i * fitted.lineHeight, fitted.line[i], sizePx, bold, ink);
+    const int y = boxY + i * (fitted.lineHeight + (i > 0 ? fitted.gapPx : 0));
+    canvas.drawText(x, y, fitted.line[i], sizePx, bold, ink);
   }
 }
 
@@ -370,7 +379,19 @@ void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const 
   if (scratch.count < MapLabelScratch::kMaxCandidates) ++scratch.count;
 }
 
-void MapLabels::offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name,
+namespace {
+void markLandmark(MapLabelCandidate& candidate, const char* below, const int markHalfPx) {
+  candidate.landmark = true;
+  candidate.markHalfPx = static_cast<uint8_t>(markHalfPx);
+  if (below != nullptr && below[0] != '\0') {
+    std::snprintf(candidate.below, sizeof(candidate.below), "%s", below);
+  } else {
+    candidate.below[0] = '\0';
+  }
+}
+}  // namespace
+
+void MapLabels::offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name, const char* below,
                               const int markHalfPx, const int anchorX, const int anchorY) {
   if (name == nullptr || name[0] == '\0') return;
   if (!scratch.onScreen(static_cast<int>(point.x), static_cast<int>(point.y))) return;
@@ -388,8 +409,7 @@ void MapLabels::offerLandmark(MapLabelScratch& scratch, const MapPointRef& point
     // exact: two candidates cannot share a screen pixel and a name.
     for (int i = 0; i < scratch.count; ++i) {
       if (scratch.candidates[i].x == asPlace.x && scratch.candidates[i].y == asPlace.y) {
-        scratch.candidates[i].landmark = true;
-        scratch.candidates[i].markHalfPx = static_cast<uint8_t>(markHalfPx);
+        markLandmark(scratch.candidates[i], below, markHalfPx);
         return;
       }
     }
@@ -397,8 +417,7 @@ void MapLabels::offerLandmark(MapLabelScratch& scratch, const MapPointRef& point
   }
   for (int i = 0; i < scratch.count; ++i) {
     if (scratch.candidates[i].x == asPlace.x && scratch.candidates[i].y == asPlace.y) {
-      scratch.candidates[i].landmark = true;
-      scratch.candidates[i].markHalfPx = static_cast<uint8_t>(markHalfPx);
+      markLandmark(scratch.candidates[i], below, markHalfPx);
       return;
     }
   }
@@ -478,12 +497,28 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       ++scratch.dropped;
       continue;
     }
-    // The box a wrapped name competes for is twice as deep, and every rule
-    // below -- the eight positions, the gap, the route overlap, the ink test --
+    // A summit is set the way a paper map sets one: name above, the symbol on
+    // the point, the height below. That needs the label block to STRADDLE the
+    // mark rather than sit beside it, so the two lines are held apart by the
+    // mark's own height.
+    //
+    // Only when the name fits on one line. A name that already wrapped has no
+    // room for a third line, and the name is worth more than the number.
+    bool straddle = false;
+    if (candidate.below[0] != '\0' && fitted.lines == 1) {
+      std::snprintf(fitted.line[1], sizeof(fitted.line[1]), "%s", candidate.below);
+      if (measureInto(canvas, fitted, 1, sizePx, bold)) {
+        fitted.lines = 2;
+        fitted.gapPx = candidate.markHalfPx * 2 + 2;
+        straddle = true;
+      }
+    }
+
+    // The box a wrapped or straddling name competes for is deeper, and every
+    // rule below -- the positions, the gap, the route overlap, the ink test --
     // works on this box.
-    int textW = fitted.width[0];
-    if (fitted.lines > 1 && fitted.width[1] > textW) textW = fitted.width[1];
-    const int textH = fitted.lineHeight * fitted.lines;
+    int textW = fitted.width_();
+    int textH = fitted.height();
 
     // Eight positions, in preference order: right of the dot first (the
     // cartographic default for left-to-right text), then left, then below and
@@ -494,6 +529,31 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
     // The diagonal offset is the straight one scaled by ~0.7, so a diagonal
     // label sits the same distance from the dot as a cardinal one instead of
     // 1.4x further out.
+    // The straddle is tried first and on its own: when it is legal it is the
+    // right answer for a summit, so it does not compete on ink with eight
+    // positions that put the name beside the mark instead of around it.
+    const auto boxUsable = [&](const Box& box) {
+      const Box knock = inflate(box, knockoutPad);
+      if (!contains(drawable, knock)) return false;
+      if (canvas.areaReserved(knock.x, knock.y, knock.w, knock.h)) return false;
+      const Box spaced = inflate(knock, style.placeLabelGapPx);
+      if (scratch.taken.anySet(spaced.x, spaced.y, spaced.w, spaced.h)) return false;
+      int routeCells = 0, totalCells = 0;
+      scratch.route.coverage(knock.x, knock.y, knock.w, knock.h, routeCells, totalCells);
+      return !(totalCells > 0 && 100 * routeCells > style.placeLabelRouteOverlapPct * totalCells);
+    };
+    Box straddleBox{candidate.x - textW / 2, candidate.y - textH / 2, textW, textH};
+    const bool straddlePlaced = straddle && boxUsable(straddleBox);
+    if (straddle && !straddlePlaced) {
+      // No room around the mark. Keep the name, drop the number: a stacked
+      // name-over-number beside the mark would read as two labels.
+      fitted.lines = 1;
+      fitted.gapPx = 0;
+      straddle = false;
+      textW = fitted.width_();
+      textH = fitted.height();
+    }
+
     const int gap = style.placeLabelOffsetPx + (candidate.landmark ? candidate.markHalfPx : dotHalf);
     const int diag = gap * 7 / 10;
     const Box placements[kPlacementCount] = {
@@ -574,9 +634,9 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       }
     }
 
-    const bool drew = bestIndex >= 0;
+    const bool drew = straddlePlaced || bestIndex >= 0;
     if (drew) {
-      const Box& textBox = placements[bestIndex];
+      const Box& textBox = straddlePlaced ? straddleBox : placements[bestIndex];
       const Box knockout = inflate(textBox, knockoutPad);
       if (style.placeLabelBg) {
         if (style.placeLabelBgBorderPx > 0) {

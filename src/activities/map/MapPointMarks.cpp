@@ -513,14 +513,13 @@ void offerName(MapLabelScratch* labels, const MapPointRef& point, const MapStyle
   // kPointEleUnknown is a SENTINEL and must never be printed, which is the one
   // way this could go wrong -- a peak with no surveyed height would read as
   // 32,768 m below sea level.
-  const char* text = point.name;
-  char withEle[MapLabelCandidate::kNameLen + 8];
+  char below[8] = "";
   if (point.name != nullptr && point.name[0] != '\0' && point.ele != kPointEleUnknown &&
       point.category < kLandmarkCategoryCount && kLandmarkShowEle[point.category]) {
-    std::snprintf(withEle, sizeof(withEle), "%s %d", point.name, static_cast<int>(point.ele));
-    text = withEle;
+    std::snprintf(below, sizeof(below), "%d", static_cast<int>(point.ele));
   }
-  MapLabels::offerLandmark(*labels, point, text, marksSide(point.kind, point.category, style) / 2, anchorX, anchorY);
+  MapLabels::offerLandmark(*labels, point, point.name, below, marksSide(point.kind, point.category, style) / 2, anchorX,
+                           anchorY);
 }
 
 void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style, MapLabelScratch* labels, int anchorX,

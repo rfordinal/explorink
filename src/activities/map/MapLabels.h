@@ -107,6 +107,9 @@ struct MapLabelCandidate {
   uint8_t markHalfPx = 0;
   uint32_t distSq = 0;
   char name[kNameLen] = "";
+  // A second line drawn UNDER the mark while `name` goes above it: a summit's
+  // height, the layout a paper map gives one. Empty for everything else.
+  char below[8] = "";
 };
 
 // The label pass's whole working set, owned by the caller.
@@ -250,8 +253,11 @@ void offer(MapLabelScratch& scratch, const MapPlaceRef& place, int anchorX, int 
 // Offered during the point walk, drawn by the same draw() as the places: a
 // name has to know where every other name went, and placement cannot start
 // until both layers have been walked (MapLabels.h, the note above).
-void offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name, int markHalfPx, int anchorX,
-                   int anchorY);
+// `below`, when non-empty, is drawn under the mark with `name` above it --
+// name, symbol, height, stacked and centred, which is how a paper map sets a
+// summit. Pass nullptr for a landmark whose whole label is its name.
+void offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name, const char* below,
+                   int markHalfPx, int anchorX, int anchorY);
 
 // Places and draws what fits. Call after the route has been drawn (so
 // scratch.route is marked) and after the place dots, since a label sits over
