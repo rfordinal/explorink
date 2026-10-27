@@ -1207,7 +1207,7 @@ pedestrian zones and the streets read as cased bands against the hairline
 footways, and the relief is gone, which takes the castle-hill contours out from
 under the street fabric.
 
-**Still open after that run, and the reason T-2033 stays:** the steps ladder
+**Still open after that run, and the reason T-2035 stays:** the steps ladder
 looks busy at 3 m/px. There are 772 `steps` ways in this tile and their rungs
 are scattered right across the frame. At 1 m/px the mark is right. Whether it
 should survive rung 1 and 2 at all, or drop to a plain line, is a maintainer's
