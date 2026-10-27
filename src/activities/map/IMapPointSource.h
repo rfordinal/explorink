@@ -22,6 +22,19 @@ struct MapPointRef {
   MapPointKind kind = MapPointKind::Unknown;
   uint8_t category = 0;
   uint8_t flags = 0;
+  // Landmarks only. 0 is most important; on a safety record it means "no rank"
+  // and the per-rung cutoff must not read it as a rank at all (MapPointMarks,
+  // visible()). A version-1 shard has no rank byte and reads back as 0 here,
+  // which is harmless for the same reason: such a file holds no landmarks.
+  uint8_t rank = kPointRankNone;
+
+  // The point's name, or nullptr when it has none or the source was not asked
+  // for names. **Valid only until the next nextMapPoint() call** -- it points
+  // into the source's own buffer, the same contract MapPlaceRef::name has, and
+  // for the same reason: a name is a seek and a read per record, so it is
+  // fetched into one reusable buffer rather than carried for every point in
+  // range (MapPointReader::readName).
+  const char* name = nullptr;
 };
 
 // The pull interface MapRenderer draws the point layer through -- the same

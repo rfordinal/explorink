@@ -1097,11 +1097,17 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // (docs/map-render-spec.md, "Point mark vocabulary"), so the bigger mark goes
   // on top -- a square half hidden by a place dot reads as neither.
   //
-  // The source decides which categories are in the walk
-  // (MapPointSource::Config::categoryMask): `Nearby -> Show on map` is a
-  // temporary view, so it filters the walk and never the style.
+  // The source decides which SAFETY categories are in the walk
+  // (MapPointSource::Config::safetyCategoryMask): `Nearby -> Show on map` is a
+  // temporary view, so it filters the walk and never the style. Landmarks have
+  // their own mask and are not gated by it: they are on the map because this
+  // mode's style draws them.
+  //
+  // Landmark names are offered here, during the walk, because this is the only
+  // place a point's name is in hand -- the placer runs below, once every layer
+  // has been walked.
   if (points != nullptr && style.pointSquarePx > 0 && points->beginMapPoints()) {
-    MapPointMarks::drawAll(canvas, *points, style);
+    MapPointMarks::drawAll(canvas, *points, style, labels, style.markerXPx, style.markerYPx);
   }
   if (timing) lap(timing->pointsMs, mark);
 

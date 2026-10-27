@@ -535,6 +535,32 @@ struct MapStyle {
   // Show on map` is a temporary view, not a style edit.
   bool pointsSafetyEnabled;
   bool pointsLandmarkEnabled;
+  // Landmarks ranked above this are not drawn. 0 draws only rank 0 (a
+  // defensive castle, a pass, a cave, a waterfall), 3 draws everything down to
+  // guideposts and locality names.
+  //
+  // Per rung and per mode through the style's own `when` clauses, because the
+  // density is not one number: 2.7 rank-2 marks per z11 tile in Mala Fatra
+  // against 16.2 in Bratislava (docs/map-landmarks.md, "The density problem").
+  // A ridge walker wants peaks; the same cutoff over a city at an overview
+  // rung is a wall of squares.
+  //
+  // Read ONLY for kind == Landmark. A safety record carries rank 0 meaning
+  // "no rank", and the zoom that would hide a spring is the zoom a walker
+  // needs it at.
+  uint8_t pointLandmarkRankMax;
+  // Landmark names, drawn by the same placer as the place names and capped
+  // separately so a ridge full of peaks cannot spend the villages' budget.
+  // 0 px or 0 labels draws none, which is what every mode but hike does today.
+  uint8_t pointLabelPx;
+  bool pointLabelBold;
+  uint8_t pointMaxLabels;
+  // Diameter of the dot a text-only landmark draws instead of a square
+  // (kLandmarkTextOnly in MapPointTypes.h: locality, guidepost). 0 draws no
+  // mark at all, which is the right answer once the name itself is drawn --
+  // such a landmark is a name, not a symbol, and the dot is only there so the
+  // ground it names can be found before the label pass exists.
+  uint8_t pointLandmarkDotPx;
   uint8_t pointSquarePx;
   uint8_t pointBorderPx;
   uint8_t pointGlyphPx;

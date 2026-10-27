@@ -206,10 +206,32 @@ void drawGlyph(IMapCanvas& canvas, uint8_t category, int x, int y, int g) {
 // style.pointClusterCellPx for one slot for a tiled cluster -- either way the
 // box is what centres the white knock-out, the border-or-icon-halo and the
 // flag consistently.
-void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, int cx, int cy, const MapStyle& style) {
+void drawMarkAt(IMapCanvas& canvas, MapPointKind kind, uint8_t category, uint16_t flags, int side, int cx, int cy,
+                const MapStyle& style) {
   if (side <= 0) return;
+  // kPoiIconByCategory is indexed by MapSafetyCategory, so it may only be
+  // consulted for a safety point. A landmark category id is a different
+  // vocabulary entirely -- castle is 1 there and water is 1 here -- and
+  // indexing one table with the other's id draws a confident lie.
+  // A text-only landmark is a name, not a symbol: no square, no glyph, no
+  // flag, just a dot small enough that the name beside it is the thing being
+  // read. 4,680 localities in one build is why -- a square each would bury the
+  // map under marks that say nothing (point_spec.LANDMARK_TEXT_ONLY).
+  if (kind == MapPointKind::Landmark && category < kLandmarkCategoryCount && kLandmarkTextOnly[category]) {
+    const int dot = style.pointLandmarkDotPx;
+    if (dot <= 0) return;
+    if (canvas.areaReserved(cx - dot / 2, cy - dot / 2, dot, dot)) return;
+    // White under it for the same reason the square knocks out: a dot on a
+    // built-up tone or a contour is not a dot.
+    disc(canvas, cx, cy, dot + 2, MapInk::White);
+    disc(canvas, cx, cy, dot, MapInk::Black);
+    return;
+  }
+
   const freeink::Icon* icon =
-      category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0]) ? kPoiIconByCategory[category] : nullptr;
+      kind == MapPointKind::Safety && category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
+          ? kPoiIconByCategory[category]
+          : nullptr;
   const int left = cx - side / 2;
   const int top = cy - side / 2;
 
@@ -236,7 +258,12 @@ void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, 
   } else {
     rectOutline(canvas, left, top, side, side, style.pointBorderPx > 0 ? style.pointBorderPx : 1, MapInk::Black);
     const int glyph = style.pointGlyphPx;
-    if (glyph > 0 && glyph <= side - 2) {
+    // drawGlyph() switches on MapSafetyCategory. A landmark draws the empty
+    // square and nothing inside it until it has artwork of its own: the square
+    // already says "this exists in the data", which is true, and a borrowed
+    // glyph would say which kind of thing it is, which would be false.
+    // The landmark glyph sheet is T-305 Step 7 and the maintainer's to draw.
+    if (kind == MapPointKind::Safety && glyph > 0 && glyph <= side - 2) {
       drawGlyph(canvas, category, cx - glyph / 2, cy - glyph / 2, glyph);
     }
   }
@@ -251,9 +278,14 @@ void drawMarkAt(IMapCanvas& canvas, uint8_t category, uint16_t flags, int side, 
   }
 }
 
-int marksSide(uint8_t category, const MapStyle& style) {
+int marksSide(MapPointKind kind, uint8_t category, const MapStyle& style) {
+  if (kind == MapPointKind::Landmark && category < kLandmarkCategoryCount && kLandmarkTextOnly[category]) {
+    return style.pointLandmarkDotPx;
+  }
   const freeink::Icon* icon =
-      category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0]) ? kPoiIconByCategory[category] : nullptr;
+      kind == MapPointKind::Safety && category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
+          ? kPoiIconByCategory[category]
+          : nullptr;
   return icon ? icon->w : style.pointSquarePx;
 }
 
@@ -266,6 +298,11 @@ struct Cluster {
   int32_t sumX = 0;
   int32_t sumY = 0;
   int32_t count = 0;
+  // Which kind's vocabulary categoryMask speaks. A point only ever merges into
+  // a cluster of its own kind: safety category 2 is a shelter and landmark
+  // category 2 is a manor, so one mask holding both would draw one glyph and
+  // mean two things (T-305 Step 9).
+  MapPointKind kind = MapPointKind::Unknown;
   uint16_t categoryMask = 0;
   uint16_t flagMask = 0;
 
@@ -294,11 +331,16 @@ int32_t dist2(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
 // wrong cluster is still on the map; a point silently skipped is not, and
 // this only fires when a single viewport opens more distinct locations than
 // any shard measured so far has shown.
-void addPoint(Cluster* clusters, int& count, int32_t radiusPx, int32_t x, int32_t y, uint8_t category, bool flagged) {
+// Returns false when the point found no cluster of its own kind and there was
+// no slot left to start one. The caller draws such a point on its own rather
+// than dropping it -- see drawAll().
+bool addPoint(Cluster* clusters, int& count, int32_t radiusPx, int32_t x, int32_t y, MapPointKind kind,
+              uint8_t category, bool flagged) {
   int best = -1;
   int32_t bestD2 = 0;
   const int32_t r2 = radiusPx * radiusPx;
   for (int i = 0; i < count; ++i) {
+    if (clusters[i].kind != kind) continue;
     const int32_t d2 = dist2(x, y, clusters[i].cx(), clusters[i].cy());
     if (d2 <= r2 && (best < 0 || d2 < bestD2)) {
       best = i;
@@ -309,14 +351,26 @@ void addPoint(Cluster* clusters, int& count, int32_t radiusPx, int32_t x, int32_
     if (count < kMaxClusters) {
       best = count++;
       clusters[best] = Cluster{};
+      clusters[best].kind = kind;
     } else {
+      // Out of slots: fold into the nearest cluster OF THIS KIND rather than
+      // drop the point. Never into a foreign one -- a mark drawn in the wrong
+      // vocabulary is worse than no mark, which is the whole reason this
+      // function knows about kinds.
       for (int i = 0; i < count; ++i) {
+        if (clusters[i].kind != kind) continue;
         const int32_t d2 = dist2(x, y, clusters[i].cx(), clusters[i].cy());
         if (best < 0 || d2 < bestD2) {
           best = i;
           bestD2 = d2;
         }
       }
+      // This kind has no cluster at all and there is no slot to start one.
+      // Hand it back to the caller instead of swallowing it: when both kinds
+      // are on, the walk order decides which kind fills the table first, and
+      // dropping here made every landmark on a dense panel invisible while the
+      // log still counted it as drawn (measured over Sulov, 2026-10-27).
+      if (best < 0) return false;
     }
   }
   Cluster& c = clusters[best];
@@ -327,6 +381,7 @@ void addPoint(Cluster* clusters, int& count, int32_t radiusPx, int32_t x, int32_
     c.categoryMask |= static_cast<uint16_t>(1u << category);
     if (flagged) c.flagMask |= static_cast<uint16_t>(1u << category);
   }
+  return true;
 }
 
 void drawCluster(IMapCanvas& canvas, const Cluster& c, const MapStyle& style) {
@@ -341,7 +396,7 @@ void drawCluster(IMapCanvas& canvas, const Cluster& c, const MapStyle& style) {
   const int32_t cy = c.cy();
   if (n == 1) {
     const uint16_t flags = (c.flagMask & (1u << categories[0])) ? kPointFlaggedOnMapMask : 0;
-    drawMarkAt(canvas, categories[0], flags, marksSide(categories[0], style), cx, cy, style);
+    drawMarkAt(canvas, c.kind, categories[0], flags, marksSide(c.kind, categories[0], style), cx, cy, style);
     return;
   }
 
@@ -359,7 +414,7 @@ void drawCluster(IMapCanvas& canvas, const Cluster& c, const MapStyle& style) {
     const int32_t slotCx = originX + col * cell + cell / 2;
     const int32_t slotCy = originY + row * cell + cell / 2;
     const uint16_t flags = (c.flagMask & (1u << categories[i])) ? kPointFlaggedOnMapMask : 0;
-    drawMarkAt(canvas, categories[i], flags, cell, slotCx, slotCy, style);
+    drawMarkAt(canvas, c.kind, categories[i], flags, cell, slotCx, slotCy, style);
   }
 }
 
@@ -372,27 +427,66 @@ int16_t reachPx(const MapStyle& style) {
   if (style.pointClusterRadiusPx == 0) return static_cast<int16_t>(single);
   // Worst case for the query margin: every category a build knows about
   // landed in one cluster, tiled as big as that makes it, merged from as far
-  // as pointClusterRadiusPx away.
+  // as pointClusterRadiusPx away. Whichever kind has more categories decides
+  // it -- a cluster holds one kind, but the margin has to cover either.
+  const int widest = kLandmarkCategoryCount > kSafetyCategoryCount ? kLandmarkCategoryCount : kSafetyCategoryCount;
   int side = 1;
-  while (side * side < kSafetyCategoryCount) ++side;
+  while (side * side < widest) ++side;
   const int tileHalf = (side * style.pointClusterCellPx) / 2;
   const int reach = style.pointClusterRadiusPx + tileHalf + 1;
   return static_cast<int16_t>(reach > single ? reach : single);
 }
 
-void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
-  if (point.kind == MapPointKind::Safety && !style.pointsSafetyEnabled) return;
-  if (point.kind == MapPointKind::Landmark && !style.pointsLandmarkEnabled) return;
-  const uint16_t flags = (point.flags & kPointFlaggedOnMapMask) != 0 ? kPointFlaggedOnMapMask : 0;
-  drawMarkAt(canvas, point.category, flags, marksSide(point.category, style), static_cast<int>(point.x),
-             static_cast<int>(point.y), style);
+// Is this point drawn at all, before anything is measured or placed?
+//
+// The rank test is scoped to a landmark and must stay that way. A safety
+// record always carries rank 0, which there means "no rank" and never "most
+// important" -- hoisting this test out of the kind branch would let a
+// landmark cutoff hide a spring, and the zoom that would hide a spring is the
+// zoom a walker needs it at (docs/point-file-spec.md, "`rank` is
+// writer-defined"). A version-1 shard reads every record back as rank 0 for
+// the same reason it reads them back as kind 1: it holds no landmarks at all,
+// so this test never sees one from such a file.
+bool visible(const MapPointRef& point, const MapStyle& style) {
+  if (point.kind == MapPointKind::Safety) return style.pointsSafetyEnabled;
+  if (point.kind == MapPointKind::Landmark) {
+    return style.pointsLandmarkEnabled && point.rank <= style.pointLandmarkRankMax;
+  }
+  return true;
 }
 
-void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style) {
+uint8_t kindMaskFor(const MapStyle& style) {
+  uint8_t mask = 0;
+  if (style.pointsSafetyEnabled) mask |= 1u << static_cast<uint8_t>(MapPointKind::Safety);
+  if (style.pointsLandmarkEnabled) mask |= 1u << static_cast<uint8_t>(MapPointKind::Landmark);
+  return mask;
+}
+
+void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
+  if (!visible(point, style)) return;
+  const uint16_t flags = (point.flags & kPointFlaggedOnMapMask) != 0 ? kPointFlaggedOnMapMask : 0;
+  drawMarkAt(canvas, point.kind, point.category, flags, marksSide(point.kind, point.category, style),
+             static_cast<int>(point.x), static_cast<int>(point.y), style);
+}
+
+// A landmark's name, offered to the label pass if one is running. Only a
+// landmark: a safety point's name belongs on the Nearby list and its square
+// already says what it is, so naming it on the map would spend ink twice.
+void offerName(MapLabelScratch* labels, const MapPointRef& point, const MapStyle& style, int anchorX, int anchorY) {
+  if (labels == nullptr || style.pointLabelPx == 0) return;
+  if (point.kind != MapPointKind::Landmark) return;
+  MapLabels::offerLandmark(*labels, point, point.name, marksSide(point.kind, point.category, style) / 2, anchorX,
+                           anchorY);
+}
+
+void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style, MapLabelScratch* labels, int anchorX,
+             int anchorY) {
   if (style.pointClusterRadiusPx == 0) {
     // Clustering off: exactly today's per-point walk, no scratch buffer.
     MapPointRef point;
     while (source.nextMapPoint(point)) {
+      if (!visible(point, style)) continue;
+      offerName(labels, point, style, anchorX, anchorY);
       draw(canvas, point, style);
     }
     return;
@@ -402,10 +496,16 @@ void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style)
   int clusterCount = 0;
   MapPointRef point;
   while (source.nextMapPoint(point)) {
-    if (point.kind == MapPointKind::Safety && !style.pointsSafetyEnabled) continue;
-    if (point.kind == MapPointKind::Landmark && !style.pointsLandmarkEnabled) continue;
-    addPoint(clusters, clusterCount, style.pointClusterRadiusPx, static_cast<int32_t>(point.x),
-             static_cast<int32_t>(point.y), point.category, (point.flags & kPointFlaggedOnMapMask) != 0);
+    if (!visible(point, style)) continue;
+    offerName(labels, point, style, anchorX, anchorY);
+    if (!addPoint(clusters, clusterCount, style.pointClusterRadiusPx, static_cast<int32_t>(point.x),
+                  static_cast<int32_t>(point.y), point.kind, point.category,
+                  (point.flags & kPointFlaggedOnMapMask) != 0)) {
+      // No slot and no cluster of this kind: draw it where it is. One
+      // unclustered mark among clustered ones is a small inconsistency; a
+      // whole kind missing from the panel is not.
+      draw(canvas, point, style);
+    }
   }
   for (int i = 0; i < clusterCount; ++i) {
     drawCluster(canvas, clusters[i], style);

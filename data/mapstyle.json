@@ -308,8 +308,43 @@
       "flag_px": 5,
       "glyph_px": 11,
       "landmark_enabled": false,
+      "landmark_rank_max": 0,
+      "landmark_dot_px": 4,
+      "label_px": 0,
+      "label_bold": false,
+      "max_labels": 0,
       "safety_enabled": true,
-      "square_px": 18
+      "square_px": 18,
+      "_comment_landmarks": "Landmarks are OFF everywhere but hike, and in hike the rank cutoff tightens as the rung widens -- a rank is per record (mapbuilder/tilegen/landmark.py) and 0 is the rarest tier. The numbers come from the density measured in docs/map-landmarks.md, carried onto one panel: a rung-0 panel is 480x800 m, so Mala Fatra's 63.5 rank-0-plus-1 records per z11 tile (12.8 km square) is about 2 marks on that panel. MEASURED on the panel over Sulov 2026-10-27, which moved every number down a rung from the arithmetic: rank 1 at rung 2 put 151 marks on one screen and at rung 3 put 527, because peaks and towers are far denser around a ridge than the regional average says. So tier 3 is rung 0 alone, tier 1 is rung 1 alone, and every wider rung keeps rank 0 only: a castle, a pass, a cave, a waterfall.",
+      "when": [
+        {
+          "modes": [
+            "hike"
+          ],
+          "landmark_enabled": true,
+          "landmark_rank_max": 0,
+          "label_px": 8,
+          "max_labels": 10
+        },
+        {
+          "modes": [
+            "hike"
+          ],
+          "steps": [
+            0
+          ],
+          "landmark_rank_max": 3
+        },
+        {
+          "modes": [
+            "hike"
+          ],
+          "steps": [
+            1
+          ],
+          "landmark_rank_max": 1
+        }
+      ]
     },
     "position": {
       "_comment": "The 'you are here' puck at the viewport origin: white disc, black ring, black heading arrow. Sizes in device pixels.",

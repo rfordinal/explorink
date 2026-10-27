@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "IMapCanvas.h"
+#include "IMapPointSource.h"
 #include "IMapSource.h"
 #include "MapStyle.h"
 
@@ -82,6 +83,14 @@ struct MapLabelCandidate {
   int16_t x = 0;
   int16_t y = 0;
   uint8_t rank = 0;
+  // A landmark name rather than a place name: its own text size and its own
+  // cap, because the two answer different questions and a ridge full of peaks
+  // must not be able to spend the village names' budget.
+  bool landmark = false;
+  // How far this candidate's own mark reaches from its anchor, so the label is
+  // pushed clear of it. A place dot and an 18 px POI square are not the same
+  // distance, and a text-only landmark's dot is smaller than either.
+  uint8_t markHalfPx = 0;
   uint32_t distSq = 0;
   char name[kNameLen] = "";
 };
@@ -218,6 +227,17 @@ namespace MapLabels {
 // map would need a redraw per fix instead of per viewport reset
 // (docs/map-render-spec.md, "the map underneath stays byte-identical").
 void offer(MapLabelScratch& scratch, const MapPlaceRef& place, int anchorX, int anchorY);
+
+// The same, for a point-layer landmark: a castle, a peak, a named rock, a
+// guidepost, a locality. `markHalfPx` is how far its own mark reaches from the
+// point (MapPointMarks::marksSide()/2), so the name clears the square or the
+// dot it belongs to.
+//
+// Offered during the point walk, drawn by the same draw() as the places: a
+// name has to know where every other name went, and placement cannot start
+// until both layers have been walked (MapLabels.h, the note above).
+void offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name, int markHalfPx, int anchorX,
+                   int anchorY);
 
 // Places and draws what fits. Call after the route has been drawn (so
 // scratch.route is marked) and after the place dots, since a label sits over

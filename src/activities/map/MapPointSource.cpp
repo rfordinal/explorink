@@ -24,7 +24,10 @@ bool MapPointSource::beginMapPoints() {
   shardIndex_ = 0;
 
   if (config_.rootDir == nullptr) return false;
-  if (config_.kindMask == 0 || config_.categoryMask == 0) return false;
+  // Nothing to walk when no kind is wanted, or when every kind that is wanted
+  // has an empty category mask of its own.
+  if (config_.kindMask == 0) return false;
+  if (config_.safetyCategoryMask == 0 && config_.landmarkCategoryMask == 0) return false;
   if (config_.range.col1 < config_.range.col0 || config_.range.row1 < config_.range.row0) return false;
   shardCount_ = config_.range.count();
   if (shardCount_ == 0) return false;
@@ -81,7 +84,9 @@ bool MapPointSource::wanted(const MapPointReader::Record& record) const {
   if (kindBit >= 8) return false;
   if ((config_.kindMask & (1u << kindBit)) == 0) return false;
   if (record.category >= 16) return false;
-  return (config_.categoryMask & (1u << record.category)) != 0;
+  const uint16_t mask =
+      record.kind == MapPointKind::Landmark ? config_.landmarkCategoryMask : config_.safetyCategoryMask;
+  return (mask & (1u << record.category)) != 0;
 }
 
 bool MapPointSource::nextMapPoint(MapPointRef& out) {
@@ -122,6 +127,11 @@ bool MapPointSource::nextMapPoint(MapPointRef& out) {
     out.kind = record.kind;
     out.category = record.category;
     out.flags = record.flags;
+    out.rank = record.rank;
+    out.name = nullptr;
+    if (config_.wantNames && record.nameLen > 0 && reader_.readName(record, nameBuf_, sizeof(nameBuf_))) {
+      out.name = nameBuf_;
+    }
     ++pointsEmitted_;
     return true;
   }

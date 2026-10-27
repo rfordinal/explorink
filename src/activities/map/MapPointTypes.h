@@ -78,6 +78,13 @@ static constexpr const char* kLandmarkCategoryNames[14] = {
     "pass",    "rock",   "cave",  "waterfall", "tower",  "guidepost", "locality",
 };
 
+// True for a landmark category that is a NAME and not a mark: it draws its
+// text and at most a small dot, never the square (point_spec.py,
+// LANDMARK_TEXT_ONLY). Indexed by landmark category id.
+static constexpr bool kLandmarkTextOnly[14] = {
+    false, false, false, false, false, false, false, false, false, false, false, false, true, true,
+};
+
 enum MapPointFlag : uint8_t {
   kPointUnverified = 1u << 0,
   kPointRestricted = 1u << 1,

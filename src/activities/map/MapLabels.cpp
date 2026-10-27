@@ -265,6 +265,40 @@ void MapLabels::offer(MapLabelScratch& scratch, const MapPlaceRef& place, const 
   if (scratch.count < MapLabelScratch::kMaxCandidates) ++scratch.count;
 }
 
+void MapLabels::offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name,
+                              const int markHalfPx, const int anchorX, const int anchorY) {
+  if (name == nullptr || name[0] == '\0') return;
+  if (!scratch.onScreen(static_cast<int>(point.x), static_cast<int>(point.y))) return;
+
+  MapPlaceRef asPlace;
+  asPlace.x = static_cast<int16_t>(point.x);
+  asPlace.y = static_cast<int16_t>(point.y);
+  asPlace.rank = point.rank;
+  asPlace.name = name;
+  const uint8_t before = scratch.count;
+  offer(scratch, asPlace, anchorX, anchorY);
+  if (scratch.count == before) {
+    // offer() either inserted or replaced; either way the new entry is the one
+    // whose name matches and which is not yet marked. Finding it by position is
+    // exact: two candidates cannot share a screen pixel and a name.
+    for (int i = 0; i < scratch.count; ++i) {
+      if (scratch.candidates[i].x == asPlace.x && scratch.candidates[i].y == asPlace.y) {
+        scratch.candidates[i].landmark = true;
+        scratch.candidates[i].markHalfPx = static_cast<uint8_t>(markHalfPx);
+        return;
+      }
+    }
+    return;
+  }
+  for (int i = 0; i < scratch.count; ++i) {
+    if (scratch.candidates[i].x == asPlace.x && scratch.candidates[i].y == asPlace.y) {
+      scratch.candidates[i].landmark = true;
+      scratch.candidates[i].markHalfPx = static_cast<uint8_t>(markHalfPx);
+      return;
+    }
+  }
+}
+
 void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style) {
   const uint8_t maxLabels = style.placeMaxLabels;
   if (maxLabels == 0) return;
@@ -289,7 +323,7 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
   // Per-tier counters. Candidates are already sorted rank-first (sortKey
   // above), so the majors are offered before the minors and a major can never
   // be crowded out by a village that happened to fit first.
-  int placedMajor = 0, placedMinor = 0;
+  int placedMajor = 0, placedMinor = 0, placedLandmark = 0;
   for (int i = 0; i < scratch.count; ++i) {
     if (scratch.placed >= maxLabels) break;
     const MapLabelCandidate& candidate = scratch.candidates[i];
@@ -305,15 +339,20 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       continue;
     }
 
-    const bool minor = candidate.rank > kMajorMaxRank;
+    const bool minor = !candidate.landmark && candidate.rank > kMajorMaxRank;
     // The tier's own cap. Tested before the name is measured and before a
     // position is searched for, so a tier that is full costs nothing per
     // candidate -- and a skipped candidate is not a *dropped* label: it was
     // never a candidate for this frame, the same reasoning as the off-screen
     // test above.
-    if (minor ? placedMinor >= style.placeMaxLabelsMinor : placedMajor >= style.placeMaxLabelsMajor) continue;
-    const int sizePx = minor ? style.placeLabelMinorPx : style.placeLabelPx;
-    const bool bold = minor ? style.placeLabelMinorBold : style.placeLabelBold;
+    if (candidate.landmark) {
+      if (placedLandmark >= style.pointMaxLabels) continue;
+    } else if (minor ? placedMinor >= style.placeMaxLabelsMinor : placedMajor >= style.placeMaxLabelsMajor) {
+      continue;
+    }
+    const int sizePx = candidate.landmark ? style.pointLabelPx : (minor ? style.placeLabelMinorPx : style.placeLabelPx);
+    const bool bold =
+        candidate.landmark ? style.pointLabelBold : (minor ? style.placeLabelMinorBold : style.placeLabelBold);
     if (sizePx == 0) continue;
 
     char text[MapLabelCandidate::kNameLen + 4];
@@ -332,7 +371,7 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
     // The diagonal offset is the straight one scaled by ~0.7, so a diagonal
     // label sits the same distance from the dot as a cardinal one instead of
     // 1.4x further out.
-    const int gap = style.placeLabelOffsetPx + dotHalf;
+    const int gap = style.placeLabelOffsetPx + (candidate.landmark ? candidate.markHalfPx : dotHalf);
     const int diag = gap * 7 / 10;
     const Box placements[kPlacementCount] = {
         {candidate.x + gap, candidate.y - textH / 2, textW, textH},
@@ -440,7 +479,13 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
       canvas.drawText(textBox.x, textBox.y, text, sizePx, bold, MapInk::Black);
       scratch.taken.markRect(knockout.x, knockout.y, knockout.w, knockout.h);
       ++scratch.placed;
-      if (minor) ++placedMinor; else ++placedMajor;
+      if (candidate.landmark) {
+        ++placedLandmark;
+      } else if (minor) {
+        ++placedMinor;
+      } else {
+        ++placedMajor;
+      }
     }
     if (!drew) ++scratch.dropped;
   }

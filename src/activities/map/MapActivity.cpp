@@ -7245,8 +7245,15 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // on map` is a temporary view, so it filters this walk and never the style
   // (MapPointSource::Config::categoryMask). With no layer on, the source is not
   // even handed over and no shard is opened.
+  //
+  // The `Nearby` mask gates the SAFETY half only. A landmark is drawn because
+  // the style for this mode draws landmarks -- tourist and hike do, ride does
+  // not -- and never because the rider asked to see nearby points. The two
+  // used to share one gate, so a rider with every Nearby row off got no
+  // castles either (maintainer, 2026-10-27).
   IMapPointSource* pointSource = nullptr;
-  if (points_ && nearbyCategoryMask_ != 0 && pointsEnabled()) {
+  const bool styleDrawsLandmarks = style.pointsLandmarkEnabled;
+  if (points_ && pointsEnabled() && (nearbyCategoryMask_ != 0 || styleDrawsLandmarks)) {
     MapPointSource::Config pointConfig;
     pointConfig.rootDir = kTileRoot;
     // The point layer is its own grid, so it gets its own range off the same
@@ -7258,7 +7265,14 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     pointConfig.range.row0 = shards.row0;
     pointConfig.range.col1 = shards.col1;
     pointConfig.range.row1 = shards.row1;
-    pointConfig.categoryMask = nearbyCategoryMask_;
+    pointConfig.safetyCategoryMask = nearbyCategoryMask_;
+    // Not a UI toggle: which landmarks draw is the style's rank cutoff
+    // (pointLandmarkRankMax), applied at draw time.
+    pointConfig.landmarkCategoryMask = 0xFFFFu;
+    pointConfig.kindMask = MapPointMarks::kindMaskFor(style);
+    // A name costs a seek and a read per point, so it is fetched only when
+    // the style actually draws landmark names.
+    pointConfig.wantNames = style.pointLabelPx > 0 && labels_ != nullptr;
     pointConfig.screenWidth = static_cast<int16_t>(renderer.getScreenWidth());
     pointConfig.screenHeight = static_cast<int16_t>(renderer.getScreenHeight());
     // A mark is drawn centred on its point, so the margin is the mark's own

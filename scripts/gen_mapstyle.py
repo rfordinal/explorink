@@ -939,7 +939,7 @@ def place_dot_diameter(style):
 
 
 def points_style(style):
-    """layers.points -> the eight C values for the POI marks.
+    """layers.points -> the nine C values for the POI marks.
 
     Absent block means the layer is off, so a style file written before the
     point layer existed keeps generating and simply draws no marks.
@@ -947,10 +947,29 @@ def points_style(style):
     points = style.get("layers", {}).get("points")
     if points is None:
         print("gen_mapstyle.py: layers.points missing -- POI marks off")
-        return False, False, 0, 0, 0, 0, 0, 0
+        return False, False, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0
 
     safety = bool(points.get("safety_enabled", True))
     landmark = bool(points.get("landmark_enabled", False))
+    # Landmarks ranked above this are not drawn. Defaults to 0 -- the rarest
+    # tier only -- so a style that turns landmarks on without thinking about
+    # density gets the handful that are always safe to draw, never the
+    # guidepost-and-locality text layer.
+    rank_max = int(points.get("landmark_rank_max", 0))
+    if not 0 <= rank_max <= 255:
+        sys.exit(f"gen_mapstyle.py: layers.points.landmark_rank_max {rank_max} does not fit a uint8_t")
+    # The dot a text-only landmark draws instead of a square. 0 draws nothing,
+    # which is what a name with its own label wants.
+    landmark_dot = _round_px(points.get("landmark_dot_px", 0), "layers.points.landmark_dot_px")
+    # Landmark names. Their own cap, next to the place names' two.
+    label_px = _round_px(points.get("label_px", 0), "layers.points.label_px")
+    label_bold = bool(points.get("label_bold", False))
+    max_labels = int(points.get("max_labels", 0))
+    if not 0 <= max_labels <= 255:
+        sys.exit(f"gen_mapstyle.py: layers.points.max_labels {max_labels} does not fit a uint8_t")
+    if label_px and not max_labels:
+        sys.exit("gen_mapstyle.py: layers.points.label_px is set but max_labels is 0 -- "
+                 "no landmark name would ever be drawn. Set max_labels, or label_px to 0.")
     square = _round_px(points.get("square_px", 0), "layers.points.square_px")
     border = _round_px(points.get("border_px", 1), "layers.points.border_px")
     glyph = _round_px(points.get("glyph_px", 0), "layers.points.glyph_px")
@@ -984,7 +1003,8 @@ def points_style(style):
                         ("cluster_cell_px", cluster_cell)):
         if value > 255:
             sys.exit(f"gen_mapstyle.py: layers.points.{name} {value}px does not fit a uint8_t")
-    return safety, landmark, square, border, glyph, flag, cluster_radius, cluster_cell
+    return (safety, landmark, rank_max, landmark_dot, square, border, glyph, flag,
+            cluster_radius, cluster_cell, label_px, label_bold, max_labels)
 
 
 def place_labels(style):
@@ -1308,12 +1328,17 @@ def _style_literal(bundle):
         f"    .placeLabelMaxWidthPx = {labels['max_width']},",
         f"    .pointsSafetyEnabled = {'true' if points_px[0] else 'false'},",
         f"    .pointsLandmarkEnabled = {'true' if points_px[1] else 'false'},",
-        f"    .pointSquarePx = {points_px[2]},",
-        f"    .pointBorderPx = {points_px[3]},",
-        f"    .pointGlyphPx = {points_px[4]},",
-        f"    .pointFlagPx = {points_px[5]},",
-        f"    .pointClusterRadiusPx = {points_px[6]},",
-        f"    .pointClusterCellPx = {points_px[7]},",
+        f"    .pointLandmarkRankMax = {points_px[2]},",
+        f"    .pointLabelPx = {points_px[10]},",
+        f"    .pointLabelBold = {'true' if points_px[11] else 'false'},",
+        f"    .pointMaxLabels = {points_px[12]},",
+        f"    .pointLandmarkDotPx = {points_px[3]},",
+        f"    .pointSquarePx = {points_px[4]},",
+        f"    .pointBorderPx = {points_px[5]},",
+        f"    .pointGlyphPx = {points_px[6]},",
+        f"    .pointFlagPx = {points_px[7]},",
+        f"    .pointClusterRadiusPx = {points_px[8]},",
+        f"    .pointClusterCellPx = {points_px[9]},",
         f"    .routeWidthPx = {route_px[0]},",
         f"    .routeArrowLenPx = {route_px[1]},",
         f"    .routeArrowWidthPx = {route_px[2]},",
@@ -1441,8 +1466,9 @@ def _print_summary(bundle, what):
           f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
           f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
     print(f"gen_mapstyle.py: {what}: POI marks {'safety' if points_px[0] else '-'}"
-          f"{'+landmark' if points_px[1] else ''} square {points_px[2]}px, glyph {points_px[4]}px, "
-          f"flag {points_px[5]}px, cluster radius {points_px[6]}px cell {points_px[7]}px")
+          f"{'+landmark<=rank' + str(points_px[2]) if points_px[1] else ''} square {points_px[4]}px, "
+          f"glyph {points_px[6]}px, flag {points_px[7]}px, text dot {points_px[3]}px, "
+          f"cluster radius {points_px[8]}px cell {points_px[9]}px")
     print(f"gen_mapstyle.py: {what}: buildings {'on' if buildings_px[0] else 'off'} "
           f"(outline {buildings_px[1]}px, tone {_toneLabel(buildings_px[2])}, hatch {buildings_px[3]}/{buildings_px[4]}px), "
           f"water {'on' if water_px[0] else 'off'} "
