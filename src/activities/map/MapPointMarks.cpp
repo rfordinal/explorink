@@ -213,11 +213,17 @@ void drawMarkAt(IMapCanvas& canvas, MapPointKind kind, uint8_t category, uint16_
   // consulted for a safety point. A landmark category id is a different
   // vocabulary entirely -- castle is 1 there and water is 1 here -- and
   // indexing one table with the other's id draws a confident lie.
-  // A text-only landmark is a name, not a symbol: no square, no glyph, no
-  // flag, just a dot small enough that the name beside it is the thing being
-  // read. 4,680 localities in one build is why -- a square each would bury the
-  // map under marks that say nothing (point_spec.LANDMARK_TEXT_ONLY).
-  if (kind == MapPointKind::Landmark && category < kLandmarkCategoryCount && kLandmarkTextOnly[category]) {
+  // Every landmark is a dot, never a square. Maintainer's call 2026-10-27,
+  // on the first Sulov render: there is no landmark glyph sheet, so a square
+  // came out empty, and an empty square says "something is here" and nothing
+  // more -- it spends the ink of a mark to deliver the information of none.
+  // The name beside the dot is what carries the meaning.
+  //
+  // kLandmarkTextOnly keeps its meaning for the day a sheet exists: locality
+  // and guidepost stay a dot even then, because they are names and not
+  // symbols. Everything else gets its glyph back by changing this branch to
+  // test for an icon the way the safety half does.
+  if (kind == MapPointKind::Landmark) {
     const int dot = style.pointLandmarkDotPx;
     if (dot <= 0) return;
     if (canvas.areaReserved(cx - dot / 2, cy - dot / 2, dot, dot)) return;
@@ -279,9 +285,9 @@ void drawMarkAt(IMapCanvas& canvas, MapPointKind kind, uint8_t category, uint16_
 }
 
 int marksSide(MapPointKind kind, uint8_t category, const MapStyle& style) {
-  if (kind == MapPointKind::Landmark && category < kLandmarkCategoryCount && kLandmarkTextOnly[category]) {
-    return style.pointLandmarkDotPx;
-  }
+  // A landmark is a dot, so its reach is the dot -- see drawMarkAt(). This is
+  // what pushes its name clear of it and what sizes the off-screen margin.
+  if (kind == MapPointKind::Landmark) return style.pointLandmarkDotPx;
   const freeink::Icon* icon =
       kind == MapPointKind::Safety && category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
           ? kPoiIconByCategory[category]

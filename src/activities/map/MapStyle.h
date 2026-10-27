@@ -555,11 +555,13 @@ struct MapStyle {
   uint8_t pointLabelPx;
   bool pointLabelBold;
   uint8_t pointMaxLabels;
-  // Diameter of the dot a text-only landmark draws instead of a square
-  // (kLandmarkTextOnly in MapPointTypes.h: locality, guidepost). 0 draws no
-  // mark at all, which is the right answer once the name itself is drawn --
-  // such a landmark is a name, not a symbol, and the dot is only there so the
-  // ground it names can be found before the label pass exists.
+  // Diameter of the dot EVERY landmark draws instead of a square. 0 draws no
+  // mark at all, which is a legitimate setting once names are on: a landmark
+  // is a name and the dot only pins it to its ground.
+  //
+  // Why no square: there is no landmark glyph sheet, so a square came out
+  // empty on the first real render, and an empty square costs a mark's ink to
+  // deliver no information (maintainer, 2026-10-27).
   uint8_t pointLandmarkDotPx;
   uint8_t pointSquarePx;
   uint8_t pointBorderPx;
