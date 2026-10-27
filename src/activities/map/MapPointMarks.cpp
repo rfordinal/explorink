@@ -1,5 +1,7 @@
 #include "MapPointMarks.h"
 
+#include <cstdio>
+
 #include "../../components/icons/poi_icons.h"
 
 namespace {
@@ -224,6 +226,22 @@ void drawMarkAt(IMapCanvas& canvas, MapPointKind kind, uint8_t category, uint16_
   // symbols. Everything else gets its glyph back by changing this branch to
   // test for an icon the way the safety half does.
   if (kind == MapPointKind::Landmark) {
+    // A summit draws a triangle, which is the one landmark symbol that needs
+    // no artwork -- every paper map prints the same one. Sized from its own
+    // style key so it can be judged against the dot without touching it.
+    const int peak = style.pointLandmarkPeakPx;
+    if (peak > 0 && category == static_cast<uint8_t>(MapLandmarkCategory::Peak)) {
+      const int half = peak / 2;
+      const int height = (peak * 7) / 8;  // a little shorter than it is wide
+      const int top = cy - height / 2;
+      const int base = top + height;
+      if (canvas.areaReserved(cx - half - 1, top - 1, peak + 2, height + 2)) return;
+      // White behind it first, for the reason the square and the dot knock
+      // out: a triangle on cliff hachures or a contour is not a triangle.
+      triangle(canvas, cx, top - 1, cx - half - 1, base + 1, cx + half + 1, base + 1, MapInk::White);
+      triangle(canvas, cx, top, cx - half, base, cx + half, base, MapInk::Black);
+      return;
+    }
     const int dot = style.pointLandmarkDotPx;
     if (dot <= 0) return;
     if (canvas.areaReserved(cx - dot / 2, cy - dot / 2, dot, dot)) return;
@@ -287,7 +305,12 @@ void drawMarkAt(IMapCanvas& canvas, MapPointKind kind, uint8_t category, uint16_
 int marksSide(MapPointKind kind, uint8_t category, const MapStyle& style) {
   // A landmark is a dot, so its reach is the dot -- see drawMarkAt(). This is
   // what pushes its name clear of it and what sizes the off-screen margin.
-  if (kind == MapPointKind::Landmark) return style.pointLandmarkDotPx;
+  if (kind == MapPointKind::Landmark) {
+    if (style.pointLandmarkPeakPx > 0 && category == static_cast<uint8_t>(MapLandmarkCategory::Peak)) {
+      return style.pointLandmarkPeakPx;
+    }
+    return style.pointLandmarkDotPx;
+  }
   const freeink::Icon* icon =
       kind == MapPointKind::Safety && category < sizeof(kPoiIconByCategory) / sizeof(kPoiIconByCategory[0])
           ? kPoiIconByCategory[category]
@@ -481,8 +504,23 @@ void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style) {
 void offerName(MapLabelScratch* labels, const MapPointRef& point, const MapStyle& style, int anchorX, int anchorY) {
   if (labels == nullptr || style.pointLabelPx == 0) return;
   if (point.kind != MapPointKind::Landmark) return;
-  MapLabels::offerLandmark(*labels, point, point.name, marksSide(point.kind, point.category, style) / 2, anchorX,
-                           anchorY);
+
+  // A summit prints its height beside its name -- "Brada 818" -- because that
+  // number is how a walker tells one rounded top from the next on a ridge with
+  // no road in sight. Only the categories kLandmarkShowEle names do it: a
+  // castle carries no height in OSM and would gain nothing from one.
+  //
+  // kPointEleUnknown is a SENTINEL and must never be printed, which is the one
+  // way this could go wrong -- a peak with no surveyed height would read as
+  // 32,768 m below sea level.
+  const char* text = point.name;
+  char withEle[MapLabelCandidate::kNameLen + 8];
+  if (point.name != nullptr && point.name[0] != '\0' && point.ele != kPointEleUnknown &&
+      point.category < kLandmarkCategoryCount && kLandmarkShowEle[point.category]) {
+    std::snprintf(withEle, sizeof(withEle), "%s %d", point.name, static_cast<int>(point.ele));
+    text = withEle;
+  }
+  MapLabels::offerLandmark(*labels, point, text, marksSide(point.kind, point.category, style) / 2, anchorX, anchorY);
 }
 
 void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style, MapLabelScratch* labels, int anchorX,

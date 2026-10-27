@@ -128,6 +128,7 @@ bool MapPointSource::nextMapPoint(MapPointRef& out) {
     out.category = record.category;
     out.flags = record.flags;
     out.rank = record.rank;
+    out.ele = record.ele;
     out.name = nullptr;
     if (config_.wantNames && record.nameLen > 0 && reader_.readName(record, nameBuf_, sizeof(nameBuf_))) {
       out.name = nameBuf_;

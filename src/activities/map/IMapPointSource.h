@@ -35,6 +35,13 @@ struct MapPointRef {
   // fetched into one reusable buffer rather than carried for every point in
   // range (MapPointReader::readName).
   const char* name = nullptr;
+
+  // Metres above the EGM96 geoid, or kPointEleUnknown. Only a few categories
+  // carry one and only some of those print it (kLandmarkShowEle) -- a summit
+  // is how a walker fixes position on a ridge, a castle's height says nothing.
+  // **It is a sentinel, not a low summit**: filter it out before any
+  // arithmetic, never feed it in.
+  int16_t ele = kPointEleUnknown;
 };
 
 // The pull interface MapRenderer draws the point layer through -- the same

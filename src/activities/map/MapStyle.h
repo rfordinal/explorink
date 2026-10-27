@@ -573,6 +573,14 @@ struct MapStyle {
   // empty on the first real render, and an empty square costs a mark's ink to
   // deliver no information (maintainer, 2026-10-27).
   uint8_t pointLandmarkDotPx;
+  // Base width of the filled triangle a peak draws instead of the dot. 0 falls
+  // back to the dot.
+  //
+  // This is the one landmark symbol that is a cartographic PRIMITIVE rather
+  // than artwork: a summit triangle is the same mark on every paper map ever
+  // printed, and drawing it needs no sheet. The rest of the categories wait
+  // for one (T-2033) and draw the dot meanwhile.
+  uint8_t pointLandmarkPeakPx;
   uint8_t pointSquarePx;
   uint8_t pointBorderPx;
   uint8_t pointGlyphPx;

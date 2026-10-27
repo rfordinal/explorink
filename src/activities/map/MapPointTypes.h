@@ -85,6 +85,12 @@ static constexpr bool kLandmarkTextOnly[14] = {
     false, false, false, false, false, false, false, false, false, false, false, false, true, true,
 };
 
+// True for a landmark category that prints its elevation beside its name
+// (point_spec.py, LANDMARK_ELE_SHOWN). Indexed by landmark category id.
+static constexpr bool kLandmarkShowEle[14] = {
+    false, false, false, false, false, false, true, true, false, false, false, false, false, false,
+};
+
 enum MapPointFlag : uint8_t {
   kPointUnverified = 1u << 0,
   kPointRestricted = 1u << 1,
