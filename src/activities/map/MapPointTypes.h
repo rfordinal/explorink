@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-static constexpr uint16_t kPointSpecVersion = 1;
+static constexpr uint16_t kPointSpecVersion = 2;
 static constexpr uint8_t kPointNameMaxBytes = 63;
 
 // A record's `ele` in metres above the EGM96 geoid, or this when the record
@@ -47,6 +47,35 @@ static constexpr uint8_t kSafetyCategoryCount = 11;
 static constexpr const char* kSafetyCategoryNames[11] = {
     "unknown",  "water",  "shelter",         "hut",       "lodging", "fuel", "hospital",
     "pharmacy", "rescue", "emergency_phone", "transport",
+};
+
+// Landmark categories, in the legend's walk order (point_spec.py). A glyph
+// table on the device is indexed by this id, so the two must not drift:
+// both are generated from point_spec.py and neither is hand-kept.
+enum class MapLandmarkCategory : uint8_t {
+  Unknown = 0,
+  Castle = 1,
+  Manor = 2,
+  Church = 3,
+  Museum = 4,
+  Viewpoint = 5,
+  Peak = 6,
+  Pass = 7,
+  Rock = 8,
+  Cave = 9,
+  Waterfall = 10,
+  Tower = 11,
+  Guidepost = 12,
+  Locality = 13,
+};
+
+static constexpr uint8_t kLandmarkCategoryCount = 14;
+
+// Wire name per landmark category id, indexed by the id. Same rule as the
+// safety names above: never a UI string.
+static constexpr const char* kLandmarkCategoryNames[14] = {
+    "unknown", "castle", "manor", "church",    "museum", "viewpoint", "peak",
+    "pass",    "rock",   "cave",  "waterfall", "tower",  "guidepost", "locality",
 };
 
 enum MapPointFlag : uint8_t {
