@@ -309,7 +309,7 @@
       "label_px": 0,
       "label_bold": false,
       "max_labels": 0,
-      "label_max_width_px": 230,
+      "label_max_width_px": 180,
       "_comment_label_px": "label_px is a LINE-HEIGHT CAP and not a type size. The canvas picks the largest registered face whose line height fits under it, and falls back to the SMALLEST face when nothing does. Registered line heights are 12 (ubuntu_5, the contour-number face), 23 (notosans_8), 24 (ubuntu_10), 29 (ubuntu_12) and 34 (notosans_12, dropped by OMIT_FONTS in the shipped build). So every value from 0 to 22 renders byte-identically -- measured 2026-10-27, after label_px 8 silently drew the 12 px contour face and read as too small and too loose on the panel. 23 is notosans_8. 24 (ubuntu_10) was tried first and read as too big on the panel: the line heights differ by one pixel, but Noto Sans at that ppem is a narrower, lighter cut, so it reads a size smaller and two long names stop needing an ellipsis. What 24 has that 23 does not is a bold cut -- smallFontFamily is regular only -- so a bold tier of landmark names would have to move back up. label_max_width_px is the landmarks' own ellipsis cap, separate from the places' one because a landmark name runs longer -- 'Kostol sv. Michala archanjela'.",
       "safety_enabled": true,
       "square_px": 18,

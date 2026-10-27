@@ -183,29 +183,111 @@ bool contains(const Box& outer, const Box& inner) {
 // Fits `name` into `maxWidthPx`, truncating on a UTF-8 boundary and appending an
 // ellipsis when it does not fit. Returns false when even one character plus the
 // ellipsis is too wide, or when this canvas has no text at all.
-bool fitName(IMapCanvas& canvas, const char* name, const int sizePx, const bool bold, const int maxWidthPx, char* out,
-             const size_t outLen, int& outWidth, int& outHeight) {
-  std::snprintf(out, outLen, "%s", name);
-  if (!canvas.measureText(out, sizePx, bold, outWidth, outHeight)) return false;
-  if (outWidth <= 0 || outHeight <= 0) return false;
-  if (maxWidthPx <= 0 || outWidth <= maxWidthPx) return true;
+// A name laid out ready to draw: one line, or two when the whole name does not
+// fit on one and a word boundary saves it.
+struct FittedLabel {
+  static constexpr int kMaxLines = 2;
+  char line[kMaxLines][MapLabelCandidate::kNameLen + 4] = {};
+  int width[kMaxLines] = {0, 0};
+  int lines = 0;
+  int lineHeight = 0;
+};
 
-  // U+2026, which the built-in Noto Sans faces carry (lib/EpdFont/builtinFonts,
-  // interval table entry 0x2026) -- so this cannot silently draw a missing
-  // glyph box.
-  static constexpr char kEllipsis[] = "\xE2\x80\xA6";
+// U+2026, which the built-in faces carry (lib/EpdFont/builtinFonts, interval
+// table entry 0x2026) -- so this cannot silently draw a missing glyph box.
+constexpr char kEllipsis[] = "\xE2\x80\xA6";
+
+bool measureInto(IMapCanvas& canvas, FittedLabel& fitted, const int index, const int sizePx, const bool bold) {
+  int height = 0;
+  if (!canvas.measureText(fitted.line[index], sizePx, bold, fitted.width[index], height)) return false;
+  if (fitted.width[index] <= 0 || height <= 0) return false;
+  fitted.lineHeight = height;
+  return true;
+}
+
+// Shortens with an ellipsis, cutting on a codepoint boundary so a multi-byte
+// character is never halved -- a half character is a corrupt name, not a
+// shorter one.
+bool ellipsise(IMapCanvas& canvas, const char* name, const int sizePx, const bool bold, const int maxWidthPx,
+               FittedLabel& fitted) {
   size_t length = std::strlen(name);
   while (length > 0) {
-    // Step back off a continuation byte so a multi-byte character is never cut
-    // in half -- a half character is a corrupt name, not a shorter one.
     --length;
     while (length > 0 && (static_cast<unsigned char>(name[length]) & 0xC0) == 0x80) --length;
     if (length == 0) break;
-    std::snprintf(out, outLen, "%.*s%s", static_cast<int>(length), name, kEllipsis);
-    if (!canvas.measureText(out, sizePx, bold, outWidth, outHeight)) return false;
-    if (outWidth <= maxWidthPx) return true;
+    std::snprintf(fitted.line[0], sizeof(fitted.line[0]), "%.*s%s", static_cast<int>(length), name, kEllipsis);
+    if (!measureInto(canvas, fitted, 0, sizePx, bold)) return false;
+    if (fitted.width[0] <= maxWidthPx) {
+      fitted.lines = 1;
+      return true;
+    }
   }
   return false;
+}
+
+// One line if the name fits, two if a word boundary makes it fit, an ellipsis
+// if neither does.
+//
+// **Two lines are a placement change, not a drawing one.** The box is what the
+// eight positions, the gap rule, the route test and the least-ink test all work
+// on, so a wrapped name competes for twice the depth and loses more positions
+// than a cut one would. That is the trade, and it is why the split is only
+// taken when BOTH halves fit: a wrap that still needs an ellipsis costs the
+// depth and saves nothing.
+//
+// Split on a space only. A hyphen looks like a candidate and is not: "Súľov-
+// Hradná" broken there reads as two places, and a map has no room to explain
+// that it is one.
+bool fitName(IMapCanvas& canvas, const char* name, const int sizePx, const bool bold, const int maxWidthPx,
+             FittedLabel& fitted) {
+  fitted.lines = 0;
+  std::snprintf(fitted.line[0], sizeof(fitted.line[0]), "%s", name);
+  if (!measureInto(canvas, fitted, 0, sizePx, bold)) return false;
+  if (maxWidthPx <= 0 || fitted.width[0] <= maxWidthPx) {
+    fitted.lines = 1;
+    return true;
+  }
+
+  // The split that balances the two lines best, so a name does not come out as
+  // one long line over one short word. Measured per candidate rather than
+  // guessed from character counts: the faces are proportional.
+  const size_t length = std::strlen(name);
+  int bestWider = -1;
+  size_t bestSplit = 0;
+  FittedLabel trial;
+  for (size_t i = 1; i + 1 < length; ++i) {
+    if (name[i] != ' ') continue;
+    std::snprintf(trial.line[0], sizeof(trial.line[0]), "%.*s", static_cast<int>(i), name);
+    std::snprintf(trial.line[1], sizeof(trial.line[1]), "%s", name + i + 1);
+    if (!measureInto(canvas, trial, 0, sizePx, bold)) continue;
+    if (!measureInto(canvas, trial, 1, sizePx, bold)) continue;
+    if (trial.width[0] > maxWidthPx || trial.width[1] > maxWidthPx) continue;
+    const int wider = trial.width[0] > trial.width[1] ? trial.width[0] : trial.width[1];
+    if (bestWider < 0 || wider < bestWider) {
+      bestWider = wider;
+      bestSplit = i;
+    }
+  }
+  if (bestWider >= 0) {
+    std::snprintf(fitted.line[0], sizeof(fitted.line[0]), "%.*s", static_cast<int>(bestSplit), name);
+    std::snprintf(fitted.line[1], sizeof(fitted.line[1]), "%s", name + bestSplit + 1);
+    if (measureInto(canvas, fitted, 0, sizePx, bold) && measureInto(canvas, fitted, 1, sizePx, bold)) {
+      fitted.lines = 2;
+      return true;
+    }
+  }
+  return ellipsise(canvas, name, sizePx, bold, maxWidthPx, fitted);
+}
+
+// Draws every line of a fitted label inside `box`, each line centred on the
+// box's own width -- a two-line name reads as one block rather than as two
+// left-aligned fragments.
+void drawFitted(IMapCanvas& canvas, const FittedLabel& fitted, const int boxX, const int boxY, const int boxW,
+                const int sizePx, const bool bold, const MapInk ink) {
+  for (int i = 0; i < fitted.lines; ++i) {
+    const int x = boxX + (boxW - fitted.width[i]) / 2;
+    canvas.drawText(x, boxY + i * fitted.lineHeight, fitted.line[i], sizePx, bold, ink);
+  }
 }
 
 }  // namespace
@@ -390,13 +472,18 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
         candidate.landmark ? style.pointLabelBold : (minor ? style.placeLabelMinorBold : style.placeLabelBold);
     if (sizePx == 0) continue;
 
-    char text[MapLabelCandidate::kNameLen + 4];
-    int textW = 0, textH = 0;
+    FittedLabel fitted;
     const int maxWidth = candidate.landmark ? style.pointLabelMaxWidthPx : style.placeLabelMaxWidthPx;
-    if (!fitName(canvas, candidate.name, sizePx, bold, maxWidth, text, sizeof(text), textW, textH)) {
+    if (!fitName(canvas, candidate.name, sizePx, bold, maxWidth, fitted)) {
       ++scratch.dropped;
       continue;
     }
+    // The box a wrapped name competes for is twice as deep, and every rule
+    // below -- the eight positions, the gap, the route overlap, the ink test --
+    // works on this box.
+    int textW = fitted.width[0];
+    if (fitted.lines > 1 && fitted.width[1] > textW) textW = fitted.width[1];
+    const int textH = fitted.lineHeight * fitted.lines;
 
     // Eight positions, in preference order: right of the dot first (the
     // cartographic default for left-to-right text), then left, then below and
@@ -507,12 +594,12 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
         // than the box.
         for (int radius = 1; radius <= style.placeLabelHaloPx; ++radius) {
           for (const HaloOffset& offset : kHaloRing) {
-            canvas.drawText(textBox.x + offset.dx * radius, textBox.y + offset.dy * radius, text, sizePx, bold,
-                            MapInk::White);
+            drawFitted(canvas, fitted, textBox.x + offset.dx * radius, textBox.y + offset.dy * radius, textBox.w,
+                       sizePx, bold, MapInk::White);
           }
         }
       }
-      canvas.drawText(textBox.x, textBox.y, text, sizePx, bold, MapInk::Black);
+      drawFitted(canvas, fitted, textBox.x, textBox.y, textBox.w, sizePx, bold, MapInk::Black);
       scratch.taken.markRect(knockout.x, knockout.y, knockout.w, knockout.h);
       ++scratch.placed;
       if (candidate.landmark) {
