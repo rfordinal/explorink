@@ -56,18 +56,36 @@ Arithmetic off the regional density (`../../docs/map-landmarks.md`, "The
 density problem") predicted about two marks on a rung-0 panel and was a whole
 rung too generous everywhere else. Measured on the Súľov panel 2026-10-27:
 
-| rung | `landmark_rank_max` | what the panel held before tightening |
+| rung | `landmark_rank_max` | names drawn on the Súľov panel |
 |---|---|---|
-| 0 | 3 (everything) | fine |
-| 1 | 3 (everything) | fine |
-| 2 | 0 | 151 marks at rank 1 |
-| 3 and wider | 0 | 527 marks at rank 1 |
+| 0 | 3 (everything) | 3 |
+| 1 | 3 (everything) | 10 |
+| 2 | 1 | 8 (3 at rank 0) |
+| 3 | 1 | 14 (9 at rank 0) |
+| 4 and wider | 0 | 13 (11 at rank 1, and 7 dropped) |
 
-Rung 1 carries tier 3 because of the second measurement, against a published
-hiking map of the same ground: that sheet names guideposts and localities at
-about the rung-1 width (1.4 km), and our own panel holds fourteen named
-landmarks there. The mark count is not the only question -- what a map of this
-kind is expected to name at a given width is the other.
+**The ladder was measured three times and the first two measurements are
+dead.** The first counted marks and set every rung a step tighter: rank 1 at
+rung 2 put 151 marks on one panel and at rung 3 put 527. The second compared
+against a published hiking map at the same width and moved rung 1 back up to
+tier 3, because that sheet names guideposts and localities at about 1.4 km
+across.
+
+The third is the one that holds, and it only became possible once **a landmark
+stopped drawing an 18 px square and became a 4 px dot plus a name**. 151 dots
+cost a fraction of 151 squares, and the name count is capped by
+`pointMaxLabels` regardless, so the crowding the first measurement found no
+longer exists. Rungs 2 and 3 carry rank 1 now, which is what puts summit names
+on a ridge: rung 2 goes from 3 names to 8 for +0.35 points of panel ink, rung 3
+from 9 to 14 for +0.20.
+
+**Rung 4 is where it turns, and it turns the other way.** Rank 1 there drops
+the count from 13 names to 11 and raises the dropped-for-no-room count from 3
+to 7: peak names crowd out the town names, which are what a 7.7 km wide panel
+is for. So 4 and wider keep rank 0 only.
+
+**A measurement taken against one drawing decision does not survive the next
+one.** That is the lesson worth more than the numbers.
 
 Peaks and towers around a ridge are far denser than the regional average says,
 which is why a count over a big box cannot set a per-panel cutoff.
