@@ -1181,12 +1181,39 @@ landmark.
 no RAM: the table is `constexpr`. Measured on the host build 2026-10-27, by
 compiling `MapStyleDefaults.h` and printing the two sizes, not estimated.
 
-### What has not been judged
+### What the panel said
 
-**None of these widths has been on a panel.** They were rendered at 1:1 through
-`test/map_preview` over the Bratislava old-town tile and read there, which is
-what `T-268` asks for, and that is a monitor and not e-ink. The row is a
-starting point for a hardware pass, not a settled style.
+**Run on an X3 on 2026-10-27**, build `c97bd73f`, framebuffer pulled over
+`CMD:SCREENSHOT` at 528x792, fake position in Bratislava's Staré Mesto. What
+the device reported at 3 m/px on the same ground, drawn ways and ways the mask
+threw away:
+
+| mode | drawn | dropped by the mask | heap |
+|---|---|---|---|
+| ride | 3,743 | 34,036 | 32,812 B |
+| hike | 10,310 | 3,912 | 32,812 B |
+| tourist | 10,873 | **14** | 32,812 B |
+
+Two things fall out of that table. **Heap does not move** between the modes, so
+the row costs flash and nothing else at runtime, as the arithmetic above
+predicted. And **tourist throws away almost nothing**: it draws the city classes
+hike hides, so in an old town it decodes very nearly the whole tile. That is the
+real per-frame cost of this row, and it is a decode cost rather than an ink one.
+
+**On the panel the row does what it was written to do.** Hike at 3 m/px in the
+old town is a flat mesh of 1 px hairlines with contours over it, and nothing in
+it says which line a walker is standing on. Tourist has a hierarchy again: the
+pedestrian zones and the streets read as cased bands against the hairline
+footways, and the relief is gone, which takes the castle-hill contours out from
+under the street fabric.
+
+**Still open after that run, and the reason T-2033 stays:** the steps ladder
+looks busy at 3 m/px. There are 772 `steps` ways in this tile and their rungs
+are scattered right across the frame. At 1 m/px the mark is right. Whether it
+should survive rung 1 and 2 at all, or drop to a plain line, is a maintainer's
+call on the glass and not a thing to settle from a screenshot. The marker was
+not judged either: the fake fix carried no trusted heading, so the panel drew
+the broken ring and never the arrow this mode inherited from cycle.
 
 **The marker is still cycle's.** `MapActivity::drawPositionMarker` draws tourist
 the small heading arrow cycle had (`kMarkerTouristTipLen`, 16 px). Hike
