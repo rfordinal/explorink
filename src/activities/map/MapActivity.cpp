@@ -664,8 +664,11 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     // Positions come off kMarkerHeadingDir, every other entry: eight points on
     // the ring, no trig, and the same table the heading glyph indexes.
     const int gap = m.ringGap;
-    for (int i = 0; i < 16; i += 16 / kMarkerRingGapCount) {
-      const HeadingVec& at = kMarkerHeadingDir[i];
+    // `g * 16 / count` rather than a stride, so the count is free of the
+    // divisors of 16 -- and it has to be, because every one of those is even
+    // and four gaps on a circle read as a crosshair (MapMarkerMetrics.h).
+    for (int g = 0; g < kMarkerRingGapCount; ++g) {
+      const HeadingVec& at = kMarkerHeadingDir[g * 16 / kMarkerRingGapCount];
       const int gx = cx + at.dx * radius / 8;
       const int gy = cy + at.dy * radius / 8;
       renderer.fillRect(gx - gap / 2, gy - gap / 2, gap, gap, false);  // false is white

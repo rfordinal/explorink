@@ -38,17 +38,22 @@ constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radi
 // length in pixels would leave the coarse rungs looking like a whole ring with a
 // nick in it, which is the one thing this must not be mistaken for.
 //
-// **Four since 2026-10-28, and eight was too many.** Judged on an X4 Pro panel:
-// at eight gaps the ring read as a dotted circle rather than as a ring that is
-// broken, which is the one thing this must not be mistaken for in the other
-// direction either. Four is every fourth entry of kMarkerHeadingDir, so the
-// positions still cost no trig -- the same 16-step table the heading glyph
-// indexes.
+// **Five, and it has to be ODD.** Judged on an X4 Pro panel three times on
+// 2026-10-28. Eight gaps of 8 px took more than half the ring and read as a
+// dotted circle. Four gaps of 5 px took 17 percent and read as a whole ring
+// with nicks. Four gaps of 9 px read as a **crosshair**, which is the worst of
+// the three: four-fold symmetry on a circle is a reticle, and no gap size
+// fixes that because it is the symmetry talking, not the size.
 //
-// The arithmetic the panel confirmed: at a 70 percent hike marker the ring is
-// 37 px across, so about 116 px of circumference, and eight 8 px gaps took
-// more than half of it away.
-constexpr int kMarkerRingGapCount = 4;
+// An odd count cannot form one. Five leaves enough breaks to read as broken
+// without reading as dots.
+//
+// Positions used to come off the heading table as `i += 16 / count`, which
+// admitted only the divisors of 16 -- 2, 4, 8, 16 -- every one of them even
+// and axis-symmetric. The loop computes `g * 16 / count` per gap now, so any
+// count works and the spacing rounds to whole table steps. At five that is
+// steps 0, 3, 6, 9 and 12: slightly uneven, which helps rather than hurts.
+constexpr int kMarkerRingGapCount = 5;
 
 // The sleep marker: what replaces the live marker on the way into a quick-resume
 // sleep (MapActivity::drawSleepMarker). Deliberately NOT scaled by rung -- it is
@@ -182,7 +187,10 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8, int pct = 100) {
   // kMarkerHeadingDir table as `i += 16 / count`, so the count has to divide
   // 16: 2, 4, 8, 16 and nothing between. Four is the only one that leaves the
   // ring reading as four arcs.
-  m.ringGap = m.ring / 4;
+  // Ring over count: that keeps the BROKEN FRACTION near 31 percent of the
+  // circumference whatever the count is, so changing the count changes the
+  // rhythm and not the weight.
+  m.ringGap = m.ring / kMarkerRingGapCount;
   if (m.ringGap < m.ringWidth + 1) m.ringGap = m.ringWidth + 1;
   m.cycleTipLen = markerScaledPct(kMarkerCycleTipLen, scale8, pct);
   m.rideTipLen = markerScaledPct(kMarkerRideTipLen, scale8, pct);
