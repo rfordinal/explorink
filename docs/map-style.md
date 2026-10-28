@@ -1090,9 +1090,9 @@ Scale matters to the reading: 421 `natural=cliff` ways in the one Súľov scene,
 so this is a crag field rather than a single escarpment, and the old 5/7
 hachure turned it into a black mass with a place name sitting in it.
 
-**A cliff is invisible in ride and cycle mode, at every rung.** Two gates, and
+**A cliff is invisible in ride and tourist mode, at every rung.** Two gates, and
 the outer one wins. `data/mapstyle.json:86-91` resolves
-`layers.contours.enabled` to false for `ride` and `cycle`, and the whole relief
+`layers.contours.enabled` to false for `ride` and `tourist`, and the whole relief
 draw sits behind `if (style.contoursEnabled)` (`MapRenderer.cpp:553`, the cliff
 pass at `MapRenderer.cpp:562`). So a motorcyclist never sees the one line that
 means "you cannot go this way". The cliff rule's own `hidden` from rung 3 out is
@@ -1131,6 +1131,156 @@ times the ground with a fifth of the contour detail, so the cliffs are a much
 larger share of a much smaller layer. Whether a cliff earns that at 6 m/px is a
 panel question, and `build_config.json`'s `layers.cliffs` is the switch.
 
+## Tourist: the city walker's row
+
+Added 2026-10-27. Slot 2 of `MapRideMode` was `Cycle` until then. Cycle had a
+class mask and nothing else: not one `when` block in `data/mapstyle.json` ever
+gave it a mark of its own, so switching to cycle gave the rider ride's map with
+cycleways and paths added, under a menu row that promised a cyclist's map nobody had built.
+One `when` block did name it -- the one that turns the relief layer off for
+`ride` and `cycle` -- so the accurate statement is that cycle could switch a
+layer off and could not draw anything differently.
+Tourist took the slot because it has something to hold -- the city classes are
+the least-tuned part of the whole style file -- and because a fourth row costs a
+fourth full-screen refresh in the mode cycle for a mode whose refresh cadence
+nothing argues for. **Cycle is unbuilt, not cancelled.** It comes back when
+somebody writes its row.
+
+### Vocabulary
+
+`modes.tourist` is hike's class list minus `bridleway`. A city walker uses
+pedestrian zones, footways and steps; a horse path is the one hike class that
+says nothing to them. `aerialway` stays, because a funicular to a castle is a
+tourist's route. The asserted consequence is in
+`test/map_tile_reader/MapTileReaderGoldenTest.cpp`: tourist is a strict superset
+of ride and a strict subset of hike, both halves checked, so a later edit cannot
+quietly turn it back into one of its neighbours.
+
+**Tourist's vocabulary is inside hike's and its drawn set is not.** The golden
+test asserts the mask relation, and at 3 m/px tourist draws eighteen classes
+against hike's seventeen -- because hike hides `steps` and `living_street` at
+every rung and tourist draws them. The two statements are about different
+things: what the mode may read, and what that rung's style asks for. A reader
+who sees them side by side will think one is wrong.
+
+### The row
+
+Seven rungs, and everything below is device pixels on the 480x800 panel.
+
+| class | before (every mode) | tourist |
+|---|---|---|
+| `pedestrian` | 1 px solid, all rungs | 5 px cased at rungs 0-1, 3 px cased at 2, 2 px at 3 |
+| `living_street` | `hidden: true`, all rungs | 4 px cased at 0-1, 2 px at 2, 1 px at 3, hidden from 4 |
+| `steps` | `hidden: true`, all rungs | ladder, tick 3 px at 0-1 and 2 px at 2, hidden from 3 |
+| `footway` | 1 px solid, all rungs | 1 px dashed at 0-2, **hidden from 3** |
+| `residential` | 1 px solid | 4 px cased at 0-1, 2 px at 2 |
+| `path` | `dash_mark` 1 px | hike's major 2 px dashed, at 0-2 only |
+| `track` | `hidden: true` | 1 px dashed at 0-2 |
+
+Three of those are decisions rather than copies of hike's row:
+
+**Pedestrian is the widest road tourist is given, and the only class where
+tourist outweighs every other mode.** In an old town the pedestrian zone is the
+main street. 5 px sits deliberately between hike's residential (4) and hike's
+unclassified (6): louder than any street a car uses there, not louder than a
+trunk road.
+
+**Residential keeps hike's close-rung weight and drops hike's rung-2
+disappearance.** Hike hides residential at 12 m/px because a hiker on a ridge is
+reading terrain and a village grid is noise under it. A city walker at 12 m/px
+is reading that exact grid to find the way back to the centre.
+
+**Footway is dropped from rung 3 out, and that is the one declutter in the row.**
+Measured 2026-10-27 with `mapbuilder/tools/class_census.py` over the z13 tile
+holding Bratislava's old town (48.139-48.148 N, 17.102-17.115 E, 12,989 ways,
+964 km of road geometry): `footway` is **6,709 ways, 443 km, 46.0 % of all road
+length in the tile** -- 147,794 px of line at 3 m/px, more than every other class
+put together. `steps` is 772 ways and 11 km, `pedestrian` 286 ways and 27 km,
+`living_street` 94 ways and 10 km. So the three classes this row exists to show
+are each under 3 % of the length, and the class that would bury them is half of
+it. Up close footways are routes; from rung 3 out they are texture over the
+marks the mode is for.
+
+### Why steps are a ladder
+
+A centre line with rungs across it, `tick_px` 3 at the close rungs. It is the
+one mark on this panel that cannot be read as something else: a dashed line is
+already a footway and a dotted one is already a path's `dash_mark`, while rungs
+say stairs in every paper map a tourist has ever held. At tick 3 the rung is
+7 px wide against a 5 px pedestrian zone, so a staircase is the widest thing in
+an alley, which is what it is in life. Gone from rung 3 out with the footways:
+at 12 m/px a flight of stairs is shorter than its own mark.
+
+Steps were drawn **nowhere, in any mode**, from the first style file until this
+one. A staircase between two streets in a hill town is both a route and a
+landmark.
+
+### What it costs
+
+**+460 B of flash and no RAM at all.** Measured 2026-10-27 by building this
+merge and its own first parent (`b15a68d3`) with env `default` on one machine
+inside one hour, the merge the only difference: flash used went 4,076,085 B to
+4,076,545 B, and RAM was 59,148 B on both sides.
+
+An earlier version of this section said **+3,012 B**. That number was
+`sizeof(MapStyle)` (502 B) times the six new rows of the variant table, which is
+the table's own growth and not the binary's -- the linker does not store these
+rows the way the arithmetic assumed. **A table that grows by N bytes is not a
+binary that grows by N bytes**, and the only way to know the difference is to
+build both sides.
+
+### What the panel said
+
+**Run on an X3 on 2026-10-27**, build `c97bd73f`, framebuffer pulled over
+`CMD:SCREENSHOT` at 528x792, fake position in Bratislava's Staré Mesto. What
+the device reported at 3 m/px on the same ground, drawn ways and ways the mask
+threw away:
+
+**Heap is 32,812 B in all three modes**, which is the one number from that run
+worth keeping: the row costs flash and nothing at runtime, as a `constexpr`
+table must.
+
+**The ways counts from that run are withdrawn.** `MapTileSource::begin()` resets
+`waysEmitted_` and `waysFiltered_` per render pass
+(`src/activities/map/MapTileSource.cpp:27-28`), and `info` can be read **while a
+pass is still running** -- so a number pulled over serial is a snapshot at an
+unknown point, not a finished frame. Proof from the same session: tourist at the
+same anchor and rung reported 1,954 drawn / 1,758 dropped once and 1,965 / 8
+minutes later. An earlier version of this section printed three such snapshots
+as a per-mode comparison and concluded that tourist decodes nearly the whole
+tile. **That conclusion is withdrawn** -- the instrument does not guarantee the
+three numbers describe the same thing. Settling the decode cost needs a counter
+read at a known end of a pass, which no command exposes today. T-2035.
+
+**On the panel the row does what it was written to do.** Hike at 3 m/px in the
+old town is a flat mesh of 1 px hairlines with contours over it, and nothing in
+it says which line a walker is standing on. Tourist has a hierarchy again: the
+pedestrian zones and the streets read as cased bands against the hairline
+footways, and the relief is gone, which takes the castle-hill contours out from
+under the street fabric.
+
+**Still open after that run, and the reason T-2035 stays:** the steps ladder
+looks busy at 3 m/px. There are 772 `steps` ways in this tile and their rungs
+are scattered right across the frame. At 1 m/px the mark is right. Whether it
+should survive rung 1 and 2 at all, or drop to a plain line, is a maintainer's
+call on the glass and not a thing to settle from a screenshot. The marker was
+not judged either: the fake fix carried no trusted heading, so the panel drew
+the broken ring and never the arrow this mode inherited from cycle.
+
+**The marker is still cycle's.** `MapActivity::drawPositionMarker` draws tourist
+the small heading arrow cycle had (`kMarkerTouristTipLen`, 16 px). Hike
+deliberately refuses that arrow -- a walker's heading comes from a phone in a
+pocket, and an arrow is a claim about direction -- so tourist drawing one is an
+open question, left unchanged with the rename because trading one unargued shape
+for another is not progress. See "Two marker paths, and they disagree".
+
+**`cycle` is not kept as a wire alias.** `mode cycle` is a `BadMode` error on
+both the serial and the BLE console, asserted in
+`test/map_command_parser/MapCommandParserTest.cpp`. A device whose settings file
+selected cycle comes back in tourist: `mapMode` persists as the slot index, not
+the name (`CrossPointSettings.cpp:220`), and so do that slot's stored zoom and
+marker steps.
+
 ## Adding the next area layer
 
 The path is now well worn. For each new layer:
@@ -1154,7 +1304,7 @@ The path is now well worn. For each new layer:
 pieces of code:
 
 - **On the device:** `MapActivity::drawPositionMarker` — mode-aware (hike a dot,
-  cycle a small arrow, ride a bigger one), drawn straight onto `GfxRenderer`,
+  tourist a small arrow, ride a bigger one), drawn straight onto `GfxRenderer`,
   using `kMarker*` constants and none of the style.
 - **In the laptop preview:** `MapRenderer::drawMarker` — the style's
   `layers.position` puck. `MapRenderer::render` draws no marker at all, so a

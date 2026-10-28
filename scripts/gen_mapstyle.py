@@ -1572,7 +1572,7 @@ def gen_cpp(base_bundle, variants, index):
     lines += [
         "};",
         "",
-        "// kMapStyleIndex[mode][rung] -- MapRideMode order (Ride, Hike, Cycle),",
+        "// kMapStyleIndex[mode][rung] -- MapRideMode order (Ride, Hike, Tourist),",
         "// MapViewport's zoom ladder order. mapStyleFor() in MapStyleTable.h is the",
         "// only thing that should read this.",
         f"inline constexpr uint8_t kMapStyleIndex[kMapRideModeCount][kMapZoomStepCount] = {{",

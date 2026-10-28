@@ -21,11 +21,17 @@ constexpr int kMarkerHikeDotDiameter = 12;  // was 18 until 2026-10-28, judged t
 // behind on the map -- see the note where it is drawn.
 constexpr int kMarkerHikeHandReach = kMarkerRingDiameter / 2 - kMarkerRingWidth;
 constexpr int kMarkerHikeHandHalfW = 2;
-// Cycle/Ride draw a heading arrow whose whole shape (base width, waist notch,
+// Tourist/Ride draw a heading arrow whose whole shape (base width, waist notch,
 // shoulders -- see MapMarkerShape.generated.h) is a fixed ratio of this one
 // center-to-tip length, generated from src/components/icons/marker-ride.svg
 // by scripts/gen_marker_shape.py. Only the tip length is a free knob per mode.
-constexpr int kMarkerCycleTipLen = 16;
+// Still the arrow cycle used, now drawn for tourist. OPEN, 2026-10-27: a
+// walker's heading comes from a phone in a pocket and an arrow is a claim
+// about direction that hike deliberately refuses to make (see the dot above).
+// Left unchanged with the rename because a marker is judged on the panel and
+// nothing has been judged yet -- changing it blind would trade one unargued
+// shape for another.
+constexpr int kMarkerTouristTipLen = 16;
 constexpr int kMarkerRideTipLen = 25;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
 
@@ -110,7 +116,7 @@ struct MarkerMetrics {
   // wider than the line it is cutting or it reads as a bruise on the ring
   // instead of a hole through it.
   int ringGap;
-  int cycleTipLen;
+  int touristTipLen;
   int rideTipLen;
   int haloMargin;
   // The marker's halo box: the unit of every partial operation. Everything the
@@ -169,30 +175,19 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8, int pct = 100) {
   m.hikeDot = markerScaledPct(kMarkerHikeDotDiameter, scale8, pct);
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
-  // **A quarter of the ring's own diameter, which is about 31 percent of its
-  // circumference once four of them are punched.** Measured against the panel
-  // twice on 2026-10-28: eight gaps of 8 px took more than half the ring away
-  // and read as a dotted circle, four gaps of 5 px took 17 percent and read as
-  // a whole ring with nicks in it. Neither is what a broken ring has to say,
-  // which is that the position is not certain.
+  // Ring over count, which keeps the BROKEN FRACTION near 31 percent of the
+  // circumference whatever the count is: changing the count changes the
+  // rhythm and not the weight.
   //
   // Derived from the RING and not from the stroke that draws it. A gap is a
   // piece of the shape -- it is how much of the ring is missing -- so it has
   // to scale with the shape at every rung and every marker percentage. Sizing
-  // it off ringWidth was the bug behind the first of those two readings: the
-  // stroke deliberately does not scale, so the gaps stayed full size while the
-  // circumference shrank by 30 percent.
-  //
-  // The count cannot carry this instead. Gap positions come off the 16-step
-  // kMarkerHeadingDir table as `i += 16 / count`, so the count has to divide
-  // 16: 2, 4, 8, 16 and nothing between. Four is the only one that leaves the
-  // ring reading as four arcs.
-  // Ring over count: that keeps the BROKEN FRACTION near 31 percent of the
-  // circumference whatever the count is, so changing the count changes the
-  // rhythm and not the weight.
+  // it off ringWidth was the bug behind the panel reading the ring as a dotted
+  // circle on 2026-10-28: the stroke deliberately does not scale, so the gaps
+  // stayed full size while the circumference shrank by 30 percent.
   m.ringGap = m.ring / kMarkerRingGapCount;
   if (m.ringGap < m.ringWidth + 1) m.ringGap = m.ringWidth + 1;
-  m.cycleTipLen = markerScaledPct(kMarkerCycleTipLen, scale8, pct);
+  m.touristTipLen = markerScaledPct(kMarkerTouristTipLen, scale8, pct);
   m.rideTipLen = markerScaledPct(kMarkerRideTipLen, scale8, pct);
   m.haloMargin = markerScaledPct(kMarkerHaloMargin, scale8, pct);
   m.box = m.ring + 2 * m.haloMargin;
@@ -227,13 +222,13 @@ static_assert(markerHandFitsAtEveryRung(),
 // table for those two directions is what makes that true -- an arbitrary angle
 // would not land on that circle in integer arithmetic.
 
-// Same bound, for Cycle/Ride's heading arrow: its farthest vertex
+// Same bound, for Tourist/Ride's heading arrow: its farthest vertex
 // (kMarkerArrowMaxReachPermille, from marker-ride.svg) scaled by tipLen must
 // stay inside the patch box too, or a move leaves it behind on the map.
 constexpr bool markerArrowFitsAtEveryRung() {
   for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
     const MarkerMetrics m = markerMetricsFor(MapViewport::kZoomLadder[step].markerScale8);
-    if (m.cycleTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
+    if (m.touristTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
     if (m.rideTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
   }
   return true;

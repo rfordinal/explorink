@@ -476,7 +476,7 @@ constexpr int kTextX = 8;
 // mapContentTop() does.
 //
 // 2, not a rounder number: mapContentTop() is headerBarHeight() + 1 (37 in
-// Ride/Cycle), and the old readout put the box's top edge at 39 with its text
+// Ride/Tourist), and the old readout put the box's top edge at 39 with its text
 // at 42. 2 lands on exactly those two numbers, so the position tuned on
 // hardware on 2026-08-08 is preserved rather than approximated. A 5 here --
 // what this shipped with for one commit -- pushed the whole box 3px down,
@@ -522,7 +522,7 @@ constexpr int kHeaderPlaceNameLeftX = kTextX + 2;
 
 // Hike mode's second header line: elevation and lat/lon, both of which answer
 // "where am I" better than a place name at hiking pace, and both of which the
-// place-name walk already fails to answer off the road network. Ride and Cycle
+// place-name walk already fails to answer off the road network. Ride and Tourist
 // keep the single-row header above untouched -- MapActivity::headerBarHeight()
 // is the only thing that reads mode_ here, and it is what
 // MapActivity::mapContentTop()/headerSeparatorY() are derived from, so the map
@@ -630,7 +630,7 @@ constexpr HeadingVec kMarkerHeadingDir[16] = {
 // Display strings for MapRideMode, indexed the same way as the enum itself
 // (MapRideMode.h) -- mapRideModeName() gives the wire name for the console,
 // this gives the translated label for the Mode popup.
-constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HIKE, StrId::STR_CYCLE};
+constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HIKE, StrId::STR_TOURIST};
 
 }  // namespace
 
@@ -685,8 +685,8 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     // this argument since 2026-08-19 -- a heading with nothing behind it is a
     // claim dressed as an observation (MapMarkerMetrics.h).
     //
-    // Hike keeps its dot, because the dot is position, not direction. Cycle and
-    // Ride have no separate position glyph, so for them the ring and halo are
+    // Hike keeps its dot, because the dot is position, not direction. Tourist
+    // and Ride have no separate position glyph, so for them the ring and halo are
     // the whole marker -- which is correct and is what a bare ring means.
     if (mode == MapRideMode::Hike) {
       renderer.fillRoundedRect(cx - m.hikeDot / 2, cy - m.hikeDot / 2, m.hikeDot, m.hikeDot, m.hikeDot / 2,
@@ -769,11 +769,11 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     return;
   }
 
-  // Cycle and ride both point at the real incoming heading, never the
+  // Tourist and ride both point at the real incoming heading, never the
   // forced-north display heading renderViewport() uses for map rotation
   // (kNoRouteDisplayHeading) -- direction of travel matters at riding speed
   // even though the map underneath stays north-up.
-  const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.cycleTipLen;
+  const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.touristTipLen;
   const HeadingVec& dir = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
   const HeadingVec perp{-dir.dy, dir.dx};
 
@@ -2155,7 +2155,7 @@ void MapActivity::drawHeaderPlaceName() {
 // directly. Those track whatever is on screen, and panBy() repoints them at
 // the pan target while Observe mode is up (riderLatE7()'s own comment); this
 // line answers "where is the rider", which does not change just because they
-// panned to look around. Ride and Cycle draw nothing here -- mode_ is the
+// panned to look around. Ride and Tourist draw nothing here -- mode_ is the
 // only gate, and a rider who switches mode picks the line up or loses it on
 // the full frame switchMode() already forces.
 void MapActivity::drawHikeElevationLine() {
@@ -3602,7 +3602,7 @@ void MapActivity::loop() {
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
   // Hike mode's elevation/lat-lon line, kept current the same way: a no-op in
-  // Ride/Cycle (mode_ gate inside).
+  // Ride/Tourist (mode_ gate inside).
   updateHikeElevationLine();
   // And the debug window, same shape again: a no-op with mapDebugInfo off,
   // which is its default.
