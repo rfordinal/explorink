@@ -34,6 +34,30 @@ Never index `kPoiIconByCategory` with a landmark category. It is the safety
 vocabulary: category 1 is water there and a castle here, so one table indexed
 by the other's id draws a confident lie.
 
+## Tourist draws them too, capped at rank 2
+
+Added 2026-10-28. A castle is rank 0 and a church rank 2, so 2 is the lowest
+cutoff that lets both through, and it brings manors, museums, viewpoints and
+towers with it -- which is the set a city walker wants. Rank is a tier of
+importance and not a per-category switch, which is the whole reason this is one
+number rather than a mask.
+
+It stops short of tier 3 deliberately. A guidepost belongs on a trail, and
+4,680 locality names in one Sulov-sized build would bury an old town.
+
+The ladder mirrors hike's, capped: rungs 0-1 at rank 2, 2-3 at rank 1, wider at
+rank 0 only.
+
+**Not seen on a device.** A Bratislava old-town build renders 11 landmark names
+on one rung-0 panel through the host renderer -- Michalska veza, kaplnka sv.
+Jakuba, Mariansky stlp, Rybarska brana, the galleries -- and that is the whole
+evidence. No city tiles have reached a card, so the panel has never shown it.
+
+One thing that render did say, and it is an argument for the glyph sheet rather
+than against the category: museums and memorials are 28 of the 117 landmarks in
+that box, the largest category, and they surface as **people's names** --
+"Anton Petrak" is a bust. A name with no symbol reads as a place. T-2033.
+
 ## The rank cutoff, and why it is scoped to one kind
 
 Every landmark record carries a writer-defined `rank`, 0 most important.
