@@ -535,6 +535,62 @@ struct MapStyle {
   // Show on map` is a temporary view, not a style edit.
   bool pointsSafetyEnabled;
   bool pointsLandmarkEnabled;
+  // Landmarks ranked above this are not drawn. 0 draws only rank 0 (a
+  // defensive castle, a pass, a cave, a waterfall), 3 draws everything down to
+  // guideposts and locality names.
+  //
+  // Per rung and per mode through the style's own `when` clauses, because the
+  // density is not one number: 2.7 rank-2 marks per z11 tile in Mala Fatra
+  // against 16.2 in Bratislava (docs/map-landmarks.md, "The density problem").
+  // A ridge walker wants peaks; the same cutoff over a city at an overview
+  // rung is a wall of squares.
+  //
+  // Read ONLY for kind == Landmark. A safety record carries rank 0 meaning
+  // "no rank", and the zoom that would hide a spring is the zoom a walker
+  // needs it at.
+  uint8_t pointLandmarkRankMax;
+  // Landmark names, drawn by the same placer as the place names and capped
+  // separately so a ridge full of peaks cannot spend the villages' budget.
+  // 0 px or 0 labels draws none, which is what every mode but hike does today.
+  // `pointLabelPx` is a LINE-HEIGHT CAP, not a type size: the canvas picks the
+  // largest registered face whose line height does not exceed it, and falls
+  // back to the smallest face when nothing fits. The faces are 12, 23, 24, 29
+  // and 34 px tall, so every value from 0 to 22 renders identically -- which
+  // is how `label_px: 8` drew the 12 px contour-number face for half a day
+  // (GfxRendererCanvas::fontIdForSize, test/map_preview/PreviewFont.cpp).
+  uint8_t pointLabelPx;
+  bool pointLabelBold;
+  uint8_t pointMaxLabels;
+  // Line-height cap for a summit's height line, under its name. 0 draws it at
+  // the name's own size. Same face ladder as pointLabelPx.
+  uint8_t pointLabelElePx;
+  // Landmarks get their own width cap rather than the places' one: a landmark
+  // name is routinely longer than a village's ("Kostol sv. Michala
+  // archanjela") and the ellipsis is what the reader pays.
+  uint16_t pointLabelMaxWidthPx;
+  // Diameter of the dot EVERY landmark draws instead of a square. 0 draws no
+  // mark at all, which is a legitimate setting once names are on: a landmark
+  // is a name and the dot only pins it to its ground.
+  //
+  // Why no square: there is no landmark glyph sheet, so a square came out
+  // empty on the first real render, and an empty square costs a mark's ink to
+  // deliver no information (maintainer, 2026-10-27).
+  uint8_t pointLandmarkDotPx;
+  // White knocked out around the dot, per side. The dot is 4 px and the map
+  // under it is a dither or a cliff hachure as often as it is white, so this
+  // is what decides whether the mark is findable at all -- raised from 1 to 2
+  // on the maintainer's call 2026-10-28, after the panel showed the dots
+  // readable on white ground and lost on everything else. It widens the mark's
+  // footprint without widening the mark.
+  uint8_t pointLandmarkDotHaloPx;
+  // Base width of the filled triangle a peak draws instead of the dot. 0 falls
+  // back to the dot.
+  //
+  // This is the one landmark symbol that is a cartographic PRIMITIVE rather
+  // than artwork: a summit triangle is the same mark on every paper map ever
+  // printed, and drawing it needs no sheet. The rest of the categories wait
+  // for one (T-2033) and draw the dot meanwhile.
+  uint8_t pointLandmarkPeakPx;
   uint8_t pointSquarePx;
   uint8_t pointBorderPx;
   uint8_t pointGlyphPx;
@@ -574,6 +630,19 @@ struct MapStyle {
   // ring of `puckRingPx`, with a black heading arrow `puckArrowPx` long inside
   // it. Radius 0 draws the bare arrow and no disc -- a bare triangle vanishes
   // into a thick route, so that is a debug shape rather than the spec's.
+  // How big the DEVICE's position marker is, as a percentage of its full size.
+  // 100 changes nothing.
+  //
+  // **This is the knob that moves the marker on the panel, and `puckRadiusPx`
+  // below is not.** The device draws the mode marker
+  // (MapActivity::drawPositionMarker, sized by MapMarkerMetrics.h) and the host
+  // preview draws the style's puck (MapRenderer::drawMarker). Two paths, one
+  // name, and the obvious-looking one is the preview's.
+  //
+  // Per mode, because the two modes read the marker differently: on a ride it
+  // has to be findable at a glance on a moving panel, and a walker standing
+  // still wants the ground around the dot rather than the dot.
+  uint8_t markerScalePct;
   uint8_t puckRadiusPx;
   uint8_t puckRingPx;
   uint8_t puckArrowPx;

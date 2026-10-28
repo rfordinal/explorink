@@ -26,6 +26,36 @@ Read with `docs/map-render-spec.md` (parent repo) item 5, which is the contract.
   compact enough to draw several of.
 - The dot is always drawn. A place whose label was dropped still shows as a dot.
 
+## A name that does not fit wraps once, then ellipsises
+
+Built 2026-10-27. `fitName()` tries the whole name on one line; if it is wider
+than the layer's `label_max_width_px` it looks for a **space** to split on and
+takes the split that balances the two lines best, measured per candidate
+because the faces are proportional. Only if no split fits does it fall back to
+the ellipsis, which is all it did before.
+
+**Both halves must fit, or the split is not taken.** A wrap that still needs an
+ellipsis costs the depth and saves nothing.
+
+**A hyphen is not a split point.** "Súľov-Hradná" broken there reads as two
+places, and a map has no room to explain that it is one.
+
+**Two lines are a placement change, not a drawing one.** The box is what the
+eight positions, the gap rule, the route test and the least-ink test all work
+on, so a wrapped name competes for twice the depth. Lines are centred on the
+box so the name reads as one block.
+
+This is shared: place names and landmark names go through the same function,
+each with its own width cap.
+
+## Landmark names ride this same placer
+
+Since 2026-10-27 the point layer's landmarks are named by this pass too
+(`landmarks.md`). They are offered during the point walk rather than the place
+walk, carry their own text size and their own cap, and clear their own mark
+rather than the place dot. Everything below -- the eight positions, the three
+hard tests, least-ink wins -- applies to them unchanged.
+
 ## Greedy, not a zoom table
 
 `MapLabels::offer()` is called for every place in the frame during the walk that

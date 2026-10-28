@@ -1050,14 +1050,45 @@ misses either gets it wrong:**
   "0 m".
 - **The point order is OSM's and is not normalised.** OSM's convention puts the
   lower ground on the right of the way's direction, so the record already carries
-  which side the drop is on. **Nothing draws a tick yet.** Keeping the order is
-  what makes drawing one later a render change rather than a refetch.
+  which side the drop is on, and `pattern: "hachured"` draws the ticks there
+  (`tick_side`, default `downhill`). Keeping the order is what makes the side
+  correct without a refetch.
 
-**The style is provisional and has not been on a panel.** `data/mapstyle.json`
-gives cliff 2 px solid, which is the index contour's weight, and hides it from
-rung 3 out. At that weight **a cliff is indistinguishable from an index
-contour**, which is the wrong outcome and is the thing a hardware pass has to
-settle. The correct mark is a ticked line with the ticks on the low side.
+**The style was judged on a panel 2026-10-27**, over Súľov at rung 1, against
+six candidate styles. It is `hachured` 3/8 at rungs 0-1 and `hachured` 2/10 at
+rung 2, and it is no longer provisional.
+
+**The instrument, because "it looks better" is not a measurement.** Render the
+same frame with the cliff class hidden, then count the pixels each candidate
+adds. A bare 1 px centreline costs 4,489 px on a 480x800 panel, and that is the
+zero every marking is measured against:
+
+| style | cliff ink | over the bare line |
+|---|---|---|
+| `hachured` 5/7 (the old one) | 6,814 px | +52 % |
+| **`hachured` 3/8 (shipped)** | **5,673 px** | **+26 %** |
+| `hachured` 4/12 | 5,448 px | +21 % |
+| `hachured` 4/16 | 5,051 px | +12 % |
+| `hachured` 3/24 | 4,802 px | +7 % |
+| `solid` 1 px | 4,489 px | 0 % |
+| `dash_mark` comb | 4,435 px | −1 % |
+
+**Three results, and two of them are rules rather than preferences.**
+
+- **The texture is what says "rock" on a 1-bit panel.** The sparser hachures
+  cost less and read as a contour with occasional hairs. Density is the signal;
+  the tick length is what to trade away, which is why the shipped style
+  shortened the tick from 5 px to 3 rather than widening the gap.
+- **`solid` is refused on principle.** A minor contour is also 1 px solid
+  black, so a cliff drawn that way is indistinguishable from a height line --
+  the same failure this section used to describe at 2 px.
+- **`dash_mark` is refused twice.** It breaks the line, and a broken line on
+  this map means a footpath; its comb teeth on short ways also came out reading
+  as scattered letters, which is what rung 2 used to draw.
+
+Scale matters to the reading: 421 `natural=cliff` ways in the one Súľov scene,
+so this is a crag field rather than a single escarpment, and the old 5/7
+hachure turned it into a black mass with a place name sitting in it.
 
 **A cliff is invisible in ride and tourist mode, at every rung.** Two gates, and
 the outer one wins. `data/mapstyle.json:86-91` resolves
@@ -1082,8 +1113,8 @@ passing. What the decision costs, so it can be taken on numbers:
   relief record, skipping the other classes by id (`MapRenderer.cpp:256`,
   `:261-262`). So ride would pay a full walk of a 32 kB
   z13 relief layer (the table below) to draw 0.3 kB of cliffs.
-- **And at 2 px a cliff still reads as an index contour**, so the mark has to be
-  designed before the answer means anything on the panel.
+- **The mark itself is no longer the blocker** -- it was designed and measured
+  2026-10-27 (above). What ride would pay is the layer walk, not the drawing.
 
 **What it costs, measured on a Mala Fatra build 2026-08-27** (297 `natural=cliff`
 ways in the bbox), against the same build with `layers.cliffs` off:

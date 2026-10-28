@@ -14,7 +14,7 @@
 // three sizes rather than three shapes.
 constexpr int kMarkerRingDiameter = 54;
 constexpr int kMarkerRingWidth = 3;
-constexpr int kMarkerHikeDotDiameter = 18;
+constexpr int kMarkerHikeDotDiameter = 12;  // was 18 until 2026-10-28, judged too heavy on an X4 Pro panel
 // Hike's heading hand: from the dot out to the ring's inner edge
 // (kMarkerRingDiameter / 2 - kMarkerRingWidth = 24), 4 px wide. The reach must
 // stay inside the patch box's half-extent or a marker move leaves the hand
@@ -44,10 +44,22 @@ constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radi
 // length in pixels would leave the coarse rungs looking like a whole ring with a
 // nick in it, which is the one thing this must not be mistaken for.
 //
-// Eight because it is every other entry of kMarkerHeadingDir, so the positions
-// cost no trig at all -- the same 16-step table the heading glyph already
-// indexes.
-constexpr int kMarkerRingGapCount = 8;
+// **Five, and it has to be ODD.** Judged on an X4 Pro panel three times on
+// 2026-10-28. Eight gaps of 8 px took more than half the ring and read as a
+// dotted circle. Four gaps of 5 px took 17 percent and read as a whole ring
+// with nicks. Four gaps of 9 px read as a **crosshair**, which is the worst of
+// the three: four-fold symmetry on a circle is a reticle, and no gap size
+// fixes that because it is the symmetry talking, not the size.
+//
+// An odd count cannot form one. Five leaves enough breaks to read as broken
+// without reading as dots.
+//
+// Positions used to come off the heading table as `i += 16 / count`, which
+// admitted only the divisors of 16 -- 2, 4, 8, 16 -- every one of them even
+// and axis-symmetric. The loop computes `g * 16 / count` per gap now, so any
+// count works and the spacing rounds to whole table steps. At five that is
+// steps 0, 3, 6, 9 and 12: slightly uneven, which helps rather than hurts.
+constexpr int kMarkerRingGapCount = 5;
 
 // The sleep marker: what replaces the live marker on the way into a quick-resume
 // sleep (MapActivity::drawSleepMarker). Deliberately NOT scaled by rung -- it is
@@ -121,9 +133,23 @@ constexpr int markerScaled(int fullSize, uint8_t scale8) {
   return scaled > 0 ? scaled : 1;
 }
 
-constexpr MarkerMetrics markerMetricsFor(uint8_t scale8) {
+// A length scaled by the style's own percentage first, then by the rung.
+// Applied to the FULL size rather than to scale8, because scale8 is eighths
+// and cannot express a 30 percent step: 8/8 to 6/8 is 25 percent and 5/8 is
+// 37.5, with nothing between them.
+constexpr int markerScaledPct(int fullSize, uint8_t scale8, int pct) {
+  return markerScaled(fullSize * pct / 100, scale8);
+}
+
+// `pct` is MapStyle::markerScalePct: 100 leaves every number below exactly
+// where it was, so a style that never set it is byte-identical.
+//
+// Strokes are deliberately NOT scaled by it, the same rule the rung scale
+// already follows below: a ring is a shape and its outline is a line, and a
+// thinner line at a smaller shape would fade rather than shrink.
+constexpr MarkerMetrics markerMetricsFor(uint8_t scale8, int pct = 100) {
   MarkerMetrics m{};
-  m.ring = markerScaled(kMarkerRingDiameter, scale8);
+  m.ring = markerScaledPct(kMarkerRingDiameter, scale8, pct);
   // Strokes do not scale with the shape, and the two values below are a
   // **choice that has never been judged on a panel**, not a limit.
   //
@@ -146,13 +172,24 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8) {
   // over the map exactly where the marker starts hiding what it points at.
   // Same for the hand's half-width.
   m.ringWidth = scale8 >= 8 ? kMarkerRingWidth : 2;
-  m.hikeDot = markerScaled(kMarkerHikeDotDiameter, scale8);
+  m.hikeDot = markerScaledPct(kMarkerHikeDotDiameter, scale8, pct);
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
-  m.ringGap = m.ringWidth * 2 + 2;
-  m.touristTipLen = markerScaled(kMarkerTouristTipLen, scale8);
-  m.rideTipLen = markerScaled(kMarkerRideTipLen, scale8);
-  m.haloMargin = markerScaled(kMarkerHaloMargin, scale8);
+  // Ring over count, which keeps the BROKEN FRACTION near 31 percent of the
+  // circumference whatever the count is: changing the count changes the
+  // rhythm and not the weight.
+  //
+  // Derived from the RING and not from the stroke that draws it. A gap is a
+  // piece of the shape -- it is how much of the ring is missing -- so it has
+  // to scale with the shape at every rung and every marker percentage. Sizing
+  // it off ringWidth was the bug behind the panel reading the ring as a dotted
+  // circle on 2026-10-28: the stroke deliberately does not scale, so the gaps
+  // stayed full size while the circumference shrank by 30 percent.
+  m.ringGap = m.ring / kMarkerRingGapCount;
+  if (m.ringGap < m.ringWidth + 1) m.ringGap = m.ringWidth + 1;
+  m.touristTipLen = markerScaledPct(kMarkerTouristTipLen, scale8, pct);
+  m.rideTipLen = markerScaledPct(kMarkerRideTipLen, scale8, pct);
+  m.haloMargin = markerScaledPct(kMarkerHaloMargin, scale8, pct);
   m.box = m.ring + 2 * m.haloMargin;
   return m;
 }
