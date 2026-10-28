@@ -360,9 +360,16 @@ def puck(style):
     """
     position = style.get("layers", {}).get("position", {})
     arrow = _round_px(position.get("arrow_px", 28), "layers.position.arrow_px")
+    # The DEVICE's marker size, as a percentage of full. Not the same thing as
+    # puck_radius_px below, which only the host preview draws -- see
+    # MapStyle::markerScalePct.
+    marker_pct = int(position.get("marker_scale_pct", 100))
+    if not 10 <= marker_pct <= 255:
+        sys.exit(f"gen_mapstyle.py: layers.position.marker_scale_pct {marker_pct} is outside "
+                 "10..255 -- below 10 the marker rounds away to nothing")
     if not position.get("enabled", True):
         print("gen_mapstyle.py: layers.position.enabled is false -- arrow only, no puck disc")
-        return 0, 0, arrow
+        return 0, 0, arrow, marker_pct
     radius = _round_px(position.get("puck_radius_px", 0), "layers.position.puck_radius_px")
     ring = _round_px(position.get("ring_px", 0), "layers.position.ring_px")
     if radius and ring >= radius:
@@ -371,7 +378,7 @@ def puck(style):
     for name, value in (("puck_radius_px", radius), ("ring_px", ring), ("arrow_px", arrow)):
         if value > 255:
             sys.exit(f"gen_mapstyle.py: layers.position.{name} {value}px does not fit a uint8_t")
-    return radius, ring, arrow
+    return radius, ring, arrow, marker_pct
 
 
 # mapstyle.json's hatch strings are matplotlib's. Only the character matters
@@ -1250,7 +1257,7 @@ def _style_literal(bundle):
             f".pattern = MapLinePattern::{pattern}, .hidden = {'true' if hidden else 'false'}"
             f"}},  // {who}")
 
-    radius, ring, arrow = puck_px
+    radius, ring, arrow, marker_pct = puck_px
     b_enabled, b_outline, b_tone, b_pattern, b_spacing = buildings_px
     (w_enabled, w_widths, w_outlines, w_patterns, w_dashes, w_gaps, w_casings, w_tones, w_pattern, w_spacing,
      w_white) = water_px
@@ -1361,6 +1368,7 @@ def _style_literal(bundle):
         f"    .routeArrowWidthPx = {route_px[2]},",
         f"    .markerXPx = {marker_x},",
         f"    .markerYPx = {marker_y},",
+        f"    .markerScalePct = {marker_pct},",
         f"    .puckRadiusPx = {radius},",
         f"    .puckRingPx = {ring},",
         f"    .puckArrowPx = {arrow},",
@@ -1481,7 +1489,7 @@ def _print_summary(bundle, what):
     cased = sum(1 for c in casings if c)
     print(f"gen_mapstyle.py: {what}: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
           f"..{max(widths)}px, {cased} cased, place dot {dot_diameter}px, marker {marker_x},{marker_y}, "
-          f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}")
+          f"puck r{puck_px[0]}/ring{puck_px[1]}/arrow{puck_px[2]}, marker {puck_px[3]}%")
     print(f"gen_mapstyle.py: {what}: POI marks {'safety' if points_px[0] else '-'}"
           f"{'+landmark<=rank' + str(points_px[2]) if points_px[1] else ''} square {points_px[4]}px, "
           f"glyph {points_px[6]}px, flag {points_px[7]}px, text dot {points_px[3]}px, "

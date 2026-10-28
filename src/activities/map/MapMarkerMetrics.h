@@ -115,9 +115,23 @@ constexpr int markerScaled(int fullSize, uint8_t scale8) {
   return scaled > 0 ? scaled : 1;
 }
 
-constexpr MarkerMetrics markerMetricsFor(uint8_t scale8) {
+// A length scaled by the style's own percentage first, then by the rung.
+// Applied to the FULL size rather than to scale8, because scale8 is eighths
+// and cannot express a 30 percent step: 8/8 to 6/8 is 25 percent and 5/8 is
+// 37.5, with nothing between them.
+constexpr int markerScaledPct(int fullSize, uint8_t scale8, int pct) {
+  return markerScaled(fullSize * pct / 100, scale8);
+}
+
+// `pct` is MapStyle::markerScalePct: 100 leaves every number below exactly
+// where it was, so a style that never set it is byte-identical.
+//
+// Strokes are deliberately NOT scaled by it, the same rule the rung scale
+// already follows below: a ring is a shape and its outline is a line, and a
+// thinner line at a smaller shape would fade rather than shrink.
+constexpr MarkerMetrics markerMetricsFor(uint8_t scale8, int pct = 100) {
   MarkerMetrics m{};
-  m.ring = markerScaled(kMarkerRingDiameter, scale8);
+  m.ring = markerScaledPct(kMarkerRingDiameter, scale8, pct);
   // Strokes do not scale with the shape, and the two values below are a
   // **choice that has never been judged on a panel**, not a limit.
   //
@@ -140,13 +154,13 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8) {
   // over the map exactly where the marker starts hiding what it points at.
   // Same for the hand's half-width.
   m.ringWidth = scale8 >= 8 ? kMarkerRingWidth : 2;
-  m.hikeDot = markerScaled(kMarkerHikeDotDiameter, scale8);
+  m.hikeDot = markerScaledPct(kMarkerHikeDotDiameter, scale8, pct);
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
   m.ringGap = m.ringWidth * 2 + 2;
-  m.cycleTipLen = markerScaled(kMarkerCycleTipLen, scale8);
-  m.rideTipLen = markerScaled(kMarkerRideTipLen, scale8);
-  m.haloMargin = markerScaled(kMarkerHaloMargin, scale8);
+  m.cycleTipLen = markerScaledPct(kMarkerCycleTipLen, scale8, pct);
+  m.rideTipLen = markerScaledPct(kMarkerRideTipLen, scale8, pct);
+  m.haloMargin = markerScaledPct(kMarkerHaloMargin, scale8, pct);
   m.box = m.ring + 2 * m.haloMargin;
   return m;
 }

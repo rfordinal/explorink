@@ -6532,7 +6532,11 @@ void MapActivity::composeCurrent() {
 }
 
 MarkerMetrics MapActivity::markerMetrics() const {
-  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8);
+  // The rung's own scale, then the style's percentage on top: the rung says
+  // how much room the marker may take at this zoom, the style says how much
+  // this MODE wants it to take at all (MapStyle::markerScalePct).
+  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8,
+                          mapStyleFor(mode_, zoomStep()).markerScalePct);
 }
 
 void MapActivity::markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const {

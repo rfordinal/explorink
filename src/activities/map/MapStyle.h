@@ -623,6 +623,19 @@ struct MapStyle {
   // ring of `puckRingPx`, with a black heading arrow `puckArrowPx` long inside
   // it. Radius 0 draws the bare arrow and no disc -- a bare triangle vanishes
   // into a thick route, so that is a debug shape rather than the spec's.
+  // How big the DEVICE's position marker is, as a percentage of its full size.
+  // 100 changes nothing.
+  //
+  // **This is the knob that moves the marker on the panel, and `puckRadiusPx`
+  // below is not.** The device draws the mode marker
+  // (MapActivity::drawPositionMarker, sized by MapMarkerMetrics.h) and the host
+  // preview draws the style's puck (MapRenderer::drawMarker). Two paths, one
+  // name, and the obvious-looking one is the preview's.
+  //
+  // Per mode, because the two modes read the marker differently: on a ride it
+  // has to be findable at a glance on a moving panel, and a walker standing
+  // still wants the ground around the dot rather than the dot.
+  uint8_t markerScalePct;
   uint8_t puckRadiusPx;
   uint8_t puckRingPx;
   uint8_t puckArrowPx;
