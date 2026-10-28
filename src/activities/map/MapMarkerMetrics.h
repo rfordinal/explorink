@@ -164,13 +164,26 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8, int pct = 100) {
   m.hikeDot = markerScaledPct(kMarkerHikeDotDiameter, scale8, pct);
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
-  // The gap scales with the marker, unlike the stroke that sizes it. A gap is
-  // a piece of the SHAPE -- it is how much of the ring is missing -- so a
-  // marker at 70 percent whose gaps stayed full size would read as more broken
-  // than the same marker at 100, which is exactly what happened on the panel
-  // on 2026-10-28 before this line existed.
-  m.ringGap = (m.ringWidth * 2 + 2) * pct / 100;
-  if (m.ringGap < 2) m.ringGap = 2;
+  // **A quarter of the ring's own diameter, which is about 31 percent of its
+  // circumference once four of them are punched.** Measured against the panel
+  // twice on 2026-10-28: eight gaps of 8 px took more than half the ring away
+  // and read as a dotted circle, four gaps of 5 px took 17 percent and read as
+  // a whole ring with nicks in it. Neither is what a broken ring has to say,
+  // which is that the position is not certain.
+  //
+  // Derived from the RING and not from the stroke that draws it. A gap is a
+  // piece of the shape -- it is how much of the ring is missing -- so it has
+  // to scale with the shape at every rung and every marker percentage. Sizing
+  // it off ringWidth was the bug behind the first of those two readings: the
+  // stroke deliberately does not scale, so the gaps stayed full size while the
+  // circumference shrank by 30 percent.
+  //
+  // The count cannot carry this instead. Gap positions come off the 16-step
+  // kMarkerHeadingDir table as `i += 16 / count`, so the count has to divide
+  // 16: 2, 4, 8, 16 and nothing between. Four is the only one that leaves the
+  // ring reading as four arcs.
+  m.ringGap = m.ring / 4;
+  if (m.ringGap < m.ringWidth + 1) m.ringGap = m.ringWidth + 1;
   m.cycleTipLen = markerScaledPct(kMarkerCycleTipLen, scale8, pct);
   m.rideTipLen = markerScaledPct(kMarkerRideTipLen, scale8, pct);
   m.haloMargin = markerScaledPct(kMarkerHaloMargin, scale8, pct);
