@@ -113,10 +113,23 @@ struct MapPreviewRequest {
   // because it is the same card (../../../docs/point-file-spec.md in the parent
   // xteink repo). False draws no marks and opens no shard.
   bool drawPoints = true;
-  // Bit N set = draw safety category id N (MapSafetyCategory). All ones is
-  // every category, which is the map's normal state; one bit is what
-  // `Nearby -> Show on map` does for a single category.
-  uint16_t pointCategoryMask = 0xFFFFu;
+  // Bit N set = draw safety category id N (MapSafetyCategory).
+  //
+  // **Zero by default, because zero is what the device shows.**
+  // MapActivity::nearbyCategoryMask_ starts at 0 and is not persisted, so every
+  // boot puts no safety square on the map and the rider turns one on through
+  // `Nearby -> Show on map` when they want it -- which is a thing somebody
+  // reaches for when the ride stops going to plan, not a layer they ride with.
+  //
+  // The comment here used to say all ones was "the map's normal state" and the
+  // default was 0xFFFF to match it. Both were wrong, and the cost was real:
+  // every landmark density judgement made on 2026-10-28 was taken against
+  // panels carrying a dozen safety squares a rider would never have had, and
+  // the crowding they showed was read as the map's.
+  //
+  // `--point-categories` turns them on deliberately, which is what judging the
+  // safety layer itself wants.
+  uint16_t pointCategoryMask = 0;
 
   // Frame the whole route instead of the lat/lon/heading/zoom above: run
   // MapRouteFit over the loaded route and use what it picks. Exactly what the
