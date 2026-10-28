@@ -59,7 +59,7 @@ busts drawn with no symbol, and a name with no symbol reads as a place. The
 host render had shown two of eleven and that read as a footnote; the panel says
 it is not one. Museums and memorials are 28 of the 117 landmarks in that box,
 the largest single category. This is the strongest argument for the glyph sheet
-(T-2033) that this layer has produced, and it is an argument for the symbol
+(T-2036) that this layer has produced, and it is an argument for the symbol
 rather than against the category.
 
 ## The rank cutoff, and why it is scoped to one kind
