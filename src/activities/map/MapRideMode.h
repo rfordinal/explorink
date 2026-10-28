@@ -11,10 +11,12 @@
 // -- settings, masks, ladders -- so they are fixed. Adding a fourth mode
 // means widening those arrays, not renumbering these.
 // Slot 2 was `Cycle` until 2026-10-27. Cycle owned a class mask and nothing
-// else -- no style variant anywhere in data/mapstyle.json was ever written
-// for it -- so the mode menu offered a third map that was ride's with
-// cycleways added, under a name that promised a cyclist's map nobody had
-// built. Tourist took the slot rather than becoming a fourth row because the
+// else -- no style variant in data/mapstyle.json ever gave it a mark of its
+// own -- so the mode menu offered a third map that was ride's with cycleways
+// added, under a name that promised a cyclist's map nobody had built. One
+// `when` block did name it, the one that turns the relief layer off for ride
+// and cycle, so the accurate statement is that cycle could switch a layer off
+// and could not draw anything differently. Tourist took the slot rather than becoming a fourth row because the
 // city walker has style variants to hold and cycle had none; cycle is
 // unbuilt, not cancelled, and comes back when somebody writes its row.
 // docs/map-style.md ("Tourist") and the parent repo's docs/tourist-mode.md.

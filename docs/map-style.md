@@ -1104,8 +1104,11 @@ panel question, and `build_config.json`'s `layers.cliffs` is the switch.
 
 Added 2026-10-27. Slot 2 of `MapRideMode` was `Cycle` until then. Cycle had a
 class mask and nothing else: not one `when` block in `data/mapstyle.json` ever
-named it, so switching to cycle gave the rider ride's map with cycleways and
-paths added, under a menu row that promised a cyclist's map nobody had built.
+gave it a mark of its own, so switching to cycle gave the rider ride's map with
+cycleways and paths added, under a menu row that promised a cyclist's map nobody had built.
+One `when` block did name it -- the one that turns the relief layer off for
+`ride` and `cycle` -- so the accurate statement is that cycle could switch a
+layer off and could not draw anything differently.
 Tourist took the slot because it has something to hold -- the city classes are
 the least-tuned part of the whole style file -- and because a fourth row costs a
 fourth full-screen refresh in the mode cycle for a mode whose refresh cadence
@@ -1121,6 +1124,13 @@ tourist's route. The asserted consequence is in
 `test/map_tile_reader/MapTileReaderGoldenTest.cpp`: tourist is a strict superset
 of ride and a strict subset of hike, both halves checked, so a later edit cannot
 quietly turn it back into one of its neighbours.
+
+**Tourist's vocabulary is inside hike's and its drawn set is not.** The golden
+test asserts the mask relation, and at 3 m/px tourist draws eighteen classes
+against hike's seventeen -- because hike hides `steps` and `living_street` at
+every rung and tourist draws them. The two statements are about different
+things: what the mode may read, and what that rung's style asks for. A reader
+who sees them side by side will think one is wrong.
 
 ### The row
 
@@ -1176,10 +1186,17 @@ landmark.
 
 ### What it costs
 
-`sizeof(MapStyle)` is 502 B and the variant table went from 15 unique rows to
-21, the maximum three modes and seven rungs can produce. **+3,012 B of flash**,
-no RAM: the table is `constexpr`. Measured on the host build 2026-10-27, by
-compiling `MapStyleDefaults.h` and printing the two sizes, not estimated.
+**+460 B of flash and no RAM at all.** Measured 2026-10-27 by building this
+merge and its own first parent (`b15a68d3`) with env `default` on one machine
+inside one hour, the merge the only difference: flash used went 4,076,085 B to
+4,076,545 B, and RAM was 59,148 B on both sides.
+
+An earlier version of this section said **+3,012 B**. That number was
+`sizeof(MapStyle)` (502 B) times the six new rows of the variant table, which is
+the table's own growth and not the binary's -- the linker does not store these
+rows the way the arithmetic assumed. **A table that grows by N bytes is not a
+binary that grows by N bytes**, and the only way to know the difference is to
+build both sides.
 
 ### What the panel said
 
@@ -1188,17 +1205,21 @@ compiling `MapStyleDefaults.h` and printing the two sizes, not estimated.
 the device reported at 3 m/px on the same ground, drawn ways and ways the mask
 threw away:
 
-| mode | drawn | dropped by the mask | heap |
-|---|---|---|---|
-| ride | 3,743 | 34,036 | 32,812 B |
-| hike | 10,310 | 3,912 | 32,812 B |
-| tourist | 10,873 | **14** | 32,812 B |
+**Heap is 32,812 B in all three modes**, which is the one number from that run
+worth keeping: the row costs flash and nothing at runtime, as a `constexpr`
+table must.
 
-Two things fall out of that table. **Heap does not move** between the modes, so
-the row costs flash and nothing else at runtime, as the arithmetic above
-predicted. And **tourist throws away almost nothing**: it draws the city classes
-hike hides, so in an old town it decodes very nearly the whole tile. That is the
-real per-frame cost of this row, and it is a decode cost rather than an ink one.
+**The ways counts from that run are withdrawn.** `MapTileSource::begin()` resets
+`waysEmitted_` and `waysFiltered_` per render pass
+(`src/activities/map/MapTileSource.cpp:27-28`), and `info` can be read **while a
+pass is still running** -- so a number pulled over serial is a snapshot at an
+unknown point, not a finished frame. Proof from the same session: tourist at the
+same anchor and rung reported 1,954 drawn / 1,758 dropped once and 1,965 / 8
+minutes later. An earlier version of this section printed three such snapshots
+as a per-mode comparison and concluded that tourist decodes nearly the whole
+tile. **That conclusion is withdrawn** -- the instrument does not guarantee the
+three numbers describe the same thing. Settling the decode cost needs a counter
+read at a known end of a pass, which no command exposes today. T-2035.
 
 **On the panel the row does what it was written to do.** Hike at 3 m/px in the
 old town is a flat mesh of 1 px hairlines with contours over it, and nothing in
