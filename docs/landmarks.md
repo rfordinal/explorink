@@ -48,15 +48,19 @@ It stops short of tier 3 deliberately. A guidepost belongs on a trail, and
 The ladder mirrors hike's, capped: rungs 0-1 at rank 2, 2-3 at rank 1, wider at
 rank 0 only.
 
-**Not seen on a device.** A Bratislava old-town build renders 11 landmark names
-on one rung-0 panel through the host renderer -- Michalska veza, kaplnka sv.
-Jakuba, Mariansky stlp, Rybarska brana, the galleries -- and that is the whole
-evidence. No city tiles have reached a card, so the panel has never shown it.
+**Seen on a device 2026-10-28**, X4 Pro, after a Bratislava old-town build went
+to the card over Wi-Fi. Twelve landmark names on one rung-0 panel over the old
+town: Michalska veza, kaplnka sv. Jakuba, Mariansky stlp, Kaplnka Kristovho
+tela, Rybarska brana, Kostol Nanebovzatia Panny Marie, the galleries.
 
-One thing that render did say, and it is an argument for the glyph sheet rather
-than against the category: museums and memorials are 28 of the 117 landmarks in
-that box, the largest category, and they surface as **people's names** --
-"Anton Petrak" is a bust. A name with no symbol reads as a place. T-2033.
+**Three of those twelve are statues** -- Anton Petrak, Pavol Orszagh
+Hviezdoslav, Tomas Garrigue Masaryk. A quarter of the names on a city panel are
+busts drawn with no symbol, and a name with no symbol reads as a place. The
+host render had shown two of eleven and that read as a footnote; the panel says
+it is not one. Museums and memorials are 28 of the 117 landmarks in that box,
+the largest single category. This is the strongest argument for the glyph sheet
+(T-2033) that this layer has produced, and it is an argument for the symbol
+rather than against the category.
 
 ## The rank cutoff, and why it is scoped to one kind
 
