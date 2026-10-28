@@ -244,10 +244,12 @@ void drawMarkAt(IMapCanvas& canvas, MapPointKind kind, uint8_t category, uint16_
     }
     const int dot = style.pointLandmarkDotPx;
     if (dot <= 0) return;
-    if (canvas.areaReserved(cx - dot / 2, cy - dot / 2, dot, dot)) return;
+    const int halo = dot + 2 * style.pointLandmarkDotHaloPx;
+    if (canvas.areaReserved(cx - halo / 2, cy - halo / 2, halo, halo)) return;
     // White under it for the same reason the square knocks out: a dot on a
-    // built-up tone or a contour is not a dot.
-    disc(canvas, cx, cy, dot + 2, MapInk::White);
+    // built-up tone or a contour is not a dot. The halo is per side, so the
+    // white disc is the dot plus twice it.
+    disc(canvas, cx, cy, dot + 2 * style.pointLandmarkDotHaloPx, MapInk::White);
     disc(canvas, cx, cy, dot, MapInk::Black);
     return;
   }

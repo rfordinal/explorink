@@ -954,7 +954,7 @@ def points_style(style):
     points = style.get("layers", {}).get("points")
     if points is None:
         print("gen_mapstyle.py: layers.points missing -- POI marks off")
-        return False, False, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0, 0, 0, 0
+        return False, False, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0, 0, 0, 0, 1
 
     safety = bool(points.get("safety_enabled", True))
     landmark = bool(points.get("landmark_enabled", False))
@@ -970,6 +970,8 @@ def points_style(style):
     landmark_dot = _round_px(points.get("landmark_dot_px", 0), "layers.points.landmark_dot_px")
     # The summit triangle. 0 falls back to the dot.
     landmark_peak = _round_px(points.get("landmark_peak_px", 0), "layers.points.landmark_peak_px")
+    # White around the dot, per side.
+    landmark_halo = _round_px(points.get("landmark_dot_halo_px", 1), "layers.points.landmark_dot_halo_px")
     # Landmark names. Their own cap, next to the place names' two.
     label_px = _round_px(points.get("label_px", 0), "layers.points.label_px")
     label_bold = bool(points.get("label_bold", False))
@@ -1025,7 +1027,7 @@ def points_style(style):
             sys.exit(f"gen_mapstyle.py: layers.points.{name} {value}px does not fit a uint8_t")
     return (safety, landmark, rank_max, landmark_dot, square, border, glyph, flag,
             cluster_radius, cluster_cell, label_px, label_bold, max_labels,
-            label_max_width, landmark_peak, label_ele_px)
+            label_max_width, landmark_peak, label_ele_px, landmark_halo)
 
 
 def place_labels(style):
@@ -1356,6 +1358,7 @@ def _style_literal(bundle):
         f"    .pointLabelElePx = {points_px[15]},",
         f"    .pointLabelMaxWidthPx = {points_px[13]},",
         f"    .pointLandmarkDotPx = {points_px[3]},",
+        f"    .pointLandmarkDotHaloPx = {points_px[16]},",
         f"    .pointLandmarkPeakPx = {points_px[14]},",
         f"    .pointSquarePx = {points_px[4]},",
         f"    .pointBorderPx = {points_px[5]},",

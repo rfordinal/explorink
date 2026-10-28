@@ -576,6 +576,13 @@ struct MapStyle {
   // empty on the first real render, and an empty square costs a mark's ink to
   // deliver no information (maintainer, 2026-10-27).
   uint8_t pointLandmarkDotPx;
+  // White knocked out around the dot, per side. The dot is 4 px and the map
+  // under it is a dither or a cliff hachure as often as it is white, so this
+  // is what decides whether the mark is findable at all -- raised from 1 to 2
+  // on the maintainer's call 2026-10-28, after the panel showed the dots
+  // readable on white ground and lost on everything else. It widens the mark's
+  // footprint without widening the mark.
+  uint8_t pointLandmarkDotHaloPx;
   // Base width of the filled triangle a peak draws instead of the dot. 0 falls
   // back to the dot.
   //

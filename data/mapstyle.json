@@ -307,6 +307,7 @@
       "landmark_rank_max": 0,
       "landmark_dot_px": 4,
       "landmark_peak_px": 11,
+      "landmark_dot_halo_px": 2,
       "label_px": 0,
       "label_bold": false,
       "max_labels": 0,
