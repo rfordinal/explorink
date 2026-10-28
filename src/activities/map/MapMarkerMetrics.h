@@ -14,7 +14,7 @@
 // three sizes rather than three shapes.
 constexpr int kMarkerRingDiameter = 54;
 constexpr int kMarkerRingWidth = 3;
-constexpr int kMarkerHikeDotDiameter = 18;
+constexpr int kMarkerHikeDotDiameter = 12;  // was 18 until 2026-10-28, judged too heavy on an X4 Pro panel
 // Hike's heading hand: from the dot out to the ring's inner edge
 // (kMarkerRingDiameter / 2 - kMarkerRingWidth = 24), 4 px wide. The reach must
 // stay inside the patch box's half-extent or a marker move leaves the hand
@@ -38,10 +38,17 @@ constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radi
 // length in pixels would leave the coarse rungs looking like a whole ring with a
 // nick in it, which is the one thing this must not be mistaken for.
 //
-// Eight because it is every other entry of kMarkerHeadingDir, so the positions
-// cost no trig at all -- the same 16-step table the heading glyph already
+// **Four since 2026-10-28, and eight was too many.** Judged on an X4 Pro panel:
+// at eight gaps the ring read as a dotted circle rather than as a ring that is
+// broken, which is the one thing this must not be mistaken for in the other
+// direction either. Four is every fourth entry of kMarkerHeadingDir, so the
+// positions still cost no trig -- the same 16-step table the heading glyph
 // indexes.
-constexpr int kMarkerRingGapCount = 8;
+//
+// The arithmetic the panel confirmed: at a 70 percent hike marker the ring is
+// 37 px across, so about 116 px of circumference, and eight 8 px gaps took
+// more than half of it away.
+constexpr int kMarkerRingGapCount = 4;
 
 // The sleep marker: what replaces the live marker on the way into a quick-resume
 // sleep (MapActivity::drawSleepMarker). Deliberately NOT scaled by rung -- it is
@@ -157,7 +164,13 @@ constexpr MarkerMetrics markerMetricsFor(uint8_t scale8, int pct = 100) {
   m.hikeDot = markerScaledPct(kMarkerHikeDotDiameter, scale8, pct);
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
-  m.ringGap = m.ringWidth * 2 + 2;
+  // The gap scales with the marker, unlike the stroke that sizes it. A gap is
+  // a piece of the SHAPE -- it is how much of the ring is missing -- so a
+  // marker at 70 percent whose gaps stayed full size would read as more broken
+  // than the same marker at 100, which is exactly what happened on the panel
+  // on 2026-10-28 before this line existed.
+  m.ringGap = (m.ringWidth * 2 + 2) * pct / 100;
+  if (m.ringGap < 2) m.ringGap = 2;
   m.cycleTipLen = markerScaledPct(kMarkerCycleTipLen, scale8, pct);
   m.rideTipLen = markerScaledPct(kMarkerRideTipLen, scale8, pct);
   m.haloMargin = markerScaledPct(kMarkerHaloMargin, scale8, pct);
