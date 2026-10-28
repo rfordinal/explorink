@@ -167,6 +167,11 @@ card is re-listed. Three decisions worth keeping:
   alive. The hazard the section above describes belongs to the phone's push
   path, which *can* arrive while the map is up.
 
+  **Read off the code, not measured**: `ActivityManager::replaceActivity` keeps
+  one current activity and no stack, and nothing under `src/activities/map/`
+  calls `pushActivity`. A future screen that pushes over the map breaks this,
+  and then the guard stops being unnecessary and becomes real work.
+
 Deleting the last trip leaves through `goToRouteSelect()`, which already
 chooses between the picker and `RouteEmptyActivity` -- a one-row list whose only
 row is Skip explains nothing.
