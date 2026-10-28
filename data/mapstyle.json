@@ -1162,7 +1162,7 @@
       ]
     },
     "tourist": {
-      "_comment": "The city walker, and the walker at a monument. Took slot 2 from `cycle` on 2026-10-27: cycle had a class mask and nothing else -- no style variant of its own anywhere in this file -- so the mode switch offered a third map that was ride's with cycleways on it, and the menu row claimed a mode the project had not built. Cycle is not cancelled, it is unbuilt; it comes back when somebody writes its row (docs/tourist-mode.md, IDEAS.md). The vocabulary here is hike's minus `bridleway`: a city walker uses pedestrian zones, footways and steps, and a horse path is the one hike class that says nothing to them. `aerialway` stays -- a funicular to a castle is a tourist's route.",
+      "_comment": "The city walker, and the walker at a monument. Took slot 2 from `cycle` on 2026-10-27: cycle had a class mask and nothing else -- no style variant of its own anywhere in this file beyond switching the relief layer off -- so the mode switch offered a third map that was ride's with cycleways on it, and the menu row claimed a mode the project had not built. Cycle is not cancelled, it is unbuilt; it comes back when somebody writes its row (docs/tourist-mode.md, IDEAS.md). The vocabulary here is hike's minus `bridleway`: a city walker uses pedestrian zones, footways and steps, and a horse path is the one hike class that says nothing to them. `aerialway` stays -- a funicular to a castle is a tourist's route.",
       "classes": [
         "unknown",
         "motorway",
