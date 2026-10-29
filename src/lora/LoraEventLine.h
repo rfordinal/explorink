@@ -77,6 +77,29 @@ enum class LoraTxDecline : uint8_t {
   NoClock,
 };
 
+// Why a transmit that did happen happened.
+//
+// **Its own enum rather than BeaconPolicy's, and that is deliberate.** This
+// file is the file format: it owns its vocabulary so a reader of `lora.csv`
+// can be told the whole closed set, and so the log does not move every time a
+// rule is renamed. main.cpp maps one to the other in one place. Same reason
+// LoraTxDecline is spelled out here rather than taken from a caller.
+//
+// `Manual` is the one that is not a rule at all: three callers transmit --
+// the beacon, the screen's "announce me now" and the console -- and until
+// this existed the file could not say which. A row that cannot be attributed
+// to a mechanism cannot answer "is the cadence working".
+enum class LoraTxReason : uint8_t {
+  None,  // not a transmit row
+  First,
+  FixChanged,
+  Moved,
+  Settled,
+  Moving,
+  Keepalive,
+  Manual,
+};
+
 // One row, as it leaves whichever task noticed it.
 //
 // **Eight key bytes, not thirty-two.** That is the same prefix `loraTeamId()`
@@ -86,6 +109,9 @@ enum class LoraTxDecline : uint8_t {
 struct LoraLogEvent {
   LoraLogKind kind;
   LoraTxDecline decline;
+  // Why we transmitted. LoraTxReason::None on every row that is not an
+  // AdvertTx, which is what keeps the detail column empty where it always was.
+  LoraTxReason txReason;
   uint8_t key[8];
   bool hasKey;
   char name[21];
@@ -114,5 +140,9 @@ inline constexpr const char* kLoraLogCsvHeader = "utc,uptime_ms,boot,kind,key,na
 // the same thing `TeamRecord` does and for the same reason: a zero there would
 // read as 1970 rather than as "unknown".
 size_t encodeLoraLogEvent(const LoraLogEvent& ev, uint32_t utc, uint32_t bootId, char* buf, size_t bufLen);
+
+// The same word the `tx` row carries, for a console line that has to agree
+// with the file. Empty string for None. Never null.
+const char* loraTxReasonText(LoraTxReason why);
 
 #endif  // ENABLE_LORA_MESH

@@ -1184,6 +1184,10 @@ static bool gMeshLastSentHadFix = false;
 //
 // Not reset by meshStart(): the schedule survives the screen gate, and a stop
 // does not stop being a stop because the rider opened Home.
+// What the last advert that actually went out was for. Mirrors the `tx` row's
+// detail column so a console reading and the file cannot disagree.
+static LoraTxReason gMeshLastTxReason = LoraTxReason::None;
+
 static bool gMeshSettleValid = false;
 static bool gMeshSettledAnnounced = false;
 static unsigned long gMeshSettleSinceMs = 0;
@@ -1430,7 +1434,11 @@ static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7, uint16_t* accuracyM
   return true;
 }
 
-static bool meshSendAdvert() {
+// `why` goes in the log row and nowhere else. Defaulted to Manual because the
+// two callers that are not the beacon -- the screen's button and the console
+// -- are exactly the ones that have no rule behind them, so the default is
+// the truth rather than a placeholder.
+static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   LoraLock lock;
   if (!gMeshRunning) return false;
 
@@ -1475,6 +1483,7 @@ static bool meshSendAdvert() {
   LoraLogEvent ev{};
   ev.kind = sent ? LoraLogKind::AdvertTx : LoraLogKind::TxDeclined;
   ev.decline = sent ? LoraTxDecline::None : LoraTxDecline::PoolEmpty;
+  ev.txReason = sent ? why : LoraTxReason::None;
   snprintf(ev.name, sizeof(ev.name), "%s", gMeshNodeName);
   ev.hasLoc = sent && hasLoc;
   ev.latE6 = latE6;
@@ -1491,6 +1500,7 @@ static bool meshSendAdvert() {
   // device, not per mechanism, so the one place that actually transmits is
   // the one place that may record it.
   if (sent) {
+    gMeshLastTxReason = why;
     gMeshLastSentMs = millis();
     gMeshLastSentHadFix = hasLoc;
     gMeshLastSentLatE7 = latE7;
@@ -1653,7 +1663,32 @@ void loraPresenceSetName(const char* name) {
   }
 }
 
-bool loraPresenceAdvertNow() { return meshSendAdvert(); }
+bool loraPresenceAdvertNow() { return meshSendAdvert(LoraTxReason::Manual); }
+
+// The one place the policy's vocabulary becomes the log file's. Kept here
+// rather than in either header so neither side depends on the other: the
+// policy is arithmetic and the log is a file format.
+static LoraTxReason loraTxReasonFor(BeaconPolicy::Reason reason) {
+  switch (reason) {
+    case BeaconPolicy::Reason::First:
+      return LoraTxReason::First;
+    case BeaconPolicy::Reason::FixChanged:
+      return LoraTxReason::FixChanged;
+    case BeaconPolicy::Reason::Moved:
+      return LoraTxReason::Moved;
+    case BeaconPolicy::Reason::Settled:
+      return LoraTxReason::Settled;
+    case BeaconPolicy::Reason::Moving:
+      return LoraTxReason::Moving;
+    case BeaconPolicy::Reason::Keepalive:
+      return LoraTxReason::Keepalive;
+    case BeaconPolicy::Reason::NoClock:
+    case BeaconPolicy::Reason::NoNews:
+      break;
+  }
+  // Not reachable: both of those are Decline actions and never reach a send.
+  return LoraTxReason::None;
+}
 
 // Decides whether this node has anything to say, and says it.
 //
@@ -1739,7 +1774,7 @@ static void meshBeaconTick() {
     return;
   }
 
-  if (!meshSendAdvert()) {
+  if (!meshSendAdvert(loraTxReasonFor(decision.reason))) {
     // Said out loud rather than retried on the next loop: a pool that cannot
     // give out a packet will not give one out 10 ms later either, and a silent
     // beacon is the failure this whole section exists to make visible.
@@ -3554,7 +3589,12 @@ void loop() {
               // floor has not expired, or there is nothing new to say. Added
               // 2026-10-20 after the first of those cost an hour of guessing.
               // `sent_ago` is -1 when nothing has ever been sent.
-              " mesh=%d hold=0x%x beacon=%lus sent_ago=%lds fix=%d"
+              // `why` is what the last advert was for and `still` how long
+              // the fix has sat inside the settle radius -- the two numbers a
+              // send-rule test reads, because four rules put the same row on
+              // the air and the cadence alone cannot tell them apart.
+              // `still` is -1 with no fix.
+              " mesh=%d hold=0x%x beacon=%lus sent_ago=%lds fix=%d why=%s still=%lds"
 #endif
               "\n",
               lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
@@ -3575,7 +3615,8 @@ void loop() {
               gMeshRunning ? 1 : 0, static_cast<unsigned>(gMeshHolders),
               static_cast<unsigned long>(SETTINGS.loraBeaconSec),
               gMeshBeaconEverSent ? static_cast<long>((millis() - gMeshLastSentMs) / 1000) : -1,
-              (gnss.fix().valid && gnss.fix().quality != 0) ? 1 : 0
+              (gnss.fix().valid && gnss.fix().quality != 0) ? 1 : 0, loraTxReasonText(gMeshLastTxReason),
+              gMeshSettleValid ? static_cast<long>((millis() - gMeshSettleSinceMs) / 1000) : -1
 #endif
           );
         } else if (upper == "ON") {

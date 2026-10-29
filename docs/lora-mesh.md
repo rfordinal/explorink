@@ -463,6 +463,29 @@ needs an error the screen can tell apart from `STR_LORA_PEERS_MESH_OFF`, which
 would otherwise report "mesh off" on a working radio, and that is a string in
 every translation.
 
+### A transmit row says which rule sent it
+
+Four rules can put the same position on the air, and until 2026-10-29 the
+`tx` row looked identical for all of them -- so the one question a send-rule
+test exists to answer, *did it send because the rider stopped*, could not be
+read off the file the test produces. The shared `detail` column now carries
+the reason: `first`, `fix`, `moved`, `settled`, `moving`, `keepalive`,
+`manual`.
+
+**`manual` is the one that is not a rule.** Three callers transmit -- the
+beacon, the screen's "announce me now" and the console -- and a row that
+cannot be attributed to a mechanism cannot answer "is the cadence working" at
+all. It was invisible before.
+
+`LORA_STATE` grew the same two numbers, so a console reading and the card
+agree: `why=<reason>` for the last advert, and `still=<seconds>` for how long
+the fix has sat inside the settle radius (`-1` with no fix). Those are the
+instruments the bench recipe reads.
+
+**The vocabulary is `LoraEventLine`'s own, not `BeaconPolicy`'s**, and main.cpp
+maps one to the other in a single function. The log is a file format and the
+policy is arithmetic; neither should move because the other was renamed.
+
 ### The rules are a pure function, since 2026-10-29
 
 `BeaconPolicy::decide()` (`src/lora/BeaconPolicy.h`) is the whole table above
