@@ -230,6 +230,22 @@ Three rules follow, and none of them is optional:
 - **Push it.** A branch that lives on one laptop is one disk failure away from
   being a story about work that was done once.
 
+**Exception, 2026-10-25: `feat/lora-presence` merged into `release/xteink-x3`
+anyway, maintainer's explicit call.** The "dead weight" cost this rule warns
+about does not apply the same way here: the whole LoRa/MeshCore/team-markers
+payload is gated behind `ENABLE_LORA_CMD`/`ENABLE_LORA_MESH`/
+`ENABLE_TEAM_MARKERS`/`ENABLE_TEAM_CMD`, none of which `env:default` or
+`env:gh_release` (X3's build) ever define -- so the merge adds zero flash and
+zero behavior on X3, verified by checking the *linked ELF's* symbol table
+(`nm firmware.elf`, not a build-log grep -- the `.cpp`/`.c` files are compiled
+for every env regardless of the gate, the linker's `--gc-sections` is what
+drops them) and by flashing the X3 and exercising Boot, Home and the Map
+screen (`docs/lora-mesh.md`, "Verified on hardware, 2026-10-25"). The maintainer asked
+for the merge anyway, after being told about this rule and the dead-weight
+argument not holding for a fully-gated board. Read as a one-off, not a
+precedent: a feature whose gating is *not* airtight still owes this rule in
+full.
+
 This is not the same thing as a device branch. A `release/<device>` branch is
 hardware-conditional work that *does* go back into `develop` once the board is
 stable. This is finished work waiting for something else to exist.
