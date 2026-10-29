@@ -38,8 +38,8 @@ The grammar, and it is deliberately small:
 """
 import copy
 
-# mapstyle.json's `modes` keys, in MapRideMode order (Ride=0, Hike=1, Cycle=2).
-MODE_ORDER = ["ride", "hike", "cycle"]
+# mapstyle.json's `modes` keys, in MapRideMode order (Ride=0, Hike=1, Tourist=2).
+MODE_ORDER = ["ride", "hike", "tourist"]
 
 # MapRideMode.h's kMapZoomStepCount. Duplicated rather than imported for the
 # same reason the class enum is: this repo builds from its own checkout alone.
@@ -81,7 +81,7 @@ def _check_entry(entry, path):
     # **A singular selector is the dangerous typo, so it is refused by name.**
     # `mode` and `step` are not selectors, so they were taken as *patch fields*:
     # the entry then had no selector at all, which means "every mode and every
-    # rung", so a block written to change hike changed ride and cycle too, and the
+    # rung", so a block written to change hike changed ride and tourist too, and the
     # stray key rode into the resolved rule where the layer parser ignored it.
     # Found 2026-08-27 in a live style -- `{"mode": ["hike"], "pattern": "dashed"}`
     # had overridden every one of the 15 variants.

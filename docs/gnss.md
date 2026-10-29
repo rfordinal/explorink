@@ -80,6 +80,59 @@ part, GPS + GLONASS + BeiDou, NMEA over UART.
   would remove the GGA-plus-RMC stitch described below, and `GPTXT` is where
   `ANTENNA OK` comes from, a health line with no equivalent anywhere else.
 
+## This receiver reports no accuracy, in any protocol, and cannot be made to
+
+**It has no GST and no way to switch one on.** `[verified from the vendor
+document, 2026-10-29]` GST is the NMEA sentence that carries position error as
+a standard deviation in metres. The question came up because the marker's trust
+states want metres and only the phone can supply them
+(`marker-fix-trust.md`). The answer is no, and it is a hard no rather than an
+unmeasured one.
+
+Read out of **Quectel L76K GNSS Protocol Specification V1.1**, the vendor
+document for this module rather than for the CASIC chip family -- the same
+document "What Quectel's own protocol document actually supports" below is
+read from.
+
+- **The output sentence chapter lists eight sentences.** RMC, GGA, GSV, GSA,
+  VTG, GLL, TXT, ZDA (2.2.1 to 2.2.8). GST is not among them.
+- **`$PCAS03` cannot turn one on either.** Its synopsis is
+  `$PCAS03,<nGGA>,<nGLL>,<nGSA>,<nGSV>,<nRMC>,<nVTG>,<nZDA>,<nANT>` plus six
+  reserved fields (2.3.3). Eight switchable sentences, and no field for a
+  ninth.
+- **`GST`, `GRS` and `GBS` occur zero times in the whole document.** So do
+  `deviation`, `sigma`, `CEP` and `RMS`. `accuracy` occurs twice, both times in
+  the legal disclaimer on the cover pages.
+- **No `NAV-` message exists for this module.** The CASIC messages V1.1
+  documents are `ACK-NACK`, `ACK-ACK`, `CFG-PRT`, `CFG-MSG`, `CFG-RST` and
+  `CFG-RATE`. Six, all configuration or acknowledgement. The binary half
+  carries no navigation output at all.
+
+**So the whole quality vocabulary this receiver speaks is:** `HDOP` (GGA field
+9), `PDOP` / `HDOP` / `VDOP` (GSA), the used-satellite count, and the GGA
+quality digit. Geometry and counts. **Nothing that is an error estimate.**
+
+Two consequences, and neither is a preference:
+
+- **`MapFixTrust::posTrustFor(accuracyM, ...)` is a phone-only path and stays
+  one.** The device's own receiver has nothing to feed it, which is why
+  `posTrustForHdop()` exists next to it.
+- **A rule for the on-board receiver has to be derived from position and time**,
+  because those are the only honest inputs left. It is not a shortcut past a
+  better number; there is no better number.
+
+`GNGSA` is still worth picking up for `PDOP` and `VDOP` -- it already arrives
+and is counted and dropped. But it is more geometry, so it does not answer
+multipath either: see "A ride says HDOP misses what the rider sees" in
+[`marker-fix-trust.md`](marker-fix-trust.md).
+
+**The one avenue left is a long shot with a bad record.** The CASIC *family*
+spec V3.6 carries messages Quectel's module document does not mention. Two such
+candidates have already been tried on this part and the module ignored both --
+`$PCAS12` and `CFG-RST` `resetMode` 8, measured 2026-09-11 (T-209). Testing a
+family `NAV-` message costs a `CFG-MSG` write and `CMD:GNSS RAW BYTES ON` to
+see whether anything answers. `[open]`
+
 ## Two pins, and they are UART0's
 
 ```

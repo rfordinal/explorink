@@ -264,9 +264,20 @@ class BaseTheme {
   // docs/map-observation-mode.md) keeps `false`; only a caller whose glyph
   // actually has a distinct bold cut and needs it (MapActivity's zoom "+"/"--")
   // passes `true`.
+  //
+  // topIcon/bottomIcon: an icon drawn in place of topBtn/bottomBtn's rotated
+  // text, non-null only for MapActivity's zoom hints (side_hint_icons.h). The
+  // box, its fill, and the disabled-stub shrink are unchanged either way --
+  // only the content glyph differs -- so passing an icon alongside a non-empty
+  // topBtn/bottomBtn draws the icon and ignores the text; every other existing
+  // caller (the pan arrows, OptionPopup, KeyboardEntryActivity) omits both and
+  // keeps drawing text exactly as before. Both default to `nullptr` in this
+  // class and in every override -- see "default arguments do not virtualize"
+  // above for why that agreement has to be exact.
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
                                    int fontId = SMALL_FONT_ID, bool topDisabled = false, bool bottomDisabled = false,
-                                   bool bold = false) const;
+                                   bool bold = false, const freeink::Icon* topIcon = nullptr,
+                                   const freeink::Icon* bottomIcon = nullptr) const;
   // The four-box hint band along the bottom. Empty on a touch panel, where
   // drawButtonHints() draws nothing. Same purpose as sideButtonHintsRect(): a
   // caller placing something near an edge has to know what is already there.
@@ -346,15 +357,13 @@ class BaseTheme {
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
   // The Home screen's row list: icon, label, chevron. One row is selected and
-  // draws inverted on a filled block; a row with `enabled == false` keeps its
-  // shape and loses half its ink, so a rider sees the feature exists and is not
-  // there yet. Rows are icon assets, not UIIcon: Home's glyphs are Lucide-baked
-  // freeink::Icons (src/components/icons/home_icons.h) and the UIIcon table is a
-  // fixed set of the reader's own bitmaps. See ../../../docs/home-screen.md.
+  // draws inverted on a filled block. Rows are icon assets, not UIIcon: Home's
+  // glyphs are Lucide-baked freeink::Icons (src/components/icons/home_icons.h)
+  // and the UIIcon table is a fixed set of the reader's own bitmaps. See
+  // ../../../docs/home-screen.md.
   struct HomeRow {
     const char* label;
     const freeink::Icon* icon;
-    bool enabled;
   };
   virtual void drawHomeMenu(const GfxRenderer& renderer, Rect rect, const HomeRow* rows, int rowCount,
                             int selectedIndex, int rowHeight) const;

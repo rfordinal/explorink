@@ -53,6 +53,7 @@
 #include "components/UITheme.h"
 #include "components/icons/map_header_icons.h"
 #include "components/icons/poi_icons.h"
+#include "components/icons/side_hint_icons.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 
@@ -475,7 +476,7 @@ constexpr int kTextX = 8;
 // mapContentTop() does.
 //
 // 2, not a rounder number: mapContentTop() is headerBarHeight() + 1 (37 in
-// Ride/Cycle), and the old readout put the box's top edge at 39 with its text
+// Ride/Tourist), and the old readout put the box's top edge at 39 with its text
 // at 42. 2 lands on exactly those two numbers, so the position tuned on
 // hardware on 2026-08-08 is preserved rather than approximated. A 5 here --
 // what this shipped with for one commit -- pushed the whole box 3px down,
@@ -521,7 +522,7 @@ constexpr int kHeaderPlaceNameLeftX = kTextX + 2;
 
 // Hike mode's second header line: elevation and lat/lon, both of which answer
 // "where am I" better than a place name at hiking pace, and both of which the
-// place-name walk already fails to answer off the road network. Ride and Cycle
+// place-name walk already fails to answer off the road network. Ride and Tourist
 // keep the single-row header above untouched -- MapActivity::headerBarHeight()
 // is the only thing that reads mode_ here, and it is what
 // MapActivity::mapContentTop()/headerSeparatorY() are derived from, so the map
@@ -629,7 +630,7 @@ constexpr HeadingVec kMarkerHeadingDir[16] = {
 // Display strings for MapRideMode, indexed the same way as the enum itself
 // (MapRideMode.h) -- mapRideModeName() gives the wire name for the console,
 // this gives the translated label for the Mode popup.
-constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HIKE, StrId::STR_CYCLE};
+constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HIKE, StrId::STR_TOURIST};
 
 }  // namespace
 
@@ -663,8 +664,11 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     // Positions come off kMarkerHeadingDir, every other entry: eight points on
     // the ring, no trig, and the same table the heading glyph indexes.
     const int gap = m.ringGap;
-    for (int i = 0; i < 16; i += 16 / kMarkerRingGapCount) {
-      const HeadingVec& at = kMarkerHeadingDir[i];
+    // `g * 16 / count` rather than a stride, so the count is free of the
+    // divisors of 16 -- and it has to be, because every one of those is even
+    // and four gaps on a circle read as a crosshair (MapMarkerMetrics.h).
+    for (int g = 0; g < kMarkerRingGapCount; ++g) {
+      const HeadingVec& at = kMarkerHeadingDir[g * 16 / kMarkerRingGapCount];
       const int gx = cx + at.dx * radius / 8;
       const int gy = cy + at.dy * radius / 8;
       renderer.fillRect(gx - gap / 2, gy - gap / 2, gap, gap, false);  // false is white
@@ -681,8 +685,8 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     // this argument since 2026-08-19 -- a heading with nothing behind it is a
     // claim dressed as an observation (MapMarkerMetrics.h).
     //
-    // Hike keeps its dot, because the dot is position, not direction. Cycle and
-    // Ride have no separate position glyph, so for them the ring and halo are
+    // Hike keeps its dot, because the dot is position, not direction. Tourist
+    // and Ride have no separate position glyph, so for them the ring and halo are
     // the whole marker -- which is correct and is what a bare ring means.
     if (mode == MapRideMode::Hike) {
       renderer.fillRoundedRect(cx - m.hikeDot / 2, cy - m.hikeDot / 2, m.hikeDot, m.hikeDot, m.hikeDot / 2,
@@ -765,11 +769,11 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     return;
   }
 
-  // Cycle and ride both point at the real incoming heading, never the
+  // Tourist and ride both point at the real incoming heading, never the
   // forced-north display heading renderViewport() uses for map rotation
   // (kNoRouteDisplayHeading) -- direction of travel matters at riding speed
   // even though the map underneath stays north-up.
-  const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.cycleTipLen;
+  const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.touristTipLen;
   const HeadingVec& dir = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
   const HeadingVec perp{-dir.dy, dir.dx};
 
@@ -2151,7 +2155,7 @@ void MapActivity::drawHeaderPlaceName() {
 // directly. Those track whatever is on screen, and panBy() repoints them at
 // the pan target while Observe mode is up (riderLatE7()'s own comment); this
 // line answers "where is the rider", which does not change just because they
-// panned to look around. Ride and Cycle draw nothing here -- mode_ is the
+// panned to look around. Ride and Tourist draw nothing here -- mode_ is the
 // only gate, and a rider who switches mode picks the line up or loses it on
 // the full frame switchMode() already forces.
 void MapActivity::drawHikeElevationLine() {
@@ -2242,6 +2246,12 @@ void MapActivity::drawHikeElevationLine() {
   // measured 2026-08-17). This icon sits over the plain white backing this
   // function already filled, not over live map lines, so the single ink pass
   // below is enough -- no silhouette-then-outline mask needed.
+  //
+  // Holds even when a neighboring call in the same function uses its own
+  // extra rotation (drawTextRotated90CW()) for an unrelated, glyph-specific
+  // reason -- do not reason from that to drawIcon() being safe nearby.
+  // docs/map-observation-mode.md's zoom-icon finding, 2026-10-20, is the exact
+  // way that reasoning went wrong for the side-hint box's "+"/"-" icons.
   renderer.drawMono1bpp(icon_mountain_16.bits, iconX, iconY, iconSize, iconSize, true);
   renderer.drawText(SMALL_FONT_ID, iconX + iconSize, textY, altStr, true);
 }
@@ -2596,18 +2606,26 @@ void MapActivity::drawZoomSideHints() {
   // Symbols, not words: "Zoom In"/"Zoom Out" rotated into a ~30px-wide box
   // reads as a blur. A single glyph is legible at that size and needs no font
   // control to prove it -- same "symbol over word in a tight space" call as
-  // KeyboardEntryActivity.cpp:947's ">"/"<". Plain literals, not tr(): a
-  // plus/minus is not language-dependent, matching that same precedent.
-  // "-" alone rendered as barely a dot: smallFontFamily has no bold face
-  // (main.cpp:102-103, single-glyph constructor) and the hyphen is a short,
-  // thin stroke even before the 90-degree rotation shrinks it further.
-  // Doubled, it survives -- same glyph, twice the ink, no new font needed.
+  // KeyboardEntryActivity.cpp:947's ">"/"<".
   //
-  // UI_10_FONT_ID, not the side-hint default SMALL_FONT_ID: same fix
-  // drawPanSideHints() already applies below, for the same reason -- a font
-  // two points bigger with a real regular+bold pair reads heavier than
-  // smallFontFamily's single glyph at any size. Unverified on glass as of
-  // this change; the pan hints' own legibility pass is what this borrows.
+  // Icons (side_hint_icons.h), not text, as of 2026-10-18 -- maintainer's
+  // call. The original plain-text "+"/"--" read too faint on the glass to be
+  // sure which box did what, and "--" (two ASCII hyphens, doubled because a
+  // single one rendered as barely a dot through this box's rotation -- see
+  // docs/map-observation-mode.md's "zoom side hints" finding) was a
+  // workaround for that, not a design choice. `icon_plus`/`icon_minus` are
+  // Lucide glyphs baked bold (scripts/gen_side_hint_icons.py, stroke-width
+  // bumped from Lucide's default 2) specifically to read clearly at this
+  // box's size. topBtn/bottomBtn below still carry the plain "+"/"-"
+  // characters -- unused for display once an icon is given (BaseTheme.cpp/
+  // LyraTheme.cpp's drawSideButtonHints() draws the icon instead and ignores
+  // the text), but still read by rememberSideLabels() and the
+  // present/disabled checks the box's border and fill rely on.
+  //
+  // UI_10_FONT_ID stays the fontId argument: it is unused for a drawn icon,
+  // but drawSideButtonHints() still takes one (every other caller still
+  // needs it), and the pan arrows below show it is the box's established
+  // size regardless.
   //
   // Disabled at a ladder end, not hidden: this box has no row to remove, so
   // it takes the same "still there, tucked toward the edge" treatment
@@ -2616,15 +2634,12 @@ void MapActivity::drawZoomSideHints() {
   // topDisabled/bottomDisabled -- Base draws it as absent instead, matching
   // its own front-hint convention. The menu's Zoom In/Out rows already hide
   // at these exact bounds (openMapMenu(), zoomStep() > 0 / zoomStep() + 1 <
-  // kZoomStepCount) -- this box just didn't check them before. "+"/topBtn is
-  // Up/stepZoom(-1) (zoom in), "--"/bottomBtn is Down/stepZoom(+1) (zoom out).
+  // kZoomStepCount) -- this box just didn't check them before. topBtn is
+  // Up/stepZoom(-1) (zoom in), bottomBtn is Down/stepZoom(+1) (zoom out).
   const bool atMostZoomedIn = zoomStep() == 0;
   const bool atMostZoomedOut = zoomStep() + 1 >= MapViewport::kZoomStepCount;
-  // bold=true: unlike the pan arrows just below, "+"/"-" actually differ
-  // between ubuntu_10's regular and bold cuts, so asking for REGULAR (every
-  // other drawSideButtonHints() caller's default) left them thin again even
-  // after the font-size fix above.
-  GUI.drawSideButtonHints(renderer, "+", "--", UI_10_FONT_ID, atMostZoomedIn, atMostZoomedOut, /*bold=*/true);
+  GUI.drawSideButtonHints(renderer, "+", "-", UI_10_FONT_ID, atMostZoomedIn, atMostZoomedOut, /*bold=*/true, &icon_plus,
+                          &icon_minus);
 }
 
 void MapActivity::drawPanSideHints() {
@@ -3589,7 +3604,7 @@ void MapActivity::loop() {
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
   // Hike mode's elevation/lat-lon line, kept current the same way: a no-op in
-  // Ride/Cycle (mode_ gate inside).
+  // Ride/Tourist (mode_ gate inside).
   updateHikeElevationLine();
   // And the debug window, same shape again: a no-op with mapDebugInfo off,
   // which is its default.
@@ -6545,7 +6560,11 @@ void MapActivity::composeCurrent() {
 }
 
 MarkerMetrics MapActivity::markerMetrics() const {
-  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8);
+  // The rung's own scale, then the style's percentage on top: the rung says
+  // how much room the marker may take at this zoom, the style says how much
+  // this MODE wants it to take at all (MapStyle::markerScalePct).
+  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8,
+                          mapStyleFor(mode_, zoomStep()).markerScalePct);
 }
 
 void MapActivity::markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const {
@@ -7258,8 +7277,15 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // on map` is a temporary view, so it filters this walk and never the style
   // (MapPointSource::Config::categoryMask). With no layer on, the source is not
   // even handed over and no shard is opened.
+  //
+  // The `Nearby` mask gates the SAFETY half only. A landmark is drawn because
+  // the style for this mode draws landmarks -- tourist and hike do, ride does
+  // not -- and never because the rider asked to see nearby points. The two
+  // used to share one gate, so a rider with every Nearby row off got no
+  // castles either (maintainer, 2026-10-27).
   IMapPointSource* pointSource = nullptr;
-  if (points_ && nearbyCategoryMask_ != 0 && pointsEnabled()) {
+  const bool styleDrawsLandmarks = style.pointsLandmarkEnabled;
+  if (points_ && pointsEnabled() && (nearbyCategoryMask_ != 0 || styleDrawsLandmarks)) {
     MapPointSource::Config pointConfig;
     pointConfig.rootDir = kTileRoot;
     // The point layer is its own grid, so it gets its own range off the same
@@ -7271,7 +7297,14 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     pointConfig.range.row0 = shards.row0;
     pointConfig.range.col1 = shards.col1;
     pointConfig.range.row1 = shards.row1;
-    pointConfig.categoryMask = nearbyCategoryMask_;
+    pointConfig.safetyCategoryMask = nearbyCategoryMask_;
+    // Not a UI toggle: which landmarks draw is the style's rank cutoff
+    // (pointLandmarkRankMax), applied at draw time.
+    pointConfig.landmarkCategoryMask = 0xFFFFu;
+    pointConfig.kindMask = MapPointMarks::kindMaskFor(style);
+    // A name costs a seek and a read per point, so it is fetched only when
+    // the style actually draws landmark names.
+    pointConfig.wantNames = style.pointLabelPx > 0 && labels_ != nullptr;
     pointConfig.screenWidth = static_cast<int16_t>(renderer.getScreenWidth());
     pointConfig.screenHeight = static_cast<int16_t>(renderer.getScreenHeight());
     // A mark is drawn centred on its point, so the margin is the mark's own

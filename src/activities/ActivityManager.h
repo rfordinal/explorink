@@ -28,10 +28,10 @@ enum class HomeMenuItem {
   PREVIEW,
   SETTINGS_MENU,
   // Trips is the trip list -- its row opens RouteSelectActivity
-  // (HomeActivity::onTripsOpen()). Pins and Wallet still have no destination
-  // yet -- they draw dimmed and refuse selection (HomeActivity::kRows,
-  // ../../docs/home-screen.md). Wallet's activity exists on the wallet-viewer
-  // branch and is not on develop.
+  // (HomeActivity::onTripsOpen()). PINS and WALLET have no Home row: Pins
+  // lives inside the map's own popup, and Wallet's activity is on the
+  // wallet-viewer branch and not on develop (../../docs/home-screen.md). The
+  // values stay in this enum for when either gets a real entry point.
   TRIPS,
   PINS,
   WALLET

@@ -80,6 +80,23 @@ configured on the device (**Settings > System > OPDS Servers**,
 `src/activities/settings/SettingsActivity.cpp:75`); the browser no longer has a
 card for them.
 
+## `CMD:GOTO_MAP` does nothing while this screen is open
+
+Measured 2026-10-28, X4 Pro. With the Wi-Fi/web-server activity on the panel,
+`CMD:GOTO_MAP` draws no `GOTO_MAP_OK` and the screen does not change; the
+serial port is healthy and `[WEB] handleClient active` keeps logging through
+it. Leaving Wi-Fi and sending the same byte-for-byte command answered
+`GOTO_MAP_OK` immediately -- one thing changed, one result changed.
+
+It matters because the obvious workflow runs straight into it: push tiles to
+the card over Wi-Fi, then drive the map console to look at them. The second
+half needs the device off this screen first, and that is a tap nobody can do
+from the laptop.
+
+**Why is not established.** `CMD:GOTO_MAP` is handled in `src/main.cpp`'s own
+console and reached from Home without trouble the same day, so the parser is
+not the suspect; what this activity does to the dispatcher was not traced.
+
 ## Web Interface
 
 The browser UI has two pages.

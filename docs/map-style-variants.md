@@ -496,7 +496,10 @@ Nothing here has been on a panel. In order of what would hurt most:
 2. **Rung 0 and 1 are unchanged by design.** If they look different, something
    resolved wrong.
 3. **The mode switch.** No mode differs from another yet, so ride, hike and
-   cycle must still look exactly as they did.
+   cycle must still look exactly as they did. (Written 2026-08; both halves
+   have since expired. Hike grew 15 mode-scoped rules, and slot 2 stopped
+   being `cycle` on 2026-10-27 -- it is `tourist` now, with a row of its own.
+   See map-style.md, "Tourist: the city walker's row".)
 4. **Buildings at rung 0 and the wash from rung 1 out**, and the label counts
    per rung. Those numbers did not change; only where they are written did. A
    difference there is a migration bug, not a style decision.

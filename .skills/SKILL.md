@@ -605,6 +605,13 @@ buries the real diff in churn. Never undo that churn with an inverse-grep
 `git checkout --` -- it silently reverts your own edits in every file the grep
 did not happen to name.
 
+**Never run `clang-format` on a non-C-family file** (a `.py` script, a `.md`
+doc). It does not error -- it silently mangles things like a shebang line
+(`#!/usr/bin/env python3` became `#!/ usr / bin / env python3`, 2026-10-20,
+still valid Python so nothing caught it until a harness diff warning did).
+The grep above already scopes to `.cpp`/`.h` for exactly this reason; do not
+run the tool by hand outside it.
+
 ### Debugging Crashes
 
 **Common Crash Causes**:

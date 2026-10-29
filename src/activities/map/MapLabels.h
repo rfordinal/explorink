@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "IMapCanvas.h"
+#include "IMapPointSource.h"
 #include "IMapSource.h"
 #include "MapStyle.h"
 
@@ -78,12 +79,37 @@ class MapOccupancyGrid {
 // and placement cannot start until the whole layer has been walked -- the
 // rank-first order is the whole point.
 struct MapLabelCandidate {
-  static constexpr int kNameLen = 32;
+  // 63 bytes of UTF-8 plus a terminator -- exactly what the point file allows
+  // a name to be (kPointNameMaxBytes, docs/point-file-spec.md) and more than a
+  // place name has ever needed.
+  //
+  // It was 32, which is fine for a village and short for a landmark: Slovak
+  // names run long ("Chranena krajinna oblast Strazovske vrchy" is 47 bytes)
+  // and the cut landed mid-name, sometimes mid-codepoint. Widening costs
+  // kMaxCandidates x 32 = 1,152 bytes of the label scratch, which MapActivity
+  // allocates once on the heap for the map screen (T-2034).
+  //
+  // A name still longer than this is cut on a codepoint boundary, never inside
+  // a UTF-8 sequence -- half a sequence draws a replacement glyph in the
+  // middle of a word. Fitting it to the panel is a separate job and belongs to
+  // fitName()'s ellipsis, which measures pixels rather than bytes.
+  static constexpr int kNameLen = 64;
   int16_t x = 0;
   int16_t y = 0;
   uint8_t rank = 0;
+  // A landmark name rather than a place name: its own text size and its own
+  // cap, because the two answer different questions and a ridge full of peaks
+  // must not be able to spend the village names' budget.
+  bool landmark = false;
+  // How far this candidate's own mark reaches from its anchor, so the label is
+  // pushed clear of it. A place dot and an 18 px POI square are not the same
+  // distance, and a text-only landmark's dot is smaller than either.
+  uint8_t markHalfPx = 0;
   uint32_t distSq = 0;
   char name[kNameLen] = "";
+  // A second line drawn UNDER the mark while `name` goes above it: a summit's
+  // height, the layout a paper map gives one. Empty for everything else.
+  char below[8] = "";
 };
 
 // The label pass's whole working set, owned by the caller.
@@ -218,6 +244,20 @@ namespace MapLabels {
 // map would need a redraw per fix instead of per viewport reset
 // (docs/map-render-spec.md, "the map underneath stays byte-identical").
 void offer(MapLabelScratch& scratch, const MapPlaceRef& place, int anchorX, int anchorY);
+
+// The same, for a point-layer landmark: a castle, a peak, a named rock, a
+// guidepost, a locality. `markHalfPx` is how far its own mark reaches from the
+// point (MapPointMarks::marksSide()/2), so the name clears the square or the
+// dot it belongs to.
+//
+// Offered during the point walk, drawn by the same draw() as the places: a
+// name has to know where every other name went, and placement cannot start
+// until both layers have been walked (MapLabels.h, the note above).
+// `below`, when non-empty, is drawn under the mark with `name` above it --
+// name, symbol, height, stacked and centred, which is how a paper map sets a
+// summit. Pass nullptr for a landmark whose whole label is its name.
+void offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name, const char* below,
+                   int markHalfPx, int anchorX, int anchorY);
 
 // Places and draws what fits. Call after the route has been drawn (so
 // scratch.route is marked) and after the place dots, since a label sits over

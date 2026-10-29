@@ -431,7 +431,7 @@ TEST(MapTileReader, SkipCrc32FoldsNothingAndSaysSo) {
 
 TEST(MapModeFilter, HikeDrawsEverythingRideDoesAndMore) {
   // A property of the masks themselves, not of any one tile: hike is a
-  // strict superset of ride, and cycle sits between them. This is what makes
+  // strict superset of ride, and tourist sits between them. This is what makes
   // "switch to hike and see more" true everywhere rather than only where
   // the test fixture happens to have a footpath.
   // The *vocabulary* masks, i.e. mapstyle.json's `modes` lists on their own.
@@ -442,11 +442,24 @@ TEST(MapModeFilter, HikeDrawsEverythingRideDoesAndMore) {
   // at one rung must not be able to falsify it.
   const uint32_t ride = kDefaultRideMask;
   const uint32_t hike = kDefaultHikeMask;
-  const uint32_t cycle = kDefaultCycleMask;
+  const uint32_t tourist = kDefaultTouristMask;
 
   EXPECT_EQ(ride & hike, ride) << "hike must draw everything ride does";
   EXPECT_NE(ride, hike) << "and strictly more, or the mode switch is invisible";
-  EXPECT_EQ(ride & cycle, ride);
+  EXPECT_EQ(ride & tourist, ride) << "tourist must draw everything ride does";
+  // Tourist is hike's vocabulary minus bridleway (mapstyle.json, modes.tourist),
+  // so it sits strictly inside hike and strictly outside ride. Both halves are
+  // asserted: a tourist mask that grew past hike would mean the city walker is
+  // reading classes nobody styled, and one that shrank to ride's would mean the
+  // mode switch shows the same map twice -- which is exactly what cycle did
+  // until 2026-10-27, and why tourist has this slot.
+  EXPECT_EQ(tourist & hike, tourist) << "tourist must stay inside hike's vocabulary";
+  EXPECT_NE(tourist, ride) << "or the mode switch is invisible";
+  EXPECT_NE(tourist, hike) << "or tourist is hike under another name";
+  EXPECT_TRUE(tourist & mapClassBit(MapClassId::Steps));
+  EXPECT_TRUE(tourist & mapClassBit(MapClassId::Pedestrian));
+  EXPECT_TRUE(tourist & mapClassBit(MapClassId::LivingStreet));
+  EXPECT_FALSE(tourist & mapClassBit(MapClassId::Bridleway));
 
   // The classes the phase is actually about: paths and footways are hike's,
   // and tracks are everyone's -- a forest track is the point of a trail
@@ -545,7 +558,7 @@ TEST(MapModeFilter, ClassNamesResolveToTheEnumTheTilesCarry) {
 }
 
 TEST(MapModeFilter, ModeNamesRoundTrip) {
-  for (const MapRideMode mode : {MapRideMode::Ride, MapRideMode::Hike, MapRideMode::Cycle}) {
+  for (const MapRideMode mode : {MapRideMode::Ride, MapRideMode::Hike, MapRideMode::Tourist}) {
     MapRideMode parsed = MapRideMode::Ride;
     ASSERT_TRUE(mapRideModeFromName(mapRideModeName(mode), parsed)) << mapRideModeName(mode);
     EXPECT_EQ(parsed, mode);
@@ -700,11 +713,10 @@ TEST(MapBuildingsPerRung, OnlyTheClosestRungDrawsThemAndSkippingThemSkipsTheRead
     for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
       const MapStyle& style = mapStyleFor(mode, step);
       const int builtUp = static_cast<int>(MapLanduseClass::BuiltUp);
-      const bool washDrawn = style.landuseTone[builtUp] != MapAreaTone::None ||
-                             style.landuseHatch[builtUp] != MapAreaFill::Pattern::None;
-      EXPECT_NE(style.buildingsEnabled, washDrawn)
-          << mapRideModeName(mode) << " step " << step
-          << " must draw buildings or the wash, never neither and never both";
+      const bool washDrawn =
+          style.landuseTone[builtUp] != MapAreaTone::None || style.landuseHatch[builtUp] != MapAreaFill::Pattern::None;
+      EXPECT_NE(style.buildingsEnabled, washDrawn) << mapRideModeName(mode) << " step " << step
+                                                   << " must draw buildings or the wash, never neither and never both";
     }
   }
 
@@ -798,7 +810,7 @@ TEST(MapZoomLadder, MarkerMetricsScaleWithTheRungAndStayDrawable) {
     EXPECT_GT(m.hikeDot, 0) << "step " << step;
     EXPECT_GT(m.hikeHandReach, 0) << "step " << step;
     EXPECT_GT(m.rideTipLen, 0) << "step " << step;
-    EXPECT_GT(m.cycleTipLen, 0) << "step " << step;
+    EXPECT_GT(m.touristTipLen, 0) << "step " << step;
     // Everything the marker draws stays inside the box the patch save/restore
     // uses, or a move smears a trail across the map. The same condition the
     // header static_asserts; here it is checked as a value, not a compile.

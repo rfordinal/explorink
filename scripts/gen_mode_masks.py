@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate the compiled ride/hike/cycle mode masks from data/mapstyle.json's
+Generate the compiled ride/hike/tourist mode masks from data/mapstyle.json's
 `modes` block.
 
 MapModeMaskDefaults.h is a build product, like lib/I18n/I18nKeys.h -- gitignored,
@@ -42,9 +42,9 @@ def _load_variants(repo_root):
     mapstyle_variants = module
 
 # Fixed order, independent of the JSON's key order -- this is what
-# MapRideMode (Ride=0, Hike=1, Cycle=2) and MapModeMasks's default array
+# MapRideMode (Ride=0, Hike=1, Tourist=2) and MapModeMasks's default array
 # assume.
-_MODE_ORDER = ["ride", "hike", "cycle"]
+_MODE_ORDER = ["ride", "hike", "tourist"]
 
 # The tile format's own class_id enum (mapbuilder/tilegen/class_spec.py, mirrored in
 # MapClassEnum.h). Owned by the tile format, not by the style -- duplicated

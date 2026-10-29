@@ -1069,7 +1069,7 @@ at the ride's own pace while you watch:
 
 ```
 map_window --tiles mapbuilder/cdn (--ride docs/rides/<ride>.jsonl | --lat L --lon L)
-            [--heading 0-15] [--mode ride|hike|cycle] [--zoom 0-6] [--marker 0-4]
+            [--heading 0-15] [--mode ride|hike|tourist] [--zoom 0-6] [--marker 0-4]
             [--route <route.tir>] [--speed X] [--no-console] [--exit-at-end]
 ```
 

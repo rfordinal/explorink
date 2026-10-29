@@ -21,7 +21,7 @@
 //   heading <0-15>
 //   zoom <0-4>
 //   marker <0-4>
-//   mode ride|hike|cycle
+//   mode ride|hike|tourist
 //   redraw
 //   tiles
 //   missing [<offset>]
