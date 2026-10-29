@@ -33,9 +33,13 @@
 // quantity mapped onto a size.
 //
 // It also keeps the panel still. Every change to the marker's shape costs a
-// windowed refresh, and a windowed refresh costs the same as a full one whatever
-// its area -- ~500 ms on an X4 (measured 2026-08-05, docs/map-follow.md) and
-// ~1,081 ms on a T5 S3 Pro (docs/refresh-modes.md, measured 2026-09-05). A
+// windowed refresh, and on an X4 that costs the same as a full one whatever its
+// area -- ~500 ms, measured 2026-08-05, docs/map-follow.md. On a T5 S3 Pro it is
+// dearer than a full frame rather than equal to it: ~1,030 ms windowed against
+// ~545 ms whole-panel (docs/refresh-modes.md, measured 2026-09-07), because
+// LgfxEpdDriver does not override displayWindow() and every window request there
+// falls through to a whole-panel push. That is a driver gap, not a panel law --
+// docs/t5s3-partial-refresh.md is the plan to close it. A
 // continuous mapping would repaint the marker on accuracy noise alone, with the
 // rider parked. Hence the hysteresis below, and hence three states rather than
 // ten.
