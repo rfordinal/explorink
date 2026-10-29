@@ -41,6 +41,28 @@ const char* declineText(LoraTxDecline why) {
   return "";
 }
 
+const char* txReasonTextImpl(LoraTxReason why) {
+  switch (why) {
+    case LoraTxReason::None:
+      return "";
+    case LoraTxReason::First:
+      return "first";
+    case LoraTxReason::FixChanged:
+      return "fix";
+    case LoraTxReason::Moved:
+      return "moved";
+    case LoraTxReason::Settled:
+      return "settled";
+    case LoraTxReason::Moving:
+      return "moving";
+    case LoraTxReason::Keepalive:
+      return "keepalive";
+    case LoraTxReason::Manual:
+      return "manual";
+  }
+  return "";
+}
+
 // int32 scaled by 1e6 back to plain decimal degrees. Integer only, same reason
 // as `TeamRecord`'s 1e7 version: no FPU, and a soft-float `printf("%f")` is
 // both slow and flash nothing else here needs. Not shared with that one
@@ -72,6 +94,8 @@ void sanitiseName(const char* in, char* out, size_t outBytes) {
 
 }  // namespace
 
+const char* loraTxReasonText(LoraTxReason why) { return txReasonTextImpl(why); }
+
 size_t encodeLoraLogEvent(const LoraLogEvent& ev, uint32_t utc, uint32_t bootId, char* buf, size_t bufLen) {
   if (buf == nullptr || bufLen == 0) return 0;
 
@@ -101,12 +125,19 @@ size_t encodeLoraLogEvent(const LoraLogEvent& ev, uint32_t utc, uint32_t bootId,
     formatE6(ev.lonE6, lon, sizeof(lon));
   }
 
-  // The detail column is a decline reason for `txskip` and the cadence for
-  // `up`. One column rather than two, because no row ever needs both and an
-  // always-empty column is a column nobody reads.
+  // The detail column is a decline reason for `txskip`, a send reason for
+  // `tx`, and the cadence for `up`. One column rather than three, because no
+  // row ever needs two of them and an always-empty column is a column nobody
+  // reads.
   char detail[16] = {};
   if (ev.kind == LoraLogKind::TxDeclined) {
     snprintf(detail, sizeof(detail), "%s", declineText(ev.decline));
+  } else if (ev.kind == LoraLogKind::AdvertTx) {
+    // **Without this a hardware pass cannot read its own result.** Four rules
+    // can put a position on the air and the row looked identical for all of
+    // them, so "did it send because the rider stopped" was unanswerable from
+    // the file the test produces.
+    snprintf(detail, sizeof(detail), "%s", txReasonTextImpl(ev.txReason));
   } else if (ev.kind == LoraLogKind::RadioUp) {
     if (ev.cadenceSec == 0) {
       snprintf(detail, sizeof(detail), "rx_only");

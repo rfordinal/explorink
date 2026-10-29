@@ -45,6 +45,59 @@ LoraLogEvent rxEvent() {
   return ev;
 }
 
+TEST(LoraEventLine, ATransmitRowSaysWhichRuleSentIt) {
+  // Four rules put the same position on the air. Without the detail column a
+  // hardware pass cannot tell "the rider stopped" from "the rider moved
+  // 100 m", which is the question the pass exists to answer.
+  LoraLogEvent ev{};
+  ev.kind = LoraLogKind::AdvertTx;
+  ev.txReason = LoraTxReason::Settled;
+  snprintf(ev.name, sizeof(ev.name), "RF-alfa");
+  ev.hasLoc = true;
+  ev.latE6 = 48377062;
+  ev.lonE6 = 17590000;
+  ev.uptimeMs = 1000;
+
+  char buf[kLoraLogLineMax] = {};
+  ASSERT_GT(encodeLoraLogEvent(ev, 1792751919, 7, buf, sizeof(buf)), 0u);
+  EXPECT_NE(std::string(buf).find(",settled"), std::string::npos) << buf;
+}
+
+TEST(LoraEventLine, AManualAdvertIsAttributedToTheButtonAndNotToARule) {
+  // Three callers transmit. A row that cannot be attributed to a mechanism
+  // cannot answer "is the cadence working".
+  LoraLogEvent ev{};
+  ev.kind = LoraLogKind::AdvertTx;
+  ev.txReason = LoraTxReason::Manual;
+  ev.uptimeMs = 1000;
+
+  char buf[kLoraLogLineMax] = {};
+  ASSERT_GT(encodeLoraLogEvent(ev, 0, 7, buf, sizeof(buf)), 0u);
+  EXPECT_NE(std::string(buf).find(",manual"), std::string::npos) << buf;
+}
+
+TEST(LoraEventLine, EveryOtherRowKeepsAnEmptyDetailColumn) {
+  // The detail column is shared, so a reason leaking onto a receive row would
+  // be a format change nobody asked for.
+  LoraLogEvent ev{};
+  ev.kind = LoraLogKind::AdvertRx;
+  ev.txReason = LoraTxReason::Moved;  // ignored: not a transmit row
+  ev.uptimeMs = 1000;
+
+  char buf[kLoraLogLineMax] = {};
+  ASSERT_GT(encodeLoraLogEvent(ev, 0, 7, buf, sizeof(buf)), 0u);
+  const std::string line(buf);
+  EXPECT_EQ(line.back(), ',') << line;
+}
+
+TEST(LoraEventLine, TheConsoleWordAndTheFileWordAreTheSame) {
+  // LORA_STATE prints why= from this, and a console reading that disagreed
+  // with the file would be two answers to one question.
+  EXPECT_STREQ(loraTxReasonText(LoraTxReason::Settled), "settled");
+  EXPECT_STREQ(loraTxReasonText(LoraTxReason::Keepalive), "keepalive");
+  EXPECT_STREQ(loraTxReasonText(LoraTxReason::None), "");
+}
+
 }  // namespace
 
 TEST(LoraEventLine, HeaderNamesEveryColumnTheEncoderWrites) {
@@ -68,9 +121,7 @@ TEST(LoraEventLine, AReceivedAdvertCarriesKeySignalAndName) {
 // The id a roster entry is matched on is `lora-` plus these same eight bytes,
 // so a row here joins a row in the black box by eye. If the width ever
 // changes, the two stop lining up silently.
-TEST(LoraEventLine, TheKeyIsTheSameEightBytesTheRosterIdUses) {
-  EXPECT_EQ(field(encode(rxEvent()), kKey).size(), 16u);
-}
+TEST(LoraEventLine, TheKeyIsTheSameEightBytesTheRosterIdUses) { EXPECT_EQ(field(encode(rxEvent()), kKey).size(), 16u); }
 
 TEST(LoraEventLine, APositionlessAdvertLeavesTheCoordinateColumnsEmpty) {
   const std::string line = encode(rxEvent());

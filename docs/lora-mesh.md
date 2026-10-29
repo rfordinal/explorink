@@ -378,6 +378,8 @@ row is a floor, not a period** -- no faster than this, not exactly this often.
 | state | what goes out | how often |
 |---|---|---|
 | moving, fix | the position | every 100 m, never faster than the floor |
+| stopped after moving, fix | where the rider stopped | once per stop |
+| crawling, fix | the position | at most every 10 min |
 | parked, fix | the same position again | once an hour |
 | no fix | the name, no coordinate | once an hour |
 
@@ -389,6 +391,203 @@ wait out the cap.
 
 A node with no fix sends its nameplate and never 0,0 -- the same distinction
 the peer table keeps and the panel prints as `loc=-`.
+
+### Dynamic cadence, since 2026-10-29
+
+Three rules joined the table above, and **none of them makes the node talk
+more often than the floor allows** -- that is a duty-cycle limit, not a
+comfort setting. Each one either suppresses a packet with no news in it or
+spends a packet that carries more than the one it replaces.
+
+**Stopping is news, and it was the gap.** Everything else here is driven by
+movement, so a rider who walked 60 m and halted tripped nothing: the group's
+marker stood where they were a minute ago and stayed there until the hourly
+heartbeat. One packet, sent once per stop and latched until the rider moves
+again, answers the question a walking group actually asks. The band it covers
+is 25 m up to the move threshold -- below 25 m the marker is already in the
+right place, above the threshold `Moved` has already spoken.
+
+**Slow is not parked.** 60 m of scrambling in fifteen minutes trips no
+movement test, and the hourly cap then holds an hour-old position of somebody
+who is walking. A node that has moved at least 25 m gets a ten-minute cap
+instead of the hour -- OpenTrailPaper's number for the same case.
+
+**And the move threshold now reads the fix's own accuracy.** Under tree cover
+a phone reports 25 to 50 m, and the distance is measured against a fixed
+anchor -- the position last sent -- so the wander accumulates against it
+rather than cancelling out. An anchor that was itself an outlier puts every
+sample past 100 m and the packet says the rider moved when nothing did. At or
+above `MapFixTrust::kLooseAtOrAboveM` the threshold doubles to 200 m.
+
+**The on-board receiver gets none of that, deliberately.** It reports no
+accuracy in any protocol and HDOP cannot stand in for one: 12,026 fixes over
+16 h put 2.2 % of consecutive pairs at physically implausible distances with a
+median HDOP of 2.3, and the four biggest jumps sat just *under* the line that
+breaks the marker's ring ([`marker-fix-trust.md`](marker-fix-trust.md), "A
+ride says HDOP misses what the rider sees"). Geometry does not see multipath,
+and a number that misses the cases it exists to catch is worse than no number.
+So a GNSS fix keeps the flat 100 m.
+
+**That leaves a real hole, and it is open.** Four of those eleven measured
+jumps clear 100 m, so on a GNSS-fed board each one earns a `Moved` advert --
+and the mesh broadcasts a teleport that every receiver holds until the next
+advert, at least a floor period later. The marker draws a jump and corrects it
+a second later; the group does not. The implied-speed ceiling that file
+proposes would cover it and the beacon has a stronger case for it than the
+marker does. **Nothing in this firmware implements one yet.**
+
+**What the three rules cost, over a 4 h hike at 4 km/h with two 20-minute
+stops** `[computed from measured]`, against 714 ms of airtime per packet and
+138.9 mA of transmit, both measured on a T5 S3 Pro
+([`lora-bringup.md`](lora-bringup.md)):
+
+| | packets | duty cycle | transmit, averaged |
+|---|---|---|---|
+| before | ~133 | 0.66 % | 0.92 mA |
+| after | ~115 | 0.57 % | 0.80 mA |
+
+**So this buys almost no battery and almost no airtime.** 0.12 mA against the
+5.4 mA the radio spends just being awake to hear. It buys what the group sees:
+"he stopped here" instead of a marker frozen 100 m back, and a slow walker who
+is not mistaken for a parked one. The battery lever is the receive path, which
+is T-2022. Packet counts are arithmetic over the rules, not a run.
+
+**One defect went with it.** `loraPresenceAdvertNow()` -- the screen's
+"announce me now" -- called `meshSendAdvert()` without recording that anything
+had been sent, so a manual advert left the last-sent stamp where it was and the
+beacon spent a second packet one floor period after the *previous* automatic
+one, with a fresh position already on the air. The bookkeeping now lives in
+`meshSendAdvert()`, which is the only place that transmits, so every caller
+records it. **The floor is still not imposed on that button**: refusing it
+needs an error the screen can tell apart from `STR_LORA_PEERS_MESH_OFF`, which
+would otherwise report "mesh off" on a working radio, and that is a string in
+every translation.
+
+### A transmit row says which rule sent it
+
+Four rules can put the same position on the air, and until 2026-10-29 the
+`tx` row looked identical for all of them -- so the one question a send-rule
+test exists to answer, *did it send because the rider stopped*, could not be
+read off the file the test produces. The shared `detail` column now carries
+the reason: `first`, `fix`, `moved`, `settled`, `moving`, `keepalive`,
+`manual`.
+
+**`manual` is the one that is not a rule.** Three callers transmit -- the
+beacon, the screen's "announce me now" and the console -- and a row that
+cannot be attributed to a mechanism cannot answer "is the cadence working" at
+all. It was invisible before.
+
+`LORA_STATE` grew the same two numbers, so a console reading and the card
+agree: `why=<reason>` for the last advert, and `still=<seconds>` for how long
+the fix has sat inside the settle radius (`-1` with no fix). Those are the
+instruments the bench recipe reads.
+
+**The vocabulary is `LoraEventLine`'s own, not `BeaconPolicy`'s**, and main.cpp
+maps one to the other in a single function. The log is a file format and the
+policy is arithmetic; neither should move because the other was renamed.
+
+### The bench pass for the dynamic cadence
+
+**Verified on hardware 2026-10-29**, build `e8d02761`, board A (`t5s3pro`)
+alone, fed a scripted track over BLE with `mapGnssPosition` temporarily off.
+Floor 70 s. Every reading is `LORA_STATE`; the `why=` and `still=` columns
+added in the same build are what made it readable at all.
+
+**`Settled` fires once per stop, and the latch holds.**
+
+| | `sent_ago` | `why` | `still` |
+|---|---|---|---|
+| standing at A | 123 s | `first` | 123 s |
+| A, past the hold | 60 s | **`settled`** | 200 s |
+| moved 60 m to B | 168 s | `settled` | 98 s |
+| B, past the hold | **37 s** | `settled` | 178 s |
+| B, later | 116 s | `settled` | 257 s |
+
+Four things in one run. Standing where the group already has you costs
+nothing -- 123 s went by, well past the floor, with `movedM` at 0 and no
+advert. The send landed at `still` ≈ 140 s, which is `kSettleHoldFloors x
+floor` exactly. The latch held: `still` ran on to 257 s and `sent_ago` grew
+with it. And moving 60 m re-armed it, so the second stop was announced too.
+**`Moved` never fired** -- 60 m is under the threshold, which is the band
+`Settled` exists for.
+
+**The threshold reads the fix's accuracy.** The same 120 m move, twice:
+
+| accuracy | threshold | moved 120 m | result |
+|---|---|---|---|
+| 40 m (`Loose`) | 200 m | `sent_ago` grew to 248 s, `why` stayed `first` | **no advert** |
+| 5 m (`Trusted`) | 100 m | `sent_ago` fell 168 s -> 61 s | **`moved`** |
+
+248 seconds is three and a half floors of silence on a move that would have
+sent before this change. A 200 m move on the same `Loose` fix did send, so
+the line is where `kLooseMoveMetres` puts it and not somewhere above it.
+
+**The manual advert records itself now.** `sent_ago=174s why=moved` before,
+`sent_ago=9s why=manual` after one `CMD:LORA ADVERT` -- the stamp moved,
+which is the double-spend fix, and the row is attributable, which it was not
+before.
+
+**What this run did not cover**: `Moving` (ten real minutes at a crawl),
+`Keepalive` (an hour), and anything two boards answer -- that the advert
+lands and moves a marker. Board A only.
+
+### Two traps the bench pass paid for
+
+**BLE advertising stops and `BLE:running=1` keeps saying otherwise.** The map
+drops the radio a couple of minutes after the last transfer, which is the
+deadline this file's sibling describes -- but the console flag is not cleared
+with it, so the instrument reports a radio that is not advertising. Thirty-five
+seconds of scanning found nothing while it read 1. Same shape as every other
+cached-flag trap here (firmware `CLAUDE.md`, "Before acting on a telemetry
+counter").
+
+**And `CMD:BUTTON back` followed by `CMD:GOTO_MAP` reboots the board.**
+Observed three times: uptime went 472 s -> 55 s, and twice more the beacon
+state came back zeroed with `beacon=` surviving from the card. It reads as a
+working recipe for restarting advertising because a reboot does restart it,
+in the fast phase -- which is how it stayed unnoticed. **The consequence for a
+bench run is that the mesh holder is gone afterwards**: one pass measured
+nothing because `CMD:LORA MESH ON` had been issued before the reboot rather
+than after it. Not diagnosed -- no serial command reports a boot reason, and
+the crash report lives on the card, which needs Wi-Fi, which closes the map.
+`[open]`
+
+**Changing the coordinate with `tools/blepos.py` is not a track.** Each
+coordinate change is a reconnect, the device's BLE position goes stale in the
+gap, and the beacon sees the fix disappear and come back -- a `FixChanged`
+advert that has nothing to do with the rule under test. Seen as `why=fix` in
+the middle of a `Settled` run. A feeder that holds one connection and walks
+the legs through it is what made these numbers readable.
+
+### The rules are a pure function, since 2026-10-29
+
+`BeaconPolicy::decide()` (`src/lora/BeaconPolicy.h`) is the whole table above
+as arithmetic: handed the floor, the time since the last advert, whether there
+is a clock and a fix, and how far the rider has moved, it answers send,
+decline or nothing. It reads no clock, no settings, no radio and no receiver.
+`meshBeaconTick()` keeps every side effect.
+
+**The split is what makes the numbers arguable.** They sat inline in an
+8,000-line `main.cpp`, where the only way to judge a change was to flash a
+board -- so "is 100 m right" and "does the parked heartbeat survive an hour of
+declines" were questions nobody could answer at a desk. Sixteen host tests
+answer them now (`test/lora_beacon/`), and one of them pins the trap the
+original code carried a paragraph about: **the decline-row throttle and the
+silence cap read two different clocks**, and writing a log stamp into the
+send stamp would postpone the parked heartbeat for as long as the rider stood
+still.
+
+The phone side learned this first. `SendPolicy.kt` in the Android repo is the
+same shape for the same reason and is the half of that feature anybody can
+still reason about.
+
+**One thing is deliberately not in the pure function**: `meshBeaconTick()`
+still tests the floor itself before reading the position. That is a guard and
+not a rule -- `meshSelfPosition()` carries static state, stamping when the
+phone's sequence number last changed, so **how often it is called is
+observable** and moving the call earlier would quietly change what
+`kMeshBlePosMaxAgeMs` measures. The policy tests the floor again and is the
+authority.
 
 ### No wall clock, no transmit
 
