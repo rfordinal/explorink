@@ -40,6 +40,7 @@
 #endif
 #ifdef ENABLE_LORA_MESH
 #include "activities/map/PinGeo.h"
+#include "lora/BeaconPolicy.h"
 #include "lora/LoraEventLine.h"
 #include "lora/LoraEventLog.h"
 #include "lora/LoraPresence.h"
@@ -1152,23 +1153,11 @@ static char gMeshNodeName[21] = {0};
 // follows.
 static uint32_t gMeshBeaconSec = 0;
 
-// What the cadence row means, and it is a floor rather than a period: **no
-// faster than this**, not "exactly this often". Three states share one
-// mechanism (../../docs/lora-mesh.md, "When a position goes out"):
-//
-//   moving with a fix   -> a position every kMeshMoveMetres, never faster
-//                          than the floor
-//   parked with a fix   -> the same position again once the silence cap
-//                          expires, because an hour in a pub still has to say
-//                          where the pub is
-//   no fix              -> a nameplate with no coordinate, same cap
-//
-// The numbers are OpenTrailPaper's, not ours: 100 m and an hourly heartbeat,
-// from a project that has run groups on this band for years
-// (../../docs/lora.md, "And their cadence is the precedent our own guess was
-// missing"). Ours start there and have to say what they buy before moving.
-static constexpr uint32_t kMeshMoveMetres = 100;
-static constexpr uint32_t kMeshMaxSilenceSec = 3600;
+// What the cadence row means, the three states it drives and where the numbers
+// come from now live in `lora/BeaconPolicy.h`, which is the arithmetic with no
+// clock, no radio and no settings in it -- and therefore the part a host test
+// can see. This file keeps the side effects: reading the time, asking for the
+// position, sending, and writing the row.
 
 // How long a BLE position stays usable after the last packet that changed it.
 //
@@ -1620,41 +1609,26 @@ bool loraPresenceAdvertNow() { return meshSendAdvert(); }
 
 // Decides whether this node has anything to say, and says it.
 //
-// **The floor is absolute and everything else is a reason to break silence.**
-// Nothing goes out faster than the rider's cadence row, whatever happens; past
-// that, three things earn an advert and nothing else does:
-//
-//   - the rider moved kMeshMoveMetres since the last one,
-//   - kMeshMaxSilenceSec has passed with nothing sent, which is the parked
-//     case -- an hour in a pub on a hike still has to tell the group where the
-//     pub is,
-//   - the fix appeared or disappeared, because "I can see the sky again" is
-//     news and the next advert would otherwise wait out the whole cap.
-//
-// A node with no fix sends its nameplate instead of a position, never 0,0.
-// That is the same distinction the peer table keeps and the panel prints as
-// `loc=-`.
+// **The rules are not here.** `BeaconPolicy::decide()` is the arithmetic --
+// the floor, the three things that earn an advert, and the decline-row
+// throttle -- with no clock, no radio and no settings in it, so a host test
+// can argue with it (`lora/BeaconPolicy.h`). This function is the side
+// effects: it reads the time and the position, calls that, and does what it
+// says.
 //
 // Runs on the loop task, under the chip mutex taken inside meshSendAdvert().
 static void meshBeaconTick() {
   if (!gMeshRunning || gMeshBeaconSec == 0) return;
 
   const unsigned long now = millis();
-  if (gMeshBeaconEverSent && (now - gMeshLastSentMs) < gMeshBeaconSec * 1000UL) return;
 
-  // **Clock first, and throttled.** Without a wall clock nothing below this
-  // matters: meshSendAdvert() will refuse, and with gMeshBeaconEverSent still
-  // false the cadence check above passes on every loop tick, so an unthrottled
-  // refusal would write a row per tick. One per cadence is the same rule the
-  // no-news decline follows, and for the same reason.
-  if (meshWallClockUtc() == 0) {
-    if (!gMeshDeclineLogged || (now - gMeshLastDeclineLogMs) >= gMeshBeaconSec * 1000UL) {
-      loraLogSimple(LoraLogKind::TxDeclined, 0, LoraTxDecline::NoClock);
-      gMeshLastDeclineLogMs = now;
-      gMeshDeclineLogged = true;
-    }
-    return;
-  }
+  // **A guard, not a rule.** The floor below is BeaconPolicy's to own and it
+  // tests this again; this copy exists only to keep meshSelfPosition() off
+  // every loop tick. That function carries static state -- it stamps when the
+  // phone's sequence number last changed, which is what dates a BLE position
+  // -- so how often it is called is observable, and a refactor that moved the
+  // call earlier would quietly change what `kMeshBlePosMaxAgeMs` measures.
+  if (gMeshBeaconEverSent && (now - gMeshLastSentMs) < gMeshBeaconSec * 1000UL) return;
 
   // The same source the advert will carry, asked once. **Not `gnss.fix()`:**
   // on a default board the position comes from the phone, and reading the
@@ -1664,32 +1638,38 @@ static void meshBeaconTick() {
   int32_t lonE7 = 0;
   const bool hasFix = meshSelfPosition(latE7, lonE7);
 
-  if (gMeshBeaconEverSent) {
-    const bool silentTooLong = (now - gMeshLastSentMs) >= kMeshMaxSilenceSec * 1000UL;
-    const bool fixChanged = hasFix != gMeshLastSentHadFix;
-    // Only comparable when both ends of the comparison are real positions.
-    const bool moved = hasFix && gMeshLastSentHadFix &&
-                       PinGeo::distanceM(gMeshLastSentLatE7, gMeshLastSentLonE7, latE7, lonE7) >= kMeshMoveMetres;
-    if (!silentTooLong && !fixChanged && !moved) {
-      // **The cadence had elapsed and the device chose not to speak**, which
-      // is a decision with a reason and therefore a row. Every earlier
-      // `return` in this function is the timer doing its job, happens
-      // thousands of times an hour, and is not logged -- the `up` row carries
-      // the cadence, which is what makes those silences readable
-      // (`lora/LoraEventLine.h`, "What is an event and what is not").
+  BeaconPolicy::Input in;
+  in.hasSentEver = gMeshBeaconEverSent;
+  in.sinceLastSentMs = static_cast<uint32_t>(now - gMeshLastSentMs);
+  in.floorMs = gMeshBeaconSec * 1000UL;
+  in.hasWallClock = meshWallClockUtc() != 0;
+  in.hasFix = hasFix;
+  in.lastSentHadFix = gMeshLastSentHadFix;
+  // Computed only when both ends are real positions; the policy does not read
+  // it otherwise, and PinGeo on a pair of zeroes would be an answer about
+  // nothing.
+  in.movedM =
+      (hasFix && gMeshLastSentHadFix) ? PinGeo::distanceM(gMeshLastSentLatE7, gMeshLastSentLonE7, latE7, lonE7) : 0;
+  in.declineLoggedEver = gMeshDeclineLogged;
+  in.sinceLastDeclineLogMs = static_cast<uint32_t>(now - gMeshLastDeclineLogMs);
+
+  const BeaconPolicy::Decision decision = BeaconPolicy::decide(in);
+
+  if (decision.action == BeaconPolicy::Action::Nothing) return;
+
+  if (decision.action == BeaconPolicy::Action::Decline) {
+    if (decision.logDecline) {
       // **Its own stamp, and `gMeshLastSentMs` must not be touched here.**
       // That one is what the hourly silence cap is measured from, so moving
       // it forward on a decline would postpone the parked heartbeat for as
       // long as the rider stood still -- which is exactly the case the
-      // heartbeat exists for (an hour in a pub on a hike). Caught while
-      // writing this, not by a test.
-      if (!gMeshDeclineLogged || (now - gMeshLastDeclineLogMs) >= gMeshBeaconSec * 1000UL) {
-        loraLogSimple(LoraLogKind::TxDeclined, 0, LoraTxDecline::NoNews);
-        gMeshLastDeclineLogMs = now;
-        gMeshDeclineLogged = true;
-      }
-      return;
+      // heartbeat exists for (an hour in a pub on a hike).
+      loraLogSimple(LoraLogKind::TxDeclined, 0,
+                    decision.reason == BeaconPolicy::Reason::NoClock ? LoraTxDecline::NoClock : LoraTxDecline::NoNews);
+      gMeshLastDeclineLogMs = now;
+      gMeshDeclineLogged = true;
     }
+    return;
   }
 
   if (!meshSendAdvert()) {

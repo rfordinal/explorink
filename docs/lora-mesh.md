@@ -390,6 +390,36 @@ wait out the cap.
 A node with no fix sends its nameplate and never 0,0 -- the same distinction
 the peer table keeps and the panel prints as `loc=-`.
 
+### The rules are a pure function, since 2026-10-29
+
+`BeaconPolicy::decide()` (`src/lora/BeaconPolicy.h`) is the whole table above
+as arithmetic: handed the floor, the time since the last advert, whether there
+is a clock and a fix, and how far the rider has moved, it answers send,
+decline or nothing. It reads no clock, no settings, no radio and no receiver.
+`meshBeaconTick()` keeps every side effect.
+
+**The split is what makes the numbers arguable.** They sat inline in an
+8,000-line `main.cpp`, where the only way to judge a change was to flash a
+board -- so "is 100 m right" and "does the parked heartbeat survive an hour of
+declines" were questions nobody could answer at a desk. Sixteen host tests
+answer them now (`test/lora_beacon/`), and one of them pins the trap the
+original code carried a paragraph about: **the decline-row throttle and the
+silence cap read two different clocks**, and writing a log stamp into the
+send stamp would postpone the parked heartbeat for as long as the rider stood
+still.
+
+The phone side learned this first. `SendPolicy.kt` in the Android repo is the
+same shape for the same reason and is the half of that feature anybody can
+still reason about.
+
+**One thing is deliberately not in the pure function**: `meshBeaconTick()`
+still tests the floor itself before reading the position. That is a guard and
+not a rule -- `meshSelfPosition()` carries static state, stamping when the
+phone's sequence number last changed, so **how often it is called is
+observable** and moving the call earlier would quietly change what
+`kMeshBlePosMaxAgeMs` measures. The policy tests the floor again and is the
+authority.
+
 ### No wall clock, no transmit
 
 **Maintainer's rule, 2026-10-23, and it is the reason the first bench run
