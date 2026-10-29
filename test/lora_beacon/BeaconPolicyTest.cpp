@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "BeaconPolicy.h"
+#include "MapFixTrust.h"
 
 using BeaconPolicy::Action;
 using BeaconPolicy::Decision;
@@ -155,6 +156,110 @@ TEST(BeaconPolicyNews, TheCapHoldsWithNoFixAtAll) {
   const Decision d = BeaconPolicy::decide(in);
   EXPECT_EQ(d.action, Action::Send);
   EXPECT_EQ(d.reason, Reason::Keepalive);
+}
+
+TEST(BeaconPolicyThreshold, AnUnstatedAccuracyBehavesAsBefore) {
+  // Every GNSS fix on this hardware lands here: the receiver reports no
+  // accuracy in any protocol and HDOP cannot stand in for one.
+  EXPECT_EQ(BeaconPolicy::moveThresholdM(MapFixTrust::kAccuracyUnstated), BeaconPolicy::kMoveMetres);
+}
+
+TEST(BeaconPolicyThreshold, AGoodFixKeepsTheHundredMetres) {
+  EXPECT_EQ(BeaconPolicy::moveThresholdM(5), BeaconPolicy::kMoveMetres);
+  EXPECT_EQ(BeaconPolicy::moveThresholdM(MapFixTrust::kLooseAtOrAboveM - 1), BeaconPolicy::kMoveMetres);
+}
+
+TEST(BeaconPolicyThreshold, AFixTheMarkerWouldNotTrustDoublesIt) {
+  EXPECT_EQ(BeaconPolicy::moveThresholdM(MapFixTrust::kLooseAtOrAboveM), BeaconPolicy::kLooseMoveMetres);
+  EXPECT_EQ(BeaconPolicy::moveThresholdM(50), BeaconPolicy::kLooseMoveMetres);
+}
+
+TEST(BeaconPolicyThreshold, TheWanderUnderTreesDoesNotEarnAPacket) {
+  Input in = settled();
+  in.accuracyM = 40;
+  // 120 m against a 40 m error circle measured from a fixed anchor is the
+  // shape GPS noise makes under canopy, not movement.
+  in.movedM = 120;
+  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
+
+  // Real movement still gets through.
+  in.movedM = 200;
+  EXPECT_EQ(BeaconPolicy::decide(in).reason, Reason::Moved);
+}
+
+TEST(BeaconPolicySettled, StoppingShortOfTheThresholdIsSaidOnce) {
+  Input in = settled();
+  in.movedM = 60;  // walked a bit, below the 100 m threshold
+  in.stillForMs = BeaconPolicy::kSettleHoldFloors * in.floorMs;
+
+  const Decision d = BeaconPolicy::decide(in);
+  EXPECT_EQ(d.action, Action::Send);
+  EXPECT_EQ(d.reason, Reason::Settled);
+
+  // And exactly once: the latch is what keeps a long rest from being a
+  // packet per cadence.
+  in.settledAnnounced = true;
+  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
+}
+
+TEST(BeaconPolicySettled, OnePauseAtAGateIsNotAStop) {
+  Input in = settled();
+  in.movedM = 60;
+  in.stillForMs = BeaconPolicy::kSettleHoldFloors * in.floorMs - 1;
+  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
+}
+
+TEST(BeaconPolicySettled, StoppingWhereTheGroupAlreadyThinksYouAreIsNotNews) {
+  Input in = settled();
+  // Inside the settle radius of the last position sent, so the marker on
+  // everybody's panel is already in the right place.
+  in.movedM = BeaconPolicy::kSettleRadiusM - 1;
+  in.stillForMs = BeaconPolicy::kSettleHoldFloors * in.floorMs * 10;
+  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
+}
+
+TEST(BeaconPolicySettled, MovedWinsWhenBothApply) {
+  Input in = settled();
+  in.movedM = 150;
+  in.stillForMs = BeaconPolicy::kSettleHoldFloors * in.floorMs;
+  // Same packet either way -- the rider's coordinate. Moved is the simpler
+  // truth and the rule that already existed.
+  EXPECT_EQ(BeaconPolicy::decide(in).reason, Reason::Moved);
+}
+
+TEST(BeaconPolicyMoving, SlowIsNotParked) {
+  Input in = settled();
+  in.movedM = 60;  // scrambling, below the move threshold
+  in.sinceLastSentMs = BeaconPolicy::kMovingCapSec * 1000UL;
+  const Decision d = BeaconPolicy::decide(in);
+  EXPECT_EQ(d.action, Action::Send);
+  EXPECT_EQ(d.reason, Reason::Moving);
+}
+
+TEST(BeaconPolicyMoving, StandingStillStillWaitsTheWholeHour) {
+  Input in = settled();
+  in.movedM = BeaconPolicy::kSettleRadiusM - 1;  // GPS wander, not walking
+  in.sinceLastSentMs = BeaconPolicy::kMovingCapSec * 1000UL;
+  // The ten-minute cap is for somebody who is demonstrably moving. A parked
+  // node must not buy itself six times the airtime on noise.
+  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
+}
+
+TEST(BeaconPolicyMoving, TenMinutesIsTheLine) {
+  Input in = settled();
+  in.movedM = 60;
+  in.sinceLastSentMs = BeaconPolicy::kMovingCapSec * 1000UL - 1;
+  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
+}
+
+TEST(BeaconPolicyMoving, TheFloorStillOutranksIt) {
+  Input in = settled();
+  in.floorMs = 300000;  // the five-minute rung
+  in.movedM = 60;
+  in.sinceLastSentMs = 200000;
+  // Ten minutes have not passed and neither has the floor. Nothing may send
+  // more often than the rider's cadence row allows.
+  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Nothing);
 }
 
 TEST(BeaconPolicyDeclineLog, TheFirstDeclineOfARunIsWritten) {

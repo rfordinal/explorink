@@ -4,7 +4,9 @@ add_executable(BeaconPolicyTest
 )
 
 target_include_directories(BeaconPolicyTest PRIVATE
+  ${REPO_ROOT}/src
   ${REPO_ROOT}/src/lora
+  ${REPO_ROOT}/src/activities/map
 )
 
 target_link_libraries(BeaconPolicyTest PRIVATE

@@ -1174,6 +1174,22 @@ static int32_t gMeshLastSentLatE7 = 0;
 static int32_t gMeshLastSentLonE7 = 0;
 static bool gMeshLastSentHadFix = false;
 
+// Where the rider stopped, and when.
+//
+// **The anchor is not the last position sent.** That one answers "does the
+// group know where I am"; this one answers "have I stopped", and they move at
+// different times -- a rider who walks 60 m and halts has an unchanged
+// last-sent position and a brand new stop. Re-anchored whenever the fix
+// leaves kSettleRadiusM, which is also what clears the announced latch.
+//
+// Not reset by meshStart(): the schedule survives the screen gate, and a stop
+// does not stop being a stop because the rider opened Home.
+static bool gMeshSettleValid = false;
+static bool gMeshSettledAnnounced = false;
+static unsigned long gMeshSettleSinceMs = 0;
+static int32_t gMeshSettleLatE7 = 0;
+static int32_t gMeshSettleLonE7 = 0;
+
 // When the file log last recorded a declined transmit. **Deliberately not
 // `gMeshLastSentMs`**: that one anchors the hourly silence cap, and writing a
 // log stamp into it would postpone the parked heartbeat for as long as the
@@ -1356,13 +1372,26 @@ static constexpr uint32_t kMeshBeaconMinSec = 70;
 // could predict.
 //
 // Returns degrees * 1e7, the scale everything else on this device stores.
-static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7) {
+static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7, uint16_t* accuracyM = nullptr) {
+  // Unstated until a source says otherwise, so a caller that gets no figure
+  // behaves exactly as it did before accuracy existed here.
+  if (accuracyM != nullptr) *accuracyM = MapFixTrust::kAccuracyUnstated;
 #ifdef ENABLE_GNSS_CMD
   if (SETTINGS.mapGnssPosition != 0) {
     const GnssFix& fix = gnss.fix();
     if (!fix.valid || fix.quality == 0) return false;
     latE7 = static_cast<int32_t>(fix.latitude * 1e7);
     lonE7 = static_cast<int32_t>(fix.longitude * 1e7);
+    // **Left unstated, and that is the finding rather than an omission.**
+    // This receiver reports no accuracy in any protocol and cannot be made
+    // to, and HDOP cannot stand in for one: a 16 h ride of 12,026 fixes found
+    // 2.2 % of consecutive pairs physically implausible at a median HDOP of
+    // 2.3, with the four biggest jumps sitting just under the line that would
+    // have broken the marker's ring. Geometry does not see multipath
+    // (`activities/map/../../docs/marker-fix-trust.md`, "A ride says HDOP
+    // misses what the rider sees"). A number that misses the cases it exists
+    // to catch is worse than no number, so the move threshold stays flat
+    // here.
     return true;
   }
 #endif
@@ -1395,6 +1424,9 @@ static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7) {
 
   latE7 = update.lat;
   lonE7 = update.lon;
+  // The phone's own fused figure, and the only honest accuracy this device
+  // ever sees. kAccuracyUnstated when it reported none.
+  if (accuracyM != nullptr) *accuracyM = update.accuracyM;
   return true;
 }
 
@@ -1449,6 +1481,22 @@ static bool meshSendAdvert() {
   ev.lonE6 = lonE6;
   ev.uptimeMs = millis();
   loraLogPost(ev);
+
+  // **What the last advert said, recorded here rather than at the beacon.**
+  // There are three callers -- the beacon, the screen's "announce me now" and
+  // the console -- and until 2026-10-29 only the beacon moved these. So a
+  // manual advert left `gMeshLastSentMs` where it was and the beacon then
+  // spent a second packet one floor period after the *previous* automatic
+  // one, with a fresh position already on the air. The duty cycle is per
+  // device, not per mechanism, so the one place that actually transmits is
+  // the one place that may record it.
+  if (sent) {
+    gMeshLastSentMs = millis();
+    gMeshLastSentHadFix = hasLoc;
+    gMeshLastSentLatE7 = latE7;
+    gMeshLastSentLonE7 = lonE7;
+    gMeshBeaconEverSent = true;
+  }
 
   return sent;
 }
@@ -1636,7 +1684,23 @@ static void meshBeaconTick() {
   // packet was never going to contain (meshSelfPosition()).
   int32_t latE7 = 0;
   int32_t lonE7 = 0;
-  const bool hasFix = meshSelfPosition(latE7, lonE7);
+  uint16_t accuracyM = MapFixTrust::kAccuracyUnstated;
+  const bool hasFix = meshSelfPosition(latE7, lonE7, &accuracyM);
+
+  // The stop detector, maintained here because this is the one place that
+  // reads a position on a schedule. Resolution is one floor period, which is
+  // all kSettleHoldFloors needs.
+  if (!hasFix) {
+    gMeshSettleValid = false;
+    gMeshSettledAnnounced = false;
+  } else if (!gMeshSettleValid ||
+             PinGeo::distanceM(gMeshSettleLatE7, gMeshSettleLonE7, latE7, lonE7) > BeaconPolicy::kSettleRadiusM) {
+    gMeshSettleValid = true;
+    gMeshSettledAnnounced = false;
+    gMeshSettleSinceMs = now;
+    gMeshSettleLatE7 = latE7;
+    gMeshSettleLonE7 = lonE7;
+  }
 
   BeaconPolicy::Input in;
   in.hasSentEver = gMeshBeaconEverSent;
@@ -1650,6 +1714,9 @@ static void meshBeaconTick() {
   // nothing.
   in.movedM =
       (hasFix && gMeshLastSentHadFix) ? PinGeo::distanceM(gMeshLastSentLatE7, gMeshLastSentLonE7, latE7, lonE7) : 0;
+  in.accuracyM = accuracyM;
+  in.stillForMs = gMeshSettleValid ? static_cast<uint32_t>(now - gMeshSettleSinceMs) : 0;
+  in.settledAnnounced = gMeshSettledAnnounced;
   in.declineLoggedEver = gMeshDeclineLogged;
   in.sinceLastDeclineLogMs = static_cast<uint32_t>(now - gMeshLastDeclineLogMs);
 
@@ -1680,11 +1747,10 @@ static void meshBeaconTick() {
     return;
   }
 
-  gMeshLastSentMs = now;
-  gMeshLastSentHadFix = hasFix;
-  gMeshLastSentLatE7 = latE7;
-  gMeshLastSentLonE7 = lonE7;
-  gMeshBeaconEverSent = true;
+  // What went out is recorded by meshSendAdvert(), which is the only place
+  // that transmits. The one thing left here is the stop latch: a Settled
+  // advert is one per stop, and the anchor moving is what re-arms it.
+  if (decision.reason == BeaconPolicy::Reason::Settled) gMeshSettledAnnounced = true;
 }
 
 // The radio runs only while a screen that may use it is open.

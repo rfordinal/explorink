@@ -378,6 +378,8 @@ row is a floor, not a period** -- no faster than this, not exactly this often.
 | state | what goes out | how often |
 |---|---|---|
 | moving, fix | the position | every 100 m, never faster than the floor |
+| stopped after moving, fix | where the rider stopped | once per stop |
+| crawling, fix | the position | at most every 10 min |
 | parked, fix | the same position again | once an hour |
 | no fix | the name, no coordinate | once an hour |
 
@@ -389,6 +391,77 @@ wait out the cap.
 
 A node with no fix sends its nameplate and never 0,0 -- the same distinction
 the peer table keeps and the panel prints as `loc=-`.
+
+### Dynamic cadence, since 2026-10-29
+
+Three rules joined the table above, and **none of them makes the node talk
+more often than the floor allows** -- that is a duty-cycle limit, not a
+comfort setting. Each one either suppresses a packet with no news in it or
+spends a packet that carries more than the one it replaces.
+
+**Stopping is news, and it was the gap.** Everything else here is driven by
+movement, so a rider who walked 60 m and halted tripped nothing: the group's
+marker stood where they were a minute ago and stayed there until the hourly
+heartbeat. One packet, sent once per stop and latched until the rider moves
+again, answers the question a walking group actually asks. The band it covers
+is 25 m up to the move threshold -- below 25 m the marker is already in the
+right place, above the threshold `Moved` has already spoken.
+
+**Slow is not parked.** 60 m of scrambling in fifteen minutes trips no
+movement test, and the hourly cap then holds an hour-old position of somebody
+who is walking. A node that has moved at least 25 m gets a ten-minute cap
+instead of the hour -- OpenTrailPaper's number for the same case.
+
+**And the move threshold now reads the fix's own accuracy.** Under tree cover
+a phone reports 25 to 50 m, and the distance is measured against a fixed
+anchor -- the position last sent -- so the wander accumulates against it
+rather than cancelling out. An anchor that was itself an outlier puts every
+sample past 100 m and the packet says the rider moved when nothing did. At or
+above `MapFixTrust::kLooseAtOrAboveM` the threshold doubles to 200 m.
+
+**The on-board receiver gets none of that, deliberately.** It reports no
+accuracy in any protocol and HDOP cannot stand in for one: 12,026 fixes over
+16 h put 2.2 % of consecutive pairs at physically implausible distances with a
+median HDOP of 2.3, and the four biggest jumps sat just *under* the line that
+breaks the marker's ring ([`marker-fix-trust.md`](marker-fix-trust.md), "A
+ride says HDOP misses what the rider sees"). Geometry does not see multipath,
+and a number that misses the cases it exists to catch is worse than no number.
+So a GNSS fix keeps the flat 100 m.
+
+**That leaves a real hole, and it is open.** Four of those eleven measured
+jumps clear 100 m, so on a GNSS-fed board each one earns a `Moved` advert --
+and the mesh broadcasts a teleport that every receiver holds until the next
+advert, at least a floor period later. The marker draws a jump and corrects it
+a second later; the group does not. The implied-speed ceiling that file
+proposes would cover it and the beacon has a stronger case for it than the
+marker does. **Nothing in this firmware implements one yet.**
+
+**What the three rules cost, over a 4 h hike at 4 km/h with two 20-minute
+stops** `[computed from measured]`, against 714 ms of airtime per packet and
+138.9 mA of transmit, both measured on a T5 S3 Pro
+([`lora-bringup.md`](lora-bringup.md)):
+
+| | packets | duty cycle | transmit, averaged |
+|---|---|---|---|
+| before | ~133 | 0.66 % | 0.92 mA |
+| after | ~115 | 0.57 % | 0.80 mA |
+
+**So this buys almost no battery and almost no airtime.** 0.12 mA against the
+5.4 mA the radio spends just being awake to hear. It buys what the group sees:
+"he stopped here" instead of a marker frozen 100 m back, and a slow walker who
+is not mistaken for a parked one. The battery lever is the receive path, which
+is T-2022. Packet counts are arithmetic over the rules, not a run.
+
+**One defect went with it.** `loraPresenceAdvertNow()` -- the screen's
+"announce me now" -- called `meshSendAdvert()` without recording that anything
+had been sent, so a manual advert left the last-sent stamp where it was and the
+beacon spent a second packet one floor period after the *previous* automatic
+one, with a fresh position already on the air. The bookkeeping now lives in
+`meshSendAdvert()`, which is the only place that transmits, so every caller
+records it. **The floor is still not imposed on that button**: refusing it
+needs an error the screen can tell apart from `STR_LORA_PEERS_MESH_OFF`, which
+would otherwise report "mesh off" on a working radio, and that is a string in
+every translation.
 
 ### The rules are a pure function, since 2026-10-29
 

@@ -14,6 +14,14 @@ bool declineIsWorthARow(const Input& in) {
 
 }  // namespace
 
+uint32_t moveThresholdM(uint16_t accuracyM) {
+  // An unstated accuracy behaves exactly as it did before this existed. Every
+  // GNSS fix on this hardware lands here, and so does a phone that reported
+  // no figure for this packet.
+  if (accuracyM == MapFixTrust::kAccuracyUnstated) return kMoveMetres;
+  return accuracyM >= MapFixTrust::kLooseAtOrAboveM ? kLooseMoveMetres : kMoveMetres;
+}
+
 Decision decide(const Input& in) {
   Decision out;
 
@@ -49,9 +57,28 @@ Decision decide(const Input& in) {
     return out;
   }
   // Only comparable when both ends of the comparison are real positions.
-  if (in.hasFix && in.lastSentHadFix && in.movedM >= kMoveMetres) {
+  const bool comparable = in.hasFix && in.lastSentHadFix;
+  if (comparable && in.movedM >= moveThresholdM(in.accuracyM)) {
     out.action = Action::Send;
     out.reason = Reason::Moved;
+    return out;
+  }
+  // **After Moved on purpose.** A rider who crossed the threshold on the way
+  // to a halt has already had their packet, and that one carries the same
+  // coordinate this would. What is left for Settled is the band between
+  // kSettleRadiusM and the move threshold: walked a little, stopped, and the
+  // group's marker is standing 25 to 100 m from where the rider actually is.
+  if (comparable && !in.settledAnnounced && in.movedM >= kSettleRadiusM &&
+      in.stillForMs >= kSettleHoldFloors * in.floorMs) {
+    out.action = Action::Send;
+    out.reason = Reason::Settled;
+    return out;
+  }
+  // Slow is not parked. Below the move threshold but demonstrably not
+  // standing still, so the silence cap is ten minutes rather than an hour.
+  if (comparable && in.movedM >= kSettleRadiusM && in.sinceLastSentMs >= kMovingCapSec * 1000UL) {
+    out.action = Action::Send;
+    out.reason = Reason::Moving;
     return out;
   }
   if (in.sinceLastSentMs >= kMaxSilenceSec * 1000UL) {
