@@ -241,12 +241,89 @@ the reported course swung 206 to 252 to 21 to 148 degrees across a minute and th
 speed reached 23.7 km/h on a device that was sitting on a desk. A rule of
 `hdop × UERE` would have called that fix good.
 
-So the GNSS mapping must take `quality` (GGA field 6 -- value 6 is dead
-reckoning, with no satellites behind it) and `satsUsed` as well as `hdop`, and
-even then it will be optimistic. **`[open]` -- it needs a ride under real sky.**
+So the GNSS mapping must take more than `hdop`, and even then it will be
+optimistic. The ride below says how much.
 
 Which means the honest summary for a bad indoor fix is: the broken ring will
 miss it, and the missing heading will catch it.
+
+## A ride says HDOP misses what the rider sees
+
+`[measured, 2026-10-29]` The ride T-260 was blocked on. One T5 S3 Pro, build
+`0.2.1-t5s3pro`, **12,026 fixes over 16 h** read off the device's own
+`/trailink/gnss.csv` -- which logs `hdop`, `sats_used`, `quality`, `speed_kmh`
+and the position per fix, so every number here is replayable from one file.
+Fix cadence: median gap 1.0 s, p99 2.5 s.
+
+The rider's report was that the dot jumped and the ring stayed whole.
+
+- **268 of 12,006 consecutive pairs (2.2 %) are physically implausible** -- the
+  distance between them needs a speed far above the one reported. **The marker
+  drew a whole ring for 82.5 % of them.**
+- **HDOP at those fixes has a median of 2.3.** `kTrustedAtOrBelowHdop` is 3.5,
+  so they are not near the line; they are comfortably inside `Trusted`.
+- **The eleven jumps over 50 m in under 5 s, and what the ring said:**
+
+  | jump | hdop | sats | ring today |
+  |---|---|---|---|
+  | 469 m | 4.6 | 4 | whole |
+  | 395 m | 4.7 | 5 | whole |
+  | 203 m | 4.7 | 5 | whole |
+  | 141 m | 4.6 | 4 | whole |
+  | 62 m | 1.7 | 9 | whole |
+
+  The four biggest sit at HDOP 4.6 to 4.7, just **under** the 5.0 that would
+  have broken the ring. The 62 m one had nine satellites and an excellent
+  HDOP. That is multipath, and geometry cannot see it -- the same point the
+  85 m jump of 2026-09-05 made, now with a count behind it.
+
+**Two inputs this file previously expected to help do not.** `quality` is 1 on
+all 12,026 rows, so the dead-reckoning digit never fires on this receiver.
+`satsUsed < 4` fires 13 times in 16 h. Neither is a usable discriminator here.
+
+**And the receiver's own speed field cannot be the reference.** Its maximum in
+the same log is **373.1 km/h**, on a device that never left the road. A rule
+comparing a jump against the reported speed rests on a field that lies in the
+same places the position does.
+
+### What is left to build a rule out of
+
+Only position and time, because the receiver reports nothing else that is
+honest -- it has no accuracy estimate in any protocol, and it cannot be given
+one ([`gnss.md`](gnss.md), "This receiver reports no accuracy, in any protocol,
+and cannot be made to").
+
+So: **an implied-speed ceiling.** If the distance to the previous fix would
+have required a speed the device cannot reach, the fix is not trusted. One
+constant, no comparison against a reported speed, and it heals after a run of
+clean fixes. Replayed against the same 12,026 fixes, counting every state
+change because every one of them costs a refresh:
+
+| rule | Loose | state changes |
+|---|---|---|
+| today, `hdop` + `satsUsed` only | 1,929 (16.0 %) | 71 |
+| + ceiling at 200 km/h | 2,106 (17.5 %) | 133 |
+| + ceiling at 150 km/h | 2,230 (18.5 %) | 175 |
+| + ceiling at 100 km/h | 2,481 (20.6 %) | 229 |
+
+A ceiling of **150 km/h** catches all eleven jumps above. `[open]` -- the
+constant is not chosen yet, and the replay is arithmetic over a log rather than
+a thing a rider has looked at.
+
+**A simpler-looking variant was rejected: a plain distance threshold.** It
+reads as one number and is wrong whenever the fix cadence slips -- 50 m over a
+5 s gap is 36 km/h, ordinary riding, so it would break the ring on a fix the
+receiver merely delivered late. Dividing by the gap costs nothing and removes
+the failure.
+
+**The refresh cost in that table is not a law of the panel.** On the T5 S3 Pro
+`LgfxEpdDriver` does not override `displayWindow()`, so a marker repaint pushes
+the whole panel -- windowed median 1,030 ms against a whole-panel `FAST` of
+545 ms (`refresh-modes.md`, measured 2026-09-07). The marker already asks for a
+window (`MapActivity.cpp`, `displayBufferWindow()` in the marker path); the
+driver does not honour it. So the price of a more sensitive rule falls on its
+own once [`t5s3-partial-refresh.md`](t5s3-partial-refresh.md) lands, and the
+state-change count should not drive the threshold on its own.
 
 ## A quality change alone has to repaint, and it did not
 
@@ -333,8 +410,11 @@ this path.
   with the sleep marker -- same ring-plus-dot shape, half the size. E-ink
   contrast and viewing distance decide all three, and an SDL window decides
   none of them.
-- **Not verified on a ride:** the phone's 90 s staleness timer, and the whole
-  GNSS accuracy mapping, which does not exist yet.
+- **Not verified on a ride:** the phone's 90 s staleness timer.
+- **Measured on a ride, 2026-10-29:** that the GNSS half is wrong in the
+  direction the rider noticed -- see "A ride says HDOP misses what the rider
+  sees". The replacement rule is replayed against that log and is **not** built
+  or seen on a panel.
 
 ## Bench recipe
 
