@@ -45,24 +45,22 @@ constexpr int kRowHeight = 60;
 // 32x31. components/icons/home_icons.h carries the full reasoning.
 const HomeActivity::Row* HomeActivity::rows() {
   static constexpr Row kRows[] = {
-      {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore, true},
-      {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips, true},
-      {HomeMenuItem::PINS, StrId::STR_HOME_PINS, &icon_pins, false},
-      {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet, false},
-      {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync, true},
-      {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer, true},
+      {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore},
+      {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips},
+      {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync},
+      {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer},
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
       // The grayscale bench is a build-flag lab instrument, not a rider's row
       // (platformio.ini).
-      {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings, true},
+      {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings},
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
       // The LoRa node list, the same kind of row and for the same reason: it
       // answers "do these two boards hear each other" and shows raw keys and
       // RSSI while doing it (platformio.ini, ENABLE_LORA_MESH).
-      {HomeMenuItem::LORA_PEERS, StrId::STR_LORA_PEERS, &icon_settings, true},
+      {HomeMenuItem::LORA_PEERS, StrId::STR_LORA_PEERS, &icon_settings},
 #endif
-      {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings, true},
+      {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings},
   };
   static_assert(sizeof(kRows) / sizeof(kRows[0]) == kRowCount, "kRowCount must match the table");
   return kRows;
@@ -76,30 +74,19 @@ int HomeActivity::indexOf(const HomeMenuItem item) {
   return 0;
 }
 
-int HomeActivity::nextSelectable(const int from, const int step) const {
-  const Row* table = rows();
-  int index = from;
-  // The walk visits at most kRowCount rows, so a table with every row disabled
-  // returns `from` instead of looping.
-  for (int tries = 0; tries < kRowCount; ++tries) {
-    index = (index + step + kRowCount) % kRowCount;
-    if (table[index].enabled) return index;
-  }
-  return from;
-}
+int HomeActivity::stepRow(const int from, const int step) { return (from + step + kRowCount) % kRowCount; }
 
 void HomeActivity::onEnter() {
   Activity::onEnter();
 
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : indexOf(initialMenuItem);
-  if (!rows()[selectorIndex].enabled) selectorIndex = nextSelectable(selectorIndex, 1);
 
   // Trigger first update
   requestUpdate();
 }
 
 void HomeActivity::activate(const int index) {
-  if (index < 0 || index >= kRowCount || !rows()[index].enabled) return;
+  if (index < 0 || index >= kRowCount) return;
   switch (rows()[index].item) {
     case HomeMenuItem::FILE_TRANSFER:
       onFileTransferOpen();
@@ -136,23 +123,23 @@ void HomeActivity::loop() {
   constexpr int count = kRowCount;
 
   buttonNavigator.onNext([this] {
-    selectorIndex = nextSelectable(selectorIndex, 1);
+    selectorIndex = stepRow(selectorIndex, 1);
     requestUpdate();
   });
 
   buttonNavigator.onPrevious([this] {
-    selectorIndex = nextSelectable(selectorIndex, -1);
+    selectorIndex = stepRow(selectorIndex, -1);
     requestUpdate();
   });
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
-    selectorIndex = nextSelectable(selectorIndex, 1);
+    selectorIndex = stepRow(selectorIndex, 1);
     requestUpdate();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
-    selectorIndex = nextSelectable(selectorIndex, -1);
+    selectorIndex = stepRow(selectorIndex, -1);
     requestUpdate();
     return;
   }
@@ -163,7 +150,6 @@ void HomeActivity::loop() {
   int menuRow = -1;
   const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, kRowHeight, count, 0, INT32_MAX, kRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
-    if (!rows()[menuRow].enabled) return;
     if (menuTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != menuRow) {
         selectorIndex = menuRow;
@@ -196,12 +182,12 @@ void HomeActivity::render(RenderLock&&) {
 
   const int menuTop = headerTop + HOMEHEADER_HEIGHT + kHeaderGap;
 
-  // The theme draws rows, not menu items: 7 x 12 bytes of stack, well inside the
+  // The theme draws rows, not menu items: 5 x 8 bytes of stack, well inside the
   // 256-byte local budget (../../../CLAUDE.md, The Resource Protocol).
   const Row* table = rows();
   BaseTheme::HomeRow drawRows[kRowCount];
   for (int i = 0; i < kRowCount; ++i) {
-    drawRows[i] = BaseTheme::HomeRow{I18n::getInstance().get(table[i].label), table[i].icon, table[i].enabled};
+    drawRows[i] = BaseTheme::HomeRow{I18n::getInstance().get(table[i].label), table[i].icon};
   }
   GUI.drawHomeMenu(renderer, Rect{0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight}, drawRows,
                    kRowCount, selectorIndex, kRowHeight);

@@ -476,8 +476,8 @@ MapCommand parseMode(const Tokens& tokens) {
     cmd.mode = MapRideMode::Ride;
   } else if (tokens.t[1] == "hike") {
     cmd.mode = MapRideMode::Hike;
-  } else if (tokens.t[1] == "cycle") {
-    cmd.mode = MapRideMode::Cycle;
+  } else if (tokens.t[1] == "tourist") {
+    cmd.mode = MapRideMode::Tourist;
   } else {
     return fail(MapCommandError::BadMode);
   }

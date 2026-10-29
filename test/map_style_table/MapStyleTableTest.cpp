@@ -55,14 +55,13 @@ TEST(MapStyleTable, RoadsGetNarrowerAcrossTheLadder) {
   // end the ladder WIDER than it started. That is the direction the whole
   // per-rung table exists to provide, and a table that failed it would be
   // doing the opposite of its job while looking tuned.
-  const MapClassId mains[] = {MapClassId::Motorway, MapClassId::Trunk, MapClassId::Primary,
-                              MapClassId::Secondary, MapClassId::Tertiary};
+  const MapClassId mains[] = {MapClassId::Motorway, MapClassId::Trunk, MapClassId::Primary, MapClassId::Secondary,
+                              MapClassId::Tertiary};
   for (const MapClassId classId : mains) {
     const uint8_t index = static_cast<uint8_t>(classId);
     const uint8_t atClosest = mapStyleFor(MapRideMode::Ride, 0).roadWidthPx[index];
     const uint8_t atWidest = mapStyleFor(MapRideMode::Ride, kRungs - 1).roadWidthPx[index];
-    EXPECT_LE(atWidest, atClosest)
-        << "class " << (int)index << " is wider at the widest rung than at the closest";
+    EXPECT_LE(atWidest, atClosest) << "class " << (int)index << " is wider at the widest rung than at the closest";
   }
   // And the ladder as a whole must actually thin, or the per-rung table is
   // doing nothing at all -- which is what the per-class check above could hide
@@ -113,9 +112,8 @@ TEST(MapStyleTable, TheFilterNeverLetsThroughAClassTheRungThenHides) {
       const MapStyle& style = mapStyleFor(mode, step);
       for (uint8_t classId = 0; classId < kClassEnumSlots; ++classId) {
         if ((mask & (1u << classId)) == 0) continue;
-        EXPECT_GT(style.roadWidthPx[classId], 0)
-            << mapRideModeName(mode) << " rung " << step << " reads class " << (int)classId
-            << " off the card and draws nothing with it";
+        EXPECT_GT(style.roadWidthPx[classId], 0) << mapRideModeName(mode) << " rung " << step << " reads class "
+                                                 << (int)classId << " off the card and draws nothing with it";
       }
     }
   }
@@ -126,7 +124,7 @@ TEST(MapStyleTable, ARungsFilterIsNeverWiderThanItsModesVocabulary) {
   // reveal something the mode does not do. A hiker's footpath must not appear
   // for a rider because a road rule was edited.
   const MapModeMasks masks;
-  const uint32_t vocabulary[kMapRideModeCount] = {kDefaultRideMask, kDefaultHikeMask, kDefaultCycleMask};
+  const uint32_t vocabulary[kMapRideModeCount] = {kDefaultRideMask, kDefaultHikeMask, kDefaultTouristMask};
   for (int modeIndex = 0; modeIndex < kMapRideModeCount; ++modeIndex) {
     for (int step = 0; step < kRungs; ++step) {
       const uint32_t mask = masks.forMode(static_cast<MapRideMode>(modeIndex), step);
@@ -169,9 +167,8 @@ TEST(MapStyleTable, AToneOnARoadAlwaysHasAnInteriorToPutItIn) {
         if (style.roadFillTone[classId] == MapAreaTone::None) continue;
         const int casing = style.roadCasingPx[classId];
         EXPECT_GT(casing, 0) << mapRideModeName(mode) << " rung " << step << " class " << (int)classId;
-        EXPECT_GE(style.roadWidthPx[classId] - 2 * casing, 2)
-            << mapRideModeName(mode) << " rung " << step << " class " << (int)classId
-            << " has a tone but no room for it";
+        EXPECT_GE(style.roadWidthPx[classId] - 2 * casing, 2) << mapRideModeName(mode) << " rung " << step << " class "
+                                                              << (int)classId << " has a tone but no room for it";
       }
     }
   }

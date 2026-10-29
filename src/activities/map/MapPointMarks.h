@@ -4,6 +4,7 @@
 
 #include "IMapCanvas.h"
 #include "IMapPointSource.h"
+#include "MapLabels.h"
 #include "MapStyle.h"
 
 // Draws one POI mark: a square outline, a category glyph inside it, and one
@@ -95,12 +96,13 @@
 // in, and re-merge zooming out. `style.pointClusterRadiusPx == 0` disables
 // this entirely and restores one-mark-per-point.
 //
-// A cluster's category mask assumes every point in it is the *same kind*
-// (MapPointKind) -- true today because landmarks are off by default
-// (pointsLandmarkEnabled) and unbuilt (T-305). If landmarks start sharing the
-// safety categories' id space while both are on, a cluster mixing kinds would
-// misread as one category when it is really two; revisit this the day T-305
-// lands.
+// A cluster holds exactly one kind (MapPointKind), and addPoint() enforces it:
+// a point only ever merges into a cluster of its own kind, and starts a new
+// one otherwise. Without that, safety category 2 (shelter) and landmark
+// category 2 (manor) would share one mask bit and the cluster would draw one
+// glyph meaning two different things. Fixed 2026-10-27 with T-305, which is
+// the day landmarks got a writer; before that the assumption held only because
+// nothing ever wrote a landmark.
 namespace MapPointMarks {
 
 // The mark's half-width, for a source's off-screen margin: a square is drawn
@@ -110,11 +112,28 @@ namespace MapPointMarks {
 int16_t reachPx(const MapStyle& style);
 
 // One mark, centred on (x, y) in screen pixels. Draws nothing when the style
-// hides the layer (pointSquarePx == 0) or the kind is filtered out.
+// hides the layer (pointSquarePx == 0), the kind is filtered out, or the
+// point is a landmark ranked past style.pointLandmarkRankMax.
 void draw(IMapCanvas& canvas, const MapPointRef& point, const MapStyle& style);
+
+// Which kinds this style draws, as a MapPointSource::Config::kindMask.
+//
+// The mask and the style have to agree or the layer lies in one of two ways: a
+// kind the style draws but the mask filters never reaches the canvas (which is
+// how landmarks were invisible on 2026-10-27 even with the style turned on),
+// and a kind the mask lets through but the style hides costs a shard read for
+// nothing. The mask is the cheap test -- a shard whose header holds no wanted
+// kind is skipped without reading a record -- so it is set FROM the style
+// rather than kept beside it.
+uint8_t kindMaskFor(const MapStyle& style);
 
 // Draws every point `source` yields, clustering first per style.
 // pointClusterRadiusPx (see above). Same kind/enable filtering as draw().
-void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style);
+// `labels` (may be null) collects landmark names for the same placement pass
+// the place names go through -- the point walk is the only place a point's
+// name is in hand, and placement cannot start until every layer has been
+// walked. `anchorX/anchorY` is the viewport anchor, as MapLabels::offer wants.
+void drawAll(IMapCanvas& canvas, IMapPointSource& source, const MapStyle& style, MapLabelScratch* labels = nullptr,
+             int anchorX = 0, int anchorY = 0);
 
 }  // namespace MapPointMarks

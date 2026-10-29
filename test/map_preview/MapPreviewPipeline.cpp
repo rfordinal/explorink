@@ -191,7 +191,12 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
     pointConfig.range.row0 = shards.row0;
     pointConfig.range.col1 = shards.col1;
     pointConfig.range.row1 = shards.row1;
-    pointConfig.categoryMask = request.pointCategoryMask;
+    // The preview's --point-categories flag is the Nearby view, so it filters
+    // the safety half alone, the same split MapActivity makes.
+    pointConfig.safetyCategoryMask = request.pointCategoryMask;
+    pointConfig.landmarkCategoryMask = 0xFFFFu;
+    pointConfig.kindMask = MapPointMarks::kindMaskFor(style);
+    pointConfig.wantNames = style.pointLabelPx > 0 && request.drawLabels;
     pointConfig.screenWidth = SCREEN_WIDTH;
     pointConfig.screenHeight = SCREEN_HEIGHT;
     // A mark is drawn centred on its point, so the margin is the mark's own

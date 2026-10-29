@@ -51,14 +51,28 @@ class MapPointSource final : public IMapPointSource {
     // just off screen still draws.
     MapPointShards::Range range;
 
-    // Bit N set = draw MapPointKind N. Default: safety only, because landmarks
-    // are T-305 and nothing writes them yet.
+    // Bit N set = draw MapPointKind N. Set it from the style with
+    // MapPointMarks::kindMaskFor(), which is the one place that decides what a
+    // style draws -- a mask that disagrees with the style silently drops a kind
+    // the style asked for. The default is safety only so a caller that forgets
+    // gets the behaviour this had before landmarks existed, not a blank layer.
     uint8_t kindMask = 1u << static_cast<uint8_t>(MapPointKind::Safety);
 
-    // Bit N set = draw category id N (per kind: the safety categories are
-    // MapSafetyCategory). All ones means every category, which is what the
-    // golden render and a "show everything" debug view want.
-    uint16_t categoryMask = 0xFFFFu;
+    // Bit N set = draw category id N. **One mask per kind, because the two
+    // answer different questions.**
+    //
+    // `safetyCategoryMask` is `Nearby -> Show on map`: a temporary view the
+    // rider switched on, nothing to do with the style. `landmarkCategoryMask`
+    // is not a UI toggle at all -- a landmark is on the map because the style
+    // says this mode draws landmarks (tourist/hike), never because somebody
+    // asked to see nearby points. Conflating them meant a rider with no Nearby
+    // category on got no landmarks either, which is the wrong reason for a
+    // castle to be missing (maintainer, 2026-10-27).
+    //
+    // All ones means every category, which is what the golden render and a
+    // "show everything" debug view want.
+    uint16_t safetyCategoryMask = 0xFFFFu;
+    uint16_t landmarkCategoryMask = 0xFFFFu;
 
     // The panel, and how far a mark can reach past its own centre. Together
     // they drop a point that cannot put a pixel on screen before it is
@@ -67,6 +81,13 @@ class MapPointSource final : public IMapPointSource {
     int16_t screenWidth = 0;
     int16_t screenHeight = 0;
     int16_t rejectMarginPx = 0;
+
+    // Fetch each emitted point's name into MapPointRef::name. Off by default
+    // because it costs a seek and a read per point that survives the filters,
+    // and the mark itself never needs one -- only the label pass does. The
+    // record's own name offset is in the record; the pool is elsewhere in the
+    // file (MapPointReader.h, "most records never need one").
+    bool wantNames = false;
   };
 
   // `proj` must stay valid for this source's whole life and must not change
@@ -118,6 +139,10 @@ class MapPointSource final : public IMapPointSource {
   uint32_t shardsMissing_ = 0;
   uint32_t shardsCorrupt_ = 0;
   uint32_t bytesRead_ = 0;
+
+  // One reusable buffer for the name of the point last emitted. kPointNameMaxBytes
+  // is 63, plus a terminator.
+  char nameBuf_[kPointNameMaxBytes + 1] = {};
 
   char path_[kMaxPathLen] = {};
 };

@@ -218,10 +218,10 @@ bool parseArgs(int argc, char** argv, Options& out) {
         out.mode = MapRideMode::Ride;
       } else if (std::strcmp(v, "hike") == 0) {
         out.mode = MapRideMode::Hike;
-      } else if (std::strcmp(v, "cycle") == 0) {
-        out.mode = MapRideMode::Cycle;
+      } else if (std::strcmp(v, "tourist") == 0) {
+        out.mode = MapRideMode::Tourist;
       } else {
-        std::fprintf(stderr, "mode must be ride|hike|cycle\n");
+        std::fprintf(stderr, "mode must be ride|hike|tourist\n");
         return false;
       }
     } else if (arg == "--speed") {
@@ -409,7 +409,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: map_window --tiles <dir> (--ride <ride.jsonl> | --lat L --lon L)\n"
                  "                  [--heading 0-15] [--route <route.tir>]\n"
-                 "                  [--mode ride|hike|cycle] [--zoom 0-%d] [--marker 0-%d]\n"
+                 "                  [--mode ride|hike|tourist] [--zoom 0-%d] [--marker 0-%d]\n"
                  "                  [--speed X] [--no-rect] [--no-console] [--exit-at-end]\n",
                  MapViewport::kZoomStepCount - 1, kMapMarkerStepCount - 1);
     return 2;

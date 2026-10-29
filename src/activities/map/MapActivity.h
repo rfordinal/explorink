@@ -706,7 +706,7 @@ class MapActivity final : public Activity,
   // One source for both, or the repaint clips what the draw put down.
   void headerStatusRect(int& x, int& y, int& w, int& h) const;
   // Height of the header bar on the panel right now: the base single-row bar
-  // in Ride/Cycle, one kHeaderRowHeight taller in Hike to hold the elevation
+  // in Ride/Tourist, one kHeaderRowHeight taller in Hike to hold the elevation
   // line. Everything that used to read the file-scope kHeaderBarHeight
   // constant for "where does the map start" now reads this instead, so a mode
   // switch moves the map viewport, the separator and the marker-bounds check
@@ -719,11 +719,11 @@ class MapActivity final : public Activity,
   // arithmetic itself.
   int headerSeparatorY() const;
   // First row the map may draw into. GfxRendererCanvas's minY clips there, so
-  // in Hike mode the map starts one kHeaderRowHeight lower than in Ride/Cycle.
+  // in Hike mode the map starts one kHeaderRowHeight lower than in Ride/Tourist.
   int mapContentTop() const;
   // Hike-only second header line: elevation (from whichever fix last carried
   // one -- BLE or the serial/BLE command console) and the fix's own lat/lon,
-  // already known from lastLatE7_/lastLonE7_. Ride and Cycle draw nothing here
+  // already known from lastLatE7_/lastLonE7_. Ride and Tourist draw nothing here
   // -- see docs/map-header-status.md, "Hike mode's second line".
   void drawHikeElevationLine();
   // Keeps the hike line honest between full frames, the same windowed-repaint

@@ -507,7 +507,7 @@ constexpr int kTextX = 8;
 // mapContentTop() does.
 //
 // 2, not a rounder number: mapContentTop() is headerBarHeight() + 1 (37 in
-// Ride/Cycle), and the old readout put the box's top edge at 39 with its text
+// Ride/Tourist), and the old readout put the box's top edge at 39 with its text
 // at 42. 2 lands on exactly those two numbers, so the position tuned on
 // hardware on 2026-08-08 is preserved rather than approximated. A 5 here --
 // what this shipped with for one commit -- pushed the whole box 3px down,
@@ -553,7 +553,7 @@ constexpr int kHeaderPlaceNameLeftX = kTextX + 2;
 
 // Hike mode's second header line: elevation and lat/lon, both of which answer
 // "where am I" better than a place name at hiking pace, and both of which the
-// place-name walk already fails to answer off the road network. Ride and Cycle
+// place-name walk already fails to answer off the road network. Ride and Tourist
 // keep the single-row header above untouched -- MapActivity::headerBarHeight()
 // is the only thing that reads mode_ here, and it is what
 // MapActivity::mapContentTop()/headerSeparatorY() are derived from, so the map
@@ -661,7 +661,7 @@ constexpr HeadingVec kMarkerHeadingDir[16] = {
 // Display strings for MapRideMode, indexed the same way as the enum itself
 // (MapRideMode.h) -- mapRideModeName() gives the wire name for the console,
 // this gives the translated label for the Mode popup.
-constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HIKE, StrId::STR_CYCLE};
+constexpr StrId kMapModeIds[kMapRideModeCount] = {StrId::STR_RIDE, StrId::STR_HIKE, StrId::STR_TOURIST};
 
 }  // namespace
 
@@ -695,8 +695,11 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     // Positions come off kMarkerHeadingDir, every other entry: eight points on
     // the ring, no trig, and the same table the heading glyph indexes.
     const int gap = m.ringGap;
-    for (int i = 0; i < 16; i += 16 / kMarkerRingGapCount) {
-      const HeadingVec& at = kMarkerHeadingDir[i];
+    // `g * 16 / count` rather than a stride, so the count is free of the
+    // divisors of 16 -- and it has to be, because every one of those is even
+    // and four gaps on a circle read as a crosshair (MapMarkerMetrics.h).
+    for (int g = 0; g < kMarkerRingGapCount; ++g) {
+      const HeadingVec& at = kMarkerHeadingDir[g * 16 / kMarkerRingGapCount];
       const int gx = cx + at.dx * radius / 8;
       const int gy = cy + at.dy * radius / 8;
       renderer.fillRect(gx - gap / 2, gy - gap / 2, gap, gap, false);  // false is white
@@ -713,8 +716,8 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     // this argument since 2026-08-19 -- a heading with nothing behind it is a
     // claim dressed as an observation (MapMarkerMetrics.h).
     //
-    // Hike keeps its dot, because the dot is position, not direction. Cycle and
-    // Ride have no separate position glyph, so for them the ring and halo are
+    // Hike keeps its dot, because the dot is position, not direction. Tourist
+    // and Ride have no separate position glyph, so for them the ring and halo are
     // the whole marker -- which is correct and is what a bare ring means.
     if (mode == MapRideMode::Hike) {
       renderer.fillRoundedRect(cx - m.hikeDot / 2, cy - m.hikeDot / 2, m.hikeDot, m.hikeDot, m.hikeDot / 2,
@@ -797,11 +800,11 @@ void MapActivity::drawPositionMarker(int cx, int cy, uint8_t headingStep, MapRid
     return;
   }
 
-  // Cycle and ride both point at the real incoming heading, never the
+  // Tourist and ride both point at the real incoming heading, never the
   // forced-north display heading renderViewport() uses for map rotation
   // (kNoRouteDisplayHeading) -- direction of travel matters at riding speed
   // even though the map underneath stays north-up.
-  const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.cycleTipLen;
+  const int tipLen = mode == MapRideMode::Ride ? m.rideTipLen : m.touristTipLen;
   const HeadingVec& dir = kMarkerHeadingDir[headingStep < 16 ? headingStep : 0];
   const HeadingVec perp{-dir.dy, dir.dx};
 
@@ -2210,7 +2213,7 @@ void MapActivity::drawHeaderPlaceName() {
 // directly. Those track whatever is on screen, and panBy() repoints them at
 // the pan target while Observe mode is up (riderLatE7()'s own comment); this
 // line answers "where is the rider", which does not change just because they
-// panned to look around. Ride and Cycle draw nothing here -- mode_ is the
+// panned to look around. Ride and Tourist draw nothing here -- mode_ is the
 // only gate, and a rider who switches mode picks the line up or loses it on
 // the full frame switchMode() already forces.
 void MapActivity::drawHikeElevationLine() {
@@ -3818,7 +3821,7 @@ void MapActivity::loop() {
   // autosync -- this is simply the one place that repaints that row.
   updateHeaderStatus();
   // Hike mode's elevation/lat-lon line, kept current the same way: a no-op in
-  // Ride/Cycle (mode_ gate inside).
+  // Ride/Tourist (mode_ gate inside).
   updateHikeElevationLine();
   // And the debug window, same shape again: a no-op with mapDebugInfo off,
   // which is its default.
@@ -6836,7 +6839,11 @@ void MapActivity::composeCurrent() {
 }
 
 MarkerMetrics MapActivity::markerMetrics() const {
-  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8);
+  // The rung's own scale, then the style's percentage on top: the rung says
+  // how much room the marker may take at this zoom, the style says how much
+  // this MODE wants it to take at all (MapStyle::markerScalePct).
+  return markerMetricsFor(MapViewport::zoomStepAt(zoomStep()).markerScale8,
+                          mapStyleFor(mode_, zoomStep()).markerScalePct);
 }
 
 void MapActivity::markerRect(int cx, int cy, int& x, int& y, int& w, int& h) const {
@@ -7562,8 +7569,15 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
   // on map` is a temporary view, so it filters this walk and never the style
   // (MapPointSource::Config::categoryMask). With no layer on, the source is not
   // even handed over and no shard is opened.
+  //
+  // The `Nearby` mask gates the SAFETY half only. A landmark is drawn because
+  // the style for this mode draws landmarks -- tourist and hike do, ride does
+  // not -- and never because the rider asked to see nearby points. The two
+  // used to share one gate, so a rider with every Nearby row off got no
+  // castles either (maintainer, 2026-10-27).
   IMapPointSource* pointSource = nullptr;
-  if (points_ && nearbyCategoryMask_ != 0 && pointsEnabled()) {
+  const bool styleDrawsLandmarks = style.pointsLandmarkEnabled;
+  if (points_ && pointsEnabled() && (nearbyCategoryMask_ != 0 || styleDrawsLandmarks)) {
     MapPointSource::Config pointConfig;
     pointConfig.rootDir = kTileRoot;
     // The point layer is its own grid, so it gets its own range off the same
@@ -7575,7 +7589,14 @@ uint32_t MapActivity::drawMapLayers(const MapViewport::TileRange& range, IMapCan
     pointConfig.range.row0 = shards.row0;
     pointConfig.range.col1 = shards.col1;
     pointConfig.range.row1 = shards.row1;
-    pointConfig.categoryMask = nearbyCategoryMask_;
+    pointConfig.safetyCategoryMask = nearbyCategoryMask_;
+    // Not a UI toggle: which landmarks draw is the style's rank cutoff
+    // (pointLandmarkRankMax), applied at draw time.
+    pointConfig.landmarkCategoryMask = 0xFFFFu;
+    pointConfig.kindMask = MapPointMarks::kindMaskFor(style);
+    // A name costs a seek and a read per point, so it is fetched only when
+    // the style actually draws landmark names.
+    pointConfig.wantNames = style.pointLabelPx > 0 && labels_ != nullptr;
     pointConfig.screenWidth = static_cast<int16_t>(renderer.getScreenWidth());
     pointConfig.screenHeight = static_cast<int16_t>(renderer.getScreenHeight());
     // A mark is drawn centred on its point, so the margin is the mark's own

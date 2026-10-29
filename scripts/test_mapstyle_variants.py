@@ -58,12 +58,12 @@ class Selectors(unittest.TestCase):
         s = road("path", width=1, when=[{"modes": ["hike"], "steps": [0], "width": 5}])
         self.assertEqual(width(mv.resolve(s, "hike", 0)), 5)
         self.assertEqual(width(mv.resolve(s, "hike", 1)), 1)
-        self.assertEqual(width(mv.resolve(s, "cycle", 0)), 1)
+        self.assertEqual(width(mv.resolve(s, "tourist", 0)), 1)
 
     def test_neither_list_means_always(self):
         s = road("track", width=1, when=[{"width": 2}])
         self.assertEqual(width(mv.resolve(s, "ride", 0)), 2)
-        self.assertEqual(width(mv.resolve(s, "cycle", 6)), 2)
+        self.assertEqual(width(mv.resolve(s, "tourist", 6)), 2)
 
 
 class Precedence(unittest.TestCase):

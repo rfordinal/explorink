@@ -645,3 +645,27 @@ touching `pio`, succeeded first try -- same fix as the two 2026-09-13 cases,
 so read as the same race, not confirmed by isolating it. The two earlier
 cases both saw the restore itself report success and something *after* it
 break; this is the first time the restore step has failed outright.
+
+## A fresh worktree cannot build the host tests until one header is generated
+
+`test/CMakeLists.txt` generates `MapStyleDefaults.h` and `MapModeMaskDefaults.h`
+through its `map_generated_headers` target, but **not**
+`MapMarkerShape.generated.h` -- that one comes from a PlatformIO pre-script. So
+a worktree that has never run `pio run` fails in `map_window` with
+
+```
+fatal error: MapMarkerShape.generated.h: No such file or directory
+```
+
+which reads like a broken cmake and is not. The sequence that works:
+
+```
+python3 scripts/gen_marker_shape.py
+cmake -S test -B build/test -DCMAKE_BUILD_TYPE=Release
+cmake --build build/test -j8
+ctest --test-dir build/test --output-on-failure -j8
+```
+
+Measured 2026-10-27: two failed builds before this was found, in a worktree
+created minutes earlier for a one-screen firmware change.
+
