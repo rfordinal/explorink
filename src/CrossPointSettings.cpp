@@ -105,6 +105,22 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   }
   // Not in SettingsList (edited from the map's Pins list), so it is saved here.
   doc["mapPinsOffscreenMask"] = mapPinsOffscreenMask;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // Not in SettingsList: three numbers a rider sets once, if ever, and three
+  // more rows in the Map category would push the ones they do use off the first
+  // screen. Edited on the card or over the console.
+  doc["mapTeamStaleMin"] = mapTeamStaleMin;
+  doc["mapTeamHideMin"] = mapTeamHideMin;
+  doc["mapTeamKeepDays"] = mapTeamKeepDays;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Not in SettingsList either: the LoRa node is a bench feature gated out of
+  // every release build, and its three controls live on its own screen
+  // (Home > LoRa nodes) rather than in a rider's Settings list.
+  doc["loraMeshOn"] = loraMeshOn;
+  doc["loraBeaconSec"] = loraBeaconSec;
+  doc["loraNodeName"] = loraNodeName;
+#endif
   doc["mapGnssPosition"] = mapGnssPosition;
   doc["frontlightOn"] = frontlightOn;
   doc["frontlightBrightness"] = frontlightBrightness;
@@ -235,6 +251,32 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Defaults to every bit set: a file written before this existed must behave the
   // way it did then, which is "the master decides for all of them".
   mapPinsOffscreenMask = doc["mapPinsOffscreenMask"] | (uint16_t)0xFFFF;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  mapTeamStaleMin = doc["mapTeamStaleMin"] | (uint8_t)5;
+  mapTeamHideMin = doc["mapTeamHideMin"] | (uint16_t)360;
+  // **A stored 30 is the old default, not a choice, so it is migrated.**
+  // Raising the default alone would have changed nothing on any device that
+  // has ever saved its settings -- and every one of them has, because the
+  // value is written on every save. The migration is safe precisely because
+  // this setting has no row in SettingsList and no console command: nothing
+  // a rider can touch could have produced a deliberate 30, so the only 30s
+  // in the field are the default that was replaced on 2026-10-23.
+  //
+  // Delete this once no card in use predates that date. It costs a comment
+  // and a comparison until then, and leaving it longer is cheaper than
+  // guessing which cards are old.
+  if (mapTeamHideMin == 30) mapTeamHideMin = 360;
+  mapTeamKeepDays = doc["mapTeamKeepDays"] | (uint8_t)14;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  loraMeshOn = (doc["loraMeshOn"] | (uint8_t)0) ? 1 : 0;
+  loraBeaconSec = doc["loraBeaconSec"] | (uint16_t)0;
+  {
+    const char* name = doc["loraNodeName"].is<const char*>() ? doc["loraNodeName"].as<const char*>() : "";
+    strncpy(loraNodeName, name, sizeof(loraNodeName) - 1);
+    loraNodeName[sizeof(loraNodeName) - 1] = '\0';
+  }
+#endif
   mapGnssPosition = doc["mapGnssPosition"] | (uint8_t)0;
   frontlightOn = (doc["frontlightOn"] | (uint8_t)0) ? 1 : 0;
   // Clamped, not trusted: this reaches the LEDC duty calculation, and the file

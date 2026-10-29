@@ -19,11 +19,18 @@ class HomeActivity final : public Activity {
     StrId label;
     const freeink::Icon* icon;
   };
+  // Five rider rows, plus one per bench row this build carries. Spelled as a
+  // sum rather than as four literals because the static_assert in
+  // HomeActivity.cpp checks it against the table, and two independent flags
+  // would otherwise need four spellings of the same number.
+  static constexpr int kRowCount = 5
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-  static constexpr int kRowCount = 6;  // + the grayscale bench row
-#else
-  static constexpr int kRowCount = 5;
+                                   + 1  // the grayscale bench
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+                                   + 1  // the LoRa node list
+#endif
+      ;
   static const Row* rows();
   static int indexOf(HomeMenuItem item);
 
@@ -37,6 +44,9 @@ class HomeActivity final : public Activity {
   void onTileSyncOpen();
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   void onPreviewOpen();
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  void onLoraPeersOpen();
 #endif
   void activate(int index);
 

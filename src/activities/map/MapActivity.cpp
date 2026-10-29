@@ -1,5 +1,10 @@
 #include "MapActivity.h"
 
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+#include "components/icons/map_header_icons.h"
+#include "lora/LoraPresence.h"
+#endif
+
 #include <BlePositionServer.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -218,6 +223,14 @@ constexpr uint32_t kHikeLineRepaintMs = 10 * 1000;
 constexpr uint32_t kDebugPollMs = 1000;
 constexpr uint32_t kDebugRepaintMs = 5 * 1000;
 
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// How often the radio's own row is recomputed. The same second as the window
+// poll above, deliberately -- a faster one would only pay the chip mutex more
+// often for a row the window will not repaint sooner anyway
+// (updateLoraDebugRow()).
+constexpr uint32_t kLoraDebugPollMs = kDebugPollMs;
+#endif
+
 // Observe mode's clock granularity, in minutes. The minute tick is the only
 // thing that repaints the header while nothing else on the device is happening,
 // and run 5 priced it: 60 windowed refreshes an hour, 9.4 s/h of panel time, in
@@ -340,6 +353,24 @@ constexpr int kHeaderGroupGap = 10;  // BLE group to battery block, and logo to 
 // Always drawn, unlike the transfer icon next to it: "off" is one of the three
 // states, not the absence of the icon. A rider who cannot tell "no receiver
 // running" from "no icon yet" learns nothing from the row.
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// The LoRa radio, and it is two glyphs rather than one on purpose: an antenna
+// while the node only listens, a tower with waves leaving it once the beacon
+// is armed. ../../../docs/lora.md's security section asks that the rider can
+// see when they are *transmitting*, and "a radio is on" does not answer that.
+//
+// Drawn only while the radio is up, unlike the GNSS glyph next to it. The
+// radio is off on most screens and in most sessions, and a permanent "LoRa
+// off" icon would spend a slot of the place name's width to say nothing.
+constexpr int kHeaderLoraIconSize = kHeaderIconHeight;
+// The gap on this glyph's **right**, whatever happens to be there -- the GNSS
+// icon on a receiver session, the Bluetooth logo on a phone one. Named for
+// the side rather than for the neighbour because it has two neighbours: the
+// old name said `ToGnss` and the Bluetooth case is exactly the one that was
+// wrong (see the chain in drawHeaderStatusStrip()).
+constexpr int kHeaderLoraIconRightGap = 6;
+#endif
+
 constexpr int kHeaderGnssIconSize = kHeaderIconHeight;
 constexpr int kHeaderGnssIconToBtGap = 6;
 // The suffix the clock carries on a GNSS session while it really is UTC, drawn
@@ -1047,7 +1078,7 @@ void MapActivity::showBusy() {
   // Windowed: the rest of the panel keeps the map that is already on it. A
   // full refresh here would cost the same waveform time and throw the picture
   // away twice.
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "busy badge window rejected: %d,%d %dx%d", x, y, w, h);
     return;
   }
@@ -1718,6 +1749,17 @@ void MapActivity::updateHeaderStatus() {
   // the bars on the panel until something else forced a redraw. Reported from a
   // real session, 2026-08-07.
   bool structural = transferIconVisible != transferIconShown_ || connected != drawnLinkConnected_;
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Structural for the same reason the GNSS glyph is: the radio moves between
+  // its three states a handful of times a ride, and each move is exactly the
+  // moment the rider should be told -- most of all the one into Beaconing,
+  // which is when this device starts putting its position on the air.
+  //
+  // Unguarded, unlike the GNSS line below: the LoRa glyph is drawn on any
+  // session, and Off means nothing is painted, so the recorded state and the
+  // live one always describe the same slot.
+  structural = structural || loraHeaderState() != drawnLoraState_;
+#endif
 #ifdef ENABLE_GNSS_CMD
   // Structural, not rate-capped: the receiver moves between three states a
   // handful of times a ride (start, first fix, sky lost), so there is nothing
@@ -1829,7 +1871,7 @@ void MapActivity::updateHeaderStatus() {
 
   // Windowed, like the busy badge: the map on the rest of the panel is
   // untouched and a full refresh would cost a second and throw it away twice.
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Status)) {
     LOG_ERR(kLogTag, "header status window rejected: %d,%d %dx%d", x, y, w, h);
   }
 }
@@ -1840,6 +1882,14 @@ Rect MapActivity::compassRect() const {
   const int haloRadius = kCompassGlyphRadius + kCompassHaloMargin;
   return Rect{centreX - haloRadius, centreY - haloRadius, haloRadius * 2, haloRadius * 2};
 }
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+MapActivity::LoraHeaderState MapActivity::loraHeaderState() {
+  const LoraPresenceIndicator lora = loraPresenceIndicator();
+  if (!lora.running) return LoraHeaderState::Off;
+  return lora.beaconing ? LoraHeaderState::Beaconing : LoraHeaderState::Listening;
+}
+#endif
 
 Rect MapActivity::headerRect() const {
   // mapContentTop(), not headerBarHeight(): the separator row belongs to the
@@ -1988,16 +2038,24 @@ void MapActivity::headerStatusRect(int& x, int& y, int& w, int& h) const {
   const int barsRight = batteryX - worstCasePercentWidth - BaseTheme::batteryPercentSpacing - kHeaderGroupGap;
   const int barsLeft = barsRight - kHeaderBleBarsWidth;
   const int logoLeft = barsLeft - kHeaderBtToBarsGap - kHeaderBtLogoWidth;
+  // The right-to-left chain, as a running cursor rather than one expression
+  // per build flag. Everything left of a link (the transfer icon, the clock,
+  // and the place name that truncates against the clock) shifts by itself,
+  // which is why these are links and not hardcoded x values -- and a cursor
+  // because two optional links would otherwise need four spellings of the
+  // same arithmetic.
+  //
+  // Reserved unconditionally, both of them: this rect is the widest layout, so
+  // the backing drawn from it clears the slots a narrower row leaves empty.
+  // See the comment at the top of this function.
+  int chainLeft = logoLeft;
 #ifdef ENABLE_GNSS_CMD
-  // One more link in the right-to-left chain, between the Bluetooth logo and
-  // the transfer icon. Everything left of it (the transfer icon, the clock, and
-  // the place name that truncates against the clock) shifts left by itself,
-  // which is why this is a link and not a hardcoded x.
-  const int gnssIconLeft = logoLeft - kHeaderGnssIconToBtGap - kHeaderGnssIconSize;
-  const int transferIconLeft = gnssIconLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
-#else
-  const int transferIconLeft = logoLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
+  chainLeft -= kHeaderGnssIconToBtGap + kHeaderGnssIconSize;
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  chainLeft -= kHeaderLoraIconRightGap + kHeaderLoraIconSize;
+#endif
+  const int transferIconLeft = chainLeft - kHeaderTransferIconToBtGap - kHeaderTransferIconSize;
 #ifdef ENABLE_GNSS_CMD
   // The "UTC" label is part of the widest layout too, so it is reserved here
   // unconditionally -- including on BLE sessions, which never draw it.
@@ -2285,7 +2343,8 @@ void MapActivity::updateHikeElevationLine() {
   // Windowed, like the row above: the map on the rest of the panel is
   // untouched and a full refresh would cost a second to redraw something a
   // few characters wide.
-  if (!renderer.displayBufferWindow(0, kHeaderBarHeight, renderer.getScreenWidth(), kHikeElevationLineHeight)) {
+  if (!renderer.displayBufferWindow(0, kHeaderBarHeight, renderer.getScreenWidth(), kHikeElevationLineHeight,
+                                    PowerTelemetry::WindowSite::Status)) {
     LOG_ERR(kLogTag, "hike elevation line window rejected");
   }
 }
@@ -2373,6 +2432,35 @@ void MapActivity::drawHeaderStatusStrip() {
     clockShowsUtc_ = SETTINGS.clockUtcOffsetQ == 48;
   }
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // The LoRa glyph takes its slot only while the radio is actually up, which
+  // on this screen means the map is holding it (src/lora/LoraPresence.h). An
+  // icon for a radio nobody started would invite exactly the wrong reading --
+  // "the link is merely down" -- which is the argument the transfer icon above
+  // already makes for itself.
+  const LoraPresenceStatus loraStatus = loraPresenceStatus();
+  int loraIconLeft = 0;
+  if (loraStatus.meshRunning) {
+    // **`chainRight` arrives in one of two conventions, and this is the first
+    // link that can follow either.** The Bluetooth branch leaves the logo's
+    // *left edge*, with no gap taken yet; the GNSS branch leaves its icon's
+    // left edge with the gap to its left already subtracted. Each downstream
+    // block today matches whichever predecessor can run before it, so the
+    // disagreement was invisible until a link appeared that both of them
+    // feed.
+    //
+    // Reported off the panel 2026-10-23: on a phone session the glyph sat
+    // flush against the Bluetooth logo, because this block took no gap and
+    // the branch above had not taken one either. So the gap is taken here
+    // only when nobody took it, and the convention this block received is the
+    // one it passes on -- changing either branch instead would move the clock
+    // on a session this icon is not even drawn in. Unifying the two is
+    // T-2038.
+    loraIconLeft = chainRight - (bleInUse_ ? kHeaderLoraIconRightGap : 0) - kHeaderLoraIconSize;
+    chainRight = loraIconLeft - (bleInUse_ ? 0 : kHeaderLoraIconRightGap);
+  }
+#endif
+
   // The transfer icon's slot leaves the chain with the icon. Leaving it reserved
   // on a GNSS session is what put 14 px of nothing between the clock and the
   // UTC label, so the label read as belonging to the glyph on its other side
@@ -2479,6 +2567,23 @@ void MapActivity::drawHeaderStatusStrip() {
                           true);
   }
   transferIconShown_ = showTransferIcon;
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // **Its own block, not inside the transfer icon's.** It lived in there for
+  // one build and drew only when a BLE tile transfer happened to be running,
+  // which is almost never -- a screenshot caught it and the compiler could
+  // not. The two icons share a row and nothing else.
+  //
+  // Which of the two glyphs says what the rider needs to know: the antenna
+  // means the node is listening and telling nobody anything, the tower means a
+  // beacon is armed and this device is putting its name and position on the
+  // air. Those are different consents and they get different pictures.
+  if (loraStatus.meshRunning) {
+    const freeink::Icon& loraGlyph = loraStatus.beaconSec != 0 ? icon_loraBeaconing : icon_loraListening;
+    renderer.drawMono1bpp(loraGlyph.bits, loraIconLeft, iconTop, loraGlyph.w, loraGlyph.h, true);
+  }
+  drawnLoraState_ = loraHeaderState();
+#endif
 
 #ifdef ENABLE_GNSS_CMD
   // The receiver's state, whenever the receiver is what this session uses.
@@ -2694,6 +2799,68 @@ void MapActivity::layoutDebugOverlay() {
 // shape as updateHeaderStatus() and updateHikeElevationLine(): the panel is
 // only spent when a slot's text actually differs from what is on it.
 //
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// What the radio is doing, in the one window a walker can see it from.
+//
+// **Rate limited to the debug window's own poll, and that is not tidiness.**
+// `loraPresenceStatus()` and `loraPresenceSnapshot()` both take the chip
+// mutex, which is held by the radio task for the whole of a serviced receive
+// -- so calling either one per `loop()` tick would put the UI task behind the
+// radio several hundred times a second to decide whether a text row changed.
+// That is the exact cost `loraPresenceIndicator()` exists to avoid for the
+// header glyph (`LoraPresence.h`); the glyph needs no lock and this row does,
+// so this one pays for it once a second instead of never.
+//
+// Only one peer is copied. The snapshot is newest-heard-first, so peer zero
+// is the last node that spoke, and a `max` of one costs a single record
+// rather than the 1.2 kB a full table copy would move under that lock.
+void MapActivity::updateLoraDebugRow() {
+  if (!SETTINGS.mapDebugInfo) return;
+  const uint32_t now = millis();
+  if (nextLoraDebugMs_ != 0 && now < nextLoraDebugMs_) return;
+  nextLoraDebugMs_ = now + kLoraDebugPollMs;
+
+  const LoraPresenceStatus st = loraPresenceStatus();
+  if (!st.meshRunning) {
+    // **Off means gone, not a row saying "off".** Maintainer's call,
+    // 2026-10-23, overriding a first version that printed `lora off` so a
+    // walker could tell a quiet channel from a radio that never came up.
+    // That reading is answered by the header glyph, which is absent for
+    // exactly the same reason, and the window is for what the radio is
+    // doing -- a switched-off radio is doing nothing and costs no ink
+    // saying so.
+    debug_.clear(debugLoraSlot_);
+    return;
+  }
+
+  // **No clock outranks the cadence, because it overrides it.** An armed
+  // beacon on a node that cannot transmit is the state that reads as a broken
+  // radio, and printing `bcn70s` there would be the panel claiming something
+  // the node is refusing to do (src/lora/LoraPresence.h).
+  char beacon[16];
+  if (!st.hasWallClock) {
+    snprintf(beacon, sizeof(beacon), "noclock");
+  } else if (st.beaconSec == 0) {
+    snprintf(beacon, sizeof(beacon), "rx");
+  } else {
+    snprintf(beacon, sizeof(beacon), "bcn%us", static_cast<unsigned>(st.beaconSec));
+  }
+
+  LoraPeer last{};
+  const bool haveLast = loraPresenceSnapshot(&last, 1) == 1;
+  if (!haveLast) {
+    debug_.set(debugLoraSlot_, "lora on %s peers=0 bad=%u", beacon, static_cast<unsigned>(st.advertsRejected));
+    return;
+  }
+
+  // Wrap-safe, same as everywhere else that subtracts two millis() stamps.
+  const uint32_t ageS = (st.nowUptimeMs - last.heardUptimeMs) / 1000;
+  debug_.set(debugLoraSlot_, "lora on %s peers=%u last %d/%d %us bad=%u", beacon, static_cast<unsigned>(st.peerCount),
+             static_cast<int>(last.rssiDbm), static_cast<int>(last.snrDb), static_cast<unsigned>(ageS),
+             static_cast<unsigned>(st.advertsRejected));
+}
+#endif  // ENABLE_LORA_MESH
+
 // This is what makes reserve()/set() worth having. A feature writing its slot
 // once a second from its own loop -- a GNSS fix count, a transfer byte
 // counter -- reaches the panel through here without triggering a frame and
@@ -2721,7 +2888,8 @@ void MapActivity::updateDebugOverlay() {
   // windowRefreshAffordable() first, same as the busy badge and the follow
   // frame's union window: displayBufferWindow() allocates a buffer per call
   // and a refused allocation aborts the device rather than failing.
-  if (!windowRefreshAffordable(w, h) || !renderer.displayBufferWindow(x, y, w, h)) {
+  if (!windowRefreshAffordable(w, h) ||
+      !renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Overlay)) {
     LOG_ERR(kLogTag, "debug window rejected: %d,%d %dx%d", x, y, w, h);
   }
 }
@@ -2766,6 +2934,18 @@ MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
   debugRouteFitSlot_ = debug_.reserve("routefit");
   debugRouteRefusedSlot_ = debug_.reserve("routeerr");
   debugTransferSlot_ = debug_.reserve("transfer");
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Last, and only on a board whose radio exists. **This row is the
+  // instrument the range walk is made of** (`lora-mesh.md`, the hardware
+  // pass, step 6): the walk happens with the map open, because the map is
+  // what holds the radio up, so the only place a walker can read RSSI is
+  // here. The LoRa nodes screen has the same numbers and the radio does not
+  // stay up on the way between the two.
+  //
+  // That fills the table: kMaxSlots is 8 and this is the eighth. The next
+  // feature that wants a row raises the limit rather than sharing one.
+  debugLoraSlot_ = debug_.reserve("lora");
+#endif
 }
 
 // The fix off the card, as this session's opening picture.
@@ -2806,6 +2986,15 @@ void MapActivity::onEnter() {
   loopTaskHandle_ = xTaskGetCurrentTaskHandle();
   Activity::onEnter();
   LOG_DBG(kLogTag, "onEnter start");
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // **An open map is the ride, pocket included**, so this is one of the two
+  // screens the LoRa node is allowed to run under. Everywhere else it neither
+  // transmits nor listens -- maintainer's rule, 2026-10-21. Costs nothing when
+  // the rider has not enabled the radio: the call checks that itself
+  // (src/lora/LoraPresence.h).
+  loraPresenceHoldRadio(true);
+#endif
 
   // NimBLEDevice::init() hangs at a low clock, and this screen can be entered
   // from an idle Home screen that is already throttled (verified 2026-08-04,
@@ -2969,6 +3158,18 @@ void MapActivity::onEnter() {
   // onto a history it never read (MapPins::pinSet).
   pins_.begin();
   consoleState_.setPinsSource(&lockedPins_);
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // The roster, then everyone's last known position off the black box. A member
+  // who was heard on the previous ride is on the panel before anybody transmits
+  // again, which is the state a rider opens the map in after a reboot.
+  team_.begin();
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+  // Through the lock, for the same reason the pins are: drawTeam() walks this
+  // store on the render task, and a `team pos` arriving over a radio or a cable
+  // rewrites it from the activity task.
+  consoleState_.setTeamSource(&lockedTeam_);
+#endif
+#endif
   // `points`/`gone`/point-shard `skip` -- wired only when the rider has
   // turned the point layer on. Same revision as TileSyncActivity's, and the
   // same reason: `gone` is an unauthenticated delete, and this repo's
@@ -3132,6 +3333,12 @@ void MapActivity::onEnter() {
 void MapActivity::onExit() {
   Activity::onExit();
 
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Radio down, rail released, chip parked with NRESET low so the SD card gets
+  // its MISO line back. Leaving the map is leaving the ride.
+  loraPresenceHoldRadio(false);
+#endif
+
   // Before anything is torn down: on the way into a quick-resume sleep the frame
   // on the panel right now is the frame that sits there for the whole sleep, so
   // the live marker gets swapped for one that does not claim a heading. Gated on
@@ -3171,6 +3378,9 @@ void MapActivity::onExit() {
   // The pins source is a member of this activity, which main.cpp deletes right
   // after this returns -- the console must not be left pointing into it.
   consoleState_.setPinsSource(nullptr);
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+  consoleState_.setTeamSource(nullptr);
+#endif
   consoleState_.setPointShardsSource(nullptr);
   consoleState_.setGoneObserver(nullptr);
   consoleState_.setPointSkipObserver(nullptr);
@@ -3258,6 +3468,9 @@ void MapActivity::loop() {
   if (mappedInput.wasAnyPressed()) clockFineUntilMs_ = millis() + kClockFineAfterInputMs;
 
   if (pendingPinPopup_ != PinPopup::None) servicePendingPinPopup();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  if (pendingTeamPopup_ != TeamPopup::None) servicePendingTeamPopup();
+#endif
   if (pendingNearbyPopup_ != NearbyPopup::None) servicePendingNearbyPopup();
 
   if (pinNoticeUntilMs_ != 0 &&
@@ -3319,7 +3532,11 @@ void MapActivity::loop() {
     // A chained handler that draws a real frame instead of a popup
     // (showPinOnMap(), savePin()) drops the backdrop itself, so keeping it here
     // cannot strand a stale one.
-    const bool chaining = pendingPinPopup_ != PinPopup::None || pendingNearbyPopup_ != NearbyPopup::None;
+    const bool chaining = pendingPinPopup_ != PinPopup::None || pendingNearbyPopup_ != NearbyPopup::None
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+                          || pendingTeamPopup_ != TeamPopup::None
+#endif
+        ;
     if (justClosed && chaining) {
       // Deliberately nothing: the popup's pixels stay on the panel until the
       // next one draws over them.
@@ -3499,6 +3716,10 @@ void MapActivity::loop() {
                static_cast<unsigned>(gnss.satsInView()), static_cast<unsigned>(gnss.satsWithSignal()),
                static_cast<unsigned>(gnss.bestSnr()));
   }
+#endif
+
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  updateLoraDebugRow();
 #endif
 
   // The command console, over both channels. Same parser, same state, same
@@ -3682,6 +3903,9 @@ void MapActivity::loop() {
   serviceDeferredInput();
 
   const uint32_t now = millis();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  serviceTeamAges(now);
+#endif
   if (redrawDueMs_ != 0 && now >= redrawDueMs_) {
     redrawDueMs_ = 0;
     renderCurrent();
@@ -3981,7 +4205,8 @@ bool MapActivity::swapChrome() {
     LOG_DBG(kLogTag, "chrome swap union %dx%d unaffordable -- full render instead", window.width, window.height);
     return false;
   }
-  if (!renderer.displayBufferWindow(window.x, window.y, window.width, window.height)) {
+  if (!renderer.displayBufferWindow(window.x, window.y, window.width, window.height,
+                                    PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "chrome swap window rejected: %d,%d %dx%d", window.x, window.y, window.width, window.height);
     return false;
   }
@@ -4041,6 +4266,18 @@ void MapActivity::dropMenuBackdrop() {
   menuBackdropRect_ = Rect{0, 0, 0, 0};
 }
 
+bool MapActivity::paintMenuBackdrop() {
+  if (!menuBackdrop_) return false;
+  const Rect rect = menuBackdropRect_;
+  if (!renderer.copyBufferToRegion(rect.x, rect.y, rect.width, rect.height, menuBackdrop_.get(), menuBackdropSize_)) {
+    LOG_ERR(kLogTag, "menu backdrop paint rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
+    return false;
+  }
+  // No displayBufferWindow() here on purpose: every popup open ends in
+  // OptionPopup::processRender(), which refreshes the whole panel anyway.
+  return true;
+}
+
 bool MapActivity::restoreMenuBackdrop() {
   // Writing the map back underneath a compose would tear the frame it is drawing,
   // and the frame is about to replace these pixels anyway. Refuse, and the caller
@@ -4076,7 +4313,7 @@ bool MapActivity::restoreMenuBackdrop() {
   // and nothing in between them was touched.
   const Rect hints = GUI.buttonHintsRect(renderer);
   if (!windowRefreshAffordable(rect.width, rect.height) ||
-      !renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height)) {
+      !renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "menu close window rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
     return false;
   }
@@ -4084,7 +4321,8 @@ bool MapActivity::restoreMenuBackdrop() {
   // instead -- drawMapButtonHints() drew that, and it lives in the same rect,
   // so an empty rect here means there is genuinely nothing to refresh.
   if (hints.width > 0 && hints.height > 0) {
-    if (!renderer.displayBufferWindow(hints.x, hints.y, hints.width, hints.height)) {
+    if (!renderer.displayBufferWindow(hints.x, hints.y, hints.width, hints.height,
+                                      PowerTelemetry::WindowSite::Chrome)) {
       LOG_ERR(kLogTag, "menu close hint window rejected: %d,%d %dx%d", hints.x, hints.y, hints.width, hints.height);
     }
   }
@@ -4105,7 +4343,7 @@ bool MapActivity::restoreMenuBackdrop() {
     // No `y` test any more: the dialog window above covers only the dialog, so
     // the side strip needs its own refresh wherever it sits.
     if (side.width > 0 && side.height > 0) {
-      if (!renderer.displayBufferWindow(side.x, side.y, side.width, side.height)) {
+      if (!renderer.displayBufferWindow(side.x, side.y, side.width, side.height, PowerTelemetry::WindowSite::Chrome)) {
         LOG_ERR(kLogTag, "side hint window rejected: %d,%d %dx%d", side.x, side.y, side.width, side.height);
       }
     }
@@ -4184,6 +4422,18 @@ void MapActivity::openMapMenu() {
     snprintf(count, sizeof(count), "%u", static_cast<unsigned>(pins_.pinCount()));
     values.emplace_back(count);
   }
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // Team, right under Pins: both are marks on the map the rider reaches for
+  // while moving, and the value column says how many members are approved -- not
+  // how many are on the panel, which changes with every position that arrives.
+  const int teamIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_TEAM));
+  {
+    char count[8];
+    snprintf(count, sizeof(count), "%u", static_cast<unsigned>(team_.teamCount()));
+    values.emplace_back(count);
+  }
+#endif
   const int modeIdx = static_cast<int>(options.size());
   options.push_back(tr(STR_MAP_MODE));
   values.push_back(I18N.get(kMapModeIds[static_cast<uint8_t>(mode_)]));
@@ -4235,12 +4485,31 @@ void MapActivity::openMapMenu() {
   options.push_back(tr(STR_REFRESH));
   values.emplace_back();
   const int debugInfoIdx = static_cast<int>(options.size());
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // The radio, flipped from the ride rather than from a bench screen. It is
+  // the same CrossPointSettings field the LoRa node list and the Settings
+  // screen write, so the three can never disagree -- the pattern the rotation
+  // and zoom rows above already follow.
+  //
+  // The value says what the radio is doing, not what the switch is set to:
+  // with the map open the two are the same thing, because this screen is one
+  // of the two that hold the radio up (src/lora/LoraPresence.h).
+  const int loraIdx = static_cast<int>(options.size());
+  options.push_back(tr(STR_MAP_LORA));
+  values.push_back(I18N.get(loraPresenceStatus().meshRunning ? StrId::STR_LORA_RADIO_ON : StrId::STR_LORA_RADIO_OFF));
+#endif
   options.push_back(tr(STR_MAP_DEBUG_INFO));
   values.push_back(I18N.get(SETTINGS.mapDebugInfo ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF));
   optionPopup_.showWithValues(
       StrId::STR_MAP, options, values, 0,
-      [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, pinsIdx, nearbyIdx, modeIdx, rotationIdx, headingIdx,
-       zoomModeIdx, reloadIdx, debugInfoIdx](int idx) {
+      [this, observeIdx, zoomInIdx, zoomOutIdx, wholeRouteIdx, pinsIdx,
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+       teamIdx,
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+       loraIdx,
+#endif
+       nearbyIdx, modeIdx, rotationIdx, headingIdx, zoomModeIdx, reloadIdx, debugInfoIdx](int idx) {
         // Rows that redraw the map do not need the backdrop; rows
         // that change nothing on it (zoom mode) put it back
         // instead of re-rendering, and so does a plain dismiss
@@ -4248,14 +4517,32 @@ void MapActivity::openMapMenu() {
         // buffer is not held across a tile read.
         // The pins list opens over the same map, so it keeps the backdrop --
         // openPinsMenu() gives it up itself if its own dialog outgrows the rect.
-        if (idx != zoomModeIdx && idx != pinsIdx && idx != nearbyIdx && idx != modeIdx) dropMenuBackdrop();
+        bool keepsBackdrop = idx == zoomModeIdx || idx == pinsIdx || idx == nearbyIdx || idx == modeIdx;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+        // The team list opens over the same map, exactly like the pins list.
+        keepsBackdrop = keepsBackdrop || idx == teamIdx;
+#endif
+        if (!keepsBackdrop) dropMenuBackdrop();
         if (idx == observeIdx) {
           toggleObserveMode();
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+        } else if (idx == loraIdx) {
+          // Takes effect now, not on the next screen: the map is holding the
+          // radio, so the setter brings it up or parks it immediately. The
+          // header gains or loses its glyph on the repaint that follows.
+          bool persisted = false;
+          loraPresenceSetMesh(!loraPresenceStatus().meshRunning, persisted);
+#endif
         } else if (idx == pinsIdx) {
           // Recorded, not opened: this callback is running *inside* the popup's
           // own handleInput(), and show()ing from here reassigns the
           // std::function currently executing. loop() opens it next iteration.
           pendingPinPopup_ = PinPopup::List;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+        } else if (idx == teamIdx) {
+          // Recorded, not opened -- same reason as the pins list above.
+          pendingTeamPopup_ = TeamPopup::List;
+#endif
         } else if (idx == nearbyIdx) {
           // Same deferral, same reason. The radius search runs when the popup
           // opens, not here: it reads up to nine files off the card and this is
@@ -4446,6 +4733,12 @@ void MapActivity::pinDistanceText(const PinEntry& entry, char* buf, size_t bufLe
 }
 
 void MapActivity::servicePendingPinPopup() {
+  // The panel still holds the popup this one is replacing, and the new one draws
+  // only its own rect. Put the map back into the buffer first, so a smaller box
+  // lands on the map instead of inside the previous dialog's frame. Free when
+  // the two rects match (the pixels are overdrawn immediately); the backdrop is
+  // kept either way -- see paintMenuBackdrop().
+  paintMenuBackdrop();
   const PinPopup which = pendingPinPopup_;
   const size_t arg = pendingPinArg_;
   pendingPinPopup_ = PinPopup::None;
@@ -4556,6 +4849,9 @@ void MapActivity::openPinsOffscreenList() {
 // implements.
 
 void MapActivity::servicePendingNearbyPopup() {
+  // Same reason as servicePendingPinPopup(): the previous popup's pixels are on
+  // the panel and the next one may be smaller.
+  paintMenuBackdrop();
   const NearbyPopup which = pendingNearbyPopup_;
   const uint8_t arg = pendingNearbyArg_;
   pendingNearbyPopup_ = NearbyPopup::None;
@@ -5860,7 +6156,7 @@ void MapActivity::drawPinNotice(const char* text) {
   const int textY = y + (h - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
   renderer.drawText(UI_12_FONT_ID, textX > x ? textX : x + 4, textY, text, true);
 
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "pin notice window rejected: %d,%d %dx%d", x, y, w, h);
   }
   pinNoticeUntilMs_ = millis() + kPinNoticeMs;
@@ -5886,7 +6182,7 @@ void MapActivity::clearPinNotice() {
     LOG_ERR(kLogTag, "pin notice restore rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
     return;
   }
-  if (!renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height)) {
+  if (!renderer.displayBufferWindow(rect.x, rect.y, rect.width, rect.height, PowerTelemetry::WindowSite::Chrome)) {
     LOG_ERR(kLogTag, "pin notice clear window rejected: %d,%d %dx%d", rect.x, rect.y, rect.width, rect.height);
   }
 }
@@ -6272,6 +6568,39 @@ bool MapActivity::preventThrottle() {
   return redrawDueMs_ != 0 || arrivalRedrawDueMs_ != 0 || transfer_.status().active;
 }
 
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+
+IMapTeamSource::Ingest MapActivity::LockedTeam::teamPosition(std::string_view idOrAcr, const TeamFix& fix) {
+  // drawTeam() walks the roster and the store on the render task. A position
+  // arriving over a radio or a cable rewrites both, and unlike a button press it
+  // cannot be deferred -- the sender is owed an answer and the card write has to
+  // happen now. So it waits out the frame, exactly as a console `pin set` does.
+  RenderLock lock;
+  return team_.teamPosition(idOrAcr, fix);
+}
+
+IMapTeamSource::Edit MapActivity::LockedTeam::teamAdd(std::string_view acr, std::string_view id,
+                                                      std::string_view name) {
+  RenderLock lock;
+  return team_.teamAdd(acr, id, name);
+}
+
+IMapTeamSource::Edit MapActivity::LockedTeam::teamRemove(std::string_view idOrAcr) {
+  RenderLock lock;
+  return team_.teamRemove(idOrAcr);
+}
+
+bool MapActivity::LockedTeam::teamReload(size_t& skipped) {
+  // The heaviest of the four: it rereads the roster file and replays the black
+  // box, so it holds the lock across card I/O. That is the trade the alternative
+  // cannot make -- a reload that renumbers slots while the compose walks them
+  // draws one member's marker under another's letters.
+  RenderLock lock;
+  return team_.teamReload(skipped);
+}
+
+#endif  // ENABLE_TEAM_CMD
+
 bool MapActivity::LockedPins::pinSet(std::string_view key, int32_t latE7, int32_t lonE7, uint32_t utc) {
   // drawPins() walks this store on the render task. A console `pin set` is the
   // one console command that rewrites it, and unlike a button press it cannot be
@@ -6607,7 +6936,7 @@ void MapActivity::drawSleepMarker() {
   // (MapMarkerMetrics.h) -- and the sleep screen's moon is a second one, so the
   // way into sleep is two windowed refreshes rather than the whole-panel HALF it
   // used to be.
-  if (!renderer.displayBufferWindow(x, y, w, h)) {
+  if (!renderer.displayBufferWindow(x, y, w, h, PowerTelemetry::WindowSite::Marker)) {
     LOG_ERR(kLogTag, "sleep marker window refused at %d,%d %dx%d", x, y, w, h);
   }
   // The patch describes the background under a marker that is no longer there.
@@ -6722,8 +7051,8 @@ void MapActivity::moveMarker(int16_t sx, int16_t sy, uint8_t headingStep) {
   // corner to corner after a re-anchor, which `Nearby -> View on map` does on
   // purpose. Unbounded, that is a 48,000-byte allocation inside the driver and
   // an abort() on this build (see windowRefreshAffordable()).
-  const bool shown =
-      windowRefreshAffordable(unionW, unionH) && renderer.displayBufferWindow(unionX, unionY, unionW, unionH);
+  const bool shown = windowRefreshAffordable(unionW, unionH) &&
+                     renderer.displayBufferWindow(unionX, unionY, unionW, unionH, PowerTelemetry::WindowSite::Marker);
   if (!shown) {
     // The framebuffer is already correct, so a full refresh shows the right
     // picture; only the cheap path was unavailable.
@@ -6949,6 +7278,16 @@ void MapActivity::applyFix(int32_t latE7, int32_t lonE7, uint8_t headingStep, ui
     return;
   }
   updateManualHeadingCapture(headingStep);
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // The rider's own row in the black box, before every early return below: a fix
+  // that Observe mode holds back from the frame is still where the rider was,
+  // and that is the whole point of the file. Off by default and rate-limited
+  // inside logSelf().
+  //
+  // No speed: this path carries a coordinate and a heading, and inventing a
+  // number for the column would be worse than leaving it empty.
+  team_.logSelf(latE7, lonE7, MapTeam::utcNowOrZero(), headingStep, true, 0, false, TeamFixSource::Ble, millis());
+#endif
   // Before every early return below: a fix held back because Observe mode or the
   // route overview owns the frame is still a fresh fix, and a pin saved while one
   // of those is up is saved at it (riderLatE7()).
@@ -7138,6 +7477,9 @@ void MapActivity::composeRouteOverview() {
   // Pins on the overview too: "where is the car relative to this whole route" is
   // exactly the question the overview is for.
   drawPins();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  drawTeam();
+#endif
   // North still rotates with the frame -- the overview is drawn at the fit's
   // heading, not north-up, so the compass is the only thing that says which way
   // the picture is turned.
@@ -7505,6 +7847,9 @@ void MapActivity::composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingS
   // The rider's own marks, over the map and under everything below: the marker,
   // the compass, the readout and the hints all still land on top of them.
   drawPins();
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  drawTeam();
+#endif
   // And the POI the rider asked to look at, if any -- over the marks the
   // renderer drew, because the whole point of it is to be findable among them.
   drawViewedNearbyPoint();
@@ -7723,3 +8068,496 @@ void MapActivity::composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingS
   pendingEntryCleanRefresh_ = false;
   busyShown_ = false;  // this frame painted over the badge
 }
+
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+
+// --- team markers (../../../docs/team-markers.md) ----------------------------
+
+namespace {
+
+// Where a short ASCII string's **ink** starts and ends, relative to the pen
+// position, in pixels.
+//
+// `getTextWidth()` is the advance width, which counts both side bearings. A mark
+// centred on it is centred on the pen run and not on what the eye sees, and the
+// two differ by whatever the first and last glyph's bearings differ by: `JKL`
+// carries a wide trailing bearing on `L` and sat visibly left inside the pin
+// head, while `RF` did not (reported on the panel 2026-09-16).
+//
+// False when the font or either end glyph is missing, in which case the caller
+// falls back to the advance width.
+bool teamAcrInkBounds(const GfxRenderer& renderer, int fontId, const char* acr, int advance, int& left, int& right) {
+  if (acr == nullptr || acr[0] == '\0') return false;
+  const auto& fonts = renderer.getFontMap();
+  const auto it = fonts.find(fontId);
+  if (it == fonts.end()) return false;
+
+  const size_t len = strlen(acr);
+  const EpdGlyph* first = it->second.getGlyph(static_cast<uint32_t>(acr[0]));
+  const EpdGlyph* last = it->second.getGlyph(static_cast<uint32_t>(acr[len - 1]));
+  if (first == nullptr || last == nullptr) return false;
+
+  // advanceX is 12.4 fixed point (EpdFontData.h), so >> 4 is its whole pixels.
+  const int lastAdvance = static_cast<int>(last->advanceX) >> 4;
+  const int trailing = lastAdvance - (last->left + last->width);
+  left = first->left;
+  right = advance - trailing;
+  return right > left;
+}
+
+}  // namespace
+
+TeamVisibility MapActivity::teamSlotVisibility(size_t slot) const {
+  const TeamFix& fix = team_.store().at(slot);
+  const TeamFixAge age = teamFixAge(fix, MapTeam::utcNowOrZero(), millis());
+  // Settings are in minutes, because that is the unit a rider thinks in; the
+  // rules are in seconds, because that is what an age is measured in.
+  return teamFixVisibility(age, static_cast<uint32_t>(SETTINGS.mapTeamStaleMin) * 60u,
+                           static_cast<uint32_t>(SETTINGS.mapTeamHideMin) * 60u);
+}
+
+void MapActivity::fillTeamBodyDither(int x, int y) const {
+  // The body bitmap is 1bpp MSB-first with bit 0 = ink (pins_shape.h), so each
+  // row is a handful of runs. Filling those runs rather than the bounding box is
+  // what keeps the grey inside the balloon.
+  const PinShapeFrame& frame = kPinShapeFrames[0];
+  const int stride = (frame.w + 7) / 8;
+  for (int row = 0; row < frame.h; ++row) {
+    const uint8_t* bits = kPinShapeBody0Bits + row * stride;
+    int runStart = -1;
+    for (int col = 0; col <= frame.w; ++col) {
+      const bool ink = col < frame.w && ((bits[col >> 3] >> (7 - (col & 7))) & 1) == 0;
+      if (ink && runStart < 0) {
+        runStart = col;
+      } else if (!ink && runStart >= 0) {
+        renderer.fillRectDither(x + runStart, y + row, col - runStart, 1, Color::LightGray);
+        runStart = -1;
+      }
+    }
+  }
+}
+
+void MapActivity::drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale) {
+  // The same baked shape a pin uses, point-down only: a member's marker never
+  // rotates, because rotation already means "the thing is off that way" for pins
+  // and there are no off-screen team markers yet.
+  const PinShapeFrame& frame = kPinShapeFrames[0];
+  const int x = tipX - frame.tipX;
+  const int y = tipY - frame.tipY;
+
+  // White silhouette plus its halo first, so neither the map nor a road line
+  // shows through -- the same first pass drawPinBalloon() makes.
+  renderer.drawMono1bpp(frame.mask, x, y, frame.w, frame.h, false);
+
+  // **A current member is a solid black balloon with white initials; a stale one
+  // is the same balloon in grey with black ones.** Filling the whole body rather
+  // than a disc inside the head was the maintainer's call, 2026-09-16: a black
+  // circle in a white balloon reads as a pin with a dot in it, and the thing
+  // that has to be obvious at a glance is person-versus-place.
+  //
+  // **Grey, not hollow**, is the second half of that call. A hollow marker is a
+  // different *shape* of thing, and a rider reads that as a different kind of
+  // mark rather than as the same person an hour older; fading is what everyone
+  // already reads as "older". Grey on this panel is a dither
+  // (docs/eink-grayscale.md), so it is painted row by row inside the silhouette
+  // -- a rectangle of dither would spill past the shape.
+  if (stale) {
+    fillTeamBodyDither(x, y);
+    renderer.drawMono1bpp(frame.ink, x, y, frame.w, frame.h, true);
+  } else {
+    renderer.drawMono1bpp(kPinShapeBody0Bits, x, y, frame.w, frame.h, true);
+  }
+
+  // The head circle's own centre, which is not `headX`/`headY`: those carry the
+  // generator's --glyph-dy, the downward nudge that makes a baked Lucide glyph
+  // read right inside the head. Letters have their own metrics and want the
+  // circle itself -- drawn at headY they sat visibly low (simulator,
+  // 2026-09-16). kPinShapeHead0* is that centre, measured by the generator off
+  // the upright silhouette and emitted for exactly this.
+  const int cx = x + kPinShapeHead0X;
+  const int cy = y + kPinShapeHead0Y;
+
+  // Letters in the head, as large as they fit. A **filled** balloon carries a
+  // bigger face than a glyph-in-a-hollow-head could: white on solid black needs
+  // no clearance from the outline, only room inside the head, so the ladder
+  // starts at UI_12 and steps down only when the acronym would spill past the
+  // head's own width (maintainer's call on the panel, 2026-09-16).
+  //
+  // How wide the letters may be: the head disc's chord at the height the
+  // capitals actually occupy, not its diameter. A word is a band through the
+  // middle of the circle and the circle is narrower there, which is why a
+  // three-letter acronym sized against the diameter sat on the edge both sides
+  // (simulator, 2026-09-16).
+  //
+  // Measured against the **outer** radius, not the clear one a baked glyph uses:
+  // this marker is filled, so outline and fill are the same ink and a letter
+  // only has to stay inside the silhouette.
+  //
+  // Cap height is not exposed by the renderer, so it is taken as the usual ~0.72
+  // of the ascender. One pixel of margin either side keeps a wide letter off the
+  // edge.
+  const auto usableWidth = [this](int candidate) {
+    const int cap = (renderer.getTextHeight(candidate) * 18) / 25;
+    const int half = cap / 2;
+    const int chordHalfSquared = kPinShapeHeadOuterRadius * kPinShapeHeadOuterRadius - half * half;
+    if (chordHalfSquared <= 0) return 0;
+    int chordHalf = 1;
+    while ((chordHalf + 1) * (chordHalf + 1) <= chordHalfSquared) ++chordHalf;
+    return chordHalf * 2 - 2;
+  };
+
+  static constexpr int kAcrFonts[] = {UI_12_FONT_ID, UI_10_FONT_ID, SMALL_FONT_ID, MAP_SMALL_FONT_ID};
+  int fontId = kAcrFonts[sizeof(kAcrFonts) / sizeof(kAcrFonts[0]) - 1];
+  // Measured on the ink, not on the advance: the fit question is whether the
+  // letters touch the outline, and the advance counts side bearings that draw
+  // nothing.
+  int inkLeft = 0;
+  int inkRight = renderer.getTextWidth(fontId, acr);
+  for (const int candidate : kAcrFonts) {
+    const int advance = renderer.getTextWidth(candidate, acr);
+    int left = 0;
+    int right = advance;
+    if (!teamAcrInkBounds(renderer, candidate, acr, advance, left, right)) {
+      left = 0;
+      right = advance;
+    }
+    if (right - left <= usableWidth(candidate)) {
+      fontId = candidate;
+      inkLeft = left;
+      inkRight = right;
+      break;
+    }
+  }
+  // Centred on the capitals, not on the line box. `drawText`'s y is the top of
+  // the ascender box and the baseline is one ascender below it, so a line-box
+  // centring hangs the letters low by the descender's half -- and an acronym is
+  // uppercase and digits only, which never use the descender at all.
+  //
+  // Cap height is not exposed, so it is taken as the usual ~0.72 of the
+  // ascender: ink centres at y + ascender - cap/2, and solving for ink at cy
+  // gives y = cy - 0.64 * ascender.
+  LOG_DBG(kLogTag, "acr '%s': font %d ink %d..%d (w %d, usable %d) at head %d,%d", acr, fontId, inkLeft, inkRight,
+          inkRight - inkLeft, usableWidth(fontId), cx, cy);
+  const int ascender = renderer.getTextHeight(fontId);
+  // The pen goes where the *ink's* middle lands on the head's centre.
+  renderer.drawText(fontId, cx - (inkLeft + inkRight) / 2, cy - (ascender * 16) / 25, acr, stale);
+}
+
+void MapActivity::serviceTeamAges(uint32_t now) {
+  // The panel holds whatever was drawn last, so an age on it is only as fresh as
+  // the last redraw -- and what makes the map redraw is a *fix*. A rider whose
+  // phone has stopped talking, or whose group has gone quiet, would otherwise
+  // read a frame saying everyone is current for as long as they look at it.
+  //
+  // So the ages are revisited on their own clock, at the step they are reported
+  // in (kTeamAgeStepMinutes): a finer period would redraw for a number that has
+  // not changed, and a coarser one would leave the panel lying for longer than
+  // the number's own resolution.
+  if (SETTINGS.mapTeamMarkers == 0) return;
+  if (now - teamAgeCheckedMs_ < kTeamAgeRefreshMs) return;
+  const uint32_t sinceLast = now - teamAgeCheckedMs_;
+  teamAgeCheckedMs_ = now;
+
+  // **Only redraw when what would be drawn has changed.** Every marker hidden,
+  // or every age still inside the same five-minute step, means an identical
+  // frame -- and a full refresh for an identical frame is a second of panel time
+  // and a slice of the ghosting budget spent on nothing. A group that has gone
+  // quiet costs one compare every five minutes and no refresh at all once the
+  // last marker is past hiding.
+  const uint32_t signature = teamAgeSignature();
+  // Said out loud on every window, not only when it redraws: "nothing changed"
+  // and "the check never ran" look identical on the panel, and telling them
+  // apart took a device, a stopwatch and two wrong guesses (2026-09-16).
+  LOG_DBG(kLogTag, "team: age check after %lu ms, signature %lu -> %lu", static_cast<unsigned long>(sinceLast),
+          static_cast<unsigned long>(teamAgeSignature_), static_cast<unsigned long>(signature));
+  if (signature == teamAgeSignature_) return;
+  teamAgeSignature_ = signature;
+
+  // Not armRedraw(): that one stamps the busy badge, which belongs to a press
+  // the rider made. Nobody asked for this frame.
+  redrawDueMs_ = now;
+  LOG_DBG(kLogTag, "team: an age crossed a %u-minute step, redrawing", static_cast<unsigned>(kTeamAgeStepMinutes));
+}
+
+uint32_t MapActivity::teamAgeSignature() const {
+  // What the next frame would say about every member, folded into one number:
+  // the visibility and the reported age step, per slot. Cheap enough to run
+  // every five minutes and exact enough that it changes if and only if some
+  // marker would look different.
+  const uint32_t nowUtc = MapTeam::utcNowOrZero();
+  const uint32_t nowMs = millis();
+  uint32_t signature = 2166136261u;
+  for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+    const TeamMember& member = team_.roster().at(slot);
+    const TeamFix& fix = team_.store().at(slot);
+    if (!member.present || !member.enabled || !fix.present) continue;
+    const TeamFixAge age = teamFixAge(fix, nowUtc, nowMs);
+    const uint32_t step = age.known ? (age.seconds / 60) / kTeamAgeStepMinutes : 0;
+    signature = (signature ^ static_cast<uint32_t>(slot)) * 16777619u;
+    signature = (signature ^ static_cast<uint32_t>(teamSlotVisibility(slot))) * 16777619u;
+    signature = (signature ^ step) * 16777619u;
+  }
+  return signature;
+}
+
+bool MapActivity::drawTeamLabel(int tipX, int tipY, const char* text, TeamLabelBoxes& taken) {
+  // Under the point, centred on it. SMALL_FONT_ID for the same reason the pins'
+  // edge markers use it: a distance readout is detail-view chrome, not a primary
+  // label, and the heavier face overstated it on the panel.
+  const int width = renderer.getTextWidth(SMALL_FONT_ID, text);
+  const int height = renderer.getLineHeight(SMALL_FONT_ID);
+  const PinShapeFrame& frame = kPinShapeFrames[0];
+
+  // Four places to try, nearest first: under the point, above the head, then
+  // either side of it. Two members a few hundred metres apart land their labels
+  // on top of each other otherwise, and two numbers overprinted read as one
+  // wrong number (the same failure the map's own place labels avoid,
+  // MapLabels.h).
+  const int headY = tipY - frame.tipY + kPinShapeHead0Y;
+  const struct {
+    int x;
+    int y;
+  } spots[] = {
+      {tipX - width / 2, tipY + 2},
+      {tipX - width / 2, tipY - frame.tipY - height - 2},
+      {tipX + frame.w / 2 + 2, headY - height / 2},
+      {tipX - frame.w / 2 - width - 2, headY - height / 2},
+  };
+
+  for (const auto& spot : spots) {
+    if (spot.x < 0 || spot.y < 0) continue;
+    if (spot.x + width > renderer.getScreenWidth() || spot.y + height > renderer.getScreenHeight()) continue;
+    if (chrome_.hits(spot.x, spot.y, width, height)) continue;
+    if (taken.hits(spot.x, spot.y, width, height)) continue;
+    // White first, one pixel out in each direction, then the black text on top.
+    // Without it the number lands straight on road lines and area dither and is
+    // unreadable -- seen in the simulator, 2026-09-16. Four passes rather than
+    // eight: the diagonals add ink and almost no legibility at this size, and
+    // this runs inside a full render that is already a second long.
+    renderer.drawText(SMALL_FONT_ID, spot.x - 1, spot.y, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x + 1, spot.y, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x, spot.y - 1, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x, spot.y + 1, text, false);
+    renderer.drawText(SMALL_FONT_ID, spot.x, spot.y, text, true);
+    taken.add(spot.x, spot.y, width, height);
+    return true;
+  }
+  // Dropped rather than overprinted: the balloon already says who and where, and
+  // the Group list has the number for whoever wants it.
+  return false;
+}
+
+void MapActivity::drawTeam() {
+  // One switch for the whole layer. Off means no marker and no reading of the
+  // store -- a rider who does not ride in a group pays nothing for this.
+  if (SETTINGS.mapTeamMarkers == 0) return;
+  if (team_.teamCount() == 0) return;
+
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  int drawn = 0;
+  int tooOld = 0;
+  int offPanel = 0;
+
+  // From this rung out, a marker on the panel can still be kilometres away and
+  // the distance stops being readable off the map itself: rung 2 is 6 m/px and
+  // covers 2.9 x 4.8 km (docs/zoom-rungs.md). Closer in, the scale bar and the
+  // map do the job and a number per member is clutter.
+  static constexpr uint8_t kTeamDistanceFromRung = 2;
+  const bool wantDistance = zoomStep() >= kTeamDistanceFromRung;
+
+  // What a label may not cover: the balloons themselves, the labels already
+  // placed, and the rider's own marker. ~200 bytes on this frame, which is
+  // inside the Resource Protocol's cap and far cheaper than the label pass the
+  // map's own names use (a 1,250-byte occupancy grid, MapLabels.h) -- twelve
+  // members cannot fill one.
+  TeamLabelBoxes taken;
+  {
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    markerRect(MapViewport::anchorScreenX(renderer.getScreenWidth()), MapViewport::markerYForStep(markerStep()), mx, my,
+               mw, mh);
+    taken.add(mx, my, mw, mh);
+  }
+  int labelsDropped = 0;
+
+  for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+    const TeamMember& member = team_.roster().at(slot);
+    if (!member.present || !member.enabled) continue;
+    const TeamFix& fix = team_.store().at(slot);
+    if (!fix.present) continue;  // has not told us where they are -- not a marker
+
+    const TeamVisibility visibility = teamSlotVisibility(slot);
+    if (visibility == TeamVisibility::Hidden) {
+      ++tooOld;
+      continue;
+    }
+
+    double mercX = 0.0;
+    double mercY = 0.0;
+    MapProjection::lonLatToMerc(static_cast<double>(fix.latE7) / 1e7, static_cast<double>(fix.lonE7) / 1e7, mercX,
+                                mercY);
+    // Wide projection for the same reason pins use it: a member can be tens of
+    // kilometres away, which overflows the int16 path.
+    int32_t sx = 0;
+    int32_t sy = 0;
+    proj_.projectMercWide(mercX, mercY, sx, sy);
+
+    const PinShapeFrame& frame = kPinShapeFrames[0];
+    if (sx < -frame.w || sy < -frame.h || sx > screenW + frame.w || sy > screenH + frame.h) {
+      // No edge marker for a member yet, deliberately: the pins' one merges
+      // overlapping marks into a count, and a merged marker that eats somebody's
+      // initials answers the wrong question. The Team list carries the distance
+      // and the direction until that is built (../../../docs/team-markers.md).
+      ++offPanel;
+      continue;
+    }
+
+    const bool stale = visibility == TeamVisibility::Stale;
+    drawTeamBalloon(static_cast<int>(sx), static_cast<int>(sy), member.acr, stale);
+    taken.add(static_cast<int>(sx) - frame.tipX, static_cast<int>(sy) - frame.tipY, frame.w, frame.h);
+    // The label says what the balloon cannot: how far, and how old. Distance only
+    // once the rung is wide enough that the eye cannot judge it; age only when
+    // the position has gone stale, so a group riding together draws no text at
+    // all (TeamFix.h, teamMarkerLabel).
+    const uint32_t metres = hasReceivedAny_ ? PinGeo::distanceM(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7) : 0;
+    char label[kTeamLabelBytes];
+    if (teamMarkerLabel(wantDistance && hasReceivedAny_, metres, stale,
+                        teamFixAge(fix, MapTeam::utcNowOrZero(), millis()), label, sizeof(label)) != 0 &&
+        !drawTeamLabel(static_cast<int>(sx), static_cast<int>(sy), label, taken)) {
+      ++labelsDropped;
+    }
+    ++drawn;
+  }
+
+  // The window starts at the frame, not at boot. What is drawn here *is* the
+  // answer the next check compares against, so re-basing both on every draw
+  // means a marker goes grey one window after it goes stale -- rather than up to
+  // two, which is what a boot-aligned clock gave and what made a panel look
+  // broken for ten minutes on 2026-09-16.
+  teamAgeCheckedMs_ = millis();
+  teamAgeSignature_ = teamAgeSignature();
+
+  // Never silent: a member who is not on the panel is the case this feature
+  // exists for, and the log is what says which of the three reasons it was.
+  if (drawn > 0 || tooOld > 0 || offPanel > 0) {
+    LOG_DBG(kLogTag, "team: %d drawn, %d too old, %d off the panel, %d label(s) with nowhere clear", drawn, tooOld,
+            offPanel, labelsDropped);
+  }
+}
+
+void MapActivity::teamRowText(size_t slot, char* buf, size_t bufLen) const {
+  if (buf == nullptr || bufLen == 0) return;
+  const TeamFix& fix = team_.store().at(slot);
+  if (!fix.present) {
+    // Not "0 m", not "unknown": they have simply never told us, which is a
+    // different thing from being at a coordinate we do not trust.
+    snprintf(buf, bufLen, "--");
+    return;
+  }
+
+  char distance[16] = "--";
+  const char* sector = "";
+  if (hasReceivedAny_) {
+    const uint32_t metres = PinGeo::distanceM(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7);
+    PinGeo::formatDistance(metres, distance, sizeof(distance));
+    sector = MapPointQuery::sectorName(MapPointQuery::sector8(riderLatE7(), riderLonE7(), fix.latE7, fix.lonE7));
+  }
+
+  const TeamFixAge age = teamFixAge(fix, MapTeam::utcNowOrZero(), millis());
+  if (!age.known) {
+    // A position with no date, which is every replayed one on a device with no
+    // clock. `?` rather than a number nobody can stand behind.
+    snprintf(buf, bufLen, "%s %s ?", distance, sector);
+    return;
+  }
+  if (age.seconds < 3600) {
+    snprintf(buf, bufLen, "%s %s %lum", distance, sector, static_cast<unsigned long>(age.seconds / 60));
+  } else {
+    snprintf(buf, bufLen, "%s %s %luh", distance, sector, static_cast<unsigned long>(age.seconds / 3600));
+  }
+}
+
+void MapActivity::openTeamMenu() {
+  const size_t count = team_.teamCount();
+  if (count == 0) {
+    // A roster is edited on the card or over the console, so there is nothing
+    // for the rider to press here. Say so instead of opening an empty list.
+    dropMenuBackdrop();
+    showPinNotice(tr(STR_TEAM_EMPTY));
+    return;
+  }
+
+  std::vector<std::string> options;
+  std::vector<std::string> values;
+  options.reserve(count);
+  values.reserve(count);
+
+  char row[32];
+  for (size_t index = 0; index < count; ++index) {
+    const size_t slot = team_.slotForIndex(index);
+    const TeamMember& member = team_.roster().at(slot);
+    // Acronym first, because that is what is on the panel: the list has to be
+    // readable against the markers without a second lookup.
+    std::string label = member.acr;
+    if (member.name[0] != '\0') {
+      label += " ";
+      label += member.name;
+    }
+    options.push_back(label);
+    teamRowText(slot, row, sizeof(row));
+    values.emplace_back(row);
+  }
+
+  optionPopup_.showWithValues(StrId::STR_MAP_TEAM, options, values, 0, [this](int idx) {
+    // Deferred, like every other popup opened from inside a popup callback.
+    pendingTeamArg_ = static_cast<uint8_t>(team_.slotForIndex(static_cast<size_t>(idx)));
+    pendingTeamPopup_ = TeamPopup::Show;
+  });
+  optionPopup_.setSize(BaseTheme::OptionPopupSize::Menu);
+  dropBackdropIfPopupOutgrew();
+  optionPopup_.processRender(renderer, mappedInput);
+}
+
+void MapActivity::showTeamMemberOnMap(size_t slot) {
+  dropMenuBackdrop();
+  if (slot >= TeamRoster::kSlotCount) return;
+  const TeamFix& fix = team_.store().at(slot);
+  if (!fix.present) return;
+
+  // Observation mode wholesale, exactly as showPinOnMap() does it and for the
+  // same reasons -- the next fix must not yank the frame back, and "Follow mode"
+  // already knows the way home.
+  if (screenMode_ == MapScreenMode::Follow) {
+    screenMode_ = MapScreenMode::Observe;
+    observeReturnLatE7_ = lastLatE7_;
+    observeReturnLonE7_ = lastLonE7_;
+    observeReturnHeading_ = lastHeading_;
+    observeReturnSeq_ = lastDrawnSeq_;
+  }
+
+  LOG_INF(kLogTag, "show team member %s at %ld,%ld", team_.roster().at(slot).acr, static_cast<long>(fix.latE7),
+          static_cast<long>(fix.lonE7));
+  redrawDueMs_ = 0;
+  showBusy();
+  renderViewport(fix.latE7, fix.lonE7, anchorHeading_, lastDrawnSeq_);
+}
+
+void MapActivity::servicePendingTeamPopup() {
+  const TeamPopup which = pendingTeamPopup_;
+  const size_t arg = pendingTeamArg_;
+  pendingTeamPopup_ = TeamPopup::None;
+  pendingTeamArg_ = 0;
+  // Exhaustive switch, no default, so a new value cannot land here silently.
+  switch (which) {
+    case TeamPopup::None:
+      return;
+    case TeamPopup::List:
+      openTeamMenu();
+      return;
+    case TeamPopup::Show:
+      showTeamMemberOnMap(arg);
+      return;
+  }
+}
+
+#endif  // ENABLE_TEAM_MARKERS

@@ -336,9 +336,33 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // the viewport are drawn either way.
         SettingInfo::Toggle(StrId::STR_MAP_PINS_OFFSCREEN, &CrossPointSettings::mapPinsOffscreen, "mapPinsOffscreen",
                             StrId::STR_CAT_MAP),
-        // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
-        // something a rider needs. Same field the map's own menu toggles live
-        // (MapActivity::openMapMenu()).
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+        // The group's dots. On by default and free with an empty roster
+        // (CrossPointSettings::mapTeamMarkers).
+        SettingInfo::Toggle(StrId::STR_MAP_TEAM_MARKERS, &CrossPointSettings::mapTeamMarkers, "mapTeamMarkers",
+                            StrId::STR_CAT_MAP),
+        // Their positions to the card's black box. On: the feature's whole point
+        // is that the trace outlives the ride.
+        SettingInfo::Toggle(StrId::STR_MAP_TEAM_LOG_PEERS, &CrossPointSettings::mapTeamLogPeers, "mapTeamLogPeers",
+                            StrId::STR_CAT_MAP),
+        // The rider's own trace into the same file. **Off by default**, and the
+        // label says "my track" rather than "black box": switching this on
+        // writes where the rider went, on a card that is lost with the device.
+        // Same call, same wording rule as the GNSS track row above.
+        SettingInfo::Toggle(StrId::STR_MAP_TEAM_LOG_SELF, &CrossPointSettings::mapTeamLogSelf, "mapTeamLogSelf",
+                            StrId::STR_CAT_MAP),
+#endif
+    // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
+    // something a rider needs. Same field the map's own menu toggles live
+    // (MapActivity::openMapMenu()).
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+        // The LoRa radio. Off out of the box: a listening SX1262 costs 5.4 mA
+        // continuously and drags the shared GNSS rail up with it
+        // (CrossPointSettings::loraMeshOn). This row only says the radio *may*
+        // be used -- it runs while the map or the LoRa node list is open and
+        // at no other time.
+        SettingInfo::Toggle(StrId::STR_MAP_LORA, &CrossPointSettings::loraMeshOn, "loraMeshOn", StrId::STR_CAT_MAP),
+#endif
         SettingInfo::Toggle(StrId::STR_MAP_DEBUG_INFO, &CrossPointSettings::mapDebugInfo, "mapDebugInfo",
                             StrId::STR_CAT_MAP),
         // Manual (default): zoom is the button ladder, unchanged. Auto

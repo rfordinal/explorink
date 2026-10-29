@@ -54,6 +54,12 @@ const HomeActivity::Row* HomeActivity::rows() {
       // (platformio.ini).
       {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings},
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+      // The LoRa node list, the same kind of row and for the same reason: it
+      // answers "do these two boards hear each other" and shows raw keys and
+      // RSSI while doing it (platformio.ini, ENABLE_LORA_MESH).
+      {HomeMenuItem::LORA_PEERS, StrId::STR_LORA_PEERS, &icon_settings},
+#endif
       {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings},
   };
   static_assert(sizeof(kRows) / sizeof(kRows[0]) == kRowCount, "kRowCount must match the table");
@@ -97,6 +103,11 @@ void HomeActivity::activate(const int index) {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     case HomeMenuItem::PREVIEW:
       onPreviewOpen();
+      break;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+    case HomeMenuItem::LORA_PEERS:
+      onLoraPeersOpen();
       break;
 #endif
     case HomeMenuItem::SETTINGS_MENU:
@@ -206,4 +217,7 @@ void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
 
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
 void HomeActivity::onPreviewOpen() { activityManager.goToPreview(); }
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+void HomeActivity::onLoraPeersOpen() { activityManager.goToLoraPeers(); }
 #endif

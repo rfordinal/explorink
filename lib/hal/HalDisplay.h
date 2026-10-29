@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <EInkDisplay.h>
+#include <PowerTelemetry.h>  // WindowSite, named in displayWindow's signature
 
 class HalDisplay {
  public:
@@ -60,7 +61,10 @@ class HalDisplay {
   // out-of-bounds rect and promotes the call to a full HALF frame while a
   // grayscale plane is still in RED RAM -- always cleanupGrayscaleBuffers()
   // after a gray render first. See docs/eink-grayscale.md.
-  void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+  // `site` says which caller asked, so the marker-move rate stays separable
+  // from the debug overlay's timer and from closing chrome (T-277).
+  void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false,
+                     PowerTelemetry::WindowSite site = PowerTelemetry::WindowSite::Other);
 
   // Power management
   void deepSleep();

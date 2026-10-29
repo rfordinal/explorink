@@ -16,6 +16,7 @@
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
+#include "lora/LoraPeersActivity.h"
 #include "map/GnssAcquireActivity.h"
 #include "map/MapActivity.h"
 #include "map/MapRouteStore.h"
@@ -254,6 +255,16 @@ void ActivityManager::goToPreview() {
 #else
   // No bench in this build; the menu has no row for it either, so this is only
   // reachable through a stale HomeMenuItem::PREVIEW (e.g. a saved return target).
+  goHome();
+#endif
+}
+
+void ActivityManager::goToLoraPeers() {
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  replaceActivity(std::make_unique<LoraPeersActivity>(renderer, mappedInput));
+#else
+  // No radio in this build, and no menu row either -- same shape as
+  // goToPreview() above, and reachable only through a stale saved target.
   goHome();
 #endif
 }

@@ -851,6 +851,15 @@ ACM device with `AT` -- and a hard reset clears both, so recovery discriminates
 nothing. Reset-on-open is no discriminator either: a healthy session on the same
 day also failed to reset on open.
 
+**And when it does reset, it eats whatever you were sending.** 2026-10-23: a
+second `CMD:SETTING` written into a freshly opened port was lost to the boot
+that open triggered, and the only sign was a missing `SETTING_OK` -- the first
+command had already answered, so the session looked healthy. A different open
+on the same board the same afternoon reported an uptime of 529 s and no banner
+at all, so the coin is still a coin. The cost is therefore paid per *session*
+rather than per command: **open once, wait out a possible boot, then send
+everything, and read every reply back** instead of assuming a write landed.
+
 Two things make the next occurrence diagnosable instead of a coin flip, one of
 them now in the firmware: the peek loop **logs the head byte** it is refusing to
 consume once it has sat there five seconds, and on the host side

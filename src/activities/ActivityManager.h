@@ -26,6 +26,9 @@ enum class HomeMenuItem {
   MAP,
   TILE_SYNC,
   PREVIEW,
+  // The LoRa node list, a bench row like PREVIEW above it and gated the same
+  // way (platformio.ini, ENABLE_LORA_MESH).
+  LORA_PEERS,
   SETTINGS_MENU,
   // Trips is the trip list -- its row opens RouteSelectActivity
   // (HomeActivity::onTripsOpen()). PINS and WALLET have no Home row: Pins
@@ -130,6 +133,7 @@ class ActivityManager {
   // stops mid-trail for, and it starts its own BLE (TileSyncActivity.h).
   void goToTileSync();
   void goToPreview();
+  void goToLoraPeers();
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
