@@ -374,6 +374,84 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // every older build skips as an unknown version and would cost a rider their
   // pins (docs/pins.md, "Reading, and damage").
   uint16_t mapPinsOffscreenMask = 0xFFFF;
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // ## Team markers (../../docs/team-markers.md)
+  //
+  // Whether other riders' dots are drawn at all. On by default *and* free when
+  // nobody is approved: with an empty roster the layer reads nothing and draws
+  // nothing, so a rider who does not ride in a group never pays for it.
+  uint8_t mapTeamMarkers = 1;
+  // **Two switches, because it is two kinds of data.** A member's position is
+  // theirs, sent to us on purpose; the rider's own trace is a record of where
+  // *they* went, on a card that is lost with the device. So the group's rows are
+  // on by default (the feature does not work without them) and the rider's own
+  // are off until they say otherwise, which is the same call GNSS track logging
+  // made for the same reason (mapGnssLog above).
+  uint8_t mapTeamLogPeers = 1;
+  uint8_t mapTeamLogSelf = 0;
+  // Minutes before a member's marker is drawn as stale (dithered head) and
+  // minutes before it is not drawn at all. 0 hides nothing -- a last known
+  // position kept on the panel forever is a legitimate choice for a search.
+  //
+  // A position whose age cannot be known is never hidden by these, whatever they
+  // are set to (TeamFix.h): every X4 is a device with no clock, and hiding what
+  // it cannot date would empty the panel at exactly the wrong moment.
+  //
+  // **Hide raised from 30 minutes to six hours on 2026-10-23**, maintainer's
+  // call, after watching it on the bench: two boards sat idle for two hours
+  // and the marker was simply gone, while the LoRa node list still reported
+  // the same board heard 223 seconds ago. Two surfaces on one device saying
+  // opposite things about one member, because they answer different questions
+  // -- heard, versus known to be somewhere -- and the map had no way to say
+  // which.
+  //
+  // Six hours is a walking day's worth of patience. A two-hour-old position
+  // is still the best lead anybody has about where a companion went, and
+  // drawing it dithered with `2h` under it says exactly that; drawing nothing
+  // says "no such person", which is a worse answer to the same question. The
+  // stale threshold is untouched at five minutes, so everything past that is
+  // visibly old rather than quietly trusted.
+  //
+  // `uint16_t` because six hours is 360 minutes and does not fit a byte. The
+  // settings file is JSON, so the width costs nothing on the card.
+  uint8_t mapTeamStaleMin = 5;
+  uint16_t mapTeamHideMin = 360;
+  // Days of black box kept on the card. Rotation deletes whole day files, so the
+  // oldest evidence goes first and a file a laptop is reading never changes
+  // under it (TeamFiles.h).
+  uint8_t mapTeamKeepDays = 14;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // ## The LoRa mesh node (../docs/lora-mesh.md)
+  //
+  // Whether the node comes up with the device. **Off by default**, and it is
+  // the rider's switch rather than a default because it costs: a listening
+  // SX1262 draws 5.4 mA continuously, and on this board the radio's power rail
+  // is shared with the GNSS receiver, so there is no way to pay for one and not
+  // the other (../docs/lora-bringup.md, ../../docs/lora.md constraint 2).
+  //
+  // Persisted because the alternative is worse: a rider who turned the radio on
+  // for a ride would have to turn it on again at every boot, and a group
+  // feature that silently stops after a battery change is a group feature
+  // nobody trusts.
+  uint8_t loraMeshOn = 0;
+  // Seconds between automatic adverts, 0 = never. **Off by default and a
+  // separate switch from the one above**, because they are different consent:
+  // listening tells nobody anything, while an advert is a plaintext broadcast
+  // of this device's name and position to anyone in range
+  // (../../docs/lora.md, "Security of the mesh channel").
+  //
+  // Refused below 70 s rather than clamped -- see kMeshBeaconMinSec in
+  // main.cpp for where that number comes from.
+  uint16_t loraBeaconSec = 0;
+  // What our advert calls us. Empty means "derive it from the public key at
+  // startup", which is what makes two boards on one bench distinguishable
+  // without anybody naming them.
+  //
+  // Longer than a team acronym on purpose: this is what another MeshCore node
+  // shows in a contact list, where two letters mean nothing.
+  char loraNodeName[21] = "";
+#endif
   // The GPS/tile/BLE readout in the map's top-left corner. Off by default: it
   // is diagnostic text, not something a rider needs on screen. Toggled from
   // the Settings screen (category Map) or live from the map's own menu

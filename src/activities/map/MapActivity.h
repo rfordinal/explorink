@@ -22,6 +22,9 @@ struct PinShapeFrame;
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPins.h"
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#include "MapTeam.h"
+#endif
 #include "MapPointQuery.h"
 #include "MapPointSource.h"
 #include "MapProjection.h"
@@ -502,6 +505,12 @@ class MapActivity final : public Activity,
   // feature's own loop reaches the panel here, and only when its text
   // actually changed.
   void updateDebugOverlay();
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Writes the radio's debug row, at most once a second. Separate from
+  // updateDebugOverlay() because it is the only slot writer that has to take
+  // the radio's chip mutex to answer.
+  void updateLoraDebugRow();
+#endif
   // Top-right north indicator. The map is drawn track-up, so this rotates: the
   // whole glyph turns about its own centre by the frame's heading, which is
   // what makes it point at true north instead of up the screen. Not static
@@ -863,6 +872,84 @@ class MapActivity final : public Activity,
   // Three screens, and the popups are opened through pendingNearbyPopup_ from
   // loop(), never from inside a popup callback -- show()ing from a callback
   // reassigns the std::function currently running (PinPopup says the same).
+#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+  // ## Team markers (../../../docs/team-markers.md)
+  //
+  // The other riders' dots. Same popup deferral as PinPopup and Nearby, same
+  // reason: show()ing from inside a popup callback reassigns the std::function
+  // that is running.
+  enum class TeamPopup : uint8_t { None, List, Show };
+  TeamPopup pendingTeamPopup_ = TeamPopup::None;
+  uint8_t pendingTeamArg_ = 0;
+
+  void servicePendingTeamPopup();
+  // Re-reads every member's age on its own clock and redraws only when the frame
+  // would differ. What the panel shows is otherwise as old as the last fix,
+  // which is exactly wrong when the fixes have stopped.
+  void serviceTeamAges(uint32_t now);
+  uint32_t teamAgeSignature() const;
+
+  // How often the ages are revisited, and it is the step they are reported in
+  // (TeamFix.h, kTeamAgeStepMinutes): a finer period redraws for a number that
+  // has not changed.
+  static constexpr uint32_t kTeamAgeRefreshMs = kTeamAgeStepMinutes * 60u * 1000u;
+  uint32_t teamAgeCheckedMs_ = 0;
+  uint32_t teamAgeSignature_ = 0;
+  void openTeamMenu();
+  void showTeamMemberOnMap(size_t slot);
+  void drawTeam();
+  // The member's balloon: the pin shape filled solid black with their two or
+  // three letters in white, so a person and a place cannot be confused at a
+  // glance -- a rider's own pins are hollow (drawPinBalloon). A stale position
+  // draws the hollow balloon with black letters instead: the fill is what says
+  // the position is current, and the panel must never draw "here they are" and
+  // "here they were an hour ago" the same way.
+  void drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale);
+  // The grey fill for a stale member, painted row by row inside the silhouette:
+  // grey on this panel is a dither, and a rectangle of it would spill past the
+  // balloon.
+  void fillTeamBodyDither(int x, int y) const;
+  // What one team pass has already put on the panel, so two labels cannot land
+  // on top of each other. A flat list rather than the map's own occupancy grid:
+  // twelve members plus their labels and the rider's marker is 25 boxes, and a
+  // linear scan of that is cheaper than 1,250 bytes of grid.
+  struct TeamLabelBoxes {
+    static constexpr size_t kMax = kTeamMaxMembers * 2 + 1;
+    int16_t x[kMax] = {};
+    int16_t y[kMax] = {};
+    int16_t w[kMax] = {};
+    int16_t h[kMax] = {};
+    size_t count = 0;
+
+    void add(int bx, int by, int bw, int bh) {
+      if (count >= kMax) return;
+      x[count] = static_cast<int16_t>(bx);
+      y[count] = static_cast<int16_t>(by);
+      w[count] = static_cast<int16_t>(bw);
+      h[count] = static_cast<int16_t>(bh);
+      ++count;
+    }
+
+    bool hits(int bx, int by, int bw, int bh) const {
+      for (size_t i = 0; i < count; ++i) {
+        if (bx < x[i] + w[i] && bx + bw > x[i] && by < y[i] + h[i] && by + bh > y[i]) return true;
+      }
+      return false;
+    }
+  };
+
+  // The distance/age line under a member's marker. Four shapes, and which one is
+  // drawn is TeamFix.h's teamMarkerLabel(). False when every spot it tried was
+  // taken, which is a dropped label and never an overprinted one.
+  bool drawTeamLabel(int tipX, int tipY, const char* text, TeamLabelBoxes& taken);
+  void teamRowText(size_t slot, char* buf, size_t bufLen) const;
+  TeamVisibility teamSlotVisibility(size_t slot) const;
+
+  // A reference, not an instance: the roster is shared with the LoRa node list
+  // now (MapTeam::getInstance()). Every `team_.` call below is unchanged.
+  MapTeam& team_ = MapTeam::getInstance();
+#endif
+
   enum class NearbyPopup : uint8_t { None, Menu, Category, Detail };
   NearbyPopup pendingNearbyPopup_ = NearbyPopup::None;
   uint8_t pendingNearbyArg_ = 0;
@@ -1544,6 +1631,18 @@ class MapActivity final : public Activity,
   // what was last *drawn*, so updateHeaderStatus() can tell a real change from
   // a poll. All of them are written by drawHeaderStatusStrip(), on every path
   // that draws the row, including full frames.
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // What the LoRa slot last painted, for the same reason drawnGnssState_ and
+  // transferIconShown_ exist: the header repaints on change, so a state
+  // nobody records is a state nobody notices.
+  //
+  // **Measured 2026-10-22**: without this, arming the beacon left the antenna
+  // glyph on the panel for 25 s with no press, and would have left it until
+  // something unrelated forced a redraw.
+  enum class LoraHeaderState : uint8_t { Off, Listening, Beaconing };
+  LoraHeaderState drawnLoraState_ = LoraHeaderState::Off;
+  static LoraHeaderState loraHeaderState();
+#endif
   bool transferIconShown_ = false;
   bool drawnLinkConnected_ = false;
   // -1 means "never drawn", which is not the same as 0 bars.
@@ -1609,8 +1708,9 @@ class MapActivity final : public Activity,
   // ## The debug window (SETTINGS.mapDebugInfo)
   //
   // One managed box below the header, with one row per feature that reserved
-  // one. Reservation happens once, in onEnter(), and the ids below are how a
-  // feature finds its own row afterwards -- see MapDebugOverlay.h for why
+  // one. Reservation happens once, **in the constructor** -- onEnter() runs
+  // again on every return to the map and would burn the table -- and the ids
+  // below are how a feature finds its own row afterwards -- see MapDebugOverlay.h for why
   // this replaced a `line1Y`/`line2Y`/... ladder duplicated across two frame
   // paths.
   //
@@ -1647,6 +1747,16 @@ class MapActivity final : public Activity,
   uint8_t debugRouteRefusedSlot_ = MapDebugOverlay::kInvalidSlot;
   // A file push happened; did it land (MapTransferReceiver::formatStatus()).
   uint8_t debugTransferSlot_ = MapDebugOverlay::kInvalidSlot;
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // The radio: on or off, the cadence, how many nodes are in the table, and
+  // the last advert's RSSI and SNR. Reserved only where the radio exists, and
+  // it is the eighth of MapDebugOverlay::kMaxSlots -- see the reserve() block.
+  uint8_t debugLoraSlot_ = MapDebugOverlay::kInvalidSlot;
+  // Its own deadline rather than the debug window's, because the window's
+  // poll decides when to *repaint* and this decides when to pay the chip
+  // mutex. See updateLoraDebugRow().
+  uint32_t nextLoraDebugMs_ = 0;
+#endif
   // millis() deadlines, same shape as the header row's above: the poll
   // interval bounds how often the window is even compared, the repaint
   // interval is the floor between two panel refreshes it may cause.
@@ -1682,6 +1792,37 @@ class MapActivity final : public Activity,
     MapPins& pins_;
   };
   LockedPins lockedPins_{pins_};
+
+#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+  // The same thing for the group layer, and for the same reason: drawTeam()
+  // walks the roster and the store on the render task, while a position
+  // arriving over a radio or a cable rewrites them from the activity task.
+  //
+  // **Every write waits out the frame, reads pass through.** A write here is
+  // rarer than a pin's -- a position every few minutes rather than a button
+  // press -- and it carries a card write anyway, so the lock costs nothing it
+  // was not already paying. Reads are left alone on the same grounds as the
+  // pins': the compose only reads, and a torn read of a POD fix costs one
+  // frame.
+  class LockedTeam : public IMapTeamSource {
+   public:
+    explicit LockedTeam(MapTeam& team) : team_(team) {}
+    Ingest teamPosition(std::string_view idOrAcr, const TeamFix& fix) override;
+    Edit teamAdd(std::string_view acr, std::string_view id, std::string_view name) override;
+    Edit teamRemove(std::string_view idOrAcr) override;
+    bool teamReload(size_t& skipped) override;
+    size_t teamCount() const override { return team_.teamCount(); }
+    TeamMember teamMemberAt(size_t index) const override { return team_.teamMemberAt(index); }
+    TeamFix teamFixAt(size_t index) const override { return team_.teamFixAt(index); }
+    uint32_t teamLogPage(uint32_t offset, uint32_t maxCount, ITeamLogVisitor& visitor) override {
+      return team_.teamLogPage(offset, maxCount, visitor);
+    }
+
+   private:
+    MapTeam& team_;
+  };
+  LockedTeam lockedTeam_{team_};
+#endif
 
   // The rider's pins: the active set replayed off the card in onEnter(), and the
   // append-only history behind it (MapPins.h, ../../../docs/pins-plan.md).
