@@ -486,6 +486,79 @@ instruments the bench recipe reads.
 maps one to the other in a single function. The log is a file format and the
 policy is arithmetic; neither should move because the other was renamed.
 
+### The bench pass for the dynamic cadence
+
+**Verified on hardware 2026-10-29**, build `e8d02761`, board A (`t5s3pro`)
+alone, fed a scripted track over BLE with `mapGnssPosition` temporarily off.
+Floor 70 s. Every reading is `LORA_STATE`; the `why=` and `still=` columns
+added in the same build are what made it readable at all.
+
+**`Settled` fires once per stop, and the latch holds.**
+
+| | `sent_ago` | `why` | `still` |
+|---|---|---|---|
+| standing at A | 123 s | `first` | 123 s |
+| A, past the hold | 60 s | **`settled`** | 200 s |
+| moved 60 m to B | 168 s | `settled` | 98 s |
+| B, past the hold | **37 s** | `settled` | 178 s |
+| B, later | 116 s | `settled` | 257 s |
+
+Four things in one run. Standing where the group already has you costs
+nothing -- 123 s went by, well past the floor, with `movedM` at 0 and no
+advert. The send landed at `still` ≈ 140 s, which is `kSettleHoldFloors x
+floor` exactly. The latch held: `still` ran on to 257 s and `sent_ago` grew
+with it. And moving 60 m re-armed it, so the second stop was announced too.
+**`Moved` never fired** -- 60 m is under the threshold, which is the band
+`Settled` exists for.
+
+**The threshold reads the fix's accuracy.** The same 120 m move, twice:
+
+| accuracy | threshold | moved 120 m | result |
+|---|---|---|---|
+| 40 m (`Loose`) | 200 m | `sent_ago` grew to 248 s, `why` stayed `first` | **no advert** |
+| 5 m (`Trusted`) | 100 m | `sent_ago` fell 168 s -> 61 s | **`moved`** |
+
+248 seconds is three and a half floors of silence on a move that would have
+sent before this change. A 200 m move on the same `Loose` fix did send, so
+the line is where `kLooseMoveMetres` puts it and not somewhere above it.
+
+**The manual advert records itself now.** `sent_ago=174s why=moved` before,
+`sent_ago=9s why=manual` after one `CMD:LORA ADVERT` -- the stamp moved,
+which is the double-spend fix, and the row is attributable, which it was not
+before.
+
+**What this run did not cover**: `Moving` (ten real minutes at a crawl),
+`Keepalive` (an hour), and anything two boards answer -- that the advert
+lands and moves a marker. Board A only.
+
+### Two traps the bench pass paid for
+
+**BLE advertising stops and `BLE:running=1` keeps saying otherwise.** The map
+drops the radio a couple of minutes after the last transfer, which is the
+deadline this file's sibling describes -- but the console flag is not cleared
+with it, so the instrument reports a radio that is not advertising. Thirty-five
+seconds of scanning found nothing while it read 1. Same shape as every other
+cached-flag trap here (firmware `CLAUDE.md`, "Before acting on a telemetry
+counter").
+
+**And `CMD:BUTTON back` followed by `CMD:GOTO_MAP` reboots the board.**
+Observed three times: uptime went 472 s -> 55 s, and twice more the beacon
+state came back zeroed with `beacon=` surviving from the card. It reads as a
+working recipe for restarting advertising because a reboot does restart it,
+in the fast phase -- which is how it stayed unnoticed. **The consequence for a
+bench run is that the mesh holder is gone afterwards**: one pass measured
+nothing because `CMD:LORA MESH ON` had been issued before the reboot rather
+than after it. Not diagnosed -- no serial command reports a boot reason, and
+the crash report lives on the card, which needs Wi-Fi, which closes the map.
+`[open]`
+
+**Changing the coordinate with `tools/blepos.py` is not a track.** Each
+coordinate change is a reconnect, the device's BLE position goes stale in the
+gap, and the beacon sees the fix disappear and come back -- a `FixChanged`
+advert that has nothing to do with the rule under test. Seen as `why=fix` in
+the middle of a `Settled` run. A feeder that holds one connection and walks
+the legs through it is what made these numbers readable.
+
 ### The rules are a pure function, since 2026-10-29
 
 `BeaconPolicy::decide()` (`src/lora/BeaconPolicy.h`) is the whole table above
