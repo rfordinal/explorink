@@ -3669,7 +3669,21 @@ void loop() {
               // send-rule test reads, because four rules put the same row on
               // the air and the cadence alone cannot tell them apart.
               // `still` is -1 with no fix.
-              " mesh=%d hold=0x%x beacon=%lus sent_ago=%lds fix=%d why=%s still=%lds"
+              // `pool_free` is how many of the 16 packets are available and
+              // `pool_out` how many are sitting in the send queue. Added
+              // 2026-10-30, after an afternoon spent deciding whether
+              // "advert not sent" meant an empty pool or something else, with
+              // no way to look. A node that cannot transmit is the group
+              // feature failing silently, so the number that decides it has to
+              // be readable.
+              //
+              // **`rx` and `tx` above are blind to the mesh and always read 0
+              // while it runs.** Both are incremented in loraServiceStep()'s
+              // console half, which returns early as soon as gMeshRunning is
+              // set. They say nothing about mesh traffic, and were read as
+              // saying plenty on 2026-10-30. `sent_ago` is the beacon's own
+              // flag and is the honest one.
+              " mesh=%d hold=0x%x beacon=%lus sent_ago=%lds fix=%d why=%s still=%lds pool_free=%d pool_out=%d"
 #endif
               "\n",
               lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
@@ -3691,7 +3705,8 @@ void loop() {
               static_cast<unsigned long>(SETTINGS.loraBeaconSec),
               gMeshBeaconEverSent ? static_cast<long>((millis() - gMeshLastSentMs) / 1000) : -1,
               (gnss.fix().valid && gnss.fix().quality != 0) ? 1 : 0, loraTxReasonText(gMeshLastTxReason),
-              gMeshSettleValid ? static_cast<long>((millis() - gMeshSettleSinceMs) / 1000) : -1
+              gMeshSettleValid ? static_cast<long>((millis() - gMeshSettleSinceMs) / 1000) : -1,
+              gMeshPackets.getFreeCount(), gMeshPackets.getOutboundTotal()
 #endif
           );
         } else if (upper == "ON") {
