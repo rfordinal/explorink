@@ -1,51 +1,51 @@
 #pragma once
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
-#include "TeamMembers.h"
+#include "GroupMembers.h"
 
 // The permanent list of group members, and the JSON document that holds it.
 //
-// Pure: no Arduino, no HAL, no SD. TeamRosterFile does the card; this does the
-// bytes and the rules, so every one of them is host-testable (test/team/).
+// Pure: no Arduino, no HAL, no SD. GroupRosterFile does the card; this does the
+// bytes and the rules, so every one of them is host-testable (test/group/).
 //
 // **The file is the truth, and it is rewritten whole.** There is no append-only
 // history here, unlike the pins log: a roster is a small setting, it is edited
 // by a human between rides, and a partial write of twelve short rows is not a
 // risk worth a second format. What *is* append-only is the black box, which is
-// where the history of the feature actually lives (TeamBlackBox.h).
+// where the history of the feature actually lives (GroupBlackBox.h).
 //
-// Document, /trailink/team/members.json:
+// Document, /trailink/group/members.json:
 //
 //   {"v":1,"members":[{"acr":"RF","name":"Roman","on":true,"ids":["a4c1380c","ble-7f"]}]}
 //
 // **`ids` is a list because one person can be heard on more than one radio**,
-// and the transports call them different things (TeamMembers.h). The older
+// and the transports call them different things (GroupMembers.h). The older
 // single `"id":"..."` spelling still loads and becomes a one-entry list.
 //
 // An unknown version is refused rather than guessed at: loading a v2 roster with
 // v1 rules could silently drop a member, and a member missing from an allowlist
 // is a rider whose marker never appears and who is never told why.
-class TeamRoster {
+class GroupRoster {
  public:
-  static constexpr size_t kSlotCount = kTeamMaxMembers;
+  static constexpr size_t kSlotCount = kGroupMaxMembers;
   static constexpr uint8_t kVersion = 1;
 
   void clear();
 
   size_t count() const;
-  const TeamMember& at(size_t slot) const { return slots_[slot < kSlotCount ? slot : 0]; }
+  const GroupMember& at(size_t slot) const { return slots_[slot < kSlotCount ? slot : 0]; }
 
   // Slot for an exact id, or kSlotCount. Case sensitive: an id is machine text
   // and the transport that issued it decides its case.
   size_t findId(std::string_view id) const;
 
   // Slot for an acronym, or kSlotCount. Case insensitive, because a human types
-  // this one (teamNormaliseAcr).
+  // this one (groupNormaliseAcr).
   size_t findAcr(std::string_view acr) const;
 
   // Either, id first. What the ingest path and the console both resolve through:
@@ -61,7 +61,7 @@ class TeamRoster {
   //
   // False when: the acronym or id is unstorable, the id already belongs to a
   // different member, the roster is full, or the member already carries
-  // kTeamIdsPerMember identifiers.
+  // kGroupIdsPerMember identifiers.
   bool set(std::string_view id, std::string_view acr, std::string_view name, bool enabled);
 
   // False when no member holds that acronym or id.
@@ -88,6 +88,6 @@ class TeamRoster {
  private:
   size_t firstFreeSlot() const;
 
-  TeamMember slots_[kSlotCount];
+  GroupMember slots_[kSlotCount];
 };
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

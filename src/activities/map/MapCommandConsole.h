@@ -10,8 +10,8 @@
 #include "PinRecord.h"
 #include "PinStore.h"
 #include "StaleTilesList.h"
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-#include "TeamSource.h"
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+#include "GroupSource.h"
 #endif
 
 // The channel-free half of the map command console: line assembly, the
@@ -525,12 +525,12 @@ class MapConsoleState {
   // answers `INFO pins=unavailable` rather than silently doing nothing.
   void setPinsSource(IMapPinsSource* source) { pins_ = source; }
 
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-  // Where `team` goes. Not owned; must outlive this state. Left unset (the
-  // default) every `team` command answers `INFO team=unavailable`, matching
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  // Where `group` goes. Not owned; must outlive this state. Left unset (the
+  // default) every `group` command answers `INFO group=unavailable`, matching
   // `pins=unavailable`: a build that never wired this must not read as a rider
   // whose group is empty.
-  void setTeamSource(IMapTeamSource* source) { team_ = source; }
+  void setGroupSource(IMapGroupSource* source) { group_ = source; }
 #endif
 
   // Where `points` asks whether a z10 shard is on the card. Not owned; must
@@ -550,11 +550,11 @@ class MapConsoleState {
   // tile line.
   static constexpr uint16_t kPinLogPageSize = 8;
 
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-  // Rows one `team log` command will print. Same bound and same reason as the
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  // Rows one `group log` command will print. Same bound and same reason as the
   // pin log's: every reply line is one BLE indication waiting for the peer's ATT
   // confirm, and a black box row is a long line.
-  static constexpr uint16_t kTeamLogPageSize = 8;
+  static constexpr uint16_t kGroupLogPageSize = 8;
 #endif
 
   // Entries one `missing` command will print. Bounded because every reply
@@ -575,10 +575,10 @@ class MapConsoleState {
   void writeHave(IMapReplyWriter& out);
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
   void writePinList(IMapReplyWriter& out) const;
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-  bool executeTeam(const MapCommand& cmd, IMapReplyWriter& out);
-  void writeTeamList(IMapReplyWriter& out) const;
-  void writeTeamLog(uint16_t offset, IMapReplyWriter& out);
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  bool executeGroup(const MapCommand& cmd, IMapReplyWriter& out);
+  void writeGroupList(IMapReplyWriter& out) const;
+  void writeGroupLog(uint16_t offset, IMapReplyWriter& out);
 #endif
   void writePoints(IMapReplyWriter& out) const;
   // Non-const: paging the log is what streams the card, and the source is not
@@ -627,8 +627,8 @@ class MapConsoleState {
   const char* screenName_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
   IMapPinsSource* pins_ = nullptr;
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-  IMapTeamSource* team_ = nullptr;
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  IMapGroupSource* group_ = nullptr;
 #endif
   IMapPointShardsSource* pointShards_ = nullptr;
   IMapGoneObserver* goneObserver_ = nullptr;

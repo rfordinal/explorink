@@ -64,7 +64,7 @@ const char* txReasonTextImpl(LoraTxReason why) {
 }
 
 // int32 scaled by 1e6 back to plain decimal degrees. Integer only, same reason
-// as `TeamRecord`'s 1e7 version: no FPU, and a soft-float `printf("%f")` is
+// as `GroupRecord`'s 1e7 version: no FPU, and a soft-float `printf("%f")` is
 // both slow and flash nothing else here needs. Not shared with that one
 // because the scale differs -- MeshCore's advert carries 1e6 and our own
 // records carry 1e7, and a single helper taking a scale would hide which is

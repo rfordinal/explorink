@@ -8,7 +8,7 @@
 // One row of the radio's event log: what the row holds, and how it is
 // spelled. The file that collects them is `LoraEventLog.h`.
 //
-// **Split exactly like `TeamRecord` is split from `TeamFiles`**, and for the
+// **Split exactly like `GroupRecord` is split from `GroupFiles`**, and for the
 // same reason: the format is what rots and the format is what tests can
 // reach. Nothing here touches storage, so `test/lora_log/` proves every
 // column with no card attached.
@@ -16,8 +16,8 @@
 // What the radio did, as a file somebody can read on a laptop afterwards.
 //
 // **Not the black box, and the difference is the whole reason this exists.**
-// `TeamBlackBox` records positions that were *accepted* -- it is the answer to
-// "where was everyone" (`team-markers.md`). This file answers the question a
+// `GroupBlackBox` records positions that were *accepted* -- it is the answer to
+// "where was everyone" (`group-markers.md`). This file answers the question a
 // range walk actually asks, which is "why is there nothing on my screen": an
 // advert that did not parse, a neighbour who is not in the roster, a beacon
 // that had nothing new to say, a packet pool that was empty. None of those
@@ -45,7 +45,7 @@
 // A row carries another person's node name, their key prefix and, when their
 // advert had one, their exact position -- on a removable card, in plain text,
 // with no passphrase. It is the same exposure as the black box
-// (`../activities/map/TeamFiles.h`) widened to **everyone in radio range**
+// (`../activities/map/GroupFiles.h`) widened to **everyone in radio range**
 // rather than the roster, because on a public MeshCore channel most of what
 // this hears belongs to strangers who never agreed to be written down. Sixteen
 // of them filled the node table in an hour in Bratislava
@@ -102,8 +102,8 @@ enum class LoraTxReason : uint8_t {
 
 // One row, as it leaves whichever task noticed it.
 //
-// **Eight key bytes, not thirty-two.** That is the same prefix `loraTeamId()`
-// derives the roster id from (`LoraTeamId.h`), so a line here joins a line in
+// **Eight key bytes, not thirty-two.** That is the same prefix `loraGroupId()`
+// derives the roster id from (`LoraGroupId.h`), so a line here joins a line in
 // the black box by eye. The full key is what verifies a signature and it has
 // already done that job by the time an event exists.
 struct LoraLogEvent {
@@ -137,7 +137,7 @@ inline constexpr const char* kLoraLogCsvHeader = "utc,uptime_ms,boot,kind,key,na
 // `test/lora_log/` proves the format with no device attached.
 //
 // `utc` 0 means the device has no clock and the field is left empty, which is
-// the same thing `TeamRecord` does and for the same reason: a zero there would
+// the same thing `GroupRecord` does and for the same reason: a zero there would
 // read as 1970 rather than as "unknown".
 size_t encodeLoraLogEvent(const LoraLogEvent& ev, uint32_t utc, uint32_t bootId, char* buf, size_t bufLen);
 

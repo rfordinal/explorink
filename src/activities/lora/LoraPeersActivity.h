@@ -5,12 +5,12 @@
 #include <I18n.h>  // StrId, for the error line the header holds
 
 #include "activities/Activity.h"
+#include "lora/LoraGroupId.h"
 #include "lora/LoraPeerTable.h"
-#include "lora/LoraTeamId.h"
 #include "util/ButtonNavigator.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-#include "activities/map/TeamMembers.h"
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+#include "activities/map/GroupMembers.h"
 #endif
 
 // The LoRa node, and the group roster it feeds.
@@ -41,12 +41,12 @@
 //      list of only what the antenna can reach
 //
 // **Section three says "not on LoRa", not "not heard", and the distinction is
-// the roster's whole design.** `MapTeam` is transport-neutral: a position
+// the roster's whole design.** `MapGroup` is transport-neutral: a position
 // reaches it from this radio, from a phone relay over BLE, or from the devel
 // console, and a member carries one id per transport that has ever named them
-// (docs/team-markers.md, "One person can be heard on more than one radio").
+// (docs/group-markers.md, "One person can be heard on more than one radio").
 // This screen can only see the LoRa half, so it must not claim the other
-// halves are silent. Answering "heard on anything" means asking the team layer
+// halves are silent. Answering "heard on anything" means asking the group layer
 // for a last-position age rather than this radio's table, and that is a
 // different question than this screen asks today.
 //
@@ -92,13 +92,13 @@ class LoraPeersActivity final : public Activity {
   bool identityPersisted_ = false;
   char nodeName_[21] = {0};
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   // Per heard peer, the acronym it carries in the roster, or empty when it is
   // a stranger. Filled in refresh() so neither the draw nor the signature has
   // to walk the roster once per row.
-  char peerAcr_[LoraPeerTable::kMaxPeers][kTeamAcrBytes] = {};
+  char peerAcr_[LoraPeerTable::kMaxPeers][kGroupAcrBytes] = {};
   // Roster entries nobody is hearing, as roster listing indices.
-  uint8_t rosterOnly_[kTeamMaxMembers] = {};
+  uint8_t rosterOnly_[kGroupMaxMembers] = {};
   size_t rosterOnlyCount_ = 0;
 #endif
 
@@ -114,7 +114,7 @@ class LoraPeersActivity final : public Activity {
   // while the rider watched it. The stated reason -- an e-ink screen must not
   // repaint every few seconds -- was right about the cost and wrong about the
   // answer, which is a slow check that repaints only when the drawn text would
-  // actually differ. Same shape the map already uses for team marker ages.
+  // actually differ. Same shape the map already uses for group marker ages.
   uint32_t lastCheckMs_ = 0;
   uint32_t drawnSignature_ = 0;
   static constexpr uint32_t kCheckIntervalMs = 20000;
@@ -136,8 +136,8 @@ class LoraPeersActivity final : public Activity {
     RowKind kind = RowKind::Control;
     int controlRow = 0;
     uint8_t key[8] = {};
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-    char acr[kTeamAcrBytes] = {};
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+    char acr[kGroupAcrBytes] = {};
 #endif
   };
   Anchor anchor_;

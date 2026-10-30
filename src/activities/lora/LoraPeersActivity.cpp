@@ -17,8 +17,8 @@
 #include "fontIds.h"
 #include "lora/LoraPresence.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-#include "activities/map/MapTeam.h"
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+#include "activities/map/MapGroup.h"
 #endif
 
 namespace {
@@ -42,7 +42,7 @@ uint32_t nextBeaconChoice(uint32_t current) {
 // A row that prints raw seconds changes every second, so a repaint-when-it
 // changed rule would repaint every tick. Seconds while a node is fresh --
 // which is when the rider wants to watch it -- then whole minutes, then fives,
-// the same quantisation the map applies to team marker ages and for the same
+// the same quantisation the map applies to group marker ages and for the same
 // reason. It also fixes a readability complaint of its own: `4009s ago` is an
 // hour and nobody reads it as one.
 void formatAge(uint32_t seconds, char* buf, size_t bufLen) {
@@ -67,10 +67,10 @@ void LoraPeersActivity::onEnter() {
   // what it is for.
   loraPresenceHoldRadio(true);
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   // Necessary here, not only on the map: this screen can be the first thing to
   // touch the roster in a session that never opened the map.
-  MapTeam::getInstance().begin();
+  MapGroup::getInstance().begin();
 #endif
 
   selectedIndex = 0;
@@ -88,7 +88,7 @@ void LoraPeersActivity::onExit() {
 
 int LoraPeersActivity::itemCount() const {
   int n = kControlRowCount + static_cast<int>(peerCount_);
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   n += static_cast<int>(rosterOnlyCount_);
 #endif
   return n;
@@ -112,28 +112,28 @@ void LoraPeersActivity::refresh() {
 
   peerCount_ = loraPresenceSnapshot(peers_, LoraPeerTable::kMaxPeers);
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   // Which heard nodes are already members, and which members nobody is
   // hearing. Both answers are computed once here rather than per drawn row:
   // the roster walk is twelve entries and the draw runs on every repaint.
-  MapTeam& team = MapTeam::getInstance();
-  bool memberHeard[kTeamMaxMembers] = {};
-  const size_t members = team.teamCount();
+  MapGroup& group = MapGroup::getInstance();
+  bool memberHeard[kGroupMaxMembers] = {};
+  const size_t members = group.groupCount();
 
   for (size_t i = 0; i < peerCount_; ++i) {
     peerAcr_[i][0] = '\0';
-    char id[kLoraTeamIdBytes];
-    loraTeamId(peers_[i].pubKey, id, sizeof(id));
-    const size_t slot = team.roster().findId(id);
-    if (slot >= TeamRoster::kSlotCount) continue;
-    snprintf(peerAcr_[i], sizeof(peerAcr_[i]), "%s", team.roster().at(slot).acr);
-    for (size_t k = 0; k < members && k < kTeamMaxMembers; ++k) {
-      if (team.slotForIndex(k) == slot) memberHeard[k] = true;
+    char id[kLoraGroupIdBytes];
+    loraGroupId(peers_[i].pubKey, id, sizeof(id));
+    const size_t slot = group.roster().findId(id);
+    if (slot >= GroupRoster::kSlotCount) continue;
+    snprintf(peerAcr_[i], sizeof(peerAcr_[i]), "%s", group.roster().at(slot).acr);
+    for (size_t k = 0; k < members && k < kGroupMaxMembers; ++k) {
+      if (group.slotForIndex(k) == slot) memberHeard[k] = true;
     }
   }
 
   rosterOnlyCount_ = 0;
-  for (size_t k = 0; k < members && k < kTeamMaxMembers; ++k) {
+  for (size_t k = 0; k < members && k < kGroupMaxMembers; ++k) {
     if (memberHeard[k]) continue;
     rosterOnly_[rosterOnlyCount_++] = static_cast<uint8_t>(k);
   }
@@ -153,9 +153,10 @@ void LoraPeersActivity::captureAnchor() {
       memcpy(anchor_.key, peers_[static_cast<size_t>(selectedIndex - kControlRowCount)].pubKey, sizeof(anchor_.key));
       break;
     case RowKind::RosterOnly:
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-      snprintf(anchor_.acr, sizeof(anchor_.acr), "%s",
-               MapTeam::getInstance().teamMemberAt(rosterOnly_[static_cast<size_t>(selectedIndex - rosterBase())]).acr);
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+      snprintf(
+          anchor_.acr, sizeof(anchor_.acr), "%s",
+          MapGroup::getInstance().groupMemberAt(rosterOnly_[static_cast<size_t>(selectedIndex - rosterBase())]).acr);
 #endif
       break;
   }
@@ -180,9 +181,9 @@ void LoraPeersActivity::restoreAnchor() {
       break;
 
     case RowKind::RosterOnly:
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
       for (size_t i = 0; i < rosterOnlyCount_; ++i) {
-        const TeamMember m = MapTeam::getInstance().teamMemberAt(rosterOnly_[i]);
+        const GroupMember m = MapGroup::getInstance().groupMemberAt(rosterOnly_[i]);
         if (strncmp(m.acr, anchor_.acr, sizeof(anchor_.acr)) == 0) {
           selectedIndex = rosterBase() + static_cast<int>(i);
           return;
@@ -200,14 +201,14 @@ void LoraPeersActivity::restoreAnchor() {
   anchor_.controlRow = 0;
 }
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 void LoraPeersActivity::addHeardPeer(size_t peerIndex) {
   const LoraPeer& peer = peers_[peerIndex];
 
-  char id[kLoraTeamIdBytes];
-  loraTeamId(peer.pubKey, id, sizeof(id));
-  char guess[kTeamAcrBytes];
-  loraTeamAcrGuess(peer.name[0] != '\0' ? peer.name : nullptr, peer.pubKey, guess, sizeof(guess));
+  char id[kLoraGroupIdBytes];
+  loraGroupId(peer.pubKey, id, sizeof(id));
+  char guess[kGroupAcrBytes];
+  loraGroupAcrGuess(peer.name[0] != '\0' ? peer.name : nullptr, peer.pubKey, guess, sizeof(guess));
 
   // **Derived, then offered.** The acronym sits on a map balloon for as long
   // as that person is in the group, and it is guessed from a string they chose
@@ -219,11 +220,11 @@ void LoraPeersActivity::addHeardPeer(size_t peerIndex) {
   auto handler = [this, idStr, name](const ActivityResult& result) {
     if (!result.isCancelled) {
       const auto& kb = std::get<KeyboardResult>(result.data);
-      if (MapTeam::getInstance().teamAdd(kb.text, idStr, name) != IMapTeamSource::Edit::Ok) {
+      if (MapGroup::getInstance().groupAdd(kb.text, idStr, name) != IMapGroupSource::Edit::Ok) {
         // The roster refuses a duplicate acronym, a crossing id pair and a
         // full table, and from here they mean one thing to the rider: pick
         // another short name, or make room.
-        lastError_ = StrId::STR_LORA_TEAM_ADD_FAILED;
+        lastError_ = StrId::STR_LORA_GROUP_ADD_FAILED;
         hasError_ = true;
       }
     }
@@ -232,8 +233,8 @@ void LoraPeersActivity::addHeardPeer(size_t peerIndex) {
   };
 
   startActivityForResult(
-      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_LORA_TEAM_ADD), std::string(guess),
-                                              kTeamAcrBytes - 1, InputType::Text),
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_LORA_GROUP_ADD), std::string(guess),
+                                              kGroupAcrBytes - 1, InputType::Text),
       handler);
 }
 
@@ -244,24 +245,24 @@ void LoraPeersActivity::removeMember(const std::string& idOrAcr, const std::stri
   // and it is not something a mis-aimed Select should do.
   auto handler = [this, idOrAcr](const ActivityResult& result) {
     if (!result.isCancelled) {
-      if (MapTeam::getInstance().teamRemove(idOrAcr) != IMapTeamSource::Edit::Ok) {
-        lastError_ = StrId::STR_LORA_TEAM_REMOVE_FAILED;
+      if (MapGroup::getInstance().groupRemove(idOrAcr) != IMapGroupSource::Edit::Ok) {
+        lastError_ = StrId::STR_LORA_GROUP_REMOVE_FAILED;
         hasError_ = true;
       }
     }
     refresh();
     requestUpdate();
   };
-  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_LORA_TEAM_REMOVE), label),
-                         handler);
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_LORA_GROUP_REMOVE), label), handler);
 }
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS
 
 void LoraPeersActivity::activate(int index) {
   hasError_ = false;
 
   const RowKind kind = rowKind(index);
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (kind == RowKind::HeardPeer) {
     const size_t i = static_cast<size_t>(index - kControlRowCount);
     if (peerAcr_[i][0] == '\0') {
@@ -273,7 +274,7 @@ void LoraPeersActivity::activate(int index) {
   }
   if (kind == RowKind::RosterOnly) {
     const size_t k = rosterOnly_[static_cast<size_t>(index - rosterBase())];
-    const TeamMember m = MapTeam::getInstance().teamMemberAt(k);
+    const GroupMember m = MapGroup::getInstance().groupMemberAt(k);
     removeMember(std::string(m.acr), rowTitle(index));
     return;
   }
@@ -389,12 +390,12 @@ std::string LoraPeersActivity::rowTitle(int index) const {
     }
   }
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (kind == RowKind::RosterOnly) {
     const size_t k = rosterOnly_[static_cast<size_t>(index - rosterBase())];
-    const TeamMember m = MapTeam::getInstance().teamMemberAt(k);
+    const GroupMember m = MapGroup::getInstance().groupMemberAt(k);
     char buf[48];
-    snprintf(buf, sizeof(buf), tr(STR_LORA_TEAM_MEMBER_FORMAT), m.acr, m.name[0] != '\0' ? m.name : m.ids[0]);
+    snprintf(buf, sizeof(buf), tr(STR_LORA_GROUP_MEMBER_FORMAT), m.acr, m.name[0] != '\0' ? m.name : m.ids[0]);
     return std::string(buf);
   }
 #endif
@@ -411,10 +412,10 @@ std::string LoraPeersActivity::rowTitle(int index) const {
     // (src/lora/LoraPeerTable.h).
     snprintf(who, sizeof(who), "%02x%02x%02x%02x", peer.pubKey[0], peer.pubKey[1], peer.pubKey[2], peer.pubKey[3]);
   }
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (peerAcr_[i][0] != '\0') {
     char buf[48];
-    snprintf(buf, sizeof(buf), tr(STR_LORA_TEAM_MEMBER_FORMAT), peerAcr_[i], who);
+    snprintf(buf, sizeof(buf), tr(STR_LORA_GROUP_MEMBER_FORMAT), peerAcr_[i], who);
     return std::string(buf);
   }
 #endif
@@ -449,7 +450,7 @@ std::string LoraPeersActivity::rowValue(int index) const {
     }
   }
 
-  if (kind == RowKind::RosterOnly) return std::string(tr(STR_LORA_TEAM_NOT_HEARD));
+  if (kind == RowKind::RosterOnly) return std::string(tr(STR_LORA_GROUP_NOT_HEARD));
 
   // A peer's coordinate, and an empty column means they have not told us where
   // they are. Never 0,0 -- that is a place in the Atlantic and a different
@@ -496,11 +497,11 @@ uint32_t LoraPeersActivity::listSignature() const {
     char age[16];
     formatAge((snapshotMs_ - p.heardUptimeMs) / 1000, age, sizeof(age));
     for (const char* c = age; *c != '\0'; ++c) mix(static_cast<uint32_t>(*c));
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
     for (const char* c = peerAcr_[i]; *c != '\0'; ++c) mix(static_cast<uint32_t>(*c));
 #endif
   }
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   mix(static_cast<uint32_t>(rosterOnlyCount_));
   for (size_t i = 0; i < rosterOnlyCount_; ++i) mix(rosterOnly_[i]);
 #endif

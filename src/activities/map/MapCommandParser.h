@@ -5,12 +5,12 @@
 
 #include "MapRideMode.h"
 #include "PinCatalog.h"
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-#if !defined(ENABLE_TEAM_MARKERS) || !ENABLE_TEAM_MARKERS
-#error "ENABLE_TEAM_CMD needs ENABLE_TEAM_MARKERS: the console cannot feed a layer that is not built"
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+#if !defined(ENABLE_GROUP_MARKERS) || !ENABLE_GROUP_MARKERS
+#error "ENABLE_GROUP_CMD needs ENABLE_GROUP_MARKERS: the console cannot feed a layer that is not built"
 #endif
-#include "TeamFix.h"
-#include "TeamMembers.h"
+#include "GroupFix.h"
+#include "GroupMembers.h"
 #endif
 
 // Line-based ASCII command grammar for the map/nav console.
@@ -46,12 +46,12 @@
 //   pin del <key>
 //   pin list
 //   pin log [<offset>]
-//   team pos <acr|id> <lat> <lon> [utc <s>] [heading <0-15>] [speed <kmh>] [src <word>]
-//   team add <acr> <id> [<name>]
-//   team del <acr|id>
-//   team list
-//   team reload
-//   team log [<offset>]
+//   group pos <acr|id> <lat> <lon> [utc <s>] [heading <0-15>] [speed <kmh>] [src <word>]
+//   group add <acr> <id> [<name>]
+//   group del <acr|id>
+//   group list
+//   group reload
+//   group log [<offset>]
 //
 // `tiles` reports the current viewport. `missing` reports the persisted
 // list of every tile the device has ever hatched, which is a different and
@@ -130,21 +130,21 @@
 // `pin log` pages exactly like `missing [<offset>]`, and for the same reason: a
 // whole history does not fit in one reply.
 //
-// `team` is the group-markers layer's console (../../../docs/team-markers.md), and
-// it exists **only in a devel build** (-DENABLE_TEAM_CMD, out of every release
-// env). Two reasons, and either one is enough: `team pos` injects a position
+// `group` is the group-markers layer's console (../../../docs/group-markers.md), and
+// it exists **only in a devel build** (-DENABLE_GROUP_CMD, out of every release
+// env). Two reasons, and either one is enough: `group pos` injects a position
 // under somebody else's name, which is a forged rider on the panel of whoever
-// holds the device, and `team list` prints where the whole group is to anyone in
+// holds the device, and `group list` prints where the whole group is to anyone in
 // BLE range, with no pairing and no ownership check (CLAUDE.md, "Security").
 //
-// `team pos` is also the shape a real transport uses: it resolves the sender
+// `group pos` is also the shape a real transport uses: it resolves the sender
 // through the roster's allowlist exactly as a LoRa or BLE frame will, so the
 // path a stranger's position dies on is the same path the console exercises.
 // The optional tail is keyword-only -- unlike `pos`, where a bare number fills
 // heading then speed -- because a bare number after a coordinate here would be
 // as likely to be a utc as a heading.
 //
-// `team add` and `team del` edit the roster file, and `team reload` re-reads it
+// `group add` and `group del` edit the roster file, and `group reload` re-reads it
 // after a hand edit on the card.
 //
 // The optional tail of `pos` takes the value bare (`pos 48.4 17.0 4 30`) or
@@ -180,8 +180,8 @@ enum class MapCommandType : uint8_t {
   Points,
   Gone,
   Pin,
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-  Team,
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  Group,
 #endif
   Error,  // see MapCommand::error
 };
@@ -195,10 +195,10 @@ enum class MapPinVerb : uint8_t {
   Log,
 };
 
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-// Sub-verb of `team`, same one-type-with-a-verb shape as `pin` and for the same
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+// Sub-verb of `group`, same one-type-with-a-verb shape as `pin` and for the same
 // reason: the six share the member field and every caller switches on the pair.
-enum class MapTeamVerb : uint8_t {
+enum class MapGroupVerb : uint8_t {
   Pos,
   Add,
   Del,
@@ -216,7 +216,7 @@ enum class MapCommandError : uint8_t {
   OutOfRange,
   BadMode,
   UnknownPin,   // `pin set`/`pin del` with a key that is not in the catalogue
-  BadMember,    // `team` with an unstorable acronym, id or name
+  BadMember,    // `group` with an unstorable acronym, id or name
   LineTooLong,  // not produced by the parser; the line assembler raises it
 };
 
@@ -284,23 +284,23 @@ struct MapCommand {
   char pinKey[kPinKeyBytes] = {};
   uint32_t pinUtc = 0;        // `pin set`, optional; 0 = the sender had no clock
   uint16_t pinLogOffset = 0;  // `pin log`, default 0 = the newest page
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-  // Team: which sub-verb, and the member it names. latE7/lonE7 above carry
-  // `team pos`'s coordinate, the same fields `pos` and `pin set` use -- one
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  // Group: which sub-verb, and the member it names. latE7/lonE7 above carry
+  // `group pos`'s coordinate, the same fields `pos` and `pin set` use -- one
   // coordinate field for this device, wherever the number came from.
   //
   // Copied, not viewed, for the same reason as skipReason: a MapCommand that
   // outlives the line it was parsed from must not hold pointers into it.
-  MapTeamVerb teamVerb = MapTeamVerb::List;
-  char teamAcr[kTeamAcrBytes] = {};   // `team add`, and the handle every other verb resolves
-  char teamId[kTeamIdBytes] = {};     // `team add`, and `team pos`/`team del` when addressed by id
-  char teamName[kTeamNameBytes] = {};  // `team add`, optional, spaces kept
-  uint32_t teamUtc = 0;               // `team pos`, keyword `utc`; 0 = the sender had no clock
-  uint16_t teamLogOffset = 0;         // `team log`, default 0 = the newest page
-  // `team pos`'s heading and speed reuse `heading`/`speedKmh` and their
+  MapGroupVerb groupVerb = MapGroupVerb::List;
+  char groupAcr[kGroupAcrBytes] = {};    // `group add`, and the handle every other verb resolves
+  char groupId[kGroupIdBytes] = {};      // `group add`, and `group pos`/`group del` when addressed by id
+  char groupName[kGroupNameBytes] = {};  // `group add`, optional, spaces kept
+  uint32_t groupUtc = 0;                 // `group pos`, keyword `utc`; 0 = the sender had no clock
+  uint16_t groupLogOffset = 0;           // `group log`, default 0 = the newest page
+  // `group pos`'s heading and speed reuse `heading`/`speedKmh` and their
   // hasHeading/hasSpeed flags below, for the same one-field-per-thing reason the
   // coordinate is shared.
-  TeamFixSource teamSource = TeamFixSource::Cmd;  // `team pos`, keyword `src`
+  GroupFixSource groupSource = GroupFixSource::Cmd;  // `group pos`, keyword `src`
 #endif
   MapRideMode mode = MapRideMode::Ride;
   bool hasHeading = false;     // Pos carried a heading

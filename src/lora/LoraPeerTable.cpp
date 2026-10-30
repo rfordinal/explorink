@@ -79,7 +79,7 @@ bool LoraPeerTable::heard(const uint8_t pubKey[32], const char* name, bool hasLo
 
   // Same rule for the coordinate, and it matters more: the difference between
   // "has not told us" and "is at 0,0" is one the whole group layer keeps
-  // (docs/team-markers.md), and an advert sent without a fix must not blank a
+  // (docs/group-markers.md), and an advert sent without a fix must not blank a
   // position we were told five minutes ago.
   if (hasLoc) {
     p.latE6 = latE6;

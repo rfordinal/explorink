@@ -1,6 +1,6 @@
-#include "TeamRecord.h"
+#include "GroupRecord.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <cstdio>
 #include <cstring>
@@ -93,42 +93,42 @@ bool nextField(std::string_view& rest, std::string_view& field, bool last) {
 
 }  // namespace
 
-const char* teamSourceText(TeamFixSource source) {
+const char* groupSourceText(GroupFixSource source) {
   switch (source) {
-    case TeamFixSource::Cmd:
+    case GroupFixSource::Cmd:
       return "cmd";
-    case TeamFixSource::Ble:
+    case GroupFixSource::Ble:
       return "ble";
-    case TeamFixSource::Lora:
+    case GroupFixSource::Lora:
       return "lora";
-    case TeamFixSource::Gnss:
+    case GroupFixSource::Gnss:
       return "gnss";
-    case TeamFixSource::Unknown:
+    case GroupFixSource::Unknown:
       break;
   }
   return "unknown";
 }
 
-bool teamSourceFromText(std::string_view text, TeamFixSource& out) {
+bool groupSourceFromText(std::string_view text, GroupFixSource& out) {
   if (text == "cmd")
-    out = TeamFixSource::Cmd;
+    out = GroupFixSource::Cmd;
   else if (text == "ble")
-    out = TeamFixSource::Ble;
+    out = GroupFixSource::Ble;
   else if (text == "lora")
-    out = TeamFixSource::Lora;
+    out = GroupFixSource::Lora;
   else if (text == "gnss")
-    out = TeamFixSource::Gnss;
+    out = GroupFixSource::Gnss;
   else if (text == "unknown")
-    out = TeamFixSource::Unknown;
+    out = GroupFixSource::Unknown;
   else
     return false;
   return true;
 }
 
-size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen) {
+size_t encodeGroupRecord(const GroupRecord& rec, char* buf, size_t bufLen) {
   if (buf == nullptr || bufLen == 0) return 0;
   const std::string_view who(rec.who);
-  if (who != kTeamSelfWho && !isValidTeamAcr(who)) return 0;
+  if (who != kGroupSelfWho && !isValidGroupAcr(who)) return 0;
 
   char lat[16];
   char lon[16];
@@ -143,13 +143,13 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen) {
   const int written = snprintf(buf, bufLen, "%lu,%lu,%lu,%lu,%s,%s,%s,%s,%s,%s,%s", static_cast<unsigned long>(rec.utc),
                                static_cast<unsigned long>(rec.recvUtc), static_cast<unsigned long>(rec.uptimeMs),
                                static_cast<unsigned long>(rec.boot), rec.who, rec.id, lat, lon, heading, speed,
-                               teamSourceText(rec.source));
+                               groupSourceText(rec.source));
   if (written < 0 || static_cast<size_t>(written) >= bufLen) return 0;
   return static_cast<size_t>(written);
 }
 
-bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
-  if (line.empty() || line.size() > kTeamLineMax) return false;
+bool decodeGroupRecord(std::string_view line, GroupRecord& out) {
+  if (line.empty() || line.size() > kGroupLineMax) return false;
 
   // Ten fields today, nine before `recv_utc`, eight before `boot` -- counted up
   // front rather than guessed at, because the field after the numbers is an
@@ -176,17 +176,17 @@ bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
     return false;
   }
 
-  TeamRecord rec;
+  GroupRecord rec;
   if (!parseUint(utc, rec.utc) || !parseUint(uptime, rec.uptimeMs)) return false;
   if (hasRecvUtc && !parseUint(recvUtc, rec.recvUtc)) return false;
   if (hasBoot && !parseUint(boot, rec.boot)) return false;
-  if (who != kTeamSelfWho && !isValidTeamAcr(who)) return false;
+  if (who != kGroupSelfWho && !isValidGroupAcr(who)) return false;
   memcpy(rec.who, who.data(), who.size());
   rec.who[who.size()] = '\0';
   // Empty is legal: `ME` rows have no transport identity, and neither does a row
   // written before the column.
   if (!id.empty()) {
-    if (!isValidTeamId(id)) return false;
+    if (!isValidGroupId(id)) return false;
     memcpy(rec.id, id.data(), id.size());
     rec.id[id.size()] = '\0';
   }
@@ -203,17 +203,17 @@ bool decodeTeamRecord(std::string_view line, TeamRecord& out) {
     rec.speedKmh = static_cast<uint16_t>(value);
     rec.hasSpeed = true;
   }
-  if (!teamSourceFromText(src, rec.source)) return false;
+  if (!groupSourceFromText(src, rec.source)) return false;
 
   out = rec;
   return true;
 }
 
-uint32_t teamDayNumber(uint32_t utc) { return dayNumberFromUtc(utc); }
+uint32_t groupDayNumber(uint32_t utc) { return dayNumberFromUtc(utc); }
 
 // The `bb-` prefix is this log's own; everything else about naming a day file
 // is shared with the radio's event log (`../../DayFile.h`), because two copies
 // of a calendar is the shape that drifts.
-bool teamDayFileName(uint32_t utc, char* out, size_t outBytes) { return dayFileName("bb", utc, out, outBytes); }
+bool groupDayFileName(uint32_t utc, char* out, size_t outBytes) { return dayFileName("bb", utc, out, outBytes); }
 
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

@@ -199,7 +199,7 @@ TEST(LoraEventLine, ARefusedPositionKeepsTheKeySoItCanBeAddedToTheRoster) {
 }
 
 // A zero there would read as 1970 rather than as "this device has no clock",
-// which is the same rule TeamRecord lives under.
+// which is the same rule GroupRecord lives under.
 TEST(LoraEventLine, NoClockLeavesTheUtcColumnEmptyRatherThanZero) {
   EXPECT_EQ(field(encode(rxEvent(), 0u), kUtc), "");
   EXPECT_EQ(field(encode(rxEvent(), 1761200000u), kUtc), "1761200000");

@@ -6,7 +6,7 @@ add_executable(LoraPeerTableTest
 # The table is build-flag gated so a board with no radio leaves it out
 # entirely (platformio.ini, ENABLE_LORA_MESH). The tests are the one place it is
 # always on: a gated-out feature that nobody compiles rots. Same reasoning as
-# test/team.
+# test/group.
 target_compile_definitions(LoraPeerTableTest PRIVATE ENABLE_LORA_MESH=1)
 
 target_include_directories(LoraPeerTableTest PRIVATE ${REPO_ROOT}/src/lora)

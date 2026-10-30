@@ -43,10 +43,10 @@
 #include "lora/BeaconPolicy.h"
 #include "lora/LoraEventLine.h"
 #include "lora/LoraEventLog.h"
+#include "lora/LoraGroupId.h"
 #include "lora/LoraPresence.h"
-#include "lora/LoraTeamId.h"
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-#include "activities/map/MapTeam.h"
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+#include "activities/map/MapGroup.h"
 #endif
 #include "lora/PresenceMesh.h"
 #endif
@@ -1212,11 +1212,11 @@ static int32_t gMeshSettleLonE7 = 0;
 static bool gMeshDeclineLogged = false;
 static unsigned long gMeshLastDeclineLogMs = 0;
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 // One heard position on its way to the group layer.
 //
 // **It goes through a queue because of which task is which.** onAdvertRecv()
-// runs on the radio task, and MapTeam::teamPosition() writes a black box row
+// runs on the radio task, and MapGroup::groupPosition() writes a black box row
 // to the SD card and reads a roster the UI task edits. A card write inside the
 // radio service loop costs packets -- an SX126x holds exactly one -- and
 // touching the roster from two tasks is a race. So the radio task copies four
@@ -1243,7 +1243,7 @@ static void meshPositionHook(const uint8_t pubKey[32], int32_t latE6, int32_t lo
   // here would cost packets, which is the thing the queue exists to avoid.
   if (xQueueSend(gMeshPosQueue, &ev, 0) != pdTRUE) ++gMeshPosDrops;
 }
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS
 
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
 // The radio's own file log. Same split as the position queue above and for a
@@ -1292,8 +1292,8 @@ static void loraLogSimple(LoraLogKind kind, uint32_t cadenceSec = 0, LoraTxDecli
 // the black box is read by. Not transmitting is the only answer that lies
 // about nothing.
 //
-// Same two sources in the same order as MapTeam::utcNowOrZero(), spelled again
-// because this has to work on a build with the team layer compiled out.
+// Same two sources in the same order as MapGroup::utcNowOrZero(), spelled again
+// because this has to work on a build with the group layer compiled out.
 static uint32_t meshWallClockUtc() {
   uint32_t utc = 0;
   if (freeink::BlePositionServer::getInstance().utcNow(utc)) return utc;
@@ -1309,15 +1309,15 @@ static uint32_t meshWallClockUtc() {
 // This run's identity, so a row can be told from one written before the last
 // reboot.
 //
-// **The team layer's id when it exists, and that is the point**: the black box
+// **The group layer's id when it exists, and that is the point**: the black box
 // stamps the same number, so a row in one file joins a row in the other by
 // eye. Without that layer the radio still needs an id, and the fallback is the
-// same recipe for the same reason (MapTeam::bootId() has it in full): never
+// same recipe for the same reason (MapGroup::bootId() has it in full): never
 // zero, and the low bits of micros() mixed upward so two boots a millisecond
 // apart cannot collide.
 static uint32_t loraLogBootId() {
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-  return MapTeam::bootId();
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  return MapGroup::bootId();
 #else
   static uint32_t id = 0;
   if (id == 0) {
@@ -1365,7 +1365,7 @@ static constexpr uint32_t kMeshBeaconMinSec = 70;
 //
 // **No fix means no coordinate, never a zero.** 0,0 is a place in the Atlantic,
 // and the difference between "has not told us" and "is at 0,0" is one this
-// whole layer keeps (docs/team-markers.md). Takes the chip mutex because it
+// whole layer keeps (docs/group-markers.md). Takes the chip mutex because it
 // touches Dispatcher state the service task also walks; it starts no transmit
 // itself -- the packet is queued and the service task puts it on the air.
 // Where this device thinks it is, from whichever radio is supplying it.
@@ -1418,13 +1418,13 @@ static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7, uint16_t* accuracyM
   // current one.** A phone that walked out of range leaves its last position
   // sitting there for the rest of the boot, and broadcasting that as our own
   // would be the device claiming a position fresher than it is -- the one
-  // thing the group layer promises never to do (`team-markers.md`). There is
+  // thing the group layer promises never to do (`group-markers.md`). There is
   // no receive timestamp in the packet, and the connection flag cannot stand
   // in for one: `connIntervalMs()` is cleared only by NimBLE's disconnect
   // callback, and a link that died without it read as connected for hours
   // (firmware CLAUDE.md, "Before acting on a telemetry counter"). So this
   // stamps its own clock the first time it sees a packet it has not seen
-  // before, exactly like MapTeam stamps `recvUtc`.
+  // before, exactly like MapGroup stamps `recvUtc`.
   static uint8_t lastSeq = 0;
   static uint32_t lastUtc = 0;
   static uint32_t lastChangeMs = 0;
@@ -1579,7 +1579,7 @@ static bool meshStart(bool& persisted) {
   // packet -- this one only makes the node's first moments dateable.
   if (const uint32_t wallUtc = meshWallClockUtc(); wallUtc != 0) gMeshRtc.setCurrentTime(wallUtc);
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (gMeshPosQueue == nullptr) gMeshPosQueue = xQueueCreate(8, sizeof(MeshPositionEvent));
   gMesh.setPositionHook(gMeshPosQueue != nullptr ? &meshPositionHook : nullptr);
 #endif
@@ -2072,23 +2072,23 @@ static void loraDrain() {
   // because an advert is queued, not transmitted, so this costs no radio time.
   meshBeaconTick();
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   // Heard positions into the group layer. This is the seam docs/lora.md
   // promised before any radio existed: a LoRa frame, a BLE relay and a console
-  // line all arrive at teamPosition(), and nothing above it knows which spoke.
+  // line all arrive at groupPosition(), and nothing above it knows which spoke.
   if (gMeshPosQueue != nullptr) {
     MeshPositionEvent ev;
     while (xQueueReceive(gMeshPosQueue, &ev, 0) == pdTRUE) {
-      char id[kLoraTeamIdBytes];
-      loraTeamId(ev.pubKey, id, sizeof(id));
+      char id[kLoraGroupIdBytes];
+      loraGroupId(ev.pubKey, id, sizeof(id));
 
       // **Membership is checked here, on this task, and never on the radio
       // task.** It also keeps strangersRefused() meaningful: on a public
       // channel most adverts are strangers, and counting every passing node
       // from Graz would drown the number that says somebody is talking *at*
       // this group.
-      MapTeam& team = MapTeam::getInstance();
-      if (team.roster().findId(id) >= TeamRoster::kSlotCount) {
+      MapGroup& group = MapGroup::getInstance();
+      if (group.roster().findId(id) >= GroupRoster::kSlotCount) {
         // **The row that explains an empty map while the radio is busy.**
         // The advert parsed, the signature verified, and the position was
         // still thrown away because nobody added this node -- which looks
@@ -2106,19 +2106,19 @@ static void loraDrain() {
         continue;
       }
 
-      TeamFix fix;
+      GroupFix fix;
       fix.present = true;
-      // MeshCore's advert carries 1e6 degrees and TeamFix stores 1e7, so the
+      // MeshCore's advert carries 1e6 degrees and GroupFix stores 1e7, so the
       // last digit is always zero. That is a unit conversion and not extra
       // precision -- about 11 cm either way, which is far finer than anything
       // this feature should be read as promising.
       fix.latE7 = static_cast<int32_t>(static_cast<int64_t>(ev.latE6) * 10);
       fix.lonE7 = static_cast<int32_t>(static_cast<int64_t>(ev.lonE6) * 10);
       fix.utc = ev.advertUtc;  // their clock, believed about nothing
-      fix.recvUtc = MapTeam::utcNowOrZero();
+      fix.recvUtc = MapGroup::utcNowOrZero();
       fix.recvUptimeMs = millis();
-      fix.source = TeamFixSource::Lora;
-      team.teamPosition(id, fix);
+      fix.source = GroupFixSource::Lora;
+      group.groupPosition(id, fix);
     }
   }
 #endif

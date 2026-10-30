@@ -1,6 +1,6 @@
-#include "TeamMembers.h"
+#include "GroupMembers.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 namespace {
 
@@ -21,8 +21,8 @@ char toUpper(char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a'
 
 }  // namespace
 
-bool isValidTeamAcr(std::string_view acr) {
-  if (acr.size() < 2 || acr.size() > kTeamAcrBytes - 1) return false;
+bool isValidGroupAcr(std::string_view acr) {
+  if (acr.size() < 2 || acr.size() > kGroupAcrBytes - 1) return false;
   for (const char c : acr) {
     const char u = toUpper(c);
     const bool letter = u >= 'A' && u <= 'Z';
@@ -32,27 +32,27 @@ bool isValidTeamAcr(std::string_view acr) {
   return true;
 }
 
-bool teamNormaliseAcr(std::string_view acr, char* out) {
-  if (out == nullptr || !isValidTeamAcr(acr)) return false;
+bool groupNormaliseAcr(std::string_view acr, char* out) {
+  if (out == nullptr || !isValidGroupAcr(acr)) return false;
   size_t i = 0;
   for (; i < acr.size(); ++i) out[i] = toUpper(acr[i]);
   out[i] = '\0';
   return true;
 }
 
-bool isValidTeamId(std::string_view id) {
-  if (id.empty() || id.size() > kTeamIdBytes - 1) return false;
+bool isValidGroupId(std::string_view id) {
+  if (id.empty() || id.size() > kGroupIdBytes - 1) return false;
   for (const char c : id) {
     if (!isPrintableAscii(c) || c == ' ' || isSeparator(c)) return false;
   }
   return true;
 }
 
-bool isValidTeamName(std::string_view name) {
-  if (name.size() > kTeamNameBytes - 1) return false;
+bool isValidGroupName(std::string_view name) {
+  if (name.size() > kGroupNameBytes - 1) return false;
   for (const char c : name) {
     if (!isPrintableAscii(c) || isSeparator(c)) return false;
   }
   return true;
 }
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

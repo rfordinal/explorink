@@ -7,10 +7,10 @@
 // day rather than by size.
 //
 // **Extracted 2026-10-23, when the LoRa event log became the second caller.**
-// The calendar arithmetic lived inside `TeamRecord.cpp`'s anonymous namespace
-// and was reachable only from the team layer, which is behind its own build
+// The calendar arithmetic lived inside `GroupRecord.cpp`'s anonymous namespace
+// and was reachable only from the group layer, which is behind its own build
 // flag -- so the radio's log could not have used it without either compiling
-// the team layer or keeping a second copy of a date algorithm. Two copies of
+// the group layer or keeping a second copy of a date algorithm. Two copies of
 // a calendar is exactly the shape that drifts.
 //
 // Integer only and no `<ctime>`: `gmtime_r` on this toolchain pulls in locale

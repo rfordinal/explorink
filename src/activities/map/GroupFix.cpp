@@ -1,11 +1,11 @@
-#include "TeamFix.h"
+#include "GroupFix.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <cstdio>
 
-TeamFixAge teamFixAge(const TeamFix& fix, uint32_t nowUtc, uint32_t nowUptimeMs) {
-  TeamFixAge age;
+GroupFixAge groupFixAge(const GroupFix& fix, uint32_t nowUtc, uint32_t nowUptimeMs) {
+  GroupFixAge age;
   if (!fix.present) return age;
 
   if (fix.utc != 0 && nowUtc != 0 && nowUtc >= fix.utc) {
@@ -30,11 +30,11 @@ TeamFixAge teamFixAge(const TeamFix& fix, uint32_t nowUtc, uint32_t nowUptimeMs)
   return age;
 }
 
-TeamVisibility teamFixVisibility(const TeamFixAge& age, uint32_t staleAfterS, uint32_t hideAfterS) {
-  if (!age.known) return TeamVisibility::Stale;
-  if (hideAfterS != 0 && age.seconds >= hideAfterS) return TeamVisibility::Hidden;
-  if (age.seconds >= staleAfterS) return TeamVisibility::Stale;
-  return TeamVisibility::Fresh;
+GroupVisibility groupFixVisibility(const GroupFixAge& age, uint32_t staleAfterS, uint32_t hideAfterS) {
+  if (!age.known) return GroupVisibility::Stale;
+  if (hideAfterS != 0 && age.seconds >= hideAfterS) return GroupVisibility::Hidden;
+  if (age.seconds >= staleAfterS) return GroupVisibility::Stale;
+  return GroupVisibility::Fresh;
 }
 
 namespace {
@@ -42,7 +42,7 @@ namespace {
 // Minutes under an hour, whole hours above it, and `?` when the age cannot be
 // known. Never seconds: a number that ticks on e-ink is a waveform pass per
 // tick, and "four minutes ago" is the resolution the question actually has.
-size_t formatAge(const TeamFixAge& age, char* buf, size_t bufLen) {
+size_t formatAge(const GroupFixAge& age, char* buf, size_t bufLen) {
   // Under a minute there is nothing to say: `0m` is a number that reads as
   // information and carries none. It only comes up with the stale threshold
   // turned down to zero, and then the hollow head is the whole message.
@@ -56,13 +56,13 @@ size_t formatAge(const TeamFixAge& age, char* buf, size_t bufLen) {
 
   // **Rounded up, to five minutes.** Two reasons and they are the same reason.
   // A number that ticks on e-ink is a waveform pass per tick, and the panel only
-  // revisits these every kTeamAgeRefreshMs anyway (MapActivity) -- so a
+  // revisits these every kGroupAgeRefreshMs anyway (MapActivity) -- so a
   // resolution finer than that period is a number that is wrong most of the
   // time. And rounding *up* is the only safe direction: "10 minutes" for a fix
   // that is nine and a half is a position claimed older than it is, which costs
   // nobody anything, while rounding down claims a stale position is fresher.
   const uint32_t minutes = (age.seconds + 59) / 60;
-  const uint32_t rounded = ((minutes + kTeamAgeStepMinutes - 1) / kTeamAgeStepMinutes) * kTeamAgeStepMinutes;
+  const uint32_t rounded = ((minutes + kGroupAgeStepMinutes - 1) / kGroupAgeStepMinutes) * kGroupAgeStepMinutes;
   const int written = rounded < 60 ? snprintf(buf, bufLen, "%lum", static_cast<unsigned long>(rounded))
                                    : snprintf(buf, bufLen, "%luh", static_cast<unsigned long>((rounded + 59) / 60));
   return written > 0 && static_cast<size_t>(written) < bufLen ? static_cast<size_t>(written) : 0;
@@ -99,8 +99,8 @@ size_t formatDistance(uint32_t metres, char* buf, size_t bufLen) {
 
 }  // namespace
 
-size_t teamMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const TeamFixAge& age, char* buf,
-                       size_t bufLen) {
+size_t groupMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const GroupFixAge& age, char* buf,
+                        size_t bufLen) {
   if (buf == nullptr || bufLen == 0) return 0;
   buf[0] = '\0';
   if (!wantDistance && !wantAge) return 0;
@@ -124,4 +124,4 @@ size_t teamMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const T
   return static_cast<size_t>(written);
 }
 
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

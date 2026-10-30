@@ -1,18 +1,18 @@
 #pragma once
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
-#include "TeamFix.h"
-#include "TeamMembers.h"
+#include "GroupFix.h"
+#include "GroupMembers.h"
 
 // One line of the black box, and the day file it belongs in.
 //
-// Pure: no Arduino, no HAL, no SD. TeamBlackBox does the card, this does the
-// bytes, so every format rule is host-testable (test/team/).
+// Pure: no Arduino, no HAL, no SD. GroupBlackBox does the card, this does the
+// bytes, so every format rule is host-testable (test/group/).
 //
 // CSV, one row per accepted position, header written when a file is created:
 //
@@ -35,7 +35,7 @@
 // **`recv_utc` is the column a search reads.** The sender's `utc` is theirs and
 // is often absent -- a peer with no clock, a console line, an early frame. Ours
 // is there whenever the device knew the time at all, from the phone's packet or
-// from the GNSS receiver (MapTeam::utcNowOrZero), and it says when this device
+// from the GNSS receiver (MapGroup::utcNowOrZero), and it says when this device
 // heard the position. It is also what dates a position across a reboot.
 //
 // **`boot` is what makes `uptime_ms` mean something after a reload.** A device
@@ -64,40 +64,40 @@
 
 // `ME` is the rider's own row, so it can never be a member's acronym -- two
 // people under one name in a search log is the failure that reserves it.
-inline constexpr const char* kTeamSelfWho = "ME";
+inline constexpr const char* kGroupSelfWho = "ME";
 
-struct TeamRecord {
+struct GroupRecord {
   uint32_t utc = 0;      // the sender's clock
   uint32_t recvUtc = 0;  // ours, when we heard it
   uint32_t uptimeMs = 0;
   // Identifies the run of *this device* that wrote the row, so its uptime can be
   // compared against the current one. 0 when the row predates the column.
   uint32_t boot = 0;
-  char who[kTeamAcrBytes] = {};
-  char id[kTeamIdBytes] = {};
+  char who[kGroupAcrBytes] = {};
+  char id[kGroupIdBytes] = {};
   int32_t latE7 = 0;
   int32_t lonE7 = 0;
   uint8_t heading = 0;
   bool hasHeading = false;
   uint16_t speedKmh = 0;
   bool hasSpeed = false;
-  TeamFixSource source = TeamFixSource::Unknown;
+  GroupFixSource source = GroupFixSource::Unknown;
 };
 
 // Every field at its type's widest plus the separators, rounded up: four
 // ten-digit numbers, a three-character acronym, a 23-character id, two signed
 // coordinates, a heading, a speed and a source word. Sized for the type, not for
 // today's data (same rule as kPinLineMax).
-inline constexpr size_t kTeamLineMax = 160;
+inline constexpr size_t kGroupLineMax = 160;
 
-inline constexpr const char* kTeamCsvHeader = "utc,recv_utc,uptime_ms,boot,who,id,lat,lon,heading,speed_kmh,src";
+inline constexpr const char* kGroupCsvHeader = "utc,recv_utc,uptime_ms,boot,who,id,lat,lon,heading,speed_kmh,src";
 
-const char* teamSourceText(TeamFixSource source);
-bool teamSourceFromText(std::string_view text, TeamFixSource& out);
+const char* groupSourceText(GroupFixSource source);
+bool groupSourceFromText(std::string_view text, GroupFixSource& out);
 
-// Writes the row into `buf`, no trailing newline (TeamBlackBox adds it). Returns
+// Writes the row into `buf`, no trailing newline (GroupBlackBox adds it). Returns
 // the length written, or 0 when the buffer is too small or `who` is unstorable.
-size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen);
+size_t encodeGroupRecord(const GroupRecord& rec, char* buf, size_t bufLen);
 
 // Parses one row, terminator already stripped, header line included (it is
 // refused like any other malformed row). False means "skip this line and keep
@@ -107,14 +107,14 @@ size_t encodeTeamRecord(const TeamRecord& rec, char* buf, size_t bufLen);
 // somebody's last known position, and refusing it would throw away the evidence
 // over columns that only help dating. Eight is the original row, nine adds
 // `boot`, ten adds `recv_utc`, eleven adds `id` after the acronym.
-bool decodeTeamRecord(std::string_view line, TeamRecord& out);
+bool decodeGroupRecord(std::string_view line, GroupRecord& out);
 
 // The file a fix belongs in. Rotation is by day, so the name carries the date:
 // `bb-20260916.csv`. A device with no clock writes `bb-noclock.csv`, because a
 // day it cannot name is still a day whose rows must not be lost.
-bool teamDayFileName(uint32_t utc, char* out, size_t outBytes);
+bool groupDayFileName(uint32_t utc, char* out, size_t outBytes);
 
 // Days since 1970-01-01 UTC, which is what rotation compares. 0 for utc 0.
-uint32_t teamDayNumber(uint32_t utc);
+uint32_t groupDayNumber(uint32_t utc);
 
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

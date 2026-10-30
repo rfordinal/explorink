@@ -35,42 +35,42 @@ Three parts:
 
 ## It is not the group roster, and that is deliberate
 
-`MapTeam` is an allowlist: a position from an id that is not in it is refused,
-counted and never drawn (`team-markers.md`, "A stranger is not a member"). This
+`MapGroup` is an allowlist: a position from an id that is not in it is refused,
+counted and never drawn (`group-markers.md`, "A stranger is not a member"). This
 table is the opposite question -- everyone the antenna heard, approved or not --
 because a board that is not in the roster yet is exactly the board a range test
 is trying to hear.
 
 Nothing on the node list reaches the map. Making a heard node a group member is
-`team add <acr> <key>` with its key, typed on purpose.
+`group add <acr> <key>` with its key, typed on purpose.
 
 ### A heard position reaches the map, since 2026-10-22
 
-`MapTeam::teamPosition()` is the transport-independent ingest that a LoRa frame
-was always going to arrive through (`team-markers.md`, "The layer does not know
+`MapGroup::groupPosition()` is the transport-independent ingest that a LoRa frame
+was always going to arrive through (`group-markers.md`, "The layer does not know
 which radio spoke"), and it is wired now: an advert that carries a coordinate
 and belongs to a roster member moves that member's marker.
 
 **It is wired through a queue, and which task does what is the reason.**
-`onAdvertRecv()` runs on the radio task; `teamPosition()` writes a black box
+`onAdvertRecv()` runs on the radio task; `groupPosition()` writes a black box
 row to the SD card and reads a roster the UI task edits. A card write inside
 the radio service loop costs packets -- an SX126x holds exactly one -- and
 touching the roster from two tasks is a race. So the radio task copies four
 numbers into a queue and returns, and `loop()` does the roster lookup, builds
-the `TeamFix` and calls the ingest. Same split the console's receive path
+the `GroupFix` and calls the ingest. Same split the console's receive path
 already uses.
 
 **Membership is checked on the loop task, before the ingest is called.** Not
 only to keep roster reads on one task: on a public channel most adverts are
-strangers, and letting `teamPosition()` refuse each one would bury
+strangers, and letting `groupPosition()` refuse each one would bury
 `strangersRefused()` -- the number that is supposed to say somebody is talking
 *at* this group -- under every passing node from Graz.
 
-The advert carries 1e6 degrees and `TeamFix` stores 1e7, so the last digit is
+The advert carries 1e6 degrees and `GroupFix` stores 1e7, so the last digit is
 always zero. That is a unit conversion, not precision.
 
 **The layer stays transport-neutral and this must not erode it.** A position
-reaches `MapTeam` from this radio, from a phone relay over BLE, or from the
+reaches `MapGroup` from this radio, from a phone relay over BLE, or from the
 console, and a member holds one id per transport that has ever named them --
 which is why the id written here is `lora-`-prefixed rather than bare. The one
 place that slipped and was corrected the same day: the node list's third
@@ -601,13 +601,15 @@ with `_rtc->getCurrentTime()` (`Mesh.cpp`, `createAdvert`), and an unseeded
 `VolatileRTCClock` counts from its own arbitrary epoch. The receiver dates
 the marker by that stamp. So an advert sent without a clock arrives as a
 position **two and a half years old and is hidden on arrival** --
-`teamFixAge()` trusts the sender's `utc` above our own receive time
-(`TeamFix.cpp`), and `teamFixVisibility()` then hides anything past
-`mapTeamHideMin`.
+`groupFixAge()` trusts the sender's `utc` above our own receive time
+(`GroupFix.cpp`), and `groupFixVisibility()` then hides anything past
+`mapGroupHideMin`.
 
 Measured exactly that way, 2026-10-23, and it is worth keeping because every
 instrument said the opposite. Two boards, fed synthetic positions over BLE,
-GNSS off. `team list` on A: `team_RFB=...,on,48.3770620,17.5900000,`
+GNSS off. The verb was `team` then and is `group` now, renamed 2026-10-30;
+the reply tokens moved with it. `team list` on A:
+`team_RFB=...,on,48.3770620,17.5900000,`
 **`1715770612`**`,lora` -- May 2024. `CMD:LORA PEERS` on both: a peer, a
 plausible RSSI, `rejected=0`. The LoRa debug row: `lora on bcn70s peers=1
 last -18/11 54s bad=0`. **And the panel drew no bubble at all**, with the
@@ -627,7 +629,7 @@ having.
 So:
 
 - `meshWallClockUtc()` is the single accessor -- BLE first, then GNSS, the
-  same order and the same two sources as `MapTeam::utcNowOrZero()`.
+  same order and the same two sources as `MapGroup::utcNowOrZero()`.
 - `meshSendAdvert()` refuses when it answers 0, which covers the cadence, the
   console and the screen's "announce me now" alike: a bench advert with a
   bogus stamp poisons a receiver exactly as thoroughly as an automatic one.
@@ -948,7 +950,7 @@ the pattern the map menu and the Settings screen already follow for the fields
 they share. `loraMeshOn`, `loraBeaconSec` and `loraNodeName` are not in
 `SettingsList`: this is a bench feature gated out of every release build, and
 its controls belong on its own screen rather than in a rider's Settings list
-(same call `team-markers.md` made for its three numbers).
+(same call `group-markers.md` made for its three numbers).
 
 **The radio choice is honoured at boot**, immediately after the settings are
 read. Not a default -- `loraMeshOn` is 0 out of the box, because a listening
@@ -1084,21 +1086,21 @@ log itself was clean of `lora`/`meshcore`/`radiolib`, which was false (the
 compile lines are right there) and arrived at the true conclusion by the wrong
 route.
 
-**Same pass, the Map screen too.** This branch also carries the team-markers
-layer (`MapTeam`, `TeamFiles`, `TeamRecord`, `TeamRoster`, `TeamStore`, the
-`team` console verb in `MapCommandConsole.cpp`) merged in from
-`lora/state-funnel`. `ENABLE_TEAM_MARKERS` and `ENABLE_TEAM_CMD` are set only
+**Same pass, the Map screen too.** This branch also carries the group-markers
+layer (`MapGroup`, `GroupFiles`, `GroupRecord`, `GroupRoster`, `GroupStore`, the
+`group` console verb in `MapCommandConsole.cpp`) merged in from
+`lora/state-funnel`. `ENABLE_GROUP_MARKERS` and `ENABLE_GROUP_CMD` are set only
 for `env:x4pro`/`env:t5s3pro`/`env:simulator` -- `env:default` (X3/X4) carries
-neither, so every `#if defined(ENABLE_TEAM_MARKERS)` block compiles out and
-`executeTeam()` is unreachable dead code behind the gated dispatch in
+neither, so every `#if defined(ENABLE_GROUP_MARKERS)` block compiles out and
+`executeGroup()` is unreachable dead code behind the gated dispatch in
 `MapCommandConsole.cpp`. Confirmed by sending `CMD:GOTO_MAP` to the flashed X3
 from Home: entered `Map`, rendered a 4-tile z11 viewport with 1 persisted pin,
 heap bottomed out at 32,812 bytes (`MapTileSource` alloc, `BlePositionServer`
-init, tile render) and climbed back, no crash, no Team/LoRa log line anywhere
-in the sequence. `mapTeamHideMin`'s settings field and its migration in
+init, tile render) and climbed back, no crash, no Group/LoRa log line anywhere
+in the sequence. `mapGroupHideMin`'s settings field and its migration in
 `CrossPointSettings.cpp` are the only pieces of this branch that are NOT
 gated -- they compile for every board, cost one `uint16_t` and a one-line
-migration check, and do nothing without `ENABLE_TEAM_MARKERS` to read them.
+migration check, and do nothing without `ENABLE_GROUP_MARKERS` to read them.
 
 ## The event log: what was heard, what went out, and what did not
 
@@ -1130,7 +1132,7 @@ Seven kinds, and the three that answer "why is my screen empty" are the point:
 | `txskip` | the cadence was due and we chose not to; `detail` says `no_news` or `pool_empty` |
 
 **It is not the black box, and the difference is the reason it exists.**
-`TeamBlackBox` records positions that were *accepted* (`team-markers.md`).
+`GroupBlackBox` records positions that were *accepted* (`group-markers.md`).
 Every row above except `rx`-with-a-position produces no position at all, so
 none of them reach that file -- and each one is a different diagnosis.
 
@@ -1160,7 +1162,7 @@ drives the panel. A full queue drops the row and says so on serial
 read as the radio having been quiet.
 
 `encodeLoraLogEvent()` is pure and lives in `LoraEventLine.{h,cpp}`, split
-from the writer exactly the way `TeamRecord` is split from `TeamFiles`:
+from the writer exactly the way `GroupRecord` is split from `GroupFiles`:
 `test/lora_log/` proves every column with no card attached, including that a
 hostile node name full of commas and newlines cannot break a row.
 
@@ -1314,15 +1316,15 @@ The chain, each step observed:
    its node list -- the position reached the panel.
 3. Adding the sender there wrote the roster entry
    `lora-3e8f8e75a6b20bd0`, the eight-byte prefix form.
-4. The next advert went through `teamPosition()`, and the far board's map
+4. The next advert went through `groupPosition()`, and the far board's map
    console answered:
 
    ```
-   INFO team_total=1
-   INFO team_RFA=lora-3e8f8e75a6b20bd0,on,<lat>,<lon>,<utc>,lora
+   INFO group_total=1
+   INFO group_RFA=lora-3e8f8e75a6b20bd0,on,<lat>,<lon>,<utc>,lora
    ```
 
-   Stored at 1e7, dated, and tagged `lora` -- `TeamFixSource::Lora`, the value
+   Stored at 1e7, dated, and tagged `lora` -- `GroupFixSource::Lora`, the value
    the group layer reserved for this transport before the radio existed.
 
 **What this does not cover** is the trigger logic around it. The advert above

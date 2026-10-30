@@ -79,7 +79,7 @@ class PresenceMesh : public mesh::Mesh {
   // Where a heard position goes next, when somebody wants one.
   //
   // **A plain function pointer, and the hook is the whole point.** This class
-  // must not know the group layer exists: `MapTeam` lives in the map's own
+  // must not know the group layer exists: `MapGroup` lives in the map's own
   // directory, writes the black box to the SD card and is edited by the UI
   // task, and none of that belongs inside a radio receive path. main.cpp owns
   // both and joins them.

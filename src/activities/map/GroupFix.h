@@ -1,21 +1,21 @@
 #pragma once
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <cstddef>
 #include <cstdint>
 
 // One member's last known position, and the age rules the panel draws by.
 //
-// Pure: no Arduino, no HAL, no SD (test/team/).
+// Pure: no Arduino, no HAL, no SD (test/group/).
 //
 // **Transport-independent, deliberately.** Nothing here knows whether the fix
 // arrived over LoRa, over BLE from the phone, or from a console command -- the
 // source is one field for the log and nothing branches on it
-// (../../../docs/team-markers.md, and parent docs/lora.md: "the group-markers layer
+// (../../../docs/group-markers.md, and parent docs/lora.md: "the group-markers layer
 // below stays the same, it does not know which protocol fed it").
 
-enum class TeamFixSource : uint8_t {
+enum class GroupFixSource : uint8_t {
   Unknown,
   Cmd,   // the console -- devel builds only
   Ble,   // the phone relayed it
@@ -23,7 +23,7 @@ enum class TeamFixSource : uint8_t {
   Gnss,  // our own receiver; only ever used for the `ME` rows
 };
 
-struct TeamFix {
+struct GroupFix {
   bool present = false;
   int32_t latE7 = 0;
   int32_t lonE7 = 0;
@@ -35,7 +35,7 @@ struct TeamFix {
   // did not know the time. This is the one that survives everything: a reboot, a
   // re-entry into the map, a sender with no clock of their own. It comes from
   // the phone's packet or from the GNSS receiver, whichever knows
-  // (MapTeam::utcNowOrZero).
+  // (MapGroup::utcNowOrZero).
   uint32_t recvUtc = 0;
   // Our uptime when the fix landed. The last resort, for a device that has never
   // been told the time -- an X4 before the phone connects.
@@ -48,11 +48,11 @@ struct TeamFix {
   bool hasHeading = false;
   uint16_t speedKmh = 0;
   bool hasSpeed = false;
-  TeamFixSource source = TeamFixSource::Unknown;
+  GroupFixSource source = GroupFixSource::Unknown;
 };
 
 // How old the fix is, and whether that is knowable at all.
-struct TeamFixAge {
+struct GroupFixAge {
   bool known = false;
   uint32_t seconds = 0;
 };
@@ -68,11 +68,11 @@ struct TeamFixAge {
 // Two and three are the same event dated by two clocks. Three is kept because a
 // device that has never been told the time still knows how long ago something
 // happened; it is thrown away across a reboot, which is what the row's `boot`
-// column detects (TeamRecord.h).
-TeamFixAge teamFixAge(const TeamFix& fix, uint32_t nowUtc, uint32_t nowUptimeMs);
+// column detects (GroupRecord.h).
+GroupFixAge groupFixAge(const GroupFix& fix, uint32_t nowUtc, uint32_t nowUptimeMs);
 
 // What the map does with it.
-enum class TeamVisibility : uint8_t {
+enum class GroupVisibility : uint8_t {
   Fresh,   // solid marker
   Stale,   // dithered marker: the position is old and may have moved
   Hidden,  // too old to draw at all
@@ -83,7 +83,7 @@ enum class TeamVisibility : uint8_t {
 // every replayed member at boot -- which is exactly when a rider wants to see
 // where everyone was. It draws as Stale, so the panel never claims it is
 // current. `hideAfterS` 0 turns hiding off entirely.
-TeamVisibility teamFixVisibility(const TeamFixAge& age, uint32_t staleAfterS, uint32_t hideAfterS);
+GroupVisibility groupFixVisibility(const GroupFixAge& age, uint32_t staleAfterS, uint32_t hideAfterS);
 
 // The label under a member's marker. Four shapes, and three of them say
 // something the balloon alone cannot: how far and how old.
@@ -96,29 +96,29 @@ TeamVisibility teamFixVisibility(const TeamFixAge& age, uint32_t staleAfterS, ui
 // **Age only when the position has gone stale**, so a group riding together
 // draws no text at all; **distance only when the panel cannot show it** -- the
 // marker is off the frame, or the rung is zoomed out far enough that "somewhere
-// over there" needs a number (MapActivity, kTeamDistanceFromRung).
+// over there" needs a number (MapActivity, kGroupDistanceFromRung).
 //
 // An age that cannot be known prints `?` rather than a number nobody can stand
-// behind: that is every replayed fix on a device with no clock (teamFixAge).
+// behind: that is every replayed fix on a device with no clock (groupFixAge).
 //
 // An age under a minute prints nothing at all -- `0m` reads as information and
 // carries none.
 //
-// Every other age is **rounded up to kTeamAgeStepMinutes**, which is also how
+// Every other age is **rounded up to kGroupAgeStepMinutes**, which is also how
 // often the panel revisits it: a finer number would be wrong between refreshes,
 // and rounding up is the safe direction (a position is never claimed fresher
 // than it is).
 //
 // Writes into `buf` and returns its length; 0 means there is nothing to draw.
-size_t teamMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const TeamFixAge& age, char* buf,
-                       size_t bufLen);
+size_t groupMarkerLabel(bool wantDistance, uint32_t metres, bool wantAge, const GroupFixAge& age, char* buf,
+                        size_t bufLen);
 
 // The step an age is reported in, and the period the map re-reads it on
-// (MapActivity::kTeamAgeRefreshMs). One number, because a display step finer
+// (MapActivity::kGroupAgeRefreshMs). One number, because a display step finer
 // than the refresh is a number that is wrong most of the time.
-inline constexpr uint32_t kTeamAgeStepMinutes = 5;
+inline constexpr uint32_t kGroupAgeStepMinutes = 5;
 
 // Longest label this writes: "1234.5 km/999h" and the terminator, rounded up.
-inline constexpr size_t kTeamLabelBytes = 24;
+inline constexpr size_t kGroupLabelBytes = 24;
 
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

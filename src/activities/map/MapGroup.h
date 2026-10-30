@@ -1,19 +1,19 @@
 #pragma once
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <cstdint>
 #include <string_view>
 
-#include "TeamFiles.h"
-#include "TeamRoster.h"
-#include "TeamSource.h"
-#include "TeamStore.h"
+#include "GroupFiles.h"
+#include "GroupRoster.h"
+#include "GroupSource.h"
+#include "GroupStore.h"
 
 // The group-markers layer: who is approved, where each of them was last seen,
 // and the black box that outlives the ride.
 //
-// **This is the transport-independent seam.** teamPosition() is what a LoRa
+// **This is the transport-independent seam.** groupPosition() is what a LoRa
 // frame, a BLE relay from the phone and a devel console line all call, and
 // nothing below it knows which one spoke (parent docs/lora.md, "What can be
 // built today, with no hardware"). Today only the console calls it; the wire
@@ -25,12 +25,12 @@
 // somebody looking for a rider actually reads.
 //
 // Owned by MapActivity for the map screen's lifetime, and it *is* the
-// IMapTeamSource the console talks to.
+// IMapGroupSource the console talks to.
 //
 // RAM: one roster (twelve members, ~50 bytes each) plus one store (twelve fixes,
 // ~28 bytes each), about 950 bytes inside the activity. No heap: the count is
-// fixed by kTeamMaxMembers and cannot grow at runtime.
-class MapTeam final : public IMapTeamSource {
+// fixed by kGroupMaxMembers and cannot grow at runtime.
+class MapGroup final : public IMapGroupSource {
  public:
   // **The roster outlives the map screen, since 2026-10-22.**
   //
@@ -48,8 +48,8 @@ class MapTeam final : public IMapTeamSource {
   // is open -- twelve roster slots and twelve fixes, no heap. What it buys
   // beyond reachability: a member's last known position survives leaving the
   // map, which is what somebody looking for that person actually wants.
-  static MapTeam& getInstance() {
-    static MapTeam instance;
+  static MapGroup& getInstance() {
+    static MapGroup instance;
     return instance;
   }
 
@@ -59,32 +59,32 @@ class MapTeam final : public IMapTeamSource {
   // strangers through.
   bool begin();
 
-  const TeamRoster& roster() const { return roster_; }
-  const TeamStore& store() const { return store_; }
+  const GroupRoster& roster() const { return roster_; }
+  const GroupStore& store() const { return store_; }
 
-  // IMapTeamSource. The ingest and the roster edits; see that interface for what
+  // IMapGroupSource. The ingest and the roster edits; see that interface for what
   // each result means.
-  Ingest teamPosition(std::string_view idOrAcr, const TeamFix& fix) override;
-  Edit teamAdd(std::string_view acr, std::string_view id, std::string_view name) override;
-  Edit teamRemove(std::string_view idOrAcr) override;
-  bool teamReload(size_t& skipped) override;
-  size_t teamCount() const override;
-  TeamMember teamMemberAt(size_t index) const override;
-  TeamFix teamFixAt(size_t index) const override;
-  uint32_t teamLogPage(uint32_t offset, uint32_t maxCount, ITeamLogVisitor& visitor) override;
+  Ingest groupPosition(std::string_view idOrAcr, const GroupFix& fix) override;
+  Edit groupAdd(std::string_view acr, std::string_view id, std::string_view name) override;
+  Edit groupRemove(std::string_view idOrAcr) override;
+  bool groupReload(size_t& skipped) override;
+  size_t groupCount() const override;
+  GroupMember groupMemberAt(size_t index) const override;
+  GroupFix groupFixAt(size_t index) const override;
+  uint32_t groupLogPage(uint32_t offset, uint32_t maxCount, IGroupLogVisitor& visitor) override;
 
   // The rider's own row in the same file, when they have turned it on.
   //
   // **Off by default and its own switch**, separate from the peers' rows: this
   // one is the rider's own movement history on a card that can be lost with the
   // device, and that is their call to make, not a side effect of riding with a
-  // group (../../../docs/team-markers.md, "Two switches, because it is two kinds of
+  // group (../../../docs/group-markers.md, "Two switches, because it is two kinds of
   // data").
   //
   // Rate-limited, unlike a peer's position: a phone pushes a fix a second, and a
   // row per fix would be a card write per second for a whole ride.
   void logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t heading, bool hasHeading, uint16_t speedKmh,
-               bool hasSpeed, TeamFixSource source, uint32_t nowUptimeMs);
+               bool hasSpeed, GroupFixSource source, uint32_t nowUptimeMs);
 
   // Which roster slot the nth listed member is. Listing order is slot order.
   size_t slotForIndex(size_t index) const;
@@ -103,7 +103,7 @@ class MapTeam final : public IMapTeamSource {
   // It is what makes a stored `uptime_ms` usable: on a device with no clock the
   // age of a position is the difference between two uptimes, and that only means
   // anything inside one run. Written into every black box row and compared on
-  // replay (TeamRecord.h, the `boot` column).
+  // replay (GroupRecord.h, the `boot` column).
   static uint32_t bootId();
 
   // How often, and how far, before the rider's own row is written again.
@@ -115,8 +115,8 @@ class MapTeam final : public IMapTeamSource {
 
  private:
   bool loaded_ = false;
-  TeamRoster roster_;
-  TeamStore store_;
+  GroupRoster roster_;
+  GroupStore store_;
   uint32_t strangersRefused_ = 0;
   // Last row written for the rider, for the rate limit above.
   uint32_t selfLastUptimeMs_ = 0;
@@ -125,4 +125,4 @@ class MapTeam final : public IMapTeamSource {
   bool selfLogged_ = false;
 };
 
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

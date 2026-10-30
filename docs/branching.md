@@ -204,7 +204,8 @@ particular board is still `develop` work.
 ## A feature nobody can use yet stays on its own branch
 
 **Maintainer's decision, 2026-09-16**, on the group-markers layer
-(`team-markers`, [`team-markers.md`](team-markers.md)). The code was finished,
+(the `team-markers` branch, [`group-markers.md`](group-markers.md) -- the
+branch keeps the name it was cut under, the layer does not). The code was finished,
 host-tested and verified on an X4 Pro, and it still does not go to `develop`,
 because **nothing carries positions into it**: the only feed is a devel-only
 console command, so a rider on a release build would see a feature that cannot
@@ -232,9 +233,9 @@ Three rules follow, and none of them is optional:
 
 **Exception, 2026-10-25: `feat/lora-presence` merged into `release/xteink-x3`
 anyway, maintainer's explicit call.** The "dead weight" cost this rule warns
-about does not apply the same way here: the whole LoRa/MeshCore/team-markers
+about does not apply the same way here: the whole LoRa/MeshCore/group-markers
 payload is gated behind `ENABLE_LORA_CMD`/`ENABLE_LORA_MESH`/
-`ENABLE_TEAM_MARKERS`/`ENABLE_TEAM_CMD`, none of which `env:default` or
+`ENABLE_GROUP_MARKERS`/`ENABLE_GROUP_CMD`, none of which `env:default` or
 `env:gh_release` (X3's build) ever define -- so the merge adds zero flash and
 zero behavior on X3, verified by checking the *linked ELF's* symbol table
 (`nm firmware.elf`, not a build-log grep -- the `.cpp`/`.c` files are compiled
