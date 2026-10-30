@@ -24,6 +24,7 @@
 #include "TextSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -389,6 +390,47 @@ void SettingsActivity::toggleCurrentSetting() {
       return;
     }
     setting.valueSetter((cur + 1) % totalValues);
+  } else if (setting.type == SettingType::STRING) {
+    // Confirm on a string row opens the keyboard, prefilled with what the row
+    // shows. Added with the render branch above, and for the same reason: the
+    // row did nothing at all before, which on a reachable tab reads as broken
+    // rather than as unimplemented.
+    //
+    // `stringSetter` wins over the raw field when a row has one -- the Group
+    // tab's node name has to reach the running radio, not just the settings
+    // struct (SettingsList.h, loraPresenceSetName()).
+    std::string current;
+    size_t maxLen = setting.stringMaxLen;
+    char* dest = nullptr;
+    if (setting.stringGetter) {
+      current = setting.stringGetter();
+      if (maxLen == 0) maxLen = 32;
+    } else if (setting.stringOffset != 0) {
+      dest = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
+      current = dest;
+    } else {
+      return;
+    }
+
+    const StrId title = setting.nameId;
+    auto stringSetter = setting.stringSetter;
+    auto handler = [this, stringSetter, dest, maxLen](const ActivityResult& result) {
+      if (!result.isCancelled) {
+        const auto& kb = std::get<KeyboardResult>(result.data);
+        if (stringSetter) {
+          stringSetter(kb.text);
+        } else if (dest != nullptr) {
+          snprintf(dest, maxLen + 1, "%s", kb.text.c_str());
+        }
+        SETTINGS.saveToFile();
+      }
+      rebuildSettingsLists();
+      requestUpdate();
+    };
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(title), current,
+                                                                   maxLen, InputType::Text),
+                           handler);
+    return;
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     const int8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (currentValue + setting.valueRange.step > setting.valueRange.max) {
@@ -593,6 +635,17 @@ void SettingsActivity::render(RenderLock&&) {
             valueText = setting.enumStringValues[value];
           } else if (value < setting.enumValues.size()) {
             valueText = I18N.get(setting.enumValues[value]);
+          }
+        } else if (setting.type == SettingType::STRING) {
+          // **There was no STRING branch here at all until 2026-10-30.** Every
+          // string row this list has ever carried was a reader row, and those
+          // left the menu before anyone noticed they drew an empty value
+          // column. The Group tab's "This device's name" was the first string
+          // row on a reachable tab, and it showed nothing.
+          if (setting.stringGetter) {
+            valueText = setting.stringGetter();
+          } else if (setting.stringOffset != 0) {
+            valueText = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
           }
         } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
           if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {

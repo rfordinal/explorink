@@ -106,6 +106,7 @@ GroupActivity::RowKind GroupActivity::rowKind(int index) const {
   if (index == kSettingsHeaderIndex) return RowKind::Header;
   if (index < heardHeaderIndex()) return RowKind::Control;
   if (index == heardHeaderIndex()) return RowKind::Header;
+  if (hasHeardPlaceholder() && index == peerBase()) return RowKind::Placeholder;
   if (index < rosterHeaderIndex()) return RowKind::HeardPeer;
   if (hasRosterSection() && index == rosterHeaderIndex()) return RowKind::Header;
   return RowKind::RosterOnly;
@@ -116,7 +117,8 @@ int GroupActivity::stepIndex(int from, int step) const {
   int i = from;
   for (int guard = 0; guard < count; ++guard) {
     i = step > 0 ? ButtonNavigator::nextIndex(i, count) : ButtonNavigator::previousIndex(i, count);
-    if (rowKind(i) != RowKind::Header) return i;
+    const RowKind k = rowKind(i);
+    if (k != RowKind::Header && k != RowKind::Placeholder) return i;
   }
   return from;
 }
@@ -167,6 +169,7 @@ void GroupActivity::captureAnchor() {
   anchor_ = Anchor{};
   anchor_.kind = rowKind(selectedIndex);
   switch (anchor_.kind) {
+    case RowKind::Placeholder:
     case RowKind::Header:
       // The cursor never rests on one, but refresh() can run while a
       // sub-activity owns the screen. Anchoring to the first control is the
@@ -192,6 +195,7 @@ void GroupActivity::captureAnchor() {
 
 void GroupActivity::restoreAnchor() {
   switch (anchor_.kind) {
+    case RowKind::Placeholder:
     case RowKind::Header:
     case RowKind::Control:
       selectedIndex = controlBase() + anchor_.controlRow;
@@ -291,7 +295,7 @@ void GroupActivity::activate(int index) {
   hasError_ = false;
 
   const RowKind kind = rowKind(index);
-  if (kind == RowKind::Header) return;
+  if (kind == RowKind::Header || kind == RowKind::Placeholder) return;
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (kind == RowKind::HeardPeer) {
     const size_t i = static_cast<size_t>(index - peerBase());
@@ -412,6 +416,8 @@ std::string GroupActivity::rowTitle(int index) const {
     return std::string(tr(STR_GROUP_SECTION_OFFLINE));
   }
 
+  if (kind == RowKind::Placeholder) return std::string(tr(STR_LORA_PEERS_NONE));
+
   if (kind == RowKind::Control) {
     switch (controlRowOf(index)) {
       case kRowMesh:
@@ -461,7 +467,7 @@ std::string GroupActivity::rowValue(int index) const {
   const RowKind kind = rowKind(index);
   char buf[32];
 
-  if (kind == RowKind::Header) return std::string();
+  if (kind == RowKind::Header || kind == RowKind::Placeholder) return std::string();
 
   if (kind == RowKind::Control) {
     switch (controlRowOf(index)) {
@@ -585,8 +591,9 @@ void GroupActivity::render(RenderLock&&) {
       [this](int index) {
         // "Announce me now" is unreachable with the radio off, and a row that
         // looks pressable and is not is worse than a dimmed one.
-        if (rowKind(index) == RowKind::Header) return true;
-        return rowKind(index) == RowKind::Control && controlRowOf(index) == kRowAdvert && !meshRunning_;
+        const RowKind k = rowKind(index);
+        if (k == RowKind::Header || k == RowKind::Placeholder) return true;
+        return k == RowKind::Control && controlRowOf(index) == kRowAdvert && !meshRunning_;
       });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

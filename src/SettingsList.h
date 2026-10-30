@@ -430,9 +430,27 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // carries it in clear to everyone in radio range, roster or not
         // (../docs/lora-mesh.md), which is why the label says "this device's
         // name" and the default is empty.
-        SettingInfo::DynamicString(
-            StrId::STR_LORA_NAME_ROW, [] { return std::string(SETTINGS.loraNodeName); },
-            [](const std::string& name) { loraPresenceSetName(name.c_str()); }, nullptr, StrId::STR_CAT_GROUP),
+        [] {
+          // The advert carries at most sizeof(loraNodeName) - 1, so the
+          // keyboard has to stop there rather than silently truncating on
+          // save (CrossPointSettings::loraNodeName).
+          SettingInfo s = SettingInfo::DynamicString(
+              StrId::STR_LORA_NAME_ROW,
+              [] {
+                // The **running node's** name, not SETTINGS.loraNodeName.
+                // They are not the same: a device that has never been named
+                // by hand still advertises one, derived from its key, and
+                // only an explicit rename ever reaches the settings field.
+                // Reading the field here left this row blank on a board whose
+                // Group screen plainly showed `EI-3e8f` -- found on a T5 S3
+                // Pro, 2026-10-30, and the whole point of this pass is that
+                // one thing does not get shown two ways.
+                return std::string(loraPresenceStatus().nodeName);
+              },
+              [](const std::string& name) { loraPresenceSetName(name.c_str()); }, nullptr, StrId::STR_CAT_GROUP);
+          s.stringMaxLen = sizeof(CrossPointSettings::loraNodeName) - 1;
+          return s;
+        }(),
 #endif
         SettingInfo::Toggle(StrId::STR_MAP_DEBUG_INFO, &CrossPointSettings::mapDebugInfo, "mapDebugInfo",
                             StrId::STR_CAT_MAP),

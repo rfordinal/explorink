@@ -8,11 +8,6 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/icons/home_icons.h"
-#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-// icon_loraListening, the 14 px antenna the map header already uses for
-// this radio -- one glyph for one thing, across two screens.
-#include "components/icons/map_header_icons.h"
-#endif
 #include "fontIds.h"
 #include "images/HomeHeader.h"
 
@@ -78,7 +73,7 @@ const HomeActivity::Row* HomeActivity::rows() {
       // transport-neutral, while the *badge* is about this screen, which
       // really is the radio's -- its controls, and the nodes it hears. A
       // rider who has to find where the radio lives has one place to look.
-      {HomeMenuItem::GROUP, StrId::STR_GROUP_TITLE, &icon_group, StrId::STR_LORA_BADGE, &icon_loraListening},
+      {HomeMenuItem::GROUP, StrId::STR_GROUP_TITLE, &icon_group, StrId::STR_LORA_BADGE, &icon_lora_badge},
 #endif
       {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync},
       {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer},

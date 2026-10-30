@@ -1034,7 +1034,11 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
         if (rows[i].badgeIcon != nullptr) {
           const freeink::Icon& glyph = *rows[i].badgeIcon;
           bx += kBadgeInnerGap;
-          renderer.drawMono1bpp(glyph.bits, bx, top + (rowHeight - glyph.h) / 2, glyph.w, glyph.h, !selected);
+          // Centred on the badge *text's* line, not on the row's full height.
+          // Centring on the row put the glyph and the brackets around it on
+          // two different centres -- a few pixels, and plainly wrong on the
+          // panel once the glyph was big enough to read.
+          renderer.drawMono1bpp(glyph.bits, bx, by + (badgeLineHeight - glyph.h) / 2, glyph.w, glyph.h, !selected);
           bx += glyph.w;
         }
         renderer.drawText(UI_10_FONT_ID, bx, by, ")", !selected);

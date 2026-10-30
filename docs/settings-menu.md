@@ -120,6 +120,30 @@ opposite of what the tab fixed: there is one switch with one name, shown in the
 two places somebody setting the group up actually stands. The rule that was
 broken before was two *names* for one field, not two ways to reach it.
 
+### String rows drew nothing, and did nothing
+
+**Found on a T5 S3 Pro, 2026-10-30.** `SettingType::STRING` had no branch in
+the settings list's value builder and none in `toggleCurrentSetting()` either.
+Every string row this list has carried was a reader row, and those left the
+menu before anybody noticed. "This device's name" was the first string row on
+a reachable tab: it showed an empty value column and ignored Confirm.
+
+Both branches are there now. Confirm opens `KeyboardEntryActivity` prefilled
+with what the row shows, and writes back through `stringSetter` when the row
+has one -- the node name has to reach the running radio, not just the settings
+struct.
+
+### And the name row was reading the wrong name
+
+Same pass, same board. The row read `SETTINGS.loraNodeName` while the Group
+screen read the running node's name, and on this board those are not the same
+thing: a device that has never been renamed by hand still advertises a name
+derived from its key, and only an explicit rename ever reaches the settings
+field. The panel showed `EI-3e8f` on one screen and nothing on the other.
+
+It reads `loraPresenceStatus().nodeName` now, which is what the Group screen
+reads. One thing, one source -- the point of the whole pass.
+
 ### Still open on the Group tab
 
 - **The Group tab is not translated.** `STR_CAT_GROUP` and the three section

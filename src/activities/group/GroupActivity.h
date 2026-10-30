@@ -80,7 +80,7 @@ class GroupActivity final : public Activity {
   // over it. The list widget has no section support of its own
   // (BaseTheme::drawList()), and giving it one means touching all four themes
   // -- so the sections live here, where only this screen pays for them.
-  enum class RowKind : uint8_t { Header, Control, HeardPeer, RosterOnly };
+  enum class RowKind : uint8_t { Header, Placeholder, Control, HeardPeer, RosterOnly };
 
   ButtonNavigator buttonNavigator;
   int selectedIndex = 0;
@@ -166,7 +166,13 @@ class GroupActivity final : public Activity {
   static constexpr int controlBase() { return kSettingsHeaderIndex + 1; }
   static constexpr int heardHeaderIndex() { return controlBase() + kControlRowCount; }
   static constexpr int peerBase() { return heardHeaderIndex() + 1; }
-  int rosterHeaderIndex() const { return peerBase() + static_cast<int>(peerCount_); }
+  // The heard section always shows its heading, even with nothing under it --
+  // unlike the roster section below, which hides with its rows. The asymmetry
+  // is deliberate: "the radio is listening and hears nobody" is an answer this
+  // screen exists to give, so the heading stays and carries an empty-state
+  // line. A roster section with nothing in it answers nothing.
+  bool hasHeardPlaceholder() const { return peerCount_ == 0; }
+  int rosterHeaderIndex() const { return peerBase() + static_cast<int>(peerCount_) + (hasHeardPlaceholder() ? 1 : 0); }
   bool hasRosterSection() const;
   int rosterBase() const { return rosterHeaderIndex() + (hasRosterSection() ? 1 : 0); }
   int itemCount() const;

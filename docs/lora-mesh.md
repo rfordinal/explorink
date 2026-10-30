@@ -991,6 +991,11 @@ Home > **Group**. Three sections under named headings, since 2026-10-30:
    entirely when it is empty, header and all: a heading over nothing reads as
    a list that failed to load.
 
+**The heard section does the opposite, and the asymmetry is deliberate.** It
+keeps its heading with nothing under it and shows `Nothing heard yet`, because
+"the radio is listening and hears nobody" is an answer this screen exists to
+give. A roster section with nothing in it answers nothing.
+
 The headings are ordinary list rows drawn dimmed, with the cursor stepping over
 them (`GroupActivity::stepIndex()`). `BaseTheme::drawList()` has no section
 support and giving it one means touching all four themes, so the sections live
