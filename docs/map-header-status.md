@@ -507,7 +507,7 @@ The LoRa glyph of 2026-10-23 is the first link both of them feed, and it
 landed **flush against the Bluetooth logo** on a phone session -- it took no
 gap, and neither had the branch above it. It is fixed by branching on
 `bleInUse_` in that one block, which is correct and is also a second copy of
-the ambiguity rather than a cure. T-2038 is the cure: one rule for every link
+the ambiguity rather than a cure. T-2045 is the cure: one rule for every link
 (take the gap on your own right, leave your own left edge), which moves the
 clock on a GNSS session and so wants a panel shot of both session kinds.
 

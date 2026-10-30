@@ -2455,7 +2455,7 @@ void MapActivity::drawHeaderStatusStrip() {
     // only when nobody took it, and the convention this block received is the
     // one it passes on -- changing either branch instead would move the clock
     // on a session this icon is not even drawn in. Unifying the two is
-    // T-2038.
+    // T-2045.
     loraIconLeft = chainRight - (bleInUse_ ? kHeaderLoraIconRightGap : 0) - kHeaderLoraIconSize;
     chainRight = loraIconLeft - (bleInUse_ ? 0 : kHeaderLoraIconRightGap);
   }

@@ -291,7 +291,7 @@ empty.
 Reported off the panel, not caught by anything else: the drawing chain's
 cursor means two different things depending on which branch filled it last,
 and this block took no gap because the Bluetooth branch had not taken one
-either. Fixed locally; the two conventions are T-2038 and the mechanism is in
+either. Fixed locally; the two conventions are T-2045 and the mechanism is in
 `map-header-status.md`, "The chain's cursor carries two conventions". The
 reservation in `headerStatusRect()` was right all along, which is why the
 backing never clipped anything -- it was 6 px wider than the draw needed.
@@ -859,7 +859,7 @@ So the threat `CLAUDE.md` asks about has a blunt answer: **anyone who takes
 the card out can copy the file and become that rider.** They can sign adverts
 under that key and put a false position on every panel in the group, and the
 signature will verify, because a signature only ever proved possession.
-Nothing in this design detects a copied key. T-2036.
+Nothing in this design detects a copied key. T-2043.
 
 ### The name is not an identity and is not unique
 
@@ -1221,7 +1221,7 @@ with, that is backwards.
 **Since 2026-10-22 a heard position does reach the roster**, so this is no
 longer theoretical: a stranger from Graz can now evict a group member whose
 marker is on the map. A roster member must outrank a stranger for a slot,
-whatever the ages say. T-2034.
+whatever the ages say. T-2042.
 
 A second, smaller thing the same screenshot showed: ages run to `4009s ago`,
 which nobody reads as an hour. Seconds are right for a bench and wrong for a
