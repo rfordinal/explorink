@@ -248,6 +248,69 @@ Two consequences a reader should expect rather than report as bugs:
   same window. On a ride that is the normal state; sitting at a table with the
   device on Home, both are silent, by design.
 
+## No clock, no position -- but still a pairing advert
+
+**The rule, since 2026-10-30.** An advert that carries a position needs a real
+wall clock, because a receiver dates the position by the advert's timestamp and
+hides what it cannot date -- that is the 2026-10-23 finding, where MeshCore's
+arbitrary epoch put a marker in May 2024 and the panel drew nothing.
+
+An advert that carries **no** position has nothing to date. `onAdvertRecv()`
+only reaches the position layer when `parser.hasLatLon()`, and the heard-node
+table ages its rows from the local `millis()` that stamped them, not from
+anything in the frame. So a clockless advert is harmless and is exactly what
+pairing needs: a key and a name.
+
+So `meshSendAdvert()` takes `allowNoClock`, and when it is set and there is no
+clock it sends **identity only**, position forced off.
+
+| caller | clockless advert |
+|---|---|
+| the Group screen's `Announce me now` | yes -- a press is a person pairing |
+| `CMD:LORA ADVERT` | yes -- same thing from a cable |
+| the beacon | **no** |
+
+**The beacon never gets it**, and that is the whole safety of the thing.
+Without a clock our timestamp is seconds since boot, so a device that reboots
+appears to a receiver to jump backwards. One such frame when a rider asks for
+it is a fair price for pairing indoors; a stream of them every 70 s on a shared
+public channel is not.
+
+**Verified on two T5 S3 Pro boards, 2026-10-30**, both freshly booted, both on
+the Group screen, neither ever having had a clock: each announced and each then
+held the other at **-26 dBm, SNR 12 and 11**, with `loc=-` on both rows.
+
+### The clock does not evaporate when its source stops
+
+`meshWallClockUtc()` reads the phone over BLE, or GNSS -- and both are live
+reads: the phone must be connected, and `gnss.running()` is only true while the
+map is open. Until 2026-10-30 that meant a device forgot the time the moment
+the rider left the map, seconds after learning it.
+
+It now latches: every live read sets `gMeshRtc`, a flag records that the time
+was ever known, and the fallback reads that clock back. It drifts like any
+millis clock, which an advert timestamp tolerates and a missing one does not.
+It is **volatile on purpose** -- after a reboot the device genuinely does not
+know the time, and saying otherwise is the bogus-timestamp problem again.
+
+### One cause per refusal
+
+`advert not sent (mesh off, or packet pool empty)` used to be printed for
+every refusal including the two it names and the two it does not. On a board
+whose mesh was running and whose pool was full it sent an afternoon after a
+defect that did not exist and put a wrong finding in the task list.
+
+`LoraAdvertResult` now carries one value per cause -- `MeshOff`, `NoClock`,
+`PoolEmpty`, `TooLong` -- to the console and to the screen's error line.
+`PresenceMesh::sendSelfAdvert()` separates `TooLong` from `PoolEmpty` itself,
+because `createAdvert()` returns the same null for both.
+
+`LORA_STATE` also reports `pool_free` and `pool_out`, which is what ended the
+guessing. **`rx` and `tx` in that same line are blind to the mesh**: both are
+incremented in `loraServiceStep()`'s console half, which returns as soon as
+the mesh is running. `rx=0` was printed next to a six-node peer table and read
+as evidence of silence.
+
 ## Three places switch the radio, and they are one field
 
 Added 2026-10-22 on the maintainer's ask: the LoRa node list was the only way

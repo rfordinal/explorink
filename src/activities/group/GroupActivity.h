@@ -94,6 +94,11 @@ class GroupActivity final : public Activity {
   uint32_t beaconSec_ = 0;
   uint32_t rejected_ = 0;
   bool identityPersisted_ = false;
+  // Whether the device has a real time. **The Announce row cannot work
+  // without one**, and this screen is the one place that never provides one:
+  // the clock comes from GNSS or the phone, and only the map runs GNSS
+  // (parent docs/TODO.md, T-2048).
+  bool hasWallClock_ = false;
   char nodeName_[21] = {0};
 
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS

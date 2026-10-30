@@ -170,7 +170,7 @@ bool PresenceMesh::beginIdentity() {
   return true;
 }
 
-bool PresenceMesh::sendSelfAdvert(const char* name, bool hasLoc, int32_t latE6, int32_t lonE6) {
+PresenceMesh::AdvertResult PresenceMesh::sendSelfAdvert(const char* name, bool hasLoc, int32_t latE6, int32_t lonE6) {
   uint8_t appData[MAX_ADVERT_DATA_SIZE];
   uint8_t len;
 
@@ -186,13 +186,22 @@ bool PresenceMesh::sendSelfAdvert(const char* name, bool hasLoc, int32_t latE6, 
     len = builder.encodeTo(appData);
   }
 
+  // Checked here rather than left to createAdvert(), which returns the same
+  // null for this and for an empty pool. Two causes behind one null is how
+  // this whole family of bugs reads.
+  if (len > MAX_ADVERT_DATA_SIZE) {
+    LOG_ERR(kLog, "advert not sent: encoded %u bytes, limit is %u", static_cast<unsigned>(len),
+            static_cast<unsigned>(MAX_ADVERT_DATA_SIZE));
+    return AdvertResult::TooLong;
+  }
+
   mesh::Packet* pkt = createAdvert(self_id, appData, len);
   if (pkt == nullptr) {
     LOG_ERR(kLog, "advert not sent: packet pool empty");
-    return false;
+    return AdvertResult::PoolEmpty;
   }
   sendZeroHop(pkt);
-  return true;
+  return AdvertResult::Sent;
 }
 
 void PresenceMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {

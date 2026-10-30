@@ -129,6 +129,7 @@ void GroupActivity::refresh() {
   beaconSec_ = status.beaconSec;
   rejected_ = status.advertsRejected;
   identityPersisted_ = status.identityPersisted;
+  hasWallClock_ = status.hasWallClock;
   snapshotMs_ = status.nowUptimeMs;
   memcpy(nodeName_, status.nodeName, sizeof(nodeName_));
   nodeName_[sizeof(nodeName_) - 1] = '\0';
@@ -355,12 +356,34 @@ void GroupActivity::activate(int index) {
                              handler);
       return;  // refresh happens in the handler, after the keyboard closes
     }
-    case kRowAdvert:
-      if (!loraPresenceAdvertNow()) {
-        lastError_ = StrId::STR_LORA_PEERS_MESH_OFF;
+    case kRowAdvert: {
+      // **One line per cause.** This row used to say "Mesh is off" whatever
+      // went wrong, including on a board whose radio was plainly listening.
+      // The cause that fires most often here is the clock: this screen does
+      // not run GNSS, so a device that has not been on the map or connected to
+      // a phone has no time, and an advert with MeshCore's epoch is hidden by
+      // whoever receives it (parent docs/TODO.md, T-2046 and T-2048).
+      const LoraAdvertResult result = loraPresenceAdvertNow();
+      if (result != LoraAdvertResult::Sent) {
+        switch (result) {
+          case LoraAdvertResult::NoClock:
+            lastError_ = StrId::STR_LORA_NO_CLOCK;
+            break;
+          case LoraAdvertResult::PoolEmpty:
+            lastError_ = StrId::STR_LORA_POOL_EMPTY;
+            break;
+          case LoraAdvertResult::TooLong:
+            lastError_ = StrId::STR_LORA_ADVERT_TOO_LONG;
+            break;
+          case LoraAdvertResult::MeshOff:
+          case LoraAdvertResult::Sent:
+            lastError_ = StrId::STR_LORA_PEERS_MESH_OFF;
+            break;
+        }
         hasError_ = true;
       }
       break;
+    }
     default:
       break;
   }
@@ -534,6 +557,7 @@ uint32_t GroupActivity::listSignature() const {
   mix(meshRunning_ ? 1u : 0u);
   mix(beaconSec_);
   mix(rejected_);
+  mix(hasWallClock_ ? 1u : 0u);
   for (size_t i = 0; i < peerCount_; ++i) {
     const LoraPeer& p = peers_[i];
     mix(static_cast<uint32_t>(p.pubKey[0]) | (static_cast<uint32_t>(p.pubKey[1]) << 8) |
@@ -571,6 +595,12 @@ void GroupActivity::render(RenderLock&&) {
     snprintf(subtitle, sizeof(subtitle), "%s", I18n::getInstance().get(lastError_));
   } else if (!meshRunning_) {
     snprintf(subtitle, sizeof(subtitle), "%s", tr(STR_LORA_PEERS_MESH_OFF));
+  } else if (!hasWallClock_) {
+    // Still said, because it changes what an announce *means*: with no clock
+    // the frame carries this device's key and name and no position, which
+    // pairs but puts nobody on a map. A rider who expects to be seen moving
+    // has to know the difference (T-2048).
+    snprintf(subtitle, sizeof(subtitle), "%s", tr(STR_LORA_NO_CLOCK));
   } else if (beaconSec_ == 0) {
     snprintf(subtitle, sizeof(subtitle), tr(STR_LORA_PEERS_HEADER_OFF_FORMAT), nodeName_,
              static_cast<unsigned long>(rejected_));
@@ -593,6 +623,10 @@ void GroupActivity::render(RenderLock&&) {
         // looks pressable and is not is worse than a dimmed one.
         const RowKind k = rowKind(index);
         if (k == RowKind::Header || k == RowKind::Placeholder) return true;
+        // Dimmed only without a radio. It was briefly dimmed without a clock
+        // too, until the clockless advert landed: a press now pairs on
+        // identity alone, so the row works and must not look like it does not
+        // (parent docs/TODO.md, T-2048).
         return k == RowKind::Control && controlRowOf(index) == kRowAdvert && !meshRunning_;
       });
 

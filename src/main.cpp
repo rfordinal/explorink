@@ -1294,15 +1294,40 @@ static void loraLogSimple(LoraLogKind kind, uint32_t cadenceSec = 0, LoraTxDecli
 //
 // Same two sources in the same order as MapGroup::utcNowOrZero(), spelled again
 // because this has to work on a build with the group layer compiled out.
+// Has this device ever known the real time this boot? Volatile on purpose:
+// after a reboot it genuinely does not, and saying otherwise would be the
+// bogus-timestamp problem the clock guard exists to prevent.
+static bool gMeshClockEverKnown = false;
+
 static uint32_t meshWallClockUtc() {
   uint32_t utc = 0;
-  if (freeink::BlePositionServer::getInstance().utcNow(utc)) return utc;
+  if (freeink::BlePositionServer::getInstance().utcNow(utc)) {
+    gMeshRtc.setCurrentTime(utc);
+    gMeshClockEverKnown = true;
+    return utc;
+  }
 #ifdef ENABLE_GNSS_CMD
   if (gnss.running()) {
     const uint32_t gnssUtc = gnss.fix().utc;
-    if (gnssUtc != 0) return gnssUtc;
+    if (gnssUtc != 0) {
+      gMeshRtc.setCurrentTime(gnssUtc);
+      gMeshClockEverKnown = true;
+      return gnssUtc;
+    }
   }
 #endif
+  // **The time does not evaporate when its source stops.** Both sources above
+  // are live reads -- the phone must be connected, and `gnss.running()` is
+  // only true on the map -- so until 2026-10-30 a device that had just been
+  // told the UTC forgot it the moment the rider left the map. The Group
+  // screen could then never announce the device at all, on a board that had
+  // known the time seconds earlier (parent docs/TODO.md, T-2048).
+  //
+  // gMeshRtc is already set from every live read above and ticked on the
+  // service task, so it is the clock this device has: a base stamp plus
+  // elapsed millis. It drifts like any millis clock, which an advert
+  // timestamp tolerates and a missing one does not.
+  if (gMeshClockEverKnown) return gMeshRtc.getCurrentTime();
   return 0;
 }
 
@@ -1449,9 +1474,40 @@ static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7, uint16_t* accuracyM
 // two callers that are not the beacon -- the screen's button and the console
 // -- are exactly the ones that have no rule behind them, so the default is
 // the truth rather than a placeholder.
-static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
+const char* loraAdvertResultText(const LoraAdvertResult result) {
+  switch (result) {
+    case LoraAdvertResult::Sent:
+      return "sent";
+    case LoraAdvertResult::MeshOff:
+      return "mesh off -- no screen is holding the radio up";
+    case LoraAdvertResult::NoClock:
+      return "no wall clock -- the device has had no time from GNSS or the phone";
+    case LoraAdvertResult::PoolEmpty:
+      return "packet pool empty";
+    case LoraAdvertResult::TooLong:
+      return "encoded advert is over the size limit";
+  }
+  return "unknown";
+}
+
+// `allowNoClock` is the pairing escape hatch, and it is **only ever true for a
+// deliberate press**: the screen's "Announce me now" and the console's ADVERT.
+//
+// The clock guard exists because a bogus timestamp made a receiver hide the
+// sender's marker (2026-10-23, docs/lora-mesh.md). That harm needs a position:
+// PresenceMesh::onAdvertRecv() only reaches the position layer when the advert
+// carries lat/lon, and the heard-node table ages rows from the local millis()
+// that stamped them. So an advert with **no position** cannot be mis-dated,
+// and it is exactly what pairing needs -- a key and a name.
+//
+// The beacon never gets this. Without a clock our timestamp is seconds since
+// boot, and a device that reboots then appears to jump backwards to a receiver
+// that remembers it. One such frame when a rider asks for it is a fair price
+// for being able to pair indoors; a stream of them on a shared public channel
+// is not.
+static LoraAdvertResult meshSendAdvert(LoraTxReason why = LoraTxReason::Manual, bool allowNoClock = false) {
   LoraLock lock;
-  if (!gMeshRunning) return false;
+  if (!gMeshRunning) return LoraAdvertResult::MeshOff;
 
   // **No wall clock, no transmit.** Checked here rather than only at the
   // beacon because there are three callers -- the console, the screen's
@@ -1459,13 +1515,36 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   // timestamp poisons a real receiver exactly as thoroughly as an automatic
   // one. See meshWallClockUtc().
   const uint32_t wallUtc = meshWallClockUtc();
+  if (wallUtc == 0 && allowNoClock) {
+    // Identity only. hasLoc is forced false below, so nothing in this frame
+    // can be placed on anybody's map, which is what makes an unknown
+    // timestamp harmless here.
+    const PresenceMesh::AdvertResult pairResult = gMesh.sendSelfAdvert(gMeshNodeName, false, 0, 0);
+    LoraLogEvent pairEv{};
+    const bool pairSent = pairResult == PresenceMesh::AdvertResult::Sent;
+    pairEv.kind = pairSent ? LoraLogKind::AdvertTx : LoraLogKind::TxDeclined;
+    pairEv.decline = pairSent ? LoraTxDecline::None : LoraTxDecline::PoolEmpty;
+    pairEv.txReason = pairSent ? why : LoraTxReason::None;
+    snprintf(pairEv.name, sizeof(pairEv.name), "%s", gMeshNodeName);
+    pairEv.hasLoc = false;
+    pairEv.uptimeMs = millis();
+    loraLogPost(pairEv);
+    if (pairSent) {
+      gMeshLastTxReason = why;
+      gMeshLastSentMs = millis();
+      gMeshLastSentHadFix = false;
+      gMeshBeaconEverSent = true;
+      return LoraAdvertResult::Sent;
+    }
+    return pairResult == PresenceMesh::AdvertResult::TooLong ? LoraAdvertResult::TooLong : LoraAdvertResult::PoolEmpty;
+  }
   if (wallUtc == 0) {
     LoraLogEvent noclock{};
     noclock.kind = LoraLogKind::TxDeclined;
     noclock.decline = LoraTxDecline::NoClock;
     noclock.uptimeMs = millis();
     loraLogPost(noclock);
-    return false;
+    return LoraAdvertResult::NoClock;
   }
   // Re-stamped on every send rather than seeded once at meshStart(). The
   // clock can arrive long after the radio did -- a phone connects, or the
@@ -1483,7 +1562,8 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   // comparing two different roundings of one position.
   const int32_t latE6 = latE7 / 10;
   const int32_t lonE6 = lonE7 / 10;
-  const bool sent = gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, latE6, lonE6);
+  const PresenceMesh::AdvertResult meshResult = gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, latE6, lonE6);
+  const bool sent = meshResult == PresenceMesh::AdvertResult::Sent;
 
   // Logged here rather than at the callers, because there are three of them --
   // the console, the screen's "announce me now" and the beacon -- and a
@@ -1493,6 +1573,9 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   // common as "did I hear anybody".
   LoraLogEvent ev{};
   ev.kind = sent ? LoraLogKind::AdvertTx : LoraLogKind::TxDeclined;
+  // PoolEmpty for both refusals the mesh can give: the log's vocabulary is a
+  // file format and gains a value in its own pass, not in this one. The
+  // console and the screen carry the exact cause today.
   ev.decline = sent ? LoraTxDecline::None : LoraTxDecline::PoolEmpty;
   ev.txReason = sent ? why : LoraTxReason::None;
   snprintf(ev.name, sizeof(ev.name), "%s", gMeshNodeName);
@@ -1519,7 +1602,15 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
     gMeshBeaconEverSent = true;
   }
 
-  return sent;
+  switch (meshResult) {
+    case PresenceMesh::AdvertResult::Sent:
+      return LoraAdvertResult::Sent;
+    case PresenceMesh::AdvertResult::TooLong:
+      return LoraAdvertResult::TooLong;
+    case PresenceMesh::AdvertResult::PoolEmpty:
+      break;
+  }
+  return LoraAdvertResult::PoolEmpty;
 }
 
 // Brings the node up: radio first, then identity, then the Dispatcher.
@@ -1674,7 +1765,11 @@ void loraPresenceSetName(const char* name) {
   }
 }
 
-bool loraPresenceAdvertNow() { return meshSendAdvert(LoraTxReason::Manual); }
+LoraAdvertResult loraPresenceAdvertNow() {
+  // The screen's row. A rider pressing it is pairing, so it may go out
+  // without a clock -- identity only.
+  return meshSendAdvert(LoraTxReason::Manual, /*allowNoClock=*/true);
+}
 
 // The one place the policy's vocabulary becomes the log file's. Kept here
 // rather than in either header so neither side depends on the other: the
@@ -1785,7 +1880,7 @@ static void meshBeaconTick() {
     return;
   }
 
-  if (!meshSendAdvert(loraTxReasonFor(decision.reason))) {
+  if (meshSendAdvert(loraTxReasonFor(decision.reason)) != LoraAdvertResult::Sent) {
     // Said out loud rather than retried on the next loop: a pool that cannot
     // give out a packet will not give one out 10 ms later either, and a silent
     // beacon is the failure this whole section exists to make visible.
@@ -3996,8 +4091,16 @@ void loop() {
         } else if (upper == "ADVERT") {
           // "started", not "sent", for the same reason PONG says it: this
           // queues a packet and the service task puts it on the air later.
-          logSerial.printf(meshSendAdvert() ? "LORA_OK:advert started\n"
-                                            : "LORA_ERR:advert not sent (mesh off, or packet pool empty)\n");
+          {
+            const LoraAdvertResult r = meshSendAdvert(LoraTxReason::Manual, /*allowNoClock=*/true);
+            if (r == LoraAdvertResult::Sent) {
+              logSerial.printf("LORA_OK:advert started\n");
+            } else {
+              // The reason, not a list of candidates. The old line named two
+              // causes and the common one was neither (T-2046).
+              logSerial.printf("LORA_ERR:advert not sent -- %s\n", loraAdvertResultText(r));
+            }
+          }
         } else if (upper.startsWith("BEACON")) {
           const long seconds =
               (upper == "BEACON" || upper == "BEACON OFF") ? 0 : strtol(argument.c_str() + 6, nullptr, 10);
