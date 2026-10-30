@@ -46,7 +46,7 @@ class HomeActivity final : public Activity {
   void onPreviewOpen();
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-  void onLoraPeersOpen();
+  void onGroupOpen();
 #endif
   void activate(int index);
 

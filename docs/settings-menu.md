@@ -33,11 +33,12 @@ The old web settings page would have been the other consumer, but it was
 removed before this (`webserver-endpoints.md`, "Device settings belong in the
 device menus").
 
-## Four tabs, not five
+## The tabs
 
-`categoryNames[]` (`SettingsActivity.cpp:30`) is now Display, Map, Controls,
-System. The Reader tab is gone, and with it three sub-screens that were only
-reachable from it:
+`categoryNames[]` (`SettingsActivity.cpp`) is Display, Map, **Group**,
+Controls, System -- five where the board builds the group layer or the LoRa
+radio, four where it builds neither. The Reader tab is gone, and with it three
+sub-screens that were only reachable from it:
 
 | Went | What it was |
 |---|---|
@@ -53,6 +54,81 @@ phone's BLE packet and ignores `SETTINGS.clockFormat` outright
 `TextSettingsActivity`, `StatusBarSettingsActivity`, `KOReaderSettingsActivity`
 and `OpdsServerListActivity` are all still compiled and still constructible.
 Only the rows that started them are gone.
+
+## The Group tab
+
+**Added 2026-10-30**, in the pass that renamed the team layer to the group
+layer everywhere.
+
+Before it, everything about who else is on the map was in two places and
+neither of them was about the group:
+
+- the **Map** tab carried `Group markers`, `Record group positions` and
+  `Record my track too`, three rows among fifteen about tiles, zoom, rotation
+  and GNSS;
+- the **Group screen** carried the radio, the beacon cadence and this device's
+  name as control rows of its own;
+- and `loraMeshOn` had a row in **both**, under two different labels -- `LoRa
+  radio` in Settings and `Radio` on the screen. One switch, two names, two
+  places. That is the kind of thing that ends with somebody believing the radio
+  is off because the other screen said so.
+
+The tab now holds all six rows. It sits between Map and Controls, because it is
+about what gets drawn on the map rather than about how the device is held.
+
+| Row | Field | Built when |
+|---|---|---|
+| Group markers | `mapGroupMarkers` | `ENABLE_GROUP_MARKERS` |
+| Record group positions | `mapGroupLogPeers` | `ENABLE_GROUP_MARKERS` |
+| Record my track too | `mapGroupLogSelf` | `ENABLE_GROUP_MARKERS` |
+| LoRa radio | `loraMeshOn` | `ENABLE_LORA_MESH` |
+| Broadcast my position | `loraBeaconSec` | `ENABLE_LORA_MESH` |
+| This device's name | `loraNodeName` | `ENABLE_LORA_MESH` |
+
+So an x4pro (group layer, no radio) gets a three-row tab, a T5 S3 Pro gets all
+six, and an X3 or X4 gets no tab at all -- `SETTINGS_HAS_GROUP_TAB` in
+`SettingsActivity.h` decides `categoryCount` at compile time, because a tab
+with nothing under it is a dead end the rider has to walk back out of.
+
+### The two radio rows are not member pointers
+
+`SettingInfo::Enum` and `::Toggle` can only point at a `uint8_t` member of
+`CrossPointSettings`. The beacon cadence is a `uint16_t` of **seconds**
+(`loraBeaconSec`) and the node name is a `char[21]`, so both go through
+`DynamicEnum` / `DynamicString` with a getter and a setter instead
+(`SettingsList.h`).
+
+That is not a workaround, it is the point: storing the row's index in a second
+field would have given the cadence two homes, which is the defect this whole
+pass removed. Both setters call `loraPresenceSetBeacon()` /
+`loraPresenceSetName()` -- the same calls the Group screen's rows make -- so
+the running node picks a change up without a restart and the two screens can
+never disagree.
+
+A cadence the console set to something outside the five offered values reads as
+the nearest one **at or below** it, never as `Never`: a row showing "off" for a
+radio that is transmitting would be a lie about a radio.
+
+### The Group screen keeps its own copy of these rows, deliberately
+
+Maintainer's call, 2026-10-30. The screen still shows Radio, Broadcast my
+position and This device's name under a `Settings` heading of its own, writing
+the same fields through the same setters.
+
+This is a duplicate of the **surface**, not of the state, and it is the
+opposite of what the tab fixed: there is one switch with one name, shown in the
+two places somebody setting the group up actually stands. The rule that was
+broken before was two *names* for one field, not two ways to reach it.
+
+### Still open on the Group tab
+
+- **The Group tab is not translated.** `STR_CAT_GROUP` and the three section
+  headings exist in `english.yaml` only, so every other language falls back to
+  English for them. Consistent with the Map tab, which is in the same state.
+- **`drawList()` has no section support.** The Group screen's headings are list
+  rows drawn dimmed, with the cursor stepping over them
+  (`GroupActivity::stepIndex()`). A real sub-header style would mean touching
+  all four themes.
 
 ## Frontlight: a row added, on the boards that have one
 

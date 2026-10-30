@@ -31,12 +31,31 @@
 // getSettingsList() so settings.json keeps them and the reader keeps working
 // — they are simply not reachable from the device any more
 // (docs/settings-menu.md).
-const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_MAP,
-                                                              StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+const StrId SettingsActivity::categoryNames[categoryCount] = {
+    StrId::STR_CAT_DISPLAY, StrId::STR_CAT_MAP,
+#if SETTINGS_HAS_GROUP_TAB
+    // Between Map and Controls, because it is about what is drawn on the map
+    // rather than about how the device is held.
+    StrId::STR_CAT_GROUP,
+#endif
+    StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+
+const std::vector<SettingInfo>* SettingsActivity::settingsForCategory(const int categoryIndex) const {
+  // Same order as categoryNames[], and the array is sized by the same constant,
+  // so a tab added to one and not the other fails to compile.
+  const std::vector<SettingInfo>* byIndex[categoryCount] = {&displaySettings, &mapSettings,
+#if SETTINGS_HAS_GROUP_TAB
+                                                            &groupSettings,
+#endif
+                                                            &controlsSettings, &systemSettings};
+  if (categoryIndex < 0 || categoryIndex >= categoryCount) return &displaySettings;
+  return byIndex[categoryIndex];
+}
 
 void SettingsActivity::rebuildSettingsLists() {
   displaySettings.clear();
   mapSettings.clear();
+  groupSettings.clear();
   controlsSettings.clear();
   systemSettings.clear();
 
@@ -57,6 +76,15 @@ void SettingsActivity::rebuildSettingsLists() {
       displaySettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_MAP) {
       mapSettings.push_back(setting);
+    } else if (setting.category == StrId::STR_CAT_GROUP) {
+#if SETTINGS_HAS_GROUP_TAB
+      groupSettings.push_back(setting);
+#else
+      // Unreachable: every row in that category is already behind the same
+      // two build flags the tab is. Here so a row added without its gate
+      // disappears rather than landing in whatever tab came last.
+      continue;
+#endif
     } else if (setting.category == StrId::STR_CAT_READER) {
       // The Reader tab is gone; nothing collects these.
       continue;
@@ -102,20 +130,7 @@ void SettingsActivity::rebuildSettingsLists() {
 
   // Update currentSettings pointer and count for the active category.
   // Index order must match categoryNames[] above.
-  switch (selectedCategoryIndex) {
-    case 0:
-      currentSettings = &displaySettings;
-      break;
-    case 1:
-      currentSettings = &mapSettings;
-      break;
-    case 2:
-      currentSettings = &controlsSettings;
-      break;
-    case 3:
-      currentSettings = &systemSettings;
-      break;
-  }
+  currentSettings = settingsForCategory(selectedCategoryIndex);
   settingsCount = static_cast<int>(currentSettings->size());
 }
 
@@ -148,21 +163,7 @@ void SettingsActivity::loop() {
   bool hasChangedCategory = false;
 
   auto applyCategorySelection = [this] {
-    // Same index order as categoryNames[] and rebuildSettingsLists().
-    switch (selectedCategoryIndex) {
-      case 0:
-        currentSettings = &displaySettings;
-        break;
-      case 1:
-        currentSettings = &mapSettings;
-        break;
-      case 2:
-        currentSettings = &controlsSettings;
-        break;
-      case 3:
-        currentSettings = &systemSettings;
-        break;
-    }
+    currentSettings = settingsForCategory(selectedCategoryIndex);
     settingsCount = static_cast<int>(currentSettings->size());
   };
 

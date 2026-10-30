@@ -184,6 +184,11 @@ class SettingsActivity final : public Activity {
   // stripped over time (firmware CLAUDE.md); the Reader tab was the first
   // thing to go (docs/settings-menu.md).
   std::vector<SettingInfo> mapSettings;
+  // The group's own tab, added 2026-10-30. Everything about who else is on
+  // the map used to be spread across the Map tab's toggles and the Group
+  // screen's own control rows, and one field (`loraMeshOn`) had a row in both
+  // (docs/settings-menu.md, "The Group tab").
+  std::vector<SettingInfo> groupSettings;
   std::vector<SettingInfo> controlsSettings;
   std::vector<SettingInfo> systemSettings;
   const std::vector<SettingInfo>* currentSettings = nullptr;
@@ -193,8 +198,23 @@ class SettingsActivity final : public Activity {
 
   OptionPopup optionPopup;
 
+  // Five tabs where a board builds the group layer or the radio, four
+  // otherwise. Compile-time, because categoryNames[] is a fixed array and a
+  // tab with nothing under it is a dead end the rider has to walk back out of.
+#if (defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS) || (defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH)
+#define SETTINGS_HAS_GROUP_TAB 1
+  static constexpr int categoryCount = 5;
+#else
+#define SETTINGS_HAS_GROUP_TAB 0
   static constexpr int categoryCount = 4;
+#endif
   static const StrId categoryNames[categoryCount];
+
+  // The one place the tab order is written as code. Everything that needs
+  // "which list is tab N" goes through this, so adding a tab is one edit here
+  // and one in categoryNames[] -- before 2026-10-30 the order was spelled out
+  // as a switch in three separate places.
+  const std::vector<SettingInfo>* settingsForCategory(int categoryIndex) const;
 
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();

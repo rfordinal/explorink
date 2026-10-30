@@ -47,6 +47,11 @@ LUCIDE_ICONS = [
     ("sync", "refresh-cw", ROW_SIZE),
     ("transfer", "wifi", ROW_SIZE),
     ("settings", "settings", ROW_SIZE),
+    # The group row. `users` and not `users-round`: at 32 px the round
+    # variant's two heads merge into one blob once the 110 threshold has
+    # had its say, and a group glyph that reads as one person is the one
+    # thing it must not do.
+    ("group", "users", ROW_SIZE),
     ("chevron", "chevron-right", CHEVRON_SIZE),
 ]
 

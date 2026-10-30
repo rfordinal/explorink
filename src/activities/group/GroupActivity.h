@@ -54,9 +54,9 @@
 // acronym is guessed and then offered for editing), and a member is removed
 // after a confirmation. Nothing here shows a position on the map; that stays
 // the Group list's job.
-class LoraPeersActivity final : public Activity {
+class GroupActivity final : public Activity {
  public:
-  LoraPeersActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+  GroupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("LoraPeers", renderer, mappedInput) {}
 
   void onEnter() override;
@@ -76,7 +76,11 @@ class LoraPeersActivity final : public Activity {
     kControlRowCount,
   };
 
-  enum class RowKind : uint8_t { Control, HeardPeer, RosterOnly };
+  // `Header` is a label, not a row: it is drawn dimmed and the cursor steps
+  // over it. The list widget has no section support of its own
+  // (BaseTheme::drawList()), and giving it one means touching all four themes
+  // -- so the sections live here, where only this screen pays for them.
+  enum class RowKind : uint8_t { Header, Control, HeardPeer, RosterOnly };
 
   ButtonNavigator buttonNavigator;
   int selectedIndex = 0;
@@ -104,7 +108,7 @@ class LoraPeersActivity final : public Activity {
 
   // Set when a row's action failed, cleared on the next one. Shown in the
   // header, because a control that silently does nothing is the worst kind.
-  StrId lastError_ = StrId::STR_LORA_PEERS;
+  StrId lastError_ = StrId::STR_GROUP_TITLE;
   bool hasError_ = false;
 
   // When the list was last re-read, and a fingerprint of what it drew.
@@ -147,9 +151,34 @@ class LoraPeersActivity final : public Activity {
 
   uint32_t listSignature() const;
 
+  // Where each section starts. Written as arithmetic over the live counts
+  // rather than a built table: every one of them is two additions, and a
+  // table would be a fourth thing refresh() has to keep in step with the
+  // radio, the roster and the anchor.
+  //
+  // The layout, top to bottom: a settings header, the four controls, a heard
+  // header, the heard nodes, and -- only when there are any -- a header and
+  // the members this radio cannot hear. The last section's header is hidden
+  // with its rows because a heading over nothing reads as a list that failed
+  // to load.
   RowKind rowKind(int index) const;
-  int rosterBase() const { return kControlRowCount + static_cast<int>(peerCount_); }
+  static constexpr int kSettingsHeaderIndex = 0;
+  static constexpr int controlBase() { return kSettingsHeaderIndex + 1; }
+  static constexpr int heardHeaderIndex() { return controlBase() + kControlRowCount; }
+  static constexpr int peerBase() { return heardHeaderIndex() + 1; }
+  int rosterHeaderIndex() const { return peerBase() + static_cast<int>(peerCount_); }
+  bool hasRosterSection() const;
+  int rosterBase() const { return rosterHeaderIndex() + (hasRosterSection() ? 1 : 0); }
   int itemCount() const;
+
+  // Which of the four controls `index` is, as a `kRow*` value. Only valid on a
+  // Control row.
+  int controlRowOf(int index) const { return index - controlBase(); }
+
+  // Navigation that skips headers. Wraps like ButtonNavigator's own helpers,
+  // and cannot loop forever: the list always carries at least the four
+  // controls, so a non-header row is always reachable.
+  int stepIndex(int from, int step) const;
 
   void refresh();
   void activate(int index);

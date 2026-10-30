@@ -13,6 +13,11 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// For the two Group rows that drive the running node rather than a field:
+// kLoraBeaconChoices, loraPresenceSetBeacon(), loraPresenceSetName().
+#include "lora/LoraPresence.h"
+#endif
 #include "KOReaderCredentialStore.h"
 #include "ReaderFontSizes.h"
 #include "activities/settings/SettingsActivity.h"
@@ -337,20 +342,29 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_MAP_PINS_OFFSCREEN, &CrossPointSettings::mapPinsOffscreen, "mapPinsOffscreen",
                             StrId::STR_CAT_MAP),
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+        // --- Group ---
+        //
+        // **Its own tab since 2026-10-30, not the Map tab's tail.** These three
+        // and the radio rows below them were spread across the Map tab and the
+        // Group screen's own control rows, with `loraMeshOn` carrying a row in
+        // both -- two places showing one switch, which is how a rider ends up
+        // believing the radio is off because the other screen said so
+        // (docs/settings-menu.md, "The Group tab").
+        //
         // The group's dots. On by default and free with an empty roster
         // (CrossPointSettings::mapGroupMarkers).
         SettingInfo::Toggle(StrId::STR_MAP_GROUP_MARKERS, &CrossPointSettings::mapGroupMarkers, "mapGroupMarkers",
-                            StrId::STR_CAT_MAP),
+                            StrId::STR_CAT_GROUP),
         // Their positions to the card's black box. On: the feature's whole point
         // is that the trace outlives the ride.
         SettingInfo::Toggle(StrId::STR_MAP_GROUP_LOG_PEERS, &CrossPointSettings::mapGroupLogPeers, "mapGroupLogPeers",
-                            StrId::STR_CAT_MAP),
+                            StrId::STR_CAT_GROUP),
         // The rider's own trace into the same file. **Off by default**, and the
         // label says "my track" rather than "black box": switching this on
         // writes where the rider went, on a card that is lost with the device.
         // Same call, same wording rule as the GNSS track row above.
         SettingInfo::Toggle(StrId::STR_MAP_GROUP_LOG_SELF, &CrossPointSettings::mapGroupLogSelf, "mapGroupLogSelf",
-                            StrId::STR_CAT_MAP),
+                            StrId::STR_CAT_GROUP),
 #endif
     // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
     // something a rider needs. Same field the map's own menu toggles live
@@ -359,9 +373,66 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // The LoRa radio. Off out of the box: a listening SX1262 costs 5.4 mA
         // continuously and drags the shared GNSS rail up with it
         // (CrossPointSettings::loraMeshOn). This row only says the radio *may*
-        // be used -- it runs while the map or the LoRa node list is open and
-        // at no other time.
-        SettingInfo::Toggle(StrId::STR_MAP_LORA, &CrossPointSettings::loraMeshOn, "loraMeshOn", StrId::STR_CAT_MAP),
+        // be used -- it runs while the map or the Group screen is open and at
+        // no other time.
+        //
+        // **The Group screen's Radio row is the same field, deliberately.**
+        // Maintainer's call, 2026-10-30: somebody setting the group up should
+        // not have to walk between two screens to finish, so the controls
+        // appear in both places and both write here. Not a duplicate of the
+        // kind this pass removed -- that one was two *names* for one switch
+        // (docs/settings-menu.md, "The Group tab").
+        SettingInfo::Toggle(StrId::STR_MAP_LORA, &CrossPointSettings::loraMeshOn, "loraMeshOn", StrId::STR_CAT_GROUP),
+        // How often this device tells the air where it is. Off by default:
+        // transmitting is what a stolen or lost device must not do on its own,
+        // and it is the only row here that spends the battery rather than
+        // reading it (../docs/lora-mesh.md, "When a position goes out").
+        //
+        // The same five values the Group screen's row cycles through, and the
+        // 70 s floor is enforced in LoraPresence rather than here -- a cap a
+        // settings row could clear would not be a cap.
+        //
+        // DynamicEnum and not Enum: the stored field is `loraBeaconSec`, a
+        // uint16_t holding seconds, and a plain Enum row can only point at a
+        // uint8_t. Writing the index to a second field would have given the
+        // cadence two homes -- the exact defect this pass is removing -- so
+        // the row converts instead, and the row carries no JSON key because
+        // CrossPointSettings already persists the seconds by hand.
+        //
+        // It also goes through loraPresenceSetBeacon() rather than writing the
+        // field, so the running node picks the new cadence up without a
+        // restart, the same call the Group screen's row makes.
+        SettingInfo::DynamicEnum(
+            StrId::STR_LORA_BEACON_ROW,
+            {StrId::STR_LORA_BEACON_OFF, StrId::STR_LORA_BEACON_70S, StrId::STR_LORA_BEACON_2MIN,
+             StrId::STR_LORA_BEACON_5MIN, StrId::STR_LORA_BEACON_15MIN},
+            [] {
+              // A cadence the console set to something outside the five reads
+              // as the nearest one at or below it, and never as "Never" unless
+              // it really is off -- a row that showed 0 for a running beacon
+              // would be a lie about a radio that is transmitting.
+              constexpr size_t n = sizeof(kLoraBeaconChoices) / sizeof(kLoraBeaconChoices[0]);
+              uint8_t best = 0;
+              for (size_t i = 0; i < n; ++i) {
+                if (SETTINGS.loraBeaconSec >= kLoraBeaconChoices[i]) best = static_cast<uint8_t>(i);
+              }
+              return best;
+            },
+            [](const uint8_t index) {
+              constexpr size_t n = sizeof(kLoraBeaconChoices) / sizeof(kLoraBeaconChoices[0]);
+              if (index < n) loraPresenceSetBeacon(kLoraBeaconChoices[index]);
+            },
+            nullptr, StrId::STR_CAT_GROUP),
+        // What this device calls itself on the air. Same field and the same
+        // setter as the Group screen's row.
+        //
+        // **It is broadcast, so it is not a place for a name.** The advert
+        // carries it in clear to everyone in radio range, roster or not
+        // (../docs/lora-mesh.md), which is why the label says "this device's
+        // name" and the default is empty.
+        SettingInfo::DynamicString(
+            StrId::STR_LORA_NAME_ROW, [] { return std::string(SETTINGS.loraNodeName); },
+            [](const std::string& name) { loraPresenceSetName(name.c_str()); }, nullptr, StrId::STR_CAT_GROUP),
 #endif
         SettingInfo::Toggle(StrId::STR_MAP_DEBUG_INFO, &CrossPointSettings::mapDebugInfo, "mapDebugInfo",
                             StrId::STR_CAT_MAP),

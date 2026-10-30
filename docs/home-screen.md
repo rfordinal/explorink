@@ -55,7 +55,22 @@ height as the step for the same reason
 | Trips | `goToRouteSelect()` (falls through to the map with no trips) | lucide `backpack` |
 | Sync | `goToTileSync()` | lucide `refresh-cw` |
 | File Transfer | `goToFileTransfer()` | lucide `wifi` |
+| Group | `goToGroup()`, only with `ENABLE_LORA_MESH` | lucide `users` |
 | Settings | `goToSettings()` | lucide `settings` |
+
+**The Group row is named for the feature, not for the radio.** Through
+2026-10-29 it read `LoRa nodes` and borrowed the gear glyph, while the map menu
+called the same people `Group` -- two names and no icon of its own for one
+thing. Renamed 2026-10-30 with the rest of the layer
+(`docs/group-markers.md`). A rider has no reason to know which radio carried a
+position, and the group layer does not know either: a position reaches it from
+LoRa, from a phone relay over BLE, or from the console.
+
+It stays gated on `ENABLE_LORA_MESH` rather than `ENABLE_GROUP_MARKERS`,
+because what the screen *does* is still the radio's: two of its three sections
+are the radio's controls and the nodes it hears. A board with the group layer
+and no radio (x4pro, simulator) keeps its roster over the console and gets the
+Settings **Group** tab without this row (`docs/settings-menu.md`).
 
 Changed 2026-08-22: Explore used to open the trip picker first (falling
 through to the map only when the card had no trips). Explore now jumps
@@ -159,6 +174,12 @@ The script exists next to the SDK's `gen_icons.py` rather than calling it for
 two reasons: that one needs `rsvg-convert` (not installed here -- this one falls
 back to cairosvg, like `scripts/gen_pin_icons.py`), and it is square-only, while
 the Explore glyph is the ExplorInk mark at 32x31.
+
+The Group glyph is Lucide **`users`** and not `users-round`: at 32 px against
+the generator's 110 threshold the round variant's two heads merge into one
+blob, and a group icon that reads as one person is the single thing it must
+not do. Checked by dumping the baked bits as ASCII rather than by eye on a
+24 px SVG.
 
 **This does satisfy the icon rule**, and the note now sits at both use sites --
 the top of `src/components/icons/home_icons.h` (generated, so it comes from the

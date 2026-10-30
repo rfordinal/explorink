@@ -1,4 +1,4 @@
-#include "LoraPeersActivity.h"
+#include "GroupActivity.h"
 
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
 
@@ -59,7 +59,7 @@ void formatAge(uint32_t seconds, char* buf, size_t bufLen) {
 
 }  // namespace
 
-void LoraPeersActivity::onEnter() {
+void GroupActivity::onEnter() {
   Activity::onEnter();
 
   // The other screen the radio may run under. Without this the list would be
@@ -73,7 +73,7 @@ void LoraPeersActivity::onEnter() {
   MapGroup::getInstance().begin();
 #endif
 
-  selectedIndex = 0;
+  selectedIndex = controlBase();
   anchor_ = Anchor{};
   lastCheckMs_ = millis();
   refresh();
@@ -81,26 +81,47 @@ void LoraPeersActivity::onEnter() {
   requestUpdate();
 }
 
-void LoraPeersActivity::onExit() {
+void GroupActivity::onExit() {
   loraPresenceHoldRadio(false);
   Activity::onExit();
 }
 
-int LoraPeersActivity::itemCount() const {
-  int n = kControlRowCount + static_cast<int>(peerCount_);
+bool GroupActivity::hasRosterSection() const {
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  return rosterOnlyCount_ > 0;
+#else
+  return false;
+#endif
+}
+
+int GroupActivity::itemCount() const {
+  int n = rosterBase();
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   n += static_cast<int>(rosterOnlyCount_);
 #endif
   return n;
 }
 
-LoraPeersActivity::RowKind LoraPeersActivity::rowKind(int index) const {
-  if (index < kControlRowCount) return RowKind::Control;
-  if (index < rosterBase()) return RowKind::HeardPeer;
+GroupActivity::RowKind GroupActivity::rowKind(int index) const {
+  if (index == kSettingsHeaderIndex) return RowKind::Header;
+  if (index < heardHeaderIndex()) return RowKind::Control;
+  if (index == heardHeaderIndex()) return RowKind::Header;
+  if (index < rosterHeaderIndex()) return RowKind::HeardPeer;
+  if (hasRosterSection() && index == rosterHeaderIndex()) return RowKind::Header;
   return RowKind::RosterOnly;
 }
 
-void LoraPeersActivity::refresh() {
+int GroupActivity::stepIndex(int from, int step) const {
+  const int count = itemCount();
+  int i = from;
+  for (int guard = 0; guard < count; ++guard) {
+    i = step > 0 ? ButtonNavigator::nextIndex(i, count) : ButtonNavigator::previousIndex(i, count);
+    if (rowKind(i) != RowKind::Header) return i;
+  }
+  return from;
+}
+
+void GroupActivity::refresh() {
   const LoraPresenceStatus status = loraPresenceStatus();
   meshRunning_ = status.meshRunning;
   beaconSec_ = status.beaconSec;
@@ -142,15 +163,22 @@ void LoraPeersActivity::refresh() {
   restoreAnchor();
 }
 
-void LoraPeersActivity::captureAnchor() {
+void GroupActivity::captureAnchor() {
   anchor_ = Anchor{};
   anchor_.kind = rowKind(selectedIndex);
   switch (anchor_.kind) {
+    case RowKind::Header:
+      // The cursor never rests on one, but refresh() can run while a
+      // sub-activity owns the screen. Anchoring to the first control is the
+      // same harmless place restoreAnchor() falls back to.
+      anchor_.kind = RowKind::Control;
+      anchor_.controlRow = 0;
+      break;
     case RowKind::Control:
-      anchor_.controlRow = selectedIndex;
+      anchor_.controlRow = controlRowOf(selectedIndex);
       break;
     case RowKind::HeardPeer:
-      memcpy(anchor_.key, peers_[static_cast<size_t>(selectedIndex - kControlRowCount)].pubKey, sizeof(anchor_.key));
+      memcpy(anchor_.key, peers_[static_cast<size_t>(selectedIndex - peerBase())].pubKey, sizeof(anchor_.key));
       break;
     case RowKind::RosterOnly:
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
@@ -162,16 +190,17 @@ void LoraPeersActivity::captureAnchor() {
   }
 }
 
-void LoraPeersActivity::restoreAnchor() {
+void GroupActivity::restoreAnchor() {
   switch (anchor_.kind) {
+    case RowKind::Header:
     case RowKind::Control:
-      selectedIndex = anchor_.controlRow;
+      selectedIndex = controlBase() + anchor_.controlRow;
       return;
 
     case RowKind::HeardPeer:
       for (size_t i = 0; i < peerCount_; ++i) {
         if (memcmp(peers_[i].pubKey, anchor_.key, sizeof(anchor_.key)) == 0) {
-          selectedIndex = kControlRowCount + static_cast<int>(i);
+          selectedIndex = peerBase() + static_cast<int>(i);
           return;
         }
       }
@@ -196,13 +225,13 @@ void LoraPeersActivity::restoreAnchor() {
   // The anchored item is gone -- removed, or stopped being heard and is not a
   // member either. The cursor goes somewhere harmless rather than to whatever
   // slid into that row number.
-  selectedIndex = 0;
+  selectedIndex = controlBase();
   anchor_.kind = RowKind::Control;
   anchor_.controlRow = 0;
 }
 
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
-void LoraPeersActivity::addHeardPeer(size_t peerIndex) {
+void GroupActivity::addHeardPeer(size_t peerIndex) {
   const LoraPeer& peer = peers_[peerIndex];
 
   char id[kLoraGroupIdBytes];
@@ -238,7 +267,7 @@ void LoraPeersActivity::addHeardPeer(size_t peerIndex) {
       handler);
 }
 
-void LoraPeersActivity::removeMember(const std::string& idOrAcr, const std::string& label) {
+void GroupActivity::removeMember(const std::string& idOrAcr, const std::string& label) {
   // **Confirmed, because this is the destructive one.** Removing a member
   // drops the allowlist entry their positions arrive through, so the next
   // thing they send is refused as a stranger. That is the point of the row,
@@ -258,13 +287,14 @@ void LoraPeersActivity::removeMember(const std::string& idOrAcr, const std::stri
 }
 #endif  // ENABLE_GROUP_MARKERS
 
-void LoraPeersActivity::activate(int index) {
+void GroupActivity::activate(int index) {
   hasError_ = false;
 
   const RowKind kind = rowKind(index);
+  if (kind == RowKind::Header) return;
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (kind == RowKind::HeardPeer) {
-    const size_t i = static_cast<size_t>(index - kControlRowCount);
+    const size_t i = static_cast<size_t>(index - peerBase());
     if (peerAcr_[i][0] == '\0') {
       addHeardPeer(i);
     } else {
@@ -283,7 +313,7 @@ void LoraPeersActivity::activate(int index) {
   if (kind != RowKind::Control) return;
 #endif
 
-  switch (index) {
+  switch (controlRowOf(index)) {
     case kRowMesh: {
       bool persisted = false;
       if (!loraPresenceSetMesh(!meshRunning_, persisted)) {
@@ -335,7 +365,7 @@ void LoraPeersActivity::activate(int index) {
   requestUpdate();
 }
 
-void LoraPeersActivity::loop() {
+void GroupActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -361,24 +391,29 @@ void LoraPeersActivity::loop() {
     }
   }
 
-  const int count = itemCount();
-  buttonNavigator.onNext([this, count] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, count);
+  buttonNavigator.onNext([this] {
+    selectedIndex = stepIndex(selectedIndex, 1);
     captureAnchor();
     requestUpdate();
   });
-  buttonNavigator.onPrevious([this, count] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, count);
+  buttonNavigator.onPrevious([this] {
+    selectedIndex = stepIndex(selectedIndex, -1);
     captureAnchor();
     requestUpdate();
   });
 }
 
-std::string LoraPeersActivity::rowTitle(int index) const {
+std::string GroupActivity::rowTitle(int index) const {
   const RowKind kind = rowKind(index);
 
+  if (kind == RowKind::Header) {
+    if (index == kSettingsHeaderIndex) return std::string(tr(STR_GROUP_SECTION_SETTINGS));
+    if (index == heardHeaderIndex()) return std::string(tr(STR_GROUP_SECTION_HEARD));
+    return std::string(tr(STR_GROUP_SECTION_OFFLINE));
+  }
+
   if (kind == RowKind::Control) {
-    switch (index) {
+    switch (controlRowOf(index)) {
       case kRowMesh:
         return std::string(tr(STR_LORA_MESH_ROW));
       case kRowBeacon:
@@ -400,7 +435,7 @@ std::string LoraPeersActivity::rowTitle(int index) const {
   }
 #endif
 
-  const size_t i = static_cast<size_t>(index - kControlRowCount);
+  const size_t i = static_cast<size_t>(index - peerBase());
   const LoraPeer& peer = peers_[i];
   char who[32];
   if (peer.name[0] != '\0') {
@@ -422,12 +457,14 @@ std::string LoraPeersActivity::rowTitle(int index) const {
   return std::string(who);
 }
 
-std::string LoraPeersActivity::rowValue(int index) const {
+std::string GroupActivity::rowValue(int index) const {
   const RowKind kind = rowKind(index);
   char buf[32];
 
+  if (kind == RowKind::Header) return std::string();
+
   if (kind == RowKind::Control) {
-    switch (index) {
+    switch (controlRowOf(index)) {
       case kRowMesh:
         // "Listening", not "On": it says what the radio is actually doing, and
         // it is the honest word -- the node hears everybody whether or not the
@@ -450,21 +487,24 @@ std::string LoraPeersActivity::rowValue(int index) const {
     }
   }
 
-  if (kind == RowKind::RosterOnly) return std::string(tr(STR_LORA_GROUP_NOT_HEARD));
+  // No value: the section heading above these rows already says "Not on
+  // LoRa", and repeating it once per row was the whole reason the screen
+  // needed headings.
+  if (kind == RowKind::RosterOnly) return std::string();
 
   // A peer's coordinate, and an empty column means they have not told us where
   // they are. Never 0,0 -- that is a place in the Atlantic and a different
   // statement entirely.
-  const LoraPeer& peer = peers_[static_cast<size_t>(index - kControlRowCount)];
+  const LoraPeer& peer = peers_[static_cast<size_t>(index - peerBase())];
   if (!peer.hasLoc) return std::string();
   snprintf(buf, sizeof(buf), "%.4f %.4f", static_cast<double>(peer.latE6) / 1e6, static_cast<double>(peer.lonE6) / 1e6);
   return std::string(buf);
 }
 
-std::string LoraPeersActivity::rowSubtitle(int index) const {
+std::string GroupActivity::rowSubtitle(int index) const {
   if (rowKind(index) != RowKind::HeardPeer) return std::string();
 
-  const LoraPeer& peer = peers_[static_cast<size_t>(index - kControlRowCount)];
+  const LoraPeer& peer = peers_[static_cast<size_t>(index - peerBase())];
   char age[16];
   formatAge((snapshotMs_ - peer.heardUptimeMs) / 1000, age, sizeof(age));
   char sub[64];
@@ -473,7 +513,7 @@ std::string LoraPeersActivity::rowSubtitle(int index) const {
   return std::string(sub);
 }
 
-uint32_t LoraPeersActivity::listSignature() const {
+uint32_t GroupActivity::listSignature() const {
   // FNV-1a over what is drawn, not over what is stored: the question this
   // answers is "would the panel look different", and anything the rider cannot
   // see must not be allowed to cost a refresh.
@@ -508,7 +548,7 @@ uint32_t LoraPeersActivity::listSignature() const {
   return h;
 }
 
-void LoraPeersActivity::render(RenderLock&&) {
+void GroupActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -533,7 +573,7 @@ void LoraPeersActivity::render(RenderLock&&) {
              static_cast<unsigned long>(beaconSec_), static_cast<unsigned long>(rejected_));
   }
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_LORA_PEERS), subtitle);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_GROUP_TITLE), subtitle);
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
@@ -545,7 +585,8 @@ void LoraPeersActivity::render(RenderLock&&) {
       [this](int index) {
         // "Announce me now" is unreachable with the radio off, and a row that
         // looks pressable and is not is worse than a dimmed one.
-        return index == kRowAdvert && !meshRunning_;
+        if (rowKind(index) == RowKind::Header) return true;
+        return rowKind(index) == RowKind::Control && controlRowOf(index) == kRowAdvert && !meshRunning_;
       });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

@@ -55,10 +55,20 @@ const HomeActivity::Row* HomeActivity::rows() {
       {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings},
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-      // The LoRa node list, the same kind of row and for the same reason: it
-      // answers "do these two boards hear each other" and shows raw keys and
-      // RSSI while doing it (platformio.ini, ENABLE_LORA_MESH).
-      {HomeMenuItem::LORA_PEERS, StrId::STR_LORA_PEERS, &icon_settings},
+      // Who else is out there. **Named for the feature and not for the radio**,
+      // 2026-10-30: the row said "LoRa nodes" and the map menu said "Group"
+      // for the same people, and a rider has no reason to know which radio
+      // carried a position -- the group layer takes them from LoRa, from a
+      // phone relay over BLE and from the console alike
+      // (../../../docs/group-markers.md, "The layer does not know which radio
+      // spoke").
+      //
+      // Still gated on ENABLE_LORA_MESH rather than ENABLE_GROUP_MARKERS,
+      // because what this screen *does* is still LoRa: two of its three
+      // sections are the radio's controls and the nodes it hears. A board with
+      // the group layer and no radio (x4pro, simulator) keeps its roster over
+      // the console, and gets the Settings tab without this row.
+      {HomeMenuItem::GROUP, StrId::STR_GROUP_TITLE, &icon_group},
 #endif
       {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings},
   };
@@ -106,8 +116,8 @@ void HomeActivity::activate(const int index) {
       break;
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-    case HomeMenuItem::LORA_PEERS:
-      onLoraPeersOpen();
+    case HomeMenuItem::GROUP:
+      onGroupOpen();
       break;
 #endif
     case HomeMenuItem::SETTINGS_MENU:
@@ -219,5 +229,5 @@ void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
 void HomeActivity::onPreviewOpen() { activityManager.goToPreview(); }
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-void HomeActivity::onLoraPeersOpen() { activityManager.goToLoraPeers(); }
+void HomeActivity::onGroupOpen() { activityManager.goToGroup(); }
 #endif

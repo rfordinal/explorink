@@ -12,11 +12,11 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "group/GroupActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
-#include "lora/LoraPeersActivity.h"
 #include "map/GnssAcquireActivity.h"
 #include "map/MapActivity.h"
 #include "map/MapRouteStore.h"
@@ -259,9 +259,9 @@ void ActivityManager::goToPreview() {
 #endif
 }
 
-void ActivityManager::goToLoraPeers() {
+void ActivityManager::goToGroup() {
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-  replaceActivity(std::make_unique<LoraPeersActivity>(renderer, mappedInput));
+  replaceActivity(std::make_unique<GroupActivity>(renderer, mappedInput));
 #else
   // No radio in this build, and no menu row either -- same shape as
   // goToPreview() above, and reachable only through a stale saved target.

@@ -30,8 +30,10 @@ Three parts:
    subclass. Loads an identity, sends adverts, receives them.
 2. **`LoraPeerTable`** (`src/lora/LoraPeerTable.{h,cpp}`) -- sixteen heard
    nodes, newest first. Plain C++, proved by `test/lora_peers/`.
-3. **`LoraPeersActivity`** (`src/activities/lora/`) -- Home > LoRa nodes, one
-   row per node. A bench screen, gated like the grayscale bench.
+3. **`GroupActivity`** (`src/activities/group/`) -- Home > **Group**, one row
+   per node plus the roster and the radio's own settings. Renamed from
+   `LoraPeersActivity` on 2026-10-30, with the layer
+   (`docs/settings-menu.md`, "The Group tab").
 
 ## It is not the group roster, and that is deliberate
 
@@ -253,9 +255,14 @@ to turn the radio on, and it is a bench screen nobody opens mid-ride.
 
 | where | what it is for |
 |---|---|
-| Settings > Map > **LoRa radio** | the setting, set once and forgotten |
+| Settings > **Group** > **LoRa radio** | the setting, set once and forgotten |
 | the map menu > **LoRa radio** | flipped from the ride, without leaving the map |
-| the LoRa node list > **Radio** | the bench, next to the things it affects |
+| the Group screen > **Radio** | next to the things it affects, while setting the group up |
+
+(The Settings row moved out of the Map tab into a Group tab of its own on
+2026-10-30, and the two labels were made the same word. They used to read
+`LoRa radio` and `Radio` -- one switch under two names, which is how somebody
+ends up believing the radio is off because the other screen said so.)
 
 All three write `CrossPointSettings::loraMeshOn` and nothing else, which is
 the pattern the rotation, heading and zoom rows already follow -- three
@@ -966,20 +973,43 @@ exactly like a radio nobody has pressed. Two messages, and the second is not an
 error -- a key that did not reach the card still works today, and the rider has
 to know that every reboot will make this a new node to everyone who heard it.
 
-## The list
+## The Group screen
 
-Home > **LoRa nodes**, one row per heard node: name (or four bytes of the key
-when the advert carried none), and under it RSSI, SNR, age and how many adverts
-have arrived. The value column is the coordinate when there is one.
+Home > **Group**. Three sections under named headings, since 2026-10-30:
+
+1. **Settings** -- `Radio`, `Broadcast my position`, `This device's name`, then
+   `Announce me now`. The same three fields as the Settings **Group** tab,
+   through the same setters, because somebody setting the group up should not
+   have to walk between two screens to finish (`docs/settings-menu.md`).
+2. **Heard on LoRa** -- one row per heard node: name, or four bytes of the key
+   when the advert carried none, and under it RSSI, SNR, age and how many
+   adverts have arrived. The value column is the coordinate when there is one.
+   A node already in the roster carries its acronym.
+3. **Not on LoRa** -- roster members this radio is not hearing. The section
+   exists so somebody who left the group can still be removed, which is
+   impossible from a list of only what the antenna can reach. It is hidden
+   entirely when it is empty, header and all: a heading over nothing reads as
+   a list that failed to load.
+
+The headings are ordinary list rows drawn dimmed, with the cursor stepping over
+them (`GroupActivity::stepIndex()`). `BaseTheme::drawList()` has no section
+support and giving it one means touching all four themes, so the sections live
+in the one screen that needs them.
+
+Select does the one thing that fits the row: a control acts, a heard stranger
+is added (the acronym is guessed, then offered for editing), a member is
+removed after a confirmation, and a heading does nothing.
 
 The header subtitle is this node's own state, because every row below it is
 meaningless without it: an empty list means "nobody is out there" only if the
-radio was listening, and "the mesh is off" otherwise.
+radio was listening, and "the mesh is off" otherwise. An error from the last
+action wins that line, because a control that did nothing has to say so.
 
-**Select is a reload, not an open.** There is nothing behind a row, and there
-is no auto-refresh timer either: on e-ink a screen that repaints itself every
-few seconds is a screen that is unreadable while it does, and a range test is
-walked between deliberate readings.
+**The list re-reads itself every 20 s and repaints only when the drawn text
+would differ.** The first version had no timer at all, which made the one
+screen whose job is "who is out there" unable to show somebody arriving while
+the rider watched it. The objection that an e-ink screen must not repaint every
+few seconds was right about the cost and wrong about the answer.
 
 The screen never touches the live table. `PresenceMesh::onAdvertRecv()` runs on
 the radio task; the screen takes a snapshot under the chip mutex once per
@@ -1354,6 +1384,12 @@ verified" and they are not, as a set:
 - **Range.** Step 6 below, and nothing on a desk substitutes for it.
 
 ## The hardware pass
+
+**Names below are the ones the panel carried on the day.** The screen was
+`LoRa nodes` until 2026-10-30 and is `Group` now, and the console verb moved
+from `team` to `group` in the same pass. What each run observed is unchanged;
+only what it would be called today is.
+
 
 In this order. Each step can kill the next. Builds `638e7b27`, `3b656d2a` and
 `fac82f05`, each archived in the parent repo per board -- the boards run
