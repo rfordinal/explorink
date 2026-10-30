@@ -1034,10 +1034,12 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
         if (rows[i].badgeIcon != nullptr) {
           const freeink::Icon& glyph = *rows[i].badgeIcon;
           bx += kBadgeInnerGap;
-          // Centred on the badge *text's* line, not on the row's full height.
-          // Centring on the row put the glyph and the brackets around it on
-          // two different centres -- a few pixels, and plainly wrong on the
-          // panel once the glyph was big enough to read.
+          // Centred on the badge *text's* line, so the glyph and the brackets
+          // around it share one centre. The difference from centring on the
+          // row is at most a pixel of integer-truncation residue -- what
+          // actually made the first badge look wrong was the glyph itself,
+          // lucide `antenna`, whose 14 px raster is top-heavy with a detached
+          // mast (scripts/gen_home_icons.py).
           renderer.drawMono1bpp(glyph.bits, bx, by + (badgeLineHeight - glyph.h) / 2, glyph.w, glyph.h, !selected);
           bx += glyph.w;
         }

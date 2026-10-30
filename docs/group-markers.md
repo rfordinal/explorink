@@ -554,6 +554,39 @@ it from `develop` every few weeks instead.
   was picked, but nothing here verifies a signature yet -- the allowlist stops a
   stranger, not somebody replaying a member's id.
 
+## Moving a card from the old name, and rolling back
+
+`groupMigrateLegacyDir()` moves `/trailink/team` to `/trailink/group` once.
+**FAT has no atomic directory rename** -- `FatFile::rename()` creates the
+destination and removes the source afterwards -- so a failure leaves both
+directories, and the decision has to be a function of what is on the card
+rather than a single try:
+
+| card | action |
+|---|---|
+| no `/trailink/team` | nothing, and never look again |
+| legacy only | rename the directory whole |
+| both, only the legacy one has `members.json` | move that one file across |
+| both have a roster, or neither does | refuse, read the new path, delete nothing |
+
+A failure is **never latched**: the next entry point tries again and picks the
+half-done state up. The first version latched before the rename, so one
+failure stranded the roster under the old name forever while an empty new
+directory made every later boot refuse. `test/group_migration/` proves all
+sixteen input states, including that no decision can ever overwrite a roster.
+
+**Rolling back loses the group.** The settings keys moved from `mapTeam*` to
+`mapGroup*` and the first save drops the old ones, and the directory has
+moved. A device flashed back to a pre-rename binary -- the documented hang
+recovery -- reads an empty roster, an empty black box and three default
+toggles, with nothing on the panel explaining it. The files are all still on
+the card under `/trailink/team`; nothing is deleted.
+
+Also: the settings half is compiled only where `ENABLE_GROUP_MARKERS` is,
+which is no release env. A card that passes through a release build between
+two devel builds has its `mapTeam*` keys dropped by that build's first save
+and arrives with nothing to migrate.
+
 ## The hardware pass
 
 **The console verb in this section is `team`, and that is not a typo.** The

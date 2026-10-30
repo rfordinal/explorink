@@ -1300,6 +1300,15 @@ static void loraLogSimple(LoraLogKind kind, uint32_t cadenceSec = 0, LoraTxDecli
 static bool gMeshClockEverKnown = false;
 
 static uint32_t meshWallClockUtc() {
+  // **Takes the lock itself, because this function writes.** It was a pure
+  // read until the latch below was added, and two of its six callers --
+  // meshBeaconTick() and loraDrain()'s log write -- never held LoraLock. A
+  // third, loraPresenceStatus(), runs on the render task. gMeshRtc is three
+  // fields and tick() is a read-modify-write, so a concurrent setCurrentTime()
+  // could leave the accumulator holding the whole uptime and put the next
+  // advert hours into the future. The mutex is recursive, so the callers that
+  // already hold it pay nothing.
+  LoraLock lock;
   uint32_t utc = 0;
   if (freeink::BlePositionServer::getInstance().utcNow(utc)) {
     gMeshRtc.setCurrentTime(utc);
@@ -1474,6 +1483,23 @@ static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7, uint16_t* accuracyM
 // two callers that are not the beacon -- the screen's button and the console
 // -- are exactly the ones that have no rule behind them, so the default is
 // the truth rather than a placeholder.
+// The timestamp the next advert will carry: `want`, or one second past the
+// last one we sent if `want` is not strictly greater.
+//
+// Two bugs share this fix. A repeated payload is dropped by every receiver
+// that still remembers its hash, and a stamp that moves backwards makes this
+// node's newest advert look older than one a peer already holds. Both are
+// reachable: without a clock the stamp is derived from uptime, and with one it
+// comes from whichever source answered last, which can disagree.
+//
+// Caller must hold LoraLock -- the only caller is meshSendAdvert(), which does.
+static uint32_t meshNextAdvertStamp(uint32_t want) {
+  static uint32_t lastStamp = 0;
+  if (want <= lastStamp) want = lastStamp + 1;
+  lastStamp = want;
+  return want;
+}
+
 const char* loraAdvertResultText(const LoraAdvertResult result) {
   switch (result) {
     case LoraAdvertResult::Sent:
@@ -1516,6 +1542,15 @@ static LoraAdvertResult meshSendAdvert(LoraTxReason why = LoraTxReason::Manual, 
   // one. See meshWallClockUtc().
   const uint32_t wallUtc = meshWallClockUtc();
   if (wallUtc == 0 && allowNoClock) {
+    // **Force the stamp to move.** MeshCore hashes the whole advert payload
+    // and a receiver silently drops a hash it has seen
+    // (meshcore SimpleMeshTables::wasSeen). Without a clock the stamp is a
+    // deterministic function of uptime and the Ed25519 signature is
+    // deterministic too, so two presses in one second -- or a reboot and a
+    // press at the same uptime -- build a byte-identical frame that the peer
+    // we are trying to pair with throws away. Same reason MeshCore itself
+    // carries getCurrentTimeUnique(), which createAdvert() does not call.
+    gMeshRtc.setCurrentTime(meshNextAdvertStamp(gMeshRtc.getCurrentTime()));
     // Identity only. hasLoc is forced false below, so nothing in this frame
     // can be placed on anybody's map, which is what makes an unknown
     // timestamp harmless here.
@@ -1533,7 +1568,12 @@ static LoraAdvertResult meshSendAdvert(LoraTxReason why = LoraTxReason::Manual, 
       gMeshLastTxReason = why;
       gMeshLastSentMs = millis();
       gMeshLastSentHadFix = false;
-      gMeshBeaconEverSent = true;
+      // **gMeshBeaconEverSent stays untouched.** It is the beacon's own
+      // "have I ever introduced myself properly" flag, and BeaconPolicy only
+      // ever sends Reason::First while it is false. Setting it from a
+      // clockless pairing frame -- which carries no position and no real time
+      // -- made a device that then received a clock skip its first real
+      // advert and fall through to the one-hour keepalive.
       return LoraAdvertResult::Sent;
     }
     return pairResult == PresenceMesh::AdvertResult::TooLong ? LoraAdvertResult::TooLong : LoraAdvertResult::PoolEmpty;
@@ -1552,7 +1592,11 @@ static LoraAdvertResult meshSendAdvert(LoraTxReason why = LoraTxReason::Manual, 
   // on from whatever it was last told. Setting it from the true clock here
   // costs nothing and is always right, including across the moment it first
   // appears.
-  gMeshRtc.setCurrentTime(wallUtc);
+  // Monotonic for the same reason the clockless path above is: a receiver
+  // drops a repeated payload hash, and a stamp that goes backwards -- a phone
+  // handing over a time behind the latched clock, say -- makes this node's
+  // adverts look older than ones the peer already holds.
+  gMeshRtc.setCurrentTime(meshNextAdvertStamp(wallUtc));
 
   int32_t latE7 = 0;
   int32_t lonE7 = 0;
@@ -1706,7 +1750,18 @@ LoraPresenceStatus loraPresenceStatus() {
   LoraLock lock;
   LoraPresenceStatus out{};
   out.meshRunning = gMeshRunning;
-  out.beaconSec = gMeshBeaconSec;
+  // **The live cadence while the radio runs, the stored one while it does
+  // not.** gMeshBeaconSec is a cache loaded at meshStart() and zeroed at
+  // meshStop(), so with the radio off it reads 0 -- and the Group screen then
+  // showed "Never" for a device configured to beacon every 15 minutes, and
+  // one press cycled from that 0 to 70 s and saved it, destroying the rider's
+  // choice silently. Reading the setting when there is no running radio is
+  // the same correction LORA_STATE already carries a few hundred lines down.
+  //
+  // It is deliberately not "always the setting": CMD:LORA BEACON is a bench
+  // override that writes the cache only, and while the radio is up the cache
+  // is what is actually on the air.
+  out.beaconSec = gMeshRunning ? gMeshBeaconSec : SETTINGS.loraBeaconSec;
   out.advertsRejected = gMesh.advertsRejected();
   out.peerCount = gMesh.peers().count();
   out.identityPersisted = gMesh.identityPersisted();

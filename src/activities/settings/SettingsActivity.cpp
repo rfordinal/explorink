@@ -399,28 +399,39 @@ void SettingsActivity::toggleCurrentSetting() {
     // `stringSetter` wins over the raw field when a row has one -- the Group
     // tab's node name has to reach the running radio, not just the settings
     // struct (SettingsList.h, loraPresenceSetName()).
+    // **stringMaxLen is the buffer size, not a character count.** That is the
+    // convention everywhere else -- SettingInfo::String() is handed
+    // sizeof(field), and copyToField() writes maxLen bytes including the NUL
+    // (CrossPointSettings.cpp). The first version of this branch read it as a
+    // character count and wrote maxLen + 1 bytes, one past the end of the
+    // field, into whatever member follows it.
     std::string current;
-    size_t maxLen = setting.stringMaxLen;
+    size_t bufBytes = setting.stringMaxLen;
     char* dest = nullptr;
     if (setting.stringGetter) {
       current = setting.stringGetter();
-      if (maxLen == 0) maxLen = 32;
+      // A DynamicString row keeps its value outside CrossPointSettings, so
+      // there is no field to size against unless the row said so.
+      if (bufBytes == 0) bufBytes = 32;
     } else if (setting.stringOffset != 0) {
       dest = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
       current = dest;
+      if (bufBytes == 0) return;  // misconfigured row; writing blind is worse
     } else {
       return;
     }
+    // What the keyboard may return: characters, so one less than the buffer.
+    const size_t maxChars = bufBytes - 1;
 
     const StrId title = setting.nameId;
     auto stringSetter = setting.stringSetter;
-    auto handler = [this, stringSetter, dest, maxLen](const ActivityResult& result) {
+    auto handler = [this, stringSetter, dest, bufBytes](const ActivityResult& result) {
       if (!result.isCancelled) {
         const auto& kb = std::get<KeyboardResult>(result.data);
         if (stringSetter) {
           stringSetter(kb.text);
         } else if (dest != nullptr) {
-          snprintf(dest, maxLen + 1, "%s", kb.text.c_str());
+          snprintf(dest, bufBytes, "%s", kb.text.c_str());
         }
         SETTINGS.saveToFile();
       }
@@ -428,7 +439,7 @@ void SettingsActivity::toggleCurrentSetting() {
       requestUpdate();
     };
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(title), current,
-                                                                   maxLen, InputType::Text),
+                                                                   maxChars, InputType::Text),
                            handler);
     return;
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {

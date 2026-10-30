@@ -209,32 +209,59 @@ void replayLine(void* ctx, std::string_view line, uint32_t) {
 }  // namespace
 
 void groupMigrateLegacyDir() {
-  // Guarded per boot as well as by the card's own state: the two entry points
-  // below both call this, and a card that is not ready yet must not be taken
-  // for a card with nothing to move.
+  // **Latched only once there is nothing left to do.** The first version set
+  // this before attempting the rename, so a single failure stranded the card:
+  // nothing retried, the black box then created an empty /trailink/group, and
+  // from the next boot the both-exist branch refused forever while the
+  // rider's hand-built roster sat unreadable under the old name.
   static bool done = false;
   if (done) return;
   if (!Storage.ready()) return;
-  done = true;
 
   constexpr const char* kLegacyDir = "/trailink/team";
-  if (!Storage.exists(kLegacyDir)) return;
-  if (Storage.exists(GroupRosterFile::kDir)) {
-    // Both there: a build before the rename ran again after a build after it,
-    // and each wrote its own. Nothing here can tell which roster the rider
-    // means, so this refuses to pick -- it logs the collision and leaves both
-    // directories exactly as they are.
-    LOG_ERR(kLogTag, "%s and %s both exist -- leaving both alone, the newer path wins", kLegacyDir,
-            GroupRosterFile::kDir);
-    return;
-  }
-  if (Storage.rename(kLegacyDir, GroupRosterFile::kDir)) {
-    LOG_INF(kLogTag, "moved %s to %s", kLegacyDir, GroupRosterFile::kDir);
-  } else {
-    LOG_ERR(kLogTag,
-            "could not move %s to %s -- the roster and the black box are still on the card, under the old "
-            "name",
-            kLegacyDir, GroupRosterFile::kDir);
+  constexpr const char* kLegacyRoster = "/trailink/team/members.json";
+
+  const bool legacyExists = Storage.exists(kLegacyDir);
+  const bool newExists = Storage.exists(GroupRosterFile::kDir);
+  const GroupMigrateAction action = groupMigrateDecide(legacyExists, newExists, Storage.exists(kLegacyRoster),
+                                                       Storage.exists(GroupRosterFile::kPath));
+
+  switch (action) {
+    case GroupMigrateAction::Nothing:
+      done = true;
+      return;
+
+    case GroupMigrateAction::MoveDirectory:
+      if (Storage.rename(kLegacyDir, GroupRosterFile::kDir)) {
+        LOG_INF(kLogTag, "moved %s to %s", kLegacyDir, GroupRosterFile::kDir);
+        done = true;
+      } else {
+        // Not latched: the next entry point tries again, and a half-finished
+        // rename lands in RescueRoster above rather than in Refuse.
+        LOG_ERR(kLogTag, "could not move %s to %s -- will retry; nothing was deleted", kLegacyDir,
+                GroupRosterFile::kDir);
+      }
+      return;
+
+    case GroupMigrateAction::RescueRoster:
+      // The roster is the irreplaceable half -- built by hand, member by
+      // member. The black box is history and stays where it is; it is named
+      // bb-YYYYMMDD.csv and a person can move it with a card reader.
+      if (Storage.rename(kLegacyRoster, GroupRosterFile::kPath)) {
+        LOG_INF(kLogTag, "rescued the roster from %s; black-box files remain in %s", kLegacyRoster, kLegacyDir);
+        done = true;
+      } else {
+        LOG_ERR(kLogTag, "could not rescue %s -- will retry; nothing was deleted", kLegacyRoster);
+      }
+      return;
+
+    case GroupMigrateAction::Refuse:
+      // Both hold a roster. Nothing here can tell which one the rider means,
+      // so this picks neither and says so. The new path is what gets read.
+      LOG_ERR(kLogTag, "%s and %s both hold a roster -- using %s, leaving both files alone", kLegacyDir,
+              GroupRosterFile::kDir, GroupRosterFile::kPath);
+      done = true;
+      return;
   }
 }
 
@@ -292,9 +319,11 @@ bool GroupRosterFile::save(const GroupRoster& roster) {
 }
 
 bool GroupBlackBox::append(const GroupRecord& rec) {
-  // The other entry point: a position can be written before anything reads
-  // the roster, and a day file landing in a fresh directory next to the old
-  // one would split the history in two.
+  // The other entry point. Today every caller has already loaded the roster,
+  // so this cannot be the first to run -- it is here because append() is the
+  // one function that *creates* the directory (ensureDirectoryExists below),
+  // and creating it behind a pending migration is what turns a retryable
+  // half-move into two directories that both look real.
   groupMigrateLegacyDir();
   char line[kGroupLineMax + 2];
   const size_t len = encodeGroupRecord(rec, line, kGroupLineMax + 1);

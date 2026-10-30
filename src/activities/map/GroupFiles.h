@@ -29,15 +29,54 @@
 // group having been wiped -- the roster empty, the history gone -- with both
 // still sitting on the card under a name nothing opens any more.
 //
-// One directory rename, not a file-by-file copy: it is atomic enough on FAT,
-// it needs no free space, and it cannot half-finish into two directories that
-// both look authoritative. If the old directory is still there afterwards the
-// rename failed, and the layer carries on with an empty new one rather than
-// guessing -- the card is readable by hand and nothing was deleted.
+// One directory rename, not a file-by-file copy: it needs no free space and
+// it moves the history with the roster.
+//
+// **It is not atomic, and an earlier comment here claimed it was.** FAT has
+// no directory rename primitive: FatFile::rename() creates the destination
+// and removes the source afterwards, so a failure between the two leaves both
+// directories. That is why the decision below is a function of what is on the
+// card rather than a single try, and why a failure is never latched -- the
+// next call picks the half-done state up and rescues the roster.
+//
+// Nothing is ever deleted. The worst outcome is both directories present and
+// a line in the log saying which one is being read.
 //
 // Idempotent and cheap: after the first successful run `/trailink/team` does
 // not exist, so every later call is one `exists()`. Delete this once no card
 // in use predates 2026-10-30.
+// What the card's state says to do about `/trailink/team`.
+//
+// Pulled out of groupMigrateLegacyDir() so it can be proved on the host:
+// the function itself needs a card, and the case that matters most -- a
+// rename that failed halfway -- had never run anywhere (test/group/).
+enum class GroupMigrateAction : uint8_t {
+  Nothing,        // no legacy directory; never look again
+  MoveDirectory,  // legacy only; rename it whole
+  RescueRoster,   // both exist and only the legacy one has a roster
+  Refuse,         // both exist and the new one has a roster of its own
+};
+
+// `legacyExists` / `newExists`: the two directories.
+// `legacyHasRoster` / `newHasRoster`: whether each holds members.json.
+//
+// Inline in the header on purpose: GroupFiles.cpp pulls in HalStorage, which
+// does not exist on the host, and this is the half that had to become
+// testable (test/group_migration/).
+inline GroupMigrateAction groupMigrateDecide(const bool legacyExists, const bool newExists, const bool legacyHasRoster,
+                                             const bool newHasRoster) {
+  if (!legacyExists) return GroupMigrateAction::Nothing;
+  if (!newExists) return GroupMigrateAction::MoveDirectory;
+  // **Both directories is the normal shape of a half-done rename, not just of
+  // two builds disagreeing.** On FAT a directory rename is not atomic:
+  // FatFile::rename() creates the destination and only then removes the
+  // source, so any failure in between leaves exactly this. The first version
+  // of this code asserted the opposite in a comment and refused on sight,
+  // which stranded the roster under the old name forever.
+  if (newHasRoster) return GroupMigrateAction::Refuse;
+  return legacyHasRoster ? GroupMigrateAction::RescueRoster : GroupMigrateAction::Refuse;
+}
+
 void groupMigrateLegacyDir();
 
 // The allowlist. One document, rewritten whole on every edit (GroupRoster.h says

@@ -367,6 +367,10 @@ void GroupActivity::activate(int index) {
       if (result != LoraAdvertResult::Sent) {
         switch (result) {
           case LoraAdvertResult::NoClock:
+            // Unreachable from this row since the clockless pairing advert
+            // landed -- loraPresenceAdvertNow() passes allowNoClock. Kept so
+            // the switch stays total and so turning that off again shows a
+            // sentence rather than the wrong one.
             lastError_ = StrId::STR_LORA_NO_CLOCK;
             break;
           case LoraAdvertResult::PoolEmpty:
@@ -535,7 +539,11 @@ std::string GroupActivity::rowSubtitle(int index) const {
 
   const LoraPeer& peer = peers_[static_cast<size_t>(index - peerBase())];
   char age[16];
-  formatAge((snapshotMs_ - peer.heardUptimeMs) / 1000, age, sizeof(age));
+  // Clamped: the status snapshot and the peer snapshot are taken under two
+  // separate locks, so an advert landing between them gives a heardUptimeMs
+  // past snapshotMs_ and the unsigned subtraction wrapped to "1193046h ago".
+  const uint32_t ageMs = snapshotMs_ > peer.heardUptimeMs ? snapshotMs_ - peer.heardUptimeMs : 0;
+  formatAge(ageMs / 1000, age, sizeof(age));
   char sub[64];
   snprintf(sub, sizeof(sub), tr(STR_LORA_PEERS_SUB_FORMAT), static_cast<int>(peer.rssiDbm),
            static_cast<int>(peer.snrDb), age, static_cast<unsigned>(peer.adverts));
@@ -558,6 +566,9 @@ uint32_t GroupActivity::listSignature() const {
   mix(beaconSec_);
   mix(rejected_);
   mix(hasWallClock_ ? 1u : 0u);
+  // Drawn in the header and in the Name row, so it has to be here or a rename
+  // from the console leaves the old name on the panel.
+  for (const char* c = nodeName_; *c != '\0'; ++c) mix(static_cast<uint32_t>(*c));
   for (size_t i = 0; i < peerCount_; ++i) {
     const LoraPeer& p = peers_[i];
     mix(static_cast<uint32_t>(p.pubKey[0]) | (static_cast<uint32_t>(p.pubKey[1]) << 8) |
@@ -565,7 +576,8 @@ uint32_t GroupActivity::listSignature() const {
     mix(p.adverts);
     mix(static_cast<uint32_t>(p.rssiDbm));
     char age[16];
-    formatAge((snapshotMs_ - p.heardUptimeMs) / 1000, age, sizeof(age));
+    const uint32_t pAgeMs = snapshotMs_ > p.heardUptimeMs ? snapshotMs_ - p.heardUptimeMs : 0;
+    formatAge(pAgeMs / 1000, age, sizeof(age));
     for (const char* c = age; *c != '\0'; ++c) mix(static_cast<uint32_t>(*c));
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
     for (const char* c = peerAcr_[i]; *c != '\0'; ++c) mix(static_cast<uint32_t>(*c));
@@ -573,7 +585,14 @@ uint32_t GroupActivity::listSignature() const {
   }
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   mix(static_cast<uint32_t>(rosterOnlyCount_));
-  for (size_t i = 0; i < rosterOnlyCount_; ++i) mix(rosterOnly_[i]);
+  // The acronym, not the listing index. A roster edit from elsewhere that
+  // removes one member and adds another into the freed slot leaves the index
+  // set identical, and the panel would have kept naming somebody who had left
+  // the group until the next structural change.
+  for (size_t i = 0; i < rosterOnlyCount_; ++i) {
+    const GroupMember m = MapGroup::getInstance().groupMemberAt(rosterOnly_[i]);
+    for (const char* c = m.acr; *c != '\0'; ++c) mix(static_cast<uint32_t>(*c));
+  }
 #endif
   return h;
 }

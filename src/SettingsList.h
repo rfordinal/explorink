@@ -411,10 +411,15 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
               // as the nearest one at or below it, and never as "Never" unless
               // it really is off -- a row that showed 0 for a running beacon
               // would be a lie about a radio that is transmitting.
+              // Through loraPresenceStatus(), not SETTINGS directly, so this row
+              // and the Group screen's row cannot disagree -- they read one
+              // accessor. Reading the field here while the screen read the
+              // running cache is how one cadence came to be shown two ways.
+              const uint32_t current = loraPresenceStatus().beaconSec;
               constexpr size_t n = sizeof(kLoraBeaconChoices) / sizeof(kLoraBeaconChoices[0]);
               uint8_t best = 0;
               for (size_t i = 0; i < n; ++i) {
-                if (SETTINGS.loraBeaconSec >= kLoraBeaconChoices[i]) best = static_cast<uint8_t>(i);
+                if (current >= kLoraBeaconChoices[i]) best = static_cast<uint8_t>(i);
               }
               return best;
             },
@@ -448,7 +453,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                 return std::string(loraPresenceStatus().nodeName);
               },
               [](const std::string& name) { loraPresenceSetName(name.c_str()); }, nullptr, StrId::STR_CAT_GROUP);
-          s.stringMaxLen = sizeof(CrossPointSettings::loraNodeName) - 1;
+          // The buffer size, matching SettingInfo::String()'s convention --
+          // the row that reads it subtracts one for the character limit.
+          s.stringMaxLen = sizeof(CrossPointSettings::loraNodeName);
           return s;
         }(),
 #endif

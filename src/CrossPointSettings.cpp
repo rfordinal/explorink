@@ -12,6 +12,7 @@
 #include "I18nKeys.h"
 #include "ReaderFontSizes.h"
 #include "SettingsList.h"
+#include "SettingsMigration.h"
 #include "fontIds.h"
 
 namespace {
@@ -275,7 +276,17 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // defaults back -- group markers on, peer logging on, their own track off.
   //
   // Old key wins only where the new one is absent, so a device that has saved
-  // once since the rename never reads the stale half. `needsResave` makes the
+  // once since the rename never reads the stale half.
+  //
+  // **This block is compiled only where ENABLE_GROUP_MARKERS is**, which is no
+  // release env (platformio.ini). A card that passes through a release build
+  // between two devel builds has its mapTeam* keys dropped by that build's
+  // first save, and arrives here with nothing to migrate. The directory move
+  // still happens; the three toggles go back to their defaults.
+  //
+  // **It is also one-way.** Rolling a device back to a pre-rename binary --
+  // the documented hang recovery -- finds the directory moved and these keys
+  // gone, and reads as a wiped group. Said in docs/group-markers.md too. `needsResave` makes the
   // next save drop the old keys, which is what ends this block's life: delete
   // it once no card in use predates 2026-10-30.
   {
@@ -292,10 +303,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
         {"mapTeamKeepDays", "mapGroupKeepDays", &mapGroupKeepDays},
     };
     for (const auto& r : renamed) {
-      if (doc[r.newKey].isNull() && !doc[r.oldKey].isNull()) {
-        *r.dest = doc[r.oldKey] | *r.dest;
-        needsResave = true;
-      }
+      const SettingsMigratedToggle m =
+          settingsMigrateToggle(!doc[r.newKey].isNull(), !doc[r.oldKey].isNull(), doc[r.oldKey] | *r.dest, *r.dest);
+      *r.dest = m.value;
+      if (m.adopted) needsResave = true;
     }
     // Not in the table above because it is a uint16_t, and because the 30 ->
     // 360 migration right above has to run on a value that arrived under the
