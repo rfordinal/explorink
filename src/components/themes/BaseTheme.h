@@ -364,6 +364,18 @@ class BaseTheme {
   struct HomeRow {
     const char* label;
     const freeink::Icon* icon;
+    // An optional badge after the label, drawn as `(<text> <glyph>)` in the
+    // smaller face. It says what a row *runs on* without putting that in the
+    // row's name -- Home's Group row is named for the feature, because the
+    // group layer takes positions from LoRa, from a phone over BLE and from
+    // the console alike, but the screen behind it really is the radio's
+    // (../../docs/home-screen.md, "The rows").
+    //
+    // Both halves are optional and the badge is skipped entirely when there
+    // is no room left before the chevron, so a translation that doubles the
+    // label's width loses the badge rather than drawing over the arrow.
+    const char* badgeLabel = nullptr;
+    const freeink::Icon* badgeIcon = nullptr;
   };
   virtual void drawHomeMenu(const GfxRenderer& renderer, Rect rect, const HomeRow* rows, int rowCount,
                             int selectedIndex, int rowHeight) const;

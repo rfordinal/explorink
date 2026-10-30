@@ -53,10 +53,44 @@ height as the step for the same reason
 |---|---|---|
 | Explore | `goToMap()` -- straight to the map, no picker | the ExplorInk mark |
 | Trips | `goToRouteSelect()` (falls through to the map with no trips) | lucide `backpack` |
+| Group `(LoRa `antenna`)` | `goToGroup()`, only with `ENABLE_LORA_MESH` | lucide `users` |
 | Sync | `goToTileSync()` | lucide `refresh-cw` |
 | File Transfer | `goToFileTransfer()` | lucide `wifi` |
-| Group | `goToGroup()`, only with `ENABLE_LORA_MESH` | lucide `users` |
 | Settings | `goToSettings()` | lucide `settings` |
+
+**Group sits third, under Trips** -- maintainer's call on the panel,
+2026-10-30, after it first shipped down next to Settings. The top of this list
+is what a rider reaches for before walking out the door: where am I, which
+trip, who is with me. Sync and File Transfer are desk jobs done once, so
+ranking the group below them read as plumbing.
+
+### The badge, and why it is not a contradiction
+
+The Group row carries an aside after its label: `(LoRa` + the 14 px antenna
+glyph + `)`. Added on the maintainer's ask, 2026-10-30, in the same pass that
+took "LoRa" *out* of the row's name.
+
+Those pull in opposite directions only if both are read as naming. They are
+not:
+
+- the **name** is the feature, because the group layer is transport-neutral --
+  a position reaches it from LoRa, from a phone relay over BLE, or from the
+  console, and it does not know which;
+- the **badge** is about this *screen*, which really is the radio's: its
+  controls and the nodes it hears. A rider looking for where the radio lives
+  now has one place to look, and nobody has to learn that "Group" is where
+  LoRa hides.
+
+Mechanically it is two optional fields on `BaseTheme::HomeRow` (`badgeLabel`,
+`badgeIcon`), drawn in UI_10 rather than the row's UI_12 -- at the label's own
+weight it read as part of the name. The glyph is `icon_loraListening`, the
+same antenna the map header already uses for this radio: one glyph for one
+thing, across two screens.
+
+**The badge is dropped, not clipped, when it does not fit.** `drawHomeMenu()`
+measures the label and the badge against the chevron's left edge and skips the
+badge entirely if they collide, so a translation with a much wider word for
+"Group" loses the aside instead of drawing over the arrow.
 
 **The Group row is named for the feature, not for the radio.** Through
 2026-10-29 it read `LoRa nodes` and borrowed the gear glyph, while the map menu

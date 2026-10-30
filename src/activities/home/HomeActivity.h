@@ -18,6 +18,11 @@ class HomeActivity final : public Activity {
     HomeMenuItem item;
     StrId label;
     const freeink::Icon* icon;
+    // Optional `(text glyph)` aside after the label -- what the row runs on,
+    // kept out of its name (BaseTheme::HomeRow, ../../docs/home-screen.md).
+    // STR_NONE_OPT means no badge text.
+    StrId badgeLabel = StrId::STR_NONE_OPT;
+    const freeink::Icon* badgeIcon = nullptr;
   };
   // Five rider rows, plus one per bench row this build carries. Spelled as a
   // sum rather than as four literals because the static_assert in
