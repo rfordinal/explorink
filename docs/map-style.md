@@ -1087,10 +1087,22 @@ of the same ground -- stipple did read as a visibly weaker rock there.
 rock massif on the panel is worth more than a confidence signal in the ink;
 the generated/real distinction still lives in the data and in this doc.
 
-**Unverified on hardware.** Both CLASS_ROCK and CLASS_ROCK_SYNTH are built and
-judged only through `test/map_preview` (the host renderer) over `--out`
-scratch tile builds at Sulov and Prosiecka dolina; no device flash, no
-`CMD:SHOWIMAGE` pass yet.
+**Verified on hardware, 2026-10-31, LilyGo T5 S3 Pro (board A).** Built and
+flashed commit `9df12ae8` (`pio run -e t5s3pro`, T15, 0 warnings from this
+change, RAM 23.8%, flash 62.9%). `CMD:SHOWIMAGE` could not be used --
+`test/map_preview`'s `SCREEN_WIDTH`/`SCREEN_HEIGHT` are hardcoded to the X4's
+480x800, not this board's 960x540 landscape framebuffer, so the host-rendered
+PNG was the wrong shape for the panel. Instead the scratch `--out` build's
+`base/13/{4518,4519}/{2806,2807}.tib` (Sulov, Goticka brana) were pushed to
+the board's own SD card over its HTTP file manager (`POST /delete` then
+`POST /upload?path=...`, `docs/webserver-endpoints.md`) while it sat on
+Wi-Fi, replacing the stale tiles there -- `blepush.py`'s BLE tile-sync service
+UUID has zero matches anywhere in this tree, so that path does not exist on
+`develop` yet. `tools/device_map_shot.py --width 960 --height 540` then
+grabbed the real panel at Goticka brana (49.1698, 18.5804), hike mode, rung 0:
+597 ways, the dark checkerboard tracing the cliff chain exactly as the host
+preview predicted. The dither reads as rock on the actual glass, not only in
+a laptop PPM.
 
 ## Water has classes now, so a river is not a ditch
 
