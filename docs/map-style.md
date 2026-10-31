@@ -1134,10 +1134,16 @@ tiles, pixel-counted not estimated); a pixel-diff overlay of what the fix
 removes shows sparse flecks along the checkerboard's own edge, not ink the
 panel needs to read "rock".
 
-**Not yet judged on the device glass** (same caveat as every tone/texture
-decision in this doc): this is a host-preview finding and needs a T5 S3 Pro
-pass over the same Sulov tiles before it is more than a well-measured guess.
-`docs/TODO.md`, T-2052.
+**Verified on hardware, 2026-10-31, LilyGo T5 S3 Pro (board A).** Built and
+flashed commit `390d1a5a` (`pio run -e t5s3pro`, this laptop -- T15 was busy
+with another session's build, RAM 23.8%, flash 63.0%, matching the prior
+rock-area-fill pass within 0.1%). Same Sulov scratch tiles as that pass,
+re-pushed with the T-2052 flags over Wi-Fi (`tools/upload_tiles.py`).
+`tools/device_map_shot.py` grabbed Goticka brana (49.1698, 18.5804), hike
+mode, rungs 0 and 1: the dark checkerboard and a plain solid line where the
+hachure used to be, reading as a drop edge next to the rock massif exactly
+the way the host preview predicted -- no comb texture competing with the
+fill's own dither on the actual glass.
 
 ## Water has classes now, so a river is not a ditch
 
