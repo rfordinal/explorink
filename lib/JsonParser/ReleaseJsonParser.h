@@ -64,7 +64,10 @@ class ReleaseJsonParser {
   uint8_t depth;
   uint8_t assetDepth;
 
-  char tagName[32];
+  // 48, not 32: the longest real tag today ("explorink-t5s3pro-v0.2.1-alpha",
+  // 30 chars) leaves only 1 byte of headroom in 32 -- the same silent-
+  // truncation risk currentAssetName was just bumped from 32 to 96 for.
+  char tagName[48];
   char expectedAssetSuffix[48];
   char firmwareUrl[512];
   size_t firmwareSize;

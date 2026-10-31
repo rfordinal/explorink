@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>
@@ -220,6 +221,20 @@ Result validateImageFile(const char* sdPath, size_t partitionSize, char* wrongBo
     return Result::WRONG_BOARD;
   }
 
+  // x4pro, t5s3pro and sticky are all ESP32-S3 and share one chip_id, so
+  // BAD_CHIP above cannot tell them apart -- only the tag can. An untagged
+  // image is therefore unproven on S3, not "safe by default" the way it is
+  // on C3 (where X3/X4 are the only sharers and are pin-compatible). This
+  // matters today, not hypothetically: every image published before this tag
+  // existed is untagged, so without this check re-enabling the SD update row
+  // would not have closed the gap T-2008 was filed for.
+  if (deviceChip == ESP_CHIP_ID_ESP32S3 && !tagScanner.sawAnyTag()) {
+    LOG_ERR("FLASH", "validate: untagged image on S3, cannot confirm board match");
+    mbedtls_sha256_free(&shaCtx);
+    file.close();
+    return Result::WRONG_BOARD;
+  }
+
   // pad_end is the 16-byte aligned offset at which the checksum byte sits at pad_end - 1.
   const size_t padEnd = (pos + 16) & ~static_cast<size_t>(15);
   const size_t expectedTotal = padEnd + (hashAppended ? SHA_TRAILER : 0);
@@ -277,7 +292,8 @@ Result validateImageFile(const char* sdPath, size_t partitionSize, char* wrongBo
   return Result::OK;
 }
 
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated) {
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated,
+                       char* wrongBoardNameOut, size_t wrongBoardNameCap) {
   // Resolve destination first so we can size-check during validation. The full image-integrity
   // pass below verifies header, segment table, XOR checksum and SHA256 trailer end-to-end before
   // we touch otadata, so a truncated/corrupted .bin can never become the next boot target.
@@ -292,7 +308,7 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
   // prompt), skip the redundant integrity scan. We still keep the partition
   // lookup so the rest of the flashing path stays unchanged.
   if (!alreadyValidated) {
-    const Result validateRes = validateImageFile(sdPath, dest->size);
+    const Result validateRes = validateImageFile(sdPath, dest->size, wrongBoardNameOut, wrongBoardNameCap);
     if (validateRes != Result::OK) {
       LOG_ERR("FLASH", "image validation failed: %s", resultName(validateRes));
       return validateRes;

@@ -43,6 +43,12 @@ class Scanner {
   bool mismatch() const { return mismatchFound; }
   // Board name from the offending tag, for logging (empty until mismatch()).
   const char* foundName() const { return mismatchFound ? captured : ""; }
+  // True once ANY complete tag was seen, matching or not. An untagged image
+  // (every build before this existed) is indistinguishable from a wrong-board
+  // image on a chip multiple boards share -- callers on such a chip should
+  // treat "no tag at all" as unproven, not as "safe by default". See
+  // FirmwareFlasher::validateImageFile(), the S3-family check.
+  bool sawAnyTag() const { return tagSeen; }
 
  private:
   static constexpr size_t MAX_NAME = 23;
@@ -51,6 +57,7 @@ class Scanner {
   size_t magicMatched = 0;
   bool capturing = false;
   bool mismatchFound = false;
+  bool tagSeen = false;
 };
 
 }  // namespace board_tag

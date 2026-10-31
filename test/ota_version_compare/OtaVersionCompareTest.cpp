@@ -21,6 +21,16 @@ TEST(OtaVersionCompare, ParsesPlainTagWithVPrefix) {
   EXPECT_EQ(patch, 1);
 }
 
+TEST(OtaVersionCompare, ParsesBareVTag) {
+  // explorink-android's own release tags have no "explorink-" prefix, e.g.
+  // "v0.2.0-alpha" directly.
+  int major, minor, patch;
+  ASSERT_TRUE(parseVersion("v0.2.0-alpha", &major, &minor, &patch));
+  EXPECT_EQ(major, 0);
+  EXPECT_EQ(minor, 2);
+  EXPECT_EQ(patch, 0);
+}
+
 TEST(OtaVersionCompare, ParsesDevicePrefixedTag) {
   // Device names embed digits ("x4pro", "t5s3pro") -- the marker must be the
   // "-v<digit>" right before the version, not the first digit anywhere.

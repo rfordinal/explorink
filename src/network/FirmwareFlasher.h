@@ -53,7 +53,14 @@ uint16_t runningPartitionChipId();
 // the user the confirmation prompt) skip the redundant second pass. Defaults
 // to false so callers without prior validation (any future entry point) keep
 // the defense-in-depth check.
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false);
+//
+// `wrongBoardNameOut`/`wrongBoardNameCap` are forwarded to the internal
+// validateImageFile() call when `alreadyValidated` is false (SD is removable,
+// so SdFirmwareUpdateActivity re-validates here even after validating once
+// before the confirmation prompt -- the two calls should report the same
+// reason on the same rejected file).
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false,
+                       char* wrongBoardNameOut = nullptr, size_t wrongBoardNameCap = 0);
 
 // Full-image integrity check that mirrors the bootloader's verification:
 // header magic, segment table walk, XOR checksum, and SHA256 trailer (when

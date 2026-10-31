@@ -11,6 +11,8 @@
 #include <esp_wifi.h>
 // clang-format on
 
+#include <esp_app_format.h>
+
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -28,13 +30,20 @@ constexpr char latestReleaseUrl[] = "https://api.github.com/repos/rfordinal/expl
 // nullptr for a board with no published asset (sticky, T-2003), so OTA
 // correctly reports NO_UPDATE instead of matching someone else's binary.
 //
-// NOTE: `/releases/latest` is the single most-recently-published release
-// across the WHOLE repo, not the most recent release FOR THIS BOARD -- each
-// board ships on its own tag (docs/public-release.md), so this can still miss
-// a real update if a different board's release happened to land more
-// recently. Tracked as a follow-up, not fixed here: this suffix match is what
-// makes OTA pick the right ASSET once it has a release JSON in hand, not what
-// decides WHICH release to fetch.
+// NOTE, confirmed against the live repo 2026-10-31: `/releases/latest`
+// skips every release GitHub has flagged "prerelease", and every ExplorInk
+// release published so far IS flagged prerelease except the very first,
+// `explorink-v0.1.0-alpha` (2026-08-22, C3-only assets) -- so `/releases/latest`
+// resolves to that one release no matter how many newer ones exist for any
+// board. Fixing the suffix match (this function) was necessary but not
+// sufficient: OTA still can't surface a real update on ANY board today,
+// because the release it fetches is always the oldest one, not because the
+// wrong asset gets picked out of it. This is T-2008's sibling bug, tracked
+// separately (docs/TODO.md) since the fix is either a release-process change
+// (stop flagging releases prerelease) or switching this to `GET /releases`
+// and scanning the list for the newest entry with a matching asset -- neither
+// of which "pick the right filename" (T-2008's actual scope) could have
+// fixed on its own.
 const char* expectedAssetSuffix() {
   const char* name = board_tag::boardName();
   const size_t len = board_tag::boardNameLen();
@@ -192,6 +201,17 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
 
   if (wrongDevice) {
     LOG_ERR("OTA", "Firmware install aborted: wrong device");
+    esp_ota_abort(otaHandle);
+    return WRONG_DEVICE_ERROR;
+  }
+
+  // Same reasoning as FirmwareFlasher::validateImageFile(): on S3 (where
+  // x4pro/t5s3pro/sticky share one chip_id) an untagged image is unproven,
+  // not safe by default. Checked only after the whole stream is in, since
+  // "no tag anywhere" can't be known mid-download.
+  if (fetchOk && flashOk && firmware_flash::runningPartitionChipId() == ESP_CHIP_ID_ESP32S3 &&
+      !tagScanner.sawAnyTag()) {
+    LOG_ERR("OTA", "Firmware install aborted: untagged image on S3, cannot confirm board match");
     esp_ota_abort(otaHandle);
     return WRONG_DEVICE_ERROR;
   }

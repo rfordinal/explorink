@@ -44,17 +44,22 @@ void Scanner::feed(const uint8_t* data, size_t len) {
       if (c == ';') {
         capturing = false;
         captured[nameLen] = '\0';
+        tagSeen = true;
         if (nameLen != boardNameLen() || memcmp(captured, boardName(), nameLen) != 0) {
           mismatchFound = true;
           return;
         }
-      } else if (nameLen < MAX_NAME && c > 0x20 && c < 0x7F) {
-        captured[nameLen++] = c;
-      } else {
-        // Overlong or non-printable: a chance byte-collision, not a real tag.
-        capturing = false;
+        continue;
       }
-      continue;
+      if (nameLen < MAX_NAME && c > 0x20 && c < 0x7F) {
+        captured[nameLen++] = c;
+        continue;
+      }
+      // Overlong or non-printable: a chance byte-collision, not a real tag.
+      // Fall through to the magic check below instead of `continue` -- this
+      // same byte can still be the start of a real tag elsewhere in the
+      // image, and skipping it here used to lose that resync point.
+      capturing = false;
     }
     if (c == TAG[magicMatched]) {
       if (++magicMatched == MAGIC_LEN) {

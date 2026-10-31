@@ -11,6 +11,10 @@ bool parseVersion(const char* tagName, int* major, int* minor, int* patch) {
   const char* versionStart = nullptr;
   if (tagName[0] >= '0' && tagName[0] <= '9') {
     versionStart = tagName;
+  } else if (tagName[0] == 'v' && tagName[1] >= '0' && tagName[1] <= '9') {
+    // A bare "v0.2.1-alpha" tag, no "explorink-" prefix (seen on the
+    // explorink-android repo's own releases, e.g. "v0.2.0-alpha").
+    versionStart = tagName + 1;
   } else {
     // Look for the "-v<digit>" marker that precedes the version in every tag
     // shape this project publishes, regardless of what device prefix (if any)
