@@ -312,8 +312,9 @@ simply never finish.**
 | 1563 | 13 | 7 | 35 | 0 |
 | 1924 | 17 | 15 | 34 | 0 |
 
-Eleven minutes, seventeen satellites in view, fifteen tracked, best C/N0
-**34 dB** -- and `q` never left 0. That is not the marginal sky the bench
+Eleven minutes with the receiver up, the last six of them with a sky that
+should have carried a fix -- seventeen satellites in view, fifteen tracked,
+best C/N0 **34 dB** -- and `q` never left 0. That is not the marginal sky the bench
 rows above were taken under. It is the sky a fix is supposed to come from.
 
 So the sentence "through glass a cold start may simply never finish" is too
@@ -533,14 +534,21 @@ five sentences**:
 - **`$PCAS06`**, which `CMD:GNSS EPH` sends to ask how many ephemerides are
   held. Meshtastic probes L76K with `$PCAS06,0` and reads the `$GPTXT` version
   line back.
-**Since 2026-10-31 the time half comes from `deviceWallClockUtc()`, not from
-the phone directly.** That function latches whatever time the device has ever
-seen this boot -- phone or GNSS -- and answers from the latch once the live
-source stops. Before it, a GNSS map session asked `BlePositionServer::utcNow()`
-while deliberately running no BLE, so the one source it consulted was the one
-guaranteed absent and the aiding went out position-only every time. A first
-session after a cold boot with no phone is still un-aided in time, which is
-T-2050.
+**Since 2026-10-31 the time half comes from `deviceWallClockUtc()`.** It asks
+the receiver first and the phone second, and latches whichever answered so a
+later session in the same boot still has a time.
+
+**The first version of this paragraph was wrong and is corrected rather than
+deleted.** It said the aiding "went out position-only every time" because a
+GNSS map session runs no BLE. False: `BlePositionServer::utcNow()` is itself a
+boot-long latch -- it anchors on any position packet carrying a time and
+nothing clears it, not a disconnect and not `end()`. So on any boot where a
+phone had been seen, aiding already carried time. What changed is the other
+direction, a GNSS-sourced time surviving into a later session, and the order:
+the receiver's clock now outranks the handset's.
+
+**The cold-boot case is untouched and is the one that matters.** No phone, no
+earlier session, so no time anywhere -- which is the walk below. T-2050.
 
 - **`AID-INI`** (0x0B 0x01), which `Gnss::injectAidIni()` sends on every map
   entry. The whole AID class is missing from V1.1.
