@@ -6,7 +6,7 @@
 
 #include "PinCatalog.h"
 
-// One line of /trailink/pins/pins.log, and the encode/decode for it.
+// One line of /explorink/pins/pins.log, and the encode/decode for it.
 //
 // Pure: no Arduino, no HAL, no SD. PinLog does the file, this does the bytes, so
 // every format rule below is host-testable (test/pins/).
@@ -30,7 +30,7 @@
 // | crc32    | 8 lowercase hex, over every byte before the final separator     |
 //
 // ASCII rather than binary deliberately: the card gets read on a laptop, and
-// /trailink/power.csv set that precedent.
+// /explorink/power.csv set that precedent.
 //
 // The CRC covers the record up to, and not including, the '|' in front of the
 // checksum itself.

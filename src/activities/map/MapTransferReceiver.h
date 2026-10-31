@@ -208,7 +208,7 @@ class MapTransferReceiver {
 
   // True if `path` is a safe relative path under the root: no leading slash,
   // no `..` component, no empty component, printable ASCII only. This is what
-  // stops a sender writing outside /trailink.
+  // stops a sender writing outside /explorink.
   static bool relPathIsSafe(const char* path, size_t len);
 
   // Reads the finished .part file back and returns its CRC32, or false if it
@@ -229,7 +229,7 @@ class MapTransferReceiver {
   uint32_t declaredCrc_ = 0;
   uint32_t received_ = 0;
   uint32_t lastFrameMs_ = 0;
-  // "/trailink/base/13/4482/2789.tib" and the same with ".part" on the end.
+  // "/explorink/base/13/4482/2789.tib" and the same with ".part" on the end.
   // Fixed buffers, not std::string: this is a member of the map activity and
   // the path length is bounded by the protocol.
   char finalPath_[kMaxRelPathBytes + 48] = {};

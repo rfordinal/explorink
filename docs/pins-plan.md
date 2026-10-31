@@ -68,7 +68,7 @@ Not design choices. What the device is.
   dialog. A long list costs one whole-panel refresh per selection step
   (`OptionPopup::processRender()` → `renderer.displayBuffer()`,
   `OptionPopup.h:148`).
-- **`/trailink/trips/` is taken.** Route files, `*.tir`, flat
+- **`/explorink/trips/` is taken.** Route files, `*.tir`, flat
   (`src/activities/map/MapRouteStore.h:26`). It is not a trip journal. Pins do
   not go there.
 - **No FPU.** ESP32-C3 is RV32IMC; every float is soft-float (read off the
@@ -85,7 +85,7 @@ Taken 2026-08-15. Each closed a real fork; the reason is why it stays closed.
    CONFIRM (`MapActivity.cpp:2042`). A hold is a new device-wide convention; it
    needs the Pins UI to exist first and its own hardware check that a hold is
    caught reliably around blocking renders.
-2. **One global log, no trips.** `/trailink/pins/pins.log`. The record carries a
+2. **One global log, no trips.** `/explorink/pins/pins.log`. The record carries a
    `trip` field, always empty today. Trips are a lifecycle feature (who opens
    one, who closes one, what a reboot mid-trip means) and belong with the future
    track/black-box log. Reserving the field costs nothing; adding it later is a
@@ -193,8 +193,8 @@ update that eats a rider's camp is the exact failure this feature prevents.
 
 ## The log on the card
 
-`/trailink/pins/pins.log`. (`/trailink` stays — the on-card path is
-infrastructure not yet renamed; parent `CLAUDE.md`, Naming.)
+`/explorink/pins/pins.log`. Renamed from `/explorink/pins/pins.log` 2026-10-31
+(`src/CardRootMigration.h`).
 
 One record per line, ASCII, `\n`-terminated:
 
@@ -216,7 +216,7 @@ v1|<seq>|<utc>|<uptime>|<op>|<key>|<id>|<latE7>|<lonE7>|<trip>|<crc32>
 | `crc32` | over everything before the final separator; `MapCrc32.h` already has the function |
 
 ASCII, not binary, deliberately: the card gets read on a laptop, and
-`/trailink/power.csv` set that precedent.
+`/explorink/power.csv` set that precedent.
 
 ### Writing
 

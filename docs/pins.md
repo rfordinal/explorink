@@ -68,8 +68,9 @@ the store is inside the heap-allocated activity, not static.
 
 ## The log on the card
 
-`/trailink/pins/pins.log`. The `/trailink` prefix stays: the on-card layout is
-infrastructure not yet renamed (parent `CLAUDE.md`, Naming).
+`/explorink/pins/pins.log`. Renamed from `/trailink/pins/pins.log` 2026-10-31
+(`src/CardRootMigration.h`); a card carrying old data gets it moved on first
+boot with the new firmware.
 
 One record per line, ASCII, `\n`-terminated:
 
@@ -102,7 +103,7 @@ v1|4|1755400000|60000|rep|parking|2|484372000|170186000||0afa87b9
   over every byte **before the final separator**, 8 lowercase hex digits.
 
 ASCII rather than binary, deliberately: the card gets read on a laptop, and
-`/trailink/power.csv` set that precedent.
+`/explorink/power.csv` set that precedent.
 
 ### Writing
 

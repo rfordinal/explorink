@@ -163,13 +163,13 @@ would have to be enormous.
 
 ## Getting the file off the device
 
-`power.csv` lives at `/trailink/power.csv` on the card. Two ways off:
+`power.csv` lives at `/explorink/power.csv` on the card. Two ways off:
 
 1. **Pull the card.** What the methodology below assumes. No network.
 2. **Over the web server**, which is what was actually used on 2026-08-15:
 
    ```
-   curl -OJ "http://<device-ip>/download?path=/trailink/power.csv"
+   curl -OJ "http://<device-ip>/download?path=/explorink/power.csv"
    ```
 
    `GET /download` is a normal endpoint (`docs/webserver-endpoints.md:131`).

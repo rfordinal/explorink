@@ -44,7 +44,7 @@ void writeOut() {
   if (!Storage.ready()) return;  // no card yet; keep buffering, try again later
 
   const bool fresh = !Storage.exists(GnssLog::kPath);
-  // A card that has never had tiles pushed to it has no /trailink yet, and
+  // A card that has never had tiles pushed to it has no /explorink yet, and
   // O_CREAT does not create the parent.
   if (fresh) Storage.ensureDirectoryExists(GnssLog::kDir);
   HalFile file = Storage.open(GnssLog::kPath, O_WRITE | O_CREAT | O_APPEND);
@@ -83,12 +83,11 @@ void GnssLog::record(const GnssFix& fix, bool moving, uint8_t headingStep) {
   // goes through %s and is never concatenated into the format string -- it
   // carries a branch name, and a '%' in one would make printf read an argument
   // that was never passed.
-  const int n = snprintf(row, sizeof(row), "%lu,%lu,%.6f,%.6f,%u,%u,%.1f,%.1f,%.1f,%u,%u,%s\n",
-                         static_cast<unsigned long>(millis()), static_cast<unsigned long>(fix.utc), fix.latitude,
-                         fix.longitude, static_cast<unsigned>(fix.quality), static_cast<unsigned>(fix.satsUsed),
-                         static_cast<double>(fix.hdop), static_cast<double>(fix.speedKmh),
-                         static_cast<double>(fix.courseDegrees), moving ? 1u : 0u,
-                         static_cast<unsigned>(headingStep), TRAILINK_VERSION);
+  const int n = snprintf(
+      row, sizeof(row), "%lu,%lu,%.6f,%.6f,%u,%u,%.1f,%.1f,%.1f,%u,%u,%s\n", static_cast<unsigned long>(millis()),
+      static_cast<unsigned long>(fix.utc), fix.latitude, fix.longitude, static_cast<unsigned>(fix.quality),
+      static_cast<unsigned>(fix.satsUsed), static_cast<double>(fix.hdop), static_cast<double>(fix.speedKmh),
+      static_cast<double>(fix.courseDegrees), moving ? 1u : 0u, static_cast<unsigned>(headingStep), TRAILINK_VERSION);
   if (n <= 0) return;
   const size_t len = static_cast<size_t>(n) < sizeof(row) ? static_cast<size_t>(n) : sizeof(row) - 1;
 

@@ -77,7 +77,7 @@ uint32_t renderClockMs() { return millis(); }
 uint32_t cardClockUs() { return micros(); }
 
 // docs/map-data-spec.md, "Layers as separate files".
-constexpr const char* kTileRoot = "/trailink";
+constexpr const char* kTileRoot = "/explorink";
 
 // How long the buttons must be quiet before the step that was landed on is
 // rendered. docs/map-data-spec.md puts it at about half a second: long

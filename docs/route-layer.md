@@ -20,7 +20,7 @@ The measured numbers are in "What it costs" below. Known-good build archived as
    `ActivityManager::goToRouteSelect()` (`ActivityManager.cpp:211`) checks
    `MapRouteStore::anyRoutes()` first and goes straight to the map when the card
    has no routes.
-2. `RouteSelectActivity` lists `/trailink/trips/*.tir` plus a **Skip** row. Each
+2. `RouteSelectActivity` lists `/explorink/trips/*.tir` plus a **Skip** row. Each
    row's name and point count come out of that file's header
    (`MapRouteStore.cpp`, `list()`).
 3. Picking a route calls `ActivityManager::goToMap(path)`; Skip calls
@@ -275,7 +275,7 @@ allocated on demand.
   area, which is the case that matters.
 - ~~**No console command.**~~ Done 2026-08-07: **`CMD:GOTO_MAP <card path>`** takes
   an optional route, e.g.
-  `CMD:GOTO_MAP /trailink/trips/baba-serp.tir` (`src/main.cpp`). It goes through the
+  `CMD:GOTO_MAP /explorink/trips/baba-serp.tir` (`src/main.cpp`). It goes through the
   same `ActivityManager::goToMap(path)` the picker uses, so it exercises the load,
   the fit and the overview for real. With no argument it behaves exactly as before.
 

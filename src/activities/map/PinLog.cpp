@@ -71,10 +71,10 @@ void countLine(void* ctx, std::string_view line, uint32_t) {
 }
 
 struct WindowCtx {
-  uint32_t index = 0;      // valid-record index, in file order
-  uint32_t first = 0;      // first index wanted
-  uint32_t count = 0;      // how many wanted
-  uint32_t found = 0;      // offsets stored
+  uint32_t index = 0;  // valid-record index, in file order
+  uint32_t first = 0;  // first index wanted
+  uint32_t count = 0;  // how many wanted
+  uint32_t found = 0;  // offsets stored
   uint32_t offsets[PinLog::kMaxPageEntries] = {};
 };
 
@@ -122,7 +122,7 @@ bool PinLog::append(const PinRecord& rec) {
     return false;
   }
   // O_CREAT does not create the parent, and a card that has never had tiles
-  // pushed to it has no /trailink at all (same trap as PowerLog).
+  // pushed to it has no /explorink at all (same trap as PowerLog).
   if (!Storage.exists(kPath)) Storage.ensureDirectoryExists(kDir);
 
   HalFile file = Storage.open(kPath, O_WRITE | O_CREAT | O_APPEND);
@@ -164,9 +164,8 @@ bool PinLog::replay(PinStore& store, PinReplayStats& stats) {
   replayer.finish();
   stats = replayer.stats();
 
-  LOG_INF(kLogTag, "replayed %s: %lu applied, %lu skipped, %u active", kPath,
-          static_cast<unsigned long>(stats.applied), static_cast<unsigned long>(stats.skipped),
-          static_cast<unsigned>(store.presentCount()));
+  LOG_INF(kLogTag, "replayed %s: %lu applied, %lu skipped, %u active", kPath, static_cast<unsigned long>(stats.applied),
+          static_cast<unsigned long>(stats.skipped), static_cast<unsigned>(store.presentCount()));
   return true;
 }
 

@@ -145,7 +145,7 @@ nothing on screen to say why.
 
 ## The identity lives on the card
 
-`/trailink/lora/identity.bin`, 96 bytes: 64 of private key then 32 of public,
+`/explorink/lora/identity.bin`, 96 bytes: 64 of private key then 32 of public,
 exactly what `LocalIdentity::writeTo()` lays down.
 
 **A node that draws a fresh key at every boot is useless for a list.** It
@@ -943,7 +943,7 @@ analysis.
 
 ### Where it lives, and who else can be you
 
-`/trailink/lora/identity.bin`, 96 bytes: 64 of private key then 32 of public,
+`/explorink/lora/identity.bin`, 96 bytes: 64 of private key then 32 of public,
 in that order, raw. **Plaintext, on a removable SD card.** No passphrase, no
 secure element, no flash encryption.
 
@@ -1224,7 +1224,7 @@ migration check, and do nothing without `ENABLE_GROUP_MARKERS` to read them.
 
 **Built 2026-10-23, on a maintainer's ask.** The panel says what the radio is
 doing right now; this says what it did. One CSV per day at
-`/trailink/lora/ev-YYYYMMDD.csv`, or `ev-noclock.csv` on a device whose clock
+`/explorink/lora/ev-YYYYMMDD.csv`, or `ev-noclock.csv` on a device whose clock
 nobody has set.
 
 ```

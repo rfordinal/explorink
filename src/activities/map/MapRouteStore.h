@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// Finds the routes on the card. `/trailink/trips/*.tir`, flat, one file per
+// Finds the routes on the card. `/explorink/trips/*.tir`, flat, one file per
 // route (../../../docs/route-file-spec.md in the parent xteink repo).
 //
 // The name shown to the rider comes out of each file's header, not from its file
@@ -17,7 +17,7 @@
 // hides a route.
 namespace MapRouteStore {
 
-inline constexpr const char* kTripsDir = "/trailink/trips";
+inline constexpr const char* kTripsDir = "/explorink/trips";
 inline constexpr const char* kExtension = ".tir";
 
 // 24 rows is well past what fits on one screen and costs 2.8 KB while the picker
@@ -49,7 +49,7 @@ uint32_t list(Entry* out, uint32_t capacity, uint32_t& outFound);
 // the first hit and opens nothing.
 bool anyRoutes();
 
-// Builds "/trailink/trips/<fileName>" into `out`. False if it would not fit.
+// Builds "/explorink/trips/<fileName>" into `out`. False if it would not fit.
 bool buildPath(const char* fileName, char* out, uint32_t outCapacity);
 
 // Deletes one route off the card. False when the path did not fit or the card

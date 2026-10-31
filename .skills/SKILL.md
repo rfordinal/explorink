@@ -1180,6 +1180,11 @@ Two hard rules, both about trust:
   more than no doc at all -- especially for panel behaviour, where much of it is
   empirical and two hardware-observed comments in this tree already contradict
   each other.
+* **A migration/decision function's no-op branch should still log at DBG.** A
+  silent `Nothing` return makes a hardware capture unable to tell "nothing to
+  do" from "never ran" -- found 2026-10-31 testing `CardRootMigration.h` on an
+  X3, the same gap `GroupFiles.h`'s own `/trailink/team` -> `/trailink/group`
+  migration already had and was fixed the same day.
 
 Never write "deterministic", "bounded" or "cannot spin" in a comment until you
 have checked it. Twice on 2026-08-13 a claim of that shape was committed and

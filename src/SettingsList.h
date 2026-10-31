@@ -307,7 +307,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           {StrId::STR_GNSS_WAIT_NEVER, StrId::STR_GNSS_WAIT_2MIN, StrId::STR_GNSS_WAIT_5MIN,
                            StrId::STR_GNSS_WAIT_10MIN},
                           "mapGnssWaitLimit", StrId::STR_CAT_MAP),
-        // One CSV row per accepted fix to /trailink/gnss.csv (GnssLog.h). Same
+        // One CSV row per accepted fix to /explorink/gnss.csv (GnssLog.h). Same
         // build gate and the same reason as the row above.
         //
         // **The label says "track" on purpose.** This writes where the rider

@@ -1707,7 +1707,7 @@ against a rider parked under open sky.
 ### The ride has to write its own numbers down
 
 `GnssLog` (`src/GnssLog.{h,cpp}`), one CSV row per accepted fix to
-`/trailink/gnss.csv`. Same conventions as `PowerLog`: header once per boot as
+`/explorink/gnss.csv`. Same conventions as `PowerLog`: header once per boot as
 the run marker, `build` on every row, appended across boots, a reader skips any
 line starting with `uptime_ms`.
 

@@ -289,7 +289,7 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   snprintf(finalPath_, sizeof(finalPath_), "%s/%s", rootDir_, rel);
   snprintf(partPath_, sizeof(partPath_), "%s.part", finalPath_);
 
-  // `base/13/4482/2789.tib` needs /trailink/base/13/4482 to exist first.
+  // `base/13/4482/2789.tib` needs /explorink/base/13/4482 to exist first.
   // ensureDirectoryExists creates parents (SdFat's mkdir defaults to pFlag).
   //
   // Truncated in place and put back rather than copied into a second buffer:
@@ -535,7 +535,7 @@ void MapTransferReceiver::refuse(const char* reason) {
 
 bool MapTransferReceiver::relPathIsSafe(const char* path, size_t len) {
   if (len == 0 || len > kMaxRelPathBytes) return false;
-  // Relative to /trailink, always. An absolute path would land wherever the
+  // Relative to /explorink, always. An absolute path would land wherever the
   // sender fancied.
   if (path[0] == '/' || path[len - 1] == '/') return false;
 

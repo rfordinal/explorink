@@ -37,9 +37,7 @@ class PowerLog {
   // card is mounted.
   static void tick();
 
-  // Where the rows go. Under the same on-device root as the tiles; the path
-  // still says trailink because the card's directory has not been renamed
-  // (parent CLAUDE.md).
-  static constexpr const char* kPath = "/trailink/power.csv";
-  static constexpr const char* kDir = "/trailink";
+  // Where the rows go. Under the same on-device root as the tiles (CardRootMigration.h).
+  static constexpr const char* kPath = "/explorink/power.csv";
+  static constexpr const char* kDir = "/explorink";
 };

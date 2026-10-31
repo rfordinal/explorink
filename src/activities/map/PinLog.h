@@ -11,13 +11,10 @@
 // PinLogScanner, so the format rules stay host-testable with no card attached.
 //
 // All access goes through HalStorage -- SdFat is not thread-safe (CLAUDE.md).
-//
-// The path keeps `/trailink`: the on-card layout is infrastructure not yet
-// renamed (parent CLAUDE.md, Naming).
 class PinLog {
  public:
-  static constexpr const char* kDir = "/trailink/pins";
-  static constexpr const char* kPath = "/trailink/pins/pins.log";
+  static constexpr const char* kDir = "/explorink/pins";
+  static constexpr const char* kPath = "/explorink/pins/pins.log";
 
   // Appends one record and flushes. False on any card failure -- the caller must
   // then **not** apply the record to its PinStore, or RAM would claim a pin the

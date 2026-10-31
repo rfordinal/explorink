@@ -477,7 +477,7 @@ Two outcomes, and they point at different work:
 
 **Added 2026-08-11.** Two instruments, one vocabulary:
 
-- **`/trailink/power.csv` on the SD card**, one row per minute
+- **`/explorink/power.csv` on the SD card**, one row per minute
   (`src/PowerLog.cpp`, `PowerLog::kIntervalMs`). Written on every screen, from
   boot, with no phone and no cable needed. This is the only instrument that
   works for the baseline that matters most -- the device on battery with
@@ -812,8 +812,8 @@ connected the whole time:
 
 | Ride | Log | Duration | Battery drop | Implied avg draw |
 |---|---|---|---|---|
-| 1 | `docs/rides/trailink-gps-20260807-142303.jsonl` (parent repo) | 34 min | 4% = 26 mAh | ~46 mA |
-| 2 | `docs/rides/trailink-gps-20260807-173058.jsonl` (parent repo) | 46.6 min | 2% = 13 mAh | ~17 mA |
+| 1 | `docs/rides/explorink-gps-20260807-142303.jsonl` (parent repo) | 34 min | 4% = 26 mAh | ~46 mA |
+| 2 | `docs/rides/explorink-gps-20260807-173058.jsonl` (parent repo) | 46.6 min | 2% = 13 mAh | ~17 mA |
 
 Neither is a clean isolated sample of the plan's "Map screen, phone connected,
 fix every 10 s" row (`optimization/07-power-and-lifecycle.md`, step 1): both
@@ -845,7 +845,7 @@ meter (the plan's step 1) is still the number to trust over either of these.
 **Measured on hardware 2026-09-03**, one ride, map screen up, phone connected,
 frontlight at 40 %, GNSS enabled by the rider. Build `0.2.0-t5s3pro`. The log is
 boot 55 of the device's `power.csv`, pulled over the web server
-(`GET /download?path=/trailink/power.csv`).
+(`GET /download?path=/explorink/power.csv`).
 
 **This is the first device in the project with a real fuel gauge on the ride**,
 so it is the first ride whose draw does not come from a voltage slope. That

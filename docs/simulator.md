@@ -92,14 +92,14 @@ even if it feels HAL-adjacent.
 ## The simulated SD card
 
 Everything the firmware reads from the card lives under `./fs_/` next to the
-binary. `/trailink/base/13/4482/2789.tib` on the device is
-`./fs_/trailink/base/13/4482/2789.tib` here. Symlink the local CDN mirror in
+binary. `/explorink/base/13/4482/2789.tib` on the device is
+`./fs_/explorink/base/13/4482/2789.tib` here. Symlink the local CDN mirror in
 rather than copying tens of MB:
 
 ```bash
-mkdir -p fs_/trailink
-ln -sfn <repo>/mapbuilder/cdn/base   fs_/trailink/base
-ln -sfn <repo>/mapbuilder/cdn/points fs_/trailink/points
+mkdir -p fs_/explorink
+ln -sfn <repo>/mapbuilder/cdn/base   fs_/explorink/base
+ln -sfn <repo>/mapbuilder/cdn/points fs_/explorink/points
 ```
 
 **The simulator writes state back, so two runs are not the same run.**
@@ -292,7 +292,7 @@ rather than argued to.
 
 `tools/sim_e2e.py` in the parent repo drives it. It builds tiles from the cached
 Overpass extract and the cached SRTM cells (no network), symlinks them in as
-`fs_/trailink/base`, seeds a fix and a mode in `fs_/.crosspoint/settings.json`, and
+`fs_/explorink/base`, seeds a fix and a mode in `fs_/.crosspoint/settings.json`, and
 runs the binary once per case with a scripted keypress and a timed screenshot:
 
 ```bash

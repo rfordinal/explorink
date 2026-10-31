@@ -216,7 +216,7 @@ by a documented decision — short range, low stakes, and it keeps the phone sid
 to "connect and write". For position packets that is a defensible trade.
 
 The transfer channel changes the stakes: **any unpaired central in range can
-write files under `/trailink` on the SD card while either the map screen or the
+write files under `/explorink` on the SD card while either the map screen or the
 tile-sync screen is open** — both attach a receiver (`MapActivity.cpp:385`,
 `TileSyncActivity.cpp:42`). The
 path validator is solid — no absolute paths, no `..` component, no empty
