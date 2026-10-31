@@ -7,6 +7,13 @@
 
 namespace {
 
+// Suffix used by most tests below -- equivalent to the old exact-match
+// "firmware.bin" behavior when the asset name has nothing before it, and the
+// behavior this parser actually needs: ReleaseJsonParser now matches assets
+// by a caller-supplied SUFFIX (see setFirmwareAssetSuffix()), because a
+// published asset's name embeds the device/chip, not just "firmware.bin".
+constexpr const char* kAnyFirmwareSuffix = "firmware.bin";
+
 const char* kRealisticPretty = R"({
   "url": "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/12345",
   "assets_url": "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/12345/assets",
@@ -124,6 +131,7 @@ void feedChunked(ReleaseJsonParser& p, const char* json, size_t chunkSize) {
 
 TEST(ReleaseJsonParser, RealisticPrettyPrinted) {
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(kRealisticPretty, strlen(kRealisticPretty));
 
   EXPECT_TRUE(p.foundTag());
@@ -136,6 +144,7 @@ TEST(ReleaseJsonParser, RealisticPrettyPrinted) {
 
 TEST(ReleaseJsonParser, RealisticMinified) {
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(kRealisticMinified, strlen(kRealisticMinified));
 
   EXPECT_TRUE(p.foundTag());
@@ -148,9 +157,11 @@ TEST(ReleaseJsonParser, RealisticMinified) {
 
 TEST(ReleaseJsonParser, PrettyAndMinifiedAgree) {
   ReleaseJsonParser pretty;
+  pretty.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   pretty.feed(kRealisticPretty, strlen(kRealisticPretty));
 
   ReleaseJsonParser minified;
+  minified.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   minified.feed(kRealisticMinified, strlen(kRealisticMinified));
 
   ASSERT_TRUE(pretty.foundTag());
@@ -175,6 +186,7 @@ TEST(ReleaseJsonParser, FirmwareNotFirstAsset) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -195,6 +207,7 @@ TEST(ReleaseJsonParser, FieldOrderUrlBeforeName) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundFirmware());
@@ -213,6 +226,7 @@ TEST(ReleaseJsonParser, FieldOrderSizeBeforeUrl) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundFirmware());
@@ -231,6 +245,7 @@ TEST(ReleaseJsonParser, FieldOrderNameFirst) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundFirmware());
@@ -251,6 +266,7 @@ TEST(ReleaseJsonParser, AssetsBeforeTagName) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -262,6 +278,7 @@ TEST(ReleaseJsonParser, AssetsBeforeTagName) {
 
 TEST(ReleaseJsonParser, ChunkedFeedingSmallChunks) {
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   feedChunked(p, kRealisticPretty, 64);
 
   EXPECT_TRUE(p.foundTag());
@@ -274,6 +291,7 @@ TEST(ReleaseJsonParser, ChunkedFeedingSmallChunks) {
 
 TEST(ReleaseJsonParser, ChunkedFeedingByteByByte) {
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   feedChunked(p, kRealisticMinified, 1);
 
   EXPECT_TRUE(p.foundTag());
@@ -285,6 +303,7 @@ TEST(ReleaseJsonParser, ChunkedFeedingByteByByte) {
 TEST(ReleaseJsonParser, ChunkedFeedingVariousChunkSizes) {
   for (size_t chunkSize : {3u, 7u, 13u, 31u, 97u, 128u, 256u, 512u, 1024u}) {
     ReleaseJsonParser p;
+    p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
     feedChunked(p, kRealisticPretty, chunkSize);
 
     EXPECT_TRUE(p.foundTag()) << "chunkSize=" << chunkSize;
@@ -309,6 +328,7 @@ TEST(ReleaseJsonParser, MissingTagName) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_FALSE(p.foundTag());
@@ -326,6 +346,7 @@ TEST(ReleaseJsonParser, MissingFirmwareBinAsset) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -339,6 +360,7 @@ TEST(ReleaseJsonParser, EmptyAssetsArray) {
   const char* json = R"({"tag_name": "v1.0.0", "assets": []})";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -349,6 +371,7 @@ TEST(ReleaseJsonParser, NoAssetsKey) {
   const char* json = R"({"tag_name": "v1.0.0", "name": "Release"})";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -359,6 +382,7 @@ TEST(ReleaseJsonParser, TruncatedBeforeTagValue) {
   const char* json = R"({"tag_name": )";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_FALSE(p.foundTag());
@@ -369,6 +393,7 @@ TEST(ReleaseJsonParser, TruncatedInsideTagValue) {
   const char* json = R"({"tag_name": "v2.4)";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_FALSE(p.foundTag());
@@ -378,6 +403,7 @@ TEST(ReleaseJsonParser, TruncatedInsideAssetsArray) {
   const char* json = R"({"tag_name": "v2.4.1", "assets": [{"name": "firm)";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -390,6 +416,7 @@ TEST(ReleaseJsonParser, TruncatedAfterFirmwareName) {
   const char* json = R"({"tag_name":"v1.0","assets":[{"name":"firmware.bin","browser_dow)";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -402,6 +429,7 @@ TEST(ReleaseJsonParser, TruncatedRealisticJson) {
     if (cutPoint >= full.size()) continue;
 
     ReleaseJsonParser p;
+    p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
     p.feed(full.c_str(), cutPoint);
     (void)p.foundTag();
     (void)p.foundFirmware();
@@ -426,6 +454,7 @@ TEST(ReleaseJsonParser, NestedObjectsInAsset) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundFirmware());
@@ -444,6 +473,7 @@ TEST(ReleaseJsonParser, NestedObjectsAtTopLevel) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -461,6 +491,7 @@ TEST(ReleaseJsonParser, ArraysAtTopLevel) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -471,6 +502,7 @@ TEST(ReleaseJsonParser, ArraysAtTopLevel) {
 
 TEST(ReleaseJsonParser, ResetAndReuse) {
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
 
   const char* json1 =
       R"({"tag_name":"v1.0","assets":[{"name":"firmware.bin","browser_download_url":"https://a","size":1}]})";
@@ -481,6 +513,9 @@ TEST(ReleaseJsonParser, ResetAndReuse) {
   EXPECT_EQ(p.getFirmwareSize(), 1u);
 
   p.reset();
+  // reset() clears the expected-suffix too -- a fresh check must set it again,
+  // same as a fresh GitHub API round trip would.
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
 
   const char* json2 =
       R"({"tag_name":"v2.0","assets":[{"name":"firmware.bin","browser_download_url":"https://b","size":2}]})";
@@ -493,6 +528,7 @@ TEST(ReleaseJsonParser, ResetAndReuse) {
 
 TEST(ReleaseJsonParser, ResetClearsState) {
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
 
   const char* json =
       R"({"tag_name":"v1.0","assets":[{"name":"firmware.bin","browser_download_url":"https://a","size":100}]})";
@@ -507,10 +543,78 @@ TEST(ReleaseJsonParser, ResetClearsState) {
   EXPECT_STREQ(p.getTagName(), "");
   EXPECT_STREQ(p.getFirmwareUrl(), "");
   EXPECT_EQ(p.getFirmwareSize(), 0u);
+
+  // reset() also clears the expected suffix -- feeding the same JSON again
+  // without re-setting it must not find anything.
+  p.feed(json, strlen(json));
+  EXPECT_FALSE(p.foundFirmware());
+}
+
+TEST(ReleaseJsonParser, NoSuffixSetMatchesNothing) {
+  // The default (reset) state has no expected suffix. A board whose
+  // FirmwareBoardTag maps to no published asset suffix (e.g. an env with no
+  // release yet) must see NO_UPDATE, not an accidental match on any asset.
+  const char* json =
+      R"({"tag_name":"v1.0","assets":[{"name":"firmware.bin","browser_download_url":"https://a","size":1}]})";
+
+  ReleaseJsonParser p;
+  p.feed(json, strlen(json));
+
+  EXPECT_TRUE(p.foundTag());
+  EXPECT_FALSE(p.foundFirmware());
+}
+
+TEST(ReleaseJsonParser, SuffixSelectsMatchingDeviceAmongSeveral) {
+  // A release carries one asset per device (today's publish convention,
+  // docs/public-release.md). A board must pick its own and ignore the rest --
+  // this is the actual bug this parser was fixed for (T-2008 investigation).
+  const char* json = R"({
+      "tag_name": "explorink-v0.2.1-alpha",
+      "assets": [
+        {"name": "explorink-0.2.1-alpha-esp32c3-bootloader.bin", "browser_download_url": "https://c3-boot", "size": 100},
+        {"name": "explorink-0.2.1-alpha-esp32c3-firmware.bin", "browser_download_url": "https://c3-fw", "size": 1000000},
+        {"name": "explorink-0.2.1-alpha-x4pro-esp32s3-firmware.bin", "browser_download_url": "https://x4pro-fw", "size": 2000000},
+        {"name": "explorink-0.2.1-alpha-t5s3pro-esp32s3-firmware.bin", "browser_download_url": "https://t5s3pro-fw", "size": 3000000}
+      ]
+    })";
+
+  {
+    ReleaseJsonParser p;
+    p.setFirmwareAssetSuffix("-x4pro-esp32s3-firmware.bin");
+    p.feed(json, strlen(json));
+    EXPECT_TRUE(p.foundFirmware());
+    EXPECT_STREQ(p.getFirmwareUrl(), "https://x4pro-fw");
+    EXPECT_EQ(p.getFirmwareSize(), 2000000u);
+  }
+  {
+    ReleaseJsonParser p;
+    p.setFirmwareAssetSuffix("-t5s3pro-esp32s3-firmware.bin");
+    p.feed(json, strlen(json));
+    EXPECT_TRUE(p.foundFirmware());
+    EXPECT_STREQ(p.getFirmwareUrl(), "https://t5s3pro-fw");
+    EXPECT_EQ(p.getFirmwareSize(), 3000000u);
+  }
+  {
+    ReleaseJsonParser p;
+    p.setFirmwareAssetSuffix("-esp32c3-firmware.bin");
+    p.feed(json, strlen(json));
+    EXPECT_TRUE(p.foundFirmware());
+    EXPECT_STREQ(p.getFirmwareUrl(), "https://c3-fw");
+    EXPECT_EQ(p.getFirmwareSize(), 1000000u);
+  }
+  {
+    // A board whose suffix isn't in this release at all (e.g. sticky, not
+    // published per T-2003) must see no match, never fall back to someone
+    // else's binary.
+    ReleaseJsonParser p;
+    p.setFirmwareAssetSuffix("-sticky-esp32s3-firmware.bin");
+    p.feed(json, strlen(json));
+    EXPECT_FALSE(p.foundFirmware());
+  }
 }
 
 TEST(ReleaseJsonParser, PartialAssetNameMatch) {
-  // "firmware.bin.bak" should NOT match "firmware.bin"
+  // "firmware.bin.bak"/".old" do not END with "firmware.bin" and must not match.
   const char* json = R"({
       "tag_name": "v1.0",
       "assets": [
@@ -520,14 +624,15 @@ TEST(ReleaseJsonParser, PartialAssetNameMatch) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
   EXPECT_FALSE(p.foundFirmware());
 }
 
-TEST(ReleaseJsonParser, FirmwareBinExactMatch) {
-  // Only exact "firmware.bin" matches, not similar names
+TEST(ReleaseJsonParser, FirmwareBinSuffixMatch) {
+  // Case-sensitive; "firmware.bin2" does not end with "firmware.bin".
   const char* json = R"({
       "tag_name": "v1.0",
       "assets": [
@@ -538,6 +643,7 @@ TEST(ReleaseJsonParser, FirmwareBinExactMatch) {
     })";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundFirmware());
@@ -551,6 +657,7 @@ TEST(ReleaseJsonParser, LargeSize) {
       R"({"tag_name":"v1.0","assets":[{"name":"firmware.bin","browser_download_url":"https://fw","size":16777216}]})";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_EQ(p.getFirmwareSize(), 16777216u);
@@ -561,6 +668,7 @@ TEST(ReleaseJsonParser, SizeZero) {
       R"({"tag_name":"v1.0","assets":[{"name":"firmware.bin","browser_download_url":"https://fw","size":0}]})";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundFirmware());
@@ -571,6 +679,7 @@ TEST(ReleaseJsonParser, MinimalValidJson) {
   const char* json = R"({"tag_name":"v0","assets":[{"name":"firmware.bin","browser_download_url":"u","size":1}]})";
 
   ReleaseJsonParser p;
+  p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
   p.feed(json, strlen(json));
 
   EXPECT_TRUE(p.foundTag());
@@ -588,6 +697,7 @@ TEST(ReleaseJsonParser, ChunkedRealisticEveryBoundary) {
 
   for (size_t split = 0; split <= len; ++split) {
     ReleaseJsonParser p;
+    p.setFirmwareAssetSuffix(kAnyFirmwareSuffix);
     if (split > 0) p.feed(json, split);
     if (split < len) p.feed(json + split, len - split);
 
