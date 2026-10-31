@@ -183,9 +183,9 @@ void stampMark(IMapCanvas& canvas, const int cx, const int cy, const MapLineMark
 // second copy is a second place for the phase carry across segment boundaries to
 // be got wrong. `side` is ignored when it is set: a mark reaching both ways has
 // no side to choose.
-void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int tickPx,
-                       const int gapPx, const MapInk ink, const MapTickSide side = MapTickSide::Downhill,
-                       const int tickWidth = 1, const bool bothSides = false) {
+void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int tickPx, const int gapPx,
+                       const MapInk ink, const MapTickSide side = MapTickSide::Downhill, const int tickWidth = 1,
+                       const bool bothSides = false) {
   if (lineWidth <= 0 || way.pointCount < 2) return;
   // The line itself, unbroken. A cliff is continuous ground; only the combs are
   // periodic.
@@ -237,8 +237,8 @@ void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineW
 // two. The mark is stamped once, at the middle of its slot, the first time the
 // walk crosses that middle -- not every step, or a segment boundary landing
 // inside the slot would stamp it twice.
-void strokeWayDashMark(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int dashPx,
-                       const int gapPx, const MapLineMark mark, const int markPx, const MapInk ink) {
+void strokeWayDashMark(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int dashPx, const int gapPx,
+                       const MapLineMark mark, const int markPx, const MapInk ink) {
   if (lineWidth <= 0 || dashPx <= 0 || gapPx <= 0 || markPx <= 0) return;
   const int markStart = dashPx + gapPx;
   const int markEnd = markStart + markPx;
@@ -525,8 +525,8 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     // not perform.
     switch (pattern) {
       case MapLinePattern::Hachured:
-        strokeWayHachured(canvas, line, lineWidth, style.contourTickPx[index], style.contourGapPx[index],
-                          MapInk::Black, style.contourTickSide[index], style.contourTickWidthPx[index]);
+        strokeWayHachured(canvas, line, lineWidth, style.contourTickPx[index], style.contourGapPx[index], MapInk::Black,
+                          style.contourTickSide[index], style.contourTickWidthPx[index]);
         break;
       case MapLinePattern::DashMark:
         strokeWayDashMark(canvas, line, lineWidth, style.contourDashPx[index], style.contourGapPx[index],
@@ -800,8 +800,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   uint32_t mark = stamp();
 
   // Draw order is fixed and not arbitrary (docs/map-data-spec.md, "A tile is a
-  // storage unit, not a render unit"): built-up area, green area, water,
-  // buildings, road casings, road fills, then places. Landuse tones are
+  // storage unit, not a render unit"): built-up area, green area, rock area,
+  // water, buildings, road casings, road fills, then places. Landuse tones are
   // background; everything above has to stay readable over them, which is why a
   // tone is a sparse pattern and not a grey block.
   //
@@ -809,16 +809,24 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // alone were 277 KB of the 364 KB a four-tile viewport read
   // (docs/map-data-spec.md, "RAM budget").
   if (style.landuseEnabled) {
-    // Two walks over one layer, built-up first: a park inside a housing estate
-    // has to land on top of it, and a single walk would draw them in whatever
-    // order the tile happens to store.
+    // Four walks over one layer, built-up first: a park inside a housing
+    // estate has to land on top of it, and a single walk would draw them in
+    // whatever order the tile happens to store.
     // Built-up is per rung, via the style (its landuse rule is hidden at rung 0,
     // where the buildings themselves carry the settlement). drawLanduseClass
     // already returns without a card walk when a class draws nothing, so there
-    // is no flag to test here. Forest is drawn at every
-    // rung, because no building shows where a wood is.
+    // is no flag to test here. Forest and rock are drawn at every rung, because
+    // no building shows where a wood or a cliff massif is.
+    //
+    // RockSynth before Rock: tilegen never lets the two overlap (the
+    // generated fill is the real polygon's area subtracted out,
+    // _synth_rock_from_cliffs), but drawing the surveyed polygon last means a
+    // seam between them resolves in favour of the real data if a future
+    // tilegen change ever lets them touch.
     drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
     drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
+    drawLanduseClass(canvas, source, style, MapLanduseClass::RockSynth);
+    drawLanduseClass(canvas, source, style, MapLanduseClass::Rock);
   }
   if (timing) lap(timing->landuseMs, mark);
 
@@ -949,7 +957,6 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       }
       // `None` with no tone draws nothing, which is a style saying so rather than
       // a mistake -- `hidden: true` is the way to also stop reading the class.
-
     }
   }
   if (timing) lap(timing->waterMs, mark);
@@ -989,8 +996,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
         // `dash` carries the reach here for the same reason it does for Hachured on a
         // road -- the road stroke has no per-class tick slot of its own, and the
         // generator spells the style-facing name `tick_px` either way.
-        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black,
-                          MapTickSide::Downhill, stroke.tickWidth, /*bothSides=*/true);
+        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black, MapTickSide::Downhill,
+                          stroke.tickWidth, /*bothSides=*/true);
       } else if (stroke.pattern != MapLinePattern::None) {
         strokeWay(canvas, way, stroke.width, MapInk::Black);
       }

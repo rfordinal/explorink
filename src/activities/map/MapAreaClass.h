@@ -20,8 +20,10 @@
 // writes a record when a tag maps to one of these, so a 0 here means a corrupt
 // byte, and both passes skip it.
 enum class MapLanduseClass : uint8_t {
-  Forest = 1,   // natural=wood or landuse=forest
-  BuiltUp = 2,  // landuse=residential/commercial/industrial/retail, merged
+  Forest = 1,     // natural=wood or landuse=forest
+  BuiltUp = 2,    // landuse=residential/commercial/industrial/retail, merged
+  Rock = 3,       // natural=bare_rock or natural=scree, merged (2026-10-30)
+  RockSynth = 4,  // generated from cliff lines where Rock has no polygon (2026-10-30)
 };
 
 // Water layer (MapTileReader::Layer::Water). `Unknown` is a real value here,
@@ -80,7 +82,7 @@ enum class MapReliefClass : uint8_t {
 // vocabulary rather than for its first class.
 using MapContourClass = MapReliefClass;
 
-inline constexpr uint8_t kLanduseClassSlots = 4;
+inline constexpr uint8_t kLanduseClassSlots = 5;
 inline constexpr uint8_t kWaterClassSlots = 4;
 inline constexpr uint8_t kReliefClassSlots = 4;
 inline constexpr uint8_t kContourClassSlots = kReliefClassSlots;
