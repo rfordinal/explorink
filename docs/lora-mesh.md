@@ -270,6 +270,26 @@ clock it sends **identity only**, position forced off.
 | `CMD:LORA ADVERT` | yes -- same thing from a cable |
 | the beacon | **no** |
 
+### Upstream already has this helper and does not call it
+
+`meshNextAdvertStamp()` forces each advert's timestamp strictly past the last
+one, because MeshCore hashes the whole payload and a receiver silently drops a
+hash it has seen (`SimpleMeshTables::wasSeen()`). Without a clock the stamp is
+a function of uptime and the signature is deterministic, so two presses in one
+second build a byte-identical frame that the peer we are pairing with throws
+away.
+
+**MeshCore solved this and `createAdvert()` does not use the solution.**
+`mesh::RTCClock::getCurrentTimeUnique()` (`meshcore/src/MeshCore.h`) returns
+`++last_unique` whenever the clock has not moved past it -- the same rule,
+arrived at here independently after a board refused to pair twice in a row.
+`Mesh::createAdvert()` stamps from `getCurrentTime()` instead.
+
+Two things follow. Agreement from an independent build is evidence the rule is
+right, and it is `read`, not measured. And the clean fix is one line upstream,
+not ours: worth an issue on MeshCore rather than carrying our own guard
+forever.
+
 **The beacon never gets it**, and that is the whole safety of the thing.
 Without a clock our timestamp is seconds since boot, so a device that reboots
 appears to a receiver to jump backwards. One such frame when a rider asks for
