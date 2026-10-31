@@ -7,9 +7,9 @@
 
 // Who else is on the air, and when we last heard them.
 //
-// **This is not the roster.** The roster (MapTeam) is an allowlist: it decides
+// **This is not the roster.** The roster (MapGroup) is an allowlist: it decides
 // who may put a marker on the panel, and a stranger is refused there by design
-// (docs/team-markers.md, "A stranger is not a member"). This table is the
+// (docs/group-markers.md, "A stranger is not a member"). This table is the
 // opposite question -- *every* node whose advert reached this antenna, known or
 // not -- because "can the two boards hear each other" cannot be answered by a
 // list that hides the half we have not approved yet.
@@ -43,7 +43,7 @@ struct LoraPeer {
   uint32_t advertUtc;
 
   // Our own millis() when the advert landed, and the only age this device can
-  // compute without trusting anybody. Same reason MapTeam stamps its own clock
+  // compute without trusting anybody. Same reason MapGroup stamps its own clock
   // on an incoming position.
   uint32_t heardUptimeMs;
 

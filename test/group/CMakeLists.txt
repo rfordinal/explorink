@@ -1,11 +1,11 @@
-add_executable(TeamTest
-  TeamTest.cpp
-  ${REPO_ROOT}/src/activities/map/TeamMembers.cpp
-  ${REPO_ROOT}/src/activities/map/TeamRoster.cpp
-  ${REPO_ROOT}/src/activities/map/TeamFix.cpp
-  ${REPO_ROOT}/src/activities/map/TeamStore.cpp
-  ${REPO_ROOT}/src/activities/map/TeamRecord.cpp
-  # Day-file naming moved out of TeamRecord.cpp when the radio's event log
+add_executable(GroupTest
+  GroupTest.cpp
+  ${REPO_ROOT}/src/activities/map/GroupMembers.cpp
+  ${REPO_ROOT}/src/activities/map/GroupRoster.cpp
+  ${REPO_ROOT}/src/activities/map/GroupFix.cpp
+  ${REPO_ROOT}/src/activities/map/GroupStore.cpp
+  ${REPO_ROOT}/src/activities/map/GroupRecord.cpp
+  # Day-file naming moved out of GroupRecord.cpp when the radio's event log
   # became the second caller (src/DayFile.h).
   ${REPO_ROOT}/src/DayFile.cpp
   ${REPO_ROOT}/src/activities/map/MapCommandParser.cpp
@@ -21,24 +21,24 @@ add_executable(TeamTest
 )
 
 # The feature is build-flag gated so a memory-tight device can leave it out
-# entirely (platformio.ini, ENABLE_TEAM_MARKERS). The tests are the one place it
+# entirely (platformio.ini, ENABLE_GROUP_MARKERS). The tests are the one place it
 # is always on: a gated-out feature that nobody compiles rots.
-target_compile_definitions(TeamTest PRIVATE
-  ENABLE_TEAM_MARKERS=1
-  ENABLE_TEAM_CMD=1
+target_compile_definitions(GroupTest PRIVATE
+  ENABLE_GROUP_MARKERS=1
+  ENABLE_GROUP_CMD=1
 )
 
-target_include_directories(TeamTest PRIVATE
+target_include_directories(GroupTest PRIVATE
   ${REPO_ROOT}/src/activities/map
   ${REPO_ROOT}/lib/JsonParser
   ${REPO_ROOT}/lib/BlePositionServer/include
 )
 
-target_link_libraries(TeamTest PRIVATE
+target_link_libraries(GroupTest PRIVATE
   crosspoint_test_common
   GTest::gtest_main
 )
 
-add_dependencies(TeamTest map_generated_headers)
+add_dependencies(GroupTest map_generated_headers)
 
-gtest_discover_tests(TeamTest)
+gtest_discover_tests(GroupTest)

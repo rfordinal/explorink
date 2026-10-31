@@ -1005,8 +1005,50 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
     renderer.drawText(UI_12_FONT_ID, x, top + (rowHeight - lineHeight) / 2, rows[i].label, !selected);
 
     const freeink::Icon& chevron = icon_chevron;
-    renderer.drawMono1bpp(chevron.bits, left + width - kRowInset - chevron.w, top + (rowHeight - chevron.h) / 2,
-                          chevron.w, chevron.h, !selected);
+    const int chevronLeft = left + width - kRowInset - chevron.w;
+
+    // The badge, when the row has one and there is room for it before the
+    // chevron. Drawn in UI_10 rather than the row's UI_12: it is an aside
+    // about what the row runs on, and at the label's own weight it would read
+    // as part of the name.
+    if (rows[i].badgeLabel != nullptr || rows[i].badgeIcon != nullptr) {
+      constexpr int kBadgeGap = 12;      // label to badge
+      constexpr int kBadgeInnerGap = 4;  // text to glyph, inside the brackets
+      constexpr int kBadgeChevronGap = 10;
+
+      const int badgeLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+      const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, rows[i].label, EpdFontFamily::REGULAR);
+
+      char open[32];
+      snprintf(open, sizeof(open), "(%s", rows[i].badgeLabel != nullptr ? rows[i].badgeLabel : "");
+      const int openWidth = renderer.getTextWidth(UI_10_FONT_ID, open, EpdFontFamily::REGULAR);
+      const int glyphWidth = rows[i].badgeIcon != nullptr ? rows[i].badgeIcon->w + kBadgeInnerGap : 0;
+      const int closeWidth = renderer.getTextWidth(UI_10_FONT_ID, ")", EpdFontFamily::REGULAR);
+      const int badgeWidth = openWidth + glyphWidth + closeWidth;
+
+      int bx = x + labelWidth + kBadgeGap;
+      if (bx + badgeWidth + kBadgeChevronGap <= chevronLeft) {
+        const int by = top + (rowHeight - badgeLineHeight) / 2;
+        renderer.drawText(UI_10_FONT_ID, bx, by, open, !selected);
+        bx += openWidth;
+        if (rows[i].badgeIcon != nullptr) {
+          const freeink::Icon& glyph = *rows[i].badgeIcon;
+          bx += kBadgeInnerGap;
+          // Centred on the badge *text's* line, so the glyph and the brackets
+          // around it share one centre. The difference from centring on the
+          // row is at most a pixel of integer-truncation residue -- what
+          // actually made the first badge look wrong was the glyph itself,
+          // lucide `antenna`, whose 14 px raster is top-heavy with a detached
+          // mast (scripts/gen_home_icons.py).
+          renderer.drawMono1bpp(glyph.bits, bx, by + (badgeLineHeight - glyph.h) / 2, glyph.w, glyph.h, !selected);
+          bx += glyph.w;
+        }
+        renderer.drawText(UI_10_FONT_ID, bx, by, ")", !selected);
+      }
+    }
+
+    renderer.drawMono1bpp(chevron.bits, chevronLeft, top + (rowHeight - chevron.h) / 2, chevron.w, chevron.h,
+                          !selected);
 
     // Hairline between rows. Not above the first row and not against the
     // selected block, which is its own boundary.

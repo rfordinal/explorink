@@ -1,11 +1,11 @@
-# Team markers: other riders on the map
+# Group markers: other riders on the map
 
 Who else is out there, where they were last seen, and what the card keeps when
 the ride is over.
 
 Built 2026-09-16 and **run on an X4 Pro the same day** -- see "The hardware
 pass" at the end for what was actually exercised and what still is not. The
-rules below are proved by host tests (`test/team/`) unless a line says
+rules below are proved by host tests (`test/group/`) unless a line says
 otherwise.
 
 ## What it is
@@ -17,11 +17,11 @@ cannot be confused at a glance.
 
 Three parts:
 
-1. **The roster** -- `/trailink/team/members.json`, an allowlist of who we are
+1. **The roster** -- `/trailink/group/members.json`, an allowlist of who we are
    willing to hear from.
 2. **The live positions** -- in RAM, one per roster slot, drawn on the map and
    listed under Group in the map menu.
-3. **The black box** -- `/trailink/team/bb-YYYYMMDD.csv`, every accepted
+3. **The black box** -- `/trailink/group/bb-YYYYMMDD.csv`, every accepted
    position, one file per day, plus the rider's own trace when they turn it on.
 
 It answers *where is everybody* and *where were they last seen*. It is not
@@ -34,8 +34,8 @@ feature is and why it behaves the way it does.
 
 ## The layer does not know which radio spoke
 
-`MapTeam::teamPosition()` is the only way a position gets in. A LoRa frame, a
-BLE relay from the phone and a `team pos` console line all call it, all pass the
+`MapGroup::groupPosition()` is the only way a position gets in. A LoRa frame, a
+BLE relay from the phone and a `group pos` console line all call it, all pass the
 same allowlist, write the same row and move the same marker.
 
 That is the decision the parent repo's `docs/lora.md` made before any radio
@@ -48,7 +48,7 @@ put markers on a panel and judge them.
 
 The roster is an allowlist, not a contact list. A position from an id that is
 not in it is **refused, counted and logged** -- never drawn, never written to
-the black box. `MapTeam::strangersRefused()` holds the count since boot.
+the black box. `MapGroup::strangersRefused()` holds the count since boot.
 
 This is the case the feature has to get right: a radio hears whoever is in
 range, including another group on the same channel and anyone who wants to put
@@ -70,7 +70,7 @@ different questions:
 that.** The same rider arrives under a MeshCore key over LoRa and under whatever
 a phone relay calls them over BLE; nothing outside the device ties those
 together. So a member holds up to three identifiers and the ingest resolves any
-of them to the same slot -- `team add RF <second-id>` attaches rather than
+of them to the same slot -- `group add RF <second-id>` attaches rather than
 replaces.
 
 Two rules hold that together, and both exist so a search reading the card can
@@ -87,7 +87,7 @@ Twelve members, fixed array, no heap.
 
 ## The roster file
 
-`/trailink/team/members.json`, rewritten whole on every edit:
+`/trailink/group/members.json`, rewritten whole on every edit:
 
 ```json
 {"v":1,"members":[{"acr":"RF","name":"Roman","on":true,"ids":["lora-8f3a","ble-7f"]}]}
@@ -101,11 +101,11 @@ the black box instead.
 
 An unknown `v` is **refused whole** and the roster is left empty, which refuses
 every incoming position rather than letting strangers through. A single
-malformed row is skipped and counted (`team reload` prints `team_skipped`) --
+malformed row is skipped and counted (`group reload` prints `group_skipped`) --
 one bad row must not cost the rider the other eleven members.
 
-Edited three ways: by hand on the card, then `team reload`; or with `team add` /
-`team del` over the console, which rewrite the file.
+Edited three ways: by hand on the card, then `group reload`; or with `group add` /
+`group del` over the console, which rewrite the file.
 
 ## The black box
 
@@ -142,7 +142,7 @@ recorded survives to the next reboot as a lie.
 ### Rotation is by whole days
 
 `bb-20260916.csv`, one file per day. Rotation deletes whole files older than
-`mapTeamKeepDays` (14 by default), so the oldest evidence goes first and a file
+`mapGroupKeepDays` (14 by default), so the oldest evidence goes first and a file
 a laptop is reading never changes under it.
 
 A device with no clock writes `bb-noclock.csv`, and **rotation never deletes
@@ -165,7 +165,7 @@ resolved to it, and the black box records it.
 
 **The device knows the time, so every row is stamped with it.** The clock comes
 from the phone's position packet or from the GNSS receiver, whichever has
-spoken -- the same two sources the map header reads (`MapTeam::utcNowOrZero`).
+spoken -- the same two sources the map header reads (`MapGroup::utcNowOrZero`).
 `recv_utc` is when *this device* heard the position, and it is the column a
 search reads: the sender's own `utc` is theirs and is often absent, while ours
 is there whenever the device knew the time at all. It is also what dates a
@@ -194,7 +194,7 @@ is still somebody's last known position.
 
 ### What comes back at boot
 
-`TeamBlackBox::replayLast()` rebuilds every member's last known position from
+`GroupBlackBox::replayLast()` rebuilds every member's last known position from
 the card, so a member heard on the previous ride is on the panel before anybody
 transmits again.
 
@@ -209,9 +209,9 @@ device may not have at boot.
 
 | state | drawn as | when |
 |---|---|---|
-| fresh | solid black balloon, white initials | younger than `mapTeamStaleMin` (5 min) |
+| fresh | solid black balloon, white initials | younger than `mapGroupStaleMin` (5 min) |
 | stale | grey balloon, black initials | older than that |
-| hidden | not drawn | older than `mapTeamHideMin` (6 h); 0 turns hiding off |
+| hidden | not drawn | older than `mapGroupHideMin` (6 h); 0 turns hiding off |
 
 **Six hours, raised from thirty minutes on 2026-10-23.** Maintainer's call,
 and it came out of watching the thirty: two boards on the bench went idle for
@@ -243,7 +243,7 @@ map header's radio row went from `noclock` to `bcn70s` the moment a phone
 supplied a time.
 
 **A stored 30 is migrated, and without that the change would have done
-nothing.** `mapTeamHideMin` is written to `settings.json` on every save, so
+nothing.** `mapGroupHideMin` is written to `settings.json` on every save, so
 every device in existence already had the old default on its card and would
 have kept it. The migration is safe because the setting has no row in
 `SettingsList` and no console command: nothing a rider can touch could have
@@ -269,9 +269,9 @@ where everyone was.
 
 ## On the panel
 
-`MapActivity::drawTeam()`, straight onto `GfxRenderer` right after the pins and
+`MapActivity::drawGroup()`, straight onto `GfxRenderer` right after the pins and
 for the same reason: a marker is not map data, and `MapRenderer` knows nothing
-about it. So the webapp's firmware preview panel cannot show team markers
+about it. So the webapp's firmware preview panel cannot show group markers
 either.
 
 **The whole balloon is filled, not a disc inside its head.** Maintainer's call,
@@ -279,7 +279,7 @@ either.
 inside a white balloon reads as a pin with a dot in it, and the thing that has
 to be obvious at a glance is person-versus-place. `scripts/gen_pin_icons.py` now
 bakes a third array for that -- `kPinShapeBody0Bits`, the silhouette with no
-halo around it, upright only, because a team marker never rotates and sixteen
+halo around it, upright only, because a group marker never rotates and sixteen
 more arrays would be flash spent on nothing.
 
 So a **current** member is a solid black balloon with white initials, and a
@@ -328,7 +328,7 @@ Measured off a **simulator** frame afterwards, against the asset's own geometry:
 ruler -- a device screenshot is a frame like any other, but nothing measured the
 letters there.
 
-`MapActivity::drawTeamBalloon()` logs each acronym's chosen face, its ink box and
+`MapActivity::drawGroupBalloon()` logs each acronym's chosen face, its ink box and
 the usable width at `LOG_DBG`. That line is what settled every number above, and
 it is the only way to tell "the font stepped down" from "the letters are drawn
 wrong" without a ruler on a screenshot.
@@ -377,8 +377,8 @@ redraw is a **fix**. A rider whose phone has stopped talking, or whose group has
 gone quiet, would otherwise read a frame saying everyone is current for as long
 as they look at it -- which is exactly the moment the ages matter.
 
-So `MapActivity::serviceTeamAges()` revisits them on their own clock, one step
-apart (`kTeamAgeRefreshMs` = `kTeamAgeStepMinutes`), and **redraws only when the
+So `MapActivity::serviceGroupAges()` revisits them on their own clock, one step
+apart (`kGroupAgeRefreshMs` = `kGroupAgeStepMinutes`), and **redraws only when the
 frame would differ**: it folds every member's visibility and reported age step
 into one number and compares it with the last drawn one. A group that has gone
 quiet therefore costs one compare every five minutes and no refresh at all once
@@ -410,27 +410,27 @@ the position cannot be dated.
 ## The console, devel builds only
 
 ```
-team pos <acr|id> <lat> <lon> [utc <s>] [heading <0-15>] [speed <kmh>] [src <word>]
-team add <acr> <id> [<name>]
-team del <acr|id>
-team list
-team reload
-team log [<offset>]
+group pos <acr|id> <lat> <lon> [utc <s>] [heading <0-15>] [speed <kmh>] [src <word>]
+group add <acr> <id> [<name>]
+group del <acr|id>
+group list
+group reload
+group log [<offset>]
 ```
 
-Gated behind `-DENABLE_TEAM_CMD`, which is in no release environment. Two
+Gated behind `-DENABLE_GROUP_CMD`, which is in no release environment. Two
 reasons, either one enough:
 
-- `team pos` injects a position under somebody else's name -- a forged rider on
+- `group pos` injects a position under somebody else's name -- a forged rider on
   the panel of whoever holds the device.
-- `team list` prints where the whole group is, to anyone in BLE range, with no
+- `group list` prints where the whole group is, to anyone in BLE range, with no
   pairing and no ownership check.
 
-The tail of `team pos` is keyword-only, unlike `pos`: after a coordinate a bare
+The tail of `group pos` is keyword-only, unlike `pos`: after a coordinate a bare
 number is as likely a unix time as a heading, and guessing wrong puts a member
 on the panel with an age that is off by years.
 
-`team list` prints **empty coordinate fields** for a member who has not been
+`group list` prints **empty coordinate fields** for a member who has not been
 heard from. Not `0,0` -- that is a place in the Atlantic, and the difference
 between "has not told us" and "is at 0,0" is one the whole layer has to keep.
 
@@ -438,12 +438,12 @@ between "has not told us" and "is at 0,0" is one the whole layer has to keep.
 
 | setting | default | what it does |
 |---|---|---|
-| `mapTeamMarkers` | on | draw the markers at all |
-| `mapTeamLogPeers` | on | write the group's positions to the black box |
-| `mapTeamLogSelf` | **off** | write the rider's own trace to the same file |
-| `mapTeamStaleMin` | 5 | minutes before a marker goes stale |
-| `mapTeamHideMin` | 360 | minutes before it is not drawn (0 = never hide). `uint16_t`: six hours does not fit a byte |
-| `mapTeamKeepDays` | 14 | days of black box kept on the card (0 keeps everything) |
+| `mapGroupMarkers` | on | draw the markers at all |
+| `mapGroupLogPeers` | on | write the group's positions to the black box |
+| `mapGroupLogSelf` | **off** | write the rider's own trace to the same file |
+| `mapGroupStaleMin` | 5 | minutes before a marker goes stale |
+| `mapGroupHideMin` | 360 | minutes before it is not drawn (0 = never hide). `uint16_t`: six hours does not fit a byte |
+| `mapGroupKeepDays` | 14 | days of black box kept on the card (0 keeps everything) |
 
 A member's position is theirs, sent to us on purpose. The rider's own trace is a
 record of where *they* went, on a card that is lost with the device -- so it is
@@ -467,10 +467,10 @@ off the first screen. They are in the settings file and nowhere else.
 
 Two flags, and both are off by default:
 
-- `-DENABLE_TEAM_MARKERS=1` -- the whole layer. Without it none of this
+- `-DENABLE_GROUP_MARKERS=1` -- the whole layer. Without it none of this
   compiles: no roster, no black box, no markers, no Group row, no settings
   fields.
-- `-DENABLE_TEAM_CMD=1` -- the console commands. Needs the first one, and says
+- `-DENABLE_GROUP_CMD=1` -- the console commands. Needs the first one, and says
   so with an `#error` if it does not get it.
 
 On in `env:x4pro`, `env:t5s3pro` and `env:simulator`. **Off everywhere else**,
@@ -497,7 +497,7 @@ true for the commit it was taken at; this one names its own.
 
 The static RAM is unchanged because the roster and the store live inside the
 `MapActivity` instance, which is not a static object. **That instance grew to
-1,728 B**: `sizeof(TeamRoster)` is 1,344 B and `sizeof(TeamStore)` 384 B,
+1,728 B**: `sizeof(GroupRoster)` is 1,344 B and `sizeof(GroupStore)` 384 B,
 measured with `g++` on the host against these headers. On the device `size_t` is
 four bytes rather than eight, so the roster is 48 B smaller there, about
 1,680 B. It is heap, held only while the map screen is up, and **it has still
@@ -512,13 +512,13 @@ static RAM (21.3 %), clean, no warnings from any of the new files.
 `develop` moved the frame's compose onto the render task (T-2024), and the pins
 got `MapActivity::LockedPins` for it: the console can rewrite the store while
 `drawPins()` is walking it. **This layer has the same shape and takes the same
-answer.** `drawTeam()` reads the roster and the store on the render task; a
+answer.** `drawGroup()` reads the roster and the store on the render task; a
 position arriving over a radio or a cable rewrites both from the activity task.
 
-`MapActivity::LockedTeam` wraps the four writes -- a position, an add, a remove,
+`MapActivity::LockedGroup` wraps the four writes -- a position, an add, a remove,
 a reload -- in a `RenderLock`, and lets the reads through. A write here is rarer
 than a pin's and carries a card write anyway, so the wait costs nothing it was
-not already paying. `teamReload()` is the heavy one: it holds the lock across
+not already paying. `groupReload()` is the heavy one: it holds the lock across
 rereading the roster and replaying the black box, which is the trade against a
 reload renumbering slots mid-compose and drawing one member's marker under
 another's letters.
@@ -528,7 +528,7 @@ wrapper as the real integration.
 
 ## Where this lives
 
-**Branch `team-markers`, and it does not go to `develop` yet.** Maintainer's
+**Branch `group-markers`, and it does not go to `develop` yet.** Maintainer's
 decision, 2026-09-16: nothing carries positions into this layer, so a rider on a
 release build would see a feature that cannot do anything. The gate is a real
 transport, LoRa first -- T-2022 in the parent repo's `docs/TODO.md`.
@@ -548,13 +548,54 @@ it from `develop` every few weeks instead.
   that does not merge two people into one arrow.
 - **A transport.** LoRa is the parent repo's `docs/lora.md` bring-up order; the
   BLE relay through the phone is not designed either. Both plug into
-  `MapTeam::teamPosition()` and change nothing above it.
+  `MapGroup::groupPosition()` and change nothing above it.
 - **Anti-spoofing beyond the allowlist.** A roster id is whatever the sender
   claims. MeshCore adverts are Ed25519-signed, which is the reason that protocol
   was picked, but nothing here verifies a signature yet -- the allowlist stops a
   stranger, not somebody replaying a member's id.
 
+## Moving a card from the old name, and rolling back
+
+`groupMigrateLegacyDir()` moves `/trailink/team` to `/trailink/group` once.
+**FAT has no atomic directory rename** -- `FatFile::rename()` creates the
+destination and removes the source afterwards -- so a failure leaves both
+directories, and the decision has to be a function of what is on the card
+rather than a single try:
+
+| card | action |
+|---|---|
+| no `/trailink/team` | nothing, and never look again |
+| legacy only | rename the directory whole |
+| both, only the legacy one has `members.json` | move that one file across |
+| both have a roster, or neither does | refuse, read the new path, delete nothing |
+
+A failure is **never latched**: the next entry point tries again and picks the
+half-done state up. The first version latched before the rename, so one
+failure stranded the roster under the old name forever while an empty new
+directory made every later boot refuse. `test/group_migration/` proves all
+sixteen input states, including that no decision can ever overwrite a roster.
+
+**Rolling back loses the group.** The settings keys moved from `mapTeam*` to
+`mapGroup*` and the first save drops the old ones, and the directory has
+moved. A device flashed back to a pre-rename binary -- the documented hang
+recovery -- reads an empty roster, an empty black box and three default
+toggles, with nothing on the panel explaining it. The files are all still on
+the card under `/trailink/team`; nothing is deleted.
+
+Also: the settings half is compiled only where `ENABLE_GROUP_MARKERS` is,
+which is no release env. A card that passes through a release build between
+two devel builds has its `mapTeam*` keys dropped by that build's first save
+and arrives with nothing to migrate.
+
 ## The hardware pass
+
+**The console verb in this section is `team`, and that is not a typo.** The
+layer was called the team layer until 2026-10-30, when the code, the UI, the
+settings keys, the card paths and the console all moved to `group` (parent
+CLAUDE.md, "Naming"). What ran on 2026-09-16 ran under the old spelling, and
+rewriting it here would claim a command that did not exist that day. Read every
+`team` below as today's `group`, and the paths in it as `/trailink/group`.
+
 
 X4 Pro, 2026-09-16. Flashed four times as the marks changed, the last being
 `47a2338a` -- so **the branch tip is two commits ahead of anything that has run

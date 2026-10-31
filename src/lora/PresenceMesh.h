@@ -74,12 +74,24 @@ class PresenceMesh : public mesh::Mesh {
   //
   // `name` may be null or empty, and the coordinate is omitted unless hasLoc.
   // Returns false when the packet pool is empty.
-  bool sendSelfAdvert(const char* name, bool hasLoc, int32_t latE6, int32_t lonE6);
+  // Why an advert did not go out, or that it did. **One value per cause, on
+  // purpose**: until 2026-10-30 this returned a bool and every caller printed
+  // "mesh off, or packet pool empty" for all of them. On a board whose pool
+  // was full and whose mesh was running that string sent an afternoon after a
+  // defect that did not exist, and put a wrong finding in the task list
+  // (../../docs/lora-mesh.md, "One cause per refusal").
+  enum class AdvertResult : uint8_t {
+    Sent,
+    PoolEmpty,  // no free packet in the 16-slot static pool
+    TooLong,    // the encoded advert exceeds MAX_ADVERT_DATA_SIZE
+  };
+
+  AdvertResult sendSelfAdvert(const char* name, bool hasLoc, int32_t latE6, int32_t lonE6);
 
   // Where a heard position goes next, when somebody wants one.
   //
   // **A plain function pointer, and the hook is the whole point.** This class
-  // must not know the group layer exists: `MapTeam` lives in the map's own
+  // must not know the group layer exists: `MapGroup` lives in the map's own
   // directory, writes the black box to the SD card and is edited by the UI
   // task, and none of that belongs inside a radio receive path. main.cpp owns
   // both and joins them.

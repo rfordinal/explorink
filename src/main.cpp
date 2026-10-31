@@ -28,8 +28,13 @@
 #include <Wire.h>
 #endif
 
+// Unconditional: deviceWallClockUtc() asks it for the time on every board, not
+// only on one that builds the GNSS console. Gating this is what made the
+// "device-wide" clock fail to compile on env:default the moment it actually
+// moved out of the GNSS region.
+#include <BlePositionServer.h>
+
 #ifdef ENABLE_GNSS_CMD
-#include <BlePositionServer.h>  // gnssStart() asks it for a clock to seed with
 #include <Gnss.h>
 #include <Wire.h>
 #include <esp_system.h>
@@ -43,20 +48,16 @@
 #include "lora/BeaconPolicy.h"
 #include "lora/LoraEventLine.h"
 #include "lora/LoraEventLog.h"
+#include "lora/LoraGroupId.h"
 #include "lora/LoraPresence.h"
-#include "lora/LoraTeamId.h"
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-#include "activities/map/MapTeam.h"
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+#include "activities/map/MapGroup.h"
 #endif
 #include "lora/PresenceMesh.h"
 #endif
 
 #if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
 #include <Wire.h>  // the charger and the gauge sit on the same I2C bus
-#endif
-
-#ifdef ENABLE_BLE_CMD
-#include <BlePositionServer.h>
 #endif
 
 #ifdef ENABLE_SDBUS_CMD
@@ -523,6 +524,11 @@ Gnss gnss;
 // rail. Everything that knows about sharing stays above this line.
 static bool gnssPowerEnable(bool on) { return t5s3RailHold(kRailUserGnss, on); }
 
+// The device's wall clock. Defined just past the GNSS region, because its
+// GNSS branch needs `gnss` and that instance lives inside it; declared here
+// so gnssStart() below can seed aiding with it.
+static uint32_t deviceWallClockUtc();
+
 // Opens the receiver: rail up, UART up, with this board's pins and ring size.
 // Declared in GnssAccess.h so the map can call it too -- CMD:GNSS ON was the
 // only caller when this was inline, and a second caller must not carry a second
@@ -586,13 +592,23 @@ bool gnssStart() {
   // the device was in Barcelona. A seed that lies about its accuracy is worse
   // than a wide one, because the receiver trusts it.
   //
-  // Time only when something has it. A GNSS map session runs no BLE
-  // (MapActivity's bleInUse_), and this board has no RTC ("RTC not found" at
-  // boot), so utcNow() answers only when a phone set the clock earlier in this
-  // same boot. Position-only aiding is still most of the win.
+  // **Time whenever the device has ever had one this boot**, not only while a
+  // phone is connected. A GNSS map session runs no BLE (MapActivity's
+  // bleInUse_) and this board has no RTC, so asking the phone directly was
+  // asking the one source that is guaranteed absent here -- and the aiding
+  // went out position-only every single time.
+  //
+  // Measured 2026-10-30, board B on a walk: eleven minutes outdoors,
+  // seventeen satellites in view, fifteen tracked, best C/N0 34 dB, and
+  // `q` never left 0. Good sky and no fix is what an unaided-in-time cold
+  // start looks like (docs/gnss.md, "no fix in 25 minutes").
+  //
+  // deviceWallClockUtc() answers from the latch when neither live source
+  // does, so a second map session in the same boot -- or any session after a
+  // phone has been seen once -- is now time-aided.
   if (SETTINGS.mapHasLastFix) {
-    uint32_t utc = 0;
-    const bool haveTime = freeink::BlePositionServer::getInstance().utcNow(utc);
+    const uint32_t utc = deviceWallClockUtc();
+    const bool haveTime = utc != 0;
     const double lat = static_cast<double>(SETTINGS.mapLastLatE7) / 1e7;
     const double lon = static_cast<double>(SETTINGS.mapLastLonE7) / 1e7;
     if (gnss.injectAidIni(lat, lon, haveTime, utc)) {
@@ -710,6 +726,92 @@ static void gnssRawByteSink(uint8_t b) {
   }
 }
 #endif
+
+// ===========================================================================
+// THE DEVICE'S WALL CLOCK
+// ===========================================================================
+//
+// One place that answers "what time is it", so the LoRa advert stamp and the
+// GNSS aiding seed cannot disagree.
+//
+// **It is a smaller change than its first commit message claimed, and that
+// claim is corrected here rather than quietly dropped.** That message said
+// GNSS aiding "went out position-only every single time" because it asked the
+// phone while the map runs no BLE. False: `BlePositionServer::utcNow()` is
+// itself a boot-long latch -- it anchors on any position packet carrying a
+// time and nothing ever clears it, not disconnect and not `end()`
+// (BlePositionServer.cpp). So aiding already had time on any boot where a
+// phone had ever been seen. What this adds is the other direction: a time
+// GNSS itself produced, surviving into a later session in the same boot.
+//
+// Still volatile, and that is the real gap. After a power-off the device
+// knows nothing, which is exactly the case that walked for eleven minutes
+// without a fix on 2026-10-30.
+//
+// **The board does have an RTC.** A battery-backed PCF8563 at 0x51, in the
+// SDK's board profile and confirmed by LilyGo by mail on 2026-08-26
+// (parent docs/devices/lilygo-t5-s3-pro.md). `"RTC not found"` at boot is a
+// failing I2C probe on a part that is fitted, not a missing part. Earlier
+// comments here and in docs/gnss.md said this board has none; getting that
+// probe working would end the cold-boot problem outright, which is why
+// T-2050 now names it first.
+//
+// A critical section rather than a mutex: the latch is three words, it is
+// reached from the Arduino loop task and from the render task (through
+// `loraPresenceStatus()`), and it must stay cheap. An earlier comment also
+// claimed the LoRa service task reaches it -- it does not; that task only
+// runs `gMesh.loop()`.
+static portMUX_TYPE gClockMux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t gClockBaseUtc = 0;
+static uint32_t gClockBaseMs = 0;
+static bool gClockKnown = false;
+
+static void deviceClockLatch(const uint32_t utc) {
+  // Stamped before the critical section, not inside it: BlePositionServer
+  // takes its own anchor the same way and says why -- millis() has no
+  // business inside one.
+  const uint32_t nowMs = millis();
+  portENTER_CRITICAL(&gClockMux);
+  gClockBaseUtc = utc;
+  gClockBaseMs = nowMs;
+  gClockKnown = true;
+  portEXIT_CRITICAL(&gClockMux);
+}
+
+// The best time this device has, or 0 if it has never had one this boot.
+// A live source always wins and re-latches; the latch answers when none does.
+static uint32_t deviceWallClockUtc() {
+  // **GNSS first, phone second.** The phone's clock is whatever its OS
+  // believes; the receiver's comes off the navigation message. Asking the
+  // phone first meant a handset running minutes fast anchored the latch and
+  // nothing could correct it for the rest of the boot -- while aiding went on
+  // declaring that time accurate to 30 s, which Gnss.h warns makes the
+  // receiver reject measurements that would have helped.
+#ifdef ENABLE_GNSS_CMD
+  if (gnss.running()) {
+    const uint32_t gnssUtc = gnss.fix().utc;
+    if (gnssUtc != 0) {
+      deviceClockLatch(gnssUtc);
+      return gnssUtc;
+    }
+  }
+#endif
+  uint32_t utc = 0;
+  if (freeink::BlePositionServer::getInstance().utcNow(utc)) {
+    deviceClockLatch(utc);
+    return utc;
+  }
+  portENTER_CRITICAL(&gClockMux);
+  const bool known = gClockKnown;
+  const uint32_t base = gClockBaseUtc;
+  const uint32_t baseMs = gClockBaseMs;
+  portEXIT_CRITICAL(&gClockMux);
+  if (!known) return 0;
+  // Drifts like any millis clock. An advert timestamp and a GNSS time seed
+  // both tolerate that; neither tolerates no time at all.
+  return base + (millis() - baseMs) / 1000;
+}
+
 #ifdef ENABLE_LORA_CMD
 // Bring-up instrument for the SX1262 on the T5 S3 Pro, and the only thing that
 // drives it. There is no UI, no mesh and no protocol yet: this exists to answer
@@ -1212,11 +1314,11 @@ static int32_t gMeshSettleLonE7 = 0;
 static bool gMeshDeclineLogged = false;
 static unsigned long gMeshLastDeclineLogMs = 0;
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 // One heard position on its way to the group layer.
 //
 // **It goes through a queue because of which task is which.** onAdvertRecv()
-// runs on the radio task, and MapTeam::teamPosition() writes a black box row
+// runs on the radio task, and MapGroup::groupPosition() writes a black box row
 // to the SD card and reads a roster the UI task edits. A card write inside the
 // radio service loop costs packets -- an SX126x holds exactly one -- and
 // touching the roster from two tasks is a race. So the radio task copies four
@@ -1243,7 +1345,7 @@ static void meshPositionHook(const uint8_t pubKey[32], int32_t latE6, int32_t lo
   // here would cost packets, which is the thing the queue exists to avoid.
   if (xQueueSend(gMeshPosQueue, &ev, 0) != pdTRUE) ++gMeshPosDrops;
 }
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS
 
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
 // The radio's own file log. Same split as the position queue above and for a
@@ -1272,52 +1374,31 @@ static void loraLogSimple(LoraLogKind kind, uint32_t cadenceSec = 0, LoraTxDecli
   loraLogPost(ev);
 }
 
-// The device's wall clock, and **the only thing that makes meshing mean
-// anything.**
-//
-// Maintainer's rule, 2026-10-23: a real time arrives from BLE or from GNSS and
-// from nowhere else, and from that moment the device counts on. Without one we
-// are in a black hole -- and a node in a black hole must not transmit, because
-// MeshCore stamps every advert with `_rtc->getCurrentTime()` and an unset RTC
-// counts from its own arbitrary epoch. That is not a cosmetic flaw: the
-// receiver dates the marker by that stamp, so an advert sent without a clock
-// arrives as a position two and a half years old and is hidden on arrival.
-// Measured exactly that way on 2026-10-23 -- board B's advert reached A with
-// `utc=1715770612` (May 2024) and A drew nothing, while every serial command
-// reported success.
-//
-// The alternatives were all worse, and that is the point of the rule rather
-// than an aside: dating a marker by our own receive time makes it look fresher
-// than it is, and dropping the sender's timestamp throws away the one thing
-// the black box is read by. Not transmitting is the only answer that lies
-// about nothing.
-//
-// Same two sources in the same order as MapTeam::utcNowOrZero(), spelled again
-// because this has to work on a build with the team layer compiled out.
 static uint32_t meshWallClockUtc() {
-  uint32_t utc = 0;
-  if (freeink::BlePositionServer::getInstance().utcNow(utc)) return utc;
-#ifdef ENABLE_GNSS_CMD
-  if (gnss.running()) {
-    const uint32_t gnssUtc = gnss.fix().utc;
-    if (gnssUtc != 0) return gnssUtc;
-  }
-#endif
-  return 0;
+  // **Read-only now.** It used to set gMeshRtc on every call, which zeroed
+  // that clock's accumulator every loop iteration and left gMeshRtc.tick()
+  // doing nothing -- the dedup hazard the tick exists for then rested
+  // entirely on this function being called often enough.
+  //
+  // Nothing needs gMeshRtc to be current except createAdvert(), and
+  // meshSendAdvert() stamps it immediately before every send through
+  // meshNextAdvertStamp(). So the one place that needs it sets it, and the
+  // tick keeps counting in between.
+  return deviceWallClockUtc();
 }
 
 // This run's identity, so a row can be told from one written before the last
 // reboot.
 //
-// **The team layer's id when it exists, and that is the point**: the black box
+// **The group layer's id when it exists, and that is the point**: the black box
 // stamps the same number, so a row in one file joins a row in the other by
 // eye. Without that layer the radio still needs an id, and the fallback is the
-// same recipe for the same reason (MapTeam::bootId() has it in full): never
+// same recipe for the same reason (MapGroup::bootId() has it in full): never
 // zero, and the low bits of micros() mixed upward so two boots a millisecond
 // apart cannot collide.
 static uint32_t loraLogBootId() {
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-  return MapTeam::bootId();
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  return MapGroup::bootId();
 #else
   static uint32_t id = 0;
   if (id == 0) {
@@ -1365,7 +1446,7 @@ static constexpr uint32_t kMeshBeaconMinSec = 70;
 //
 // **No fix means no coordinate, never a zero.** 0,0 is a place in the Atlantic,
 // and the difference between "has not told us" and "is at 0,0" is one this
-// whole layer keeps (docs/team-markers.md). Takes the chip mutex because it
+// whole layer keeps (docs/group-markers.md). Takes the chip mutex because it
 // touches Dispatcher state the service task also walks; it starts no transmit
 // itself -- the packet is queued and the service task puts it on the air.
 // Where this device thinks it is, from whichever radio is supplying it.
@@ -1418,13 +1499,13 @@ static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7, uint16_t* accuracyM
   // current one.** A phone that walked out of range leaves its last position
   // sitting there for the rest of the boot, and broadcasting that as our own
   // would be the device claiming a position fresher than it is -- the one
-  // thing the group layer promises never to do (`team-markers.md`). There is
+  // thing the group layer promises never to do (`group-markers.md`). There is
   // no receive timestamp in the packet, and the connection flag cannot stand
   // in for one: `connIntervalMs()` is cleared only by NimBLE's disconnect
   // callback, and a link that died without it read as connected for hours
   // (firmware CLAUDE.md, "Before acting on a telemetry counter"). So this
   // stamps its own clock the first time it sees a packet it has not seen
-  // before, exactly like MapTeam stamps `recvUtc`.
+  // before, exactly like MapGroup stamps `recvUtc`.
   static uint8_t lastSeq = 0;
   static uint32_t lastUtc = 0;
   static uint32_t lastChangeMs = 0;
@@ -1449,9 +1530,57 @@ static bool meshSelfPosition(int32_t& latE7, int32_t& lonE7, uint16_t* accuracyM
 // two callers that are not the beacon -- the screen's button and the console
 // -- are exactly the ones that have no rule behind them, so the default is
 // the truth rather than a placeholder.
-static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
+// The timestamp the next advert will carry: `want`, or one second past the
+// last one we sent if `want` is not strictly greater.
+//
+// Two bugs share this fix. A repeated payload is dropped by every receiver
+// that still remembers its hash, and a stamp that moves backwards makes this
+// node's newest advert look older than one a peer already holds. Both are
+// reachable: without a clock the stamp is derived from uptime, and with one it
+// comes from whichever source answered last, which can disagree.
+//
+// Caller must hold LoraLock -- the only caller is meshSendAdvert(), which does.
+static uint32_t meshNextAdvertStamp(uint32_t want) {
+  static uint32_t lastStamp = 0;
+  if (want <= lastStamp) want = lastStamp + 1;
+  lastStamp = want;
+  return want;
+}
+
+const char* loraAdvertResultText(const LoraAdvertResult result) {
+  switch (result) {
+    case LoraAdvertResult::Sent:
+      return "sent";
+    case LoraAdvertResult::MeshOff:
+      return "mesh off -- no screen is holding the radio up";
+    case LoraAdvertResult::NoClock:
+      return "no wall clock -- the device has had no time from GNSS or the phone";
+    case LoraAdvertResult::PoolEmpty:
+      return "packet pool empty";
+    case LoraAdvertResult::TooLong:
+      return "encoded advert is over the size limit";
+  }
+  return "unknown";
+}
+
+// `allowNoClock` is the pairing escape hatch, and it is **only ever true for a
+// deliberate press**: the screen's "Announce me now" and the console's ADVERT.
+//
+// The clock guard exists because a bogus timestamp made a receiver hide the
+// sender's marker (2026-10-23, docs/lora-mesh.md). That harm needs a position:
+// PresenceMesh::onAdvertRecv() only reaches the position layer when the advert
+// carries lat/lon, and the heard-node table ages rows from the local millis()
+// that stamped them. So an advert with **no position** cannot be mis-dated,
+// and it is exactly what pairing needs -- a key and a name.
+//
+// The beacon never gets this. Without a clock our timestamp is seconds since
+// boot, and a device that reboots then appears to jump backwards to a receiver
+// that remembers it. One such frame when a rider asks for it is a fair price
+// for being able to pair indoors; a stream of them on a shared public channel
+// is not.
+static LoraAdvertResult meshSendAdvert(LoraTxReason why = LoraTxReason::Manual, bool allowNoClock = false) {
   LoraLock lock;
-  if (!gMeshRunning) return false;
+  if (!gMeshRunning) return LoraAdvertResult::MeshOff;
 
   // **No wall clock, no transmit.** Checked here rather than only at the
   // beacon because there are three callers -- the console, the screen's
@@ -1459,13 +1588,50 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   // timestamp poisons a real receiver exactly as thoroughly as an automatic
   // one. See meshWallClockUtc().
   const uint32_t wallUtc = meshWallClockUtc();
+  if (wallUtc == 0 && allowNoClock) {
+    // **Force the stamp to move.** MeshCore hashes the whole advert payload
+    // and a receiver silently drops a hash it has seen
+    // (meshcore SimpleMeshTables::wasSeen). Without a clock the stamp is a
+    // deterministic function of uptime and the Ed25519 signature is
+    // deterministic too, so two presses in one second -- or a reboot and a
+    // press at the same uptime -- build a byte-identical frame that the peer
+    // we are trying to pair with throws away. Same reason MeshCore itself
+    // carries getCurrentTimeUnique(), which createAdvert() does not call.
+    gMeshRtc.setCurrentTime(meshNextAdvertStamp(gMeshRtc.getCurrentTime()));
+    // Identity only. hasLoc is forced false below, so nothing in this frame
+    // can be placed on anybody's map, which is what makes an unknown
+    // timestamp harmless here.
+    const PresenceMesh::AdvertResult pairResult = gMesh.sendSelfAdvert(gMeshNodeName, false, 0, 0);
+    LoraLogEvent pairEv{};
+    const bool pairSent = pairResult == PresenceMesh::AdvertResult::Sent;
+    pairEv.kind = pairSent ? LoraLogKind::AdvertTx : LoraLogKind::TxDeclined;
+    pairEv.decline = pairSent ? LoraTxDecline::None : LoraTxDecline::PoolEmpty;
+    pairEv.txReason = pairSent ? why : LoraTxReason::None;
+    snprintf(pairEv.name, sizeof(pairEv.name), "%s", gMeshNodeName);
+    pairEv.hasLoc = false;
+    pairEv.uptimeMs = millis();
+    loraLogPost(pairEv);
+    if (pairSent) {
+      gMeshLastTxReason = why;
+      gMeshLastSentMs = millis();
+      gMeshLastSentHadFix = false;
+      // **gMeshBeaconEverSent stays untouched.** It is the beacon's own
+      // "have I ever introduced myself properly" flag, and BeaconPolicy only
+      // ever sends Reason::First while it is false. Setting it from a
+      // clockless pairing frame -- which carries no position and no real time
+      // -- made a device that then received a clock skip its first real
+      // advert and fall through to the one-hour keepalive.
+      return LoraAdvertResult::Sent;
+    }
+    return pairResult == PresenceMesh::AdvertResult::TooLong ? LoraAdvertResult::TooLong : LoraAdvertResult::PoolEmpty;
+  }
   if (wallUtc == 0) {
     LoraLogEvent noclock{};
     noclock.kind = LoraLogKind::TxDeclined;
     noclock.decline = LoraTxDecline::NoClock;
     noclock.uptimeMs = millis();
     loraLogPost(noclock);
-    return false;
+    return LoraAdvertResult::NoClock;
   }
   // Re-stamped on every send rather than seeded once at meshStart(). The
   // clock can arrive long after the radio did -- a phone connects, or the
@@ -1473,7 +1639,11 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   // on from whatever it was last told. Setting it from the true clock here
   // costs nothing and is always right, including across the moment it first
   // appears.
-  gMeshRtc.setCurrentTime(wallUtc);
+  // Monotonic for the same reason the clockless path above is: a receiver
+  // drops a repeated payload hash, and a stamp that goes backwards -- a phone
+  // handing over a time behind the latched clock, say -- makes this node's
+  // adverts look older than ones the peer already holds.
+  gMeshRtc.setCurrentTime(meshNextAdvertStamp(wallUtc));
 
   int32_t latE7 = 0;
   int32_t lonE7 = 0;
@@ -1483,7 +1653,8 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   // comparing two different roundings of one position.
   const int32_t latE6 = latE7 / 10;
   const int32_t lonE6 = lonE7 / 10;
-  const bool sent = gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, latE6, lonE6);
+  const PresenceMesh::AdvertResult meshResult = gMesh.sendSelfAdvert(gMeshNodeName, hasLoc, latE6, lonE6);
+  const bool sent = meshResult == PresenceMesh::AdvertResult::Sent;
 
   // Logged here rather than at the callers, because there are three of them --
   // the console, the screen's "announce me now" and the beacon -- and a
@@ -1493,6 +1664,9 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
   // common as "did I hear anybody".
   LoraLogEvent ev{};
   ev.kind = sent ? LoraLogKind::AdvertTx : LoraLogKind::TxDeclined;
+  // PoolEmpty for both refusals the mesh can give: the log's vocabulary is a
+  // file format and gains a value in its own pass, not in this one. The
+  // console and the screen carry the exact cause today.
   ev.decline = sent ? LoraTxDecline::None : LoraTxDecline::PoolEmpty;
   ev.txReason = sent ? why : LoraTxReason::None;
   snprintf(ev.name, sizeof(ev.name), "%s", gMeshNodeName);
@@ -1519,7 +1693,15 @@ static bool meshSendAdvert(LoraTxReason why = LoraTxReason::Manual) {
     gMeshBeaconEverSent = true;
   }
 
-  return sent;
+  switch (meshResult) {
+    case PresenceMesh::AdvertResult::Sent:
+      return LoraAdvertResult::Sent;
+    case PresenceMesh::AdvertResult::TooLong:
+      return LoraAdvertResult::TooLong;
+    case PresenceMesh::AdvertResult::PoolEmpty:
+      break;
+  }
+  return LoraAdvertResult::PoolEmpty;
 }
 
 // Brings the node up: radio first, then identity, then the Dispatcher.
@@ -1579,7 +1761,7 @@ static bool meshStart(bool& persisted) {
   // packet -- this one only makes the node's first moments dateable.
   if (const uint32_t wallUtc = meshWallClockUtc(); wallUtc != 0) gMeshRtc.setCurrentTime(wallUtc);
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (gMeshPosQueue == nullptr) gMeshPosQueue = xQueueCreate(8, sizeof(MeshPositionEvent));
   gMesh.setPositionHook(gMeshPosQueue != nullptr ? &meshPositionHook : nullptr);
 #endif
@@ -1615,7 +1797,18 @@ LoraPresenceStatus loraPresenceStatus() {
   LoraLock lock;
   LoraPresenceStatus out{};
   out.meshRunning = gMeshRunning;
-  out.beaconSec = gMeshBeaconSec;
+  // **The live cadence while the radio runs, the stored one while it does
+  // not.** gMeshBeaconSec is a cache loaded at meshStart() and zeroed at
+  // meshStop(), so with the radio off it reads 0 -- and the Group screen then
+  // showed "Never" for a device configured to beacon every 15 minutes, and
+  // one press cycled from that 0 to 70 s and saved it, destroying the rider's
+  // choice silently. Reading the setting when there is no running radio is
+  // the same correction LORA_STATE already carries a few hundred lines down.
+  //
+  // It is deliberately not "always the setting": CMD:LORA BEACON is a bench
+  // override that writes the cache only, and while the radio is up the cache
+  // is what is actually on the air.
+  out.beaconSec = gMeshRunning ? gMeshBeaconSec : SETTINGS.loraBeaconSec;
   out.advertsRejected = gMesh.advertsRejected();
   out.peerCount = gMesh.peers().count();
   out.identityPersisted = gMesh.identityPersisted();
@@ -1674,7 +1867,11 @@ void loraPresenceSetName(const char* name) {
   }
 }
 
-bool loraPresenceAdvertNow() { return meshSendAdvert(LoraTxReason::Manual); }
+LoraAdvertResult loraPresenceAdvertNow() {
+  // The screen's row. A rider pressing it is pairing, so it may go out
+  // without a clock -- identity only.
+  return meshSendAdvert(LoraTxReason::Manual, /*allowNoClock=*/true);
+}
 
 // The one place the policy's vocabulary becomes the log file's. Kept here
 // rather than in either header so neither side depends on the other: the
@@ -1785,7 +1982,7 @@ static void meshBeaconTick() {
     return;
   }
 
-  if (!meshSendAdvert(loraTxReasonFor(decision.reason))) {
+  if (meshSendAdvert(loraTxReasonFor(decision.reason)) != LoraAdvertResult::Sent) {
     // Said out loud rather than retried on the next loop: a pool that cannot
     // give out a packet will not give one out 10 ms later either, and a silent
     // beacon is the failure this whole section exists to make visible.
@@ -2072,23 +2269,23 @@ static void loraDrain() {
   // because an advert is queued, not transmitted, so this costs no radio time.
   meshBeaconTick();
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   // Heard positions into the group layer. This is the seam docs/lora.md
   // promised before any radio existed: a LoRa frame, a BLE relay and a console
-  // line all arrive at teamPosition(), and nothing above it knows which spoke.
+  // line all arrive at groupPosition(), and nothing above it knows which spoke.
   if (gMeshPosQueue != nullptr) {
     MeshPositionEvent ev;
     while (xQueueReceive(gMeshPosQueue, &ev, 0) == pdTRUE) {
-      char id[kLoraTeamIdBytes];
-      loraTeamId(ev.pubKey, id, sizeof(id));
+      char id[kLoraGroupIdBytes];
+      loraGroupId(ev.pubKey, id, sizeof(id));
 
       // **Membership is checked here, on this task, and never on the radio
       // task.** It also keeps strangersRefused() meaningful: on a public
       // channel most adverts are strangers, and counting every passing node
       // from Graz would drown the number that says somebody is talking *at*
       // this group.
-      MapTeam& team = MapTeam::getInstance();
-      if (team.roster().findId(id) >= TeamRoster::kSlotCount) {
+      MapGroup& group = MapGroup::getInstance();
+      if (group.roster().findId(id) >= GroupRoster::kSlotCount) {
         // **The row that explains an empty map while the radio is busy.**
         // The advert parsed, the signature verified, and the position was
         // still thrown away because nobody added this node -- which looks
@@ -2106,19 +2303,19 @@ static void loraDrain() {
         continue;
       }
 
-      TeamFix fix;
+      GroupFix fix;
       fix.present = true;
-      // MeshCore's advert carries 1e6 degrees and TeamFix stores 1e7, so the
+      // MeshCore's advert carries 1e6 degrees and GroupFix stores 1e7, so the
       // last digit is always zero. That is a unit conversion and not extra
       // precision -- about 11 cm either way, which is far finer than anything
       // this feature should be read as promising.
       fix.latE7 = static_cast<int32_t>(static_cast<int64_t>(ev.latE6) * 10);
       fix.lonE7 = static_cast<int32_t>(static_cast<int64_t>(ev.lonE6) * 10);
       fix.utc = ev.advertUtc;  // their clock, believed about nothing
-      fix.recvUtc = MapTeam::utcNowOrZero();
+      fix.recvUtc = MapGroup::utcNowOrZero();
       fix.recvUptimeMs = millis();
-      fix.source = TeamFixSource::Lora;
-      team.teamPosition(id, fix);
+      fix.source = GroupFixSource::Lora;
+      group.groupPosition(id, fix);
     }
   }
 #endif
@@ -3669,7 +3866,21 @@ void loop() {
               // send-rule test reads, because four rules put the same row on
               // the air and the cadence alone cannot tell them apart.
               // `still` is -1 with no fix.
-              " mesh=%d hold=0x%x beacon=%lus sent_ago=%lds fix=%d why=%s still=%lds"
+              // `pool_free` is how many of the 16 packets are available and
+              // `pool_out` how many are sitting in the send queue. Added
+              // 2026-10-30, after an afternoon spent deciding whether
+              // "advert not sent" meant an empty pool or something else, with
+              // no way to look. A node that cannot transmit is the group
+              // feature failing silently, so the number that decides it has to
+              // be readable.
+              //
+              // **`rx` and `tx` above are blind to the mesh and always read 0
+              // while it runs.** Both are incremented in loraServiceStep()'s
+              // console half, which returns early as soon as gMeshRunning is
+              // set. They say nothing about mesh traffic, and were read as
+              // saying plenty on 2026-10-30. `sent_ago` is the beacon's own
+              // flag and is the honest one.
+              " mesh=%d hold=0x%x beacon=%lus sent_ago=%lds fix=%d why=%s still=%lds pool_free=%d pool_out=%d"
 #endif
               "\n",
               lora.ready() ? 1 : 0, lora.listening() ? 1 : 0, gLoraPongMode ? 1 : 0, (t5s3RailUsers != 0) ? 1 : 0,
@@ -3691,7 +3902,8 @@ void loop() {
               static_cast<unsigned long>(SETTINGS.loraBeaconSec),
               gMeshBeaconEverSent ? static_cast<long>((millis() - gMeshLastSentMs) / 1000) : -1,
               (gnss.fix().valid && gnss.fix().quality != 0) ? 1 : 0, loraTxReasonText(gMeshLastTxReason),
-              gMeshSettleValid ? static_cast<long>((millis() - gMeshSettleSinceMs) / 1000) : -1
+              gMeshSettleValid ? static_cast<long>((millis() - gMeshSettleSinceMs) / 1000) : -1,
+              gMeshPackets.getFreeCount(), gMeshPackets.getOutboundTotal()
 #endif
           );
         } else if (upper == "ON") {
@@ -3981,8 +4193,17 @@ void loop() {
         } else if (upper == "ADVERT") {
           // "started", not "sent", for the same reason PONG says it: this
           // queues a packet and the service task puts it on the air later.
-          logSerial.printf(meshSendAdvert() ? "LORA_OK:advert started\n"
-                                            : "LORA_ERR:advert not sent (mesh off, or packet pool empty)\n");
+          {
+            const LoraAdvertResult r = meshSendAdvert(LoraTxReason::Manual, /*allowNoClock=*/true);
+            if (r == LoraAdvertResult::Sent) {
+              logSerial.printf("LORA_OK:advert started\n");
+            } else {
+              // The reason, not a list of candidates. The old line named two
+              // causes and the common one was neither
+              // (docs/lora-mesh.md, "One cause per refusal").
+              logSerial.printf("LORA_ERR:advert not sent -- %s\n", loraAdvertResultText(r));
+            }
+          }
         } else if (upper.startsWith("BEACON")) {
           const long seconds =
               (upper == "BEACON" || upper == "BEACON OFF") ? 0 : strtol(argument.c_str() + 6, nullptr, 10);

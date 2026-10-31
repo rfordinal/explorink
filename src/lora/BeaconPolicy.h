@@ -55,7 +55,7 @@ inline constexpr uint32_t kLooseMoveMetres = 200;
 //
 // **Not a new number.** `MapFixTrust::kLooseAtOrAboveM` is 25 because that is
 // the error that still fits inside the drawn marker at the finest zoom rung,
-// and `MapTeam::kSelfLogMinMetres` is 25 for the rider's own black box rows.
+// and `MapGroup::kSelfLogMinMetres` is 25 for the rider's own black box rows.
 // One line, three uses.
 inline constexpr uint32_t kSettleRadiusM = 25;
 

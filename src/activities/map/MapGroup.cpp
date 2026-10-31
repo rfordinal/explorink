@@ -1,6 +1,6 @@
-#include "MapTeam.h"
+#include "MapGroup.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <Arduino.h>
 #include <BlePositionServer.h>
@@ -13,12 +13,12 @@
 #include "PinGeo.h"
 
 namespace {
-constexpr const char* kLogTag = "TEAM";
+constexpr const char* kLogTag = "GROUP";
 }
 
-bool MapTeam::begin() {
+bool MapGroup::begin() {
   size_t skipped = 0;
-  const bool ok = TeamRosterFile::load(roster_, skipped);
+  const bool ok = GroupRosterFile::load(roster_, skipped);
   loaded_ = ok;
   if (!ok) {
     LOG_ERR(kLogTag, "no roster read -- every incoming position will be refused");
@@ -28,12 +28,12 @@ bool MapTeam::begin() {
 
   // Rotate before the replay, so a day that is past keeping is not read back
   // into RAM on its way to being deleted.
-  TeamBlackBox::rotate(utcNowOrZero(), SETTINGS.mapTeamKeepDays);
-  TeamBlackBox::replayLast(roster_, store_, bootId());
+  GroupBlackBox::rotate(utcNowOrZero(), SETTINGS.mapGroupKeepDays);
+  GroupBlackBox::replayLast(roster_, store_, bootId());
   return true;
 }
 
-uint32_t MapTeam::bootId() {
+uint32_t MapGroup::bootId() {
   // Once per boot, and never zero: zero is what a row written before this column
   // existed carries, and it has to keep meaning "not this run".
   //
@@ -53,7 +53,7 @@ uint32_t MapTeam::bootId() {
   return id;
 }
 
-uint32_t MapTeam::utcNowOrZero() {
+uint32_t MapGroup::utcNowOrZero() {
   // **Both radios carry a clock, so ask both.** The phone's position packet
   // anchors one (BlePositionServer::utcNow) and every GNSS receiver sends UTC
   // with its date sentence, well before it has a position fix (Gnss.h). The map
@@ -71,31 +71,31 @@ uint32_t MapTeam::utcNowOrZero() {
   return 0;
 }
 
-size_t MapTeam::slotForIndex(size_t index) const {
+size_t MapGroup::slotForIndex(size_t index) const {
   size_t seen = 0;
-  for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+  for (size_t slot = 0; slot < GroupRoster::kSlotCount; ++slot) {
     if (!roster_.at(slot).present) continue;
     if (seen == index) return slot;
     ++seen;
   }
-  return TeamRoster::kSlotCount;
+  return GroupRoster::kSlotCount;
 }
 
-IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const TeamFix& fix) {
+IMapGroupSource::Ingest MapGroup::groupPosition(std::string_view idOrAcr, const GroupFix& fix) {
   const size_t slot = roster_.find(idOrAcr);
-  if (slot >= TeamRoster::kSlotCount) {
+  if (slot >= GroupRoster::kSlotCount) {
     // The allowlist doing its job. Counted and said out loud, because on a radio
     // this is a device from another group -- or somebody probing ours -- and a
-    // silent drop would make that invisible (../../../docs/team-markers.md).
+    // silent drop would make that invisible (../../../docs/group-markers.md).
     ++strangersRefused_;
     LOG_INF(kLogTag, "refused a position from '%.*s': not in the roster", static_cast<int>(idOrAcr.size()),
             idOrAcr.data());
     return Ingest::UnknownMember;
   }
-  const TeamMember& member = roster_.at(slot);
+  const GroupMember& member = roster_.at(slot);
   if (!member.enabled) return Ingest::Muted;
 
-  TeamFix stored = fix;
+  GroupFix stored = fix;
   stored.present = true;
   stored.fromLog = false;
   stored.recvUptimeMs = millis();
@@ -108,8 +108,8 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
   // rider has turned peer logging off, and the marker still moves: what is on
   // the panel and what is kept on the card are two decisions, and only the
   // second one is a privacy question.
-  if (SETTINGS.mapTeamLogPeers != 0) {
-    TeamRecord rec;
+  if (SETTINGS.mapGroupLogPeers != 0) {
+    GroupRecord rec;
     rec.utc = stored.utc;
     rec.recvUtc = stored.recvUtc;
     rec.uptimeMs = stored.recvUptimeMs;
@@ -119,7 +119,7 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
     // first one: a rider heard over two radios has two, and the row should say
     // which one spoke. Falls back to the member's own when the caller addressed
     // them by acronym, which only the console does.
-    const bool addressedById = roster_.findId(idOrAcr) < TeamRoster::kSlotCount;
+    const bool addressedById = roster_.findId(idOrAcr) < GroupRoster::kSlotCount;
     if (addressedById) {
       snprintf(rec.id, sizeof(rec.id), "%.*s", static_cast<int>(idOrAcr.size()), idOrAcr.data());
     } else if (member.idCount > 0) {
@@ -132,44 +132,44 @@ IMapTeamSource::Ingest MapTeam::teamPosition(std::string_view idOrAcr, const Tea
     rec.speedKmh = stored.speedKmh;
     rec.hasSpeed = stored.hasSpeed;
     rec.source = stored.source;
-    if (!TeamBlackBox::append(rec)) return Ingest::WriteFailed;
+    if (!GroupBlackBox::append(rec)) return Ingest::WriteFailed;
   }
 
   store_.set(slot, stored);
   LOG_DBG(kLogTag, "%s at %ld,%ld (%s)", member.acr, static_cast<long>(stored.latE7), static_cast<long>(stored.lonE7),
-          teamSourceText(stored.source));
+          groupSourceText(stored.source));
   return Ingest::Accepted;
 }
 
-IMapTeamSource::Edit MapTeam::teamAdd(std::string_view acr, std::string_view id, std::string_view name) {
+IMapGroupSource::Edit MapGroup::groupAdd(std::string_view acr, std::string_view id, std::string_view name) {
   if (!loaded_) {
     // Saving now would write a roster built from nothing over the one on the
     // card, which is how a rider loses eleven members to one add.
     LOG_ERR(kLogTag, "roster not loaded -- refusing to save");
     return Edit::WriteFailed;
   }
-  if (roster_.find(id) >= TeamRoster::kSlotCount && roster_.findAcr(acr) >= TeamRoster::kSlotCount &&
-      roster_.count() >= TeamRoster::kSlotCount) {
+  if (roster_.find(id) >= GroupRoster::kSlotCount && roster_.findAcr(acr) >= GroupRoster::kSlotCount &&
+      roster_.count() >= GroupRoster::kSlotCount) {
     return Edit::Full;
   }
 
-  TeamRoster candidate = roster_;
+  GroupRoster candidate = roster_;
   if (!candidate.set(id, acr, name, true)) return Edit::Invalid;
-  if (!TeamRosterFile::save(candidate)) return Edit::WriteFailed;
+  if (!GroupRosterFile::save(candidate)) return Edit::WriteFailed;
   roster_ = candidate;
   LOG_INF(kLogTag, "added %.*s (%.*s)", static_cast<int>(acr.size()), acr.data(), static_cast<int>(id.size()),
           id.data());
   return Edit::Ok;
 }
 
-IMapTeamSource::Edit MapTeam::teamRemove(std::string_view idOrAcr) {
+IMapGroupSource::Edit MapGroup::groupRemove(std::string_view idOrAcr) {
   if (!loaded_) return Edit::WriteFailed;
   const size_t slot = roster_.find(idOrAcr);
-  if (slot >= TeamRoster::kSlotCount) return Edit::UnknownMember;
+  if (slot >= GroupRoster::kSlotCount) return Edit::UnknownMember;
 
-  TeamRoster candidate = roster_;
+  GroupRoster candidate = roster_;
   if (!candidate.remove(idOrAcr)) return Edit::UnknownMember;
-  if (!TeamRosterFile::save(candidate)) return Edit::WriteFailed;
+  if (!GroupRosterFile::save(candidate)) return Edit::WriteFailed;
   roster_ = candidate;
   // The marker goes with the member. Their rows stay in the black box -- it is
   // evidence and is never rewritten -- they are simply no longer drawn.
@@ -177,37 +177,37 @@ IMapTeamSource::Edit MapTeam::teamRemove(std::string_view idOrAcr) {
   return Edit::Ok;
 }
 
-bool MapTeam::teamReload(size_t& skipped) {
-  TeamRoster candidate;
-  if (!TeamRosterFile::load(candidate, skipped)) return false;
+bool MapGroup::groupReload(size_t& skipped) {
+  GroupRoster candidate;
+  if (!GroupRosterFile::load(candidate, skipped)) return false;
   roster_ = candidate;
   // Positions are keyed by slot and a reload can renumber the slots, so the
   // store is rebuilt from the card rather than reindexed: a marker under the
   // wrong acronym is worse than a marker that takes a moment to come back.
-  TeamBlackBox::replayLast(roster_, store_, bootId());
+  GroupBlackBox::replayLast(roster_, store_, bootId());
   loaded_ = true;
   return true;
 }
 
-size_t MapTeam::teamCount() const { return roster_.count(); }
+size_t MapGroup::groupCount() const { return roster_.count(); }
 
-TeamMember MapTeam::teamMemberAt(size_t index) const {
+GroupMember MapGroup::groupMemberAt(size_t index) const {
   const size_t slot = slotForIndex(index);
-  return slot < TeamRoster::kSlotCount ? roster_.at(slot) : TeamMember{};
+  return slot < GroupRoster::kSlotCount ? roster_.at(slot) : GroupMember{};
 }
 
-TeamFix MapTeam::teamFixAt(size_t index) const {
+GroupFix MapGroup::groupFixAt(size_t index) const {
   const size_t slot = slotForIndex(index);
-  return slot < TeamRoster::kSlotCount ? store_.at(slot) : TeamFix{};
+  return slot < GroupRoster::kSlotCount ? store_.at(slot) : GroupFix{};
 }
 
-uint32_t MapTeam::teamLogPage(uint32_t offset, uint32_t maxCount, ITeamLogVisitor& visitor) {
-  return TeamBlackBox::page(offset, maxCount, visitor);
+uint32_t MapGroup::groupLogPage(uint32_t offset, uint32_t maxCount, IGroupLogVisitor& visitor) {
+  return GroupBlackBox::page(offset, maxCount, visitor);
 }
 
-void MapTeam::logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t heading, bool hasHeading, uint16_t speedKmh,
-                      bool hasSpeed, TeamFixSource source, uint32_t nowUptimeMs) {
-  if (SETTINGS.mapTeamLogSelf == 0) return;
+void MapGroup::logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t heading, bool hasHeading, uint16_t speedKmh,
+                       bool hasSpeed, GroupFixSource source, uint32_t nowUptimeMs) {
+  if (SETTINGS.mapGroupLogSelf == 0) return;
 
   if (selfLogged_) {
     const bool soon = nowUptimeMs >= selfLastUptimeMs_ && nowUptimeMs - selfLastUptimeMs_ < kSelfLogMinIntervalMs;
@@ -219,12 +219,12 @@ void MapTeam::logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t headin
     if (soon && moved < kSelfLogMinMetres) return;
   }
 
-  TeamRecord rec;
+  GroupRecord rec;
   rec.utc = utc;
   rec.recvUtc = utc;  // our own position: the two times are the same reading
   rec.uptimeMs = nowUptimeMs;
   rec.boot = bootId();
-  snprintf(rec.who, sizeof(rec.who), "%s", kTeamSelfWho);
+  snprintf(rec.who, sizeof(rec.who), "%s", kGroupSelfWho);
   rec.latE7 = latE7;
   rec.lonE7 = lonE7;
   rec.heading = heading;
@@ -232,7 +232,7 @@ void MapTeam::logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t headin
   rec.speedKmh = speedKmh;
   rec.hasSpeed = hasSpeed;
   rec.source = source;
-  if (!TeamBlackBox::append(rec)) return;
+  if (!GroupBlackBox::append(rec)) return;
 
   selfLogged_ = true;
   selfLastUptimeMs_ = nowUptimeMs;
@@ -240,4 +240,4 @@ void MapTeam::logSelf(int32_t latE7, int32_t lonE7, uint32_t utc, uint8_t headin
   selfLastLonE7_ = lonE7;
 }
 
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

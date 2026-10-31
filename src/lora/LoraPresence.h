@@ -90,7 +90,24 @@ bool loraPresenceSetBeacon(uint32_t seconds);
 void loraPresenceSetName(const char* name);
 
 // One advert now. False when the mesh is off or the packet pool is empty.
-bool loraPresenceAdvertNow();
+// Why an advert did not go out, carried all the way to whoever asked.
+//
+// **Every value here was once the same sentence.** `advert not sent (mesh off,
+// or packet pool empty)` was printed for refusals that were neither, and the
+// one that actually fires most often -- no wall clock -- was not even in it
+// (../../docs/lora-mesh.md, "One cause per refusal").
+enum class LoraAdvertResult : uint8_t {
+  Sent,
+  MeshOff,    // the radio is not running; no screen is holding it up
+  NoClock,    // no wall clock, so a timestamp would be MeshCore's epoch
+  PoolEmpty,  // the 16-slot packet pool had nothing free
+  TooLong,    // the encoded advert exceeds MAX_ADVERT_DATA_SIZE
+};
+
+// One short line per cause, for a console reply or a log. Never null.
+const char* loraAdvertResultText(LoraAdvertResult result);
+
+LoraAdvertResult loraPresenceAdvertNow();
 
 // The cadences the screen cycles through, lowest first after "off". Here
 // rather than in the screen because the floor they respect is a radio fact,

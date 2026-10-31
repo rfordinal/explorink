@@ -1,18 +1,17 @@
-#include "TeamFiles.h"
+#include "GroupFiles.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <HalStorage.h>
 #include <Logging.h>
 
-#include <vector>
-
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace {
 
-constexpr const char* kLogTag = "TEAMFILE";
+constexpr const char* kLogTag = "GROUPFILE";
 
 // Read chunk. Small on purpose: this runs on the activity task's stack next to a
 // line buffer, and the Resource Protocol caps a frame's locals at 256 bytes
@@ -29,14 +28,14 @@ constexpr uint32_t kRotateLookBackDays = 60;
 constexpr uint32_t kSecondsPerDay = 86400u;
 
 bool pathForName(const char* name, char* out, size_t outBytes) {
-  const int written = snprintf(out, outBytes, "%s/%s", TeamBlackBox::kDir, name);
+  const int written = snprintf(out, outBytes, "%s/%s", GroupBlackBox::kDir, name);
   return written > 0 && static_cast<size_t>(written) < outBytes;
 }
 
 // The file a given day's rows live in. `utc` 0 is the no-clock file.
 bool pathForUtc(uint32_t utc, char* out, size_t outBytes) {
-  char name[TeamBlackBox::kNameBytes];
-  if (!teamDayFileName(utc, name, sizeof(name))) return false;
+  char name[GroupBlackBox::kNameBytes];
+  if (!groupDayFileName(utc, name, sizeof(name))) return false;
   return pathForName(name, out, outBytes);
 }
 
@@ -49,7 +48,7 @@ bool streamLines(const char* path, LineVisit fn, void* ctx) {
   HalFile file;
   if (!Storage.openFileForRead(kLogTag, path, file)) return false;
 
-  char line[kTeamLineMax + 1];
+  char line[kGroupLineMax + 1];
   size_t len = 0;
   bool discarding = false;
   uint32_t filePos = 0;
@@ -72,7 +71,7 @@ bool streamLines(const char* path, LineVisit fn, void* ctx) {
         continue;
       }
       if (discarding) continue;
-      if (len >= kTeamLineMax) {
+      if (len >= kGroupLineMax) {
         discarding = true;
         len = 0;
         continue;
@@ -121,8 +120,8 @@ struct CountCtx {
 };
 
 void countLine(void* ctx, std::string_view line, uint32_t) {
-  TeamRecord rec;
-  if (!decodeTeamRecord(line, rec)) return;
+  GroupRecord rec;
+  if (!decodeGroupRecord(line, rec)) return;
   static_cast<CountCtx*>(ctx)->valid++;
 }
 
@@ -131,61 +130,61 @@ struct WindowCtx {
   uint32_t first = 0;
   uint32_t count = 0;
   uint32_t found = 0;
-  uint32_t offsets[TeamBlackBox::kMaxPageEntries] = {};
+  uint32_t offsets[GroupBlackBox::kMaxPageEntries] = {};
 };
 
 void windowLine(void* ctx, std::string_view line, uint32_t byteOffset) {
   auto* w = static_cast<WindowCtx*>(ctx);
-  TeamRecord rec;
-  if (!decodeTeamRecord(line, rec)) return;
+  GroupRecord rec;
+  if (!decodeGroupRecord(line, rec)) return;
   const uint32_t index = w->index++;
   if (index < w->first) return;
   if (index >= w->first + w->count) return;
-  if (w->found < TeamBlackBox::kMaxPageEntries) w->offsets[w->found++] = byteOffset;
+  if (w->found < GroupBlackBox::kMaxPageEntries) w->offsets[w->found++] = byteOffset;
 }
 
-bool readRecordAt(const char* path, uint32_t byteOffset, TeamRecord& out) {
+bool readRecordAt(const char* path, uint32_t byteOffset, GroupRecord& out) {
   HalFile file;
   if (!Storage.openFileForRead(kLogTag, path, file)) return false;
   if (!file.seek(byteOffset)) return false;
 
-  char line[kTeamLineMax + 1];
-  const int read = file.read(line, kTeamLineMax);
+  char line[kGroupLineMax + 1];
+  const int read = file.read(line, kGroupLineMax);
   if (read <= 0) return false;
   size_t len = 0;
   while (len < static_cast<size_t>(read) && line[len] != '\n' && line[len] != '\r') ++len;
   line[len] = '\0';
-  return decodeTeamRecord(std::string_view(line, len), out);
+  return decodeGroupRecord(std::string_view(line, len), out);
 }
 
 // One file's worth of "the last row each member wrote". Filled in file order, so
 // a later row simply overwrites an earlier one.
 struct ReplayCtx {
-  const TeamRoster* roster = nullptr;
-  TeamStore* store = nullptr;
+  const GroupRoster* roster = nullptr;
+  GroupStore* store = nullptr;
   uint32_t bootId = 0;
-  bool filled[TeamRoster::kSlotCount] = {};   // filled by an already-read, newer file
-  bool inThisFile[TeamRoster::kSlotCount] = {};
+  bool filled[GroupRoster::kSlotCount] = {};  // filled by an already-read, newer file
+  bool inThisFile[GroupRoster::kSlotCount] = {};
 };
 
 void replayLine(void* ctx, std::string_view line, uint32_t) {
   auto* r = static_cast<ReplayCtx*>(ctx);
-  TeamRecord rec;
-  if (!decodeTeamRecord(line, rec)) return;
-  if (std::string_view(rec.who) == kTeamSelfWho) return;  // the rider's own trace, not a marker
+  GroupRecord rec;
+  if (!decodeGroupRecord(line, rec)) return;
+  if (std::string_view(rec.who) == kGroupSelfWho) return;  // the rider's own trace, not a marker
 
   // By id first: a roster edit between rides can move an acronym to a different
   // person, and then the acronym in an old row points at somebody who was never
   // there. The acronym is the fallback, for rows written before the id column.
-  size_t slot = rec.id[0] != '\0' ? r->roster->findId(rec.id) : TeamRoster::kSlotCount;
-  if (slot >= TeamRoster::kSlotCount) slot = r->roster->findAcr(rec.who);
+  size_t slot = rec.id[0] != '\0' ? r->roster->findId(rec.id) : GroupRoster::kSlotCount;
+  if (slot >= GroupRoster::kSlotCount) slot = r->roster->findAcr(rec.who);
   // A row for somebody who is no longer in the roster stays in the file and is
   // simply not drawn: the black box is evidence and is never rewritten, but the
   // allowlist decides what reaches the panel.
-  if (slot >= TeamRoster::kSlotCount) return;
+  if (slot >= GroupRoster::kSlotCount) return;
   if (r->filled[slot]) return;  // a newer file already answered for this member
 
-  TeamFix fix;
+  GroupFix fix;
   fix.present = true;
   fix.latE7 = rec.latE7;
   fix.lonE7 = rec.lonE7;
@@ -209,7 +208,64 @@ void replayLine(void* ctx, std::string_view line, uint32_t) {
 
 }  // namespace
 
-bool TeamRosterFile::load(TeamRoster& roster, size_t& skipped) {
+void groupMigrateLegacyDir() {
+  // **Latched only once there is nothing left to do.** The first version set
+  // this before attempting the rename, so a single failure stranded the card:
+  // nothing retried, the black box then created an empty /trailink/group, and
+  // from the next boot the both-exist branch refused forever while the
+  // rider's hand-built roster sat unreadable under the old name.
+  static bool done = false;
+  if (done) return;
+  if (!Storage.ready()) return;
+
+  constexpr const char* kLegacyDir = "/trailink/team";
+  constexpr const char* kLegacyRoster = "/trailink/team/members.json";
+
+  const bool legacyExists = Storage.exists(kLegacyDir);
+  const bool newExists = Storage.exists(GroupRosterFile::kDir);
+  const GroupMigrateAction action = groupMigrateDecide(legacyExists, newExists, Storage.exists(kLegacyRoster),
+                                                       Storage.exists(GroupRosterFile::kPath));
+
+  switch (action) {
+    case GroupMigrateAction::Nothing:
+      done = true;
+      return;
+
+    case GroupMigrateAction::MoveDirectory:
+      if (Storage.rename(kLegacyDir, GroupRosterFile::kDir)) {
+        LOG_INF(kLogTag, "moved %s to %s", kLegacyDir, GroupRosterFile::kDir);
+        done = true;
+      } else {
+        // Not latched: the next entry point tries again, and a half-finished
+        // rename lands in RescueRoster above rather than in Refuse.
+        LOG_ERR(kLogTag, "could not move %s to %s -- will retry; nothing was deleted", kLegacyDir,
+                GroupRosterFile::kDir);
+      }
+      return;
+
+    case GroupMigrateAction::RescueRoster:
+      // The roster is the irreplaceable half -- built by hand, member by
+      // member. The black box is history and stays where it is; it is named
+      // bb-YYYYMMDD.csv and a person can move it with a card reader.
+      if (Storage.rename(kLegacyRoster, GroupRosterFile::kPath)) {
+        LOG_INF(kLogTag, "rescued the roster from %s; black-box files remain in %s", kLegacyRoster, kLegacyDir);
+        done = true;
+      } else {
+        LOG_ERR(kLogTag, "could not rescue %s -- will retry; nothing was deleted", kLegacyRoster);
+      }
+      return;
+
+    case GroupMigrateAction::Refuse:
+      // Both hold a roster. Nothing here can tell which one the rider means,
+      // so this picks neither and says so. The new path is what gets read.
+      LOG_ERR(kLogTag, "%s and %s both hold a roster -- using %s, leaving both files alone", kLegacyDir,
+              GroupRosterFile::kDir, GroupRosterFile::kPath);
+      done = true;
+      return;
+  }
+}
+
+bool GroupRosterFile::load(GroupRoster& roster, size_t& skipped) {
   roster.clear();
   skipped = 0;
 
@@ -217,12 +273,15 @@ bool TeamRosterFile::load(TeamRoster& roster, size_t& skipped) {
     LOG_ERR(kLogTag, "no card -- no roster, so every incoming position is refused");
     return false;
   }
+  // Before the first look at the new path, never after: a load that ran first
+  // would report an empty roster and the rider would see the group gone.
+  groupMigrateLegacyDir();
   if (!Storage.exists(kPath)) {
     LOG_INF(kLogTag, "no %s yet -- nobody is approved", kPath);
     return true;
   }
 
-  char buf[TeamRoster::kJsonBytes];
+  char buf[GroupRoster::kJsonBytes];
   const size_t read = Storage.readFileToBuffer(kPath, buf, sizeof(buf));
   if (read == 0) {
     LOG_ERR(kLogTag, "cannot read %s", kPath);
@@ -244,12 +303,12 @@ bool TeamRosterFile::load(TeamRoster& roster, size_t& skipped) {
   return true;
 }
 
-bool TeamRosterFile::save(const TeamRoster& roster) {
+bool GroupRosterFile::save(const GroupRoster& roster) {
   if (!Storage.ready()) {
     LOG_ERR(kLogTag, "no card -- roster not saved");
     return false;
   }
-  char buf[TeamRoster::kJsonBytes];
+  char buf[GroupRoster::kJsonBytes];
   const size_t len = roster.writeJson(buf, sizeof(buf));
   if (len == 0) {
     LOG_ERR(kLogTag, "roster does not fit %u bytes", static_cast<unsigned>(sizeof(buf)));
@@ -259,9 +318,15 @@ bool TeamRosterFile::save(const TeamRoster& roster) {
   return Storage.writeFile(kPath, String(buf));
 }
 
-bool TeamBlackBox::append(const TeamRecord& rec) {
-  char line[kTeamLineMax + 2];
-  const size_t len = encodeTeamRecord(rec, line, kTeamLineMax + 1);
+bool GroupBlackBox::append(const GroupRecord& rec) {
+  // The other entry point. Today every caller has already loaded the roster,
+  // so this cannot be the first to run -- it is here because append() is the
+  // one function that *creates* the directory (ensureDirectoryExists below),
+  // and creating it behind a pending migration is what turns a retryable
+  // half-move into two directories that both look real.
+  groupMigrateLegacyDir();
+  char line[kGroupLineMax + 2];
+  const size_t len = encodeGroupRecord(rec, line, kGroupLineMax + 1);
   if (len == 0) {
     LOG_ERR(kLogTag, "refusing to append an unencodable row (who '%s')", rec.who);
     return false;
@@ -292,7 +357,7 @@ bool TeamBlackBox::append(const TeamRecord& rec) {
   // days that actually happened.
   if (fresh) {
     char header[96];
-    const int headerLen = snprintf(header, sizeof(header), "%s\n", kTeamCsvHeader);
+    const int headerLen = snprintf(header, sizeof(header), "%s\n", kGroupCsvHeader);
     if (headerLen > 0) file.write(header, static_cast<size_t>(headerLen));
   }
   const size_t written = file.write(line, len + 1);
@@ -304,7 +369,7 @@ bool TeamBlackBox::append(const TeamRecord& rec) {
   return true;
 }
 
-bool TeamBlackBox::replayLast(const TeamRoster& roster, TeamStore& store, uint32_t bootId) {
+bool GroupBlackBox::replayLast(const GroupRoster& roster, GroupStore& store, uint32_t bootId) {
   store.clear();
   if (!Storage.ready()) {
     LOG_ERR(kLogTag, "no card -- nobody's last position restored");
@@ -328,14 +393,14 @@ bool TeamBlackBox::replayLast(const TeamRoster& roster, TeamStore& store, uint32
     if (streamLines(path, &replayLine, &ctx)) ++filesRead;
     // A member the newest file answered for is settled: an older file's row for
     // them is an older position and must not overwrite it.
-    for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+    for (size_t slot = 0; slot < GroupRoster::kSlotCount; ++slot) {
       if (ctx.inThisFile[slot]) ctx.filled[slot] = true;
     }
     // Every member answered for: the older files hold older positions and there
     // is nothing left for them to say. This is the difference between reading
     // one file and reading a fortnight of them on the way into the map screen.
     bool everyone = true;
-    for (size_t slot = 0; slot < TeamRoster::kSlotCount; ++slot) {
+    for (size_t slot = 0; slot < GroupRoster::kSlotCount; ++slot) {
       if (roster.at(slot).present && !ctx.filled[slot]) everyone = false;
     }
     if (everyone) break;
@@ -347,16 +412,16 @@ bool TeamBlackBox::replayLast(const TeamRoster& roster, TeamStore& store, uint32
     if (streamLines(path, &replayLine, &ctx)) ++filesRead;
   }
 
-  LOG_INF(kLogTag, "black box: %u file(s) read, %u member position(s) restored",
-          static_cast<unsigned>(filesRead), static_cast<unsigned>(store.presentCount()));
+  LOG_INF(kLogTag, "black box: %u file(s) read, %u member position(s) restored", static_cast<unsigned>(filesRead),
+          static_cast<unsigned>(store.presentCount()));
   return true;
 }
 
-void TeamBlackBox::rotate(uint32_t nowUtc, uint32_t keepDays) {
+void GroupBlackBox::rotate(uint32_t nowUtc, uint32_t keepDays) {
   if (nowUtc == 0 || keepDays == 0) return;  // a day it cannot name is a day it must not delete
   if (!Storage.ready()) return;
 
-  const uint32_t today = teamDayNumber(nowUtc);
+  const uint32_t today = groupDayNumber(nowUtc);
   char path[64];
   for (uint32_t back = keepDays; back <= keepDays + kRotateLookBackDays; ++back) {
     if (back > today) break;
@@ -370,7 +435,7 @@ void TeamBlackBox::rotate(uint32_t nowUtc, uint32_t keepDays) {
   }
 }
 
-uint32_t TeamBlackBox::page(uint32_t offset, uint32_t maxCount, ITeamLogVisitor& visitor) {
+uint32_t GroupBlackBox::page(uint32_t offset, uint32_t maxCount, IGroupLogVisitor& visitor) {
   if (!Storage.ready()) return 0;
 
   const std::vector<String> names = Storage.listFiles(kDir, kMaxDayFiles);
@@ -399,10 +464,10 @@ uint32_t TeamBlackBox::page(uint32_t offset, uint32_t maxCount, ITeamLogVisitor&
   // Reversed here rather than in the scan: the file only reads forwards, and the
   // offsets are 4 bytes each against a row's ~60.
   for (uint32_t i = window.found; i > 0; --i) {
-    TeamRecord rec;
-    if (readRecordAt(path, window.offsets[i - 1], rec)) visitor.onTeamLogRecord(rec);
+    GroupRecord rec;
+    if (readRecordAt(path, window.offsets[i - 1], rec)) visitor.onGroupLogRecord(rec);
   }
   return total;
 }
 
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS

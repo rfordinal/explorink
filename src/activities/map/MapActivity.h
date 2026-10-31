@@ -22,8 +22,8 @@ struct PinShapeFrame;
 #include "MapMarkerMetrics.h"
 #include "MapModeMask.h"
 #include "MapPins.h"
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-#include "MapTeam.h"
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+#include "MapGroup.h"
 #endif
 #include "MapPointQuery.h"
 #include "MapPointSource.h"
@@ -872,49 +872,49 @@ class MapActivity final : public Activity,
   // Three screens, and the popups are opened through pendingNearbyPopup_ from
   // loop(), never from inside a popup callback -- show()ing from a callback
   // reassigns the std::function currently running (PinPopup says the same).
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-  // ## Team markers (../../../docs/team-markers.md)
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  // ## Group markers (../../../docs/group-markers.md)
   //
   // The other riders' dots. Same popup deferral as PinPopup and Nearby, same
   // reason: show()ing from inside a popup callback reassigns the std::function
   // that is running.
-  enum class TeamPopup : uint8_t { None, List, Show };
-  TeamPopup pendingTeamPopup_ = TeamPopup::None;
-  uint8_t pendingTeamArg_ = 0;
+  enum class GroupPopup : uint8_t { None, List, Show };
+  GroupPopup pendingGroupPopup_ = GroupPopup::None;
+  uint8_t pendingGroupArg_ = 0;
 
-  void servicePendingTeamPopup();
+  void servicePendingGroupPopup();
   // Re-reads every member's age on its own clock and redraws only when the frame
   // would differ. What the panel shows is otherwise as old as the last fix,
   // which is exactly wrong when the fixes have stopped.
-  void serviceTeamAges(uint32_t now);
-  uint32_t teamAgeSignature() const;
+  void serviceGroupAges(uint32_t now);
+  uint32_t groupAgeSignature() const;
 
   // How often the ages are revisited, and it is the step they are reported in
-  // (TeamFix.h, kTeamAgeStepMinutes): a finer period redraws for a number that
+  // (GroupFix.h, kGroupAgeStepMinutes): a finer period redraws for a number that
   // has not changed.
-  static constexpr uint32_t kTeamAgeRefreshMs = kTeamAgeStepMinutes * 60u * 1000u;
-  uint32_t teamAgeCheckedMs_ = 0;
-  uint32_t teamAgeSignature_ = 0;
-  void openTeamMenu();
-  void showTeamMemberOnMap(size_t slot);
-  void drawTeam();
+  static constexpr uint32_t kGroupAgeRefreshMs = kGroupAgeStepMinutes * 60u * 1000u;
+  uint32_t groupAgeCheckedMs_ = 0;
+  uint32_t groupAgeSignature_ = 0;
+  void openGroupMenu();
+  void showGroupMemberOnMap(size_t slot);
+  void drawGroup();
   // The member's balloon: the pin shape filled solid black with their two or
   // three letters in white, so a person and a place cannot be confused at a
   // glance -- a rider's own pins are hollow (drawPinBalloon). A stale position
   // draws the hollow balloon with black letters instead: the fill is what says
   // the position is current, and the panel must never draw "here they are" and
   // "here they were an hour ago" the same way.
-  void drawTeamBalloon(int tipX, int tipY, const char* acr, bool stale);
+  void drawGroupBalloon(int tipX, int tipY, const char* acr, bool stale);
   // The grey fill for a stale member, painted row by row inside the silhouette:
   // grey on this panel is a dither, and a rectangle of it would spill past the
   // balloon.
-  void fillTeamBodyDither(int x, int y) const;
-  // What one team pass has already put on the panel, so two labels cannot land
+  void fillGroupBodyDither(int x, int y) const;
+  // What one group pass has already put on the panel, so two labels cannot land
   // on top of each other. A flat list rather than the map's own occupancy grid:
   // twelve members plus their labels and the rider's marker is 25 boxes, and a
   // linear scan of that is cheaper than 1,250 bytes of grid.
-  struct TeamLabelBoxes {
-    static constexpr size_t kMax = kTeamMaxMembers * 2 + 1;
+  struct GroupLabelBoxes {
+    static constexpr size_t kMax = kGroupMaxMembers * 2 + 1;
     int16_t x[kMax] = {};
     int16_t y[kMax] = {};
     int16_t w[kMax] = {};
@@ -939,15 +939,15 @@ class MapActivity final : public Activity,
   };
 
   // The distance/age line under a member's marker. Four shapes, and which one is
-  // drawn is TeamFix.h's teamMarkerLabel(). False when every spot it tried was
+  // drawn is GroupFix.h's groupMarkerLabel(). False when every spot it tried was
   // taken, which is a dropped label and never an overprinted one.
-  bool drawTeamLabel(int tipX, int tipY, const char* text, TeamLabelBoxes& taken);
-  void teamRowText(size_t slot, char* buf, size_t bufLen) const;
-  TeamVisibility teamSlotVisibility(size_t slot) const;
+  bool drawGroupLabel(int tipX, int tipY, const char* text, GroupLabelBoxes& taken);
+  void groupRowText(size_t slot, char* buf, size_t bufLen) const;
+  GroupVisibility groupSlotVisibility(size_t slot) const;
 
   // A reference, not an instance: the roster is shared with the LoRa node list
-  // now (MapTeam::getInstance()). Every `team_.` call below is unchanged.
-  MapTeam& team_ = MapTeam::getInstance();
+  // now (MapGroup::getInstance()). Every `group_.` call below is unchanged.
+  MapGroup& group_ = MapGroup::getInstance();
 #endif
 
   enum class NearbyPopup : uint8_t { None, Menu, Category, Detail };
@@ -1793,8 +1793,8 @@ class MapActivity final : public Activity,
   };
   LockedPins lockedPins_{pins_};
 
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-  // The same thing for the group layer, and for the same reason: drawTeam()
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  // The same thing for the group layer, and for the same reason: drawGroup()
   // walks the roster and the store on the render task, while a position
   // arriving over a radio or a cable rewrites them from the activity task.
   //
@@ -1804,24 +1804,24 @@ class MapActivity final : public Activity,
   // was not already paying. Reads are left alone on the same grounds as the
   // pins': the compose only reads, and a torn read of a POD fix costs one
   // frame.
-  class LockedTeam : public IMapTeamSource {
+  class LockedGroup : public IMapGroupSource {
    public:
-    explicit LockedTeam(MapTeam& team) : team_(team) {}
-    Ingest teamPosition(std::string_view idOrAcr, const TeamFix& fix) override;
-    Edit teamAdd(std::string_view acr, std::string_view id, std::string_view name) override;
-    Edit teamRemove(std::string_view idOrAcr) override;
-    bool teamReload(size_t& skipped) override;
-    size_t teamCount() const override { return team_.teamCount(); }
-    TeamMember teamMemberAt(size_t index) const override { return team_.teamMemberAt(index); }
-    TeamFix teamFixAt(size_t index) const override { return team_.teamFixAt(index); }
-    uint32_t teamLogPage(uint32_t offset, uint32_t maxCount, ITeamLogVisitor& visitor) override {
-      return team_.teamLogPage(offset, maxCount, visitor);
+    explicit LockedGroup(MapGroup& group) : group_(group) {}
+    Ingest groupPosition(std::string_view idOrAcr, const GroupFix& fix) override;
+    Edit groupAdd(std::string_view acr, std::string_view id, std::string_view name) override;
+    Edit groupRemove(std::string_view idOrAcr) override;
+    bool groupReload(size_t& skipped) override;
+    size_t groupCount() const override { return group_.groupCount(); }
+    GroupMember groupMemberAt(size_t index) const override { return group_.groupMemberAt(index); }
+    GroupFix groupFixAt(size_t index) const override { return group_.groupFixAt(index); }
+    uint32_t groupLogPage(uint32_t offset, uint32_t maxCount, IGroupLogVisitor& visitor) override {
+      return group_.groupLogPage(offset, maxCount, visitor);
     }
 
    private:
-    MapTeam& team_;
+    MapGroup& group_;
   };
-  LockedTeam lockedTeam_{team_};
+  LockedGroup lockedGroup_{group_};
 #endif
 
   // The rider's pins: the active set replayed off the card in onEnter(), and the

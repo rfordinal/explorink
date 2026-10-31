@@ -47,6 +47,24 @@ LUCIDE_ICONS = [
     ("sync", "refresh-cw", ROW_SIZE),
     ("transfer", "wifi", ROW_SIZE),
     ("settings", "settings", ROW_SIZE),
+    # The group row. `users` and not `users-round`: at 32 px the round
+    # variant's two heads merge into one blob once the 110 threshold has
+    # had its say, and a group glyph that reads as one person is the one
+    # thing it must not do.
+    ("group", "users", ROW_SIZE),
+    # The LoRa badge on the Group row, at 16 px rather than the row's 32.
+    #
+    # **radio-tower, and not lucide `antenna`, which is what shipped first and
+    # did not read.** At 14 px the antenna rasterises into two bands of noisy
+    # diagonal strokes, three empty rows, and a detached 2x3 mast -- on the
+    # panel it looked like a smudge, not a transmitter. radio-tower at 16 is
+    # contiguous: two arcs, a body, a mast.
+    #
+    # It is also `icon_loraBeaconing`'s source, which in the map header means
+    # "this node is transmitting". Here it is not a state, it is a label
+    # sitting directly after the word LoRa, so there is nothing for it to be
+    # confused with.
+    ("lora_badge", "radio-tower", 16),
     ("chevron", "chevron-right", CHEVRON_SIZE),
 ]
 

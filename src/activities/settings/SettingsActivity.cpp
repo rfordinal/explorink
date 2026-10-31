@@ -24,6 +24,7 @@
 #include "TextSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -31,12 +32,31 @@
 // getSettingsList() so settings.json keeps them and the reader keeps working
 // — they are simply not reachable from the device any more
 // (docs/settings-menu.md).
-const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_MAP,
-                                                              StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+const StrId SettingsActivity::categoryNames[categoryCount] = {
+    StrId::STR_CAT_DISPLAY, StrId::STR_CAT_MAP,
+#if SETTINGS_HAS_GROUP_TAB
+    // Between Map and Controls, because it is about what is drawn on the map
+    // rather than about how the device is held.
+    StrId::STR_CAT_GROUP,
+#endif
+    StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+
+const std::vector<SettingInfo>* SettingsActivity::settingsForCategory(const int categoryIndex) const {
+  // Same order as categoryNames[], and the array is sized by the same constant,
+  // so a tab added to one and not the other fails to compile.
+  const std::vector<SettingInfo>* byIndex[categoryCount] = {&displaySettings, &mapSettings,
+#if SETTINGS_HAS_GROUP_TAB
+                                                            &groupSettings,
+#endif
+                                                            &controlsSettings, &systemSettings};
+  if (categoryIndex < 0 || categoryIndex >= categoryCount) return &displaySettings;
+  return byIndex[categoryIndex];
+}
 
 void SettingsActivity::rebuildSettingsLists() {
   displaySettings.clear();
   mapSettings.clear();
+  groupSettings.clear();
   controlsSettings.clear();
   systemSettings.clear();
 
@@ -57,6 +77,15 @@ void SettingsActivity::rebuildSettingsLists() {
       displaySettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_MAP) {
       mapSettings.push_back(setting);
+    } else if (setting.category == StrId::STR_CAT_GROUP) {
+#if SETTINGS_HAS_GROUP_TAB
+      groupSettings.push_back(setting);
+#else
+      // Unreachable: every row in that category is already behind the same
+      // two build flags the tab is. Here so a row added without its gate
+      // disappears rather than landing in whatever tab came last.
+      continue;
+#endif
     } else if (setting.category == StrId::STR_CAT_READER) {
       // The Reader tab is gone; nothing collects these.
       continue;
@@ -102,20 +131,7 @@ void SettingsActivity::rebuildSettingsLists() {
 
   // Update currentSettings pointer and count for the active category.
   // Index order must match categoryNames[] above.
-  switch (selectedCategoryIndex) {
-    case 0:
-      currentSettings = &displaySettings;
-      break;
-    case 1:
-      currentSettings = &mapSettings;
-      break;
-    case 2:
-      currentSettings = &controlsSettings;
-      break;
-    case 3:
-      currentSettings = &systemSettings;
-      break;
-  }
+  currentSettings = settingsForCategory(selectedCategoryIndex);
   settingsCount = static_cast<int>(currentSettings->size());
 }
 
@@ -148,21 +164,7 @@ void SettingsActivity::loop() {
   bool hasChangedCategory = false;
 
   auto applyCategorySelection = [this] {
-    // Same index order as categoryNames[] and rebuildSettingsLists().
-    switch (selectedCategoryIndex) {
-      case 0:
-        currentSettings = &displaySettings;
-        break;
-      case 1:
-        currentSettings = &mapSettings;
-        break;
-      case 2:
-        currentSettings = &controlsSettings;
-        break;
-      case 3:
-        currentSettings = &systemSettings;
-        break;
-    }
+    currentSettings = settingsForCategory(selectedCategoryIndex);
     settingsCount = static_cast<int>(currentSettings->size());
   };
 
@@ -388,6 +390,58 @@ void SettingsActivity::toggleCurrentSetting() {
       return;
     }
     setting.valueSetter((cur + 1) % totalValues);
+  } else if (setting.type == SettingType::STRING) {
+    // Confirm on a string row opens the keyboard, prefilled with what the row
+    // shows. Added with the render branch above, and for the same reason: the
+    // row did nothing at all before, which on a reachable tab reads as broken
+    // rather than as unimplemented.
+    //
+    // `stringSetter` wins over the raw field when a row has one -- the Group
+    // tab's node name has to reach the running radio, not just the settings
+    // struct (SettingsList.h, loraPresenceSetName()).
+    // **stringMaxLen is the buffer size, not a character count.** That is the
+    // convention everywhere else -- SettingInfo::String() is handed
+    // sizeof(field), and copyToField() writes maxLen bytes including the NUL
+    // (CrossPointSettings.cpp). The first version of this branch read it as a
+    // character count and wrote maxLen + 1 bytes, one past the end of the
+    // field, into whatever member follows it.
+    std::string current;
+    size_t bufBytes = setting.stringMaxLen;
+    char* dest = nullptr;
+    if (setting.stringGetter) {
+      current = setting.stringGetter();
+      // A DynamicString row keeps its value outside CrossPointSettings, so
+      // there is no field to size against unless the row said so.
+      if (bufBytes == 0) bufBytes = 32;
+    } else if (setting.stringOffset != 0) {
+      dest = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
+      current = dest;
+      if (bufBytes == 0) return;  // misconfigured row; writing blind is worse
+    } else {
+      return;
+    }
+    // What the keyboard may return: characters, so one less than the buffer.
+    const size_t maxChars = bufBytes - 1;
+
+    const StrId title = setting.nameId;
+    auto stringSetter = setting.stringSetter;
+    auto handler = [this, stringSetter, dest, bufBytes](const ActivityResult& result) {
+      if (!result.isCancelled) {
+        const auto& kb = std::get<KeyboardResult>(result.data);
+        if (stringSetter) {
+          stringSetter(kb.text);
+        } else if (dest != nullptr) {
+          snprintf(dest, bufBytes, "%s", kb.text.c_str());
+        }
+        SETTINGS.saveToFile();
+      }
+      rebuildSettingsLists();
+      requestUpdate();
+    };
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(title), current,
+                                                                   maxChars, InputType::Text),
+                           handler);
+    return;
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     const int8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (currentValue + setting.valueRange.step > setting.valueRange.max) {
@@ -592,6 +646,17 @@ void SettingsActivity::render(RenderLock&&) {
             valueText = setting.enumStringValues[value];
           } else if (value < setting.enumValues.size()) {
             valueText = I18N.get(setting.enumValues[value]);
+          }
+        } else if (setting.type == SettingType::STRING) {
+          // **There was no STRING branch here at all until 2026-10-30.** Every
+          // string row this list has ever carried was a reader row, and those
+          // left the menu before anyone noticed they drew an empty value
+          // column. The Group tab's "This device's name" was the first string
+          // row on a reachable tab, and it showed nothing.
+          if (setting.stringGetter) {
+            valueText = setting.stringGetter();
+          } else if (setting.stringOffset != 0) {
+            valueText = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
           }
         } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
           if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {

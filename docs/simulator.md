@@ -211,7 +211,7 @@ run and a windowed run write the same map frame -- 0 of 384,000 pixels differ, w
 persisted fix reseeded before each run.
 
 **The map redraws on events, so a timed screenshot shows the state at the last
-event and not at the capture.** Measured 2026-09-16 while watching team markers
+event and not at the capture.** Measured 2026-09-16 while watching group markers
 age: positions were fed at 14 s, the capture fired at 115 s, and the frame was
 the one drawn at 14 s -- the markers still read as current because nothing had
 asked the map to draw them again. Two readings were thrown away before the cause

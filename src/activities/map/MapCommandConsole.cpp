@@ -275,9 +275,9 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
     case MapCommandType::Pin:
       return executePin(cmd, out);
 
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
-    case MapCommandType::Team:
-      return executeTeam(cmd, out);
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+    case MapCommandType::Group:
+      return executeGroup(cmd, out);
 #endif
 
     case MapCommandType::Zoom:
@@ -860,46 +860,46 @@ bool MapCommandConsole::feed(char c, IMapReplyWriter& out) {
   return false;
 }
 
-#if defined(ENABLE_TEAM_CMD) && ENABLE_TEAM_CMD
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
 
 namespace {
 
-// The handle a `team` command addressed its member by. The grammar fills exactly
+// The handle a `group` command addressed its member by. The grammar fills exactly
 // one of the two fields, and both verbs that take a member accept either
 // (MapCommandParser.h).
-std::string_view teamHandle(const MapCommand& cmd) {
-  return cmd.teamAcr[0] != '\0' ? std::string_view(cmd.teamAcr) : std::string_view(cmd.teamId);
+std::string_view groupHandle(const MapCommand& cmd) {
+  return cmd.groupAcr[0] != '\0' ? std::string_view(cmd.groupAcr) : std::string_view(cmd.groupId);
 }
 
-const char* teamEditError(IMapTeamSource::Edit result) {
+const char* groupEditError(IMapGroupSource::Edit result) {
   switch (result) {
-    case IMapTeamSource::Edit::UnknownMember:
+    case IMapGroupSource::Edit::UnknownMember:
       return "ERR unknown_member";
-    case IMapTeamSource::Edit::Full:
-      return "ERR team_full";
-    case IMapTeamSource::Edit::Invalid:
+    case IMapGroupSource::Edit::Full:
+      return "ERR group_full";
+    case IMapGroupSource::Edit::Invalid:
       return "ERR bad_member";
-    case IMapTeamSource::Edit::WriteFailed:
-      return "ERR team_write";
-    case IMapTeamSource::Edit::Ok:
+    case IMapGroupSource::Edit::WriteFailed:
+      return "ERR group_write";
+    case IMapGroupSource::Edit::Ok:
       break;
   }
   return "OK";
 }
 
-// Formats each row of a `team log` page as it streams off the card, so a page
+// Formats each row of a `group log` page as it streams off the card, so a page
 // costs one record on the stack rather than an array of them.
-class TeamLogReplyVisitor : public ITeamLogVisitor {
+class GroupLogReplyVisitor : public IGroupLogVisitor {
  public:
-  explicit TeamLogReplyVisitor(IMapReplyWriter& out) : out_(out) {}
+  explicit GroupLogReplyVisitor(IMapReplyWriter& out) : out_(out) {}
 
-  void onTeamLogRecord(const TeamRecord& rec) override {
-    char csv[kTeamLineMax + 1];
-    if (encodeTeamRecord(rec, csv, sizeof(csv)) == 0) return;
+  void onGroupLogRecord(const GroupRecord& rec) override {
+    char csv[kGroupLineMax + 1];
+    if (encodeGroupRecord(rec, csv, sizeof(csv)) == 0) return;
     // The card's own line, verbatim: a recovery listing that reformats its
     // source is a second format to keep in step with the first.
-    char line[kTeamLineMax + 16];
-    snprintf(line, sizeof(line), "INFO team_log=%s", csv);
+    char line[kGroupLineMax + 16];
+    snprintf(line, sizeof(line), "INFO group_log=%s", csv);
     out_.reply(line);
   }
 
@@ -909,47 +909,47 @@ class TeamLogReplyVisitor : public ITeamLogVisitor {
 
 }  // namespace
 
-bool MapConsoleState::executeTeam(const MapCommand& cmd, IMapReplyWriter& out) {
-  if (team_ == nullptr) {
+bool MapConsoleState::executeGroup(const MapCommand& cmd, IMapReplyWriter& out) {
+  if (group_ == nullptr) {
     // Distinct from "no members", exactly like `pins=unavailable`: a host must
     // not read "this rider has no group" out of a screen that cannot answer.
-    out.reply("INFO team=unavailable");
+    out.reply("INFO group=unavailable");
     out.reply("OK");
     return false;
   }
 
   char line[kReplyBuf];
-  switch (cmd.teamVerb) {
-    case MapTeamVerb::Pos: {
-      TeamFix fix;
+  switch (cmd.groupVerb) {
+    case MapGroupVerb::Pos: {
+      GroupFix fix;
       fix.latE7 = cmd.latE7;
       fix.lonE7 = cmd.lonE7;
-      fix.utc = cmd.teamUtc;
+      fix.utc = cmd.groupUtc;
       fix.heading = cmd.heading;
       fix.hasHeading = cmd.hasHeading;
       fix.speedKmh = cmd.speedKmh;
       fix.hasSpeed = cmd.hasSpeed;
-      fix.source = cmd.teamSource;
-      const IMapTeamSource::Ingest result = team_->teamPosition(teamHandle(cmd), fix);
+      fix.source = cmd.groupSource;
+      const IMapGroupSource::Ingest result = group_->groupPosition(groupHandle(cmd), fix);
       switch (result) {
-        case IMapTeamSource::Ingest::UnknownMember:
+        case IMapGroupSource::Ingest::UnknownMember:
           // Said out loud rather than swallowed: on a radio this is the case
           // that matters -- somebody outside the group is talking and the device
-          // is refusing them (../../../docs/team-markers.md).
+          // is refusing them (../../../docs/group-markers.md).
           out.reply("ERR unknown_member");
           return false;
-        case IMapTeamSource::Ingest::Muted:
-          out.reply("ERR team_muted");
+        case IMapGroupSource::Ingest::Muted:
+          out.reply("ERR group_muted");
           return false;
-        case IMapTeamSource::Ingest::WriteFailed:
+        case IMapGroupSource::Ingest::WriteFailed:
           // The row is written before the marker moves, so a refused card leaves
           // the panel exactly as it was.
-          out.reply("ERR team_write");
+          out.reply("ERR group_write");
           return false;
-        case IMapTeamSource::Ingest::Accepted:
+        case IMapGroupSource::Ingest::Accepted:
           break;
       }
-      snprintf(line, sizeof(line), "INFO team_pos=%s", teamHandle(cmd).data());
+      snprintf(line, sizeof(line), "INFO group_pos=%s", groupHandle(cmd).data());
       out.reply(line);
       out.reply("OK");
       // The member has to be drawn, so this is a redraw and not merely a report
@@ -958,25 +958,25 @@ bool MapConsoleState::executeTeam(const MapCommand& cmd, IMapReplyWriter& out) {
       return true;
     }
 
-    case MapTeamVerb::Add: {
-      const IMapTeamSource::Edit result = team_->teamAdd(cmd.teamAcr, cmd.teamId, cmd.teamName);
-      if (result != IMapTeamSource::Edit::Ok) {
-        out.reply(teamEditError(result));
+    case MapGroupVerb::Add: {
+      const IMapGroupSource::Edit result = group_->groupAdd(cmd.groupAcr, cmd.groupId, cmd.groupName);
+      if (result != IMapGroupSource::Edit::Ok) {
+        out.reply(groupEditError(result));
         return false;
       }
-      snprintf(line, sizeof(line), "INFO team_add=%s", cmd.teamAcr);
+      snprintf(line, sizeof(line), "INFO group_add=%s", cmd.groupAcr);
       out.reply(line);
       out.reply("OK");
       return false;
     }
 
-    case MapTeamVerb::Del: {
-      const IMapTeamSource::Edit result = team_->teamRemove(teamHandle(cmd));
-      if (result != IMapTeamSource::Edit::Ok) {
-        out.reply(teamEditError(result));
+    case MapGroupVerb::Del: {
+      const IMapGroupSource::Edit result = group_->groupRemove(groupHandle(cmd));
+      if (result != IMapGroupSource::Edit::Ok) {
+        out.reply(groupEditError(result));
         return false;
       }
-      snprintf(line, sizeof(line), "INFO team_del=%s", teamHandle(cmd).data());
+      snprintf(line, sizeof(line), "INFO group_del=%s", groupHandle(cmd).data());
       out.reply(line);
       out.reply("OK");
       // A member that is gone must stop being drawn in the same frame.
@@ -984,37 +984,37 @@ bool MapConsoleState::executeTeam(const MapCommand& cmd, IMapReplyWriter& out) {
       return true;
     }
 
-    case MapTeamVerb::Reload: {
+    case MapGroupVerb::Reload: {
       size_t skipped = 0;
-      if (!team_->teamReload(skipped)) {
-        out.reply("ERR team_read");
+      if (!group_->groupReload(skipped)) {
+        out.reply("ERR group_read");
         return false;
       }
-      snprintf(line, sizeof(line), "INFO team_total=%lu", static_cast<unsigned long>(team_->teamCount()));
+      snprintf(line, sizeof(line), "INFO group_total=%lu", static_cast<unsigned long>(group_->groupCount()));
       out.reply(line);
       // Never silent: a skipped row is a member whose marker will never appear,
       // and the count is the only sign the file needs fixing.
-      snprintf(line, sizeof(line), "INFO team_skipped=%lu", static_cast<unsigned long>(skipped));
+      snprintf(line, sizeof(line), "INFO group_skipped=%lu", static_cast<unsigned long>(skipped));
       out.reply(line);
       out.reply("OK");
       ++seq_;
       return true;
     }
 
-    case MapTeamVerb::List:
-      writeTeamList(out);
+    case MapGroupVerb::List:
+      writeGroupList(out);
       out.reply("OK");
       return false;
 
-    case MapTeamVerb::Log:
-      writeTeamLog(cmd.teamLogOffset, out);
+    case MapGroupVerb::Log:
+      writeGroupLog(cmd.groupLogOffset, out);
       out.reply("OK");
       return false;
   }
   return false;
 }
 
-void MapConsoleState::writeTeamList(IMapReplyWriter& out) const {
+void MapConsoleState::writeGroupList(IMapReplyWriter& out) const {
   // Wider than kReplyBuf, same reason as writePinList's: an acronym, an id, two
   // signed coordinates and a timestamp at their widest do not fit 64 characters,
   // and a truncated coordinate points at the wrong place.
@@ -1022,57 +1022,57 @@ void MapConsoleState::writeTeamList(IMapReplyWriter& out) const {
   char lat[24];
   char lon[24];
 
-  const size_t total = team_->teamCount();
-  snprintf(line, sizeof(line), "INFO team_total=%lu", static_cast<unsigned long>(total));
+  const size_t total = group_->groupCount();
+  snprintf(line, sizeof(line), "INFO group_total=%lu", static_cast<unsigned long>(total));
   out.reply(line);
 
-  // Bounded by the roster (kTeamMaxMembers), so no paging: twelve lines is
+  // Bounded by the roster (kGroupMaxMembers), so no paging: twelve lines is
   // inside what `info` already sends in one command.
   for (size_t i = 0; i < total; ++i) {
-    const TeamMember member = team_->teamMemberAt(i);
-    const TeamFix fix = team_->teamFixAt(i);
+    const GroupMember member = group_->groupMemberAt(i);
+    const GroupFix fix = group_->groupFixAt(i);
     if (!fix.present) {
       // **Empty is not zero.** A member who has not been heard from has empty
       // coordinate fields; 0,0 is a place in the Atlantic and a reader must
       // never be able to confuse the two (parent docs/lora.md, "has not told us
       // versus is at 0,0").
-      snprintf(line, sizeof(line), "INFO team_%s=%s,%s,,,,", member.acr, member.idCount > 0 ? member.ids[0] : "",
+      snprintf(line, sizeof(line), "INFO group_%s=%s,%s,,,,", member.acr, member.idCount > 0 ? member.ids[0] : "",
                member.enabled ? "on" : "off");
       out.reply(line);
       continue;
     }
     formatE7(fix.latE7, lat, sizeof(lat));
     formatE7(fix.lonE7, lon, sizeof(lon));
-    snprintf(line, sizeof(line), "INFO team_%s=%s,%s,%s,%s,%lu,%s", member.acr,
+    snprintf(line, sizeof(line), "INFO group_%s=%s,%s,%s,%s,%lu,%s", member.acr,
              member.idCount > 0 ? member.ids[0] : "", member.enabled ? "on" : "off", lat, lon,
-             static_cast<unsigned long>(fix.utc), teamSourceText(fix.source));
+             static_cast<unsigned long>(fix.utc), groupSourceText(fix.source));
     out.reply(line);
   }
 }
 
-void MapConsoleState::writeTeamLog(uint16_t offset, IMapReplyWriter& out) {
+void MapConsoleState::writeGroupLog(uint16_t offset, IMapReplyWriter& out) {
   char line[kReplyBuf];
-  TeamLogReplyVisitor visitor(out);
+  GroupLogReplyVisitor visitor(out);
 
   // Totals before entries, the same order `pin log` and `missing` answer in --
   // asking for zero records is how the total is fetched without them.
-  const uint32_t total = team_->teamLogPage(offset, 0, visitor);
-  snprintf(line, sizeof(line), "INFO teamlog_total=%lu", static_cast<unsigned long>(total));
+  const uint32_t total = group_->groupLogPage(offset, 0, visitor);
+  snprintf(line, sizeof(line), "INFO grouplog_total=%lu", static_cast<unsigned long>(total));
   out.reply(line);
-  snprintf(line, sizeof(line), "INFO teamlog_offset=%u", static_cast<unsigned>(offset));
+  snprintf(line, sizeof(line), "INFO grouplog_offset=%u", static_cast<unsigned>(offset));
   out.reply(line);
 
   // Newest first, so offset 0 is where everybody was last seen -- which is what
   // somebody looking for a rider needs on the first screen.
-  team_->teamLogPage(offset, kTeamLogPageSize, visitor);
+  group_->groupLogPage(offset, kGroupLogPageSize, visitor);
 
-  const uint32_t next = static_cast<uint32_t>(offset) + kTeamLogPageSize;
+  const uint32_t next = static_cast<uint32_t>(offset) + kGroupLogPageSize;
   if (next < total) {
-    snprintf(line, sizeof(line), "INFO teamlog_next=%lu", static_cast<unsigned long>(next));
+    snprintf(line, sizeof(line), "INFO grouplog_next=%lu", static_cast<unsigned long>(next));
   } else {
-    snprintf(line, sizeof(line), "INFO teamlog_next=done");
+    snprintf(line, sizeof(line), "INFO grouplog_next=done");
   }
   out.reply(line);
 }
 
-#endif  // ENABLE_TEAM_CMD
+#endif  // ENABLE_GROUP_CMD

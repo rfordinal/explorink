@@ -47,18 +47,40 @@ const HomeActivity::Row* HomeActivity::rows() {
   static constexpr Row kRows[] = {
       {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore},
       {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips},
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+      // Who else is out there. **Named for the feature and not for the radio**,
+      // 2026-10-30: the row said "LoRa nodes" and the map menu said "Group"
+      // for the same people, and a rider has no reason to know which radio
+      // carried a position -- the group layer takes them from LoRa, from a
+      // phone relay over BLE and from the console alike
+      // (../../../docs/group-markers.md, "The layer does not know which radio
+      // spoke").
+      //
+      // **Third, under Trips** (maintainer's call, 2026-10-30), not down by
+      // Settings where it first landed. The top of this list is what the rider
+      // reaches for before walking out: where am I, which trip, who is with
+      // me. Sync and File Transfer are desk jobs done once, and the bench row
+      // below them is not a rider's row at all -- putting the group behind
+      // them ranked it as plumbing.
+      //
+      // Still gated on ENABLE_LORA_MESH rather than ENABLE_GROUP_MARKERS,
+      // because what this screen *does* is still LoRa: two of its three
+      // sections are the radio's controls and the nodes it hears. A board with
+      // the group layer and no radio (x4pro, simulator) keeps its roster over
+      // the console, and gets the Settings tab without this row.
+      // The badge says LoRa even though the row does not, and the two are not
+      // in tension: the *name* is the feature, because the layer is
+      // transport-neutral, while the *badge* is about this screen, which
+      // really is the radio's -- its controls, and the nodes it hears. A
+      // rider who has to find where the radio lives has one place to look.
+      {HomeMenuItem::GROUP, StrId::STR_GROUP_TITLE, &icon_group, StrId::STR_LORA_BADGE, &icon_lora_badge},
+#endif
       {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync},
       {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer},
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
       // The grayscale bench is a build-flag lab instrument, not a rider's row
       // (platformio.ini).
       {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings},
-#endif
-#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-      // The LoRa node list, the same kind of row and for the same reason: it
-      // answers "do these two boards hear each other" and shows raw keys and
-      // RSSI while doing it (platformio.ini, ENABLE_LORA_MESH).
-      {HomeMenuItem::LORA_PEERS, StrId::STR_LORA_PEERS, &icon_settings},
 #endif
       {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings},
   };
@@ -106,8 +128,8 @@ void HomeActivity::activate(const int index) {
       break;
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-    case HomeMenuItem::LORA_PEERS:
-      onLoraPeersOpen();
+    case HomeMenuItem::GROUP:
+      onGroupOpen();
       break;
 #endif
     case HomeMenuItem::SETTINGS_MENU:
@@ -187,7 +209,10 @@ void HomeActivity::render(RenderLock&&) {
   const Row* table = rows();
   BaseTheme::HomeRow drawRows[kRowCount];
   for (int i = 0; i < kRowCount; ++i) {
-    drawRows[i] = BaseTheme::HomeRow{I18n::getInstance().get(table[i].label), table[i].icon};
+    drawRows[i] = BaseTheme::HomeRow{
+        I18n::getInstance().get(table[i].label), table[i].icon,
+        table[i].badgeLabel == StrId::STR_NONE_OPT ? nullptr : I18n::getInstance().get(table[i].badgeLabel),
+        table[i].badgeIcon};
   }
   GUI.drawHomeMenu(renderer, Rect{0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight}, drawRows,
                    kRowCount, selectorIndex, kRowHeight);
@@ -219,5 +244,5 @@ void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
 void HomeActivity::onPreviewOpen() { activityManager.goToPreview(); }
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
-void HomeActivity::onLoraPeersOpen() { activityManager.goToLoraPeers(); }
+void HomeActivity::onGroupOpen() { activityManager.goToGroup(); }
 #endif

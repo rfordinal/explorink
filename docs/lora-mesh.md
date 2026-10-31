@@ -30,47 +30,49 @@ Three parts:
    subclass. Loads an identity, sends adverts, receives them.
 2. **`LoraPeerTable`** (`src/lora/LoraPeerTable.{h,cpp}`) -- sixteen heard
    nodes, newest first. Plain C++, proved by `test/lora_peers/`.
-3. **`LoraPeersActivity`** (`src/activities/lora/`) -- Home > LoRa nodes, one
-   row per node. A bench screen, gated like the grayscale bench.
+3. **`GroupActivity`** (`src/activities/group/`) -- Home > **Group**, one row
+   per node plus the roster and the radio's own settings. Renamed from
+   `LoraPeersActivity` on 2026-10-30, with the layer
+   (`docs/settings-menu.md`, "The Group tab").
 
 ## It is not the group roster, and that is deliberate
 
-`MapTeam` is an allowlist: a position from an id that is not in it is refused,
-counted and never drawn (`team-markers.md`, "A stranger is not a member"). This
+`MapGroup` is an allowlist: a position from an id that is not in it is refused,
+counted and never drawn (`group-markers.md`, "A stranger is not a member"). This
 table is the opposite question -- everyone the antenna heard, approved or not --
 because a board that is not in the roster yet is exactly the board a range test
 is trying to hear.
 
 Nothing on the node list reaches the map. Making a heard node a group member is
-`team add <acr> <key>` with its key, typed on purpose.
+`group add <acr> <key>` with its key, typed on purpose.
 
 ### A heard position reaches the map, since 2026-10-22
 
-`MapTeam::teamPosition()` is the transport-independent ingest that a LoRa frame
-was always going to arrive through (`team-markers.md`, "The layer does not know
+`MapGroup::groupPosition()` is the transport-independent ingest that a LoRa frame
+was always going to arrive through (`group-markers.md`, "The layer does not know
 which radio spoke"), and it is wired now: an advert that carries a coordinate
 and belongs to a roster member moves that member's marker.
 
 **It is wired through a queue, and which task does what is the reason.**
-`onAdvertRecv()` runs on the radio task; `teamPosition()` writes a black box
+`onAdvertRecv()` runs on the radio task; `groupPosition()` writes a black box
 row to the SD card and reads a roster the UI task edits. A card write inside
 the radio service loop costs packets -- an SX126x holds exactly one -- and
 touching the roster from two tasks is a race. So the radio task copies four
 numbers into a queue and returns, and `loop()` does the roster lookup, builds
-the `TeamFix` and calls the ingest. Same split the console's receive path
+the `GroupFix` and calls the ingest. Same split the console's receive path
 already uses.
 
 **Membership is checked on the loop task, before the ingest is called.** Not
 only to keep roster reads on one task: on a public channel most adverts are
-strangers, and letting `teamPosition()` refuse each one would bury
+strangers, and letting `groupPosition()` refuse each one would bury
 `strangersRefused()` -- the number that is supposed to say somebody is talking
 *at* this group -- under every passing node from Graz.
 
-The advert carries 1e6 degrees and `TeamFix` stores 1e7, so the last digit is
+The advert carries 1e6 degrees and `GroupFix` stores 1e7, so the last digit is
 always zero. That is a unit conversion, not precision.
 
 **The layer stays transport-neutral and this must not erode it.** A position
-reaches `MapTeam` from this radio, from a phone relay over BLE, or from the
+reaches `MapGroup` from this radio, from a phone relay over BLE, or from the
 console, and a member holds one id per transport that has ever named them --
 which is why the id written here is `lora-`-prefixed rather than bare. The one
 place that slipped and was corrected the same day: the node list's third
@@ -246,6 +248,69 @@ Two consequences a reader should expect rather than report as bugs:
   same window. On a ride that is the normal state; sitting at a table with the
   device on Home, both are silent, by design.
 
+## No clock, no position -- but still a pairing advert
+
+**The rule, since 2026-10-30.** An advert that carries a position needs a real
+wall clock, because a receiver dates the position by the advert's timestamp and
+hides what it cannot date -- that is the 2026-10-23 finding, where MeshCore's
+arbitrary epoch put a marker in May 2024 and the panel drew nothing.
+
+An advert that carries **no** position has nothing to date. `onAdvertRecv()`
+only reaches the position layer when `parser.hasLatLon()`, and the heard-node
+table ages its rows from the local `millis()` that stamped them, not from
+anything in the frame. So a clockless advert is harmless and is exactly what
+pairing needs: a key and a name.
+
+So `meshSendAdvert()` takes `allowNoClock`, and when it is set and there is no
+clock it sends **identity only**, position forced off.
+
+| caller | clockless advert |
+|---|---|
+| the Group screen's `Announce me now` | yes -- a press is a person pairing |
+| `CMD:LORA ADVERT` | yes -- same thing from a cable |
+| the beacon | **no** |
+
+**The beacon never gets it**, and that is the whole safety of the thing.
+Without a clock our timestamp is seconds since boot, so a device that reboots
+appears to a receiver to jump backwards. One such frame when a rider asks for
+it is a fair price for pairing indoors; a stream of them every 70 s on a shared
+public channel is not.
+
+**Verified on two T5 S3 Pro boards, 2026-10-30**, both freshly booted, both on
+the Group screen, neither ever having had a clock: each announced and each then
+held the other at **-26 dBm, SNR 12 and 11**, with `loc=-` on both rows.
+
+### The clock does not evaporate when its source stops
+
+`meshWallClockUtc()` reads the phone over BLE, or GNSS -- and both are live
+reads: the phone must be connected, and `gnss.running()` is only true while the
+map is open. Until 2026-10-30 that meant a device forgot the time the moment
+the rider left the map, seconds after learning it.
+
+It now latches: every live read sets `gMeshRtc`, a flag records that the time
+was ever known, and the fallback reads that clock back. It drifts like any
+millis clock, which an advert timestamp tolerates and a missing one does not.
+It is **volatile on purpose** -- after a reboot the device genuinely does not
+know the time, and saying otherwise is the bogus-timestamp problem again.
+
+### One cause per refusal
+
+`advert not sent (mesh off, or packet pool empty)` used to be printed for
+every refusal including the two it names and the two it does not. On a board
+whose mesh was running and whose pool was full it sent an afternoon after a
+defect that did not exist and put a wrong finding in the task list.
+
+`LoraAdvertResult` now carries one value per cause -- `MeshOff`, `NoClock`,
+`PoolEmpty`, `TooLong` -- to the console and to the screen's error line.
+`PresenceMesh::sendSelfAdvert()` separates `TooLong` from `PoolEmpty` itself,
+because `createAdvert()` returns the same null for both.
+
+`LORA_STATE` also reports `pool_free` and `pool_out`, which is what ended the
+guessing. **`rx` and `tx` in that same line are blind to the mesh**: both are
+incremented in `loraServiceStep()`'s console half, which returns as soon as
+the mesh is running. `rx=0` was printed next to a six-node peer table and read
+as evidence of silence.
+
 ## Three places switch the radio, and they are one field
 
 Added 2026-10-22 on the maintainer's ask: the LoRa node list was the only way
@@ -253,9 +318,14 @@ to turn the radio on, and it is a bench screen nobody opens mid-ride.
 
 | where | what it is for |
 |---|---|
-| Settings > Map > **LoRa radio** | the setting, set once and forgotten |
+| Settings > **Group** > **LoRa radio** | the setting, set once and forgotten |
 | the map menu > **LoRa radio** | flipped from the ride, without leaving the map |
-| the LoRa node list > **Radio** | the bench, next to the things it affects |
+| the Group screen > **Radio** | next to the things it affects, while setting the group up |
+
+(The Settings row moved out of the Map tab into a Group tab of its own on
+2026-10-30, and the two labels were made the same word. They used to read
+`LoRa radio` and `Radio` -- one switch under two names, which is how somebody
+ends up believing the radio is off because the other screen said so.)
 
 All three write `CrossPointSettings::loraMeshOn` and nothing else, which is
 the pattern the rotation, heading and zoom rows already follow -- three
@@ -601,13 +671,15 @@ with `_rtc->getCurrentTime()` (`Mesh.cpp`, `createAdvert`), and an unseeded
 `VolatileRTCClock` counts from its own arbitrary epoch. The receiver dates
 the marker by that stamp. So an advert sent without a clock arrives as a
 position **two and a half years old and is hidden on arrival** --
-`teamFixAge()` trusts the sender's `utc` above our own receive time
-(`TeamFix.cpp`), and `teamFixVisibility()` then hides anything past
-`mapTeamHideMin`.
+`groupFixAge()` trusts the sender's `utc` above our own receive time
+(`GroupFix.cpp`), and `groupFixVisibility()` then hides anything past
+`mapGroupHideMin`.
 
 Measured exactly that way, 2026-10-23, and it is worth keeping because every
 instrument said the opposite. Two boards, fed synthetic positions over BLE,
-GNSS off. `team list` on A: `team_RFB=...,on,48.3770620,17.5900000,`
+GNSS off. The verb was `team` then and is `group` now, renamed 2026-10-30;
+the reply tokens moved with it. `team list` on A:
+`team_RFB=...,on,48.3770620,17.5900000,`
 **`1715770612`**`,lora` -- May 2024. `CMD:LORA PEERS` on both: a peer, a
 plausible RSSI, `rejected=0`. The LoRa debug row: `lora on bcn70s peers=1
 last -18/11 54s bad=0`. **And the panel drew no bubble at all**, with the
@@ -627,7 +699,7 @@ having.
 So:
 
 - `meshWallClockUtc()` is the single accessor -- BLE first, then GNSS, the
-  same order and the same two sources as `MapTeam::utcNowOrZero()`.
+  same order and the same two sources as `MapGroup::utcNowOrZero()`.
 - `meshSendAdvert()` refuses when it answers 0, which covers the cadence, the
   console and the screen's "announce me now" alike: a bench advert with a
   bogus stamp poisons a receiver exactly as thoroughly as an automatic one.
@@ -948,7 +1020,7 @@ the pattern the map menu and the Settings screen already follow for the fields
 they share. `loraMeshOn`, `loraBeaconSec` and `loraNodeName` are not in
 `SettingsList`: this is a bench feature gated out of every release build, and
 its controls belong on its own screen rather than in a rider's Settings list
-(same call `team-markers.md` made for its three numbers).
+(same call `group-markers.md` made for its three numbers).
 
 **The radio choice is honoured at boot**, immediately after the settings are
 read. Not a default -- `loraMeshOn` is 0 out of the box, because a listening
@@ -964,20 +1036,48 @@ exactly like a radio nobody has pressed. Two messages, and the second is not an
 error -- a key that did not reach the card still works today, and the rider has
 to know that every reboot will make this a new node to everyone who heard it.
 
-## The list
+## The Group screen
 
-Home > **LoRa nodes**, one row per heard node: name (or four bytes of the key
-when the advert carried none), and under it RSSI, SNR, age and how many adverts
-have arrived. The value column is the coordinate when there is one.
+Home > **Group**. Three sections under named headings, since 2026-10-30:
+
+1. **Settings** -- `Radio`, `Broadcast my position`, `This device's name`, then
+   `Announce me now`. The same three fields as the Settings **Group** tab,
+   through the same setters, because somebody setting the group up should not
+   have to walk between two screens to finish (`docs/settings-menu.md`).
+2. **Heard on LoRa** -- one row per heard node: name, or four bytes of the key
+   when the advert carried none, and under it RSSI, SNR, age and how many
+   adverts have arrived. The value column is the coordinate when there is one.
+   A node already in the roster carries its acronym.
+3. **Not on LoRa** -- roster members this radio is not hearing. The section
+   exists so somebody who left the group can still be removed, which is
+   impossible from a list of only what the antenna can reach. It is hidden
+   entirely when it is empty, header and all: a heading over nothing reads as
+   a list that failed to load.
+
+**The heard section does the opposite, and the asymmetry is deliberate.** It
+keeps its heading with nothing under it and shows `Nothing heard yet`, because
+"the radio is listening and hears nobody" is an answer this screen exists to
+give. A roster section with nothing in it answers nothing.
+
+The headings are ordinary list rows drawn dimmed, with the cursor stepping over
+them (`GroupActivity::stepIndex()`). `BaseTheme::drawList()` has no section
+support and giving it one means touching all four themes, so the sections live
+in the one screen that needs them.
+
+Select does the one thing that fits the row: a control acts, a heard stranger
+is added (the acronym is guessed, then offered for editing), a member is
+removed after a confirmation, and a heading does nothing.
 
 The header subtitle is this node's own state, because every row below it is
 meaningless without it: an empty list means "nobody is out there" only if the
-radio was listening, and "the mesh is off" otherwise.
+radio was listening, and "the mesh is off" otherwise. An error from the last
+action wins that line, because a control that did nothing has to say so.
 
-**Select is a reload, not an open.** There is nothing behind a row, and there
-is no auto-refresh timer either: on e-ink a screen that repaints itself every
-few seconds is a screen that is unreadable while it does, and a range test is
-walked between deliberate readings.
+**The list re-reads itself every 20 s and repaints only when the drawn text
+would differ.** The first version had no timer at all, which made the one
+screen whose job is "who is out there" unable to show somebody arriving while
+the rider watched it. The objection that an e-ink screen must not repaint every
+few seconds was right about the cost and wrong about the answer.
 
 The screen never touches the live table. `PresenceMesh::onAdvertRecv()` runs on
 the radio task; the screen takes a snapshot under the chip mutex once per
@@ -1084,21 +1184,21 @@ log itself was clean of `lora`/`meshcore`/`radiolib`, which was false (the
 compile lines are right there) and arrived at the true conclusion by the wrong
 route.
 
-**Same pass, the Map screen too.** This branch also carries the team-markers
-layer (`MapTeam`, `TeamFiles`, `TeamRecord`, `TeamRoster`, `TeamStore`, the
-`team` console verb in `MapCommandConsole.cpp`) merged in from
-`lora/state-funnel`. `ENABLE_TEAM_MARKERS` and `ENABLE_TEAM_CMD` are set only
+**Same pass, the Map screen too.** This branch also carries the group-markers
+layer (`MapGroup`, `GroupFiles`, `GroupRecord`, `GroupRoster`, `GroupStore`, the
+`group` console verb in `MapCommandConsole.cpp`) merged in from
+`lora/state-funnel`. `ENABLE_GROUP_MARKERS` and `ENABLE_GROUP_CMD` are set only
 for `env:x4pro`/`env:t5s3pro`/`env:simulator` -- `env:default` (X3/X4) carries
-neither, so every `#if defined(ENABLE_TEAM_MARKERS)` block compiles out and
-`executeTeam()` is unreachable dead code behind the gated dispatch in
+neither, so every `#if defined(ENABLE_GROUP_MARKERS)` block compiles out and
+`executeGroup()` is unreachable dead code behind the gated dispatch in
 `MapCommandConsole.cpp`. Confirmed by sending `CMD:GOTO_MAP` to the flashed X3
 from Home: entered `Map`, rendered a 4-tile z11 viewport with 1 persisted pin,
 heap bottomed out at 32,812 bytes (`MapTileSource` alloc, `BlePositionServer`
-init, tile render) and climbed back, no crash, no Team/LoRa log line anywhere
-in the sequence. `mapTeamHideMin`'s settings field and its migration in
+init, tile render) and climbed back, no crash, no Group/LoRa log line anywhere
+in the sequence. `mapGroupHideMin`'s settings field and its migration in
 `CrossPointSettings.cpp` are the only pieces of this branch that are NOT
 gated -- they compile for every board, cost one `uint16_t` and a one-line
-migration check, and do nothing without `ENABLE_TEAM_MARKERS` to read them.
+migration check, and do nothing without `ENABLE_GROUP_MARKERS` to read them.
 
 ## The event log: what was heard, what went out, and what did not
 
@@ -1130,7 +1230,7 @@ Seven kinds, and the three that answer "why is my screen empty" are the point:
 | `txskip` | the cadence was due and we chose not to; `detail` says `no_news` or `pool_empty` |
 
 **It is not the black box, and the difference is the reason it exists.**
-`TeamBlackBox` records positions that were *accepted* (`team-markers.md`).
+`GroupBlackBox` records positions that were *accepted* (`group-markers.md`).
 Every row above except `rx`-with-a-position produces no position at all, so
 none of them reach that file -- and each one is a different diagnosis.
 
@@ -1160,7 +1260,7 @@ drives the panel. A full queue drops the row and says so on serial
 read as the radio having been quiet.
 
 `encodeLoraLogEvent()` is pure and lives in `LoraEventLine.{h,cpp}`, split
-from the writer exactly the way `TeamRecord` is split from `TeamFiles`:
+from the writer exactly the way `GroupRecord` is split from `GroupFiles`:
 `test/lora_log/` proves every column with no card attached, including that a
 hostile node name full of commas and newlines cannot break a row.
 
@@ -1314,15 +1414,15 @@ The chain, each step observed:
    its node list -- the position reached the panel.
 3. Adding the sender there wrote the roster entry
    `lora-3e8f8e75a6b20bd0`, the eight-byte prefix form.
-4. The next advert went through `teamPosition()`, and the far board's map
+4. The next advert went through `groupPosition()`, and the far board's map
    console answered:
 
    ```
-   INFO team_total=1
-   INFO team_RFA=lora-3e8f8e75a6b20bd0,on,<lat>,<lon>,<utc>,lora
+   INFO group_total=1
+   INFO group_RFA=lora-3e8f8e75a6b20bd0,on,<lat>,<lon>,<utc>,lora
    ```
 
-   Stored at 1e7, dated, and tagged `lora` -- `TeamFixSource::Lora`, the value
+   Stored at 1e7, dated, and tagged `lora` -- `GroupFixSource::Lora`, the value
    the group layer reserved for this transport before the radio existed.
 
 **What this does not cover** is the trigger logic around it. The advert above
@@ -1352,6 +1452,12 @@ verified" and they are not, as a set:
 - **Range.** Step 6 below, and nothing on a desk substitutes for it.
 
 ## The hardware pass
+
+**Names below are the ones the panel carried on the day.** The screen was
+`LoRa nodes` until 2026-10-30 and is `Group` now, and the console verb moved
+from `team` to `group` in the same pass. What each run observed is unchanged;
+only what it would be called today is.
+
 
 In this order. Each step can kill the next. Builds `638e7b27`, `3b656d2a` and
 `fac82f05`, each archived in the parent repo per board -- the boards run

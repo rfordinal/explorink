@@ -9,8 +9,8 @@
 // How a MeshCore node is written down in the group roster.
 //
 // **The roster cannot hold the whole key, and that is a design fact rather
-// than a shortcut.** A roster id is `kTeamIdBytes` = 24 bytes including the
-// terminator (TeamMembers.h), and an Ed25519 public key is 64 hex characters.
+// than a shortcut.** A roster id is `kGroupIdBytes` = 24 bytes including the
+// terminator (GroupMembers.h), and an Ed25519 public key is 64 hex characters.
 // So membership is matched on a prefix: `lora-` plus the first eight bytes of
 // the key, 21 characters.
 //
@@ -28,14 +28,14 @@
 // would make a member silently stop being recognised.
 //
 // `lora-` follows the roster's own convention for transport-tagged ids
-// (docs/team-markers.md: `"ids":["lora-8f3a","ble-7f"]`), which is what lets
+// (docs/group-markers.md: `"ids":["lora-8f3a","ble-7f"]`), which is what lets
 // one person be known by a LoRa key and a phone relay name at once.
 
-inline constexpr size_t kLoraTeamIdBytes = 22;  // "lora-" + 16 hex + NUL
+inline constexpr size_t kLoraGroupIdBytes = 22;  // "lora-" + 16 hex + NUL
 
-inline void loraTeamId(const uint8_t pubKey[32], char* buf, size_t bufLen) {
-  snprintf(buf, bufLen, "lora-%02x%02x%02x%02x%02x%02x%02x%02x", pubKey[0], pubKey[1], pubKey[2], pubKey[3],
-           pubKey[4], pubKey[5], pubKey[6], pubKey[7]);
+inline void loraGroupId(const uint8_t pubKey[32], char* buf, size_t bufLen) {
+  snprintf(buf, bufLen, "lora-%02x%02x%02x%02x%02x%02x%02x%02x", pubKey[0], pubKey[1], pubKey[2], pubKey[3], pubKey[4],
+           pubKey[5], pubKey[6], pubKey[7]);
 }
 
 // A first guess at the two or three letters that will sit on the map marker,
@@ -52,7 +52,7 @@ inline void loraTeamId(const uint8_t pubKey[32], char* buf, size_t bufLen) {
 // falls back to the key, which is unreadable and unique -- better than empty,
 // because the roster refuses an empty acronym and the rider would be left
 // with a row that cannot be added at all.
-inline void loraTeamAcrGuess(const char* name, const uint8_t pubKey[32], char* buf, size_t bufLen) {
+inline void loraGroupAcrGuess(const char* name, const uint8_t pubKey[32], char* buf, size_t bufLen) {
   size_t out = 0;
   if (name != nullptr) {
     for (const char* c = name; *c != '\0' && out + 1 < bufLen && out < 3; ++c) {

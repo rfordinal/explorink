@@ -12,6 +12,7 @@
 #include "I18nKeys.h"
 #include "ReaderFontSizes.h"
 #include "SettingsList.h"
+#include "SettingsMigration.h"
 #include "fontIds.h"
 
 namespace {
@@ -105,13 +106,13 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   }
   // Not in SettingsList (edited from the map's Pins list), so it is saved here.
   doc["mapPinsOffscreenMask"] = mapPinsOffscreenMask;
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   // Not in SettingsList: three numbers a rider sets once, if ever, and three
   // more rows in the Map category would push the ones they do use off the first
   // screen. Edited on the card or over the console.
-  doc["mapTeamStaleMin"] = mapTeamStaleMin;
-  doc["mapTeamHideMin"] = mapTeamHideMin;
-  doc["mapTeamKeepDays"] = mapTeamKeepDays;
+  doc["mapGroupStaleMin"] = mapGroupStaleMin;
+  doc["mapGroupHideMin"] = mapGroupHideMin;
+  doc["mapGroupKeepDays"] = mapGroupKeepDays;
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
   // Not in SettingsList either: the LoRa node is a bench feature gated out of
@@ -251,9 +252,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Defaults to every bit set: a file written before this existed must behave the
   // way it did then, which is "the master decides for all of them".
   mapPinsOffscreenMask = doc["mapPinsOffscreenMask"] | (uint16_t)0xFFFF;
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
-  mapTeamStaleMin = doc["mapTeamStaleMin"] | (uint8_t)5;
-  mapTeamHideMin = doc["mapTeamHideMin"] | (uint16_t)360;
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  mapGroupStaleMin = doc["mapGroupStaleMin"] | (uint8_t)5;
+  mapGroupHideMin = doc["mapGroupHideMin"] | (uint16_t)360;
   // **A stored 30 is the old default, not a choice, so it is migrated.**
   // Raising the default alone would have changed nothing on any device that
   // has ever saved its settings -- and every one of them has, because the
@@ -265,8 +266,57 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Delete this once no card in use predates that date. It costs a comment
   // and a comparison until then, and leaving it longer is cheaper than
   // guessing which cards are old.
-  if (mapTeamHideMin == 30) mapTeamHideMin = 360;
-  mapTeamKeepDays = doc["mapTeamKeepDays"] | (uint8_t)14;
+  if (mapGroupHideMin == 30) mapGroupHideMin = 360;
+  mapGroupKeepDays = doc["mapGroupKeepDays"] | (uint8_t)14;
+  // **Settings written before the group layer stopped being called the team
+  // layer.** Renamed 2026-10-30 (parent CLAUDE.md, "Naming"): the code, the UI
+  // and the console all say group now, and the JSON keys went with them. A
+  // card written by any earlier build still carries the `mapTeam*` spelling,
+  // and without this every one of those riders would silently get the
+  // defaults back -- group markers on, peer logging on, their own track off.
+  //
+  // Old key wins only where the new one is absent, so a device that has saved
+  // once since the rename never reads the stale half.
+  //
+  // **This block is compiled only where ENABLE_GROUP_MARKERS is**, which is no
+  // release env (platformio.ini). A card that passes through a release build
+  // between two devel builds has its mapTeam* keys dropped by that build's
+  // first save, and arrives here with nothing to migrate. The directory move
+  // still happens; the three toggles go back to their defaults.
+  //
+  // **It is also one-way.** Rolling a device back to a pre-rename binary --
+  // the documented hang recovery -- finds the directory moved and these keys
+  // gone, and reads as a wiped group. Said in docs/group-markers.md too. `needsResave` makes the
+  // next save drop the old keys, which is what ends this block's life: delete
+  // it once no card in use predates 2026-10-30.
+  {
+    struct Renamed {
+      const char* oldKey;
+      const char* newKey;
+      uint8_t* dest;
+    };
+    const Renamed renamed[] = {
+        {"mapTeamMarkers", "mapGroupMarkers", &mapGroupMarkers},
+        {"mapTeamLogPeers", "mapGroupLogPeers", &mapGroupLogPeers},
+        {"mapTeamLogSelf", "mapGroupLogSelf", &mapGroupLogSelf},
+        {"mapTeamStaleMin", "mapGroupStaleMin", &mapGroupStaleMin},
+        {"mapTeamKeepDays", "mapGroupKeepDays", &mapGroupKeepDays},
+    };
+    for (const auto& r : renamed) {
+      const SettingsMigratedToggle m =
+          settingsMigrateToggle(!doc[r.newKey].isNull(), !doc[r.oldKey].isNull(), doc[r.oldKey] | *r.dest, *r.dest);
+      *r.dest = m.value;
+      if (m.adopted) needsResave = true;
+    }
+    // Not in the table above because it is a uint16_t, and because the 30 ->
+    // 360 migration right above has to run on a value that arrived under the
+    // old name too.
+    if (doc["mapGroupHideMin"].isNull() && !doc["mapTeamHideMin"].isNull()) {
+      mapGroupHideMin = doc["mapTeamHideMin"] | mapGroupHideMin;
+      if (mapGroupHideMin == 30) mapGroupHideMin = 360;
+      needsResave = true;
+    }
+  }
 #endif
 #if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
   loraMeshOn = (doc["loraMeshOn"] | (uint8_t)0) ? 1 : 0;

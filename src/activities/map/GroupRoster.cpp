@@ -1,13 +1,13 @@
-#include "TeamRoster.h"
+#include "GroupRoster.h"
 
-#if defined(ENABLE_TEAM_MARKERS) && ENABLE_TEAM_MARKERS
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
 
 #include <StreamingJsonParser.h>
 
-#include "TeamRecord.h"
-
 #include <cstdio>
 #include <cstring>
+
+#include "GroupRecord.h"
 
 namespace {
 
@@ -25,7 +25,7 @@ bool copyField(char* dst, size_t dstBytes, std::string_view src) {
 // need to know where they are. A struct rather than captured state because
 // StreamingJsonParser takes free functions and a void* context.
 struct ParseCtx {
-  TeamRoster* roster = nullptr;
+  GroupRoster* roster = nullptr;
   size_t skipped = 0;
   bool sawVersion = false;
   bool versionOk = false;
@@ -36,10 +36,10 @@ struct ParseCtx {
   int arrayDepth = 0;
   int membersDepth = -1;
   char key[16] = {};
-  char ids[kTeamIdsPerMember][kTeamIdBytes] = {};
+  char ids[kGroupIdsPerMember][kGroupIdBytes] = {};
   size_t idCount = 0;
-  char acr[kTeamAcrBytes] = {};
-  char name[kTeamNameBytes] = {};
+  char acr[kGroupAcrBytes] = {};
+  char name[kGroupNameBytes] = {};
   bool enabled = true;
   // Cleared by a field that did not fit, so the row is counted as skipped rather
   // than stored as a truncated stranger.
@@ -61,10 +61,10 @@ void onString(void* ctx, const char* value, size_t len) {
   // land in the same list, because one radio is the common case and several is
   // the one that matters.
   if (strcmp(c->key, "id") == 0 || strcmp(c->key, "ids") == 0) {
-    if (c->idCount >= kTeamIdsPerMember) {
+    if (c->idCount >= kGroupIdsPerMember) {
       c->rowOk = false;
     } else {
-      c->rowOk &= copyField(c->ids[c->idCount], kTeamIdBytes, v);
+      c->rowOk &= copyField(c->ids[c->idCount], kGroupIdBytes, v);
       ++c->idCount;
     }
   } else if (strcmp(c->key, "acr") == 0) {
@@ -78,7 +78,7 @@ void onNumber(void* ctx, const char* value, size_t len) {
   auto* c = static_cast<ParseCtx*>(ctx);
   if (c->inMember || strcmp(c->key, "v") != 0) return;
   c->sawVersion = true;
-  c->versionOk = (len == 1 && value[0] == '0' + TeamRoster::kVersion);
+  c->versionOk = (len == 1 && value[0] == '0' + GroupRoster::kVersion);
 }
 
 void onBool(void* ctx, bool value) {
@@ -140,11 +140,11 @@ void onArrayEnd(void* ctx) {
 
 }  // namespace
 
-void TeamRoster::clear() {
-  for (auto& slot : slots_) slot = TeamMember{};
+void GroupRoster::clear() {
+  for (auto& slot : slots_) slot = GroupMember{};
 }
 
-size_t TeamRoster::count() const {
+size_t GroupRoster::count() const {
   size_t n = 0;
   for (const auto& slot : slots_) {
     if (slot.present) ++n;
@@ -152,11 +152,11 @@ size_t TeamRoster::count() const {
   return n;
 }
 
-size_t TeamRoster::findId(std::string_view id) const {
+size_t GroupRoster::findId(std::string_view id) const {
   if (id.empty()) return kSlotCount;
   // Every identifier the member is known by, not just the first: the same person
   // arrives under a MeshCore key on one radio and under something else entirely
-  // when a phone relays them (TeamMembers.h).
+  // when a phone relays them (GroupMembers.h).
   for (size_t i = 0; i < kSlotCount; ++i) {
     if (!slots_[i].present) continue;
     for (size_t n = 0; n < slots_[i].idCount; ++n) {
@@ -166,35 +166,35 @@ size_t TeamRoster::findId(std::string_view id) const {
   return kSlotCount;
 }
 
-size_t TeamRoster::findAcr(std::string_view acr) const {
-  char norm[kTeamAcrBytes];
-  if (!teamNormaliseAcr(acr, norm)) return kSlotCount;
+size_t GroupRoster::findAcr(std::string_view acr) const {
+  char norm[kGroupAcrBytes];
+  if (!groupNormaliseAcr(acr, norm)) return kSlotCount;
   for (size_t i = 0; i < kSlotCount; ++i) {
     if (slots_[i].present && strcmp(slots_[i].acr, norm) == 0) return i;
   }
   return kSlotCount;
 }
 
-size_t TeamRoster::find(std::string_view idOrAcr) const {
+size_t GroupRoster::find(std::string_view idOrAcr) const {
   const size_t byId = findId(idOrAcr);
   if (byId < kSlotCount) return byId;
   return findAcr(idOrAcr);
 }
 
-size_t TeamRoster::firstFreeSlot() const {
+size_t GroupRoster::firstFreeSlot() const {
   for (size_t i = 0; i < kSlotCount; ++i) {
     if (!slots_[i].present) return i;
   }
   return kSlotCount;
 }
 
-bool TeamRoster::set(std::string_view id, std::string_view acr, std::string_view name, bool enabled) {
-  char norm[kTeamAcrBytes];
-  if (!isValidTeamId(id) || !teamNormaliseAcr(acr, norm) || !isValidTeamName(name)) return false;
-  // `ME` is the rider's own row in the black box (TeamRecord.h). A member under
+bool GroupRoster::set(std::string_view id, std::string_view acr, std::string_view name, bool enabled) {
+  char norm[kGroupAcrBytes];
+  if (!isValidGroupId(id) || !groupNormaliseAcr(acr, norm) || !isValidGroupName(name)) return false;
+  // `ME` is the rider's own row in the black box (GroupRecord.h). A member under
   // that acronym would put two people on one name in the one file somebody reads
   // when looking for them.
-  if (std::string_view(norm) == kTeamSelfWho) return false;
+  if (std::string_view(norm) == kGroupSelfWho) return false;
 
   const size_t byId = findId(id);
   const size_t byAcr = findAcr(norm);
@@ -209,7 +209,7 @@ bool TeamRoster::set(std::string_view id, std::string_view acr, std::string_view
   if (slot >= kSlotCount) slot = firstFreeSlot();
   if (slot >= kSlotCount) return false;
 
-  TeamMember& member = slots_[slot];
+  GroupMember& member = slots_[slot];
   const bool isNew = !member.present;
   member.present = true;
   member.enabled = enabled;
@@ -221,28 +221,28 @@ bool TeamRoster::set(std::string_view id, std::string_view acr, std::string_view
   // identifier rather than replacing the one they had: the LoRa key and the
   // relayed BLE name are both true at once.
   if (byId >= kSlotCount) {
-    if (member.idCount >= kTeamIdsPerMember) return false;
-    copyField(member.ids[member.idCount], kTeamIdBytes, id);
+    if (member.idCount >= kGroupIdsPerMember) return false;
+    copyField(member.ids[member.idCount], kGroupIdBytes, id);
     ++member.idCount;
   }
   return true;
 }
 
-bool TeamRoster::remove(std::string_view idOrAcr) {
+bool GroupRoster::remove(std::string_view idOrAcr) {
   const size_t slot = find(idOrAcr);
   if (slot >= kSlotCount) return false;
-  slots_[slot] = TeamMember{};
+  slots_[slot] = GroupMember{};
   return true;
 }
 
-bool TeamRoster::parseJson(std::string_view json, size_t& skipped) {
+bool GroupRoster::parseJson(std::string_view json, size_t& skipped) {
   skipped = 0;
   clear();
 
   ParseCtx ctx;
   ctx.roster = this;
-  const JsonCallbacks callbacks = {&ctx,          onKey,         onString,     onNumber,   onBool,
-                                   onNull,        onObjectStart, onObjectEnd,  onArrayStart, onArrayEnd};
+  const JsonCallbacks callbacks = {&ctx,   onKey,         onString,    onNumber,     onBool,
+                                   onNull, onObjectStart, onObjectEnd, onArrayStart, onArrayEnd};
   StreamingJsonParser parser(callbacks);
   parser.feed(json.data(), json.size());
 
@@ -257,7 +257,7 @@ bool TeamRoster::parseJson(std::string_view json, size_t& skipped) {
   return true;
 }
 
-size_t TeamRoster::writeJson(char* buf, size_t bufLen) const {
+size_t GroupRoster::writeJson(char* buf, size_t bufLen) const {
   if (buf == nullptr || bufLen == 0) return 0;
   int written = snprintf(buf, bufLen, "{\"v\":%u,\"members\":[", static_cast<unsigned>(kVersion));
   if (written < 0 || static_cast<size_t>(written) >= bufLen) return 0;
@@ -285,4 +285,4 @@ size_t TeamRoster::writeJson(char* buf, size_t bufLen) const {
   if (written < 0 || static_cast<size_t>(written) >= bufLen - len) return 0;
   return len + static_cast<size_t>(written);
 }
-#endif  // ENABLE_TEAM_MARKERS
+#endif  // ENABLE_GROUP_MARKERS
