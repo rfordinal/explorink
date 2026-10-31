@@ -980,31 +980,31 @@ against 1.1 s for the 198 KB regional view. Buildings are also no longer written
 at the coarse LODs at all (`mapbuilder/tilegen/build_config.json`), so the expensive case
 only arises at detail zoom, where the wait is expected anyway.
 
-## Landuse: forest and built-up areas
+## Landuse: forest, built-up and rock areas
 
-Landed 2026-08-05, both sides. The tile layer is `layer_id 6`, way records like
-buildings and water, and it carries **two classes in one layer**:
-`MapLanduseClass::Forest = 1`, `BuiltUp = 2` (`MapAreaClass.h`, mirroring
-mapbuilder's `landuse_class.py`).
+Landed 2026-08-05 for forest/built-up, extended 2026-10-30 for rock. The tile
+layer is `layer_id 6`, way records like buildings and water, and it carries
+**three classes in one layer**: `MapLanduseClass::Forest = 1`, `BuiltUp = 2`,
+`Rock = 3` (`MapAreaClass.h`, mirroring mapbuilder's `landuse_class.py`).
 
-**The renderer walks that layer twice, once per class**, because the two are
-drawn at different depths and a single walk would emit them in whatever order
-the tile stored them. A park inside a housing estate has to land on top of it.
-Same shape as the two road passes, and the same rewindable `begin*()` makes it
-cost a second seek rather than a buffer.
+**The renderer walks that layer three times, once per class**, because they
+are drawn at different depths and a single walk would emit them in whatever
+order the tile stored them. A park inside a housing estate has to land on top
+of it. Same shape as the two road passes, and the same rewindable `begin*()`
+makes it cost a second (or third) seek rather than a buffer.
 
 Full draw order, fixed (`docs/map-data-spec.md`, "A tile is a storage unit, not a
 render unit"):
 
 ```
-built-up area -> forest -> water -> buildings -> road casings -> road fills -> places
+built-up area -> forest -> rock -> water -> buildings -> road casings -> road fills -> places
 ```
 
 Landuse is background. Everything above it has to stay readable over it, which is
 why a tone is a sparse pattern rather than a grey block.
 
 `MapStyle` carries per-class outline, tone, hatch and hatch spacing indexed by
-`MapLanduseClass`, so the two classes are independent. **Two adjacent layers must
+`MapLanduseClass`, so the three classes are independent. **Two adjacent layers must
 not share a tone** -- their boundary disappears, and that boundary is often the
 thing being navigated by. The committed style uses stipple for built-up and a
 diagonal hatch for forest, which is large enough to carry lines.
@@ -1012,6 +1012,97 @@ diagonal hatch for forest, which is large enough to carry lines.
 A class whose rule draws nothing at all is a build error, not a silent skip:
 an enabled layer is read off the card in full, so a rule with no fill and no
 outline is pure I/O cost. Drop the rule or disable the layer.
+
+### Rock (`natural=bare_rock`/`scree`), added 2026-10-30
+
+`CLASS_ROCK = 3`, from `natural=bare_rock` and `natural=scree` collapsed into
+one class -- same reasoning as `natural=wood` and `landuse=forest` both landing
+on `Forest`: a walker does not care which tag a mapper used, only that the
+ground is rock and the line underfoot is about to end. `fetch_osm.py`'s
+`fetch_features(include_landuse=True)` clause list grew a fourth pair (way +
+multipolygon relation); `_QUERY_VERSION` bumped 3 -> 4 because it is the same
+combined highway+landuse query every other build reads
+(`mapbuilder/tilegen/build_tiles.py`).
+
+**Built because the relief layer's cliff line had nothing to sit on.** A cliff
+(above) is a line, the edge of a drop; `bare_rock`/`scree` is the area, and a
+published hiking map draws both -- a grey fill with the cliff hachure on its
+edge. Before this the device drew the hachure over bare landuse wash
+(`docs/map-landmarks.md`, "we draw cliff lines and no rock area at all").
+
+**Tone judged on the host preview over two real scenes, 2026-10-30.** `dots`/6
+(forest's own rung-0 hike density) was indistinguishable from the forest wash
+sitting right next to it. `stipple` (built-up's tone) was visible on a
+large polygon but still read close to forest at a glance. Settled on `dark`
+(checkerboard, 1 px in 2) -- darker reads as rock rather than as denser forest,
+and a checkerboard (unlike `solid`) still lets the cliff hachure drawn on top
+of it (landuse before relief, see draw order above) show through the gaps.
+Not yet judged on the device glass, same caveat as every tone decision here
+(`CMD:SHOWIMAGE`, above).
+
+**OSM's own area coverage is uneven, read off two real builds.** Over Sulov's
+own Goticka brana -- the densest cliff field measured anywhere in this repo,
+762 `natural=cliff` ways in the build region -- only 2 `bare_rock`/`scree`
+polygons exist, 55 and 96 m across, effectively invisible under the cliff
+hachure and the place label. Over Prosiecka dolina the same query found 48
+polygons at the detail LOD, several 200-300 m across and clearly visible. A
+cliff line and a rock area are mapped independently in OSM, by different
+people, so this class alone draws nothing at most real cliffs -- CLASS_ROCK_SYNTH
+below is the fallback that gap drove.
+
+### Rock, generated (`CLASS_ROCK_SYNTH`), added 2026-10-30
+
+Fills the gap CLASS_ROCK's own coverage leaves, from the cliff lines
+themselves. `tiles.py`'s `_synth_rock_from_cliffs` buffers each cliff line
+one-sided -- `fetch_osm.fetch_terrain`/`_extract_cliffs` already keep OSM's
+point order for exactly this, lower ground on the right of travel, so the
+rock massif is the left side, and Shapely's `single_sided` buffer at a
+positive distance buffers left of travel with no flip needed. The buffered
+strips are unioned, then any real CLASS_ROCK polygon nearby is subtracted out,
+so a cliff with real OSM coverage contributes nothing here and the two
+classes never overlap on a tile. `cliff_rock_buffer_m` (build_config.json, 25
+m today) is the buffer width; `TILE_RULES_VERSION` bumped 4 -> 5, the hand-bumped
+signal for a `tiles.py` logic change build_config.json's own hash cannot see
+(`tiles.py:63`, "a code change here that alters tile output... does not touch
+that file").
+
+**A full line-buffer replacement for CLASS_ROCK was considered first and
+rejected, generation as a gap-filler was not**: a cliff is an edge, not an
+area, a scree field can sit with no cliff line anywhere near it (confirmed in
+the Prosiecka scene, where CLASS_ROCK's own coverage is already good), and a
+blanket buffer would throw away real OSM shape everywhere it exists. Scoped
+to fill only where CLASS_ROCK has nothing, the same arbitrary-buffer-width
+objection stops being a reason not to draw anything at all at Sulov's own
+showcase cliff field.
+
+**Tone: tried different from real `rock`'s `dark`, settled on the same.**
+`stipple` (built-up's tone, lighter than `dark`) was the first attempt, so a
+generated outline -- a guess at a buffer width, not a surveyed shape -- would
+read as less certain than a surveyed one. JUDGED on the host preview over
+Sulov's Goticka brana, 2026-10-30: 222 generated polygons against the build's
+2 real ones, tracing the cliff chain from Goticka brana up to Sulov on the
+correct (uphill) side, and reading close to a published reference (mapy.com)
+of the same ground -- stipple did read as a visibly weaker rock there.
+**Maintainer's call, same day: `dark`, same as real rock.** One solid-reading
+rock massif on the panel is worth more than a confidence signal in the ink;
+the generated/real distinction still lives in the data and in this doc.
+
+**Verified on hardware, 2026-10-31, LilyGo T5 S3 Pro (board A).** Built and
+flashed commit `9df12ae8` (`pio run -e t5s3pro`, T15, 0 warnings from this
+change, RAM 23.8%, flash 62.9%). `CMD:SHOWIMAGE` could not be used --
+`test/map_preview`'s `SCREEN_WIDTH`/`SCREEN_HEIGHT` are hardcoded to the X4's
+480x800, not this board's 960x540 landscape framebuffer, so the host-rendered
+PNG was the wrong shape for the panel. Instead the scratch `--out` build's
+`base/13/{4518,4519}/{2806,2807}.tib` (Sulov, Goticka brana) were pushed to
+the board's own SD card over its HTTP file manager (`POST /delete` then
+`POST /upload?path=...`, `docs/webserver-endpoints.md`) while it sat on
+Wi-Fi, replacing the stale tiles there -- `blepush.py`'s BLE tile-sync service
+UUID has zero matches anywhere in this tree, so that path does not exist on
+`develop` yet. `tools/device_map_shot.py --width 960 --height 540` then
+grabbed the real panel at Goticka brana (49.1698, 18.5804), hike mode, rung 0:
+597 ways, the dark checkerboard tracing the cliff chain exactly as the host
+preview predicted. The dither reads as rock on the actual glass, not only in
+a laptop PPM.
 
 ## Water has classes now, so a river is not a ditch
 
