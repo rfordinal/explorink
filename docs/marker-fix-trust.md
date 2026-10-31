@@ -251,7 +251,7 @@ miss it, and the missing heading will catch it.
 
 `[measured, 2026-10-29]` The ride T-260 was blocked on. One T5 S3 Pro, build
 `0.2.1-t5s3pro`, **12,026 fixes over 16 h** read off the device's own
-`/trailink/gnss.csv` -- which logs `hdop`, `sats_used`, `quality`, `speed_kmh`
+`/explorink/gnss.csv` -- which logs `hdop`, `sats_used`, `quality`, `speed_kmh`
 and the position per fix, so every number here is replayable from one file.
 Fix cadence: median gap 1.0 s, p99 2.5 s.
 

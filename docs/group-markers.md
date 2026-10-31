@@ -17,11 +17,11 @@ cannot be confused at a glance.
 
 Three parts:
 
-1. **The roster** -- `/trailink/group/members.json`, an allowlist of who we are
+1. **The roster** -- `/explorink/group/members.json`, an allowlist of who we are
    willing to hear from.
 2. **The live positions** -- in RAM, one per roster slot, drawn on the map and
    listed under Group in the map menu.
-3. **The black box** -- `/trailink/group/bb-YYYYMMDD.csv`, every accepted
+3. **The black box** -- `/explorink/group/bb-YYYYMMDD.csv`, every accepted
    position, one file per day, plus the rider's own trace when they turn it on.
 
 It answers *where is everybody* and *where were they last seen*. It is not
@@ -87,7 +87,7 @@ Twelve members, fixed array, no heap.
 
 ## The roster file
 
-`/trailink/group/members.json`, rewritten whole on every edit:
+`/explorink/group/members.json`, rewritten whole on every edit:
 
 ```json
 {"v":1,"members":[{"acr":"RF","name":"Roman","on":true,"ids":["lora-8f3a","ble-7f"]}]}
@@ -556,7 +556,7 @@ it from `develop` every few weeks instead.
 
 ## Moving a card from the old name, and rolling back
 
-`groupMigrateLegacyDir()` moves `/trailink/team` to `/trailink/group` once.
+`groupMigrateLegacyDir()` moves `/explorink/team` to `/explorink/group` once.
 **FAT has no atomic directory rename** -- `FatFile::rename()` creates the
 destination and removes the source afterwards -- so a failure leaves both
 directories, and the decision has to be a function of what is on the card
@@ -564,7 +564,7 @@ rather than a single try:
 
 | card | action |
 |---|---|
-| no `/trailink/team` | nothing, and never look again |
+| no `/explorink/team` | nothing, and never look again |
 | legacy only | rename the directory whole |
 | both, only the legacy one has `members.json` | move that one file across |
 | both have a roster, or neither does | refuse, read the new path, delete nothing |
@@ -580,7 +580,7 @@ sixteen input states, including that no decision can ever overwrite a roster.
 moved. A device flashed back to a pre-rename binary -- the documented hang
 recovery -- reads an empty roster, an empty black box and three default
 toggles, with nothing on the panel explaining it. The files are all still on
-the card under `/trailink/team`; nothing is deleted.
+the card under `/explorink/team`; nothing is deleted.
 
 Also: the settings half is compiled only where `ENABLE_GROUP_MARKERS` is,
 which is no release env. A card that passes through a release build between
@@ -594,7 +594,7 @@ layer was called the team layer until 2026-10-30, when the code, the UI, the
 settings keys, the card paths and the console all moved to `group` (parent
 CLAUDE.md, "Naming"). What ran on 2026-09-16 ran under the old spelling, and
 rewriting it here would claim a command that did not exist that day. Read every
-`team` below as today's `group`, and the paths in it as `/trailink/group`.
+`team` below as today's `group`, and the paths in it as `/explorink/group`.
 
 
 X4 Pro, 2026-09-16. Flashed four times as the marks changed, the last being

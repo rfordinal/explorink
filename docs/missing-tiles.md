@@ -885,7 +885,7 @@ filesystem would settle it.
 
 **Why the path check is a security boundary and not hygiene.** Paths are joined
 as `<root>/<rel>` with `snprintf` and no normalisation
-(`src/activities/map/MapTransferReceiver.cpp:289-290`), root `/trailink`. One
+(`src/activities/map/MapTransferReceiver.cpp:289-290`), root `/explorink`. One
 accepted `..` reaches the card root, where `.crosspoint/settings.json` lives. The
 check holds today, on live code, against every escape tried. What it does **not**
 bound is the legitimate surface: any safe relative path under the root is
@@ -950,7 +950,7 @@ allows", and T-222.
     in the session log, at zoom rungs 0 and 1 with 1-2 tiles loaded.
 - **Verified against the real phone app, 2026-08-07** -- the whole chain, with
   nothing standing in for anything. A tile under the rider's actual position was
-  deleted off the card over WebDAV (`DELETE /trailink/base/13/4485/2843.tib`,
+  deleted off the card over WebDAV (`DELETE /explorink/base/13/4485/2843.tib`,
   204, then 404 to confirm), the map was reopened and the app connected:
 
   ```

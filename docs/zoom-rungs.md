@@ -259,7 +259,7 @@ the console) is different: a fix close enough to the last one skips the reset
 and calls `moveMarker()` with the *held* `anchorHeading_`, so the arrow's
 screen angle changes while the map does not. Confirmed by loading a real
 route (`RouteSelectActivity`, `Trips` on Home -- picked up any `.tir` under
-`/trailink/trips/`, `build/trips/do-prace.tir` for this run) and sending a
+`/explorink/trips/`, `build/trips/do-prace.tir` for this run) and sending a
 sequence of close-together fixes over real BLE, `tools/blepos.py <lat> <lon>
 --heading <N>` (not `mapcmd.py`, which only reaches the console): the arrow
 sat pointing up through headings 0, 2, 4 and 6, then rotated to point roughly

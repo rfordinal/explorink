@@ -36,7 +36,7 @@ measurement is step 1 below and it is cheap.
 ## The other fact: almost none of that work draws a pixel
 
 **measured 2026-08-06**, from real `.tib` tiles in
-`mapbuilder/test-data/trailink-sd`, by `mapbuilder/tools/tile_cost.py` (parent
+`mapbuilder/test-data/explorink-sd`, by `mapbuilder/tools/tile_cost.py` (parent
 repo). Counts are exact; no device needed, and no device timing is implied.
 
 A tile is much larger than the screen at the rung that reads it. The detail LOD

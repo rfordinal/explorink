@@ -14,8 +14,23 @@
 // Same non-atomicity as GroupFiles.h's migration, same reason: FAT has no
 // directory-rename primitive, so FatFile::rename() creates the destination
 // and removes the source afterwards, and a failure between the two leaves
-// both directories. The decision is therefore a function of what is on the
+// both directories -- empty on the new side, since nothing has repointed it
+// yet. CardRootMigration.cpp's tryMove() rescues exactly that shape (an empty
+// `/explorink` can be rmdir'd with no data at risk, then the move retried) on
+// the same boot immediately and, failing that, on the next boot's Refuse
+// path too. The decision below is therefore a function of what is on the
 // card, never a single try, and a failure is never latched.
+//
+// **What the rescue does not cover** (found by review 2026-10-31, after an
+// earlier version of this file claimed the opposite): once a subsystem has
+// written ANYTHING under `/explorink` on its own -- PowerLog, GnssLog and
+// PinLog all lazily create their own directory on first write with no
+// knowledge of this migration, and PowerLog's first write can happen as
+// early as this boot's first loop() iteration -- the new root is no longer
+// empty, rmdir refuses, and a genuinely interrupted rename becomes a
+// permanent Refuse with real history stuck under `/trailink`. Narrowing that
+// window further needs every such subsystem to defer its own directory
+// creation until this migration has run, which is out of this file's scope.
 enum class CardRootMigrateAction : uint8_t {
   Nothing,        // no legacy directory; never look again
   MoveDirectory,  // legacy only; rename it whole
@@ -30,11 +45,17 @@ inline CardRootMigrateAction cardRootMigrateDecide(const bool legacyExists, cons
   if (!newExists) return CardRootMigrateAction::MoveDirectory;
   // Both existing is the normal shape of a rename that failed partway
   // through, not just two boots disagreeing -- same reasoning as
-  // GroupFiles.h's groupMigrateDecide(). Unlike that migration there is no
-  // single irreplaceable file to rescue here (this moves everything at
-  // once, before any subsystem has written under the new root), so the only
-  // safe move is to leave both alone and let whichever one the firmware
-  // reads decide by its own per-subsystem exists() checks.
+  // GroupFiles.h's groupMigrateDecide(). An EARLIER version of this comment
+  // claimed there was "no single irreplaceable file to rescue here... so the
+  // only safe move is to leave both alone" -- that was wrong, found by
+  // review 2026-10-31: the interrupted-rename shape leaves `/explorink`
+  // EMPTY (SdFat creates the destination before repointing it to the
+  // source's data, CardRootMigration.cpp's tryMove() has the exact mechanics), and an
+  // empty directory is rescuable without guessing -- `Storage.rmdir()` only
+  // ever succeeds on one. migrateCardRootDir() does that rescue before
+  // falling back to this Refuse action; this decide function only picks the
+  // action, so by the time a caller sees Refuse the cheap rescue has already
+  // been tried and failed (genuinely non-empty, not just interrupted).
   return CardRootMigrateAction::Refuse;
 }
 
