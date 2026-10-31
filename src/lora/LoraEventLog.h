@@ -10,7 +10,7 @@
 // touches because a file it cannot date is a file it cannot judge.
 class LoraEventLog {
  public:
-  static constexpr const char* kDir = "/trailink/lora";
+  static constexpr const char* kDir = "/explorink/lora";
 
   // Appends and flushes, creating the day file with its header on first use.
   // False on any card failure. **A failure never stops the radio**: unlike the

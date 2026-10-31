@@ -48,7 +48,7 @@
 //
 // CSV rather than the pins log's `v1|...|crc32` framing, deliberately. This file
 // is read by a person -- on a laptop, possibly by somebody looking for a rider
-// -- and /trailink/power.csv and /trailink/gnss.csv already set that precedent.
+// -- and /explorink/power.csv and /explorink/gnss.csv already set that precedent.
 // There is no CRC for the same reason: a torn last line is visibly torn, and a
 // checksum that makes a rescuer's spreadsheet refuse a row helps nobody.
 //

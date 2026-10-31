@@ -17,7 +17,7 @@ struct MapTileCoord {
 // both the absolute card path and the sender's root-relative path parse the
 // same:
 //
-//   /trailink/base/12/2199/1416.tib
+//   /explorink/base/12/2199/1416.tib
 //   base/12/2199/1416.tib
 //
 // Why this exists: a file that lands over BLE is the answer to a

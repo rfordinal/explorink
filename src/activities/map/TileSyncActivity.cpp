@@ -28,7 +28,7 @@ namespace {
 constexpr const char* kLogTag = "TILESYNC";
 
 // Same card root the map's tile paths are built against (MapActivity.cpp).
-constexpr const char* kTileRoot = "/trailink";
+constexpr const char* kTileRoot = "/explorink";
 
 }  // namespace
 

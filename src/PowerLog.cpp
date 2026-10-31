@@ -97,7 +97,7 @@ void PowerLog::tick() {
   nextDueMs = now + kIntervalMs;
 
   const bool fresh = !Storage.exists(kPath);
-  // A card that has never had tiles pushed to it has no /trailink yet, and
+  // A card that has never had tiles pushed to it has no /explorink yet, and
   // O_CREAT does not create the parent.
   if (fresh) Storage.ensureDirectoryExists(kDir);
   HalFile file = Storage.open(kPath, O_WRITE | O_CREAT | O_APPEND);

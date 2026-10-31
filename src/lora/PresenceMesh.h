@@ -126,11 +126,11 @@ class PresenceMesh : public mesh::Mesh {
   // somebody is transmitting something we are not meant to read.
   uint32_t advertsRejected() const { return advertsRejected_; }
 
-  // Where the keypair lives. Under the same `/trailink` root as the rest of the
+  // Where the keypair lives. Under the same `/explorink` root as the rest of the
   // device's state -- the path is the SD card's legacy spelling and renaming it
   // is a card-compatibility change, not a text change (CLAUDE.md, "Naming").
-  static constexpr const char* kIdentityDir = "/trailink/lora";
-  static constexpr const char* kIdentityPath = "/trailink/lora/identity.bin";
+  static constexpr const char* kIdentityDir = "/explorink/lora";
+  static constexpr const char* kIdentityPath = "/explorink/lora/identity.bin";
 
  protected:
   void onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, uint32_t timestamp, const uint8_t* appData,

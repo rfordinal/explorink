@@ -19,7 +19,7 @@
 // risk worth a second format. What *is* append-only is the black box, which is
 // where the history of the feature actually lives (GroupBlackBox.h).
 //
-// Document, /trailink/group/members.json:
+// Document, /explorink/group/members.json:
 //
 //   {"v":1,"members":[{"acr":"RF","name":"Roman","on":true,"ids":["a4c1380c","ble-7f"]}]}
 //

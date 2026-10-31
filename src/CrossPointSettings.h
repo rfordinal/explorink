@@ -321,7 +321,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // 2026-09-03 and cost a device session
   // (../docs/gnss-to-map-plan.md, "And it was reported as a GNSS regression").
   uint8_t mapGnssPosition = 0;
-  // Write one CSV row per accepted GNSS fix to /trailink/gnss.csv (GnssLog.h).
+  // Write one CSV row per accepted GNSS fix to /explorink/gnss.csv (GnssLog.h).
   // Off by default and it must stay that way: the file is a **track log**, not
   // a single point, so on a lost or stolen device it is a record of where the
   // rider went. Only exists on a build with a receiver.

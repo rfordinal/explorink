@@ -94,6 +94,7 @@ static inline void sampleInput() {
 #endif
   gpio.update();
 }
+#include "CardRootMigration.h"
 #include "GnssAccess.h"
 #include "GnssFakeSky.h"
 #include "GnssLog.h"
@@ -2994,6 +2995,13 @@ void setup() {
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
   }
+
+  // Before anything else touches the card: the on-card root was "/trailink"
+  // (the old brand) and is now "/explorink" (CardRootMigration.h). Must run
+  // before any subsystem's lazy init can create something under the new
+  // root, or a partial write there could later look like a half-finished
+  // migration.
+  migrateCardRootDir();
 
   HalSystem::checkPanic();
 

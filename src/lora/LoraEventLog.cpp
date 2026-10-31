@@ -44,7 +44,7 @@ bool LoraEventLog::append(const LoraLogEvent& ev, uint32_t utc, uint32_t bootId)
   if (!pathForUtc(utc, path, sizeof(path))) return false;
 
   // O_CREAT does not create the parent, and a card that has never had tiles
-  // pushed to it has no `/trailink` at all. `PresenceMesh` already makes this
+  // pushed to it has no `/explorink` at all. `PresenceMesh` already makes this
   // directory for the identity file, but only once a key has been written --
   // a card swapped in afterwards would otherwise swallow every row.
   const bool fresh = !Storage.exists(path);

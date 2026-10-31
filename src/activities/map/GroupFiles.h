@@ -15,15 +15,15 @@
 // (test/group/).
 //
 // All access goes through HalStorage -- SdFat is not thread-safe (CLAUDE.md).
-//
-// The paths keep `/trailink`: the on-card layout is infrastructure not yet
-// renamed (parent CLAUDE.md, Naming).
 
-// Moves `/trailink/team` to `/trailink/group` once, if the old directory is
-// there and the new one is not.
+// Moves `/explorink/team` to `/explorink/group` once, if the old directory is
+// there and the new one is not. (Written when the on-card root was still
+// `/trailink`, so this moved `/trailink/team` to `/trailink/group`; the whole
+// root has since moved to `/explorink`, CardRootMigration.h -- this migration
+// keeps working unchanged one level under it, same two names either way.)
 //
 // **The rename of 2026-10-30 reached the card, so the card needs a step.**
-// Everything the group layer owns lived under `/trailink/team`: the roster a
+// Everything the group layer owns lived under `/explorink/team`: the roster a
 // rider built by hand, member by member, and every black-box day file since
 // the layer shipped. Shipping the new path without this would have read as the
 // group having been wiped -- the roster empty, the history gone -- with both
@@ -42,10 +42,10 @@
 // Nothing is ever deleted. The worst outcome is both directories present and
 // a line in the log saying which one is being read.
 //
-// Idempotent and cheap: after the first successful run `/trailink/team` does
+// Idempotent and cheap: after the first successful run `/explorink/team` does
 // not exist, so every later call is one `exists()`. Delete this once no card
 // in use predates 2026-10-30.
-// What the card's state says to do about `/trailink/team`.
+// What the card's state says to do about `/explorink/team`.
 //
 // Pulled out of groupMigrateLegacyDir() so it can be proved on the host:
 // the function itself needs a card, and the case that matters most -- a
@@ -83,8 +83,8 @@ void groupMigrateLegacyDir();
 // why there is no history here).
 class GroupRosterFile {
  public:
-  static constexpr const char* kDir = "/trailink/group";
-  static constexpr const char* kPath = "/trailink/group/members.json";
+  static constexpr const char* kDir = "/explorink/group";
+  static constexpr const char* kPath = "/explorink/group/members.json";
 
   // A file that does not exist yet is a successful empty load, exactly like the
   // pins log: a rider who has never added anybody is not an error. False means
@@ -107,7 +107,7 @@ class GroupRosterFile {
 // cannot judge. Every X4 is such a device until the phone hands it a time.
 class GroupBlackBox {
  public:
-  static constexpr const char* kDir = "/trailink/group";
+  static constexpr const char* kDir = "/explorink/group";
 
   // Appends one row and flushes, creating the day file with its header if it is
   // not there yet. False on any card failure -- the caller must then **not**

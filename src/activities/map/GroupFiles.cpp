@@ -211,15 +211,15 @@ void replayLine(void* ctx, std::string_view line, uint32_t) {
 void groupMigrateLegacyDir() {
   // **Latched only once there is nothing left to do.** The first version set
   // this before attempting the rename, so a single failure stranded the card:
-  // nothing retried, the black box then created an empty /trailink/group, and
+  // nothing retried, the black box then created an empty /explorink/group, and
   // from the next boot the both-exist branch refused forever while the
   // rider's hand-built roster sat unreadable under the old name.
   static bool done = false;
   if (done) return;
   if (!Storage.ready()) return;
 
-  constexpr const char* kLegacyDir = "/trailink/team";
-  constexpr const char* kLegacyRoster = "/trailink/team/members.json";
+  constexpr const char* kLegacyDir = "/explorink/team";
+  constexpr const char* kLegacyRoster = "/explorink/team/members.json";
 
   const bool legacyExists = Storage.exists(kLegacyDir);
   const bool newExists = Storage.exists(GroupRosterFile::kDir);
@@ -343,7 +343,7 @@ bool GroupBlackBox::append(const GroupRecord& rec) {
   if (!pathForUtc(rec.utc, path, sizeof(path))) return false;
 
   // O_CREAT does not create the parent, and a card that has never had tiles
-  // pushed to it has no /trailink at all (same trap as PowerLog and PinLog).
+  // pushed to it has no /explorink at all (same trap as PowerLog and PinLog).
   const bool fresh = !Storage.exists(path);
   if (fresh) Storage.ensureDirectoryExists(kDir);
 
