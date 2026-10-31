@@ -79,13 +79,13 @@ _CLASS_SLOTS = 32
 # mapbuilder/tilegen/water_class.py and landuse_class.py). Not slots in the road enum:
 # a record's layer id already says which vocabulary its class byte belongs to.
 _WATER_CLASS = {"unknown": 0, "river": 1, "stream": 2, "lake": 3}
-_LANDUSE_CLASS = {"forest": 1, "built_up": 2, "rock": 3, "rock_synth": 4}
+_LANDUSE_CLASS = {"forest": 1, "built_up": 2}
 # Mirrors mapbuilder/tilegen/relief_class.py. `cliff` is a terrain line rather
 # than a contour and shares the layer: it has no elevation, so no label ever
 # hangs on it (drawContourClass is passed no slots for it).
 _CONTOUR_CLASS = {"minor": 1, "index": 2, "cliff": 3}
 _WATER_SLOTS = 4
-_LANDUSE_SLOTS = 5
+_LANDUSE_SLOTS = 4
 _CONTOUR_SLOTS = 4
 
 def _toneLabel(expr):
@@ -1267,7 +1267,7 @@ def _style_literal(bundle):
     (c_enabled, c_widths, c_labels, c_patterns, c_ticks, c_gaps, c_marks, c_mark_pxs,
      c_dashes, c_tick_sides, c_tick_widths) = contours_px
     water_names = [name for name, _ in sorted(_WATER_CLASS.items(), key=lambda kv: kv[1])]
-    landuse_names = ["(unused)", "forest", "built_up", "rock", "rock_synth"]
+    landuse_names = ["(unused)", "forest", "built_up", "(unused)"]
     contour_names = ["(unused)", "minor", "index", "cliff"]
     lines += [
         "    },",
@@ -1515,9 +1515,7 @@ def _print_summary(bundle, what):
           f"route overlap <= {labels['route_overlap_pct']}%, width cap {labels['max_width']}px")
     if landuse_px[0]:
         print(f"gen_mapstyle.py: {what}: landuse on -- forest tone {_toneLabel(landuse_px[4][1])}/hatch {landuse_px[5][1]}, "
-              f"built_up tone {_toneLabel(landuse_px[4][2])}/hatch {landuse_px[5][2]}, "
-              f"rock tone {_toneLabel(landuse_px[4][3])}/hatch {landuse_px[5][3]}, "
-              f"rock_synth tone {_toneLabel(landuse_px[4][4])}/hatch {landuse_px[5][4]}")
+              f"built_up tone {_toneLabel(landuse_px[4][2])}/hatch {landuse_px[5][2]}")
     else:
         print(f"gen_mapstyle.py: {what}: landuse off")
     if contours_px[0]:
