@@ -20,6 +20,10 @@ void migrateCardRootDir() {
   const bool newExists = Storage.exists(kNewRoot);
   const CardRootMigrateAction action = cardRootMigrateDecide(legacyExists, newExists);
 
+  // DBG, not silent: a hardware pass with no line here cannot tell "nothing
+  // to migrate" from "never ran" (found testing this on an X3, 2026-10-31).
+  LOG_DBG(kLogTag, "legacy=%s(%d) new=%s(%d)", kLegacyRoot, legacyExists, kNewRoot, newExists);
+
   switch (action) {
     case CardRootMigrateAction::Nothing:
       return;
