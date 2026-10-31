@@ -1075,14 +1075,17 @@ to fill only where CLASS_ROCK has nothing, the same arbitrary-buffer-width
 objection stops being a reason not to draw anything at all at Sulov's own
 showcase cliff field.
 
-**Tone deliberately not the same as real `rock`'s `dark`** -- a generated
-outline is a guess at a buffer width, not a surveyed shape, and the two must
-stay tellable apart. Settled on `stipple` (built-up's tone, lighter than
-`rock`'s `dark`) after the same `dots`/6-reads-as-forest problem CLASS_ROCK
-itself had. JUDGED on the host preview over Sulov's Goticka brana, 2026-10-30:
-222 generated polygons against the build's 2 real ones, tracing the cliff
-chain from Goticka brana up to Sulov on the correct (uphill) side, and reading
-close to a published reference (mapy.com) of the same ground.
+**Tone: tried different from real `rock`'s `dark`, settled on the same.**
+`stipple` (built-up's tone, lighter than `dark`) was the first attempt, so a
+generated outline -- a guess at a buffer width, not a surveyed shape -- would
+read as less certain than a surveyed one. JUDGED on the host preview over
+Sulov's Goticka brana, 2026-10-30: 222 generated polygons against the build's
+2 real ones, tracing the cliff chain from Goticka brana up to Sulov on the
+correct (uphill) side, and reading close to a published reference (mapy.com)
+of the same ground -- stipple did read as a visibly weaker rock there.
+**Maintainer's call, same day: `dark`, same as real rock.** One solid-reading
+rock massif on the panel is worth more than a confidence signal in the ink;
+the generated/real distinction still lives in the data and in this doc.
 
 **Unverified on hardware.** Both CLASS_ROCK and CLASS_ROCK_SYNTH are built and
 judged only through `test/map_preview` (the host renderer) over `--out`
