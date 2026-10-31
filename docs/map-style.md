@@ -1104,6 +1104,41 @@ grabbed the real panel at Goticka brana (49.1698, 18.5804), hike mode, rung 0:
 preview predicted. The dither reads as rock on the actual glass, not only in
 a laptop PPM.
 
+**The cliff hachure drops over this fill, T-2052, 2026-10-31.** Watching that
+hardware pass raised the question the fill's own design had not asked: once a
+cliff draws a dark checkerboard under it, does the hachure comb on top still
+carry anything the fill does not already say. The answer differs by which
+rock class is under it, because `CLASS_ROCK_SYNTH` is *generated from the
+cliff line itself* (`_synth_rock_from_cliffs`, a one-sided buffer of the same
+way) while `CLASS_ROCK` is an independently surveyed polygon. Over the
+generated fill the comb repeats the exact line the fill was built from -- the
+same shape said twice; over a surveyed polygon the comb is still independent
+data, so it keeps earning its ink.
+
+Mapbuilder tags each cliff way's `flags` byte with `MASK_CLIFF_FILL_GENERATED`
+(`tiles.py`, `_cliff_fill_flags`; `TILE_RULES_VERSION` 5 -> 6) when its own
+buffered strip is not substantially covered by a real rock polygon nearby.
+`drawContourClass` (`MapRenderer.cpp`) reads `kCliffFlagFillGenerated`
+(`MapAreaClass.h`) off the record and draws a plain line instead of the
+hachure comb when it is set -- same mirrored-constant-name convention as every
+other cross-repo value in this spec.
+
+**Checked on the host preview over both reference scenes.** 601/623 cliff
+ways at Sulov Goticka brana and 1,682/1,702 at Prosiecka dolina are
+generated-fill-only: 96-99% in both, despite Prosiecka's real rock polygon
+count (105) being 5x Sulov's (22) -- a rock area and a cliff line are mapped
+independently in OSM, so the real-rock count does not predict how much of a
+given cliff it actually covers. Dropping the comb there costs 0.8-3.2% of a
+rung's dark pixels (`test/map_preview`, baseline binary vs. the fix, same
+tiles, pixel-counted not estimated); a pixel-diff overlay of what the fix
+removes shows sparse flecks along the checkerboard's own edge, not ink the
+panel needs to read "rock".
+
+**Not yet judged on the device glass** (same caveat as every tone/texture
+decision in this doc): this is a host-preview finding and needs a T5 S3 Pro
+pass over the same Sulov tiles before it is more than a well-measured guess.
+`docs/TODO.md`, T-2052.
+
 ## Water has classes now, so a river is not a ditch
 
 Also 2026-08-05. Every water record used to carry `class_id 0`, which made
