@@ -120,9 +120,33 @@
       "require_major": true
     },
     "landuse": {
-      "_comment": "Forest and built-up areas, one tile layer (layer_id 6), two classes. Drawn under everything else: built-up first, then forest, then water, buildings and roads on top. Each class gets its own fill because they are background tones and two adjacent tones that match make their boundary vanish.",
+      "_comment": "Forest, built-up, rock and rock_synth areas, one tile layer (layer_id 6), four classes. Drawn under everything else: built-up first, then forest, then rock_synth, then rock, then water, buildings and roads on top. Each class gets its own fill because they are background tones and two adjacent tones that match make their boundary vanish.",
       "enabled": true,
       "rules": [
+        {
+          "_comment": "Added 2026-10-30 -- a generated rock-massif fill (tiles.py _synth_rock_from_cliffs, landuse_class.py CLASS_ROCK_SYNTH), for a cliff OSM never mapped a bare_rock/scree polygon next to: 222 of these generated against 2 real CLASS_ROCK polygons over the same Sulov build, the fetch_osm 'lower ground on the right of travel' convention turned into a one-sided Shapely buffer on the high side, real CLASS_ROCK subtracted out so the two classes never overlap. Tried `stipple` first, deliberately lighter than real `rock`'s `dark` so a generated outline (a guess at a buffer width, build_config.json cliff_rock_buffer_m) would read as less certain than a surveyed shape. Maintainer's call, 2026-10-30: `dark`, same as real rock -- one solid-reading rock massif on the panel regardless of which half of it came from a survey and which from a buffer, and the generated/real distinction lives in the data and this doc, not in the ink.",
+          "color": "#000000",
+          "fill": "tone",
+          "match": {
+            "class": [
+              "rock_synth"
+            ]
+          },
+          "outline_width": 0,
+          "tone": "dark"
+        },
+        {
+          "_comment": "Added 2026-10-30 -- natural=bare_rock/scree (landuse_class.py CLASS_ROCK). The reference hiking map draws the rock massif as a grey fill with the cliff hachure sitting on its edge, and before this we drew the cliff line with nothing for it to sit on (docs/map-landmarks.md, 'we draw cliff lines and no rock area at all'). Tried `dots`/6 (indistinguishable from forest's own rung-0 hike dots) and `stipple` (visible but still read as close to the forest wash on a real polygon over Prosiecka dolina) before settling on `dark` -- maintainer's call on the host preview, needed to read as rock rather than as denser forest. `dark` is a checkerboard, not solid, deliberately: solid would paint over the cliff hachure that is drawn on top of this layer (MapRenderer.cpp, landuse before contours), and the two features must stay visually separable. OSM's own `bare_rock`/`scree` coverage is uneven -- 2 tiny polygons (55-96 m) at Sulov's own Goticka brana against 762 cliff ways there, but 48 polygons including some 260x326 m ones at Prosiecka -- so this layer will draw nothing at many real cliffs and that is read off the data, not a bug.",
+          "color": "#000000",
+          "fill": "tone",
+          "match": {
+            "class": [
+              "rock"
+            ]
+          },
+          "outline_width": 0,
+          "tone": "dark"
+        },
         {
           "color": "#000000",
           "fill": "tone",
