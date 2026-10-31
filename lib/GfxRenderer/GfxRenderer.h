@@ -2,6 +2,13 @@
 
 #include <EpdFontFamily.h>
 #include <HalDisplay.h>
+// WindowSite is used directly below (displayBufferWindow's default arg) --
+// include it explicitly rather than relying on HalDisplay.h to pull it in
+// transitively. The simulator swaps in its own HalDisplay.h (explorink-
+// simulator replaces lib/hal/ wholesale, see platformio.ini's [env:simulator]
+// comment), which doesn't need PowerTelemetry for its own API and so doesn't
+// include it -- breaking this file's build there until this line existed.
+#include <PowerTelemetry.h>
 
 namespace BidiUtils {
 // Paragraph base direction for the Unicode BiDi algorithm (UAX#9).
