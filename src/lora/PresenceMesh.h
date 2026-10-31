@@ -79,7 +79,7 @@ class PresenceMesh : public mesh::Mesh {
   // "mesh off, or packet pool empty" for all of them. On a board whose pool
   // was full and whose mesh was running that string sent an afternoon after a
   // defect that did not exist, and put a wrong finding in the task list
-  // (parent docs/TODO.md, T-2046).
+  // (../../docs/lora-mesh.md, "One cause per refusal").
   enum class AdvertResult : uint8_t {
     Sent,
     PoolEmpty,  // no free packet in the 16-slot static pool

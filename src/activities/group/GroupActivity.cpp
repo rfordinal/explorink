@@ -362,7 +362,7 @@ void GroupActivity::activate(int index) {
       // The cause that fires most often here is the clock: this screen does
       // not run GNSS, so a device that has not been on the map or connected to
       // a phone has no time, and an advert with MeshCore's epoch is hidden by
-      // whoever receives it (parent docs/TODO.md, T-2046 and T-2048).
+      // whoever receives it (../../../docs/lora-mesh.md, "No clock, no position").
       const LoraAdvertResult result = loraPresenceAdvertNow();
       if (result != LoraAdvertResult::Sent) {
         switch (result) {
@@ -618,7 +618,8 @@ void GroupActivity::render(RenderLock&&) {
     // Still said, because it changes what an announce *means*: with no clock
     // the frame carries this device's key and name and no position, which
     // pairs but puts nobody on a map. A rider who expects to be seen moving
-    // has to know the difference (T-2048).
+    // has to know the difference
+    // (../../../docs/lora-mesh.md, "No clock, no position").
     snprintf(subtitle, sizeof(subtitle), "%s", tr(STR_LORA_NO_CLOCK));
   } else if (beaconSec_ == 0) {
     snprintf(subtitle, sizeof(subtitle), tr(STR_LORA_PEERS_HEADER_OFF_FORMAT), nodeName_,
@@ -645,7 +646,7 @@ void GroupActivity::render(RenderLock&&) {
         // Dimmed only without a radio. It was briefly dimmed without a clock
         // too, until the clockless advert landed: a press now pairs on
         // identity alone, so the row works and must not look like it does not
-        // (parent docs/TODO.md, T-2048).
+        // (../../../docs/lora-mesh.md, "No clock, no position").
         return k == RowKind::Control && controlRowOf(index) == kRowAdvert && !meshRunning_;
       });
 

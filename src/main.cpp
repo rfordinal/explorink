@@ -4199,7 +4199,8 @@ void loop() {
               logSerial.printf("LORA_OK:advert started\n");
             } else {
               // The reason, not a list of candidates. The old line named two
-              // causes and the common one was neither (T-2046).
+              // causes and the common one was neither
+              // (docs/lora-mesh.md, "One cause per refusal").
               logSerial.printf("LORA_ERR:advert not sent -- %s\n", loraAdvertResultText(r));
             }
           }

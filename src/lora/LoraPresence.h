@@ -95,7 +95,7 @@ void loraPresenceSetName(const char* name);
 // **Every value here was once the same sentence.** `advert not sent (mesh off,
 // or packet pool empty)` was printed for refusals that were neither, and the
 // one that actually fires most often -- no wall clock -- was not even in it
-// (parent docs/TODO.md, T-2046).
+// (../../docs/lora-mesh.md, "One cause per refusal").
 enum class LoraAdvertResult : uint8_t {
   Sent,
   MeshOff,    // the radio is not running; no screen is holding it up
