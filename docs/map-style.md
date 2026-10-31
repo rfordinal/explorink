@@ -1145,6 +1145,20 @@ hachure used to be, reading as a drop edge next to the rock massif exactly
 the way the host preview predicted -- no comb texture competing with the
 fill's own dither on the actual glass.
 
+**The tangled mass of lines near Goticka brana's own marker is boulder-field
+density, not duplicate OSM data or a rendering bug** -- checked 2026-10-31
+while judging the T-2052 fix. 35 `natural=cliff` ways sit within 150 m of the
+marker; a node-sequence and node-set comparison across all 623 cliff ways in
+the cached extract found zero exact duplicates. The handful of pairs whose
+buffered strips overlap by more than half are either ordinary way-splitting
+(two ways sharing an end node, one continuing where the other stops) or
+genuinely distinct short features sitting close together -- a 6-point closed
+loop (one isolated boulder, about 8x6 m) right next to a 268 m crag line, for
+instance. Every way checked carries `"source": "survey, Ortofotomozaika SR"`,
+consistent with one careful orthophoto-derived import tracing each rock
+feature in a real boulder field separately, not a mapping error. Nothing here
+needs a code fix; it is what the ground looks like.
+
 ## Water has classes now, so a river is not a ditch
 
 Also 2026-08-05. Every water record used to carry `class_id 0`, which made
