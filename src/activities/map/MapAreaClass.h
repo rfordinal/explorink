@@ -56,11 +56,20 @@ enum class MapReliefClass : uint8_t {
   // in the High Tatras and 1.2 kB in Mala Fatra against a 35 kB contour layer.
   //
   // Two things a reader of this layer must handle differently for a cliff:
-  // `flags` is **0**, not an elevation -- a cliff runs across contours and has
-  // no single height -- so nothing may print it as a number; and the record's
+  // `flags` carries no elevation -- a cliff runs across contours and has no
+  // single height -- so nothing may print it as a number; and the record's
   // point order is OSM's, which puts the lower ground on the right of the
   // direction of travel. Nothing draws a correct-side tick yet, and the order
   // is what makes adding one a render change rather than a refetch.
+  //
+  // Bit 0 of `flags` is `kCliffFlagFillGenerated` (T-2052, mirrors
+  // mapbuilder's `tiles.MASK_CLIFF_FILL_GENERATED`): set when the ground
+  // under this way is this build's own generated rock strip
+  // (CLASS_ROCK_SYNTH), not a surveyed `natural=bare_rock`/`scree` polygon.
+  // MapRenderer skips the hachure comb there, because the fill IS that way's
+  // own line, buffered -- drawing both is the same shape said twice. Over a
+  // surveyed polygon (bit unset) the two are independent data, so the comb
+  // stays: `docs/map-style.md`, "Rock, generated".
   Cliff = 3,
   // Reserved, not built. `Cliff = 3` is the last class that fits a per-class
   // style table: kReliefClassSlots is 4, so the valid indices are 0-3, and
@@ -86,3 +95,7 @@ inline constexpr uint8_t kLanduseClassSlots = 5;
 inline constexpr uint8_t kWaterClassSlots = 4;
 inline constexpr uint8_t kReliefClassSlots = 4;
 inline constexpr uint8_t kContourClassSlots = kReliefClassSlots;
+
+// See MapReliefClass::Cliff above. Mirrors mapbuilder's
+// tiles.MASK_CLIFF_FILL_GENERATED.
+inline constexpr uint16_t kCliffFlagFillGenerated = 0x1;

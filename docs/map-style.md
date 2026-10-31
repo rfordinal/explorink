@@ -1104,6 +1104,61 @@ grabbed the real panel at Goticka brana (49.1698, 18.5804), hike mode, rung 0:
 preview predicted. The dither reads as rock on the actual glass, not only in
 a laptop PPM.
 
+**The cliff hachure drops over this fill, T-2052, 2026-10-31.** Watching that
+hardware pass raised the question the fill's own design had not asked: once a
+cliff draws a dark checkerboard under it, does the hachure comb on top still
+carry anything the fill does not already say. The answer differs by which
+rock class is under it, because `CLASS_ROCK_SYNTH` is *generated from the
+cliff line itself* (`_synth_rock_from_cliffs`, a one-sided buffer of the same
+way) while `CLASS_ROCK` is an independently surveyed polygon. Over the
+generated fill the comb repeats the exact line the fill was built from -- the
+same shape said twice; over a surveyed polygon the comb is still independent
+data, so it keeps earning its ink.
+
+Mapbuilder tags each cliff way's `flags` byte with `MASK_CLIFF_FILL_GENERATED`
+(`tiles.py`, `_cliff_fill_flags`; `TILE_RULES_VERSION` 5 -> 6) when its own
+buffered strip is not substantially covered by a real rock polygon nearby.
+`drawContourClass` (`MapRenderer.cpp`) reads `kCliffFlagFillGenerated`
+(`MapAreaClass.h`) off the record and draws a plain line instead of the
+hachure comb when it is set -- same mirrored-constant-name convention as every
+other cross-repo value in this spec.
+
+**Checked on the host preview over both reference scenes.** 601/623 cliff
+ways at Sulov Goticka brana and 1,682/1,702 at Prosiecka dolina are
+generated-fill-only: 96-99% in both, despite Prosiecka's real rock polygon
+count (105) being 5x Sulov's (22) -- a rock area and a cliff line are mapped
+independently in OSM, so the real-rock count does not predict how much of a
+given cliff it actually covers. Dropping the comb there costs 0.8-3.2% of a
+rung's dark pixels (`test/map_preview`, baseline binary vs. the fix, same
+tiles, pixel-counted not estimated); a pixel-diff overlay of what the fix
+removes shows sparse flecks along the checkerboard's own edge, not ink the
+panel needs to read "rock".
+
+**Verified on hardware, 2026-10-31, LilyGo T5 S3 Pro (board A).** Built and
+flashed commit `390d1a5a` (`pio run -e t5s3pro`, this laptop -- T15 was busy
+with another session's build, RAM 23.8%, flash 63.0%, matching the prior
+rock-area-fill pass within 0.1%). Same Sulov scratch tiles as that pass,
+re-pushed with the T-2052 flags over Wi-Fi (`tools/upload_tiles.py`).
+`tools/device_map_shot.py` grabbed Goticka brana (49.1698, 18.5804), hike
+mode, rungs 0 and 1: the dark checkerboard and a plain solid line where the
+hachure used to be, reading as a drop edge next to the rock massif exactly
+the way the host preview predicted -- no comb texture competing with the
+fill's own dither on the actual glass.
+
+**The tangled mass of lines near Goticka brana's own marker is boulder-field
+density, not duplicate OSM data or a rendering bug** -- checked 2026-10-31
+while judging the T-2052 fix. 35 `natural=cliff` ways sit within 150 m of the
+marker; a node-sequence and node-set comparison across all 623 cliff ways in
+the cached extract found zero exact duplicates. The handful of pairs whose
+buffered strips overlap by more than half are either ordinary way-splitting
+(two ways sharing an end node, one continuing where the other stops) or
+genuinely distinct short features sitting close together -- a 6-point closed
+loop (one isolated boulder, about 8x6 m) right next to a 268 m crag line, for
+instance. Every way checked carries `"source": "survey, Ortofotomozaika SR"`,
+consistent with one careful orthophoto-derived import tracing each rock
+feature in a real boulder field separately, not a mapping error. Nothing here
+needs a code fix; it is what the ground looks like.
+
 ## Water has classes now, so a river is not a ditch
 
 Also 2026-08-05. Every water record used to carry `class_id 0`, which made
