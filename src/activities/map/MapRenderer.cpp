@@ -523,10 +523,21 @@ void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     // an index contour -- one says "a hundred metres of height", the other says
     // "you fall here". A panel pass would have been judging a render the style did
     // not perform.
+    // A cliff over this build's own generated rock strip (T-2052,
+    // kCliffFlagFillGenerated) skips the comb: that fill IS this very line,
+    // buffered, so a hachure on top of it repeats the same shape rather than
+    // adding a second signal. Over a surveyed rock polygon (bit unset) the
+    // fill is independent data and the comb still earns its ink -- the same
+    // reasoning the mapbuilder side's `_cliff_fill_flags` comment carries.
+    const bool suppressHachure = wanted == MapReliefClass::Cliff && (line.flags & kCliffFlagFillGenerated) != 0;
     switch (pattern) {
       case MapLinePattern::Hachured:
-        strokeWayHachured(canvas, line, lineWidth, style.contourTickPx[index], style.contourGapPx[index], MapInk::Black,
-                          style.contourTickSide[index], style.contourTickWidthPx[index]);
+        if (suppressHachure) {
+          strokeWay(canvas, line, lineWidth, MapInk::Black);
+        } else {
+          strokeWayHachured(canvas, line, lineWidth, style.contourTickPx[index], style.contourGapPx[index],
+                            MapInk::Black, style.contourTickSide[index], style.contourTickWidthPx[index]);
+        }
         break;
       case MapLinePattern::DashMark:
         strokeWayDashMark(canvas, line, lineWidth, style.contourDashPx[index], style.contourGapPx[index],
