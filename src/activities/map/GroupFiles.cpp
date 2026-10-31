@@ -223,8 +223,16 @@ void groupMigrateLegacyDir() {
 
   const bool legacyExists = Storage.exists(kLegacyDir);
   const bool newExists = Storage.exists(GroupRosterFile::kDir);
-  const GroupMigrateAction action = groupMigrateDecide(legacyExists, newExists, Storage.exists(kLegacyRoster),
-                                                       Storage.exists(GroupRosterFile::kPath));
+  const bool legacyRoster = Storage.exists(kLegacyRoster);
+  const bool newRoster = Storage.exists(GroupRosterFile::kPath);
+  const GroupMigrateAction action = groupMigrateDecide(legacyExists, newExists, legacyRoster, newRoster);
+
+  // DBG, not silent on Nothing: a hardware capture with no line on that
+  // branch can't tell "nothing to migrate" from "never ran" -- the same gap
+  // CardRootMigration.cpp had until a hardware pass on an X3 found it,
+  // 2026-10-31.
+  LOG_DBG(kLogTag, "legacy=%s(%d,roster=%d) new=%s(%d,roster=%d)", kLegacyDir, legacyExists, legacyRoster,
+          GroupRosterFile::kDir, newExists, newRoster);
 
   switch (action) {
     case GroupMigrateAction::Nothing:
