@@ -301,6 +301,32 @@ position but no time (no RTC on this board, no phone in the session). **So the
 526 s of 2026-09-02 is not the ceiling indoors -- through glass a cold start may
 simply never finish.**
 
+### And outdoors it did not finish either
+
+**Measured 2026-10-30**, board B on a walk, read back from the device's own
+`power.csv` (parent `docs/crashes/2026-10-30-t5s3pro-b-walk-freeze/`):
+
+| uptime_s | inview | tracked | bestsnr | q |
+|---|---|---|---|---|
+| 1263 | 10 | 0 | 0 | 0 |
+| 1563 | 13 | 7 | 35 | 0 |
+| 1924 | 17 | 15 | 34 | 0 |
+
+Eleven minutes, seventeen satellites in view, fifteen tracked, best C/N0
+**34 dB** -- and `q` never left 0. That is not the marginal sky the bench
+rows above were taken under. It is the sky a fix is supposed to come from.
+
+So the sentence "through glass a cold start may simply never finish" is too
+kind to the module: **this one did not finish under an open sky either.**
+Why is open -- parent `docs/TODO.md`, T-2049 -- and it needs the receiver's
+own diagnostics across an acquisition, not more source reading.
+
+What this run rules out, by reading rather than by assuming: the NMEA parser
+(`Gnss.cpp` skips the talker and matches `GGA`, so `GNGGA` lands), the
+position seed (44 km out, declared as 50 km, so honest), the battery
+(3,976 mV and falling normally), and any crash or hang (no coredump, heap
+and loop counters flat into the last row).
+
 **So the honest reading is that this bench measured the window, not the
 module.** Outdoors the same three drops should come back faster, and by how
 much is unmeasured. What the numbers do settle is that **a duty cycle cannot be
@@ -507,6 +533,15 @@ five sentences**:
 - **`$PCAS06`**, which `CMD:GNSS EPH` sends to ask how many ephemerides are
   held. Meshtastic probes L76K with `$PCAS06,0` and reads the `$GPTXT` version
   line back.
+**Since 2026-10-31 the time half comes from `deviceWallClockUtc()`, not from
+the phone directly.** That function latches whatever time the device has ever
+seen this boot -- phone or GNSS -- and answers from the latch once the live
+source stops. Before it, a GNSS map session asked `BlePositionServer::utcNow()`
+while deliberately running no BLE, so the one source it consulted was the one
+guaranteed absent and the aiding went out position-only every time. A first
+session after a cold boot with no phone is still un-aided in time, which is
+T-2050.
+
 - **`AID-INI`** (0x0B 0x01), which `Gnss::injectAidIni()` sends on every map
   entry. The whole AID class is missing from V1.1.
 

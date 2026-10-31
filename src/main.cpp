@@ -523,6 +523,68 @@ Gnss gnss;
 // rail. Everything that knows about sharing stays above this line.
 static bool gnssPowerEnable(bool on) { return t5s3RailHold(kRailUserGnss, on); }
 
+// ===========================================================================
+// THE DEVICE'S WALL CLOCK
+// ===========================================================================
+//
+// **Both sources are live reads, and both come and go.** The phone answers
+// only while it is connected, and `gnss.running()` is only true while the map
+// holds the receiver up. Neither is a clock; together with a latch they are.
+//
+// This board has no RTC ("RTC not found" at boot), so until the latch landed
+// the device forgot the time the moment the rider left the map -- seconds
+// after learning it -- and two things paid for that: the LoRa node could not
+// advertise at all off the map, and GNSS aiding went out with no time in it
+// (gnssStart() below, docs/gnss.md "AID-INI").
+//
+// Volatile on purpose. After a reboot the device genuinely does not know what
+// time it is, and an advert carrying a guessed timestamp is the bug the clock
+// guard exists to prevent.
+//
+// A critical section rather than a mutex: it guards three words, it is reached
+// from the loop task, the render task and the LoRa service task, and it must
+// work on boards that build no radio at all -- so it cannot borrow LoraLock.
+static portMUX_TYPE gClockMux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t gClockBaseUtc = 0;
+static uint32_t gClockBaseMs = 0;
+static bool gClockKnown = false;
+
+static void deviceClockLatch(const uint32_t utc) {
+  portENTER_CRITICAL(&gClockMux);
+  gClockBaseUtc = utc;
+  gClockBaseMs = millis();
+  gClockKnown = true;
+  portEXIT_CRITICAL(&gClockMux);
+}
+
+// The best time this device has, or 0 if it has never had one this boot.
+// A live source always wins and re-latches; the latch answers when none does.
+uint32_t deviceWallClockUtc() {
+  uint32_t utc = 0;
+  if (freeink::BlePositionServer::getInstance().utcNow(utc)) {
+    deviceClockLatch(utc);
+    return utc;
+  }
+#ifdef ENABLE_GNSS_CMD
+  if (gnss.running()) {
+    const uint32_t gnssUtc = gnss.fix().utc;
+    if (gnssUtc != 0) {
+      deviceClockLatch(gnssUtc);
+      return gnssUtc;
+    }
+  }
+#endif
+  portENTER_CRITICAL(&gClockMux);
+  const bool known = gClockKnown;
+  const uint32_t base = gClockBaseUtc;
+  const uint32_t baseMs = gClockBaseMs;
+  portEXIT_CRITICAL(&gClockMux);
+  if (!known) return 0;
+  // Drifts like any millis clock. An advert timestamp and a GNSS time seed
+  // both tolerate that; neither tolerates no time at all.
+  return base + (millis() - baseMs) / 1000;
+}
+
 // Opens the receiver: rail up, UART up, with this board's pins and ring size.
 // Declared in GnssAccess.h so the map can call it too -- CMD:GNSS ON was the
 // only caller when this was inline, and a second caller must not carry a second
@@ -586,13 +648,23 @@ bool gnssStart() {
   // the device was in Barcelona. A seed that lies about its accuracy is worse
   // than a wide one, because the receiver trusts it.
   //
-  // Time only when something has it. A GNSS map session runs no BLE
-  // (MapActivity's bleInUse_), and this board has no RTC ("RTC not found" at
-  // boot), so utcNow() answers only when a phone set the clock earlier in this
-  // same boot. Position-only aiding is still most of the win.
+  // **Time whenever the device has ever had one this boot**, not only while a
+  // phone is connected. A GNSS map session runs no BLE (MapActivity's
+  // bleInUse_) and this board has no RTC, so asking the phone directly was
+  // asking the one source that is guaranteed absent here -- and the aiding
+  // went out position-only every single time.
+  //
+  // Measured 2026-10-30, board B on a walk: eleven minutes outdoors,
+  // seventeen satellites in view, fifteen tracked, best C/N0 34 dB, and
+  // `q` never left 0. Good sky and no fix is what an unaided-in-time cold
+  // start looks like (docs/gnss.md, "no fix in 25 minutes").
+  //
+  // deviceWallClockUtc() answers from the latch when neither live source
+  // does, so a second map session in the same boot -- or any session after a
+  // phone has been seen once -- is now time-aided.
   if (SETTINGS.mapHasLastFix) {
-    uint32_t utc = 0;
-    const bool haveTime = freeink::BlePositionServer::getInstance().utcNow(utc);
+    const uint32_t utc = deviceWallClockUtc();
+    const bool haveTime = utc != 0;
     const double lat = static_cast<double>(SETTINGS.mapLastLatE7) / 1e7;
     const double lon = static_cast<double>(SETTINGS.mapLastLonE7) / 1e7;
     if (gnss.injectAidIni(lat, lon, haveTime, utc)) {
@@ -1300,44 +1372,18 @@ static void loraLogSimple(LoraLogKind kind, uint32_t cadenceSec = 0, LoraTxDecli
 static bool gMeshClockEverKnown = false;
 
 static uint32_t meshWallClockUtc() {
-  // **Takes the lock itself, because this function writes.** It was a pure
-  // read until the latch below was added, and two of its six callers --
-  // meshBeaconTick() and loraDrain()'s log write -- never held LoraLock. A
-  // third, loraPresenceStatus(), runs on the render task. gMeshRtc is three
-  // fields and tick() is a read-modify-write, so a concurrent setCurrentTime()
-  // could leave the accumulator holding the whole uptime and put the next
-  // advert hours into the future. The mutex is recursive, so the callers that
-  // already hold it pay nothing.
-  LoraLock lock;
-  uint32_t utc = 0;
-  if (freeink::BlePositionServer::getInstance().utcNow(utc)) {
-    gMeshRtc.setCurrentTime(utc);
-    gMeshClockEverKnown = true;
-    return utc;
-  }
-#ifdef ENABLE_GNSS_CMD
-  if (gnss.running()) {
-    const uint32_t gnssUtc = gnss.fix().utc;
-    if (gnssUtc != 0) {
-      gMeshRtc.setCurrentTime(gnssUtc);
-      gMeshClockEverKnown = true;
-      return gnssUtc;
-    }
-  }
-#endif
-  // **The time does not evaporate when its source stops.** Both sources above
-  // are live reads -- the phone must be connected, and `gnss.running()` is
-  // only true on the map -- so until 2026-10-30 a device that had just been
-  // told the UTC forgot it the moment the rider left the map. The Group
-  // screen could then never announce the device at all, on a board that had
-  // known the time seconds earlier (parent docs/TODO.md, T-2048).
+  // **Takes the lock because it writes gMeshRtc.** It was a pure read until
+  // the clock latch landed, and two of its callers never held LoraLock while
+  // a third runs on the render task. The mutex is recursive, so the callers
+  // that already hold it pay nothing.
   //
-  // gMeshRtc is already set from every live read above and ticked on the
-  // service task, so it is the clock this device has: a base stamp plus
-  // elapsed millis. It drifts like any millis clock, which an advert
-  // timestamp tolerates and a missing one does not.
-  if (gMeshClockEverKnown) return gMeshRtc.getCurrentTime();
-  return 0;
+  // The time itself comes from deviceWallClockUtc(), which is not LoRa's --
+  // the same clock seeds GNSS aiding. This keeps MeshCore's own RTC in step
+  // with it, which is what createAdvert() stamps a frame from.
+  LoraLock lock;
+  const uint32_t utc = deviceWallClockUtc();
+  if (utc != 0) gMeshRtc.setCurrentTime(utc);
+  return utc;
 }
 
 // This run's identity, so a row can be told from one written before the last
