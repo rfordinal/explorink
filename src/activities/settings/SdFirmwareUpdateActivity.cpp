@@ -14,6 +14,32 @@
 #include "fontIds.h"
 #include "network/FirmwareFlasher.h"
 
+namespace {
+// Shared between the pre-confirmation validation pass and the flash-time
+// TOCTOU re-validation (SdFirmwareUpdateActivity::performUpdate()), so a
+// file rejected for the same reason twice shows the same message both times.
+std::string describeFirmwareError(firmware_flash::Result vr, const char* wrongBoardName) {
+  switch (vr) {
+    case firmware_flash::Result::TOO_LARGE:
+      return tr(STR_FIRMWARE_TOO_LARGE);
+    case firmware_flash::Result::TOO_SMALL:
+      return tr(STR_FIRMWARE_TOO_SMALL);
+    case firmware_flash::Result::BAD_CHIP:
+      return tr(STR_FIRMWARE_WRONG_DEVICE);
+    case firmware_flash::Result::WRONG_BOARD:
+      // wrongBoardName names the board the FILE is for (empty when the image
+      // carries no tag at all -- still rejected on S3, see
+      // FirmwareFlasher::validateImageFile(), but there's no name to show).
+      if (wrongBoardName && wrongBoardName[0] != '\0') {
+        return std::string(tr(STR_FIRMWARE_WRONG_DEVICE)) + " (" + wrongBoardName + ")";
+      }
+      return tr(STR_FIRMWARE_WRONG_DEVICE);
+    default:
+      return tr(STR_INVALID_FIRMWARE);
+  }
+}
+}  // namespace
+
 void SdFirmwareUpdateActivity::onEnter() {
   Activity::onEnter();
   // Build-identity marker — confirms which firmware build owns the SD update flow.
@@ -96,16 +122,12 @@ bool SdFirmwareUpdateActivity::validateFirmware() {
   // trailer) that the shared firmware-flasher applies right before raw-writing otadata. This
   // catches truncated or corrupted .bin files at confirmation time, before the user ever sees
   // the "Updating…" progress bar.
-  const auto vr = firmware_flash::validateImageFile(firmwarePath.c_str(), partitionLimit);
+  char wrongBoardName[24] = {};
+  const auto vr =
+      firmware_flash::validateImageFile(firmwarePath.c_str(), partitionLimit, wrongBoardName, sizeof(wrongBoardName));
   if (vr != firmware_flash::Result::OK) {
     LOG_ERR("FW", "image validation failed: %s", firmware_flash::resultName(vr));
-    if (vr == firmware_flash::Result::TOO_LARGE) {
-      errorMessage = tr(STR_FIRMWARE_TOO_LARGE);
-    } else if (vr == firmware_flash::Result::TOO_SMALL) {
-      errorMessage = tr(STR_FIRMWARE_TOO_SMALL);
-    } else {
-      errorMessage = tr(STR_INVALID_FIRMWARE);
-    }
+    errorMessage = describeFirmwareError(vr, wrongBoardName);
     return false;
   }
   return true;
@@ -164,10 +186,21 @@ void SdFirmwareUpdateActivity::performUpdate() {
   // pre-confirmation pass. The alreadyValidated parameter on the API stays
   // for callers (e.g. an OTA staging path) where the same byte stream was
   // just hashed and there's no removable-media gap.
-  const auto result = firmware_flash::flashFromSdPath(firmwarePath.c_str(), progressCb, this);
+  char wrongBoardName[24] = {};
+  const auto result =
+      firmware_flash::flashFromSdPath(firmwarePath.c_str(), progressCb, this,
+                                      /*alreadyValidated=*/false, wrongBoardName, sizeof(wrongBoardName));
   if (result != firmware_flash::Result::OK) {
     LOG_ERR("FW", "flash failed: %s", firmware_flash::resultName(result));
-    errorMessage = tr(STR_FIRMWARE_WRITE_FAILED);
+    // A card swapped after the confirmation prompt can fail validation here
+    // for the same reasons validateFirmware() checks -- WRITE_FAILED alone
+    // would be misleading for those. Anything else (an actual write/erase
+    // failure) still falls through describeFirmwareError()'s default case,
+    // which is too generic for that -- use the dedicated message instead.
+    errorMessage = (result == firmware_flash::Result::WRITE_FAIL || result == firmware_flash::Result::ERASE_FAIL ||
+                    result == firmware_flash::Result::OTADATA_FAIL)
+                       ? tr(STR_FIRMWARE_WRITE_FAILED)
+                       : describeFirmwareError(result, wrongBoardName);
     RenderLock lock(*this);
     state = State::FAILED;
     requestUpdate();

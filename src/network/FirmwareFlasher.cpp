@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <memory>
 
+#include "FirmwareBoardTag.h"
 #include "OtaBootSwitch.h"
 
 namespace firmware_flash {
@@ -46,6 +48,10 @@ const char* resultName(Result r) {
       return "BAD_CHECKSUM";
     case Result::BAD_SHA:
       return "BAD_SHA";
+    case Result::BAD_CHIP:
+      return "BAD_CHIP";
+    case Result::WRONG_BOARD:
+      return "WRONG_BOARD";
     case Result::BAD_SIZE:
       return "BAD_SIZE";
     case Result::NO_PARTITION:
@@ -64,17 +70,35 @@ const char* resultName(Result r) {
   return "?";
 }
 
+uint16_t runningPartitionChipId() {
+  // esp_partition_read hits SPI flash; cache the running slot's chip_id so we
+  // only pay that cost once per boot. The running image is immutable at
+  // runtime, so a function-local static is safe here.
+  static uint16_t cached = [] {
+    const esp_partition_t* run = esp_ota_get_running_partition();
+    if (!run) return static_cast<uint16_t>(0xFFFF);
+    uint16_t id = 0xFFFF;
+    // chip_id sits at offset 12 of esp_image_header_t. memcpy target is a
+    // uint16_t local, so RISC-V alignment is guaranteed.
+    if (esp_partition_read(run, 12, &id, sizeof(id)) != ESP_OK) return static_cast<uint16_t>(0xFFFF);
+    return id;
+  }();
+  return cached;
+}
+
 namespace {
 // Stream `length` bytes from `file` starting at the current read offset, feeding them through
-// both the XOR-checksum and SHA256 accumulators. Used by validateImageFile so the whole image
-// is verified end-to-end without holding it in RAM (ESP32-C3 only has ~380 KB).
-Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbedtls_sha256_context* sha, uint8_t* buf) {
+// the XOR-checksum, SHA256 and board-tag accumulators. Used by validateImageFile so the whole
+// image is verified end-to-end without holding it in RAM (ESP32-C3 only has ~380 KB).
+Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbedtls_sha256_context* sha, uint8_t* buf,
+                           board_tag::Scanner* tagScanner) {
   size_t remaining = length;
   while (remaining > 0) {
     const size_t want = std::min<size_t>(CHUNK, remaining);
     const int got = file.read(buf, want);
     if (got <= 0 || static_cast<size_t>(got) != want) return Result::READ_FAIL;
     if (sha) mbedtls_sha256_update(sha, buf, want);
+    if (tagScanner) tagScanner->feed(buf, want);
     if (xorAccum) {
       uint8_t acc = *xorAccum;
       for (size_t i = 0; i < want; i++) acc ^= buf[i];
@@ -86,7 +110,7 @@ Result feedHashAndChecksum(HalFile& file, size_t length, uint8_t* xorAccum, mbed
 }
 }  // namespace
 
-Result validateImageFile(const char* sdPath, size_t partitionSize) {
+Result validateImageFile(const char* sdPath, size_t partitionSize, char* wrongBoardNameOut, size_t wrongBoardNameCap) {
   HalFile file;
   if (!Storage.openFileForRead("FLASH", sdPath, file) || !file) {
     LOG_ERR("FLASH", "validate: open failed: %s", sdPath);
@@ -117,6 +141,17 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
     file.close();
     return Result::BAD_MAGIC;
   }
+  // Reject an image built for a different MCU family before it can brick the
+  // device. chip_id lives at esp_image_header_t offset 12; compare it against
+  // the running slot's own chip_id (self-describing, no chip enumeration).
+  uint16_t imageChip;
+  std::memcpy(&imageChip, header + 12, sizeof(imageChip));
+  const uint16_t deviceChip = runningPartitionChipId();
+  if (deviceChip != 0xFFFF && imageChip != deviceChip) {
+    LOG_ERR("FLASH", "validate: wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
+    file.close();
+    return Result::BAD_CHIP;
+  }
   const uint8_t segCount = header[1];
   const bool hashAppended = header[23] != 0;
 
@@ -133,6 +168,10 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
 
   uint8_t xorAccum = CHECKSUM_SEED;
   size_t pos = HEADER_SIZE;
+  // Board tag: scanned from the same segment stream the hash pass already
+  // reads, so the check is free of extra I/O. Only a present-and-mismatched
+  // tag rejects; untagged images (forks, other projects) pass.
+  board_tag::Scanner tagScanner;
 
   for (uint8_t i = 0; i < segCount; i++) {
     if (pos + SEG_HEADER_SIZE > fileSize) {
@@ -160,13 +199,40 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
       return Result::BAD_SEGMENTS;
     }
 
-    const Result feedRes = feedHashAndChecksum(file, dataLen, &xorAccum, &shaCtx, buf.get());
+    const Result feedRes = feedHashAndChecksum(file, dataLen, &xorAccum, &shaCtx, buf.get(), &tagScanner);
     if (feedRes != Result::OK) {
       mbedtls_sha256_free(&shaCtx);
       file.close();
       return feedRes;
     }
     pos += dataLen;
+  }
+
+  if (tagScanner.mismatch()) {
+    LOG_ERR("FLASH", "validate: wrong board: image=%s device=%.*s", tagScanner.foundName(),
+            static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
+    if (wrongBoardNameOut && wrongBoardNameCap > 0) {
+      const size_t n = std::min(wrongBoardNameCap - 1, strlen(tagScanner.foundName()));
+      memcpy(wrongBoardNameOut, tagScanner.foundName(), n);
+      wrongBoardNameOut[n] = '\0';
+    }
+    mbedtls_sha256_free(&shaCtx);
+    file.close();
+    return Result::WRONG_BOARD;
+  }
+
+  // x4pro, t5s3pro and sticky are all ESP32-S3 and share one chip_id, so
+  // BAD_CHIP above cannot tell them apart -- only the tag can. An untagged
+  // image is therefore unproven on S3, not "safe by default" the way it is
+  // on C3 (where X3/X4 are the only sharers and are pin-compatible). This
+  // matters today, not hypothetically: every image published before this tag
+  // existed is untagged, so without this check re-enabling the SD update row
+  // would not have closed the gap T-2008 was filed for.
+  if (deviceChip == ESP_CHIP_ID_ESP32S3 && !tagScanner.sawAnyTag()) {
+    LOG_ERR("FLASH", "validate: untagged image on S3, cannot confirm board match");
+    mbedtls_sha256_free(&shaCtx);
+    file.close();
+    return Result::WRONG_BOARD;
   }
 
   // pad_end is the 16-byte aligned offset at which the checksum byte sits at pad_end - 1.
@@ -226,7 +292,8 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   return Result::OK;
 }
 
-Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated) {
+Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated,
+                       char* wrongBoardNameOut, size_t wrongBoardNameCap) {
   // Resolve destination first so we can size-check during validation. The full image-integrity
   // pass below verifies header, segment table, XOR checksum and SHA256 trailer end-to-end before
   // we touch otadata, so a truncated/corrupted .bin can never become the next boot target.
@@ -241,7 +308,7 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
   // prompt), skip the redundant integrity scan. We still keep the partition
   // lookup so the rest of the flashing path stays unchanged.
   if (!alreadyValidated) {
-    const Result validateRes = validateImageFile(sdPath, dest->size);
+    const Result validateRes = validateImageFile(sdPath, dest->size, wrongBoardNameOut, wrongBoardNameCap);
     if (validateRes != Result::OK) {
       LOG_ERR("FLASH", "image validation failed: %s", resultName(validateRes));
       return validateRes;
