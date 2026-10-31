@@ -48,6 +48,7 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     LOG_DBG("OTA", "Update check failed: %d", res);
     {
       RenderLock lock(*this);
+      errorMessage.clear();
       state = FAILED;
     }
     return;
@@ -160,6 +161,9 @@ void OtaUpdateActivity::render(RenderLock&&) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
+    if (!errorMessage.empty()) {
+      renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, errorMessage.c_str());
+    }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == FINISHED) {
@@ -190,6 +194,7 @@ void OtaUpdateActivity::runUpdateInstall() {
     LOG_DBG("OTA", "Update failed: %d", res);
     {
       RenderLock lock(*this);
+      errorMessage = (res == OtaUpdater::WRONG_DEVICE_ERROR) ? tr(STR_FIRMWARE_WRONG_DEVICE) : "";
       state = FAILED;
     }
     requestUpdate();

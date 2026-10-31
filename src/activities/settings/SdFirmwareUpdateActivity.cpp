@@ -96,13 +96,22 @@ bool SdFirmwareUpdateActivity::validateFirmware() {
   // trailer) that the shared firmware-flasher applies right before raw-writing otadata. This
   // catches truncated or corrupted .bin files at confirmation time, before the user ever sees
   // the "Updating…" progress bar.
-  const auto vr = firmware_flash::validateImageFile(firmwarePath.c_str(), partitionLimit);
+  char wrongBoardName[24] = {};
+  const auto vr =
+      firmware_flash::validateImageFile(firmwarePath.c_str(), partitionLimit, wrongBoardName, sizeof(wrongBoardName));
   if (vr != firmware_flash::Result::OK) {
     LOG_ERR("FW", "image validation failed: %s", firmware_flash::resultName(vr));
     if (vr == firmware_flash::Result::TOO_LARGE) {
       errorMessage = tr(STR_FIRMWARE_TOO_LARGE);
     } else if (vr == firmware_flash::Result::TOO_SMALL) {
       errorMessage = tr(STR_FIRMWARE_TOO_SMALL);
+    } else if (vr == firmware_flash::Result::BAD_CHIP) {
+      errorMessage = tr(STR_FIRMWARE_WRONG_DEVICE);
+    } else if (vr == firmware_flash::Result::WRONG_BOARD) {
+      // wrongBoardName names the board the FILE is for; board_tag::boardName()
+      // names the board actually running -- both short machine tags ("x4pro",
+      // "t5s3pro"), same vocabulary the image's own embedded tag uses.
+      errorMessage = std::string(tr(STR_FIRMWARE_WRONG_DEVICE)) + " (" + wrongBoardName + ")";
     } else {
       errorMessage = tr(STR_INVALID_FIRMWARE);
     }

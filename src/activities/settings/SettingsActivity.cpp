@@ -85,16 +85,12 @@ void SettingsActivity::rebuildSettingsLists() {
   if (!BoardConfig::hasTouch()) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   }
-  // Menu row disabled, 2026-09-14 (T-2008): FirmwareFlasher::validateImageFile()
-  // checks image structure only, not chip_id or board identity (unlike upstream
-  // CrossPoint's board_tag::Scanner, see docs/upstream-crosspoint.md). Every
-  // board sees this row today, so a person could pick an S3 image (x4pro/
-  // sticky/t5s3pro) from the SD card on the wrong S3 board -- same chip_id,
-  // different pins -- and it would pass validation and flash. Re-enable once
-  // T-2008 lands the chip/board check. SdFirmwareUpdateActivity itself is
-  // untouched: recovery-mode boot (left button + power on X3) still uses it,
-  // and that path has no menu to gate.
-  // systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
+  // Row was hidden 2026-09-14 (T-2008): FirmwareFlasher::validateImageFile()
+  // checked image structure only, so a wrong-board S3 image (x4pro/sticky/
+  // t5s3pro share one chip_id) would pass and flash. Re-enabled now that
+  // validateImageFile() rejects BAD_CHIP and WRONG_BOARD
+  // (FirmwareBoardTag.h/.cpp) before otadata is ever touched.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   // Text Settings, Manage Fonts and Customise Status Bar went with the Reader
   // tab. The status bar they customise is the reader's; the map header draws

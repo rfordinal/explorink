@@ -11,6 +11,13 @@ void safeCopy(char* dst, size_t dstSize, const char* src, size_t srcLen) {
   dst[n] = '\0';
 }
 
+bool endsWith(const char* str, const char* suffix) {
+  const size_t strLen = strlen(str);
+  const size_t suffixLen = strlen(suffix);
+  if (suffixLen == 0 || suffixLen > strLen) return false;
+  return memcmp(str + (strLen - suffixLen), suffix, suffixLen) == 0;
+}
+
 }  // namespace
 
 ReleaseJsonParser::ReleaseJsonParser()
@@ -26,6 +33,7 @@ void ReleaseJsonParser::reset() {
   depth = 0;
   assetDepth = 0;
   tagName[0] = '\0';
+  expectedAssetSuffix[0] = '\0';
   firmwareUrl[0] = '\0';
   firmwareSize = 0;
   tagFound = false;
@@ -37,6 +45,10 @@ void ReleaseJsonParser::reset() {
 
 void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, len); }
 
+void ReleaseJsonParser::setFirmwareAssetSuffix(const char* suffix) {
+  safeCopy(expectedAssetSuffix, sizeof(expectedAssetSuffix), suffix ? suffix : "", suffix ? strlen(suffix) : 0);
+}
+
 bool ReleaseJsonParser::foundTag() const { return tagFound; }
 bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
 const char* ReleaseJsonParser::getTagName() const { return tagName; }
@@ -44,7 +56,7 @@ const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
-  if (strcmp(currentAssetName, "firmware.bin") == 0) {
+  if (!firmwareFound && expectedAssetSuffix[0] != '\0' && endsWith(currentAssetName, expectedAssetSuffix)) {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;
     firmwareFound = true;

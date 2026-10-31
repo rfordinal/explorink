@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "activities/Activity.h"
 #include "network/OtaUpdater.h"
 
@@ -21,6 +23,7 @@ class OtaUpdateActivity : public Activity {
   State state = WIFI_SELECTION;
   unsigned int lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
   OtaUpdater updater;
+  std::string errorMessage;
 
   void onWifiSelectionComplete(bool success);
   void runUpdateInstall();

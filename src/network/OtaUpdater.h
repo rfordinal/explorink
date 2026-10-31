@@ -21,6 +21,7 @@ class OtaUpdater {
     UPDATE_OLDER_ERROR,
     INTERNAL_UPDATE_ERROR,
     OOM_ERROR,
+    WRONG_DEVICE_ERROR,  // download aborted: wrong chip_id or a board_tag naming a different board
   };
 
   size_t getOtaSize() const { return otaSize; }
