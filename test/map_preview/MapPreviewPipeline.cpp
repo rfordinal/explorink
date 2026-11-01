@@ -253,6 +253,9 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.placesDrawn = source->placesEmitted();
   result.labelsPlaced = labels.placed;
   result.labelsDropped = labels.dropped;
+  result.roadOffered = labels.roadCount;
+  result.roadPlaced = labels.roadPlaced;
+  result.roadTooLong = labels.roadTooLong;
   result.labelInkProbes = labels.inkProbes;
   result.labelInkSamples = labels.inkSamples;
   result.bytesRead = source->bytesRead();

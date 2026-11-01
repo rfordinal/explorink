@@ -27,6 +27,7 @@ void MapTileSource::begin(const Config& config) {
   waysEmitted_ = 0;
   waysFiltered_ = 0;
   placesEmitted_ = 0;
+  roadLabelsEmitted_ = 0;
   bytesRead_ = 0;
   pointsProjected_ = 0;
   waysOffScreen_ = 0;
@@ -427,6 +428,52 @@ bool MapTileSource::nextWayRecord(MapWayRef& out, const bool applyClassMask) {
     out.xs = xs_;
     out.ys = ys_;
     ++waysEmitted_;
+    return true;
+  }
+}
+
+bool MapTileSource::beginRoadLabels() { return startPass(MapTileReader::Layer::RoadLabels); }
+
+bool MapTileSource::nextRoadLabel(MapRoadLabelRef& out) {
+  for (;;) {
+    if (!tileOpen_ && !advanceToNextTile()) return false;
+
+    MapTileReader::RoadLabelHeader header;
+    if (!reader_.readRoadLabelHeader(header)) {
+      closeCurrentTile();
+      continue;
+    }
+    if (!reader_.readRoadLabelName(header, name_, sizeof(name_))) {
+      closeCurrentTile();
+      continue;
+    }
+
+    int16_t sx = 0;
+    int16_t sy = 0;
+    proj_.projectTileLocal(reader_.originX(), reader_.originY(), header.x, header.y, sx, sy,
+                           reader_.coordShift());
+    ++pointsProjected_;
+
+    // The tangent is rotated, never projected. Projecting the anchor and a
+    // second point one unit along it collapses to zero at the closest rung,
+    // where one stored unit is one pixel and both land on the same pixel.
+    double rdx = 0.0;
+    double rdy = 0.0;
+    proj_.rotateTileLocalDir(header.dx, header.dy, rdx, rdy);
+
+    out.x = sx;
+    out.y = sy;
+    out.dx = static_cast<int16_t>(std::lround(rdx));
+    out.dy = static_cast<int16_t>(std::lround(rdy));
+    // runQ is GROUND metres (the builder saturates it at 255); the renderer
+    // wants the pixels a name has to fit into, and only the projection still
+    // knows this rung's ground scale.
+    const double mpp = proj_.mppGround();
+    const double runPx = mpp > 0.0 ? header.runQ / mpp : 0.0;
+    out.runPx = static_cast<uint16_t>(runPx > 65535.0 ? 65535.0 : (runPx < 0.0 ? 0.0 : runPx));
+    out.classId = header.classId;
+    out.name = name_;
+    ++roadLabelsEmitted_;
     return true;
   }
 }

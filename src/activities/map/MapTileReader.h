@@ -60,6 +60,13 @@ class MapTileReader {
     // elevation in metres as an int16 on the contour classes -- not a bit field
     // on this layer (docs/contours-plan.md, "The record").
     Relief = 7,
+    // Street names, written by the detail LOD alone (T-558). A record is a
+    // point plus a DIRECTION, because the name is laid along its street the way
+    // a contour's height number is laid along its line -- not beside an anchor.
+    //
+    // Added without a format bump: see kMaxLayers above. A build that predates
+    // this layer scans past id 8 and draws no names.
+    RoadLabels = 8,
   };
 
   struct WayHeader {
@@ -73,6 +80,28 @@ class MapTileReader {
     int16_t x = 0;
     int16_t y = 0;
     uint8_t rank = 0;
+    uint8_t nameLen = 0;
+  };
+
+  // One street name. Nine bytes on the wire, then `nameLen` bytes of UTF-8
+  // (docs/map-data-spec.md, "Road label record").
+  struct RoadLabelHeader {
+    int16_t x = 0;
+    int16_t y = 0;
+    // The street's tangent at the anchor, normalised to 127, in the RECORD's
+    // frame -- y counts down from the tile's north edge, same as x/y above. The
+    // builder already flipped it out of Mercator's y-grows-north, so do not
+    // flip it again: a label drawn from a re-flipped tangent is mirrored about
+    // the horizontal and looks like a font bug.
+    int8_t dx = 0;
+    int8_t dy = 0;
+    // Straight run through the anchor in GROUND metres, saturated at 255. Not
+    // device pixels: the renderer divides by its own rung's mpp, so one record
+    // serves every rung. A name wider than this is refused -- that is what
+    // keeps a long name off a short stub of street.
+    uint8_t runQ = 0;
+    // Road class, which is also the label's rank: lower draws first.
+    uint8_t classId = 0;
     uint8_t nameLen = 0;
   };
 
@@ -254,6 +283,11 @@ class MapTileReader {
   // Writes a null terminator within `bufCap`.
   bool readPlaceName(const PlaceHeader& header, char* buf, size_t bufCap);
 
+  bool readRoadLabelHeader(RoadLabelHeader& out);
+  // Same contract as readPlaceName: consumes exactly `header.nameLen` bytes
+  // whatever `bufCap` is, so the cursor always lands on the next record.
+  bool readRoadLabelName(const RoadLabelHeader& header, char* buf, size_t bufCap);
+
   bool readJunctionRecord(JunctionRecord& out);
 
   // Real bytes pulled from `file` for the tile currently open -- header,
@@ -342,6 +376,8 @@ class MapTileReader {
   bool parseHeader();
   const LayerEntry* findLayer(Layer layer) const;
   bool readRaw(void* dst, size_t len);
+  // Consumes exactly `nameLen` bytes whatever `bufCap` holds -- see the .cpp.
+  bool readNameBytes(uint8_t nameLen, char* buf, size_t bufCap);
   bool refill();
   // The one place that ever calls file_->read(). Every byte it returns is
   // real I/O, so this is also the one place bytesRead_ is incremented.

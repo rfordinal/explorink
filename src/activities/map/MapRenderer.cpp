@@ -1133,6 +1133,21 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // draws next. A label is the only thing here that is placed rather than
   // simply drawn, so it has to see the finished picture (MapLabels.h).
   if (labels != nullptr) MapLabels::draw(canvas, *labels, style);
+  // Street names between the settlement names and the contour heights, and the
+  // order is the whole declutter rule: a place name beats a street, a street
+  // beats a height. Each pass claims its ground in `labels->taken` and the next
+  // one yields to it.
+  //
+  // The layer is opened only when the style draws names -- the same gate the
+  // relief layer has -- so a mode or a rung that shows none pays no card read.
+  if (labels != nullptr && style.roadLabelPx > 0 && style.roadLabelMax > 0 && source.beginRoadLabels()) {
+    MapRoadLabelRef roadLabel;
+    while (source.nextRoadLabel(roadLabel)) {
+      MapLabels::offerRoadLabel(*labels, roadLabel);
+    }
+    MapLabels::drawRoadLabels(canvas, *labels, style);
+  }
+  if (timing) lap(timing->roadLabels, mark);
   if (style.contoursEnabled) {
     drawContourLabels(canvas, style, labels, contourLabels,
                       static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])),

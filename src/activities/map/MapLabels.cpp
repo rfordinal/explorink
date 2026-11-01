@@ -1,5 +1,7 @@
 #include "MapLabels.h"
 
+#include "MapTextMask.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -684,4 +686,183 @@ void MapLabels::draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyl
     }
     if (!drew) ++scratch.dropped;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Street names (T-558)
+// ---------------------------------------------------------------------------
+//
+// A separate pass from the places above, not a third tier of them. The text
+// lies ALONG its street at that street's own angle, the way drawContourLabels
+// sets a height on its contour -- so there is no eight-position search, no dot
+// to clear, no per-cell quota, and the occupancy test has to be taken over the
+// ROTATED extent.
+
+void MapLabels::offerRoadLabel(MapLabelScratch& scratch, const MapRoadLabelRef& label) {
+  if (label.name == nullptr || label.name[0] == '\0') return;
+  // A street whose anchor is off the panel cannot be named -- drawRoadLabels()
+  // skips it -- so letting it hold a slot only starves one that could have been.
+  if (!scratch.onScreen(label.x, label.y)) return;
+  // A direction of zero carries no angle, and mapTextBasisFromUp would fall
+  // back to horizontal: a name lying across its own street rather than along
+  // it. Refuse it here instead, where it costs nothing.
+  if (label.dx == 0 && label.dy == 0) return;
+
+  // **One name per street per panel.** The builder spaces anchors along a street
+  // so that a panel anywhere on it catches one; a street that runs the length of
+  // the screen catches two, and the first render put "Liscie udolie" on one
+  // panel twice. A paper map repeats a name along a road, but not twice inside
+  // one screen-height.
+  //
+  // The first offer wins rather than the best one. Both are on the same panel
+  // and differ only in which end of the same street they sit on, so picking
+  // between them would be arithmetic with no visible answer.
+  for (int i = 0; i < scratch.roadCount; ++i) {
+    if (std::strcmp(scratch.roadLabels[i].name, label.name) == 0) return;
+  }
+
+  // Best-first by road class, then by the longer straight run. No distance to
+  // the anchor, unlike a place: a street name is not pointing at something the
+  // rider is near, it is saying what the line under it is called.
+  //
+  // The tile already wrote its own records in this order, so on one tile this
+  // is a no-op; what it actually does is merge the two to four tiles a close
+  // rung reads into one order.
+  int at = scratch.roadCount;
+  while (at > 0) {
+    const MapRoadLabelSlot& prev = scratch.roadLabels[at - 1];
+    const bool worse = prev.classId > label.classId ||
+                       (prev.classId == label.classId && prev.runPx < label.runPx);
+    if (!worse) break;
+    --at;
+  }
+  if (at >= MapLabelScratch::kMaxRoadLabels) return;
+
+  for (int i = MapLabelScratch::kMaxRoadLabels - 1; i > at; --i) {
+    scratch.roadLabels[i] = scratch.roadLabels[i - 1];
+  }
+  MapRoadLabelSlot& slot = scratch.roadLabels[at];
+  slot.x = label.x;
+  slot.y = label.y;
+  slot.dx = label.dx;
+  slot.dy = label.dy;
+  slot.runPx = label.runPx;
+  slot.classId = label.classId;
+  copyName(slot.name, MapRoadLabelSlot::kNameLen, label.name);
+  if (scratch.roadCount < MapLabelScratch::kMaxRoadLabels) ++scratch.roadCount;
+}
+
+void MapLabels::drawRoadLabels(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style) {
+  if (style.roadLabelPx == 0 || style.roadLabelMax == 0) return;
+  const int sizePx = static_cast<int>(style.roadLabelPx);
+
+  int drawableX = 0, drawableY = 0, drawableW = 0, drawableH = 0;
+  canvas.drawableRect(drawableX, drawableY, drawableW, drawableH);
+  if (drawableW <= 0 || drawableH <= 0) return;
+
+  int placed = 0;
+  for (int i = 0; i < scratch.roadCount && placed < static_cast<int>(style.roadLabelMax); ++i) {
+    const MapRoadLabelSlot& slot = scratch.roadLabels[i];
+    if (slot.x < drawableX || slot.y < drawableY || slot.x >= drawableX + drawableW ||
+        slot.y >= drawableY + drawableH) {
+      continue;
+    }
+
+    FittedLabel fitted;
+    if (!fitName(canvas, slot.name, sizePx, style.roadLabelBold,
+                 static_cast<int>(style.roadLabelMaxWidthPx), fitted)) {
+      ++scratch.dropped;
+      continue;
+    }
+    // One line only. A street name wrapped onto two lines would have to be
+    // stacked perpendicular to a street running at any angle, and two stacked
+    // lines along a diagonal road read as two different labels.
+    if (fitted.lines != 1) {
+      ++scratch.dropped;
+      continue;
+    }
+
+    // **The rule that makes this look like a map rather than a word cloud.**
+    // A name wider than the straight street under it would have to bend, and a
+    // bent name is what no paper map draws. The builder measured the run
+    // (docs/map-data-spec.md, "Road label record"); this is where it is spent.
+    if (fitted.width_() > static_cast<int>(slot.runPx)) {
+      ++scratch.roadTooLong;
+      continue;
+    }
+
+    // The reading direction is the street's own, flipped when it would run
+    // right to left: a name upside down is worse than a name at the wrong end.
+    // A street at exactly 90 degrees reads bottom to top, which is what a road
+    // sign and a paper map both do.
+    int rx = slot.dx;
+    int ry = slot.dy;
+    if (rx < 0 || (rx == 0 && ry > 0)) {
+      rx = -rx;
+      ry = -ry;
+    }
+    // mapTextBasisFromUp wants the glyphs' UP, and it builds right = (-ay, ax).
+    // Inverting that for the reading direction we want gives up = (ry, -rx).
+    // Handing it a tangent and a normal separately is a reflection, and every
+    // label comes out mirrored -- it already happened once on the contour
+    // numbers (MapRenderer.cpp, drawContourLabels).
+    int rightX = 1024, rightY = 0, downX = 0, downY = 1024;
+    if (!mapTextBasisFromUp(ry, -rx, rightX, rightY, downX, downY)) continue;
+
+    // The claimed box is the ROTATED extent, or two names at different bearings
+    // would be judged as if both were horizontal.
+    const int32_t absR = rightX < 0 ? -rightX : rightX;
+    const int32_t absRY = rightY < 0 ? -rightY : rightY;
+    const int gap = static_cast<int>(style.roadLabelMinGapPx);
+    const int textW = fitted.width_();
+    const int textH = fitted.height();
+    const int spanW = static_cast<int>((textW * absR + textH * absRY) >> 10) + 2 + gap;
+    const int spanH = static_cast<int>((textW * absRY + textH * absR) >> 10) + 2 + gap;
+    const int boxX = slot.x - spanW / 2;
+    const int boxY = slot.y - spanH / 2;
+
+    // Yield to anything already on the canvas that claimed this ground: a
+    // settlement name, a landmark, the puck. A street is countable from the
+    // next one along; a place name is not.
+    // The WHOLE turned name has to be on the panel, not just its anchor. A
+    // place name clipped by the edge still reads, because it is beside a dot the
+    // reader can see; half a street name lying along a street that leaves the
+    // screen reads as a smudge. The first render put one at the bottom corner.
+    if (boxX < drawableX || boxY < drawableY || boxX + spanW > drawableX + drawableW ||
+        boxY + spanH > drawableY + drawableH) {
+      continue;
+    }
+
+    // **And out from under the screen furniture.** The scale bar, the compass,
+    // the button hints and the header are drawn AFTER the map, so nothing of
+    // them is on the canvas for the occupancy grid to have caught -- they
+    // register their rectangles instead (MapChrome.h) and the canvas answers
+    // for them here. The place placer already asks; this pass did not, and the
+    // first X4 Pro frame had a street name half eaten by the scale bar. Same
+    // clash T-296 fixed for place names.
+    //
+    // The host preview cannot catch this: it has no screen furniture at all, so
+    // its areaReserved() always answers false (test/map_preview, PpmCanvas).
+    // This one needed the panel.
+    if (canvas.areaReserved(boxX, boxY, spanW, spanH)) {
+      ++scratch.dropped;
+      continue;
+    }
+
+    if (scratch.taken.anySet(boxX, boxY, spanW, spanH)) {
+      ++scratch.dropped;
+      continue;
+    }
+
+    if (!canvas.drawTextRotated(slot.x, slot.y, fitted.line[0], sizePx, style.roadLabelBold, MapInk::Black,
+                                static_cast<int>(style.roadLabelHaloPx), rightX, rightY, downX, downY)) {
+      // Nothing inked, so nothing may be claimed: marking here would let a
+      // label that does not exist block a contour number, and it would spend
+      // one of roadLabelMax on empty ground.
+      continue;
+    }
+    scratch.taken.markRect(boxX, boxY, spanW, spanH);
+    ++placed;
+  }
+  scratch.roadPlaced = static_cast<uint8_t>(placed);
 }

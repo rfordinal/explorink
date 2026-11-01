@@ -60,6 +60,14 @@ class FakeCanvas : public IMapCanvas {
     return true;
   }
 
+  // The screen furniture's rectangle, as the device's chrome register answers
+  // it. Empty by default so every existing case is unchanged.
+  bool areaReserved(int x, int y, int width, int height) const override {
+    if (reservedW <= 0 || reservedH <= 0) return false;
+    return x < reservedX + reservedW && x + width > reservedX && y < reservedY + reservedH &&
+           y + height > reservedY;
+  }
+
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {
     outX = 0;
     outY = topY;
@@ -85,6 +93,7 @@ class FakeCanvas : public IMapCanvas {
   std::vector<DrawnText> texts;
   bool hasText = true;
   int topY = 0;
+  int reservedX = 0, reservedY = 0, reservedW = 0, reservedH = 0;
 };
 
 MapStyle labelStyle() {
@@ -120,7 +129,186 @@ MapPlaceRef place(const int x, const int y, const uint8_t rank, const char* name
   return out;
 }
 
+MapStyle roadLabelStyle() {
+  MapStyle style = labelStyle();
+  style.roadLabelPx = 20;
+  style.roadLabelBold = false;
+  style.roadLabelHaloPx = 1;
+  style.roadLabelMax = 3;
+  style.roadLabelMinGapPx = 0;
+  style.roadLabelMaxWidthPx = 0;  // 0 means no ellipsis cap in fitName
+  return style;
+}
+
+// `runPx` defaults generously: most cases below are about rank and dedupe, and
+// a street that is too short for its own name is its own test.
+MapRoadLabelRef street(const int x, const int y, const int dx, const int dy, const uint8_t classId,
+                       const char* name, const int runPx = 4000) {
+  MapRoadLabelRef out;
+  out.x = static_cast<int16_t>(x);
+  out.y = static_cast<int16_t>(y);
+  out.dx = static_cast<int16_t>(dx);
+  out.dy = static_cast<int16_t>(dy);
+  out.runPx = static_cast<uint16_t>(runPx);
+  out.classId = classId;
+  out.name = name;
+  return out;
+}
+
 }  // namespace
+
+TEST(MapRoadLabels, DrawsTheNameOnItsStreet) {
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapLabels::offerRoadLabel(scratch, street(200, 400, 100, 0, 7, "Adamiho"));
+  MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
+
+  const auto drawn = canvas.blackTexts();
+  ASSERT_EQ(drawn.size(), 1u);
+  EXPECT_EQ(drawn[0].text, "Adamiho");
+  EXPECT_EQ(scratch.roadPlaced, 1);
+}
+
+TEST(MapRoadLabels, TheBiggerRoadWinsWhenOnlyOneFits) {
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapStyle style = roadLabelStyle();
+  style.roadLabelMax = 1;
+  // Offered worst-first on purpose: the order records arrive in must not decide.
+  MapLabels::offerRoadLabel(scratch, street(200, 400, 100, 0, 7, "Hudecova"));
+  MapLabels::offerRoadLabel(scratch, street(200, 600, 100, 0, 4, "Karloveska"));
+  MapLabels::drawRoadLabels(canvas, scratch, style);
+
+  const auto drawn = canvas.blackTexts();
+  ASSERT_EQ(drawn.size(), 1u);
+  EXPECT_EQ(drawn[0].text, "Karloveska");
+}
+
+TEST(MapRoadLabels, TheLongerStraightRunBreaksATieWithinOneClass) {
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapStyle style = roadLabelStyle();
+  style.roadLabelMax = 1;
+  MapLabels::offerRoadLabel(scratch, street(200, 400, 100, 0, 7, "Kratka", 200));
+  MapLabels::offerRoadLabel(scratch, street(200, 600, 100, 0, 7, "Dlha", 3000));
+  MapLabels::drawRoadLabels(canvas, scratch, style);
+
+  const auto drawn = canvas.blackTexts();
+  ASSERT_EQ(drawn.size(), 1u);
+  EXPECT_EQ(drawn[0].text, "Dlha");
+}
+
+TEST(MapRoadLabels, OneNameAStreetAPanelEvenWithTwoAnchors) {
+  // The builder spaces anchors along a street so a panel anywhere on it catches
+  // one. A street running the length of the screen catches two, and the first
+  // real render put the same name on one panel twice.
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapLabels::offerRoadLabel(scratch, street(200, 200, 0, 100, 7, "Liscie udolie"));
+  MapLabels::offerRoadLabel(scratch, street(200, 700, 0, 100, 7, "Liscie udolie"));
+  MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
+
+  EXPECT_EQ(scratch.roadCount, 1);
+  EXPECT_EQ(canvas.blackTexts().size(), 1u);
+}
+
+TEST(MapRoadLabels, ANameUnderTheScaleBarIsRefused) {
+  // The scale bar, the compass and the button hints are drawn AFTER the map, so
+  // nothing of them is on the canvas for the occupancy grid to catch. They
+  // register rectangles instead and the canvas answers for them.
+  //
+  // Found on the first X4 Pro frame, not in the preview: the host preview has no
+  // screen furniture, so its areaReserved() always answers false. Same clash
+  // T-296 fixed for place names.
+  FakeCanvas canvas;
+  canvas.reservedX = 0;
+  canvas.reservedY = 700;
+  canvas.reservedW = 200;
+  canvas.reservedH = 100;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapLabels::offerRoadLabel(scratch, street(100, 740, 100, 0, 7, "Druzstevna"));
+  MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
+
+  EXPECT_EQ(canvas.blackTexts().size(), 0u);
+  EXPECT_EQ(scratch.roadPlaced, 0);
+}
+
+TEST(MapRoadLabels, ANameClearOfTheScaleBarStillDraws) {
+  // The guard above must refuse the overlap and nothing else.
+  FakeCanvas canvas;
+  canvas.reservedX = 0;
+  canvas.reservedY = 700;
+  canvas.reservedW = 200;
+  canvas.reservedH = 100;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapLabels::offerRoadLabel(scratch, street(300, 400, 100, 0, 7, "Druzstevna"));
+  MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
+
+  EXPECT_EQ(canvas.blackTexts().size(), 1u);
+}
+
+TEST(MapRoadLabels, ANameWiderThanItsOwnStreetIsRefused) {
+  // The rule that keeps a long name off a short residential stub. Measured on
+  // Bratislava, the bottom tenth of streets have 30 device px or less at rung 0,
+  // which is shorter than any name (docs/street-labels-plan.md).
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  // 8 characters at kCharPx is 80 px of text against 30 px of straight street.
+  MapLabels::offerRoadLabel(scratch, street(200, 400, 100, 0, 7, "Hudecova", 30));
+  MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
+
+  EXPECT_EQ(canvas.blackTexts().size(), 0u);
+  EXPECT_EQ(scratch.roadTooLong, 1);
+  // Not counted as dropped: it was never a candidate for this frame, and lumping
+  // the two makes the declutter rules read as if they rejected everything.
+  EXPECT_EQ(scratch.dropped, 0);
+}
+
+TEST(MapRoadLabels, ADirectionlessRecordIsRefusedRatherThanDrawnFlat) {
+  // mapTextBasisFromUp falls back to horizontal for a zero vector, which would
+  // lay a name ACROSS its own street instead of along it.
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapLabels::offerRoadLabel(scratch, street(200, 400, 0, 0, 7, "Nikam"));
+  EXPECT_EQ(scratch.roadCount, 0);
+}
+
+TEST(MapRoadLabels, AStreetNameYieldsToAPlaceNameAlreadyPlaced) {
+  // Order is the declutter rule: a settlement name beats a street name. Both
+  // passes claim the same occupancy grid, so the second one has to see the first.
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  const MapStyle style = roadLabelStyle();
+  MapLabels::offer(scratch, place(200, 400, 0, "Bratislava"), 20, 780);
+  MapLabels::draw(canvas, scratch, style);
+  ASSERT_EQ(scratch.placed, 1);
+
+  MapLabels::offerRoadLabel(scratch, street(200, 400, 100, 0, 7, "Adamiho"));
+  MapLabels::drawRoadLabels(canvas, scratch, style);
+  EXPECT_EQ(scratch.roadPlaced, 0);
+}
+
+TEST(MapRoadLabels, NothingIsDrawnWhenTheStyleSwitchesThemOff) {
+  // How every mode but tourist and every rung but 0 and 1 is served. The
+  // renderer's own gate is the same condition, so this is the whole feature's
+  // off switch.
+  FakeCanvas canvas;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapStyle style = roadLabelStyle();
+  style.roadLabelPx = 0;
+  MapLabels::offerRoadLabel(scratch, street(200, 400, 100, 0, 7, "Adamiho"));
+  MapLabels::drawRoadLabels(canvas, scratch, style);
+  EXPECT_EQ(canvas.blackTexts().size(), 0u);
+}
 
 TEST(MapLabels, DrawsTheNameBesideItsDot) {
   FakeCanvas canvas;

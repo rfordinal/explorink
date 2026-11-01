@@ -47,6 +47,24 @@ struct MapPlaceRef {
   const char* name = "";
 };
 
+// One street name, already projected to screen pixels. `name` points into the
+// source's own buffer, is null-terminated, may be truncated, and is valid only
+// until the next nextRoadLabel() call.
+//
+// `dx`/`dy` are the street's tangent at the anchor in SCREEN pixels: the source
+// rotates it with the viewport, so a label follows the map when the map turns.
+// `runPx` is the straight run through the anchor converted to this rung's
+// pixels, which is what a name has to fit inside.
+struct MapRoadLabelRef {
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t dx = 0;
+  int16_t dy = 0;
+  uint16_t runPx = 0;
+  uint8_t classId = 0;
+  const char* name = "";
+};
+
 class IMapSource {
  public:
   virtual ~IMapSource() = default;
@@ -100,6 +118,15 @@ class IMapSource {
 
   virtual bool beginPlaces() = 0;
   virtual bool nextPlace(MapPlaceRef& out) = 0;
+
+  // Street names (tile layer 8). Written by the detail LOD alone, so this walk
+  // finds nothing at the coarse rungs -- and the renderer does not even open it
+  // unless the style draws names, the same gate the relief layer has.
+  //
+  // Records arrive most-important-first, so a caller that has filled its cap
+  // may stop walking rather than read the rest of the layer.
+  virtual bool beginRoadLabels() = 0;
+  virtual bool nextRoadLabel(MapRoadLabelRef& out) = 0;
 };
 
 // True when a way record is a closed ring, i.e. an area rather than a line.

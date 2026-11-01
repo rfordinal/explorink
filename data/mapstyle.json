@@ -233,6 +233,37 @@
         }
       ]
     },
+    "road_labels": {
+      "_comment": "Street names, tile layer_id 8, laid ALONG the street at its own bearing with a 1 px white outline from the same rotated mask -- the same mechanism as the contour height numbers, and for the same reason: a name that belongs to a line reads as part of it only if it lies on it. The outline knocks out only what the glyphs occupy, so the street still runs visibly behind the text; a knockout box would wipe the very line the name is about. Sizes in DEVICE PIXELS. label_px is a LINE-HEIGHT CAP, not a type size (see layers.places for which faces exist at which heights). OFF everywhere by default and ON only for tourist at rungs 0 and 1, which is a product decision and not a cost one: at 6 m/px a name is longer than the street it names, and a rider is not reading street fabric. With label_px 0 the renderer never opens tile layer 8 at all, so every other mode and rung pays no card read -- the same gate layers.contours.enabled gives the relief layer. max_labels is the real declutter mechanism here, unlike the places where it is a cost cap: a Bratislava city-centre z13 tile offers a MEASURED median of 13 names on one rung-0 panel (docs/street-labels-plan.md, 2026-11-01), so 3 of 13 is what this number means. The second filter is in the data: each record carries the straight run of street under its anchor, and a name wider than that run is refused before the cap is reached, which is what keeps a long name off a short residential stub -- measured, the bottom tenth of streets have 30 px or less at rung 0. label_max_width_px is the ellipsis cap, separate from the places' one because a street name runs longer than a village's. label_halo_px 2 rather than the contour numbers' 1 (maintainer, 2026-11-01, looking at the first render): a street name lies along a cased road, which is far more ink under it than a contour line, and 1 px of white let the casing run through the letters. 3 was tried and thickens the text into the map without reading better. label_px stays 23 and a smaller size is NOT available: the registered faces have line heights 12, 23, 24 and 29, so the only step down from 23 is the 12 px contour-number cut, whose letter spacing falls apart on a name (rendered and rejected the same day). STILL UNJUDGED ON HARDWARE: every choice here was made on the host preview at 1:1, which is what T-558 step 6 exists to close.",
+      "label_bold": false,
+      "label_halo_px": 2,
+      "label_max_width_px": 150,
+      "label_min_gap_px": 8,
+      "label_px": 0,
+      "max_labels": 0,
+      "when": [
+        {
+          "label_px": 23,
+          "max_labels": 3,
+          "modes": [
+            "tourist"
+          ],
+          "steps": [
+            0
+          ]
+        },
+        {
+          "label_px": 23,
+          "max_labels": 2,
+          "modes": [
+            "tourist"
+          ],
+          "steps": [
+            1
+          ]
+        }
+      ]
+    },
     "offscreen_places": {
       "_comment": "Edge indicators for villages OUTSIDE the viewport. A clipped-away village tells you nothing, but 'which way is the next village' is exactly what a glance needs -- so each gets a chevron on the screen edge where the ray from the position marker exits, pointing outward, with the name pulled back inside so it cannot be clipped too. Nearest first: if two want the same piece of edge (closer than min_gap_px) the further one is dropped rather than overlapped, and at most max_count are shown. Sizes in device pixels.",
       "arrow_len_px": 18,
