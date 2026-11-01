@@ -285,6 +285,8 @@ int main(int argc, char** argv) {
   std::printf("marker y=%d, class mask 0x%08x, %u ways dropped by it\n", preview.markerY, request.classMask,
               preview.waysFiltered);
   std::printf("place labels: %u drawn, %u dropped (no room)\n", preview.labelsPlaced, preview.labelsDropped);
+  std::printf("street names: %u drawn, %u held, %u too long for their own street\n", preview.roadPlaced,
+              preview.roadOffered, preview.roadTooLong);
   std::printf("label ink test: %u boxes probed, %u samples read\n", preview.labelInkProbes, preview.labelInkSamples);
   std::printf("tile size on disk: %ld..%ld bytes, %u bytes actually read\n", preview.smallestTileBytes,
               preview.largestTileBytes, preview.bytesRead);

@@ -759,6 +759,36 @@ def water(style):
     return True, widths, outlines, patterns_w, dashes, gaps, casings, tones, pattern, spacing, white
 
 
+def road_labels(style):
+    """layers.road_labels: street names laid along their own street (T-558).
+
+    Same shape as the contour height numbers, because it is the same mechanism:
+    text on a line at that line's bearing, with a rotated outline rather than a
+    knockout box. px 0 switches the whole thing off, and that is the normal
+    case -- only tourist mode at rungs 0 and 1 draws them. The renderer then
+    never opens tile layer 8 at all, so no other mode pays a card read.
+    """
+    layer = style.get("layers", {}).get("road_labels", {})
+    out = {
+        "px": _round_px(layer.get("label_px", 0), "layers.road_labels.label_px"),
+        "bold": bool(layer.get("label_bold", False)),
+        "halo": _round_px(layer.get("label_halo_px", 1), "layers.road_labels.label_halo_px"),
+        "max": _round_px(layer.get("max_labels", 0), "layers.road_labels.max_labels"),
+        "min_gap": _round_px(layer.get("label_min_gap_px", 0), "layers.road_labels.label_min_gap_px"),
+        "max_width": _round_px(layer.get("label_max_width_px", 0),
+                               "layers.road_labels.label_max_width_px"),
+    }
+    # The same trap the contour numbers already guard: a size with no cap draws
+    # nothing and looks like a renderer bug rather than a style one.
+    if out["px"] and not out["max"]:
+        sys.exit("gen_mapstyle.py: layers.road_labels: label_px is set but max_labels is 0, so no "
+                 "street name would ever be drawn. Set max_labels, or drop label_px.")
+    if out["px"] and not out["max_width"]:
+        sys.exit("gen_mapstyle.py: layers.road_labels: label_px is set but label_max_width_px is 0, "
+                 "so every name would be refused by the ellipsis cap. Set it.")
+    return out
+
+
 def contours(style):
     """(enabled, [width]) per contour class.
 
@@ -1147,7 +1177,8 @@ def _style_literal(bundle):
     21 structs.
     """
     (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths, tones, flag_rules, buildings_px, water_px, landuse_px,
-     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
+     contours_px, road_label_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y,
+     puck_px) = bundle
     id_to_name = {class_id: name for name, class_id in _CLASS_ID.items()}
     lines = [
         "{",
@@ -1333,6 +1364,12 @@ def _style_literal(bundle):
         f"    .contourLabelHaloPx = {c_labels['halo']},",
         f"    .contourLabelMax = {c_labels['max']},",
         f"    .contourLabelMinGapPx = {c_labels['min_gap']},",
+        f"    .roadLabelPx = {road_label_px['px']},",
+        f"    .roadLabelBold = {'true' if road_label_px['bold'] else 'false'},",
+        f"    .roadLabelHaloPx = {road_label_px['halo']},",
+        f"    .roadLabelMax = {road_label_px['max']},",
+        f"    .roadLabelMinGapPx = {road_label_px['min_gap']},",
+        f"    .roadLabelMaxWidthPx = {road_label_px['max_width']},",
         f"    .placeDotDiameterPx = {dot_diameter},",
         f"    .placeLabelPx = {labels['px']},",
         f"    .placeLabelBold = {'true' if labels['bold'] else 'false'},",
@@ -1479,7 +1516,7 @@ def compile_style(style):
     (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths,
      tones) = road_widths(style)
     return (widths, casings, patterns, dashes, gaps, marks, mark_pxs, tick_sides, tick_widths, tones, road_flag_rules(style),
-            buildings(style), water(style), landuse(style), contours(style),
+            buildings(style), water(style), landuse(style), contours(style), road_labels(style),
             place_dot_diameter(style),
             place_labels(style), points_style(style), route(style),
             *marker_anchor(style), puck(style))
@@ -1487,7 +1524,8 @@ def compile_style(style):
 
 def _print_summary(bundle, what):
     (widths, casings, _patterns, _dashes, _gaps, _marks, _mark_pxs, _tick_sides, _tick_widths, _tones, flag_rules, buildings_px, water_px, landuse_px,
-     contours_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y, puck_px) = bundle
+     contours_px, road_label_px, dot_diameter, labels, points_px, route_px, marker_x, marker_y,
+     puck_px) = bundle
     drawn = sum(1 for w in widths if w)
     cased = sum(1 for c in casings if c)
     print(f"gen_mapstyle.py: {what}: {drawn} road classes drawn, widths {min(w for w in widths if w)}"
@@ -1520,6 +1558,10 @@ def _print_summary(bundle, what):
               f"rock_synth tone {_toneLabel(landuse_px[4][4])}/hatch {landuse_px[5][4]}")
     else:
         print(f"gen_mapstyle.py: {what}: landuse off")
+    if road_label_px["px"]:
+        print(f"gen_mapstyle.py: {what}: street names {road_label_px['px']} px "
+              f"x{road_label_px['max']}, halo {road_label_px['halo']} px, "
+              f"ellipsis at {road_label_px['max_width']} px")
     if contours_px[0]:
         heights = (f", heights {contours_px[2]['px']}px x{contours_px[2]['max']} "
                    f"halo {contours_px[2]['halo']}px"

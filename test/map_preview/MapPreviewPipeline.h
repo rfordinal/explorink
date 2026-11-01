@@ -166,6 +166,14 @@ struct MapPreviewResult {
   // thinning the picture -- which is the intended order.
   uint8_t labelsPlaced = 0;
   uint8_t labelsDropped = 0;
+  // Street names (T-558). `roadOffered` is how many of the tile's records the
+  // panel could have used at all, `roadTooLong` how many were refused because
+  // the name is wider than the straight street under it. A high roadTooLong is
+  // the data talking, not the declutter rules: it is the rule that keeps a long
+  // name off a short residential stub.
+  uint8_t roadOffered = 0;
+  uint8_t roadPlaced = 0;
+  uint8_t roadTooLong = 0;
 
   // What the least-ink placement test cost: candidate boxes probed, and pixel
   // samples read across them (IMapCanvas::inkCoverage). The same two numbers

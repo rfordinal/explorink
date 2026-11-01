@@ -76,6 +76,8 @@ struct MapRenderTiming {
   // from a flat one (docs/simulator.md, "End to end against real tiles").
   uint32_t contourLines = 0;
   uint32_t contourLabels = 0;
+  // Street names: the layer-8 walk plus the placement, one number (T-558).
+  uint32_t roadLabels = 0;
 };
 
 // Nearest named place to the marker, by screen-pixel distance, picked while

@@ -425,8 +425,12 @@ struct MapStyle {
   // 0 px switches them off. The number is drawn into a white knockout box
   // rather than a halo, because a gap in the line is what a paper contour map
   // does and it reads better than letters floating on the line they belong to.
-  // Not rotated to follow the contour -- the canvas has no rotated text, so
-  // this is a known deviation from paper practice (docs/contours-plan.md).
+  // Rotated to follow the contour, at that line's own bearing with the digits'
+  // top toward the higher ground (MapRenderer.cpp, drawContourLabels). This
+  // comment said the opposite until 2026-11-01 -- "the canvas has no rotated
+  // text" -- which was false from the day the numbers shipped and is what sent
+  // the street-name design to a horizontal label beside an anchor for two
+  // months (docs/street-labels-plan.md).
   uint8_t contourLabelPx;
   bool contourLabelBold;
   // White outline around the digits, in pixels. 0 draws none, which on a dotted
@@ -437,6 +441,31 @@ struct MapStyle {
   // Minimum spacing between two numbers, so they spread instead of clustering
   // wherever the stream happened to offer straight contour first.
   uint8_t contourLabelMinGapPx;
+
+  // layers.road_labels: street names, drawn along their own street (T-558).
+  //
+  // The same shape as the contour numbers above, for the same reason: both lie
+  // on a line rather than beside a point. 0 px switches them off, and that is
+  // how every mode but tourist and every rung but 0 and 1 is served -- the tile
+  // layer is then never opened at all, so a hiker pays no card read for a
+  // feature they cannot see.
+  uint8_t roadLabelPx;
+  bool roadLabelBold;
+  // White outline around the glyphs, from the same rotated mask, so it follows
+  // the name's angle. A knockout box is wrong here even more than it is for a
+  // height: the box would wipe the street the name belongs to.
+  uint8_t roadLabelHaloPx;
+  // How many names on one frame. Two or three at rung 0 (maintainer,
+  // 2026-11-01, against a reference map of real ground) -- the tile offers a
+  // median of thirteen on a city-centre panel, so this cap is doing real work
+  // rather than trimming an edge case.
+  uint8_t roadLabelMax;
+  // Minimum spacing between two street names, so they spread instead of
+  // clustering wherever the layer happened to be read first.
+  uint8_t roadLabelMinGapPx;
+  // A longer name is cut with an ellipsis. Separate from the places' cap: a
+  // street name runs longer than a village's.
+  uint16_t roadLabelMaxWidthPx;
 
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.

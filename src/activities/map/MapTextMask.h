@@ -24,10 +24,23 @@
 // panel has two values and a filtered edge would have to become a dither
 // (docs/map-render-spec.md, "1-bit rules").
 struct MapTextMask {
-  // 80 x 32 covers a five-digit height at any face this map uses, and costs 320
-  // bytes. A string that does not fit is not drawn rather than clipped: half a
-  // number is a wrong number.
-  static constexpr int kMaxW = 80;
+  // 160 x 32, which costs 640 bytes a mask. A string that does not fit is not
+  // drawn rather than clipped: half a number is a wrong number.
+  //
+  // **80 wide was enough for a contour height and silently is not for a street
+  // name** (T-558, 2026-11-01). Five digits at 12 px are about 40 px;
+  // "Karloveska" at 23 px is 83, and the first real render drew exactly one of
+  // six names -- the only one under 80 px -- with the rest refused here, far
+  // from where they were offered. 160 covers every name the style's own
+  // ellipsis cap lets through (layers.road_labels.label_max_width_px, 150, plus
+  // the outline's two pixels).
+  //
+  // The cost is **DRAM, not stack**: GfxRendererCanvas holds one static pair for
+  // the life of the firmware, deliberately (see its drawTextRotated). So this is
+  // +640 bytes resident, read off the array dimensions rather than measured by
+  // two builds -- which it should be before anybody quotes it
+  // (CLAUDE.md, "A flash or RAM cost is two builds").
+  static constexpr int kMaxW = 160;
   static constexpr int kMaxH = 32;
 
   uint8_t bits[(kMaxW * kMaxH + 7) / 8] = {};

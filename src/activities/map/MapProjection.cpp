@@ -24,9 +24,23 @@ void MapProjection::reset(double anchorLat, double anchorLon, int16_t anchorScre
   anchorScreenY_ = anchorScreenY;
   mppMerc_ = mppMerc;
 
+  // mppMerc is mpp / cos(anchorLat), so this undoes it. Kept rather than
+  // recomputed: a ground length (a street's straight run, in metres) has to
+  // become pixels somewhere, and only this class still has the latitude.
+  mppGround_ = mppMerc * std::cos(anchorLat * kDegToRad);
+
   const double theta = (headingStep % 16) * 22.5 * kDegToRad;
   cosTheta_ = std::cos(theta);
   sinTheta_ = std::sin(theta);
+}
+
+void MapProjection::rotateTileLocalDir(double dx, double dy, double& outDx, double& outDy) const {
+  // Tile-local y grows SOUTH, so a local direction is (east, north) = (dx, -dy).
+  // Substituted into projectMerc's rotation the two sign flips cancel into this
+  // plain rotation -- which is worth keeping as arithmetic rather than as two
+  // negations somebody later "simplifies" one of away.
+  outDx = dx * cosTheta_ + dy * sinTheta_;
+  outDy = -dx * sinTheta_ + dy * cosTheta_;
 }
 
 void MapProjection::projectMerc(double mercX, double mercY, int16_t& outScreenX, int16_t& outScreenY) const {

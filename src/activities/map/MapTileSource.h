@@ -98,6 +98,8 @@ class MapTileSource : public IMapSource {
   bool nextContour(MapWayRef& out) override;
   bool beginPlaces() override;
   bool nextPlace(MapPlaceRef& out) override;
+  bool beginRoadLabels() override;
+  bool nextRoadLabel(MapRoadLabelRef& out) override;
 
   // Counted over the pass that is running or most recently ran, so they
   // describe one walk of the tile set rather than a growing total. A tile
@@ -140,6 +142,7 @@ class MapTileSource : public IMapSource {
   // caller after "how much map is in the picture" divides by that constant.
   uint32_t waysEmitted() const { return waysEmitted_; }
   uint32_t placesEmitted() const { return placesEmitted_; }
+  uint32_t roadLabelsEmitted() const { return roadLabelsEmitted_; }
 
   // Ways read off the card and dropped by Config::classMask. This is the
   // mode filter's own evidence: the same coordinate in two modes reads the
@@ -282,6 +285,7 @@ class MapTileSource : public IMapSource {
   uint32_t waysEmitted_ = 0;
   uint32_t waysFiltered_ = 0;
   uint32_t placesEmitted_ = 0;
+  uint32_t roadLabelsEmitted_ = 0;
   uint32_t bytesRead_ = 0;
   uint32_t pointsProjected_ = 0;
   uint32_t waysOffScreen_ = 0;

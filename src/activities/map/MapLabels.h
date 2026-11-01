@@ -112,6 +112,35 @@ struct MapLabelCandidate {
   char below[8] = "";
 };
 
+// One street name waiting to be drawn, already projected and already rotated.
+//
+// Street names are held apart from MapLabelCandidate on purpose. They are a
+// different mechanism, not a third tier of the same one: the text lies ALONG
+// its street at the street's own angle, the way a contour's height number lies
+// along its line, so there is no eight-position search, no dot to clear and no
+// per-cell quota. Sharing the place placer's array would also have let a city
+// tile's hundreds of street records starve the settlement names it is tuned
+// for.
+struct MapRoadLabelSlot {
+  // 48 bytes of UTF-8 plus a terminator. The longest named street in the
+  // measured Bratislava extract is 37 bytes and the median is 10; a longer one
+  // is cut on a codepoint boundary and then fitted to the panel by pixel.
+  static constexpr int kNameLen = 49;
+  int16_t x = 0;
+  int16_t y = 0;
+  // The street's direction on SCREEN, already turned with the viewport.
+  int16_t dx = 0;
+  int16_t dy = 0;
+  // How many pixels of straight street this anchor sits on. A name wider than
+  // this is refused: the alternative is a long name bent around a corner, which
+  // is what no paper map does and what the builder's run_q field exists to
+  // prevent (docs/map-data-spec.md, "Road label record").
+  uint16_t runPx = 0;
+  // Road class, which is the rank. Lower wins.
+  uint8_t classId = 0;
+  char name[kNameLen] = "";
+};
+
 // The label pass's whole working set, owned by the caller.
 //
 // ~3.8 KB, which is why it is not a local: the render task's stack budget is
@@ -157,6 +186,26 @@ struct MapLabelScratch {
   MapOccupancyGrid taken;
   MapLabelCandidate candidates[kMaxCandidates];
   uint8_t count = 0;
+  // Street names, kept apart from the place candidates above.
+  //
+  // Eight slots for a cap of two or three, which is the same reasoning the
+  // contour numbers use: the extras are what a collision has to fall back on.
+  // It is NOT a candidate buffer -- the tile hands records over
+  // most-important-first already, so this only has to hold the front of that
+  // order across the two to four tiles a close rung reads.
+  //
+  // About 480 bytes on top of MapLabelScratch, which MapActivity allocates on
+  // the heap once for the map screen.
+  static constexpr int kMaxRoadLabels = 8;
+  MapRoadLabelSlot roadLabels[kMaxRoadLabels];
+  uint8_t roadCount = 0;
+  uint8_t roadPlaced = 0;
+  // Refused because the name is wider than its own straight street. Counted
+  // separately from `dropped`: a name with nowhere straight to lie was never a
+  // candidate, and lumping the two makes the declutter rules read as if they
+  // were rejecting everything.
+  uint8_t roadTooLong = 0;
+
   // Filled in by draw(), for the debug readout and the preview's stderr line.
   uint8_t placed = 0;
   uint8_t dropped = 0;
@@ -224,6 +273,9 @@ struct MapLabelScratch {
     route.clear();
     taken.clear();
     count = 0;
+    roadCount = 0;
+    roadPlaced = 0;
+    roadTooLong = 0;
     placed = 0;
     dropped = 0;
     inkProbes = 0;
@@ -270,5 +322,22 @@ void offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const cha
 // the smaller won -- the same number in two files, free to drift, answering the
 // same question. The rung's answer now arrives as the style itself.
 void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style);
+
+// Offers one street name. Kept best-first by (road class, then the longer
+// straight run), which is the order the tile already wrote them in -- this only
+// has to merge the two to four tiles a close rung reads into one order.
+//
+// No anchor distance in the key, unlike places: a street name is not pointing
+// at anything the rider is near, it is saying what the line under it is called.
+void offerRoadLabel(MapLabelScratch& scratch, const MapRoadLabelRef& label);
+
+// Draws the street names that fit, over the map and under nothing.
+//
+// Call it AFTER draw() above and BEFORE the contour numbers: a settlement name
+// beats a street name, and a street name beats a height. Each one lies along
+// its own street at that street's angle, with a 1 px outline from the same
+// rotated mask, exactly as drawContourLabels sets a height -- so the line still
+// runs visibly behind the text instead of through a punched-out box.
+void drawRoadLabels(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style);
 
 }  // namespace MapLabels

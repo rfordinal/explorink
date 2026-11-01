@@ -406,12 +406,17 @@ bool MapTileReader::readPlaceHeader(PlaceHeader& out) {
   return true;
 }
 
-bool MapTileReader::readPlaceName(const PlaceHeader& header, char* buf, size_t bufCap) {
-  const size_t toBuf = bufCap > 0 ? (header.nameLen < bufCap - 1 ? header.nameLen : bufCap - 1) : 0;
+// Shared by the place and the road-label walks. The contract that matters is
+// that it consumes exactly `nameLen` bytes whatever the caller's buffer can
+// hold: a name truncated into the buffer must still leave the stream cursor on
+// the next record, or every record after a long name is read at the wrong
+// offset and decodes into plausible garbage.
+bool MapTileReader::readNameBytes(uint8_t nameLen, char* buf, size_t bufCap) {
+  const size_t toBuf = bufCap > 0 ? (nameLen < bufCap - 1 ? nameLen : bufCap - 1) : 0;
   if (toBuf > 0 && !readRaw(buf, toBuf)) return false;
   if (bufCap > 0) buf[toBuf] = '\0';
 
-  size_t remaining = header.nameLen - toBuf;
+  size_t remaining = nameLen - toBuf;
   uint8_t discard[64];
   while (remaining > 0) {
     const size_t chunk = remaining < sizeof(discard) ? remaining : sizeof(discard);
@@ -419,6 +424,27 @@ bool MapTileReader::readPlaceName(const PlaceHeader& header, char* buf, size_t b
     remaining -= chunk;
   }
   return true;
+}
+
+bool MapTileReader::readPlaceName(const PlaceHeader& header, char* buf, size_t bufCap) {
+  return readNameBytes(header.nameLen, buf, bufCap);
+}
+
+bool MapTileReader::readRoadLabelHeader(RoadLabelHeader& out) {
+  uint8_t buf[9];
+  if (!readRaw(buf, sizeof(buf))) return false;
+  std::memcpy(&out.x, &buf[0], sizeof(out.x));
+  std::memcpy(&out.y, &buf[2], sizeof(out.y));
+  out.dx = static_cast<int8_t>(buf[4]);
+  out.dy = static_cast<int8_t>(buf[5]);
+  out.runQ = buf[6];
+  out.classId = buf[7];
+  out.nameLen = buf[8];
+  return true;
+}
+
+bool MapTileReader::readRoadLabelName(const RoadLabelHeader& header, char* buf, size_t bufCap) {
+  return readNameBytes(header.nameLen, buf, bufCap);
 }
 
 bool MapTileReader::readJunctionRecord(JunctionRecord& out) {
