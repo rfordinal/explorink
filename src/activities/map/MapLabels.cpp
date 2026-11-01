@@ -833,6 +833,22 @@ void MapLabels::drawRoadLabels(IMapCanvas& canvas, MapLabelScratch& scratch, con
       continue;
     }
 
+    // **And out from under the screen furniture.** The scale bar, the compass,
+    // the button hints and the header are drawn AFTER the map, so nothing of
+    // them is on the canvas for the occupancy grid to have caught -- they
+    // register their rectangles instead (MapChrome.h) and the canvas answers
+    // for them here. The place placer already asks; this pass did not, and the
+    // first X4 Pro frame had a street name half eaten by the scale bar. Same
+    // clash T-296 fixed for place names.
+    //
+    // The host preview cannot catch this: it has no screen furniture at all, so
+    // its areaReserved() always answers false (test/map_preview, PpmCanvas).
+    // This one needed the panel.
+    if (canvas.areaReserved(boxX, boxY, spanW, spanH)) {
+      ++scratch.dropped;
+      continue;
+    }
+
     if (scratch.taken.anySet(boxX, boxY, spanW, spanH)) {
       ++scratch.dropped;
       continue;

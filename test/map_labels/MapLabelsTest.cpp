@@ -60,6 +60,14 @@ class FakeCanvas : public IMapCanvas {
     return true;
   }
 
+  // The screen furniture's rectangle, as the device's chrome register answers
+  // it. Empty by default so every existing case is unchanged.
+  bool areaReserved(int x, int y, int width, int height) const override {
+    if (reservedW <= 0 || reservedH <= 0) return false;
+    return x < reservedX + reservedW && x + width > reservedX && y < reservedY + reservedH &&
+           y + height > reservedY;
+  }
+
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {
     outX = 0;
     outY = topY;
@@ -85,6 +93,7 @@ class FakeCanvas : public IMapCanvas {
   std::vector<DrawnText> texts;
   bool hasText = true;
   int topY = 0;
+  int reservedX = 0, reservedY = 0, reservedW = 0, reservedH = 0;
 };
 
 MapStyle labelStyle() {
@@ -204,6 +213,43 @@ TEST(MapRoadLabels, OneNameAStreetAPanelEvenWithTwoAnchors) {
   MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
 
   EXPECT_EQ(scratch.roadCount, 1);
+  EXPECT_EQ(canvas.blackTexts().size(), 1u);
+}
+
+TEST(MapRoadLabels, ANameUnderTheScaleBarIsRefused) {
+  // The scale bar, the compass and the button hints are drawn AFTER the map, so
+  // nothing of them is on the canvas for the occupancy grid to catch. They
+  // register rectangles instead and the canvas answers for them.
+  //
+  // Found on the first X4 Pro frame, not in the preview: the host preview has no
+  // screen furniture, so its areaReserved() always answers false. Same clash
+  // T-296 fixed for place names.
+  FakeCanvas canvas;
+  canvas.reservedX = 0;
+  canvas.reservedY = 700;
+  canvas.reservedW = 200;
+  canvas.reservedH = 100;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapLabels::offerRoadLabel(scratch, street(100, 740, 100, 0, 7, "Druzstevna"));
+  MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
+
+  EXPECT_EQ(canvas.blackTexts().size(), 0u);
+  EXPECT_EQ(scratch.roadPlaced, 0);
+}
+
+TEST(MapRoadLabels, ANameClearOfTheScaleBarStillDraws) {
+  // The guard above must refuse the overlap and nothing else.
+  FakeCanvas canvas;
+  canvas.reservedX = 0;
+  canvas.reservedY = 700;
+  canvas.reservedW = 200;
+  canvas.reservedH = 100;
+  MapLabelScratch scratch;
+  scratch.setClip(0, 0, kScreenW, kScreenH);
+  MapLabels::offerRoadLabel(scratch, street(300, 400, 100, 0, 7, "Druzstevna"));
+  MapLabels::drawRoadLabels(canvas, scratch, roadLabelStyle());
+
   EXPECT_EQ(canvas.blackTexts().size(), 1u);
 }
 
