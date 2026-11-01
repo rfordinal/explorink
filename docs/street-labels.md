@@ -118,6 +118,30 @@ contour-number cut, whose letter spacing falls apart on a name. `label_halo_px`
 is 2 rather than the contour numbers' 1, because a street name lies along a
 cased road and 1 px of white let the casing run through the letters.
 
+## Where this shape comes from
+
+Line placement is one of cartography's solved problems, and our rules land on
+the same shape independently. That is evidence rather than coincidence, and it
+is worth saying out loud because nothing here was copied (label: **read**, from
+each project's own documentation).
+
+MapLibre GL's `symbol-placement: line` places labels along the geometry at a
+`symbol-spacing` interval and drops a candidate whose `text-max-angle` is
+exceeded. Mapnik's line placement does the same with its own spacing and
+maximum-angle knobs. **Our anchor spacing and `max_bend_deg` are those two
+knobs under other names**, and the refusal rule
+(`fitted.width_() > slot.runPx`) is their "no room, no label".
+
+**Where we diverge, and the constraint that explains it:** both of them place
+at render time from the full geometry. We precompute anchors in tilegen and
+ship them in layer 8, because the device has no FPU and cannot afford a
+geometry pass per frame. So the run length a name must fit into is known before
+the tile is written, and the device only compares two numbers.
+
+No constraint explains a second difference, so there is not one to report: the
+restraint (three names at rung 0, two at rung 1) is a style decision about a
+480x800 e-ink panel, not a departure from how anybody else does it.
+
 ## Unjudged
 
 Every choice above was made on the host preview at 1:1. **Nothing has run on a
