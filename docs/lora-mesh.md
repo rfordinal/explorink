@@ -632,6 +632,44 @@ before.
 `Keepalive` (an hour), and anything two boards answer -- that the advert
 lands and moves a marker. Board A only.
 
+### `Keepalive` covered, two boards not -- 2026-11-02
+
+**`Keepalive` now fires at the shortened cap, confirmed on board A
+(`t5s3pro`) alone.** `BeaconPolicy::kMaxSilenceSec` moved from 3600 s to 600 s
+the same day (`BeaconPolicy.h:82`). Fed a fixed `--pos` over real BLE
+(`tools/blefakephone.py`, not a console injection), parked the whole run
+(`movedM` ~0, below `kSettleRadiusM` -- `Settled` never fired, so this run
+isolated `Keepalive` cleanly):
+
+```
+still=563s why=fix    sent_ago=563s
+still=608s why=keepalive sent_ago=8s     <- new advert between 563s and 608s
+```
+
+Matches the new cap, not the old hourly one. `LORA_STATE`'s `pool_free`/
+`pool_out` stayed 16/0 throughout -- the send queue was never the bottleneck.
+
+**Board B never heard any of it, and that is still open.** Three independent
+sends from board A during this same session -- the `FixChanged` send, the
+`Keepalive` send above, and one manual `CMD:LORA ADVERT` -- and board B
+(`t5s3pro-b`) logged no `[LORAMESH] new node` for board A's key at any point,
+only ambient third-party MeshCore adverts (Austrian ham stations, `rssi -98`
+to `-105`). Both boards reported identical `freq=869.618 bw=62.5 sf=8 cr=5
+power=14` over `CMD:LORA` at the time. Board A's own bookkeeping says every
+send succeeded (no `LORA_ERR` line, `sent_ago` reset each time) -- MeshCore's
+`sendSelfAdvert()` reports queued-to-the-radio, not received-by-a-peer, so
+"board A thinks it sent" and "board B heard nothing" are not a contradiction,
+just two different questions. Three misses from two boards sitting on the
+same desk, after both were confirmed receiving distant weak stations fine, is
+more than sampling noise. Not diagnosed: antenna seating, a MeshCore-side
+channel/region parameter neither `CMD:LORA`'s read-only `freq`/`bw`/`sf`/`cr`
+fields nor this pass checked, or something specific to these two boards'
+current state. T-2056. Next step before anything else: `CMD:LORA PONG ON` on
+B, `CMD:LORA PING` on A -- the raw bench-level round trip this file's own
+earlier pass used to prove the link, bypassing MeshCore's advert/roster layer
+entirely, to split "the radios can't hear each other" from "the radios hear
+each other and MeshCore drops it".
+
 ### Two traps the bench pass paid for
 
 **BLE advertising stops and `BLE:running=1` keeps saying otherwise.** The map
