@@ -1434,6 +1434,15 @@ table reaches past a priority id to the oldest stranger instead, a priority id
 heard again still updates in place with no eviction at all, and the
 all-priority fallback actually evicts rather than deadlocking.
 
+**Same shape as Meshtastic's `NodeDB`**, read for comparison rather than
+code (GPL, rejected as our protocol 2026-09-08): `getOrCreateMeshNode()`
+skips favourite/ignored/verified nodes in its own oldest-node eviction scan,
+independent agreement that "skip the protected ones in the scan" is the
+right shape for a bounded radio-filled table. They cap how many can be
+protected and keep a demote-to-warm-tier path this table has no need for;
+`docs/prior-art-meshtastic.md` has the full comparison and why the
+differences are structural, not disagreement.
+
 **Hardware pass, 2026-11-02, T5 S3 Pro (`7c:2c:67:8a:4c:b4`).** Built on T15,
 flashed from this laptop (`docs/firmware-builds/2026-11-02-t5s3pro-
 t2042-peer-priority-32b2e00b-good/`). `CMD:LORA MESH ON` loads the identity
