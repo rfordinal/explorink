@@ -9,6 +9,7 @@
 #include <helpers/StaticPoolPacketManager.h>
 
 #include "LoraEventLine.h"
+#include "LoraGroupId.h"
 #include "LoraMeshRadio.h"
 #include "LoraPeerTable.h"
 
@@ -121,6 +122,18 @@ class PresenceMesh : public mesh::Mesh {
   const LoraPeerTable& peers() const { return peers_; }
   LoraPeerTable& peers() { return peers_; }
 
+  // Ids a full table must evict last, in `loraGroupId()`'s own spelling.
+  // Pushed in from outside rather than looked up live: this class must not
+  // know the group layer exists (see the position hook above), and membership
+  // is checked on the task that owns the roster, never on the radio task
+  // (main.cpp, "Membership is checked here, on this task, and never on the
+  // radio task"). Call this from that same task, under the lock that already
+  // guards `peers()` from both sides -- main.cpp's `loraDrain()` rebuilds the
+  // list from the roster every tick and calls this under `LoraLock`, which is
+  // also what `onAdvertRecv()` runs under, so there is no new synchronisation
+  // here, only the existing one used the other way. T-2042.
+  void setPriorityIds(const char (*ids)[kLoraGroupIdBytes], size_t count);
+
   // Adverts heard whose signature or payload did not parse, since boot. Shown
   // rather than swallowed: on a shared band this is the number that says
   // somebody is transmitting something we are not meant to read.
@@ -153,6 +166,11 @@ class PresenceMesh : public mesh::Mesh {
   int16_t lastRxRssiDbm_ = 0;
   PositionHook positionHook_ = nullptr;
   EventHook eventHook_ = nullptr;
+  // Bounded by the peer table's own size: a priority list longer than the
+  // table itself could ever hold is never meaningful.
+  static constexpr size_t kMaxPriorityIds = LoraPeerTable::kMaxPeers;
+  char priorityIds_[kMaxPriorityIds][kLoraGroupIdBytes] = {};
+  size_t priorityCount_ = 0;
   // Kept for its noise, which seeds the keypair. See beginIdentity().
   LoraMeshRadio* radio_ = nullptr;
 };

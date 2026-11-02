@@ -2271,6 +2271,32 @@ static void loraDrain() {
   meshBeaconTick();
 
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  // Who the heard-nodes table must never evict to make room for a stranger
+  // (T-2042). Rebuilt every tick rather than hooked to each roster edit --
+  // twelve string compares is nothing next to gMesh.loop() itself, and a
+  // card-loaded roster is covered with no extra wiring. Read here, on the task
+  // that owns the roster, and pushed under the chip mutex -- never computed
+  // live inside onAdvertRecv (see the membership check a few lines down, and
+  // PresenceMesh::setPriorityIds()).
+  {
+    char priorityIds[GroupRoster::kSlotCount][kLoraGroupIdBytes];
+    size_t priorityCount = 0;
+    const GroupRoster& roster = MapGroup::getInstance().roster();
+    for (size_t slot = 0; slot < GroupRoster::kSlotCount; ++slot) {
+      const GroupMember& m = roster.at(slot);
+      if (!m.present) continue;
+      for (size_t i = 0; i < m.idCount; ++i) {
+        if (strncmp(m.ids[i], "lora-", 5) == 0) {
+          memcpy(priorityIds[priorityCount], m.ids[i], kLoraGroupIdBytes);
+          ++priorityCount;
+          break;  // one LoRa id is enough to protect this member's slot
+        }
+      }
+    }
+    LoraLock lock;
+    gMesh.setPriorityIds(priorityIds, priorityCount);
+  }
+
   // Heard positions into the group layer. This is the seam docs/lora.md
   // promised before any radio existed: a LoRa frame, a BLE relay and a console
   // line all arrive at groupPosition(), and nothing above it knows which spoke.

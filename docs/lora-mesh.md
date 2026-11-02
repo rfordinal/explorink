@@ -1409,6 +1409,35 @@ longer theoretical: a stranger from Graz can now evict a group member whose
 marker is on the map. A roster member must outrank a stranger for a slot,
 whatever the ages say. T-2042.
 
+**Fixed 2026-11-02, branch `t2042-peer-priority`.** `LoraPeerTable::heard()`
+takes an optional list of priority ids (`src/lora/LoraPeerTable.h:69-84`,
+spelled the way `loraGroupId()` spells one, LoraGroupId.h) and `oldestSlot()`
+(`src/lora/LoraPeerTable.cpp`) skips any slot on that list unless the whole
+table is priority ids -- which the real roster can never make happen,
+`kGroupMaxMembers` (12) being less than `kMaxPeers` (16), but the table is
+generic and tested standalone so the fallback still has to exist and is
+covered by its own test.
+
+The list itself never touches the radio task. `PresenceMesh::setPriorityIds()`
+(`src/lora/PresenceMesh.h`) just holds what it is given; `main.cpp`'s
+`loraDrain()` rebuilds it from `MapGroup::getInstance().roster()` every tick
+and pushes it in under `LoraLock`, the same lock `onAdvertRecv()` already runs
+under and the UI-side snapshot functions already take -- no new
+synchronisation, the existing one used the other way. This keeps the rule a
+few paragraphs below intact: "Membership is checked here, on this task, and
+never on the radio task" (`main.cpp`, the position-queue drain). Twelve ids at
+22 bytes is 264 bytes on the stack per tick, nothing next to `gMesh.loop()`
+itself.
+
+Proved by four host tests in `test/lora_peers/LoraPeerTableTest.cpp`: a full
+table reaches past a priority id to the oldest stranger instead, a priority id
+heard again still updates in place with no eviction at all, and the
+all-priority fallback actually evicts rather than deadlocking. **Not yet
+confirmed on a board**: the logic needs no device, but whether a roster member
+actually survives a busy real channel is a hardware question T-2042 still
+owes, same distinction the rest of this file draws between read-off-the-code
+and measured-on-hardware.
+
 A second, smaller thing the same screenshot showed: ages run to `4009s ago`,
 which nobody reads as an hour. Seconds are right for a bench and wrong for a
 list somebody uses.

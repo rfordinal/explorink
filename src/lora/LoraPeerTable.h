@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "LoraGroupId.h"
+
 // Who else is on the air, and when we last heard them.
 //
 // **This is not the roster.** The roster (MapGroup) is an allowlist: it decides
@@ -64,10 +66,24 @@ class LoraPeerTable {
   // Records one advert. Returns true when this was a node we had not heard
   // before, so the caller can log a new neighbour without logging every repeat.
   //
-  // A full table evicts the node heard longest ago. It never evicts to make
-  // room for a node already in the table, because that path is an update.
+  // A full table evicts the node heard longest ago among the ids not named in
+  // `priorityIds` -- so a channel crowded with strangers cannot push a roster
+  // member out to make room for one more stranger (T-2042: a busy public
+  // channel filled all sixteen slots with strangers inside an hour, and plain
+  // age-based eviction would have let any one of them bump a quiet group
+  // member). It falls back to the true oldest, priority included, only when
+  // every slot is a priority id -- which cannot happen with a real roster
+  // (`kGroupMaxMembers` < `kMaxPeers`) but keeps this generic table correct
+  // standalone. `priorityIds` is nullptr by default, which is the old,
+  // unconditioned behaviour. The spelling matches `loraGroupId()`
+  // (LoraGroupId.h, "exactly one spelling") -- this table still does not know
+  // what a roster is, only that some ids outrank others for eviction.
+  //
+  // It never evicts to make room for a node already in the table, because
+  // that path is an update.
   bool heard(const uint8_t pubKey[32], const char* name, bool hasLoc, int32_t latE6, int32_t lonE6, uint32_t advertUtc,
-             int16_t rssiDbm, int8_t snrDb, uint32_t nowUptimeMs);
+             int16_t rssiDbm, int8_t snrDb, uint32_t nowUptimeMs,
+             const char (*priorityIds)[kLoraGroupIdBytes] = nullptr, size_t priorityCount = 0);
 
   size_t count() const { return count_; }
 
