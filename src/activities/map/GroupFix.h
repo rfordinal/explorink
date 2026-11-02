@@ -88,10 +88,16 @@ GroupVisibility groupFixVisibility(const GroupFixAge& age, uint32_t staleAfterS,
 // The label under a member's marker. Four shapes, and three of them say
 // something the balloon alone cannot: how far and how old.
 //
-//   ""             everything current, and the rider can see the distance
-//   "1.2 km"       far enough that the gap matters
-//   "1.2 km/12m"   far and old
-//   "12m"          old, but close enough to judge by eye
+//   ""               everything current, and the rider can see the distance
+//   "1.2 km"         far enough that the gap matters
+//   "1.2 km/12min"   far and old
+//   "12min"          old, but close enough to judge by eye
+//
+// **"min", not "m", for the age.** The distance half of this label is also in
+// "m" under a kilometre (formatDistance), and "1.2 km/15m" read as 15 metres as
+// often as 15 minutes -- found by the maintainer 2026-11-02 looking at a pin
+// with no other context to disambiguate it. "h" needed no change: nothing else
+// on this label is ever in hours.
 //
 // **Age only when the position has gone stale**, so a group riding together
 // draws no text at all; **distance only when the panel cannot show it** -- the
@@ -101,7 +107,7 @@ GroupVisibility groupFixVisibility(const GroupFixAge& age, uint32_t staleAfterS,
 // An age that cannot be known prints `?` rather than a number nobody can stand
 // behind: that is every replayed fix on a device with no clock (groupFixAge).
 //
-// An age under a minute prints nothing at all -- `0m` reads as information and
+// An age under a minute prints nothing at all -- `0min` reads as information and
 // carries none.
 //
 // Every other age is **rounded up to kGroupAgeStepMinutes**, which is also how

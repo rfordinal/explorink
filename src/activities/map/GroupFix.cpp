@@ -63,7 +63,10 @@ size_t formatAge(const GroupFixAge& age, char* buf, size_t bufLen) {
   // nobody anything, while rounding down claims a stale position is fresher.
   const uint32_t minutes = (age.seconds + 59) / 60;
   const uint32_t rounded = ((minutes + kGroupAgeStepMinutes - 1) / kGroupAgeStepMinutes) * kGroupAgeStepMinutes;
-  const int written = rounded < 60 ? snprintf(buf, bufLen, "%lum", static_cast<unsigned long>(rounded))
+  // "min", not "m" -- the label right before this one is a distance, also in
+  // "m" (formatDistance), and "1.2 km/15m" read as 15 metres as often as 15
+  // minutes. "h" stays: nothing else on this label is ever in hours.
+  const int written = rounded < 60 ? snprintf(buf, bufLen, "%lumin", static_cast<unsigned long>(rounded))
                                    : snprintf(buf, bufLen, "%luh", static_cast<unsigned long>((rounded + 59) / 60));
   return written > 0 && static_cast<size_t>(written) < bufLen ? static_cast<size_t>(written) : 0;
 }

@@ -26,14 +26,20 @@
 //   moving with a fix   -> a position every kMoveMetres, never faster than the
 //                          floor
 //   parked with a fix   -> the same position again once the silence cap
-//                          expires, because an hour in a pub still has to say
-//                          where the pub is
+//                          expires, because a stop still has to say where it
+//                          is
 //   no fix              -> a nameplate with no coordinate, same cap
 //
-// The numbers are OpenTrailPaper's, not ours: 100 m and an hourly heartbeat,
-// from a project that has run groups on this band for years
-// (`../../../docs/lora.md`, "And their cadence is the precedent our own guess
-// was missing"). Ours start there and have to say what they buy before moving.
+// The move threshold is OpenTrailPaper's, not ours: 100 m, from a project that
+// has run groups on this band for years (`../../../docs/lora.md`, "And their
+// cadence is the precedent our own guess was missing"). The parked silence cap
+// started at OpenTrailPaper's hourly number too, and was shortened to 10
+// minutes by the maintainer 2026-11-02 -- a parked member's own group members
+// found an hour-old marker made the group screen read as broken. Not yet
+// backed by the airtime-budget enforcement `docs/TODO.md` T-2044 describes;
+// shortening it again past 10 minutes needs that budget built first, or a
+// parked group's own silence cap can outrun the regulatory duty-cycle limit
+// this constant was previously standing in for.
 namespace BeaconPolicy {
 
 // How far the rider moves before the position is worth a packet, on a fix
@@ -76,10 +82,12 @@ inline constexpr uint32_t kSettleHoldFloors = 2;
 inline constexpr uint32_t kMovingCapSec = 600;
 
 // The longest this node stays silent, whatever the movement test says. The
-// parked case is the one that is easy to get wrong: an hour in a pub on a hike
-// still has to tell the group where the pub is, so silence is capped rather
-// than left to the movement test.
-inline constexpr uint32_t kMaxSilenceSec = 3600;
+// parked case is the one that is easy to get wrong: a stop on a hike still has
+// to tell the group where it is, so silence is capped rather than left to the
+// movement test. 10 minutes, same as kMovingCapSec -- the two states now share
+// one cadence, and Reason::Moving vs Reason::Keepalive is a log distinction
+// rather than a timing one.
+inline constexpr uint32_t kMaxSilenceSec = 600;
 
 // What the caller should do with this tick.
 enum class Action : uint8_t {

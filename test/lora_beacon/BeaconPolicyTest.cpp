@@ -136,7 +136,7 @@ TEST(BeaconPolicyNews, LosingTheSkyIsNewsToo) {
   EXPECT_EQ(d.reason, Reason::FixChanged);
 }
 
-TEST(BeaconPolicyNews, AnHourParkedStillSaysWhereThePubIs) {
+TEST(BeaconPolicyNews, AParkedNodeStillSaysWhereItIs) {
   Input in = settled();
   in.sinceLastSentMs = BeaconPolicy::kMaxSilenceSec * 1000UL - 1;
   EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
@@ -152,7 +152,8 @@ TEST(BeaconPolicyNews, TheCapHoldsWithNoFixAtAll) {
   in.hasFix = false;
   in.lastSentHadFix = false;
   in.sinceLastSentMs = BeaconPolicy::kMaxSilenceSec * 1000UL;
-  // A node with no fix sends its nameplate once an hour, never 0,0.
+  // A node with no fix sends its nameplate once the parked cap expires, never
+  // 0,0.
   const Decision d = BeaconPolicy::decide(in);
   EXPECT_EQ(d.action, Action::Send);
   EXPECT_EQ(d.reason, Reason::Keepalive);
@@ -236,13 +237,19 @@ TEST(BeaconPolicyMoving, SlowIsNotParked) {
   EXPECT_EQ(d.reason, Reason::Moving);
 }
 
-TEST(BeaconPolicyMoving, StandingStillStillWaitsTheWholeHour) {
+TEST(BeaconPolicyMoving, StandingStillSharesTheSameCapNow) {
   Input in = settled();
   in.movedM = BeaconPolicy::kSettleRadiusM - 1;  // GPS wander, not walking
   in.sinceLastSentMs = BeaconPolicy::kMovingCapSec * 1000UL;
-  // The ten-minute cap is for somebody who is demonstrably moving. A parked
-  // node must not buy itself six times the airtime on noise.
-  EXPECT_EQ(BeaconPolicy::decide(in).action, Action::Decline);
+  // kMovingCapSec and kMaxSilenceSec are both 600 s today (BeaconPolicy.h), so
+  // a genuinely parked node (movedM below kSettleRadiusM, never trips the
+  // Moving branch) is caught by the Keepalive branch at the exact same
+  // instant. This test exists to notice the day they diverge again -- if
+  // kMaxSilenceSec moves back up, a parked node must go back to waiting for
+  // it rather than the shorter moving cap.
+  const Decision d = BeaconPolicy::decide(in);
+  EXPECT_EQ(d.action, Action::Send);
+  EXPECT_EQ(d.reason, Reason::Keepalive);
 }
 
 TEST(BeaconPolicyMoving, TenMinutesIsTheLine) {
