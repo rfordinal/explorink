@@ -670,6 +670,23 @@ earlier pass used to prove the link, bypassing MeshCore's advert/roster layer
 entirely, to split "the radios can't hear each other" from "the radios hear
 each other and MeshCore drops it".
 
+**That round trip ran, same day: the radios themselves cannot hear each
+other.** `CMD:LORA PONG ON` on B, `CMD:LORA PING` on A --
+
+```
+A: LORA_OK:ping=1 air=170ms  ... 10s later ...  LORA_PING_TIMEOUT:seq=1 after=10000ms
+B: LORA_STATE: ... rx=0 ...   (never saw the packet at all)
+```
+
+-- and the reverse direction, B pinging A with A on `PONG ON`, timed out the
+same way. Symmetric: not a one-sided TX or RX fault, and `rx=0` on B rules out
+"it arrived but something above the radio dropped it" -- the packet never
+reached B's radio hardware. This is below MeshCore entirely: `CMD:LORA PING`
+talks straight to the SX1262 driver (`lib/LoraRadio`), no advert, no roster, no
+signature. Whatever is wrong is RF, not code this session's change touched.
+T-2056 narrows to: antenna seating on one or both boards, a hardware fault, or
+something about these two boards' current physical state -- not firmware.
+
 ### Two traps the bench pass paid for
 
 **BLE advertising stops and `BLE:running=1` keeps saying otherwise.** The map
