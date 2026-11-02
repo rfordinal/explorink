@@ -79,6 +79,8 @@ struct OneWay : public IMapSource {
   bool nextContour(MapWayRef&) override { return false; }
   bool beginPlaces() override { return false; }
   bool nextPlace(MapPlaceRef&) override { return false; }
+  bool beginRoadLabels() override { return false; }
+  bool nextRoadLabel(MapRoadLabelRef&) override { return false; }
 };
 
 // The renderer with nothing but the road layer: no route, no timing, no places,
