@@ -116,10 +116,15 @@ near the route. So the panel settles on an ordinary follow frame and the opening
 frame of a trip is never on the glass. `overviewShown_` exists and does not gate
 the group redraw.
 
-Only a build with `ENABLE_GROUP_MARKERS` can reach it -- `x4pro`, `t5s3pro` and
-`simulator`, not `gh_release` or `gh_release_x4pro` -- so no published build is
-affected today, and it ships the day group markers do. Parent repo
-`docs/TODO.md`, `T-2057`.
+**The published X4 Pro and T5 S3 Pro downloads have this.** The gate is
+`ENABLE_GROUP_MARKERS`, which `gh_release` and `gh_release_x4pro` do not set --
+and those envs are not what ships. The public images come from the devel envs
+(`build-environments.md`, and the parent repo's `docs/public-release.md`, "The
+published build is the devel environment"), so `env:x4pro` and `env:t5s3pro`
+carry it. The C3 image (`env:default`, X4 and X3) does not set the flag and is
+clear. Reading the flag against the `gh_release*` envs instead of against the
+publishing path is what made the first version of this section say no download
+was affected. Parent repo `docs/TODO.md`, `T-2057`.
 
 ### The overview is not a follow frame
 
