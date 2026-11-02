@@ -470,14 +470,21 @@ row is a floor, not a period** -- no faster than this, not exactly this often.
 | moving, fix | the position | every 100 m, never faster than the floor |
 | stopped after moving, fix | where the rider stopped | once per stop |
 | crawling, fix | the position | at most every 10 min |
-| parked, fix | the same position again | once an hour |
-| no fix | the name, no coordinate | once an hour |
+| parked, fix | the same position again | at most every 10 min |
+| no fix | the name, no coordinate | at most every 10 min |
 
-The parked case is the one that is easy to get wrong: **an hour in a pub on a
-hike still has to tell the group where the pub is**, so silence is capped
-rather than left to the movement test. And a fix appearing or disappearing
-sends immediately, because "I can see the sky again" is news that should not
-wait out the cap.
+The parked case is the one that is easy to get wrong: **a stop on a hike still
+has to tell the group where it is**, so silence is capped rather than left to
+the movement test. And a fix appearing or disappearing sends immediately,
+because "I can see the sky again" is news that should not wait out the cap.
+
+**The parked cap was an hour until 2026-11-02**, shortened to 10 minutes by the
+maintainer after an hour-old marker read as a broken group screen on a hike.
+It now matches the crawling cap exactly (`BeaconPolicy.h`,
+`kMaxSilenceSec` = `kMovingCapSec`), so `Moving` and `Keepalive` are a log
+distinction, not a timing one, until something separates them again. Not yet
+backed by the airtime-budget enforcement `docs/TODO.md` T-2044 describes --
+shortening this further needs that budget built first.
 
 A node with no fix sends its nameplate and never 0,0 -- the same distinction
 the peer table keeps and the panel prints as `loc=-`.
@@ -491,16 +498,20 @@ spends a packet that carries more than the one it replaces.
 
 **Stopping is news, and it was the gap.** Everything else here is driven by
 movement, so a rider who walked 60 m and halted tripped nothing: the group's
-marker stood where they were a minute ago and stayed there until the hourly
+marker stood where they were a minute ago and stayed there until the parked
 heartbeat. One packet, sent once per stop and latched until the rider moves
 again, answers the question a walking group actually asks. The band it covers
 is 25 m up to the move threshold -- below 25 m the marker is already in the
 right place, above the threshold `Moved` has already spoken.
 
-**Slow is not parked.** 60 m of scrambling in fifteen minutes trips no
-movement test, and the hourly cap then holds an hour-old position of somebody
-who is walking. A node that has moved at least 25 m gets a ten-minute cap
-instead of the hour -- OpenTrailPaper's number for the same case.
+**Slow is not parked**, even though the cap reads the same number today. 60 m
+of scrambling in fifteen minutes trips no movement test, and before 2026-11-02
+the parked cap held an hour-old position of somebody who was walking. A node
+that has moved at least 25 m gets `kMovingCapSec` (ten minutes, OpenTrailPaper's
+number for this case); a node that has not gets `kMaxSilenceSec`, now the same
+ten minutes rather than the hour it used to be. The two constants stayed
+separate in the code because the day the parked cap moves again (back up, for
+airtime, or down, if the budget allows it) they do not have to move together.
 
 **And the move threshold now reads the fix's own accuracy.** Under tree cover
 a phone reports 25 to 50 m, and the distance is measured against a fixed

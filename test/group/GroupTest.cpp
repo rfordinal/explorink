@@ -397,11 +397,11 @@ TEST(GroupLabel, FourShapes) {
 
   // Age alone: close enough to see, old enough to doubt.
   ASSERT_GT(groupMarkerLabel(false, 1200, true, old, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "15m");
+  EXPECT_STREQ(buf, "15min");
 
   // Both.
   ASSERT_GT(groupMarkerLabel(true, 1200, true, old, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "1.2 km/15m");
+  EXPECT_STREQ(buf, "1.2 km/15min");
 }
 
 TEST(GroupLabel, RoundedUpToFiveMinutes) {
@@ -412,16 +412,16 @@ TEST(GroupLabel, RoundedUpToFiveMinutes) {
   // the step matches how often the panel revisits it.
   age.seconds = 61;
   ASSERT_GT(groupMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "5m");
+  EXPECT_STREQ(buf, "5min");
   age.seconds = 5 * 60;
   ASSERT_GT(groupMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "5m");
+  EXPECT_STREQ(buf, "5min");
   age.seconds = 5 * 60 + 1;
   ASSERT_GT(groupMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "10m");
+  EXPECT_STREQ(buf, "10min");
   age.seconds = 47 * 60;
   ASSERT_GT(groupMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
-  EXPECT_STREQ(buf, "50m");
+  EXPECT_STREQ(buf, "50min");
   age.seconds = 58 * 60;
   ASSERT_GT(groupMarkerLabel(false, 0, true, age, buf, sizeof(buf)), 0u);
   EXPECT_STREQ(buf, "1h");
@@ -447,7 +447,7 @@ TEST(GroupLabel, NothingIsSaidAboutTheLastMinute) {
   seconds.known = true;
   seconds.seconds = 40;
   char buf[kGroupLabelBytes];
-  // Stale by a threshold of zero, but `0m` would read as information and carry
+  // Stale by a threshold of zero, but `0min` would read as information and carry
   // none -- the hollow head is the whole message there.
   EXPECT_EQ(groupMarkerLabel(false, 450, true, seconds, buf, sizeof(buf)), 0u);
   ASSERT_GT(groupMarkerLabel(true, 450, true, seconds, buf, sizeof(buf)), 0u);

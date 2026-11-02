@@ -348,15 +348,21 @@ The balloon says who and whether the position is current. The line under it says
 |---|---|
 | *(nothing)* | current, and close enough that the map itself shows the distance |
 | `1.2 km` | far: the rung is zoomed out past rung 2 (6 m/px, 2.9 x 4.8 km on the panel) |
-| `1.2 km/15m` | far and stale |
-| `15m` | stale, but close enough to judge the distance by eye |
+| `1.2 km/15min` | far and stale |
+| `15min` | stale, but close enough to judge the distance by eye |
 
 So a group riding together draws no text at all, which is the common case and
 the one that must stay clean. Age appears exactly when the marker goes hollow,
 so the two say the same thing at two resolutions; `?` is an age that cannot be
 known, which is every replayed fix on a device with no clock. **Under a minute
-the age is left out** -- `0m` reads as information and carries none, and there
+the age is left out** -- `0min` reads as information and carries none, and there
 the hollow head is the whole message.
+
+**The age reads "min", not "m".** Both numbers used to share the "m" suffix --
+"1.2 km/15m" read as 15 metres as often as 15 minutes, since the distance just
+before the slash is also in "m" under a kilometre. Changed 2026-11-02
+(`GroupFix.cpp`, `formatAge`); "h" above an hour needed no change, nothing else
+on this label is ever in hours.
 
 **Both numbers are quantised, and neither is an accident.** The distance goes in
 100 m steps under a kilometre, tenths to ten, whole kilometres above -- the same
@@ -399,7 +405,7 @@ It carries a white halo, drawn as four offset passes before the black text: at
 ### The Group list
 
 Map menu > **Group**. One row per member: acronym, optional name, and a value
-column with distance, compass sector and age (`1.2 km NE 4m`). Confirm shows
+column with distance, compass sector and age (`1.2 km NE 4min`). Confirm shows
 that member on the map, which drops into Observation mode exactly as showing a
 pin does.
 

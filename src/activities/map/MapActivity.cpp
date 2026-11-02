@@ -8471,7 +8471,10 @@ void MapActivity::groupRowText(size_t slot, char* buf, size_t bufLen) const {
     return;
   }
   if (age.seconds < 3600) {
-    snprintf(buf, bufLen, "%s %s %lum", distance, sector, static_cast<unsigned long>(age.seconds / 60));
+    // "min", not "m" -- `distance` just before it is also in "m" under a
+    // kilometre (PinGeo::formatDistance), same ambiguity as the pin label
+    // (GroupFix.h, groupMarkerLabel).
+    snprintf(buf, bufLen, "%s %s %lumin", distance, sector, static_cast<unsigned long>(age.seconds / 60));
   } else {
     snprintf(buf, bufLen, "%s %s %luh", distance, sector, static_cast<unsigned long>(age.seconds / 3600));
   }
