@@ -687,6 +687,23 @@ signature. Whatever is wrong is RF, not code this session's change touched.
 T-2056 narrows to: antenna seating on one or both boards, a hardware fault, or
 something about these two boards' current physical state -- not firmware.
 
+**Addendum, 2026-11-02, from the T-2042 hardware pass, and it does not sit
+comfortably next to the paragraph above.** With both boards' mesh left running
+(not the raw `CMD:LORA PING`/`PONG` path -- the real `MeshCore` advert/roster
+layer), board A's `CMD:LORA PEERS` logged board B's own advert repeatedly and
+at strong signal: `key=c6c28a10 name=EI-c6c2 rssi=-21 ... adv=2` on first
+sight, `rssi=-28 ... adv=5` roughly an hour later. That is a packet reaching
+board A's radio hardware from board B, several times, at a strength distant
+public stations never come close to (-91 to -105 dBm for everyone else heard
+that session). The PING/PONG pass's own conclusion was "the packet never
+reached B's radio hardware" (`rx=0`), which an RF/antenna fault should affect
+identically regardless of packet type. **Not reconciled**: whether `CMD:LORA
+PING`/`PONG` exercises a different code path, frequency, or radio state than
+a mesh advert does, or whether "RF/antenna/hardware fault" was the wrong
+narrowing from the start. Whoever picks T-2056 back up should read this before
+trusting the PING/PONG conclusion further -- measured here, not reasoned, and
+the measurement contradicts it.
+
 ### Two traps the bench pass paid for
 
 **BLE advertising stops and `BLE:running=1` keeps saying otherwise.** The map
