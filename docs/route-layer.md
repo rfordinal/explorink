@@ -86,15 +86,45 @@ the one orientation a rider can always read
 
 ### When nothing fits
 
-The coarsest rung is 20 m/px, which is 9.6 x 16 km of screen. A day's ride is
-longer than that. Then `Result::fits` is false, the coarsest rung and the best
-heading are used anyway, and the middle of the route is what lands on screen. The
-frame says so out loud (`STR_MAP_ROUTE_PARTIAL`, `MapActivity.cpp`'s
-`renderRouteOverview()`), because a frame showing the middle of a long route looks
-exactly like one showing all of a short one.
+The coarsest rung is rung 6, 45 m/px, which is 24 x 40 km of screen
+(`zoom-rungs.md`, the ladder table). A day's ride can still be longer than that.
+Then `Result::fits` is false, the coarsest rung and the best heading are used
+anyway, and the middle of the route is what lands on screen. The frame says so
+out loud (`STR_MAP_ROUTE_PARTIAL`, `MapActivity.cpp`'s `renderRouteOverview()`),
+because a frame showing the middle of a long route looks exactly like one
+showing all of a short one.
 
-The alternative would be a sixth ladder rung reading a z10 tile set that does not
-exist — see `docs/map-data-spec.md` open question 1 in the parent repo.
+**This said 20 m/px until 2026-11-02**, which was rung 4 and the top of the
+ladder when the fit was written. Rungs 5 and 6 were added later for the regional
+view; going past rung 6 would need a z10 tile set that does not exist, see
+`docs/map-data-spec.md` open question 1 in the parent repo.
+
+### The group age check wipes it, and the rider never sees it
+
+**Measured on an X4 Pro 2026-11-02, three times**, through the picker and
+through `CMD:GOTO_MAP <route>`. The group age re-check requests a redraw before
+the overview renders, and that redraw lands after it:
+
+```
+0.23 s  group: an age crossed a 5-minute step, redrawing
+0.90 s  route overview: heading 14, zoom step 3, 4 tiles, 0 missing, 721 ms, whole route
+2.35 s  renderViewport start: lat=483165700 lon=172796100 heading=10 seq=0
+```
+
+That last frame is the persisted fix, which on a trip picked at home is nowhere
+near the route. So the panel settles on an ordinary follow frame and the opening
+frame of a trip is never on the glass. `overviewShown_` exists and does not gate
+the group redraw.
+
+**The published X4 Pro and T5 S3 Pro downloads have this.** The gate is
+`ENABLE_GROUP_MARKERS`, which `gh_release` and `gh_release_x4pro` do not set --
+and those envs are not what ships. The public images come from the devel envs
+(`build-environments.md`, and the parent repo's `docs/public-release.md`, "The
+published build is the devel environment"), so `env:x4pro` and `env:t5s3pro`
+carry it. The C3 image (`env:default`, X4 and X3) does not set the flag and is
+clear. Reading the flag against the `gh_release*` envs instead of against the
+publishing path is what made the first version of this section say no download
+was affected. Parent repo `docs/TODO.md`, `T-2057`.
 
 ### The overview is not a follow frame
 
