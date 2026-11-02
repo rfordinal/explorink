@@ -1,8 +1,9 @@
-#include "LoraPeerTable.h"
-
 #include <gtest/gtest.h>
 
 #include <cstring>
+
+#include "LoraGroupId.h"
+#include "LoraPeerTable.h"
 
 // The heard-nodes table, on the host.
 //
@@ -198,4 +199,78 @@ TEST(LoraPeerTable, ClearEmptiesIt) {
   table.clear();
   EXPECT_EQ(table.count(), 0u);
   EXPECT_EQ(table.find(key), -1);
+}
+
+// T-2042: a busy public channel fills all sixteen slots with strangers inside
+// an hour (docs/lora-mesh.md, "A busy channel fills the table with
+// strangers"), and plain age-based eviction would let any one of them bump a
+// group member who has simply been quiet for a while. A roster member must
+// outrank a stranger for a slot, whatever the ages say.
+
+TEST(LoraPeerTable, AFullTableNeverEvictsAPriorityIdForAStranger) {
+  LoraPeerTable table;
+  uint8_t key[32];
+  for (uint8_t i = 0; i < LoraPeerTable::kMaxPeers; ++i) {
+    keyFor(key, i);
+    table.heard(key, "x", false, 0, 0, 1, -40, 9, 1000u + i);
+  }
+
+  // Node 0 is the oldest, and the one that would be evicted first with no
+  // priority list at all (see AFullTableEvictsTheNodeHeardLongestAgo above).
+  // Marking it a group member must make the table reach past it instead.
+  keyFor(key, 0);
+  char priorityIds[1][kLoraGroupIdBytes];
+  loraGroupId(key, priorityIds[0], kLoraGroupIdBytes);
+
+  uint8_t fresh[32];
+  keyFor(fresh, 200);
+  EXPECT_TRUE(table.heard(fresh, "NEW", false, 0, 0, 1, -40, 9, 9000, priorityIds, 1));
+
+  keyFor(key, 0);
+  EXPECT_NE(table.find(key), -1) << "the group member was evicted instead of a stranger";
+  keyFor(key, 1);
+  EXPECT_EQ(table.find(key), -1) << "node 1, the oldest stranger, should have been evicted instead";
+}
+
+TEST(LoraPeerTable, APriorityIdStillUpdatesInPlaceWithNoEviction) {
+  // Hearing a priority id again is the same update path as any other repeat --
+  // the priority list only changes which slot a *new* node evicts.
+  LoraPeerTable table;
+  uint8_t key[32];
+  for (uint8_t i = 0; i < LoraPeerTable::kMaxPeers; ++i) {
+    keyFor(key, i);
+    table.heard(key, "x", false, 0, 0, 1, -40, 9, 1000u + i);
+  }
+
+  keyFor(key, 0);
+  char priorityIds[1][kLoraGroupIdBytes];
+  loraGroupId(key, priorityIds[0], kLoraGroupIdBytes);
+
+  EXPECT_FALSE(table.heard(key, "x", false, 0, 0, 2, -40, 9, 9000, priorityIds, 1));
+  EXPECT_EQ(table.count(), LoraPeerTable::kMaxPeers);
+  for (uint8_t i = 0; i < LoraPeerTable::kMaxPeers; ++i) {
+    keyFor(key, i);
+    EXPECT_NE(table.find(key), -1) << "node " << static_cast<int>(i) << " was dropped";
+  }
+}
+
+TEST(LoraPeerTable, AFullTableOfOnlyPriorityIdsFallsBackToTheOldest) {
+  // The real roster can never fill the table this way (kGroupMaxMembers = 12
+  // < kMaxPeers = 16, GroupMembers.h), but the table is generic and tested
+  // standalone, so the fallback that keeps it from deadlocking is proved here.
+  LoraPeerTable table;
+  uint8_t key[32];
+  char priorityIds[LoraPeerTable::kMaxPeers][kLoraGroupIdBytes];
+  for (uint8_t i = 0; i < LoraPeerTable::kMaxPeers; ++i) {
+    keyFor(key, i);
+    table.heard(key, "x", false, 0, 0, 1, -40, 9, 1000u + i);
+    loraGroupId(key, priorityIds[i], kLoraGroupIdBytes);
+  }
+
+  uint8_t fresh[32];
+  keyFor(fresh, 200);
+  EXPECT_TRUE(table.heard(fresh, "NEW", false, 0, 0, 1, -40, 9, 9000, priorityIds, LoraPeerTable::kMaxPeers));
+
+  keyFor(key, 0);
+  EXPECT_EQ(table.find(key), -1) << "with no stranger left to evict, the oldest priority id must still go";
 }

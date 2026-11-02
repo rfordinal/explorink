@@ -208,6 +208,11 @@ void PresenceMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len)
   lastRxRssiDbm_ = static_cast<int16_t>(rssi);
 }
 
+void PresenceMesh::setPriorityIds(const char (*ids)[kLoraGroupIdBytes], size_t count) {
+  priorityCount_ = count < kMaxPriorityIds ? count : kMaxPriorityIds;
+  if (priorityCount_ > 0) memcpy(priorityIds_, ids, priorityCount_ * sizeof(priorityIds_[0]));
+}
+
 void PresenceMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, uint32_t timestamp,
                                 const uint8_t* appData, size_t appDataLen) {
   AdvertDataParser parser(appData, static_cast<uint8_t>(appDataLen));
@@ -238,7 +243,8 @@ void PresenceMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
   const int8_t snrDb = static_cast<int8_t>(packet->getSNR());
 
   const bool isNew = peers_.heard(id.pub_key, parser.hasName() ? parser.getName() : nullptr, parser.hasLatLon(),
-                                  parser.getIntLat(), parser.getIntLon(), timestamp, lastRxRssiDbm_, snrDb, millis());
+                                  parser.getIntLat(), parser.getIntLon(), timestamp, lastRxRssiDbm_, snrDb, millis(),
+                                  priorityCount_ > 0 ? priorityIds_ : nullptr, priorityCount_);
 
   // Only a position goes on: an advert with no coordinate says the sender is
   // alive, which the table above already recorded, and there is nothing for a

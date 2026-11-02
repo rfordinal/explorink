@@ -6,13 +6,35 @@
 
 namespace {
 
-// Oldest-heard first, by our own clock. millis() wraps after 49 days and the
-// subtraction below is what survives that: the difference of two unsigned
-// values is correct across the wrap, an ordinary `<` comparison is not.
-size_t oldestSlot(const LoraPeer* peers, size_t count, uint32_t nowUptimeMs) {
+bool isPriority(const uint8_t pubKey[32], const char (*priorityIds)[kLoraGroupIdBytes], size_t priorityCount) {
+  if (priorityCount == 0) return false;
+  char id[kLoraGroupIdBytes];
+  loraGroupId(pubKey, id, sizeof(id));
+  for (size_t i = 0; i < priorityCount; ++i) {
+    if (strcmp(id, priorityIds[i]) == 0) return true;
+  }
+  return false;
+}
+
+// Oldest-heard first, by our own clock, among the non-priority slots -- a
+// priority id is skipped unless every slot in the table is one (T-2042).
+// millis() wraps after 49 days and the subtraction below is what survives
+// that: the difference of two unsigned values is correct across the wrap, an
+// ordinary `<` comparison is not.
+size_t oldestSlot(const LoraPeer* peers, size_t count, uint32_t nowUptimeMs,
+                  const char (*priorityIds)[kLoraGroupIdBytes], size_t priorityCount) {
+  bool anyNonPriority = false;
+  for (size_t i = 0; i < count; ++i) {
+    if (!isPriority(peers[i].pubKey, priorityIds, priorityCount)) {
+      anyNonPriority = true;
+      break;
+    }
+  }
+
   size_t worst = 0;
   uint32_t worstAge = 0;
   for (size_t i = 0; i < count; ++i) {
+    if (anyNonPriority && isPriority(peers[i].pubKey, priorityIds, priorityCount)) continue;
     const uint32_t age = nowUptimeMs - peers[i].heardUptimeMs;
     if (age >= worstAge) {
       worstAge = age;
@@ -49,7 +71,8 @@ void LoraPeerTable::promote(size_t slot, size_t orderLen) {
 }
 
 bool LoraPeerTable::heard(const uint8_t pubKey[32], const char* name, bool hasLoc, int32_t latE6, int32_t lonE6,
-                          uint32_t advertUtc, int16_t rssiDbm, int8_t snrDb, uint32_t nowUptimeMs) {
+                          uint32_t advertUtc, int16_t rssiDbm, int8_t snrDb, uint32_t nowUptimeMs,
+                          const char (*priorityIds)[kLoraGroupIdBytes], size_t priorityCount) {
   int at = find(pubKey);
   const bool isNew = at < 0;
   size_t orderLen = count_;
@@ -59,7 +82,7 @@ bool LoraPeerTable::heard(const uint8_t pubKey[32], const char* name, bool hasLo
     if (count_ < kMaxPeers) {
       slot = count_++;  // orderLen stays at the old count: order_ has no entry for this slot yet
     } else {
-      slot = oldestSlot(peers_, count_, nowUptimeMs);
+      slot = oldestSlot(peers_, count_, nowUptimeMs, priorityIds, priorityCount);
     }
     memset(&peers_[slot], 0, sizeof(peers_[slot]));
     memcpy(peers_[slot].pubKey, pubKey, 32);

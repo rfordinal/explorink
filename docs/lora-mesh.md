@@ -687,6 +687,23 @@ signature. Whatever is wrong is RF, not code this session's change touched.
 T-2056 narrows to: antenna seating on one or both boards, a hardware fault, or
 something about these two boards' current physical state -- not firmware.
 
+**Addendum, 2026-11-02, from the T-2042 hardware pass, and it does not sit
+comfortably next to the paragraph above.** With both boards' mesh left running
+(not the raw `CMD:LORA PING`/`PONG` path -- the real `MeshCore` advert/roster
+layer), board A's `CMD:LORA PEERS` logged board B's own advert repeatedly and
+at strong signal: `key=c6c28a10 name=EI-c6c2 rssi=-21 ... adv=2` on first
+sight, `rssi=-28 ... adv=5` roughly an hour later. That is a packet reaching
+board A's radio hardware from board B, several times, at a strength distant
+public stations never come close to (-91 to -105 dBm for everyone else heard
+that session). The PING/PONG pass's own conclusion was "the packet never
+reached B's radio hardware" (`rx=0`), which an RF/antenna fault should affect
+identically regardless of packet type. **Not reconciled**: whether `CMD:LORA
+PING`/`PONG` exercises a different code path, frequency, or radio state than
+a mesh advert does, or whether "RF/antenna/hardware fault" was the wrong
+narrowing from the start. Whoever picks T-2056 back up should read this before
+trusting the PING/PONG conclusion further -- measured here, not reasoned, and
+the measurement contradicts it.
+
 ### Two traps the bench pass paid for
 
 **BLE advertising stops and `BLE:running=1` keeps saying otherwise.** The map
@@ -1408,6 +1425,92 @@ with, that is backwards.
 longer theoretical: a stranger from Graz can now evict a group member whose
 marker is on the map. A roster member must outrank a stranger for a slot,
 whatever the ages say. T-2042.
+
+**Fixed 2026-11-02, branch `t2042-peer-priority`.** `LoraPeerTable::heard()`
+takes an optional list of priority ids (`src/lora/LoraPeerTable.h:69-84`,
+spelled the way `loraGroupId()` spells one, LoraGroupId.h) and `oldestSlot()`
+(`src/lora/LoraPeerTable.cpp`) skips any slot on that list unless the whole
+table is priority ids -- which the real roster can never make happen,
+`kGroupMaxMembers` (12) being less than `kMaxPeers` (16), but the table is
+generic and tested standalone so the fallback still has to exist and is
+covered by its own test.
+
+The list itself never touches the radio task. `PresenceMesh::setPriorityIds()`
+(`src/lora/PresenceMesh.h`) just holds what it is given; `main.cpp`'s
+`loraDrain()` rebuilds it from `MapGroup::getInstance().roster()` every tick
+and pushes it in under `LoraLock`, the same lock `onAdvertRecv()` already runs
+under and the UI-side snapshot functions already take -- no new
+synchronisation, the existing one used the other way. This keeps the rule a
+few paragraphs below intact: "Membership is checked here, on this task, and
+never on the radio task" (`main.cpp`, the position-queue drain). Twelve ids at
+22 bytes is 264 bytes on the stack per tick, nothing next to `gMesh.loop()`
+itself.
+
+Proved by four host tests in `test/lora_peers/LoraPeerTableTest.cpp`: a full
+table reaches past a priority id to the oldest stranger instead, a priority id
+heard again still updates in place with no eviction at all, and the
+all-priority fallback actually evicts rather than deadlocking.
+
+**Same shape as Meshtastic's `NodeDB`**, read for comparison rather than
+code (GPL, rejected as our protocol 2026-09-08): `getOrCreateMeshNode()`
+skips favourite/ignored/verified nodes in its own oldest-node eviction scan,
+independent agreement that "skip the protected ones in the scan" is the
+right shape for a bounded radio-filled table. They cap how many can be
+protected and keep a demote-to-warm-tier path this table has no need for;
+`docs/prior-art-meshtastic.md` has the full comparison and why the
+differences are structural, not disagreement.
+
+**Hardware pass, 2026-11-02, T5 S3 Pro (`7c:2c:67:8a:4c:b4`).** Built on T15,
+flashed from this laptop (`docs/firmware-builds/2026-11-02-t5s3pro-
+t2042-peer-priority-32b2e00b-good/`). `CMD:LORA MESH ON` loads the identity
+and starts clean, `CMD:LORA PEERS` answers `count=0 rejected=0 mesh=1`, and
+free heap held flat at 169,400 B across several ticks over about 150 seconds
+with mesh running -- so the new per-tick resync loop in `loraDrain()` (264
+stack bytes, no heap) costs nothing measurable and does not crash the board.
+**What this did not confirm**: the actual busy-channel scenario, because the
+2026-10-21 measurement took about an hour of real public traffic to fill the
+table, which a short bench pass cannot force. Left running with an empty
+roster; the field question -- does a real member survive what Graz, Vienna
+and Plavecky Stvrtok did to this table -- is still open until somebody
+watches it with a member actually in the roster.
+
+**The field question answered, 2026-11-02, same day, test branch
+`t2042-small-table-test`.** `LoraPeerTable::kMaxPeers` cut to 6 (never
+merged -- the branch exists only to force the table full in minutes instead
+of an hour) so a real public channel would need to evict, repeatedly, inside
+one sitting. A second T5 S3 Pro on the desk (`t5s3pro-b`, already a roster
+member on A from earlier bring-up) sent one advert, then had its own mesh
+switched off -- silenced, so its entry in A's table could only age, never
+refresh.
+
+**First attempt was invalid and is recorded as such, not quietly redone.**
+`MapGroup::begin()` only runs on the Map activity's `onEnter()`
+(`MapActivity.cpp`), and after flashing this branch the console never sent
+`CMD:GOTO_MAP` -- only `CMD:LORA MESH ON` from Home. So for over two hours
+the roster singleton stayed at its default-constructed empty state, `loraDrain()`'s
+priority-id rebuild had nothing to copy, and every eviction ran exactly as it
+would have before T-2042. Board B's entry did get evicted during that window
+-- a true result, but not a test of the fix, because the fix was never
+armed. Caught by checking the boot log for `[GROUPFILE] roster: N member(s)`
+after the fact and finding `N` had never printed at all. The run was
+restarted properly: board B re-heard with the map screen open (`roster: 1
+member(s)` confirmed in the log this time), silenced again, and the clock
+restarted from that point.
+
+**Second attempt, roster confirmed active throughout: decisive and
+positive.** Board B's entry aged to **2192 s (about 36.5 minutes)**, by far
+the oldest of the six slots -- every other slot held a stranger heard inside
+the last 280 s. Multiple strangers arrived and were admitted across that
+stretch, each replacing a different, younger non-priority entry, and board
+B's slot was never touched despite being the obvious oldest candidate every
+single time. `LoraPeerTable::oldestSlot()`'s priority skip is doing on a
+real radio exactly what the host tests say it does.
+
+**The mistake is worth keeping in this doc, not editing out**: a roster-
+dependent behaviour needs the roster actually loaded before any hardware
+observation is trusted, and `CMD:LORA MESH ON` alone does not load it --
+only entering the Map screen does. Check the boot log line, not just that
+the mesh command answered `LORA_OK`.
 
 A second, smaller thing the same screenshot showed: ages run to `4009s ago`,
 which nobody reads as an hour. Seconds are right for a bench and wrong for a
