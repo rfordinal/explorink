@@ -1432,11 +1432,21 @@ itself.
 Proved by four host tests in `test/lora_peers/LoraPeerTableTest.cpp`: a full
 table reaches past a priority id to the oldest stranger instead, a priority id
 heard again still updates in place with no eviction at all, and the
-all-priority fallback actually evicts rather than deadlocking. **Not yet
-confirmed on a board**: the logic needs no device, but whether a roster member
-actually survives a busy real channel is a hardware question T-2042 still
-owes, same distinction the rest of this file draws between read-off-the-code
-and measured-on-hardware.
+all-priority fallback actually evicts rather than deadlocking.
+
+**Hardware pass, 2026-11-02, T5 S3 Pro (`7c:2c:67:8a:4c:b4`).** Built on T15,
+flashed from this laptop (`docs/firmware-builds/2026-11-02-t5s3pro-
+t2042-peer-priority-32b2e00b-good/`). `CMD:LORA MESH ON` loads the identity
+and starts clean, `CMD:LORA PEERS` answers `count=0 rejected=0 mesh=1`, and
+free heap held flat at 169,400 B across several ticks over about 150 seconds
+with mesh running -- so the new per-tick resync loop in `loraDrain()` (264
+stack bytes, no heap) costs nothing measurable and does not crash the board.
+**What this did not confirm**: the actual busy-channel scenario, because the
+2026-10-21 measurement took about an hour of real public traffic to fill the
+table, which a short bench pass cannot force. Left running with an empty
+roster; the field question -- does a real member survive what Graz, Vienna
+and Plavecky Stvrtok did to this table -- is still open until somebody
+watches it with a member actually in the roster.
 
 A second, smaller thing the same screenshot showed: ages run to `4009s ago`,
 which nobody reads as an hour. Seconds are right for a bench and wrong for a
