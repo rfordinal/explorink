@@ -1474,6 +1474,44 @@ roster; the field question -- does a real member survive what Graz, Vienna
 and Plavecky Stvrtok did to this table -- is still open until somebody
 watches it with a member actually in the roster.
 
+**The field question answered, 2026-11-02, same day, test branch
+`t2042-small-table-test`.** `LoraPeerTable::kMaxPeers` cut to 6 (never
+merged -- the branch exists only to force the table full in minutes instead
+of an hour) so a real public channel would need to evict, repeatedly, inside
+one sitting. A second T5 S3 Pro on the desk (`t5s3pro-b`, already a roster
+member on A from earlier bring-up) sent one advert, then had its own mesh
+switched off -- silenced, so its entry in A's table could only age, never
+refresh.
+
+**First attempt was invalid and is recorded as such, not quietly redone.**
+`MapGroup::begin()` only runs on the Map activity's `onEnter()`
+(`MapActivity.cpp`), and after flashing this branch the console never sent
+`CMD:GOTO_MAP` -- only `CMD:LORA MESH ON` from Home. So for over two hours
+the roster singleton stayed at its default-constructed empty state, `loraDrain()`'s
+priority-id rebuild had nothing to copy, and every eviction ran exactly as it
+would have before T-2042. Board B's entry did get evicted during that window
+-- a true result, but not a test of the fix, because the fix was never
+armed. Caught by checking the boot log for `[GROUPFILE] roster: N member(s)`
+after the fact and finding `N` had never printed at all. The run was
+restarted properly: board B re-heard with the map screen open (`roster: 1
+member(s)` confirmed in the log this time), silenced again, and the clock
+restarted from that point.
+
+**Second attempt, roster confirmed active throughout: decisive and
+positive.** Board B's entry aged to **2192 s (about 36.5 minutes)**, by far
+the oldest of the six slots -- every other slot held a stranger heard inside
+the last 280 s. Multiple strangers arrived and were admitted across that
+stretch, each replacing a different, younger non-priority entry, and board
+B's slot was never touched despite being the obvious oldest candidate every
+single time. `LoraPeerTable::oldestSlot()`'s priority skip is doing on a
+real radio exactly what the host tests say it does.
+
+**The mistake is worth keeping in this doc, not editing out**: a roster-
+dependent behaviour needs the roster actually loaded before any hardware
+observation is trusted, and `CMD:LORA MESH ON` alone does not load it --
+only entering the Map screen does. Check the boot log line, not just that
+the mesh command answered `LORA_OK`.
+
 A second, smaller thing the same screenshot showed: ages run to `4009s ago`,
 which nobody reads as an hour. Seconds are right for a bench and wrong for a
 list somebody uses.
