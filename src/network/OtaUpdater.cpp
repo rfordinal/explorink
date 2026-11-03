@@ -22,7 +22,22 @@
 #include "OtaVersionCompare.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/rfordinal/explorink/releases/latest";
+// The release LIST, not `/releases/latest`. GitHub's "latest" endpoint skips
+// every release flagged "prerelease", and every ExplorInk release but the very
+// first is flagged that way -- so `/releases/latest` resolved to
+// `explorink-v0.1.0-alpha` (2026-08-22, C3 assets only) no matter how many
+// newer per-board releases existed, and OTA could never surface an update on
+// any board. T-2053. The list endpoint returns every release, draft ones
+// excluded, newest first; ReleaseJsonParser in list mode walks it and keeps
+// the first entry carrying an asset for THIS board.
+//
+// per_page=10 rather than the default 30: a release round publishes one entry
+// per board (x3x4, x4pro, t5s3pro), so ten entries cover three full rounds --
+// enough for a board that sat out a round -- while bounding the response. The
+// whole 10-release list measured 148 kB on 2026-11-03, almost all of it
+// release-note `body` text; the early abort below means a board whose release
+// is near the top never reads most of it.
+constexpr char releaseListUrl[] = "https://api.github.com/repos/rfordinal/explorink/releases?per_page=10";
 
 // Suffix of the published asset name this running build should download --
 // see docs/public-release.md for the naming convention, and
@@ -30,20 +45,9 @@ constexpr char latestReleaseUrl[] = "https://api.github.com/repos/rfordinal/expl
 // nullptr for a board with no published asset (sticky, T-2003), so OTA
 // correctly reports NO_UPDATE instead of matching someone else's binary.
 //
-// NOTE, confirmed against the live repo 2026-10-31: `/releases/latest`
-// skips every release GitHub has flagged "prerelease", and every ExplorInk
-// release published so far IS flagged prerelease except the very first,
-// `explorink-v0.1.0-alpha` (2026-08-22, C3-only assets) -- so `/releases/latest`
-// resolves to that one release no matter how many newer ones exist for any
-// board. Fixing the suffix match (this function) was necessary but not
-// sufficient: OTA still can't surface a real update on ANY board today,
-// because the release it fetches is always the oldest one, not because the
-// wrong asset gets picked out of it. This is T-2008's sibling bug, tracked
-// separately (docs/TODO.md) since the fix is either a release-process change
-// (stop flagging releases prerelease) or switching this to `GET /releases`
-// and scanning the list for the newest entry with a matching asset -- neither
-// of which "pick the right filename" (T-2008's actual scope) could have
-// fixed on its own.
+// This suffix is also what decides WHICH release in the list is "the latest
+// for this board": the list carries every board's releases interleaved, so
+// the scan keeps the newest entry whose assets end with this string.
 const char* expectedAssetSuffix() {
   const char* name = board_tag::boardName();
   const size_t len = board_tag::boardNameLen();
@@ -65,18 +69,30 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return NO_UPDATE;
   }
 
-  // Stream the ~32KB release JSON straight into the parser as it arrives.
-  // Buffering the whole body in a std::string would add a growing allocation
-  // on top of the TLS session's heap during the fetch; with -fno-exceptions an
-  // OOM there aborts. fetchUrl handles the verified-https GET, redirects, and
+  // Stream the release-list JSON straight into the parser as it arrives --
+  // 148 kB for the full ten-entry list, measured 2026-11-03. Buffering a body
+  // that size in a std::string would add a growing allocation on top of the
+  // TLS session's heap during the fetch; with -fno-exceptions an OOM there
+  // aborts. fetchUrl handles the verified-https GET, redirects, and
   // User-Agent (see HttpDownloader).
   ReleaseJsonParser releaseParser;
   releaseParser.setFirmwareAssetSuffix(assetSuffix);
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
+  releaseParser.setListMode(true);
+
+  // Returning false from the data callback aborts the transfer, and
+  // HttpDownloader reports that abort as a failed fetch -- it cannot tell a
+  // deliberate stop from a dropped connection. So record why we stopped and
+  // treat only an unplanned failure as an error.
+  bool stoppedOnMatch = false;
+  const bool ok = HttpDownloader::fetchUrl(releaseListUrl, [&](const uint8_t* data, size_t len) {
     releaseParser.feed(reinterpret_cast<const char*>(data), len);
+    if (releaseParser.isComplete()) {
+      stoppedOnMatch = true;
+      return false;
+    }
     return true;
   });
-  if (!ok) {
+  if (!ok && !stoppedOnMatch) {
     LOG_ERR("OTA", "Release check fetch failed");
     return HTTP_ERROR;
   }
@@ -84,13 +100,21 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
           releaseParser.foundFirmware() ? "yes" : "no");
 
+  // In list mode a release with no asset for this board is rolled back tag and
+  // all, so "no tag" here means every release in the list was rejected, not
+  // that the JSON was malformed -- report that as NO_UPDATE, which is what it
+  // is, and keep JSON_PARSE_ERROR for a response that parsed to nothing at all.
   if (!releaseParser.foundTag()) {
-    LOG_ERR("OTA", "No tag_name in release JSON");
-    return JSON_PARSE_ERROR;
+    if (releaseParser.foundFirmware()) {
+      LOG_ERR("OTA", "Firmware asset with no tag -- malformed release JSON");
+      return JSON_PARSE_ERROR;
+    }
+    LOG_INF("OTA", "No release in the list carries an asset ending '%s'", assetSuffix);
+    return NO_UPDATE;
   }
 
   if (!releaseParser.foundFirmware()) {
-    LOG_INF("OTA", "No asset ending '%s' in latest release (tag=%s)", assetSuffix, releaseParser.getTagName());
+    LOG_INF("OTA", "No release in the list carries an asset ending '%s'", assetSuffix);
     return NO_UPDATE;
   }
 
