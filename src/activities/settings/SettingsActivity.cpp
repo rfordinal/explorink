@@ -110,10 +110,16 @@ void SettingsActivity::rebuildSettingsLists() {
   // three are book plumbing — reading-position sync, an e-book catalogue, and
   // the reader's own pagination cache. The activities are still built and still
   // reachable from code; only the Settings rows are gone.
-  // TODO: Touch devices need their own firmware update path/artifacts before OTA is exposed.
-  if (!BoardConfig::hasTouch()) {
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
-  }
+  // Shown on every board since 2026-11-03. It used to be hidden behind
+  // !hasTouch(), under a TODO reading "touch devices need their own firmware
+  // update path/artifacts before OTA is exposed" -- and that hid the row on
+  // BOTH S3 boards, because the X4 Pro carries a GT911 just like the T5 S3 Pro
+  // (BoardConfig.h, XTEINK_X4_PRO). Neither half of the TODO still holds:
+  // OtaUpdateActivity draws and handles Cancel/Update rects under
+  // mappedInput.hasTouch(), and per-board assets have shipped since
+  // explorink-x4pro-v0.2.0-alpha (2026-09-09). Leaving it hidden meant the
+  // only device on the desk that could even reach the row was an X3.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   // Row was hidden 2026-09-14 (T-2008): FirmwareFlasher::validateImageFile()
   // checked image structure only, so a wrong-board S3 image (x4pro/sticky/
   // t5s3pro share one chip_id) would pass and flash. Re-enabled now that

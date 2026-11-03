@@ -23,6 +23,26 @@ class ReleaseJsonParser {
   // before feed(); an empty/null suffix means no asset ever matches.
   void setFirmwareAssetSuffix(const char* suffix);
 
+  // Parse a RELEASE LIST (`GET /repos/<o>/<r>/releases`) instead of a single
+  // release object (`GET .../releases/latest`). The two differ only by one
+  // array level, so the same state machine covers both: every depth test
+  // shifts by one and a release object that carried no matching asset is
+  // rolled back at its closing brace, leaving the NEWEST release that does
+  // carry one. GitHub returns the list newest-first, so first match wins.
+  //
+  // Why this mode exists at all: `/releases/latest` skips every release
+  // flagged "prerelease", and every ExplorInk release but the first is
+  // flagged that way -- see OtaUpdater::checkForUpdate() and T-2053.
+  // Call before feed(), like setFirmwareAssetSuffix().
+  void setListMode(bool enabled);
+
+  // True once a tag AND a matching firmware asset have both been seen. In
+  // list mode the caller can stop the download here: GitHub orders a release
+  // object's keys with `tag_name` and `assets` before the long `body`, so
+  // everything needed is already in hand and the rest of the response -- the
+  // release notes, plus every older release -- is dead weight.
+  bool isComplete() const;
+
   bool foundTag() const;
   bool foundFirmware() const;
   const char* getTagName() const;
@@ -83,4 +103,14 @@ class ReleaseJsonParser {
   char currentAssetName[96];
   char currentAssetUrl[512];
   size_t currentAssetSize;
+
+  bool listMode;
+
+  // Set at the closing brace of the release that supplied the firmware. From
+  // then on no further tag_name is taken -- see sOnString().
+  bool releaseLocked;
+
+  // Depth at which a release object's own keys sit: 1 for a bare release
+  // object, 2 once the top level is the list's array.
+  uint8_t releaseDepth() const { return listMode ? 2 : 1; }
 };
