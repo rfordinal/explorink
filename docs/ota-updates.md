@@ -191,10 +191,30 @@ Equal numeric versions are "newer" only when the running build is an RC.
   too, on every board, forever. It is the positive run that carries the
   evidence, and the negative that confirms the version compare -- one build,
   two version strings, one board, nothing else different.
-- **Open:** a real download-and-install over OTA has still never been run on a
-  device. The check path is what this pass covers; `installUpdate()` and
-  `FirmwareFlasher`'s board check are exercised only by the SD path and host
-  tests.
+- **Download and install proven on an X4 Pro, 2026-11-03** -- the first time
+  on this project. A board flashed over USB with an 0.2.1-labelled build
+  pressed Update, pulled the 3.93 MB
+  `explorink-0.2.2-x4pro-esp32s3-firmware.bin` from GitHub over wolfSSL,
+  wrote it to the inactive slot, switched boot and restarted into it.
+
+  **"Settings says 0.2.2" is not the proof, and it was worth not stopping
+  there.** The slot the image lands in (`app1`) held an older build from a
+  past session, so a boot flag flipping to a stale 0.2.2 image produces the
+  same version on screen with no download at all. What settles it is the
+  256-byte `esp_app_desc` read back out of `app1`
+  (`esptool read-flash 0x650020 256`) compared against the same 256 bytes of
+  the published asset: byte-identical, and different from the branch's own
+  build (`project_name` `v022-x4pro` against `ota-reachable`). The device is
+  running exactly what it downloaded.
+
+  That run also exercised the board checks on the install path for real: the
+  `chip_id` test after the first 14 bytes and the streamed board-tag scan
+  both passed on an image independently confirmed to carry
+  `EXPLORINK-BOARD-V1:x4pro;` and `chip_id 0x0009`.
+- **Still open:** no failure path has been exercised. A wrong-board image, a
+  connection dropped mid-write, and a corrupt image are all handled in code
+  (`esp_ota_abort()`, and boot is switched only after `esp_ota_end()`
+  verifies) and none of the three has been made to happen on a device.
 
 ## Release process note
 
