@@ -211,6 +211,19 @@ Equal numeric versions are "newer" only when the running build is an RC.
   `chip_id` test after the first 14 bytes and the streamed board-tag scan
   both passed on an image independently confirmed to carry
   `EXPLORINK-BOARD-V1:x4pro;` and `chip_id 0x0009`.
+- **Repeated on a T5 S3 Pro the same day, and that is the run that covers the
+  list scan.** On the X4 Pro the matching release is **entry 0** of the list,
+  so the skip-and-roll-back path -- the part that needed new code -- never ran
+  on hardware at all. The T5 S3 Pro has to discard `explorink-x4pro-v0.2.2`
+  and `explorink-v0.2.2`, tags included, before it reaches its own. Its screen
+  named `explorink-t5s3pro-v0.2.2`, which is the proof: **without the rollback
+  it would have shown entry 0's tag beside entry 2's asset.** It then
+  downloaded and installed that release, and the `esp_app_desc` read back out
+  of its `app1` matches the published t5s3pro asset byte for byte
+  (`project_name` `v022-t5s3` against the branch's `ota-reachable-t5s3pro`).
+
+  The touch fix holds there too: the confirmation screen on that board, a
+  540x960 panel also in BUTTONS_ONLY, shows the hint boxes alone.
 - **Still open:** no failure path has been exercised. A wrong-board image, a
   connection dropped mid-write, and a corrupt image are all handled in code
   (`esp_ota_abort()`, and boot is switched only after `esp_ota_end()`
