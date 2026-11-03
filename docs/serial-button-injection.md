@@ -136,6 +136,25 @@ build carries no `BUTTON_OK` or `BUTTON_ERR` string and no `DebugInput` symbol,
 while the archived devel build carries one and three. So the check could have
 failed.
 
+**That is true of the ENV and false of what we actually ship.** Measured
+2026-11-03 against the three published 0.2.2 assets downloaded from the
+release page: every one of them carries **one `BUTTON_OK:` and three
+`BUTTON_ERR:`** -- the devel signature above, not the `gh_release` zeros. The
+C3 image for X4 and X3 included. And it is live, not dead strings: a T5 S3 Pro
+running `explorink-t5s3pro-v0.2.2`, confirmed byte-identical to the published
+asset by `esp_app_desc` first, answered `CMD:BUTTON back` with
+`BUTTON_OK:back:0`.
+
+So the published images are built from devel envs. `docs/public-release.md`
+does not name which env each board's published image comes from, which is how
+this went unnoticed. Parent repo, T-2063; the maintainer's call 2026-11-03 was
+that it does not block a release and belongs in a security pass.
+
+**Do not re-derive this from `strings` alone.** `BUTTON_OK:` appears in all
+three images, so a presence check cannot tell a devel build from a release
+one -- it is the **count** against the 2026-09-08 baseline that discriminates,
+and only a device answers the question outright.
+
 The reason is the standing one: the device gets lost or stolen, and the person
 holding it can plug in USB. A press injector is a thumb for that person -- walk
 the menus, open the rider's books, read their pins, all without touching the
