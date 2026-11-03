@@ -133,6 +133,33 @@ chunks, full list 148 kB:
 
 Almost all of the 148 kB is release-note `body` text.
 
+## The confirmation screen on a touch board
+
+The screen draws its own half-width **Cancel** and **Update** rects along the
+bottom 80 px, and separately asks the theme for the four button hints. Which
+of the two a board shows is decided by the touch mode (`src/TouchPolicy.h`),
+and the two predicates are disjoint on purpose:
+
+| touch mode | `touchAnywhere()` | `hintsVisible()` | what is drawn |
+|---|---|---|---|
+| no digitizer | false | true | hint boxes only |
+| ANYWHERE | true | false | the Cancel/Update rects only |
+| BUTTONS\_ONLY | false | true | hint boxes only |
+| DISABLED | false | false | the padlock only |
+
+**Guarding the rects on `mappedInput.hasTouch()` is wrong and was the bug
+(T-2059).** That call answers "is there a digitizer", not "may a tap anywhere
+do anything". In BUTTONS_ONLY, `MappedInputManager::wasScreenTapped()` returns
+false outside the hint boxes, so the rects were drawn, invited a finger, and
+did nothing -- sitting on top of the hint boxes, which the theme draws in
+exactly that mode and into exactly that 80 px. A board in DISABLED got the same
+two dead buttons beside the padlock.
+
+Draw a touch-only control under the same predicate that gates its tap.
+`BaseTheme.h` states the rule from the other side -- "a hit area that is not
+the box the user can see is a lie they aim at" -- and a drawn control that is
+not a hit area is that lie reversed.
+
 ## Deciding "newer"
 
 `ota_version::isVersionNewer()` (`src/network/OtaVersionCompare.cpp`) compares
@@ -149,6 +176,11 @@ Equal numeric versions are "newer" only when the running build is an RC.
 - Host-tested: 44 tests in `test/release_json_parser/`, 11 of them list mode,
   plus `test/ota_version_compare/`.
 - Host-tested against the live GitHub response for all three boards.
+- **Confirmed on an X4 Pro, 2026-11-03.** An x4pro build with its version
+  string lowered to 0.2.1 reached `Settings -> System -> Check for updates`,
+  connected to a saved network, and drew `New update available! / Current
+  Version: 0.2.1-x4pro / New Version: explorink-x4pro-v0.2.2` -- the list
+  scan, over real WiFi and TLS, naming this board's own newest release.
 - **Open:** a real download-and-install over OTA has still never been run on a
   device. The check path is what this pass covers; `installUpdate()` and
   `FirmwareFlasher`'s board check are exercised only by the SD path and host
