@@ -26,9 +26,20 @@ class ReleaseJsonParser {
   // Parse a RELEASE LIST (`GET /repos/<o>/<r>/releases`) instead of a single
   // release object (`GET .../releases/latest`). The two differ only by one
   // array level, so the same state machine covers both: every depth test
-  // shifts by one and a release object that carried no matching asset is
-  // rolled back at its closing brace, leaving the NEWEST release that does
-  // carry one. GitHub returns the list newest-first, so first match wins.
+  // shifts by one. GitHub returns the list newest-first, so first match wins.
+  //
+  // Two guards come with the extra level and they do DIFFERENT jobs -- stated
+  // apart because they were first written up as one and that was wrong
+  // (docs/ota-updates.md, "What each run actually proved"):
+  //
+  //   * releaseLocked stops a LATER release -- always older -- overwriting the
+  //     tag of the one that supplied the firmware. It only bites when the
+  //     match is not the last entry read.
+  //   * the rollback in sOnObjectEnd() only changes the outcome when NOTHING
+  //     matches. Each tag_name overwrites the previous one anyway, so the
+  //     final answer is already right without it; what it removes is a
+  //     leftover tag with no asset, which reads as "found a release, it had
+  //     nothing for you" and hides the real reason.
   //
   // Why this mode exists at all: `/releases/latest` skips every release
   // flagged "prerelease", and every ExplorInk release but the first is
