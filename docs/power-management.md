@@ -2330,6 +2330,32 @@ the loop was alive), months after the device's last flash. The same DTR/RTS
 reset + send-inside-the-3s-boot-window recipe worked. So this is not a C3-only
 or fresh-flash-only quirk -- same symptom on a different chip, after arbitrary
 idle time, not just right after upload.
+
+**Third occurrence, 2026-11-03, on an X4 Pro (ESP32-S3).** Same shape again:
+`CMD:SCREENSHOT` and `CMD:BUTTON` both answered nothing while the `[MEM]`
+heartbeat kept printing on schedule, about ten seconds after a flash. The boot
+log read `[5467] [PWR] Going to low-power mode (80 MHz)` -- **80 MHz, not 10**,
+because this is a PSRAM board and 80 is its floor. The commands that failed
+were all sent after that line; a screenshot taken inside the boot window had
+worked a minute earlier.
+
+That is worth recording precisely because it does **not** fit "the low clock
+deafens the RX" cleanly: 80 MHz is eight times the clock the original X4
+observation blamed, and the symptom is identical. Either the clock is innocent
+or the mechanism is not about raw speed. The experiment proposed above is still
+the one that would settle it, and still has not been run.
+
+The recipe worked first try, same as both earlier times: reset with
+`esptool --chip esp32s3 --port <by-id> --no-stub chip-id`, then send the
+command about 3 s later -- after `Entering activity: Home` (2.4 s on this
+board) and before the low-power switch (5.5 s). Sending immediately on reset
+is too early: the app is not up and the reply never comes.
+
+**And do not reach for a "passive" pyserial reader to watch what the device
+says instead.** Opening the port from pyserial resets the board even with
+`dtr`/`rts` set false before `open()` -- measured the same day, the capture
+came back full of boot-log timestamps from a device that had been running for
+minutes. A reader that resets what it observes is not an instrument.
 ## The fix
 
 **Every `CMD:` handler runs at full CPU.** `main.cpp` calls

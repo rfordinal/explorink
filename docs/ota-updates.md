@@ -155,6 +155,9 @@ did nothing -- sitting on top of the hint boxes, which the theme draws in
 exactly that mode and into exactly that 80 px. A board in DISABLED got the same
 two dead buttons beside the padlock.
 
+**Fixed and confirmed on an X4 Pro 2026-11-03**, which is in BUTTONS_ONLY: the
+confirmation screen now shows the hint boxes alone, nothing over them.
+
 Draw a touch-only control under the same predicate that gates its tap.
 `BaseTheme.h` states the rule from the other side -- "a hit area that is not
 the box the user can see is a lie they aim at" -- and a drawn control that is
@@ -176,11 +179,18 @@ Equal numeric versions are "newer" only when the running build is an RC.
 - Host-tested: 44 tests in `test/release_json_parser/`, 11 of them list mode,
   plus `test/ota_version_compare/`.
 - Host-tested against the live GitHub response for all three boards.
-- **Confirmed on an X4 Pro, 2026-11-03.** An x4pro build with its version
-  string lowered to 0.2.1 reached `Settings -> System -> Check for updates`,
-  connected to a saved network, and drew `New update available! / Current
-  Version: 0.2.1-x4pro / New Version: explorink-x4pro-v0.2.2` -- the list
-  scan, over real WiFi and TLS, naming this board's own newest release.
+- **Confirmed on an X4 Pro, 2026-11-03, both answers.** An x4pro build with
+  its version string lowered to 0.2.1 reached `Settings -> System -> Check for
+  updates`, connected to a saved network, and drew `New update available! /
+  Current Version: 0.2.1-x4pro / New Version: explorink-x4pro-v0.2.2` -- the
+  list scan, over real WiFi and TLS, naming this board's own newest release.
+  The same branch built at the real 0.2.2 then drew **No update available** on
+  the same board.
+
+  The negative on its own proves nothing: the broken code said exactly that
+  too, on every board, forever. It is the positive run that carries the
+  evidence, and the negative that confirms the version compare -- one build,
+  two version strings, one board, nothing else different.
 - **Open:** a real download-and-install over OTA has still never been run on a
   device. The check path is what this pass covers; `installUpdate()` and
   `FirmwareFlasher`'s board check are exercised only by the SD path and host
