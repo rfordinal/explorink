@@ -2362,11 +2362,19 @@ command about 3 s later -- after `Entering activity: Home` (2.4 s on this
 board) and before the low-power switch (5.5 s). Sending immediately on reset
 is too early: the app is not up and the reply never comes.
 
-**And do not reach for a "passive" pyserial reader to watch what the device
-says instead.** Opening the port from pyserial resets the board even with
-`dtr`/`rts` set false before `open()` -- measured the same day, the capture
-came back full of boot-log timestamps from a device that had been running for
-minutes. A reader that resets what it observes is not an instrument.
+**And be careful reaching for a "passive" pyserial reader to watch what the
+device says instead.** It appears to reset the board even with `dtr`/`rts` set
+false before `open()`: on 2026-11-03 a 12-second capture came back holding the
+boot log from `[587]` to `[10009]` and then nothing, on a board that had been
+reset by esptool a minute or more earlier -- the shape of a board that booted
+*when the port opened*, not one that had been up a while.
+
+**Observed once, and the obvious alternative is not excluded**: the board may
+have reset itself seconds before the read for an unrelated reason. What would
+settle it: open the port while a known-high `[MEM]` timestamp is ticking and
+see whether the timestamps restart from zero. Until then, treat a pyserial
+capture as possibly disturbing what it observes, and prefer a tool that already
+handles the port (`tools/screenshot_gate.py`, `tools/mapcmd.py`).
 ## The fix
 
 **Every `CMD:` handler runs at full CPU.** `main.cpp` calls
