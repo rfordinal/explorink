@@ -145,10 +145,22 @@ running `explorink-t5s3pro-v0.2.2`, confirmed byte-identical to the published
 asset by `esp_app_desc` first, answered `CMD:BUTTON back` with
 `BUTTON_OK:back:0`.
 
-So the published images are built from devel envs. `docs/public-release.md`
-does not name which env each board's published image comes from, which is how
-this went unnoticed. Parent repo, T-2063; the maintainer's call 2026-11-03 was
-that it does not block a release and belongs in a security pass.
+So the published images are built from devel envs -- and
+`docs/public-release.md` says so plainly, in the 0.2.2 env table: `default`
+for the C3, `x4pro`, `t5s3pro`. Nobody had connected that table to this
+section. (An earlier version of this paragraph claimed the recipe did not
+record the env. It does.)
+
+**It is a tradeoff, not an oversight.** That release's rule is "the published
+image is the flashed image" -- flash a board, verify on the panel, publish
+those exact bytes. Verification runs on `CMD:BUTTON` and `CMD:SCREENSHOT`, so
+the env that can be verified is the env that carries them. Publishing a
+`gh_release` build instead would ship bytes nobody tested. Pick one; there is
+no option that is both today. And there is no `gh_release_t5s3pro` env at all,
+so for that board the hardened image cannot currently be built.
+
+Parent repo, T-2063; the maintainer's call 2026-11-03 was that it does not
+block a release and belongs in a security pass.
 
 **Do not re-derive this from `strings` alone.** `BUTTON_OK:` appears in all
 three images, so a presence check cannot tell a devel build from a release
