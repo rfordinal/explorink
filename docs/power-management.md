@@ -2341,9 +2341,20 @@ worked a minute earlier.
 
 That is worth recording precisely because it does **not** fit "the low clock
 deafens the RX" cleanly: 80 MHz is eight times the clock the original X4
-observation blamed, and the symptom is identical. Either the clock is innocent
-or the mechanism is not about raw speed. The experiment proposed above is still
-the one that would settle it, and still has not been run.
+observation blamed, and the symptom is identical. So if the clock is involved
+at all, it is **being in the throttled state** rather than any particular MHz
+number. The experiment proposed above is still the one that would settle it,
+and still has not been run.
+
+One thing that fits the throttled-state reading without proving it:
+`docs/serial-button-injection.md` records that an injected press counts as user
+input in `loop()` for both the auto-sleep deadline and the CPU throttle. That
+explains why a board stays responsive for a long walk through the UI once the
+first command lands -- every press un-throttles it again -- and why a board
+that has already gone deaf cannot be rescued by sending one, since the press
+would have to arrive through the channel that is not listening. It is a
+consistent story, not evidence: nothing here rules out a cause that merely
+correlates with the throttle.
 
 The recipe worked first try, same as both earlier times: reset with
 `esptool --chip esp32s3 --port <by-id> --no-stub chip-id`, then send the
