@@ -6,6 +6,7 @@
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "TouchPolicy.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -127,7 +128,23 @@ void OtaUpdateActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, top + height * 2 + metrics.verticalSpacing * 2,
                       (std::string(tr(STR_NEW_VERSION)) + updater.getLatestVersion()).c_str());
 
-    if (mappedInput.hasTouch()) {
+    // TouchPolicy::touchAnywhere(), not mappedInput.hasTouch(): the second one
+    // only says a digitizer exists. Drawing on that answer put these two
+    // labels on screen in BUTTONS_ONLY mode, where wasScreenTapped() returns
+    // false outside the hint boxes (MappedInputManager::wasScreenTapped) -- a
+    // control the user can see, aim at, and get nothing from. It landed on top
+    // of the hint boxes as well, because the theme draws those in exactly the
+    // mode this screen was drawing over them, and both want the bottom 80 px.
+    // Found 2026-11-03 on an X4 Pro, the first time this screen had ever been
+    // reachable on a touch board (T-2059). BaseTheme.h states the rule for the
+    // other direction -- "a hit area that is not the box the user can see is a
+    // lie they aim at" -- and a drawn box that is not a hit area is the same
+    // lie. One predicate now decides both.
+    //
+    // The three modes come out disjoint: ANYWHERE draws these and no hints
+    // (TouchPolicy::hintsVisible() is false), BUTTONS_ONLY draws the hints and
+    // not these, and a board with no digitizer draws the hints, unchanged.
+    if (TouchPolicy::touchAnywhere()) {
       const auto actionRects = getOtaActionRects(renderer);
       const int cancelTextWidth = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CANCEL));
       renderer.drawText(UI_10_FONT_ID, actionRects.cancel.x + (actionRects.cancel.width - cancelTextWidth) / 2,
