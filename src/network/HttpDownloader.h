@@ -34,9 +34,15 @@ class HttpDownloader {
 
   /**
    * Stream the response body to onData as it arrives, without buffering it.
+   *
+   * `bulk` marks a transfer measured in megabytes. It makes the TLS layer
+   * hold one full-record buffer for the length of the request, which is what
+   * lets a firmware download complete on a board with no PSRAM --
+   * SecureClient::reserveRecordBuffer() has the measurement. Leave it false
+   * for a short fetch: the block is not free.
    */
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", bool bulk = false);
 
   /**
    * Download a file to the SD card with optional credentials.

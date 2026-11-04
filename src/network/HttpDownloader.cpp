@@ -39,6 +39,9 @@ struct Sink {
   bool* cancelFlag = nullptr;
   size_t total = 0;
   size_t downloaded = 0;
+  // Megabytes rather than kilobytes: worth tying up a 16 KB contiguous block
+  // for the length of the transfer (SecureClient::reserveRecordBuffer).
+  bool bulk = false;
 };
 
 bool isRedirect(int status) {
@@ -62,6 +65,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     // append a second User-Agent header, which strict servers reject (aiohttp
     // answers 400 "Duplicate 'User-Agent' header found").
     http.setUserAgent("TrailInk-ESP32-" TRAILINK_VERSION);
+    http.setReserveRecordBuffer(sink.bulk);
     if (!username.empty() && !password.empty()) {
       const std::string credentials = username + ":" + password;
       const String encoded = base64::encode(credentials.c_str());
@@ -251,10 +255,11 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, bool bulk) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   Sink sink;
   sink.write = onData;
+  sink.bulk = bulk;
   return runGetSecure(url, username, password, sink) == OK;
 }
 
@@ -275,6 +280,8 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   Sink sink;
   sink.progress = std::move(progress);
   sink.cancelFlag = cancelFlag;
+  // A book, a font pack or a firmware image: this path is always megabytes.
+  sink.bulk = true;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
   const DownloadError result = runGetSecure(url, username, password, sink);

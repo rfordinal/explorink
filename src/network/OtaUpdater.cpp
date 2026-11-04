@@ -179,46 +179,52 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // inactive OTA slot before the abort, but esp_ota_abort() below means it
   // never becomes the boot target.
   board_tag::Scanner tagScanner;
-  const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
-    if (hdrLen < sizeof(hdr)) {
-      const size_t take = std::min(len, sizeof(hdr) - hdrLen);
-      std::memcpy(hdr + hdrLen, data, take);
-      hdrLen += take;
-      if (hdrLen == sizeof(hdr)) {
-        uint16_t imageChip;
-        std::memcpy(&imageChip, hdr + 12, sizeof(imageChip));
-        const uint16_t deviceChip = firmware_flash::runningPartitionChipId();
-        if (deviceChip != 0xFFFF && imageChip != deviceChip) {
-          LOG_ERR("OTA", "wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
+  // bulk=true: ~4 MB over TLS. Without the reserved full-record buffer this
+  // fails on a C3 -- measured on an X3 2026-11-04, MEMORY_E 61,810 bytes in,
+  // because the heap has no 16 KB contiguous block left. T-2064.
+  const bool fetchOk = HttpDownloader::fetchUrl(
+      otaUrl,
+      [&](const uint8_t* data, size_t len) {
+        if (hdrLen < sizeof(hdr)) {
+          const size_t take = std::min(len, sizeof(hdr) - hdrLen);
+          std::memcpy(hdr + hdrLen, data, take);
+          hdrLen += take;
+          if (hdrLen == sizeof(hdr)) {
+            uint16_t imageChip;
+            std::memcpy(&imageChip, hdr + 12, sizeof(imageChip));
+            const uint16_t deviceChip = firmware_flash::runningPartitionChipId();
+            if (deviceChip != 0xFFFF && imageChip != deviceChip) {
+              LOG_ERR("OTA", "wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
+              wrongDevice = true;
+              return false;  // abort the transfer
+            }
+          }
+        }
+        tagScanner.feed(data, len);
+        if (tagScanner.mismatch()) {
+          LOG_ERR("OTA", "wrong board: image=%s device=%.*s", tagScanner.foundName(),
+                  static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
           wrongDevice = true;
           return false;  // abort the transfer
         }
-      }
-    }
-    tagScanner.feed(data, len);
-    if (tagScanner.mismatch()) {
-      LOG_ERR("OTA", "wrong board: image=%s device=%.*s", tagScanner.foundName(),
-              static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
-      wrongDevice = true;
-      return false;  // abort the transfer
-    }
-    if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
-      flashOk = false;
-      return false;  // abort the transfer
-    }
-    processedSize += len;
-    // Fire the callback only on whole-percent change. Per-chunk updates wake the
-    // render task, whose framebuffer work contends with TLS on the internal arena,
-    // and e-ink can't repaint faster than a percent tick anyway.
-    if (onProgress && totalSize > 0) {
-      const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
-      if (pct != lastReportedPct) {
-        lastReportedPct = pct;
-        onProgress(ctx);
-      }
-    }
-    return true;
-  });
+        if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
+          flashOk = false;
+          return false;  // abort the transfer
+        }
+        processedSize += len;
+        // Fire the callback only on whole-percent change. Per-chunk updates wake the
+        // render task, whose framebuffer work contends with TLS on the internal arena,
+        // and e-ink can't repaint faster than a percent tick anyway.
+        if (onProgress && totalSize > 0) {
+          const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
+          if (pct != lastReportedPct) {
+            lastReportedPct = pct;
+            onProgress(ctx);
+          }
+        }
+        return true;
+      },
+      /*username=*/"", /*password=*/"", /*bulk=*/true);
 
   /* Return back to default power saving for WiFi in case of failing */
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
