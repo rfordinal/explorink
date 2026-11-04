@@ -184,6 +184,19 @@ Keep this in mind when the bump is scheduled: it is not a TLS-only change. 339
 commits carries the panel driver, the SD path and the input layer with it, so
 the full hardware set below applies on every board.
 
+**Two commits of our own now sit in `SecureNet`, where the fork used to carry
+nothing.** Both on `fix/http-line-cap`, both on top of `154d57ee`:
+
+| ours | what it does | state |
+|---|---|---|
+| `55265fe` | `readLine` reserves `MAX_LINE` once the line passes 256 bytes, instead of letting `std::string` double into a request for twice the cap | **unverified** -- no measurement separates it from the runs around it |
+| `faa19a4` | logs `ssl->max_fragment` after the handshake, with free and largest-block heap | measured, and it is what proved the asset host ignores the extension |
+
+`faa19a4` is a log line and merges anywhere. `55265fe` touches an allocation
+path upstream rewrote in the 14 SecureNet commits above, so expect it to be
+either superseded or in conflict -- check whether the bumped code still has the
+doubling before carrying it forward.
+
 ### Checklist for the next bump
 
 1. `git -C freeink-sdk fetch upstream`, then read what changed under

@@ -35,7 +35,12 @@ constexpr int MAX_REDIRECTS = 5;
 // Reconnect attempts allowed after a body is cut short. Each one costs a TLS
 // handshake (about 3 s on the C3), so the cap bounds a stuck download rather
 // than a slow one; eight covers the observed failure rate with room to spare.
-constexpr int MAX_RESUMES = 8;
+constexpr int MAX_RESUMES = 24;
+// A reconnect that delivers nothing is still worth a couple of retries: late in
+// a download the connection often dies on the first record after the handshake,
+// and the next attempt usually gets further. Giving up on the first barren one
+// stopped a transfer at 3,661,739 of 4,105,888 bytes (X3, 2026-11-04).
+constexpr int MAX_BARREN_RESUMES = 3;
 constexpr uint32_t RESUME_DELAY_MS = 250;
 
 struct Sink {
@@ -63,8 +68,10 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
                                          const std::string& password, Sink& sink) {
   std::string url = startUrl;
   int resumes = 0;
+  int barren = 0;
+  int redirects = 0;
 
-  for (int hop = 0; hop <= MAX_REDIRECTS + MAX_RESUMES; ++hop) {
+  while (true) {
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setInsecure();
@@ -109,11 +116,26 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     if (http.callbackAborted()) return HttpDownloader::FILE_ERROR;
 
     if (isRedirect(status)) {
+      if (++redirects > MAX_REDIRECTS) {
+        LOG_ERR("HTTP", "wolfSSL too many redirects");
+        return HttpDownloader::HTTP_ERROR;
+      }
       const std::string location = http.getHeader("location");
       if (location.empty() || !freeink::SecureHttpClient::resolveUrl(url, location, url)) {
         LOG_ERR("HTTP", "wolfSSL bad redirect: %d", status);
         return HttpDownloader::HTTP_ERROR;
       }
+      continue;
+    }
+
+    // A signed CDN URL can expire mid-transfer, and the redirect that minted it
+    // is replayable. Going back to the start URL re-mints one; the Range header
+    // is sent again either way, so no bytes are refetched.
+    if (resumeFrom > 0 && (status == 403 || status == 404) && url != startUrl && resumes < MAX_RESUMES) {
+      ++resumes;
+      LOG_INF("HTTP", "wolfSSL %d on resume, re-resolving from the start URL", status);
+      url = startUrl;
+      redirects = 0;
       continue;
     }
 
@@ -136,7 +158,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     // that delivers nothing new would otherwise reconnect MAX_RESUMES times
     // against a server or a heap that cannot serve it at all.
     const bool progressed = sink.downloaded > resumeFrom;
-    if (sink.total > 0 && (progressed || resumeFrom == 0) && resumes < MAX_RESUMES) {
+    barren = progressed ? 0 : barren + 1;
+    if (sink.total > 0 && resumes < MAX_RESUMES && barren <= MAX_BARREN_RESUMES) {
       ++resumes;
       LOG_INF("HTTP", "wolfSSL resume %d: have %zu of %zu bytes", resumes, sink.downloaded, sink.total);
       // The heap is at its emptiest the instant the connection died; let the
@@ -151,8 +174,6 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     }
     return HttpDownloader::HTTP_ERROR;
   }
-  LOG_ERR("HTTP", "wolfSSL gave up after %d redirects and %d resumes", MAX_REDIRECTS, resumes);
-  return HttpDownloader::HTTP_ERROR;
 }
 #endif
 
