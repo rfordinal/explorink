@@ -104,6 +104,25 @@ we want" is the point of having a pointer.
 Newest pass on top. `take` = we want the code, `idea` = we want the thought and
 will write our own, `skip` = not ours.
 
+### Targeted read, 2026-11-04 -- not a pass, and the pointer did not move
+
+Chasing a bug, not reviewing a range: an X3 could not install an OTA update
+and the question was whether upstream had met it. They had.
+
+| Verdict | Commit | Why |
+|---|---|---|
+| **take** | `3e627112` "oom exceptions for OPDS, KOSync, and OTA via wolfssl" | Their answer to OTA OOM was moving to wolfSSL. **We already have this**, including their `scripts/patch_wolfssl.py` -- except its `#undef DEBUG_WOLFSSL` block, which we are missing and which links wolfSSL's trace into every build of ours for nothing |
+| **take** | `freeink-sdk` `118c6723`, `813a3c82`, `e49d6b82` | The real fix, and it lives in the SDK rather than in their firmware: reserve a full-record TLS buffer after the handshake and lend it to wolfSSL. Measured by them on an X4, the same C3 we fail on. Parent repo, T-2064 |
+
+Also noted while there, not acted on: upstream's `HttpDownloader` drives
+`freeink::fetchResumable`, ours drives `SecureHttpClient::GET` directly, and
+their build sets `-DNO_WOLFSSL_ESP32_CRYPT_RSA_PRI` and
+`-DFREEINK_CONTENT_WOLFSSL=1` where ours does not.
+
+**`docs/upstream-reviewed.sha` was deliberately left where it is.** This read
+covered the commits a single bug pointed at, not everything new since
+`7db14a01`. Moving the pointer would claim a review that did not happen.
+
 ### Pass 1, 2026-09-07/08, up to `7db14a01` (2026-09-06)
 
 Reviewed 140 commits. Nothing cherry-picked yet: this pass produced the

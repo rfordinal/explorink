@@ -187,6 +187,52 @@ make this code wrong, it makes it redundant. Their derive-the-filename-from-the-
 trick is not available to us either way, because our tag does not carry the
 version in the form the filename uses.
 
+## The C3 can check, but cannot install (T-2064)
+
+Measured on an X3, 2026-11-04, reproduced twice. The check works and offers
+`explorink-v0.2.2`. The download then dies at **61,810 of 4,105,888 bytes**,
+427 ms in:
+
+```
+[SecureClient] read failed: -125, free heap 25876
+[ERR] [HTTP] wolfSSL incomplete: got 61810 of 4105888 bytes
+[ERR] [OTA] Firmware install failed (download)
+```
+
+`-125` is `MEMORY_E`, "out of memory error"
+(`Arduino-wolfSSL/src/wolfssl/wolfcrypt/error-crypt.h:72`). Both handshakes
+succeeded before it (395 ms to github.com, 160 ms to release-assets after the
+redirect), so it is neither the handshake nor the board check.
+
+**The constraint is the largest contiguous block, not free bytes.** Same
+board, `Total: 244,356 B`:
+
+| state | free | largest block |
+|---|---|---|
+| Home, WiFi off | 108,720 | **30,708** |
+| map open | 29,932 | 26,612 |
+| WiFi up, confirmation screen | 47,784 | **27,636** |
+| at the failure | 25,876 | -- |
+
+With 108 kB free the biggest block is still only 30.7 kB. The heap is
+fragmented before anything starts, so the board enters the download already
+unable to serve a 16 kB TLS record. Nothing drains during the transfer.
+
+**Upstream solved this on the same chip.** `freeink-sdk` `118c6723` reserves a
+full-record TLS buffer right after the handshake, while a large block is still
+free, and lends it to wolfSSL -- written against an X4, where they measured
+"largest free block 16,372 bytes vs 16,406 needed". We do not have it: our SDK
+pin is 339 commits behind, and the API that enables the reservation
+(`freeink::fetchResumable`) does not exist in our pinned SDK at all. T-2064
+has the plan.
+
+**So on an X4 or X3 today the row finds an update it cannot install.** That is
+worse than no row. Decide what ships on the C3 before a release carries this.
+
+The S3 boards are unaffected -- both download and install -- and the obvious
+explanation is PSRAM, but that is **reasoned, not measured**: the heap during
+a download on an S3 board has not been read.
+
 ## Deciding "newer"
 
 `ota_version::isVersionNewer()` (`src/network/OtaVersionCompare.cpp`) compares
@@ -285,7 +331,11 @@ both guards on hardware, or drop the one that turns out to be dead.
 The host test `NoReleaseForThisBoardLeavesNothingBehind` does catch a missing
 rollback (`foundTag` comes back 1 instead of 0), so the suite is not vacuous --
 that was checked the same way.
-- **Still open:** no failure path has been exercised. A wrong-board image, a
+- **One failure path has now run, by accident:** the C3 download above. The
+  device behaved correctly -- `app0` untouched, "Update failed" on the panel,
+  a retry possible with nothing reset. What it could not do is say *why*
+  (T-2065).
+- **Still open:** no failure path has been exercised deliberately. A wrong-board image, a
   connection dropped mid-write, and a corrupt image are all handled in code
   (`esp_ota_abort()`, and boot is switched only after `esp_ota_end()`
   verifies) and none of the three has been made to happen on a device.

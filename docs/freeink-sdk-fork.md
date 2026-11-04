@@ -161,6 +161,29 @@ Evidence, all from a laptop, none from a device:
 **None of that says the firmware runs.** A bump is trusted once a C3 device boots,
 draws a map and holds a BLE link on it.
 
+### A reason for the next bump exists, 2026-11-04
+
+The pin is `154d57ee`; upstream CrossPoint builds against `5e94fe74`. That is
+**339 commits**, and 14 of them are in `libs/network/SecureNet`. Three of those
+are the fix for a bug we hit on our own X3 the same day: OTA downloads die with
+wolfSSL `MEMORY_E` because the heap has no contiguous block left for a 16 kB
+TLS record.
+
+| SDK commit | what it does |
+|---|---|
+| `118c6723` | reserves one full-record TLS buffer right after the handshake, while a large block is still free, and lends it to wolfSSL. Written against an X4 -- our C3 |
+| `813a3c82` | moves that reservation to after the request is written, or the request string itself fails to allocate; also lowers the lending threshold from 4 kB to 1 kB |
+| `e49d6b82` | replaces task-wide lending with connection-owned buffers |
+
+**The bump alone will not fix it.** The API that turns the reservation on is
+`freeink::fetchResumable`, which upstream's `HttpDownloader` calls and ours
+does not -- and which does not exist in our pinned SDK. The consumer side has
+to move too. Parent repo, T-2064.
+
+Keep this in mind when the bump is scheduled: it is not a TLS-only change. 339
+commits carries the panel driver, the SD path and the input layer with it, so
+the full hardware set below applies on every board.
+
 ### Checklist for the next bump
 
 1. `git -C freeink-sdk fetch upstream`, then read what changed under
