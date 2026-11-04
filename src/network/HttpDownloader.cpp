@@ -5,8 +5,12 @@
 #include <Memory.h>
 #include <base64.h>
 
+#include <cctype>
+#include <cstdint>
 #include <functional>
 #include <string>
+
+#include "DownloadResumePolicy.h"
 
 #if defined(FREEINK_NET_WOLFSSL)
 #include <SecureHttpClient.h>
@@ -32,6 +36,9 @@ constexpr int HTTP_TX_BUF = 512;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
+// The heap is at its emptiest the instant a connection dies; let the TLS
+// teardown's frees settle before asking for a fresh handshake.
+constexpr uint32_t RESUME_DELAY_MS = 250;
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -46,17 +53,71 @@ bool isRedirect(int status) {
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
+// scheme://host of a URL, for logging. A resolved download URL is a bearer
+// credential -- GitHub's release CDN signs it with X-Amz-Signature -- so the
+// full string must never reach a log a stolen device can be made to replay.
+std::string urlOrigin(const std::string& url) {
+  const size_t schemeEnd = url.find("://");
+  if (schemeEnd == std::string::npos) return "<malformed url>";
+  const size_t hostEnd = url.find('/', schemeEnd + 3);
+  return hostEnd == std::string::npos ? url : url.substr(0, hostEnd);
+}
+
+// First-byte offset of a `Content-Range: bytes <first>-<last>/<complete>`
+// header, or SIZE_MAX if the header is absent or not in that form. A 206 whose
+// range does not start exactly where we asked would be spliced into the sink at
+// the wrong offset, because no sink on this path can seek.
+constexpr size_t NO_RANGE_START = SIZE_MAX;
+size_t contentRangeStart(const std::string& header) {
+  const std::string unit = "bytes ";
+  if (header.compare(0, unit.size(), unit) != 0) return NO_RANGE_START;
+  size_t i = unit.size();
+  if (i >= header.size() || !isdigit(static_cast<unsigned char>(header[i]))) return NO_RANGE_START;
+  size_t value = 0;
+  for (; i < header.size() && isdigit(static_cast<unsigned char>(header[i])); ++i) {
+    value = value * 10 + static_cast<size_t>(header[i] - '0');
+  }
+  // Anything but a '-' here means this is not a satisfied byte range (an
+  // unsatisfied one reads `bytes */1234`), so refuse rather than guess.
+  return (i < header.size() && header[i] == '-') ? value : NO_RANGE_START;
+}
+#endif
+
+#if defined(FREEINK_NET_WOLFSSL)
+// A GET that survives the connection dying mid-body. On the C3 the TLS stack
+// runs out of contiguous heap partway through a multi-megabyte download and
+// wolfSSL answers MEMORY_E, killing the connection with most of the transfer
+// already done. Measured on an X3, 2026-11-04: free heap runs 3.6 to 8.6 kB for
+// the whole download with a largest block of 2 to 5.6 kB, while at each
+// handshake the largest block reads 19 to 28 kB. So the failure is a property
+// of the connection, not of the board, and a fresh connection restores the
+// precondition that failed -- which is why reconnecting is the mechanism here
+// and not merely a retry.
+//
+// Every byte already handed to the sink is kept and the rest asked for with a
+// Range request. That is sound only because every sink on this path is
+// append-only (esp_ota_write, a file write, a string append) and none can seek
+// or rewind, so sink.downloaded is the exact resume point -- and only as long
+// as the server's answer is checked to actually start there, below.
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink) {
   std::string url = startUrl;
+  download_resume::State resumeState;
 
-  for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
+  while (true) {
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setInsecure();
     if (!http.begin(url)) {
-      LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
+      LOG_ERR("HTTP", "wolfSSL bad URL: %s", urlOrigin(url).c_str());
       return HttpDownloader::HTTP_ERROR;
+    }
+    // Asking from byte N makes this attempt a continuation rather than a
+    // restart. Sent on whatever URL this attempt starts from, so the signed CDN
+    // URL a redirect hands out is what gets resumed.
+    const size_t resumeFrom = sink.downloaded;
+    if (resumeFrom > 0) {
+      http.addHeader("Range", "bytes=" + std::to_string(resumeFrom) + "-");
     }
     // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
     // append a second User-Agent header, which strict servers reject (aiohttp
@@ -68,11 +129,29 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
     }
 
-    LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
+    // Redirects are counted per attempt, not across the whole transfer: a
+    // signed-redirector answers 30x on every new connection, and a budget
+    // shared with the resumes would blame "too many redirects" for what is
+    // really a download that reconnected a few times.
+    int redirects = 0;
+    bool rangeChecked = resumeFrom == 0;
+    bool rangeMismatch = false;
+
+    LOG_DBG("HTTP", "wolfSSL GET: %s", urlOrigin(url).c_str());
     const int status = http.GET(
-        [&http, &sink](const uint8_t* data, size_t len) {
-          if (http.getStatus() != 200) return true;
-          if (sink.total == 0 && http.hasContentLength()) sink.total = http.getContentLength();
+        [&http, &sink, &rangeChecked, &rangeMismatch, resumeFrom](const uint8_t* data, size_t len) {
+          if (http.getStatus() != 200 && http.getStatus() != 206) return true;
+          // Checked at the first body byte rather than before the request
+          // returns, because this is the last point at which refusing costs
+          // nothing: one byte further and the sink has already taken it.
+          if (!rangeChecked) {
+            const size_t start = contentRangeStart(http.getHeader("content-range"));
+            if (start != resumeFrom) {
+              rangeMismatch = true;
+              return false;
+            }
+            rangeChecked = true;
+          }
           if (!sink.write(data, len)) return false;
           sink.downloaded += len;
           if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
@@ -80,12 +159,30 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
         },
         [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
 
+    // The total is read here and not from inside the callback, so a connection
+    // that dies after the headers and before the first body byte still leaves a
+    // size behind -- that is exactly the attempt the resume exists for. Only
+    // the first attempt may set it: a 206's Content-Length counts the bytes in
+    // that range, not the whole body.
+    if (sink.total == 0 && resumeFrom == 0 && http.hasContentLength()) sink.total = http.getContentLength();
+
     if (http.aborted()) return HttpDownloader::ABORTED;
-    if (status < 0) {
-      LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
+    // A range that does not start where we asked also stops the callback, so it
+    // is separated from a sink refusal before the latter is reported.
+    if (rangeMismatch) {
+      LOG_ERR("HTTP", "wolfSSL 206 does not start at %zu, refusing to splice", resumeFrom);
       return HttpDownloader::HTTP_ERROR;
     }
+    // The sink refusing data is the caller's decision, never a transport
+    // failure, so it is checked before anything that could retry. The OTA
+    // release-list parser stops itself this way once it has matched.
+    if (http.callbackAborted()) return HttpDownloader::FILE_ERROR;
+
     if (isRedirect(status)) {
+      if (++redirects > MAX_REDIRECTS) {
+        LOG_ERR("HTTP", "wolfSSL too many redirects");
+        return HttpDownloader::HTTP_ERROR;
+      }
       const std::string location = http.getHeader("location");
       if (location.empty() || !freeink::SecureHttpClient::resolveUrl(url, location, url)) {
         LOG_ERR("HTTP", "wolfSSL bad redirect: %d", status);
@@ -93,19 +190,42 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       }
       continue;
     }
-    if (status != 200) {
+
+    download_resume::Attempt attempt;
+    attempt.status = status;
+    attempt.bodyComplete = http.responseComplete();
+    attempt.resumedFrom = resumeFrom;
+    attempt.downloaded = sink.downloaded;
+    attempt.total = sink.total;
+    attempt.onStartUrl = url == startUrl;
+
+    switch (download_resume::decide(attempt, resumeState)) {
+      case download_resume::Step::Done:
+        return HttpDownloader::OK;
+      case download_resume::Step::ReResolve:
+        LOG_INF("HTTP", "wolfSSL %d on resume, re-resolving from the start URL", status);
+        url = startUrl;
+        vTaskDelay(pdMS_TO_TICKS(RESUME_DELAY_MS));
+        continue;
+      case download_resume::Step::Retry:
+        LOG_INF("HTTP", "wolfSSL resume %d: have %zu of %zu bytes", resumeState.resumes, sink.downloaded, sink.total);
+        vTaskDelay(pdMS_TO_TICKS(RESUME_DELAY_MS));
+        continue;
+      case download_resume::Step::Fail:
+        break;
+    }
+
+    if (status < 0) {
+      LOG_ERR("HTTP", "wolfSSL request failed: %s", urlOrigin(url).c_str());
+    } else if (resumeFrom > 0 && status == 200) {
+      LOG_ERR("HTTP", "wolfSSL server ignored Range at %zu bytes", resumeFrom);
+    } else if (status != 200 && status != 206) {
       LOG_ERR("HTTP", "wolfSSL unexpected status: %d", status);
-      return HttpDownloader::HTTP_ERROR;
-    }
-    if (http.callbackAborted()) return HttpDownloader::FILE_ERROR;
-    if (!http.responseComplete()) {
+    } else {
       LOG_ERR("HTTP", "wolfSSL incomplete: got %zu of %zu bytes", sink.downloaded, sink.total);
-      return HttpDownloader::HTTP_ERROR;
     }
-    return HttpDownloader::OK;
+    return HttpDownloader::HTTP_ERROR;
   }
-  LOG_ERR("HTTP", "too many redirects");
-  return HttpDownloader::HTTP_ERROR;
 }
 #endif
 
