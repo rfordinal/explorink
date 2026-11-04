@@ -32,6 +32,11 @@ constexpr int HTTP_TX_BUF = 512;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
+// Reconnect attempts allowed after a body is cut short. Each one costs a TLS
+// handshake (about 3 s on the C3), so the cap bounds a stuck download rather
+// than a slow one; eight covers the observed failure rate with room to spare.
+constexpr int MAX_RESUMES = 8;
+constexpr uint32_t RESUME_DELAY_MS = 250;
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -46,17 +51,33 @@ bool isRedirect(int status) {
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
+// A GET that survives a connection dying mid-body. On the C3 the TLS stack runs
+// out of contiguous heap during a multi-megabyte download and wolfSSL answers
+// MEMORY_E (-125), which kills the connection with the transfer part done --
+// measured failing about four runs in five on the X3, 2026-11-04. Every byte
+// already handed to the sink is kept and the rest is asked for with a Range
+// request, so a failure costs a reconnect rather than the whole download.
+// Resuming is only sound because every sink here is append-only (esp_ota_write,
+// a file write, a string append), so sink.downloaded is the exact resume point.
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink) {
   std::string url = startUrl;
+  int resumes = 0;
 
-  for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
+  for (int hop = 0; hop <= MAX_REDIRECTS + MAX_RESUMES; ++hop) {
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setInsecure();
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
       return HttpDownloader::HTTP_ERROR;
+    }
+    // Asking from byte N makes this attempt a continuation rather than a
+    // restart. Sent on the resolved URL, so the signed CDN redirect that
+    // GitHub hands out is the thing being resumed, not the API URL.
+    const size_t resumeFrom = sink.downloaded;
+    if (resumeFrom > 0) {
+      http.addHeader("Range", "bytes=" + std::to_string(resumeFrom) + "-");
     }
     // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
     // append a second User-Agent header, which strict servers reject (aiohttp
@@ -71,7 +92,9 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
     const int status = http.GET(
         [&http, &sink](const uint8_t* data, size_t len) {
-          if (http.getStatus() != 200) return true;
+          if (http.getStatus() != 200 && http.getStatus() != 206) return true;
+          // A 206's Content-Length counts the remaining bytes, not the whole
+          // body, so only the first attempt may set the total.
           if (sink.total == 0 && http.hasContentLength()) sink.total = http.getContentLength();
           if (!sink.write(data, len)) return false;
           sink.downloaded += len;
@@ -81,10 +104,10 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
         [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
 
     if (http.aborted()) return HttpDownloader::ABORTED;
-    if (status < 0) {
-      LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
-      return HttpDownloader::HTTP_ERROR;
-    }
+    // The sink refusing data is the caller's decision, never a transport
+    // failure, so it is checked before anything that could retry.
+    if (http.callbackAborted()) return HttpDownloader::FILE_ERROR;
+
     if (isRedirect(status)) {
       const std::string location = http.getHeader("location");
       if (location.empty() || !freeink::SecureHttpClient::resolveUrl(url, location, url)) {
@@ -93,18 +116,42 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       }
       continue;
     }
-    if (status != 200) {
+
+    // A server that ignores Range answers 200 and restarts the body at zero.
+    // Appending that to what the sink already holds would corrupt it, and no
+    // sink here can rewind, so this is fatal rather than another retry.
+    if (resumeFrom > 0 && status == 200) {
+      LOG_ERR("HTTP", "wolfSSL server ignored Range at %zu bytes", resumeFrom);
+      return HttpDownloader::HTTP_ERROR;
+    }
+
+    const bool transportDied = status < 0;
+    if (!transportDied && status != 200 && status != 206) {
       LOG_ERR("HTTP", "wolfSSL unexpected status: %d", status);
       return HttpDownloader::HTTP_ERROR;
     }
-    if (http.callbackAborted()) return HttpDownloader::FILE_ERROR;
-    if (!http.responseComplete()) {
-      LOG_ERR("HTTP", "wolfSSL incomplete: got %zu of %zu bytes", sink.downloaded, sink.total);
-      return HttpDownloader::HTTP_ERROR;
+    if (!transportDied && http.responseComplete()) return HttpDownloader::OK;
+
+    // Partial body. Retry only while attempts keep making progress: a resume
+    // that delivers nothing new would otherwise reconnect MAX_RESUMES times
+    // against a server or a heap that cannot serve it at all.
+    const bool progressed = sink.downloaded > resumeFrom;
+    if (sink.total > 0 && (progressed || resumeFrom == 0) && resumes < MAX_RESUMES) {
+      ++resumes;
+      LOG_INF("HTTP", "wolfSSL resume %d: have %zu of %zu bytes", resumes, sink.downloaded, sink.total);
+      // The heap is at its emptiest the instant the connection died; let the
+      // TLS teardown's frees settle before asking for a fresh handshake.
+      vTaskDelay(pdMS_TO_TICKS(RESUME_DELAY_MS));
+      continue;
     }
-    return HttpDownloader::OK;
+    if (transportDied) {
+      LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
+    } else {
+      LOG_ERR("HTTP", "wolfSSL incomplete: got %zu of %zu bytes", sink.downloaded, sink.total);
+    }
+    return HttpDownloader::HTTP_ERROR;
   }
-  LOG_ERR("HTTP", "too many redirects");
+  LOG_ERR("HTTP", "wolfSSL gave up after %d redirects and %d resumes", MAX_REDIRECTS, resumes);
   return HttpDownloader::HTTP_ERROR;
 }
 #endif
