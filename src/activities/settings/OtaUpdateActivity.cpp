@@ -112,8 +112,20 @@ void OtaUpdateActivity::render(RenderLock&&) {
   if (state == UPDATE_IN_PROGRESS) {
     LOG_DBG("OTA", "Update progress: %d / %d", updater.getProcessedSize(), updater.getTotalSize());
     updaterProgress = static_cast<float>(updater.getProcessedSize()) / static_cast<float>(updater.getTotalSize());
-    // Only update every 2% at the most
-    if (static_cast<int>(updaterProgress * 50) == lastUpdaterPercentage / 2) {
+    // Every 10%, not every 2%, and the reason is heap rather than taste.
+    //
+    // Each repaint is a full panel refresh: ~30 ms of drawing and then a
+    // 380 ms X3_DRF wait, and the display path allocates while it runs. At 2%
+    // that is 50 refreshes interleaved with a 4 MB TLS download, and on a C3
+    // the two compete for the same heap. Measured on an X3 2026-11-04: the
+    // download reached 3,076,995 of 4,105,888 bytes and then died with
+    // wolfSSL MEMORY_E; the heartbeat after it reported `Min Free: 4916`, so
+    // something transient had taken nearly all of a heap that sits at 47 kB
+    // free when the confirmation screen is up. T-2064.
+    //
+    // 10 refreshes still tell a watching rider that the thing is moving. A
+    // progress bar is not worth the download it is reporting on.
+    if (static_cast<int>(updaterProgress * 10) == lastUpdaterPercentage / 10) {
       return;
     }
     lastUpdaterPercentage = static_cast<int>(updaterProgress * 100);
