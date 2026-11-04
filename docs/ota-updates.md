@@ -187,11 +187,10 @@ make this code wrong, it makes it redundant. Their derive-the-filename-from-the-
 trick is not available to us either way, because our tag does not carry the
 version in the form the filename uses.
 
-## The C3 can check, but cannot install (T-2064)
+## The C3 installs about one run in five (T-2064)
 
-Measured on an X3, 2026-11-04, reproduced twice. The check works and offers
-`explorink-v0.2.2`. The download then dies at **61,810 of 4,105,888 bytes**,
-427 ms in:
+Measured on an X3, 2026-11-04. The check works and offers `explorink-v0.2.2`.
+The download usually dies partway through:
 
 ```
 [SecureClient] read failed: -125, free heap 25876
@@ -201,33 +200,76 @@ Measured on an X3, 2026-11-04, reproduced twice. The check works and offers
 
 `-125` is `MEMORY_E`, "out of memory error"
 (`Arduino-wolfSSL/src/wolfssl/wolfcrypt/error-crypt.h:72`). Both handshakes
-succeeded before it (395 ms to github.com, 160 ms to release-assets after the
-redirect), so it is neither the handshake nor the board check.
+succeed before it (395 ms to github.com, 160 ms to release-assets after the
+redirect), so it is neither the handshake nor the board check. It does
+sometimes get all the way through -- roughly one attempt in five.
 
-**The constraint is the largest contiguous block, not free bytes.** Same
-board, `Total: 244,356 B`:
+### The download host ignores max_fragment_length
 
-| state | free | largest block |
+RFC 6066's `max_fragment_length` asks the peer to cap TLS records at 2 kB
+instead of 16 kB. `SecureClient.cpp` has always requested it, but under
+`#ifdef HAVE_MAX_FRAGMENT`, and that macro was never defined in any of our
+build flags -- so the request was compiled out until 2026-11-04.
+
+Defining it and logging what the peer actually agreed to answers the question
+in one run. Measured on the X3:
+
+```
+[SecureClient] max_fragment: 2048  (MAX_RECORD_SIZE 16384)   <- api.github.com
+[SecureClient] max_fragment: 16384 (MAX_RECORD_SIZE 16384)   <- release asset host
+```
+
+**The API host accepts it; the asset host does not.** So smaller records help
+the cheap request and do nothing for the expensive one. The flag stays on --
+it costs nothing and the check gets the benefit -- but it is not the fix.
+
+### The heap during the download, measured
+
+The failure was first read as fragmentation, because the board enters the
+download with 47.8 kB free and a largest block of only 27.6 kB. Tracing the
+heap every 10 % of the transfer shows something simpler. Same board, same run,
+`Total: 244,356 B`:
+
+| point | free | largest block |
 |---|---|---|
-| Home, WiFi off | 108,720 | **30,708** |
-| map open | 29,932 | 26,612 |
-| WiFi up, confirmation screen | 47,784 | **27,636** |
-| at the failure | 25,876 | -- |
+| Home, WiFi off | 108,720 | 30,708 |
+| WiFi up, confirmation screen | 47,784 | 27,636 |
+| download at 0 % | 3,668 | 2,036 |
+| download at 50 % | 6,144 | 3,188 |
+| download at 90 % | 8,624 | 5,620 |
+| download finished | 35,960 | 19,444 |
 
-With 108 kB free the biggest block is still only 30.7 kB. The heap is
-fragmented before anything starts, so the board enters the download already
-unable to serve a 16 kB TLS record. Nothing drains during the transfer.
+**The download itself consumes almost the whole heap.** Through the transfer
+there are 3.6 to 8.6 kB free with a largest block of 2 to 5.6 kB, so any
+transient allocation above a few kB fails. That is the `MEMORY_E`. The earlier
+reading that "nothing drains during the transfer" was taken before this trace
+existed and was wrong.
 
-**Upstream solved this on the same chip.** `freeink-sdk` `118c6723` reserves a
-full-record TLS buffer right after the handshake, while a large block is still
-free, and lends it to wolfSSL -- written against an X4, where they measured
-"largest free block 16,372 bytes vs 16,406 needed". We do not have it: our SDK
-pin is 339 commits behind, and the API that enables the reservation
-(`freeink::fetchResumable`) does not exist in our pinned SDK at all. T-2064
-has the plan.
+### The fix: resume instead of restart
 
-**So on an X4 or X3 today the row finds an update it cannot install.** That is
-worse than no row. Decide what ships on the C3 before a release carries this.
+`runGetWolf` (`src/network/HttpDownloader.cpp`) keeps every byte already
+handed to the sink and asks for the rest with `Range: bytes=N-`. A dead
+connection then costs a reconnect, not the download. It is sound only because
+every sink on this path is append-only -- `esp_ota_write`, a file write, a
+string append -- so `sink.downloaded` is the exact resume point. A server that
+ignores `Range` answers 200 and restarts the body at zero; no sink here can
+rewind, so that case is fatal rather than another retry.
+
+**This is the same order upstream took.** `freeink-sdk` `118c6723` describes
+downloads that "failed with MEMORY_E and fell back to many Range retries" --
+their `fetchResumable` already resumed, and the commit adds a *second* layer
+on top: a full-record buffer reserved right after the handshake, while a large
+block is still free, lent to wolfSSL through an allocator hook
+(`setReserveFullRecord`). They skip it when the peer accepted
+`max_fragment_length` -- which, per the measurement above, our asset host does
+not, so that layer would apply to us too.
+
+We do not have either piece: our SDK pin is 339 commits behind and
+`freeink::fetchResumable` does not exist in it. The Range resume above is our
+own, in our own `HttpDownloader`. The allocator hook is **not** ported: a first
+attempt at it crashed the X3 outright (`std::bad_alloc` in `readLine`,
+`docs/crashes/2026-11-04-x3-ota-tls-reserve/` in the parent repo) and it is
+the harder half. T-2064 tracks the rest.
 
 The S3 boards are unaffected -- both download and install -- and the obvious
 explanation is PSRAM, but that is **reasoned, not measured**: the heap during
