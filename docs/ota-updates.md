@@ -266,6 +266,36 @@ string append -- so `sink.downloaded` is the exact resume point. A server that
 ignores `Range` answers 200 and restarts the body at zero; no sink here can
 rewind, so that case is fatal rather than another retry.
 
+**Measured on the X3, 2026-11-04: five installs in a row, all completed.**
+Resumes per install: 9, 3, 3, and two that needed none. Wall clock 50 s to
+12 min -- the spread is the WiFi link, not the retries.
+
+Two bounds had to be right, and the first version had both wrong:
+
+- **A reconnect that delivers nothing is not the end.** Late in a transfer the
+  connection often dies on the first record after the handshake. Giving up on
+  the first barren attempt stopped a download at 3,661,739 of 4,105,888 bytes.
+  A barren attempt now costs one of three.
+- **Redirects and resumes need separate counters.** Sharing one capped the real
+  number of reconnects well below the limit.
+
+A signed CDN URL can also expire mid-transfer, so a 403 or 404 on a resume goes
+back to the start URL to re-mint one. The `Range` header is sent either way, so
+nothing is refetched. **Not observed on hardware** -- the longest run above was
+12 minutes and never hit it.
+
+### What the retries cost, and why layer two still matters
+
+The resumes are not evenly spread. Early in a download an attempt carries
+hundreds of kB; past about 3.5 MB an attempt often carries exactly one 16 kB
+record and dies. At the handshake the largest free block reads 19 to 28 kB --
+enough for a 16.4 kB record -- and it is gone by the next one. That is
+upstream's diagnosis word for word: wolfSSL frees its grown input buffer after
+every record and cannot get an equivalent block back.
+
+So the resume makes the download finish; it does not make it cheap. Each
+reconnect is a full TLS handshake.
+
 **This is the same order upstream took.** `freeink-sdk` `118c6723` describes
 downloads that "failed with MEMORY_E and fell back to many Range retries" --
 their `fetchResumable` already resumed, and the commit adds a *second* layer
