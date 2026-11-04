@@ -267,8 +267,18 @@ ignores `Range` answers 200 and restarts the body at zero; no sink here can
 rewind, so that case is fatal rather than another retry.
 
 **Measured on the X3, 2026-11-04: five installs in a row, all completed.**
-Resumes per install: 9, 3, 3, and two that needed none. Wall clock 50 s to
-12 min -- the spread is the WiFi link, not the retries.
+
+| install | resumes | wall clock after the confirm |
+|---|---|---|
+| 1 | 9 | 47 s |
+| 2 | 3 | 38 s |
+| 3 | 3 | 10 min 28 s |
+| 4 | 10 | 5 min 46 s |
+| 5 | 5 | 49 s |
+
+**Every one of them needed the resume**; none completed on a single
+connection. The wall-clock spread is the WiFi link and the panel repaint, not
+the retries -- a reconnect costs a handshake, about 600 ms.
 
 Two bounds had to be right, and the first version had both wrong:
 
