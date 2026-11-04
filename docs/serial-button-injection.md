@@ -136,14 +136,24 @@ build carries no `BUTTON_OK` or `BUTTON_ERR` string and no `DebugInput` symbol,
 while the archived devel build carries one and three. So the check could have
 failed.
 
-**That is true of the ENV and false of what we actually ship.** Measured
-2026-11-03 against the three published 0.2.2 assets downloaded from the
-release page: every one of them carries **one `BUTTON_OK:` and three
-`BUTTON_ERR:`** -- the devel signature above, not the `gh_release` zeros. The
-C3 image for X4 and X3 included. And it is live, not dead strings: a T5 S3 Pro
-running `explorink-t5s3pro-v0.2.2`, confirmed byte-identical to the published
-asset by `esp_app_desc` first, answered `CMD:BUTTON back` with
-`BUTTON_OK:back:0`.
+**That is true of the ENV and false of what we actually ship.** Two boards,
+each running an image confirmed byte-identical to its published asset by
+`esp_app_desc` before the test, answered a press:
+
+| published image | board | reply |
+|---|---|---|
+| `explorink-t5s3pro-v0.2.2` | T5 S3 Pro, 2026-11-03 | `BUTTON_OK:back:0` |
+| `explorink-v0.2.2` (C3, X4 and X3) | X3, 2026-11-04 | `BUTTON_OK:down:0` |
+
+The X4 Pro image is untested -- the board was unplugged before it could be
+checked.
+
+**And the string counts above do not prove it; only the replies do.** All
+three published assets carry one `BUTTON_OK:` and three `BUTTON_ERR:`, which
+*looks* like the devel signature, but the 2026-09-08 `gh_release` measurement
+has not been re-run against a current build, so the zeros it recorded cannot
+be relied on as the contrast. Treat `strings` as unable to answer this and ask
+a board.
 
 So the published images are built from devel envs -- and
 `docs/public-release.md` says so plainly, in the 0.2.2 env table: `default`
