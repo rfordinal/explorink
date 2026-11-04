@@ -294,6 +294,30 @@ back to the start URL to re-mint one. The `Range` header is sent either way, so
 nothing is refetched. **Not observed on hardware** -- the longest run above was
 12 minutes and never hit it.
 
+### The S3 boards: one connection, no resume, and the contrast that confirms it
+
+Both S3 boards ran the same build and the same walk, 2026-11-04. Neither
+needed a single reconnect.
+
+| board | resumes | wall clock | free during the download | largest block |
+|---|---|---|---|---|
+| X4 Pro | 0 | 33 s | 174,248 | 126,964 |
+| T5 S3 Pro (board B) | 0 | 40 s | 108,864 | 63,476 |
+
+Both numbers are **flat across the whole transfer** -- the same reading at
+0 %, 50 % and 100 % -- against the C3's 3.6 to 8.6 kB free and a largest block
+that moves between 2 and 5.6 kB. That is the contrast the C3 diagnosis rests
+on, and it is measured now rather than reasoned from "the S3 has PSRAM".
+
+`max_fragment` read 2048 on `api.github.com` and 16384 on the asset host on
+all three boards, so the extension's behaviour is the server's, not ours.
+
+The T5 S3 Pro was the second board on purpose: its release sits third in the
+GitHub list, so the scan walks past `explorink-x4pro-v0.2.2` and
+`explorink-v0.2.2` to reach `explorink-t5s3pro-v0.2.2`, which is what its
+confirmation screen named. The X4 Pro's own release is first in that list and
+puts the scan through nothing.
+
 ### What the retries cost, and why layer two still matters
 
 The resumes are not evenly spread. Early in a download an attempt carries
