@@ -245,6 +245,17 @@ transient allocation above a few kB fails. That is the `MEMORY_E`. The earlier
 reading that "nothing drains during the transfer" was taken before this trace
 existed and was wrong.
 
+### One run proves nothing here
+
+Where the download dies varies enormously between attempts of the *same*
+build: measured failures at 32 kB and at 4.1 MB, which is the whole file. So a
+build that completes one download has not been shown to fix anything, and a
+build that fails one has not been shown to be worse. Any claim about this path
+needs a run of five.
+
+This was learned by publishing a "50x improvement" off one sample per build,
+2026-11-04. It was not supported.
+
 ### The fix: resume instead of restart
 
 `runGetWolf` (`src/network/HttpDownloader.cpp`) keeps every byte already
