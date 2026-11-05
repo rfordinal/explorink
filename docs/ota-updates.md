@@ -272,19 +272,22 @@ This was learned by publishing a "50x improvement" off one sample per build,
 to the sink and asks for the rest with `Range: bytes=N-`. A dead connection
 then costs a reconnect, not the download.
 
-**Measured on the X3, 2026-11-04: five installs in a row, all completed.**
+**Measured on the X3: five installs in a row, all completed.** Ten in total
+across two builds.
 
-| install | resumes | wall clock after the confirm |
-|---|---|---|
-| 1 | 9 | 47 s |
-| 2 | 3 | 38 s |
-| 3 | 3 | 10 min 28 s |
-| 4 | 10 | 5 min 46 s |
-| 5 | 5 | 49 s |
+| build | resumes per install |
+|---|---|
+| first cut, 2026-11-04 | 9, 3, 3, 10, 5 |
+| reviewed, 2026-11-05 | 5, 6, 0, 3, 8 |
 
-**Every one of them needed it**; none completed on a single connection. So the
-resume is not a safety net here, it is the mechanism. The wall-clock spread is
-the WiFi link and the panel repaint, not the retries -- a reconnect is one
+Nine of the ten needed at least one reconnect. **One did not** -- the third run
+on 2026-11-05 carried the whole 4.1 MB on a single connection, which is the
+only time that has happened on a C3. So "every install needs it" is wrong as a
+rule; what holds is that most do, and nothing distinguishes the lucky run but
+the heap it happened to find.
+
+Wall clock after the confirm ran from 38 s to 11 min 36 s. The spread is the
+WiFi link and the panel repaint, not the retries -- a reconnect is one
 handshake, about 600 ms.
 
 #### Why a reconnect is the right answer and not merely a retry
@@ -340,6 +343,28 @@ exercises it. A short range, a barren reconnect, an expired signature and a
 server that ignores `Range` are precisely the transitions a real download will
 not reproduce on demand; the alternative was a four-megabyte download on a C3
 per case.
+
+#### The reviewed code, re-measured
+
+The first cut of this was reviewed and rewritten (see the parent repo's
+`docs/PROGRESS.md`, 2026-11-05). The three server-answer checks above, the
+separated budgets and the host tests are all from that pass. Re-run on
+hardware afterwards:
+
+| board | installs | resumes | result |
+|---|---|---|---|
+| X3 (C3) | 5 | 5, 6, 0, 3, 8 | all completed, board booted the release it downloaded |
+| T5 S3 Pro board B | 1 | 0 | completed in 40 s, heap flat at 108,904 free / 61,428 largest |
+
+Nothing in any of those logs mentions a refused splice, an ignored `Range` or
+an unexpected status, so the new checks cost nothing on a well-behaved server
+-- which is the only claim a passing run can support about them. The paths
+they guard are covered by `test/download_resume/` instead.
+
+Two of the barren attempts the tolerance exists for showed up in the X3 runs
+(resume 2 and resume 6 of the eight-reconnect install both delivered zero new
+bytes, and the install still finished), so that bound earns its place on
+hardware and not only in a test.
 
 #### What is not fixed
 
