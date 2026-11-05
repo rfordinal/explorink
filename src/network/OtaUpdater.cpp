@@ -164,6 +164,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
 
   processedSize = 0;
   int lastReportedPct = -1;
+  int lastHeapLogPct = -1;
   bool flashOk = true;
   // The image streams in chunks; only the first bytes carry the header.
   // Buffer them so we can read chip_id (esp_image_header_t offset 12) and
@@ -213,6 +214,19 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     if (onProgress && totalSize > 0) {
       const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
       if (pct != lastReportedPct) {
+        // The number that decides this bug is the largest CONTIGUOUS block,
+        // not free bytes: wolfSSL asks for one record-sized block at a time
+        // and fails with MEMORY_E when no single block is big enough, however
+        // much is free in total. Five runs on one build 2026-11-04 ended
+        // anywhere from 32 kB to the full 4.1 MB, so a single end-of-run
+        // number says nothing -- this is the trace that shows whether the
+        // block shrinks as the transfer proceeds. Every 10% to keep it out of
+        // the way of the transfer it is measuring. T-2064.
+        if (pct % 10 == 0 && pct != lastHeapLogPct) {
+          lastHeapLogPct = pct;
+          LOG_INF("OTA", "heap at %d%%: free %u, maxAlloc %u", pct, (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
+        }
         lastReportedPct = pct;
         onProgress(ctx);
       }
@@ -241,7 +255,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   }
 
   if (!fetchOk || !flashOk) {
-    LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
+    // Largest block at the moment it gave up -- the one reading that was
+    // missing from every failure recorded before 2026-11-04.
+    LOG_ERR("OTA", "Firmware install failed (%s) at %zu/%zu, free %u, maxAlloc %u",
+            flashOk ? "download" : "flash write", processedSize, totalSize, (unsigned)ESP.getFreeHeap(),
+            (unsigned)ESP.getMaxAllocHeap());
     esp_ota_abort(otaHandle);
     return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
   }

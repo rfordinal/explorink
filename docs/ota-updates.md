@@ -187,11 +187,10 @@ make this code wrong, it makes it redundant. Their derive-the-filename-from-the-
 trick is not available to us either way, because our tag does not carry the
 version in the form the filename uses.
 
-## The C3 can check, but cannot install (T-2064)
+## The C3 installs about one run in five (T-2064)
 
-Measured on an X3, 2026-11-04, reproduced twice. The check works and offers
-`explorink-v0.2.2`. The download then dies at **61,810 of 4,105,888 bytes**,
-427 ms in:
+Measured on an X3, 2026-11-04. The check works and offers `explorink-v0.2.2`.
+The download usually dies partway through:
 
 ```
 [SecureClient] read failed: -125, free heap 25876
@@ -201,37 +200,241 @@ Measured on an X3, 2026-11-04, reproduced twice. The check works and offers
 
 `-125` is `MEMORY_E`, "out of memory error"
 (`Arduino-wolfSSL/src/wolfssl/wolfcrypt/error-crypt.h:72`). Both handshakes
-succeeded before it (395 ms to github.com, 160 ms to release-assets after the
-redirect), so it is neither the handshake nor the board check.
+succeed before it (395 ms to github.com, 160 ms to release-assets after the
+redirect), so it is neither the handshake nor the board check. It does
+sometimes get all the way through -- roughly one attempt in five.
 
-**The constraint is the largest contiguous block, not free bytes.** Same
-board, `Total: 244,356 B`:
+### max_fragment_length does not help, and the flag was taken back out
 
-| state | free | largest block |
+RFC 6066's `max_fragment_length` asks the peer to cap TLS records at 2 kB
+instead of 16 kB. `SecureClient.cpp` has always requested it, but under
+`#ifdef HAVE_MAX_FRAGMENT`, and that macro is defined in no build flags of
+ours -- so the request has always been compiled out.
+
+Defining it temporarily and logging what the peer agreed to answers the
+question in one run. Measured on the X3, 2026-11-04:
+
+```
+[SecureClient] max_fragment: 2048  (MAX_RECORD_SIZE 16384)   <- api.github.com
+[SecureClient] max_fragment: 16384 (MAX_RECORD_SIZE 16384)   <- release asset host
+```
+
+Repeated on the X4 Pro and a T5 S3 Pro with the same two answers, so the
+behaviour belongs to the server and not to the chip.
+
+**The API host accepts it; the asset host does not.** Small records would make
+the cheap request cheaper and do nothing for the expensive one, so the flag
+buys nothing on the path that fails. It was removed again rather than shipped:
+in the pinned wolfSSL (Arduino-wolfSSL 5.7.2) the macro also swaps the
+record-layer length check from a fixed `MAX_RECORD_SIZE` to `ssl->max_fragment`
+(`src/src/internal.c:11473-11480`), which is harmless when the peer ignores the
+extension -- `internal.c:7440` defaults the field to `MAX_RECORD_SIZE` -- and a
+new hard `LENGTH_ERROR` for any peer that accepts it and then sends a larger
+record. Putting that on every TLS connection on every board, for no measured
+gain on the one path it was meant for, is not a trade worth making.
+
+### The heap during the download, measured
+
+The failure was first read as fragmentation, because the board enters the
+download with 47.8 kB free and a largest block of only 27.6 kB. Tracing the
+heap every 10 % of the transfer shows something simpler. Same board, same run,
+`Total: 244,356 B`:
+
+| point | free | largest block |
 |---|---|---|
-| Home, WiFi off | 108,720 | **30,708** |
-| map open | 29,932 | 26,612 |
-| WiFi up, confirmation screen | 47,784 | **27,636** |
-| at the failure | 25,876 | -- |
+| Home, WiFi off | 108,720 | 30,708 |
+| WiFi up, confirmation screen | 47,784 | 27,636 |
+| download at 0 % | 3,668 | 2,036 |
+| download at 50 % | 6,144 | 3,188 |
+| download at 90 % | 8,624 | 5,620 |
+| download finished | 35,960 | 19,444 |
 
-With 108 kB free the biggest block is still only 30.7 kB. The heap is
-fragmented before anything starts, so the board enters the download already
-unable to serve a 16 kB TLS record. Nothing drains during the transfer.
+**The download itself consumes almost the whole heap.** Through the transfer
+there are 3.6 to 8.6 kB free with a largest block of 2 to 5.6 kB, so any
+transient allocation above a few kB fails. That is the `MEMORY_E`. The earlier
+reading that "nothing drains during the transfer" was taken before this trace
+existed and was wrong.
 
-**Upstream solved this on the same chip.** `freeink-sdk` `118c6723` reserves a
-full-record TLS buffer right after the handshake, while a large block is still
-free, and lends it to wolfSSL -- written against an X4, where they measured
-"largest free block 16,372 bytes vs 16,406 needed". We do not have it: our SDK
-pin is 339 commits behind, and the API that enables the reservation
-(`freeink::fetchResumable`) does not exist in our pinned SDK at all. T-2064
-has the plan.
+### One run proves nothing here
 
-**So on an X4 or X3 today the row finds an update it cannot install.** That is
-worse than no row. Decide what ships on the C3 before a release carries this.
+Where the download dies varies enormously between attempts of the *same*
+build: measured failures at 32 kB and at 4.1 MB, which is the whole file. So a
+build that completes one download has not been shown to fix anything, and a
+build that fails one has not been shown to be worse. Any claim about this path
+needs a run of five.
 
-The S3 boards are unaffected -- both download and install -- and the obvious
-explanation is PSRAM, but that is **reasoned, not measured**: the heap during
-a download on an S3 board has not been read.
+This was learned by publishing a "50x improvement" off one sample per build,
+2026-11-04. It was not supported.
+
+### The fix: resume instead of restart
+
+`runGetWolf` (`src/network/HttpDownloader.cpp`) keeps every byte already handed
+to the sink and asks for the rest with `Range: bytes=N-`. A dead connection
+then costs a reconnect, not the download.
+
+**Measured on the X3: five installs in a row, all completed.** Ten in total
+across two builds.
+
+| build | resumes per install |
+|---|---|
+| first cut, 2026-11-04 | 9, 3, 3, 10, 5 |
+| reviewed, 2026-11-05 | 5, 6, 0, 3, 8 |
+
+Nine of the ten needed at least one reconnect. **One did not** -- the third run
+on 2026-11-05 carried the whole 4.1 MB on a single connection, which is the
+only time that has happened on a C3. So "every install needs it" is wrong as a
+rule; what holds is that most do, and nothing distinguishes the lucky run but
+the heap it happened to find.
+
+Wall clock after the confirm ran from 38 s to 11 min 36 s. The spread is the
+WiFi link and the panel repaint, not the retries -- a reconnect is one
+handshake, about 600 ms.
+
+#### Why a reconnect is the right answer and not merely a retry
+
+At each handshake the largest free block reads 19 to 28 kB, which is enough for
+a 16.4 kB record, and it is gone by the next one. The failing condition belongs
+to the connection, not to the board, so a fresh connection restores exactly the
+precondition that failed. That is also upstream's diagnosis: wolfSSL frees its
+grown input buffer after every record and cannot get an equivalent block back.
+
+#### What makes it sound, and the three things that are checked
+
+Resuming is only correct because every sink on this path is append-only --
+`esp_ota_write`, a file write, a string append -- and none can seek, so
+`sink.downloaded` is the exact resume point. That argument holds only if the
+server's answer really starts there, so three things are checked rather than
+assumed:
+
+- **A 206's `Content-Range` must begin exactly at the requested offset.** No
+  sink can seek, so a range starting anywhere else would be spliced in at the
+  wrong place. A 206 with no usable `Content-Range` is refused too.
+- **A 200 in answer to a Range request** means the server ignored it and
+  restarted the body at zero. Fatal, not another attempt.
+- **Completion needs the bytes, not the server's word for it.** RFC 7233 lets a
+  server satisfy `bytes=N-` with less than the remainder, so "the announced
+  range arrived whole" no longer implies a whole body. Without the
+  `downloaded >= total` check a short range reports success and the caller keeps
+  a truncated file -- on the OTA path only `esp_ota_end`'s SHA-256 would have
+  caught it, and on the font path nothing would.
+
+Two bounds also had to be right, and the first version had both wrong:
+
+- **A reconnect that delivers nothing is not the end.** Late in a transfer the
+  connection often dies on the first record after the handshake. Giving up on
+  the first barren attempt stopped a download at 3,661,739 of 4,105,888 bytes.
+  Three barren attempts in a row now end it; one between two productive ones
+  costs nothing.
+- **Redirects count per attempt, not across the transfer.** A signed-redirector
+  answers 30x on every new connection, and a budget shared with the resumes
+  blames "too many redirects" for a download that merely reconnected.
+
+A signed CDN URL can also expire mid-transfer, so a 403 or 404 while resuming a
+redirected URL goes back to the start URL to mint a fresh one. The `Range`
+header is sent either way, so nothing already received is refetched. The same
+status on the start URL is an ordinary failure. **Not observed on hardware** --
+the longest run above was 12 minutes and never hit it.
+
+#### The decision is a pure function with host tests
+
+`src/network/DownloadResumePolicy.h` holds the whole after-each-attempt
+decision as `decide(Attempt, State&) -> Step`, and `test/download_resume/`
+exercises it. A short range, a barren reconnect, an expired signature and a
+server that ignores `Range` are precisely the transitions a real download will
+not reproduce on demand; the alternative was a four-megabyte download on a C3
+per case.
+
+#### The reviewed code, re-measured
+
+The first cut of this was reviewed and rewritten (see the parent repo's
+`docs/PROGRESS.md`, 2026-11-05). The three server-answer checks above, the
+separated budgets and the host tests are all from that pass. Re-run on
+hardware afterwards:
+
+| board | installs | resumes | result |
+|---|---|---|---|
+| X3 (C3) | 5 | 5, 6, 0, 3, 8 | all completed, board booted the release it downloaded |
+| T5 S3 Pro board B | 1 | 0 | completed in 40 s, heap flat at 108,904 free / 61,428 largest |
+
+Nothing in any of those logs mentions a refused splice, an ignored `Range` or
+an unexpected status, so the new checks cost nothing on a well-behaved server
+-- which is the only claim a passing run can support about them. The paths
+they guard are covered by `test/download_resume/` instead.
+
+Two of the barren attempts the tolerance exists for showed up in the X3 runs
+(resume 2 and resume 6 of the eight-reconnect install both delivered zero new
+bytes, and the install still finished), so that bound earns its place on
+hardware and not only in a test.
+
+#### What is not fixed
+
+The download URL is logged as `scheme://host` only. GitHub's release CDN signs
+it with `X-Amz-Signature`, so the full string is a bearer credential and does
+not belong in a log on a device this project assumes can be stolen.
+
+Two things the resume does **not** address, both pre-existing:
+
+- `SecureClient::setInsecure()` is in force on this path
+  (`SecureClient.cpp:87`, `WOLFSSL_VERIFY_NONE`), so there is no TLS peer
+  verification. The resume adds a seam where two halves of a file could come
+  from different answers; the `Content-Range` check closes the accidental
+  version of that and not the deliberate one. No `If-Range` validator is sent.
+  T-2067.
+- On the OTA path the only integrity backstop is `esp_ota_end`'s SHA-256, which
+  proves the image is self-consistent, not that it is ours. There is no
+  signature check, and the board-tag check runs only on S3
+  (`OtaUpdater.cpp:250`).
+
+### The S3 boards: one connection, no resume, and the contrast that confirms it
+
+Both S3 boards ran the same build and the same walk, 2026-11-04. Neither
+needed a single reconnect. (That build still carried the temporary
+`HAVE_MAX_FRAGMENT` flag described above, which the asset host ignored, so the
+download itself ran under the same 16 kB records as the shipped code.)
+
+| board | resumes | wall clock | free during the download | largest block |
+|---|---|---|---|---|
+| X4 Pro | 0 | 33 s | 174,248 | 126,964 |
+| T5 S3 Pro (board B) | 0 | 40 s | 108,864 | 63,476 |
+
+Both numbers are **flat across the whole transfer** -- the same reading at
+0 %, 50 % and 100 % -- against the C3's 3.6 to 8.6 kB free and a largest block
+that moves between 2 and 5.6 kB. That is the contrast the C3 diagnosis rests
+on, and it is measured now rather than reasoned from "the S3 has PSRAM".
+
+The T5 S3 Pro was the second board on purpose: its release sits third in the
+GitHub list, so the scan walks past `explorink-x4pro-v0.2.2` and
+`explorink-v0.2.2` to reach `explorink-t5s3pro-v0.2.2`, which is what its
+confirmation screen named. The X4 Pro's own release is first in that list and
+puts the scan through nothing.
+
+### What the retries cost, and why layer two still matters
+
+The resumes are not evenly spread. Early in a download an attempt carries
+hundreds of kB; past about 3.5 MB an attempt often carries exactly one 16 kB
+record and dies. At the handshake the largest free block reads 19 to 28 kB --
+enough for a 16.4 kB record -- and it is gone by the next one. That is
+upstream's diagnosis word for word: wolfSSL frees its grown input buffer after
+every record and cannot get an equivalent block back.
+
+So the resume makes the download finish; it does not make it cheap. Each
+reconnect is a full TLS handshake.
+
+**This is the same order upstream took.** `freeink-sdk` `118c6723` describes
+downloads that "failed with MEMORY_E and fell back to many Range retries" --
+their `fetchResumable` already resumed, and the commit adds a *second* layer
+on top: a full-record buffer reserved right after the handshake, while a large
+block is still free, lent to wolfSSL through an allocator hook
+(`setReserveFullRecord`). They skip it when the peer accepted
+`max_fragment_length` -- which, per the measurement above, our asset host does
+not, so that layer would apply to us too.
+
+We do not have either piece: our SDK pin is 339 commits behind and
+`freeink::fetchResumable` does not exist in it. The Range resume above is our
+own, in our own `HttpDownloader`. The allocator hook is **not** ported: a first
+attempt at it crashed the X3 outright (`std::bad_alloc` in `readLine`,
+`docs/crashes/2026-11-04-x3-ota-tls-reserve/` in the parent repo) and it is
+the harder half. T-2064 tracks the rest.
 
 ## Deciding "newer"
 
