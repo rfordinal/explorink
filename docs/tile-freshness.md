@@ -145,6 +145,60 @@ in `test/map_command_parser/MapCommandParserTest.cpp`:
   loop and cannot spin, because the second answer agrees.
 - **`checked unknown` settles nothing.** The phone could not read the index and
   is claiming nothing.
+- **`skip` re-arms the entry** (`HeldTilesStore::rearm()`, 2026-11-05). The
+  replacement the line above assumes did not arrive, so the entry goes back to
+  pending instead of staying settled on a copy the device has itself identified
+  as out of date. See below.
+
+### The loop only closed on success -- fixed 2026-11-05
+
+The fourth rule above rests on a promise: `checked` settles a stale entry
+because the replacement is coming, and `record()` re-arms it when the new bytes
+are drawn. **A fetch that fails breaks that promise with nothing left pointing
+at the tile.** The bytes on the card do not change, so the `content_id` does not
+move, so `record()` sees the tile it already had and changes nothing. The entry
+stays settled forever: `have` never lists it again, the phone never looks it up
+again, and the device sits on a tile it knows is stale with nothing on the panel
+and nothing on the wire to say so. Only a reboot cleared it, because the store
+is not persisted.
+
+Found on a T5 S3 Pro, 2026-11-05, over ground the rider was standing on: two
+viewport tiles whose published copies carry 1,673 and 5,682 bytes of street
+names, the host renderer drawing three of those names from those exact files,
+and the device drawing none. `have` answered empty six times across two sessions
+while both tiles were loaded and `tiles_ok=2`.
+
+It mattered more than one board, because the app had just been through a window
+where **every** stale fetch in the fleet failed on a content-id bug. Every tile
+any device checked during that window was settled and unreachable by the one
+mechanism meant to refresh it.
+
+Two changes, and both were needed:
+
+- `HeldTilesStore::rearm(z, col, row)`, called from the console's `skip`
+  handler. Clears **both** flag bits, not just `kChecked`: a skip can arrive
+  while the entry is still stamped asked, and leaving `kAsked` set would let
+  that listing's `checked` settle it straight back again.
+- `MapActivity::onTileSkipped()` no longer calls `StaleTilesList::giveUp()`. It
+  `remove()`s instead. The ping-pong guard that `giveUp()` arms is for one
+  specific loop -- a tile that was fetched, **landed**, and was reported stale
+  again, which no amount of re-fetching fixes. A fetch that never delivered a
+  byte is the opposite case, and spending the guard on it retired the tile on
+  its first failure for the rest of the boot, however transient the cause.
+
+**The re-arm is unbounded: no retry counter.** A cap would re-create the same
+bug one cap later, and the case that produced this one is exactly the case a cap
+loses -- an app-side bug that failed every stale fetch for an afternoon, far
+longer than a few ten-minute check rounds. The cost of retrying is one `have`
+line and one HTTP GET per stale-and-unavailable tile per round, and a round is
+the rider's own choice (`mapTileFreshnessMode` is off by default). It cannot
+spin against a working CDN: the fetch that lands moves the `content_id` and the
+next answer agrees. It cannot spin against a CDN that serves the wrong body
+either -- that tile *arrives*, which arms the ping-pong guard properly.
+
+The console's handler is **reason-blind on purpose**. Every word means the same
+thing to this half: no new bytes landed. Keying on the word would make the
+device depend on a phone vocabulary it cannot verify and which grows.
 
 **This is why `Live` mode looks like it works a backlog down** -- it does. The
 map screen's ten-minute check empties the store in the background, and the sync

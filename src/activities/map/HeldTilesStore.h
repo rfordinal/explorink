@@ -83,6 +83,32 @@ class HeldTilesStore {
   // values already there (MapActivity::renderViewport).
   void record(uint8_t z, uint32_t col, uint32_t row, uint32_t contentId);
 
+  // This tile's replacement never landed: the phone answered the freshness
+  // query, said the tile was stale, and then failed to supply the new bytes
+  // (`skip`). Puts the entry back to pending. Returns true if it was listed.
+  //
+  // **Without this the loop only closes on success.** markAskedChecked()
+  // settles a stale entry the moment the phone answers, on the promise that
+  // the replacement is coming and re-arms the entry through record() when it
+  // is drawn. A fetch that fails breaks that promise with nothing left
+  // pointing at it: the bytes on the card do not change, so the content_id
+  // does not move, so record() sees the same tile it already has and changes
+  // nothing. The device then sits on a tile it has itself identified as out of
+  // date, indefinitely, with nothing in `have` to say so -- observed
+  // 2026-11-05 on a T5 S3 Pro, two viewport tiles, no street names drawn while
+  // the published tiles carried them (../../../docs/TODO.md, T-2069).
+  //
+  // **Unbounded on purpose: no retry counter.** A cap would re-create the same
+  // bug one cap later, and the case that produced this one is exactly the one
+  // a cap loses: a content-id bug in the app made *every* stale fetch in the
+  // fleet fail for an afternoon, far longer than any small number of ten-minute
+  // check cycles. The cost of retrying forever is one `have` line and one HTTP
+  // GET per stale-and-unavailable tile per check round, and a check round is
+  // the rider's own choice (mapTileFreshnessMode is off by default). It cannot
+  // spin against a working CDN, because the fetch that succeeds moves the
+  // content_id and the next answer agrees.
+  bool rearm(uint8_t z, uint32_t col, uint32_t row);
+
   // Drops this tile. Returns true if it was on the list.
   //
   // For a tile that left the card, not for one that changed -- record() handles

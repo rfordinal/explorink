@@ -154,6 +154,18 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
         out.reply("OK");
         return false;
       }
+      // A tile the device already holds and had asked about: the replacement
+      // the phone promised did not arrive, so the entry goes back to pending
+      // rather than staying settled on a copy known to be out of date
+      // (HeldTilesStore::rearm). Does nothing for a tile that was merely
+      // missing -- those are not in this store at all.
+      //
+      // Reason-blind on purpose. Every reason word means the same thing here:
+      // no new bytes landed. Keying on the word would make this half depend on
+      // the phone's vocabulary, which the device cannot verify and which grows
+      // (`nosource`, `refused`, `fmt<N>`, `offline`, `oldcopy`).
+      if (heldTiles_ != nullptr) heldTiles_->rearm(cmd.skipZ, cmd.skipCol, cmd.skipRow);
+
       // Counted, not acted on: the tile is still missing, so it stays on the
       // store's list. This only stops the fetch screen waiting for it.
       ++skips_.count;
