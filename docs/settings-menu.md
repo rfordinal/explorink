@@ -416,12 +416,20 @@ migration is unverified against an actual pre-pruning `settings.json` -- it is
 read off `fromJson()`'s own clamp-and-load pattern for every other field in
 this file, not measured.
 
-**Status: flashed and hand-tested on an X4 Pro, 2026-11-06.** The five-row
-picker (Dark/Light/Location/None/Quick Resume) renders and cycles correctly
-(wraps at 5, not 7), Sleep Cover Mode/Filter are confirmed gone from Display,
-selecting a value round-trips through a save and a hard reset, and selecting
-`Quick Resume` correctly auto-toggles the independent `Quick Resume Timeout`
-row (confirming the `sleepScreenChanged` `nameId` fix above actually works).
-Not exercised on hardware: the `LocationCustom` migration path, and a `Custom`
-value surviving a load now that it is no longer migrated away -- both read off
-the code, not measured, for the reasons above.
+**Status: flashed and hand-tested on three boards, 2026-11-06** -- an X3 and a
+LilyGo T5 S3 Pro at the final merged commit (`9215866f`), an X4 Pro one commit
+earlier (`5a708c99`, before the Custom-migration fix and a `sizeof`
+correctness fix below -- both comment/load-path-only changes a second Opus
+review confirmed do not alter on-device behaviour, so this is not a gap in
+what was actually exercised). On every board: the five-row picker renders and
+cycles correctly (wraps at 5, not 7), Sleep Cover Mode/Filter are confirmed
+gone from Display, a selection round-trips through a save and a hard reset,
+and selecting `Quick Resume` correctly auto-toggles the independent `Quick
+Resume Timeout` row (confirming the `sleepScreenChanged` `nameId` fix above
+actually works). The second Opus review independently re-verified the
+BmpViewerActivity-unreachability claim above by its own grep audit (every
+`goToFileBrowser` caller, every `HomeActivity::activate()` case, the OTA
+firmware-picker path, serial `CMD:GOTO_*`) rather than trusting the first
+pass's conclusion. Not exercised on hardware: the `LocationCustom` migration
+path, and a `Custom` value surviving a load -- both read off the code, not
+measured.
