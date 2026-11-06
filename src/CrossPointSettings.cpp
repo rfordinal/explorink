@@ -344,7 +344,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // legitimate is lost moving it.
   //
   // Custom is deliberately NOT migrated, even though the menu no longer offers
-  // picking it (SettingsList.h, "The menu offers six..."): unlike
+  // picking it (SettingsList.h, "The menu offers five..."): unlike
   // LocationCustom it DOES have a real setter,
   // BmpViewerActivity::doSetSleepCover() ("set as sleep screen" on a BMP opened
   // from the file browser), so a hand-edited or reader-era settings.json that
