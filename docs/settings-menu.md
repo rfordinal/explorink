@@ -353,20 +353,29 @@ the row needs a second cue.
 Unlike the rows above, **Sleep Screen's enum choices were narrowed**, not just
 hidden -- the first time an enum's *option list* shrank rather than a whole
 row. Seven stored modes (`CrossPointSettings::SLEEP_SCREEN_MODE`,
-`CrossPointSettings.h:18-28`), four offered on the panel:
+`CrossPointSettings.h:18-28`), five offered on the panel:
 
 | Dropped | Why |
 |---|---|
 | `Custom` | Needs a BMP placed on `/.sleep` or `/sleep` by hand (`docs/sleep-screen.md`, "Repurposing COVER") -- no on-device way to pick or preview one |
 | `LocationCustom` | Same BMP dependency, plus it duplicates `Location`'s own no-fix fallback text |
-| `QuickResume` | Duplicates the independent **Quick Resume Timeout** row (`quickResumeSleepScreen`) -- `main.cpp:2804-2807` already ORs `sleepScreen == QUICK_RESUME` with "timeout toggle is on", so the toggle alone reproduces the same wake behaviour |
+
+**`QuickResume` was wrongly listed as a third drop in an earlier version of this
+pass, on the claim that it duplicates the independent `Quick Resume Timeout`
+row.** It does not: that row's effect is guarded on `fromTimeout`
+(`main.cpp:2804-2807`), so it only ever fires for an auto-sleep from idle --
+never for a manual sleep, the sleep button or a deliberate gesture. Only
+`sleepScreen == QUICK_RESUME` gets quick resume on *every* sleep, including a
+manual one. A rider who wants to press the sleep button and still wake straight
+back in needs the mode, not the toggle. Caught by the maintainer before this
+built, not by a hardware pass -- `QuickResume` stays a selectable mode.
 
 The note above this section said a persisted-by-index enum "needs a migration,
 not an edit" and left `Hide Battery %`'s dead `In Reader` option alone for that
 reason. This pass is that migration, done once: `STR_SLEEP_SCREEN` is a
-`SettingInfo::DynamicEnum` now (`SettingsList.h`, "The menu offers four of the
+`SettingInfo::DynamicEnum` now (`SettingsList.h`, "The menu offers five of the
 seven stored modes"), not a plain `Enum` over `&CrossPointSettings::sleepScreen`.
-The picker shows the short list; a getter/setter pair translates its 0-3 index
+The picker shows the short list; a getter/setter pair translates its 0-4 index
 to and from the real 0-6 `SLEEP_SCREEN_MODE` value, so the stored byte keeps the
 full range and a settings.json hand-edited to `Custom` still renders as `Custom`
 (`SleepActivity.cpp`'s switch is untouched).

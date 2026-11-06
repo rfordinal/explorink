@@ -123,7 +123,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["loraNodeName"] = loraNodeName;
 #endif
   // Sleep screen mode -- DynamicEnum in SettingsList, not Enum, because the menu
-  // offers only four of the seven stored modes (SettingsList.h, "Display"). The
+  // offers only five of the seven stored modes (SettingsList.h, "Display"). The
   // generic loop above skips a key-less valuePtr-less entry, so the full 0-6
   // range is written here by hand, same reason as loraBeaconSec above.
   doc["sleepScreen"] = sleepScreen;
@@ -334,26 +334,23 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 #endif
   // Same reason as toJson(): DynamicEnum in SettingsList, so the generic loop
   // above skips it. Clamped against the full SLEEP_SCREEN_MODE_COUNT, not the
-  // four the menu offers -- a settings.json a power user hand-edited to Custom
+  // five the menu offers -- a settings.json a power user hand-edited to Custom
   // still has to render as Custom (SleepActivity.cpp).
   //
-  // A device that already has one of the three retired modes stored (from
+  // A device that already has one of the two retired modes stored (from
   // before this pass, or from a hand edit) is migrated onto its nearest
   // surviving equivalent: Custom and LocationCustom fold into Location, the
   // mode that already shows the same "no fix yet" text instead of a cover
-  // image; QuickResume folds into Dark plus the independent timeout toggle,
-  // which already reproduces its exact wake behaviour (main.cpp:2804-2807 ORs
-  // the same two conditions), so the device keeps skipping the splash on an
-  // auto-sleep wake, it is just no longer its own sleep-screen choice.
+  // image. QuickResume is not retired -- it is kept as its own mode, because it
+  // is not the same thing as the independent timeout toggle below: that toggle
+  // only fires on an auto-sleep-from-timeout (main.cpp:2804-2807 guards it on
+  // `fromTimeout`), so a manual sleep (the sleep button, a deliberate press)
+  // needs this mode to get quick resume at all.
   {
     const uint8_t fieldDefault = sleepScreen;
     uint8_t loadedSleepScreen = clamp(doc["sleepScreen"] | fieldDefault, SLEEP_SCREEN_MODE_COUNT, fieldDefault);
     if (loadedSleepScreen == CUSTOM || loadedSleepScreen == LOCATION_CUSTOM) {
       loadedSleepScreen = LOCATION;
-      needsResave = true;
-    } else if (loadedSleepScreen == QUICK_RESUME) {
-      loadedSleepScreen = DARK;
-      quickResumeSleepScreen = QUICK_RESUME_AFTER_TIMEOUT;
       needsResave = true;
     }
     sleepScreen = loadedSleepScreen;

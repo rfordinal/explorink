@@ -196,23 +196,25 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
 inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
                                                 const std::vector<DictionaryEntry>* dictionaries = nullptr) {
   static const std::vector<SettingInfo> baseList = [] {
-    // The menu offers four of the seven stored modes -- Custom, LocationCustom
-    // and QuickResume dropped (docs/settings-menu.md, "Pruning Sleep Screen"):
-    // Custom/LocationCustom needed a BMP placed on the SD card by hand, with no
-    // on-device way to pick or preview one, and QuickResume duplicated the
-    // independent STR_QUICK_RESUME_TIMEOUT row below (main.cpp:2804-2807 already
-    // treats "sleep screen is Dark/Light/etc with the timeout toggle on" the
-    // same as "sleep screen is QuickResume").
+    // The menu offers five of the seven stored modes -- Custom and
+    // LocationCustom dropped (docs/settings-menu.md, "Pruning Sleep Screen"):
+    // both need a BMP placed on the SD card by hand, with no on-device way to
+    // pick or preview one. QuickResume stays: it is NOT the same thing as the
+    // independent STR_QUICK_RESUME_TIMEOUT row below -- that toggle only
+    // applies to an auto-sleep-from-timeout (main.cpp:2804-2807 guards it on
+    // `fromTimeout`), so a rider who wants quick resume on a *manual* sleep
+    // (the sleep button, a deliberate press) needs this mode, not the toggle.
     //
     // The stored byte still carries the full SLEEP_SCREEN_MODE range -- a
     // settings.json a power user hand-edited to Custom still renders that way
     // (SleepActivity.cpp) -- so this is a DynamicEnum, not an Enum: the picker
     // shows this short list and the getter/setter below translate between its
     // index and the real enum value. fromJson() migrates a device that already
-    // had one of the three dropped values (CrossPointSettings.cpp, "sleepScreen
+    // had one of the two dropped values (CrossPointSettings.cpp, "sleepScreen
     // mode").
     static constexpr uint8_t kVisibleSleepScreenModes[] = {CrossPointSettings::DARK, CrossPointSettings::LIGHT,
-                                                           CrossPointSettings::LOCATION, CrossPointSettings::BLANK};
+                                                           CrossPointSettings::LOCATION, CrossPointSettings::BLANK,
+                                                           CrossPointSettings::QUICK_RESUME};
 
     std::vector<StrId> statusBarClockValues(CrossPointSettings::STATUS_BAR_CLOCK_MODE_COUNT);
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_HIDE] = StrId::STR_HIDE;
@@ -223,10 +225,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // --- Display ---
         // No JSON key: the full range is hand-serialised in CrossPointSettings.cpp
         // ("sleepScreen mode"), same reason as loraBeaconSec above -- a DynamicEnum
-        // row writing through a key would store the narrowed 0-3 index instead of
+        // row writing through a key would store the narrowed 0-4 index instead of
         // the real 0-6 mode.
         SettingInfo::DynamicEnum(
-            StrId::STR_SLEEP_SCREEN, {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_LOCATION, StrId::STR_NONE_OPT},
+            StrId::STR_SLEEP_SCREEN,
+            {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_LOCATION, StrId::STR_NONE_OPT, StrId::STR_QUICK_RESUME},
             [] {
               switch (SETTINGS.sleepScreen) {
                 case CrossPointSettings::LIGHT:
@@ -235,8 +238,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                   return uint8_t{2};
                 case CrossPointSettings::BLANK:
                   return uint8_t{3};
+                case CrossPointSettings::QUICK_RESUME:
+                  return uint8_t{4};
                 default:
-                  // DARK, and the three retired modes until fromJson() migrates
+                  // DARK, and the two retired modes until fromJson() migrates
                   // them off a hand-edited or pre-pruning settings.json.
                   return uint8_t{0};
               }
