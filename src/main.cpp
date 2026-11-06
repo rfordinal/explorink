@@ -3743,6 +3743,39 @@ void loop() {
             logSerial.printf("VCOM_OK:%d:default:%d\n", BoardT5S3::getEpdVcomMv(), BoardT5S3::getEpdDefaultVcomMv());
           }
         }
+      } else if (cmd == "VADJ" || cmd.startsWith("VADJ ")) {
+        // Set the EPD PMIC's VPOS/VNEG source rails (TPS65185 register 0x02).
+        //
+        //   CMD:VADJ        ->  VADJ_OK:0        (0 = leave the part alone)
+        //   CMD:VADJ 2      ->  VADJ_OK:2        (applied on the next refresh)
+        //   CMD:VADJ 9      ->  VADJ_ERR:range:0-3
+        //
+        // Why: board B renders a full-black clean frame grey where board A
+        // renders it black. Raising the black drive from 6 passes to 14 made B
+        // darker without reaching A, which manages it at 6 -- help without
+        // arrival is a voltage ceiling, not a dose shortfall. The effect also
+        // scales with black coverage and deepens down the panel, which fits a
+        // rail sagging under load somewhere power-good cannot see: the
+        // TPS65185 senses at its own output, not at the panel.
+        //
+        // **This raises the voltage the panel is driven at.** The ED047TC1's
+        // source rails are specified at +/-15 V and the datasheet that would
+        // give an absolute maximum is not on this machine, so the range here is
+        // deliberately only the codes adjacent to stock (0x03), and the default
+        // stays "do not touch". Devel builds only, same gate as CMD:EPDLUT.
+        String rest = cmd.length() > 4 ? cmd.substring(5) : String("");
+        rest.trim();
+        if (rest.isEmpty()) {
+          logSerial.printf("VADJ_OK:%u\n", (unsigned)BoardT5S3::getEpdVadj());
+        } else {
+          const long code = rest.toInt();
+          if (code < 0 || code > 3) {
+            logSerial.println("VADJ_ERR:range:0-3");
+          } else {
+            BoardT5S3::setEpdVadj(static_cast<uint8_t>(code));
+            logSerial.printf("VADJ_OK:%u\n", (unsigned)BoardT5S3::getEpdVadj());
+          }
+        }
       } else if (cmd == "TPS") {
         // Dump the EPD PMIC's own registers to the log: temperature, enable
         // mask, the VCOM pair as the part holds it, power-good and the revision
