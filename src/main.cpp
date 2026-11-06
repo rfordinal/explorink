@@ -3754,8 +3754,14 @@ void loop() {
         //   CMD:TPS  ->  the register lines on the log, then TPS_OK
         //
         // Read-only, devel builds only.
-        BoardT5S3::dumpTpsRegisters();
-        logSerial.println("TPS_OK");
+        //
+        // Arms rather than reads. Outside a refresh epdPowerOff() has driven
+        // TPS_WAKEUP low and every register read fails with
+        // ESP_ERR_INVALID_STATE (measured on board B, 2026-11-06), so the dump
+        // rides along with the next power-up, which is the only moment the part
+        // is awake. Push a frame after this to make it fire.
+        BoardT5S3::armTpsDump();
+        logSerial.println("TPS_OK:armed, dumps on the next refresh");
 #endif  // ENABLE_EPDLUT_CMD
 #ifdef ENABLE_TOUCHLOG_CMD
       } else if (cmd == "TOUCHLOG" || cmd.startsWith("TOUCHLOG ")) {
