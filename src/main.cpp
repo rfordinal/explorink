@@ -3857,6 +3857,57 @@ void loop() {
         } else {
           logSerial.printf("TEXTLUT_OK:%d\n", applied);
         }
+      } else if (cmd == "PCA") {
+        // Stress the PCA9535 I2C expander: read every pin repeatedly and check
+        // the readings are stable, then write/read-back the GNSS+LoRa enable.
+        //
+        //   CMD:PCA  ->  PCA:reads=600 unstable=0 wr_fail=0 rb_fail=0
+        //
+        // Why this is the suspect. Two unrelated subsystems misbehave on board
+        // B and only on board B: the clean frame renders grey and grainy, and
+        // GNSS is unreliable. They share exactly one thing -- this expander.
+        // GNSS and LoRa are powered through PCA9535_IO00_LORA_GPS_EN, and the
+        // whole EPD power sequence runs through IO10..IO17 on the same part:
+        // EP_OE, EP_MODE, TPS_PWRUP, VCOM_CTRL, TPS_WAKEUP, TPS_PWR_GOOD.
+        //
+        // A marginal expander would under-drive or intermittently drop EP_OE
+        // or VCOM_CTRL, which is weak and uneven panel drive -- grey with
+        // grain -- and would also drop the GNSS rail. Nothing in this session
+        // has ever checked that a write to this part actually lands; the power
+        // sequence writes and assumes.
+        constexpr int kRounds = 100;
+        const uint8_t pins[] = {PCA9535_IO00_LORA_GPS_EN, PCA9535_IO10_EP_OE, PCA9535_IO11_EP_MODE,
+                                PCA9535_IO13_TPS_PWRUP, PCA9535_IO14_VCOM_CTRL, PCA9535_IO15_TPS_WAKEUP};
+        bool first[sizeof(pins)] = {false};
+        bool haveFirst = false;
+        size_t reads = 0, unstable = 0, readFail = 0;
+        for (int r = 0; r < kRounds; ++r) {
+          for (size_t i = 0; i < sizeof(pins); ++i) {
+            bool v = false;
+            if (!BoardT5S3::readPca9535Pin(pins[i], &v)) { ++readFail; continue; }
+            ++reads;
+            if (!haveFirst) continue;
+            if (v != first[i]) ++unstable;
+          }
+          if (!haveFirst) {
+            for (size_t i = 0; i < sizeof(pins); ++i) BoardT5S3::readPca9535Pin(pins[i], &first[i]);
+            haveFirst = true;
+          }
+        }
+        // Write/read-back on the GNSS+LoRa enable: the pin the GNSS symptom
+        // points at, and the one safe to toggle here (the map path powers it
+        // deliberately anyway).
+        size_t wrFail = 0, rbFail = 0;
+        for (int r = 0; r < 50; ++r) {
+          const bool want = (r & 1) != 0;
+          if (!BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, want)) { ++wrFail; continue; }
+          bool got = !want;
+          if (!BoardT5S3::readPca9535Pin(PCA9535_IO00_LORA_GPS_EN, &got) || got != want) ++rbFail;
+        }
+        BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, false);
+        logSerial.printf("PCA:present=%d reads=%u readFail=%u unstable=%u wr_fail=%u rb_fail=%u\n",
+                         BoardT5S3::pca9535Present() ? 1 : 0, (unsigned)reads, (unsigned)readFail,
+                         (unsigned)unstable, (unsigned)wrFail, (unsigned)rbFail);
       } else if (cmd == "LASTSCAN") {
         // How long the last panel refresh actually drove, and which table was
         // live for it.
