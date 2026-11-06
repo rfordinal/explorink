@@ -333,7 +333,7 @@ void SettingsActivity::toggleCurrentSetting() {
   // hint.
   if (setting.disabled) return;
   // By nameId, not valuePtr: the Sleep Screen row is a DynamicEnum now (the
-  // menu narrows its seven stored modes to four, SettingsList.h), so it has no
+  // menu narrows its seven stored modes to five, SettingsList.h), so it has no
   // valuePtr and the old `setting.valuePtr == &CrossPointSettings::sleepScreen`
   // check would silently stop matching it.
   const bool sleepScreenChanged = setting.nameId == StrId::STR_SLEEP_SCREEN;

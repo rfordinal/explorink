@@ -357,8 +357,8 @@ row. Seven stored modes (`CrossPointSettings::SLEEP_SCREEN_MODE`,
 
 | Dropped | Why |
 |---|---|
-| `Custom` | Needs a BMP placed on `/.sleep` or `/sleep` by hand (`docs/sleep-screen.md`, "Repurposing COVER") -- no on-device way to pick or preview one |
-| `LocationCustom` | Same BMP dependency, plus it duplicates `Location`'s own no-fix fallback text |
+| `Custom` | The only on-device setter, `BmpViewerActivity::doSetSleepCover()` ("set as sleep screen" on a BMP opened from the file browser), has no path to it from Home -- the reader-era file browser it needs is itself unreachable today (no `HomeActivity::activate()` case leads to it, no `CMD:GOTO_FILEBROWSER` exists). Otherwise it needs a BMP placed on `/.sleep` or `/sleep` by hand (`docs/sleep-screen.md`, "Repurposing COVER") |
+| `LocationCustom` | Same BMP dependency and no setter at all, ever -- grep the tree and the only places it is named are the enum definition, `SleepActivity.cpp`'s switch case, and this pass's migration. It also duplicates `Location`'s own no-fix fallback text |
 
 **`QuickResume` was wrongly listed as a third drop in an earlier version of this
 pass, on the claim that it duplicates the independent `Quick Resume Timeout`
@@ -396,24 +396,32 @@ Two consequences of going `DynamicEnum`, both load-bearing:
   specific setting changed" has the same trap waiting the day that row goes
   dynamic.
 
-**Migration, in `fromJson()`:** a device already on one of the three retired
-modes is moved to its nearest surviving equivalent on load, not left to
-silently show the wrong label --
+**Migration, in `fromJson()`: `LocationCustom` only, onto `Location`** (same
+no-fix fallback text, no BMP dependency) -- not left to silently show the wrong
+label. **`Custom` is deliberately not migrated.** An early draft of this pass
+migrated both, on the reasoning that neither can be reached from the menu
+anymore. A review (Opus, via subagent) caught that this reasoning does not hold
+for `Custom`: unlike `LocationCustom` it has a real setter
+(`BmpViewerActivity::doSetSleepCover()`), so migrating it on load would have
+silently discarded a value a rider genuinely chose -- through a path that is
+itself unreachable today, but that is exactly the "hidden, not deleted" case
+this whole file's convention exists to protect
+(`hiddenFromMenu`/`withHidden()`, top of `getSettingsList()`). `Custom` keeps
+rendering correctly in `SleepActivity.cpp` either way; only the *menu's*
+display of it approximates as "Dark" until the rider picks something from the
+five-item list (`SettingsList.h`, the `DynamicEnum` getter's `default` case).
 
-- `Custom` / `LocationCustom` -> `Location` (same no-fix fallback text, no BMP
-  dependency).
-- `QuickResume` -> `Dark` **and** `quickResumeSleepScreen =
-  QUICK_RESUME_AFTER_TIMEOUT` -- the pair that already reproduces QuickResume's
-  exact wake behaviour, so the device keeps skipping the splash on an
-  auto-sleep wake.
+No real device carries `LocationCustom` (`project no_real_users_yet`), so that
+migration is unverified against an actual pre-pruning `settings.json` -- it is
+read off `fromJson()`'s own clamp-and-load pattern for every other field in
+this file, not measured.
 
-No real devices carried any of the three at the time of this pass (`project
-no_real_users_yet`), so the migration is unverified against an actual
-pre-pruning `settings.json` -- it is read off `fromJson()`'s own clamp-and-load
-pattern for every other field in this file, not measured.
-
-**Status: built clean on T15 (`env:default`, SHA `de063fa8`), not yet flashed.**
-A hardware pass still owes: confirm the four-row picker renders and cycles
-correctly, and confirm Sleep Cover Mode/Filter are actually gone from Display
-(both now carry `.withHidden()`, same mechanism already confirmed on a T5 S3
-Pro for Refresh Frequency and the three System actions above).
+**Status: flashed and hand-tested on an X4 Pro, 2026-11-06.** The five-row
+picker (Dark/Light/Location/None/Quick Resume) renders and cycles correctly
+(wraps at 5, not 7), Sleep Cover Mode/Filter are confirmed gone from Display,
+selecting a value round-trips through a save and a hard reset, and selecting
+`Quick Resume` correctly auto-toggles the independent `Quick Resume Timeout`
+row (confirming the `sleepScreenChanged` `nameId` fix above actually works).
+Not exercised on hardware: the `LocationCustom` migration path, and a `Custom`
+value surviving a load now that it is no longer migrated away -- both read off
+the code, not measured, for the reasons above.

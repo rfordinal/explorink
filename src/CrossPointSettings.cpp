@@ -337,19 +337,34 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // five the menu offers -- a settings.json a power user hand-edited to Custom
   // still has to render as Custom (SleepActivity.cpp).
   //
-  // A device that already has one of the two retired modes stored (from
-  // before this pass, or from a hand edit) is migrated onto its nearest
-  // surviving equivalent: Custom and LocationCustom fold into Location, the
-  // mode that already shows the same "no fix yet" text instead of a cover
-  // image. QuickResume is not retired -- it is kept as its own mode, because it
-  // is not the same thing as the independent timeout toggle below: that toggle
-  // only fires on an auto-sleep-from-timeout (main.cpp:2804-2807 guards it on
-  // `fromTimeout`), so a manual sleep (the sleep button, a deliberate press)
-  // needs this mode to get quick resume at all.
+  // Only LocationCustom is migrated, onto Location -- the mode that already
+  // shows the same "no fix yet" text instead of a cover image. It has never had
+  // an on-device setter (grep the tree: only the enum definition, this
+  // migration, and SleepActivity.cpp's switch case ever name it), so nothing
+  // legitimate is lost moving it.
+  //
+  // Custom is deliberately NOT migrated, even though the menu no longer offers
+  // picking it (SettingsList.h, "The menu offers six..."): unlike
+  // LocationCustom it DOES have a real setter,
+  // BmpViewerActivity::doSetSleepCover() ("set as sleep screen" on a BMP opened
+  // from the file browser), so a hand-edited or reader-era settings.json that
+  // already says Custom is honoured exactly as before -- same "hide the row,
+  // keep the field working" discipline this file uses everywhere else
+  // (`hiddenFromMenu` in SettingsList.h). That BMP-viewer path is itself
+  // unreachable today (no Home entry leads to the file browser, confirmed by
+  // grepping every `goToFileBrowser` caller; the old reader-era Library entry
+  // that reached it is already gone), but that is exactly the kind of "not
+  // reachable, but still correct for the stored field" case this project does
+  // not destroy on load. QuickResume is not retired at all -- it is kept as
+  // its own mode, because it is not the same thing as the independent timeout
+  // toggle below: that toggle only fires on an auto-sleep-from-timeout
+  // (main.cpp:2804-2807 guards it on `fromTimeout`), so a manual sleep (the
+  // sleep button, a deliberate press) needs this mode to get quick resume at
+  // all.
   {
     const uint8_t fieldDefault = sleepScreen;
     uint8_t loadedSleepScreen = clamp(doc["sleepScreen"] | fieldDefault, SLEEP_SCREEN_MODE_COUNT, fieldDefault);
-    if (loadedSleepScreen == CUSTOM || loadedSleepScreen == LOCATION_CUSTOM) {
+    if (loadedSleepScreen == LOCATION_CUSTOM) {
       loadedSleepScreen = LOCATION;
       needsResave = true;
     }

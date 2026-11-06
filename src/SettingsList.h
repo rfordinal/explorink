@@ -198,20 +198,26 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   static const std::vector<SettingInfo> baseList = [] {
     // The menu offers five of the seven stored modes -- Custom and
     // LocationCustom dropped (docs/settings-menu.md, "Pruning Sleep Screen"):
-    // both need a BMP placed on the SD card by hand, with no on-device way to
-    // pick or preview one. QuickResume stays: it is NOT the same thing as the
-    // independent STR_QUICK_RESUME_TIMEOUT row below -- that toggle only
-    // applies to an auto-sleep-from-timeout (main.cpp:2804-2807 guards it on
-    // `fromTimeout`), so a rider who wants quick resume on a *manual* sleep
-    // (the sleep button, a deliberate press) needs this mode, not the toggle.
+    // both relied on a BMP, and the only on-device way to set one,
+    // BmpViewerActivity::doSetSleepCover()'s "set as sleep screen" action, has
+    // no path to it from Home today (the reader-era file browser it needs is
+    // itself unreachable -- grep `goToFileBrowser` callers). QuickResume stays:
+    // it is NOT the same thing as the independent STR_QUICK_RESUME_TIMEOUT row
+    // below -- that toggle only applies to an auto-sleep-from-timeout
+    // (main.cpp:2804-2807 guards it on `fromTimeout`), so a rider who wants
+    // quick resume on a *manual* sleep (the sleep button, a deliberate press)
+    // needs this mode, not the toggle.
     //
     // The stored byte still carries the full SLEEP_SCREEN_MODE range -- a
     // settings.json a power user hand-edited to Custom still renders that way
     // (SleepActivity.cpp) -- so this is a DynamicEnum, not an Enum: the picker
     // shows this short list and the getter/setter below translate between its
-    // index and the real enum value. fromJson() migrates a device that already
-    // had one of the two dropped values (CrossPointSettings.cpp, "sleepScreen
-    // mode").
+    // index and the real enum value. fromJson() migrates LocationCustom only
+    // (CrossPointSettings.cpp, "sleepScreen mode") -- Custom is left stored
+    // as-is, because unlike LocationCustom it has that real (if currently
+    // unreachable) on-device setter, and migrating it away would silently
+    // discard a value a rider actually chose, the one thing this project's own
+    // hide-don't-delete convention exists to prevent.
     static constexpr uint8_t kVisibleSleepScreenModes[] = {CrossPointSettings::DARK, CrossPointSettings::LIGHT,
                                                            CrossPointSettings::LOCATION, CrossPointSettings::BLANK,
                                                            CrossPointSettings::QUICK_RESUME};
@@ -241,13 +247,19 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                 case CrossPointSettings::QUICK_RESUME:
                   return uint8_t{4};
                 default:
-                  // DARK, and the two retired modes until fromJson() migrates
-                  // them off a hand-edited or pre-pruning settings.json.
+                  // DARK, LocationCustom until fromJson() migrates it away, and
+                  // Custom -- which fromJson() deliberately leaves alone (see
+                  // the comment above kVisibleSleepScreenModes), so a device
+                  // with a real Custom BMP set shows "Dark" here until the
+                  // rider picks something from this list, at which point it is
+                  // a real DARK rather than a mislabeled Custom. The render
+                  // path is unaffected either way: SleepActivity.cpp switches
+                  // on the raw stored value, not on this display mapping.
                   return uint8_t{0};
               }
             },
             [](const uint8_t idx) {
-              if (idx < sizeof(kVisibleSleepScreenModes)) SETTINGS.sleepScreen = kVisibleSleepScreenModes[idx];
+              if (idx < std::size(kVisibleSleepScreenModes)) SETTINGS.sleepScreen = kVisibleSleepScreenModes[idx];
             },
             nullptr, StrId::STR_CAT_DISPLAY),
         // Configures the Custom/LocationCustom BMP the menu no longer offers
