@@ -3777,6 +3777,18 @@ void loop() {
             logSerial.printf("VADJ_OK:%u\n", (unsigned)BoardT5S3::getEpdVadj());
           }
         }
+      } else if (cmd == "LASTSCAN") {
+        // How long the last panel refresh actually drove, and which table was
+        // live for it.
+        //
+        //   CMD:LASTSCAN  ->  LASTSCAN:ms=1228 textLutLen=32
+        //
+        // Exists because logSerial runs with setTxTimeoutMs(1) and drops lines
+        // while CMD:SHOWIMAGE streams 64 kB, so the one frame under test was
+        // the one frame that could never be timed from the log. Several knobs
+        // were misread as having no effect for exactly that reason.
+        logSerial.printf("LASTSCAN:ms=%u textLutLen=%u\n", (unsigned)BoardT5S3::getLastScanMs(),
+                         (unsigned)BoardT5S3::getTextLutLen());
       } else if (cmd == "PSRAM") {
         // Pattern-test the PSRAM the gray canvas lives in.
         //
