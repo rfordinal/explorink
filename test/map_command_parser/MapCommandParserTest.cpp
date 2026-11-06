@@ -1374,6 +1374,90 @@ TEST(MapCommandConsole, CheckedOnlySettlesWhatWasListed) {
   EXPECT_EQ(out.lines[1], "INFO have_13_4482_2840=00000001");
 }
 
+// The failure half of the loop. The phone said the tile was stale, settled the
+// entry by answering, and then could not supply the replacement. Without the
+// re-arm the device sits on a copy it has itself identified as out of date,
+// with nothing in `have` to say so (T-2069, observed 2026-11-05).
+TEST(MapCommandConsole, ASkippedReplacementRearmsTheHeldTile) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}, {13, 4482, 2840, 0x00000001u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "have");
+  feedLine(console, out, "checked 2");
+  out.lines.clear();
+  ASSERT_EQ(held.pendingCount(), 0u);
+
+  feedLine(console, out, "skip 13 4482 2839 nosource");
+  out.lines.clear();
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 3u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=1");
+  EXPECT_EQ(out.lines[1], "INFO have_13_4482_2839=abb60454");
+}
+
+// A skip that lands before the phone answers the listing it came out of. The
+// answer must not settle the entry straight back again -- that is the same bug
+// one round later.
+TEST(MapCommandConsole, ASkipDuringAListingSurvivesTheAnswer) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "have");
+  feedLine(console, out, "skip 13 4482 2839 nosource");
+  feedLine(console, out, "checked 1");
+  out.lines.clear();
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 3u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=1");
+  EXPECT_EQ(out.lines[1], "INFO have_13_4482_2839=abb60454");
+}
+
+// Every reason word means the same thing to this half: no new bytes landed.
+// The device cannot verify the phone's vocabulary and must not depend on it.
+TEST(MapCommandConsole, EverySkipReasonRearms) {
+  for (const char* line : {"skip 13 4482 2839 nosource", "skip 13 4482 2839 refused",
+                           "skip 13 4482 2839 fmt3", "skip 13 4482 2839 oldcopy",
+                           "skip 13 4482 2839 offline"}) {
+    MapConsoleState state;
+    MapCommandConsole console(state);
+    CollectingWriter out;
+    HeldTilesStore held;
+    seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+    state.setHeldTilesStore(&held);
+
+    feedLine(console, out, "have");
+    feedLine(console, out, "checked 1");
+    ASSERT_EQ(held.pendingCount(), 0u) << line;
+    feedLine(console, out, line);
+    EXPECT_EQ(held.pendingCount(), 1u) << line;
+  }
+}
+
+// A skip for ground the device does not hold is the ordinary missing-tile case.
+// It must not invent an entry, or the store fills with tiles nobody has drawn.
+TEST(MapCommandConsole, ASkipForAnUnheldTileAddsNothing) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "skip 13 9999 1 nosource");
+  EXPECT_EQ(held.size(), 1u);
+  EXPECT_EQ(held.pendingCount(), 1u);
+}
+
 // "Cannot answer" must never read as "everything is current" -- the same
 // distinction `tiles=none` and `missing=unavailable` already make.
 TEST(MapCommandConsole, HaveSaysNoneBeforeAnythingIsDrawn) {

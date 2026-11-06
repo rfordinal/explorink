@@ -1266,10 +1266,19 @@ void MapActivity::drainTransferredTiles() {
 }
 
 void MapActivity::onTileSkipped(uint8_t z, uint32_t col, uint32_t row) {
-  // A skip for a stale tile means the phone could not vouch for the replacement
-  // -- no source, or a download that still did not match. Give up on it rather
-  // than leave it on the list to be asked for on the next drain.
-  if (staleTiles_.contains(z, col, row)) staleTiles_.giveUp(z, col, row);
+  // A skip for a stale tile means no replacement arrived: the phone could not
+  // read it from the CDN, or read something it refused to push. Dropped from
+  // the list, **not** given up on.
+  //
+  // giveUp() here until 2026-11-05 (T-2069). The ping-pong guard it arms is for
+  // one specific loop -- a tile that was fetched, landed, and was reported
+  // stale *again*, which no amount of re-fetching fixes (StaleTilesList::add).
+  // A fetch that never delivered a byte is the opposite case: nothing has been
+  // tried yet. Spending the guard on it retired the tile on its first failure,
+  // for the rest of the boot, however transient the cause -- and the cause that
+  // produced this line was an app-side content-id bug that failed *every* stale
+  // fetch in the fleet for an afternoon.
+  staleTiles_.remove(z, col, row);
   // The supplier does not have this tile. Remembered, so the next frame over
   // the same gap does not ask for it again -- see the class comment.
   // millis() here, not inside the store: the refusal schedule is the store's
