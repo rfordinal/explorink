@@ -37,6 +37,11 @@ slot in the menu, different content: no book cover, so this now shows the
 last known map fix instead. See "Repurposing COVER" below.
 
 User-facing labels: Settings > Display > Sleep screen, `src/SettingsList.h:196-213`.
+**The menu offers only Dark/Light/Location/Blank since 2026-11-06** --
+`Custom`/`LocationCustom`/`QuickResume` still work exactly as below for a
+settings.json that names them, but are no longer reachable from the picker.
+`docs/settings-menu.md`, "Pruning Sleep Screen, 2026-11-06", has the why and the
+migration.
 Persisted at `/.crosspoint/settings.json` (`CrossPointSettings.h:376`).
 Default is still `DARK` (`CrossPointSettings.h:179`) on this branch — see
 "Default" below.

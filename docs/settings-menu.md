@@ -347,3 +347,64 @@ the row needs a second cue.
   leaves 30-odd translations saying "(reader)", so it wants its own pass.
 - **No reordering.** The rows inside each tab are still in the order the
   reader-era list put them in.
+
+## Pruning Sleep Screen, 2026-11-06
+
+Unlike the rows above, **Sleep Screen's enum choices were narrowed**, not just
+hidden -- the first time an enum's *option list* shrank rather than a whole
+row. Seven stored modes (`CrossPointSettings::SLEEP_SCREEN_MODE`,
+`CrossPointSettings.h:18-28`), four offered on the panel:
+
+| Dropped | Why |
+|---|---|
+| `Custom` | Needs a BMP placed on `/.sleep` or `/sleep` by hand (`docs/sleep-screen.md`, "Repurposing COVER") -- no on-device way to pick or preview one |
+| `LocationCustom` | Same BMP dependency, plus it duplicates `Location`'s own no-fix fallback text |
+| `QuickResume` | Duplicates the independent **Quick Resume Timeout** row (`quickResumeSleepScreen`) -- `main.cpp:2804-2807` already ORs `sleepScreen == QUICK_RESUME` with "timeout toggle is on", so the toggle alone reproduces the same wake behaviour |
+
+The note above this section said a persisted-by-index enum "needs a migration,
+not an edit" and left `Hide Battery %`'s dead `In Reader` option alone for that
+reason. This pass is that migration, done once: `STR_SLEEP_SCREEN` is a
+`SettingInfo::DynamicEnum` now (`SettingsList.h`, "The menu offers four of the
+seven stored modes"), not a plain `Enum` over `&CrossPointSettings::sleepScreen`.
+The picker shows the short list; a getter/setter pair translates its 0-3 index
+to and from the real 0-6 `SLEEP_SCREEN_MODE` value, so the stored byte keeps the
+full range and a settings.json hand-edited to `Custom` still renders as `Custom`
+(`SleepActivity.cpp`'s switch is untouched).
+
+Two consequences of going `DynamicEnum`, both load-bearing:
+
+- **No JSON key.** The generic `toJson`/`fromJson` loop skips an entry with no
+  `valuePtr` (`CrossPointSettings.cpp:70,161`), so `sleepScreen` is written and
+  read by hand now, same pattern as `loraBeaconSec` and the frontlight rows.
+  Forgetting this half would have silently stopped persisting the setting at
+  all, not just narrowed its menu.
+- **`SettingsActivity::toggleCurrentSetting()`'s `sleepScreenChanged` flag broke
+  silently.** It matched the row by `setting.valuePtr ==
+  &CrossPointSettings::sleepScreen` -- true for a plain `Enum`, never true for a
+  `DynamicEnum` (no `valuePtr` at all). Fixed by matching `setting.nameId ==
+  StrId::STR_SLEEP_SCREEN` instead, which holds regardless of how the row is
+  built. Anything else that compares a row by `valuePtr` to detect "this
+  specific setting changed" has the same trap waiting the day that row goes
+  dynamic.
+
+**Migration, in `fromJson()`:** a device already on one of the three retired
+modes is moved to its nearest surviving equivalent on load, not left to
+silently show the wrong label --
+
+- `Custom` / `LocationCustom` -> `Location` (same no-fix fallback text, no BMP
+  dependency).
+- `QuickResume` -> `Dark` **and** `quickResumeSleepScreen =
+  QUICK_RESUME_AFTER_TIMEOUT` -- the pair that already reproduces QuickResume's
+  exact wake behaviour, so the device keeps skipping the splash on an
+  auto-sleep wake.
+
+No real devices carried any of the three at the time of this pass (`project
+no_real_users_yet`), so the migration is unverified against an actual
+pre-pruning `settings.json` -- it is read off `fromJson()`'s own clamp-and-load
+pattern for every other field in this file, not measured.
+
+**Status: built clean on T15 (`env:default`, SHA `de063fa8`), not yet flashed.**
+A hardware pass still owes: confirm the four-row picker renders and cycles
+correctly, and confirm Sleep Cover Mode/Filter are actually gone from Display
+(both now carry `.withHidden()`, same mechanism already confirmed on a T5 S3
+Pro for Refresh Frequency and the three System actions above).
