@@ -3777,6 +3777,63 @@ void loop() {
             logSerial.printf("VADJ_OK:%u\n", (unsigned)BoardT5S3::getEpdVadj());
           }
         }
+      } else if (cmd.startsWith("TESTPAGE")) {
+        // Draw a test fill on the device and refresh it with a named mode.
+        //
+        //   CMD:TESTPAGE full black   ->  TESTPAGE_OK:full:black ms=1228
+        //   CMD:TESTPAGE fast black   ->  TESTPAGE_OK:fast:black ms=363
+        //   CMD:TESTPAGE half white   ->  ...
+        //
+        // Why this exists rather than CMD:SHOWIMAGE. That command streams
+        // 64 kB, and logSerial runs with setTxTimeoutMs(1), so every log line
+        // the refresh emits is dropped -- the one frame under investigation was
+        // the one frame that could not be observed. It also reaches the panel
+        // by its own route. Filling the framebuffer here uses the ordinary
+        // display path, the same one the sleep screen takes, and leaves the
+        // serial line quiet so the mode, the table length and the scan time all
+        // come back.
+        //
+        // The point is the comparison: identical content, three waveforms, one
+        // board. Board B renders a full-black frame solid through the fast path
+        // and grey through the clean one, and this puts both side by side
+        // without a transfer in between.
+        String rest = cmd.length() > 8 ? cmd.substring(9) : String("");
+        rest.trim();
+        rest.toLowerCase();
+        String modeName = rest, fillName = "black";
+        const int sp = rest.indexOf(' ');
+        if (sp > 0) { modeName = rest.substring(0, sp); fillName = rest.substring(sp + 1); fillName.trim(); }
+        modeName.trim();
+        HalDisplay::RefreshMode mode = HalDisplay::RefreshMode::FULL_REFRESH;
+        bool modeOk = true;
+        if (modeName == "full" || modeName.isEmpty()) mode = HalDisplay::RefreshMode::FULL_REFRESH;
+        else if (modeName == "half") mode = HalDisplay::RefreshMode::HALF_REFRESH;
+        else if (modeName == "fast") mode = HalDisplay::RefreshMode::FAST_REFRESH;
+        else modeOk = false;
+        uint8_t fillByte = 0x00;  // bit 0 is black
+        bool fillOk = true;
+        if (fillName == "black") fillByte = 0x00;
+        else if (fillName == "white") fillByte = 0xFF;
+        else fillOk = false;
+        if (!modeOk) {
+          logSerial.println("TESTPAGE_ERR:mode:full,half,fast");
+        } else if (!fillOk) {
+          logSerial.println("TESTPAGE_ERR:fill:black,white");
+        } else {
+          uint8_t* buf = display.getFrameBuffer();
+          const uint32_t sz = display.getBufferSize();
+          if (buf == nullptr || sz == 0) {
+            logSerial.println("TESTPAGE_ERR:nobuffer");
+          } else {
+            {
+              RenderLock lock;
+              memset(buf, fillByte, sz);
+              display.displayBuffer(mode);
+            }
+            logSerial.printf("TESTPAGE_OK:%s:%s ms=%u textLutLen=%u\n", modeName.c_str(), fillName.c_str(),
+                             (unsigned)BoardT5S3::getLastScanMs(), (unsigned)BoardT5S3::getTextLutLen());
+          }
+        }
       } else if (cmd == "LASTSCAN") {
         // How long the last panel refresh actually drove, and which table was
         // live for it.
