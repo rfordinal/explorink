@@ -64,6 +64,7 @@
 #include <esp_rom_crc.h>
 #endif
 
+#include <esp_heap_caps.h>
 #include <cstring>
 
 #ifdef ENABLE_EPDLUT_CMD
@@ -3775,6 +3776,50 @@ void loop() {
             BoardT5S3::setEpdVadj(static_cast<uint8_t>(code));
             logSerial.printf("VADJ_OK:%u\n", (unsigned)BoardT5S3::getEpdVadj());
           }
+        }
+      } else if (cmd == "PSRAM") {
+        // Pattern-test the PSRAM the gray canvas lives in.
+        //
+        //   CMD:PSRAM  ->  PSRAM:size=... free=... errors=N first=0x.. at=...
+        //
+        // Why this is the suspect. LgfxEpdDriver::allocCanvas() builds the
+        // 8-bit canvas with setPsram(true), and fillCanvasBW() writes 0x00 into
+        // it for every black pixel. The two refresh paths then read that buffer
+        // very differently: epd_fast Bayer-thresholds each byte (`< 248 ? 0 :
+        // 0xF`), so anything below 248 still comes out black, while epd_text
+        // takes the byte straight and picks a LUT column from its top nibble --
+        // 0x10 is a grey. So a PSRAM that does not return the zeros written
+        // into it would render menus solid black and a full-black clean frame
+        // as grainy grey, which is exactly what board B does and board A does
+        // not, on identical firmware and identical PMIC registers.
+        //
+        // Three passes over a canvas-sized block: all-zero (the case that
+        // matters), all-ones, and an address-derived pattern that catches stuck
+        // address lines a uniform fill cannot.
+        constexpr size_t kBlock = 518400;  // one 960x540 8-bit canvas
+        auto* p = static_cast<uint8_t*>(heap_caps_malloc(kBlock, MALLOC_CAP_SPIRAM));
+        if (p == nullptr) {
+          logSerial.println("PSRAM_ERR:alloc");
+        } else {
+          size_t errors = 0, firstAt = 0;
+          uint8_t firstGot = 0, firstWant = 0;
+          for (int pass = 0; pass < 3; ++pass) {
+            for (size_t i = 0; i < kBlock; ++i) {
+              p[i] = pass == 0 ? 0x00 : pass == 1 ? 0xFF : static_cast<uint8_t>(i * 31u);
+            }
+            for (size_t i = 0; i < kBlock; ++i) {
+              const uint8_t want = pass == 0 ? 0x00 : pass == 1 ? 0xFF : static_cast<uint8_t>(i * 31u);
+              if (p[i] != want) {
+                if (errors == 0) { firstAt = i; firstGot = p[i]; firstWant = want; }
+                ++errors;
+              }
+            }
+            logSerial.printf("PSRAM:pass=%d errors=%u\n", pass, (unsigned)errors);
+          }
+          logSerial.printf("PSRAM:size=%u free=%u totalErrors=%u first=0x%02X want=0x%02X at=%u\n",
+                           (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram(), (unsigned)errors,
+                           firstGot, firstWant, (unsigned)firstAt);
+          heap_caps_free(p);
         }
       } else if (cmd == "TPS") {
         // Dump the EPD PMIC's own registers to the log: temperature, enable
