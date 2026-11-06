@@ -193,8 +193,30 @@ longer than a few ten-minute check rounds. The cost of retrying is one `have`
 line and one HTTP GET per stale-and-unavailable tile per round, and a round is
 the rider's own choice (`mapTileFreshnessMode` is off by default). It cannot
 spin against a working CDN: the fetch that lands moves the `content_id` and the
-next answer agrees. It cannot spin against a CDN that serves the wrong body
-either -- that tile *arrives*, which arms the ping-pong guard properly.
+next answer agrees. **It does retry indefinitely against a CDN that keeps
+serving the wrong body**, and the first version of this section claimed
+otherwise. The ping-pong guard arms on *arrival*
+(`StaleTilesList::onArrived`), and a content-id mismatch never arrives: the app
+refuses it locally and answers `skip wrongcrc` (`TileFetcher.onTileBytes`). So
+that tile is re-armed, found stale again, fetched again, refused again, once per
+check round, for as long as the rider leaves the check on. The cost is bounded
+per round and the loop is not -- `../../docs/TODO.md`, T-2071.
+
+### The same shape elsewhere, and one divergence at home
+
+**HTTP caching arrives at the same rule** (RFC 9111): a revalidation that fails
+leaves the stored response *stale*. It never marks it fresh, and the next use
+revalidates again. Settling an entry on a promise of bytes that then did not
+arrive is precisely the move that specification forbids. Independent agreement,
+label `read`.
+
+**This repo's own missing-tile path solved it a third way**, and the stale path
+does not follow it: `MissingTilesStore::markRefused()` stamps an expiring retry
+time with a doubling delay (`refusalDelayMs()`, `src/MissingTilesStore.cpp:87`),
+so a tile nobody can supply is asked for less and less often rather than never
+or always. The stale path re-arms at a flat cadence instead. No constraint
+explains the difference, which makes it a finding rather than a design --
+T-2071.
 
 The console's handler is **reason-blind on purpose**. Every word means the same
 thing to this half: no new bytes landed. Keying on the word would make the
