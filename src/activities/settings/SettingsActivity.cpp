@@ -332,7 +332,11 @@ void SettingsActivity::toggleCurrentSetting() {
   // it) and a hint that promises an action which never comes is worse than no
   // hint.
   if (setting.disabled) return;
-  const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
+  // By nameId, not valuePtr: the Sleep Screen row is a DynamicEnum now (the
+  // menu narrows its seven stored modes to four, SettingsList.h), so it has no
+  // valuePtr and the old `setting.valuePtr == &CrossPointSettings::sleepScreen`
+  // check would silently stop matching it.
+  const bool sleepScreenChanged = setting.nameId == StrId::STR_SLEEP_SCREEN;
   const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
 
   if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {

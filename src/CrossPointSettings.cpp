@@ -122,6 +122,11 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["loraBeaconSec"] = loraBeaconSec;
   doc["loraNodeName"] = loraNodeName;
 #endif
+  // Sleep screen mode -- DynamicEnum in SettingsList, not Enum, because the menu
+  // offers only four of the seven stored modes (SettingsList.h, "Display"). The
+  // generic loop above skips a key-less valuePtr-less entry, so the full 0-6
+  // range is written here by hand, same reason as loraBeaconSec above.
+  doc["sleepScreen"] = sleepScreen;
   doc["mapGnssPosition"] = mapGnssPosition;
   doc["frontlightOn"] = frontlightOn;
   doc["frontlightBrightness"] = frontlightBrightness;
@@ -327,6 +332,32 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     loraNodeName[sizeof(loraNodeName) - 1] = '\0';
   }
 #endif
+  // Same reason as toJson(): DynamicEnum in SettingsList, so the generic loop
+  // above skips it. Clamped against the full SLEEP_SCREEN_MODE_COUNT, not the
+  // four the menu offers -- a settings.json a power user hand-edited to Custom
+  // still has to render as Custom (SleepActivity.cpp).
+  //
+  // A device that already has one of the three retired modes stored (from
+  // before this pass, or from a hand edit) is migrated onto its nearest
+  // surviving equivalent: Custom and LocationCustom fold into Location, the
+  // mode that already shows the same "no fix yet" text instead of a cover
+  // image; QuickResume folds into Dark plus the independent timeout toggle,
+  // which already reproduces its exact wake behaviour (main.cpp:2804-2807 ORs
+  // the same two conditions), so the device keeps skipping the splash on an
+  // auto-sleep wake, it is just no longer its own sleep-screen choice.
+  {
+    const uint8_t fieldDefault = sleepScreen;
+    uint8_t loadedSleepScreen = clamp(doc["sleepScreen"] | fieldDefault, SLEEP_SCREEN_MODE_COUNT, fieldDefault);
+    if (loadedSleepScreen == CUSTOM || loadedSleepScreen == LOCATION_CUSTOM) {
+      loadedSleepScreen = LOCATION;
+      needsResave = true;
+    } else if (loadedSleepScreen == QUICK_RESUME) {
+      loadedSleepScreen = DARK;
+      quickResumeSleepScreen = QUICK_RESUME_AFTER_TIMEOUT;
+      needsResave = true;
+    }
+    sleepScreen = loadedSleepScreen;
+  }
   mapGnssPosition = doc["mapGnssPosition"] | (uint8_t)0;
   frontlightOn = (doc["frontlightOn"] | (uint8_t)0) ? 1 : 0;
   // Clamped, not trusted: this reaches the LEDC duty calculation, and the file
