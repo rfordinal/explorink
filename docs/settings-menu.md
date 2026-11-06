@@ -347,3 +347,81 @@ the row needs a second cue.
   leaves 30-odd translations saying "(reader)", so it wants its own pass.
 - **No reordering.** The rows inside each tab are still in the order the
   reader-era list put them in.
+
+## Pruning Sleep Screen, 2026-11-06
+
+Unlike the rows above, **Sleep Screen's enum choices were narrowed**, not just
+hidden -- the first time an enum's *option list* shrank rather than a whole
+row. Seven stored modes (`CrossPointSettings::SLEEP_SCREEN_MODE`,
+`CrossPointSettings.h:18-28`), five offered on the panel:
+
+| Dropped | Why |
+|---|---|
+| `Custom` | The only on-device setter, `BmpViewerActivity::doSetSleepCover()` ("set as sleep screen" on a BMP opened from the file browser), has no path to it from Home -- the reader-era file browser it needs is itself unreachable today (no `HomeActivity::activate()` case leads to it, no `CMD:GOTO_FILEBROWSER` exists). Otherwise it needs a BMP placed on `/.sleep` or `/sleep` by hand (`docs/sleep-screen.md`, "Repurposing COVER") |
+| `LocationCustom` | Same BMP dependency and no setter at all, ever -- grep the tree and the only places it is named are the enum definition, `SleepActivity.cpp`'s switch case, and this pass's migration. It also duplicates `Location`'s own no-fix fallback text |
+
+**`QuickResume` was wrongly listed as a third drop in an earlier version of this
+pass, on the claim that it duplicates the independent `Quick Resume Timeout`
+row.** It does not: that row's effect is guarded on `fromTimeout`
+(`main.cpp:2804-2807`), so it only ever fires for an auto-sleep from idle --
+never for a manual sleep, the sleep button or a deliberate gesture. Only
+`sleepScreen == QUICK_RESUME` gets quick resume on *every* sleep, including a
+manual one. A rider who wants to press the sleep button and still wake straight
+back in needs the mode, not the toggle. Caught by the maintainer before this
+built, not by a hardware pass -- `QuickResume` stays a selectable mode.
+
+The note above this section said a persisted-by-index enum "needs a migration,
+not an edit" and left `Hide Battery %`'s dead `In Reader` option alone for that
+reason. This pass is that migration, done once: `STR_SLEEP_SCREEN` is a
+`SettingInfo::DynamicEnum` now (`SettingsList.h`, "The menu offers five of the
+seven stored modes"), not a plain `Enum` over `&CrossPointSettings::sleepScreen`.
+The picker shows the short list; a getter/setter pair translates its 0-4 index
+to and from the real 0-6 `SLEEP_SCREEN_MODE` value, so the stored byte keeps the
+full range and a settings.json hand-edited to `Custom` still renders as `Custom`
+(`SleepActivity.cpp`'s switch is untouched).
+
+Two consequences of going `DynamicEnum`, both load-bearing:
+
+- **No JSON key.** The generic `toJson`/`fromJson` loop skips an entry with no
+  `valuePtr` (`CrossPointSettings.cpp:70,161`), so `sleepScreen` is written and
+  read by hand now, same pattern as `loraBeaconSec` and the frontlight rows.
+  Forgetting this half would have silently stopped persisting the setting at
+  all, not just narrowed its menu.
+- **`SettingsActivity::toggleCurrentSetting()`'s `sleepScreenChanged` flag broke
+  silently.** It matched the row by `setting.valuePtr ==
+  &CrossPointSettings::sleepScreen` -- true for a plain `Enum`, never true for a
+  `DynamicEnum` (no `valuePtr` at all). Fixed by matching `setting.nameId ==
+  StrId::STR_SLEEP_SCREEN` instead, which holds regardless of how the row is
+  built. Anything else that compares a row by `valuePtr` to detect "this
+  specific setting changed" has the same trap waiting the day that row goes
+  dynamic.
+
+**Migration, in `fromJson()`: `LocationCustom` only, onto `Location`** (same
+no-fix fallback text, no BMP dependency) -- not left to silently show the wrong
+label. **`Custom` is deliberately not migrated.** An early draft of this pass
+migrated both, on the reasoning that neither can be reached from the menu
+anymore. A review (Opus, via subagent) caught that this reasoning does not hold
+for `Custom`: unlike `LocationCustom` it has a real setter
+(`BmpViewerActivity::doSetSleepCover()`), so migrating it on load would have
+silently discarded a value a rider genuinely chose -- through a path that is
+itself unreachable today, but that is exactly the "hidden, not deleted" case
+this whole file's convention exists to protect
+(`hiddenFromMenu`/`withHidden()`, top of `getSettingsList()`). `Custom` keeps
+rendering correctly in `SleepActivity.cpp` either way; only the *menu's*
+display of it approximates as "Dark" until the rider picks something from the
+five-item list (`SettingsList.h`, the `DynamicEnum` getter's `default` case).
+
+No real device carries `LocationCustom` (`project no_real_users_yet`), so that
+migration is unverified against an actual pre-pruning `settings.json` -- it is
+read off `fromJson()`'s own clamp-and-load pattern for every other field in
+this file, not measured.
+
+**Status: flashed and hand-tested on an X4 Pro, 2026-11-06.** The five-row
+picker (Dark/Light/Location/None/Quick Resume) renders and cycles correctly
+(wraps at 5, not 7), Sleep Cover Mode/Filter are confirmed gone from Display,
+selecting a value round-trips through a save and a hard reset, and selecting
+`Quick Resume` correctly auto-toggles the independent `Quick Resume Timeout`
+row (confirming the `sleepScreenChanged` `nameId` fix above actually works).
+Not exercised on hardware: the `LocationCustom` migration path, and a `Custom`
+value surviving a load now that it is no longer migrated away -- both read off
+the code, not measured, for the reasons above.

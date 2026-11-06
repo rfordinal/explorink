@@ -196,16 +196,31 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
 inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
                                                 const std::vector<DictionaryEntry>* dictionaries = nullptr) {
   static const std::vector<SettingInfo> baseList = [] {
-    // Enum settings are persisted as numeric values. Assign these labels by enum
-    // value so a reordered menu or enum cannot silently swap their behavior.
-    std::vector<StrId> sleepScreenValues(CrossPointSettings::SLEEP_SCREEN_MODE_COUNT);
-    sleepScreenValues[CrossPointSettings::DARK] = StrId::STR_DARK;
-    sleepScreenValues[CrossPointSettings::LIGHT] = StrId::STR_LIGHT;
-    sleepScreenValues[CrossPointSettings::CUSTOM] = StrId::STR_CUSTOM;
-    sleepScreenValues[CrossPointSettings::LOCATION] = StrId::STR_LOCATION;
-    sleepScreenValues[CrossPointSettings::LOCATION_CUSTOM] = StrId::STR_LOCATION_CUSTOM;
-    sleepScreenValues[CrossPointSettings::BLANK] = StrId::STR_NONE_OPT;
-    sleepScreenValues[CrossPointSettings::QUICK_RESUME] = StrId::STR_QUICK_RESUME;
+    // The menu offers five of the seven stored modes -- Custom and
+    // LocationCustom dropped (docs/settings-menu.md, "Pruning Sleep Screen"):
+    // both relied on a BMP, and the only on-device way to set one,
+    // BmpViewerActivity::doSetSleepCover()'s "set as sleep screen" action, has
+    // no path to it from Home today (the reader-era file browser it needs is
+    // itself unreachable -- grep `goToFileBrowser` callers). QuickResume stays:
+    // it is NOT the same thing as the independent STR_QUICK_RESUME_TIMEOUT row
+    // below -- that toggle only applies to an auto-sleep-from-timeout
+    // (main.cpp:2804-2807 guards it on `fromTimeout`), so a rider who wants
+    // quick resume on a *manual* sleep (the sleep button, a deliberate press)
+    // needs this mode, not the toggle.
+    //
+    // The stored byte still carries the full SLEEP_SCREEN_MODE range -- a
+    // settings.json a power user hand-edited to Custom still renders that way
+    // (SleepActivity.cpp) -- so this is a DynamicEnum, not an Enum: the picker
+    // shows this short list and the getter/setter below translate between its
+    // index and the real enum value. fromJson() migrates LocationCustom only
+    // (CrossPointSettings.cpp, "sleepScreen mode") -- Custom is left stored
+    // as-is, because unlike LocationCustom it has that real (if currently
+    // unreachable) on-device setter, and migrating it away would silently
+    // discard a value a rider actually chose, the one thing this project's own
+    // hide-don't-delete convention exists to prevent.
+    static constexpr uint8_t kVisibleSleepScreenModes[] = {CrossPointSettings::DARK, CrossPointSettings::LIGHT,
+                                                           CrossPointSettings::LOCATION, CrossPointSettings::BLANK,
+                                                           CrossPointSettings::QUICK_RESUME};
 
     std::vector<StrId> statusBarClockValues(CrossPointSettings::STATUS_BAR_CLOCK_MODE_COUNT);
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_HIDE] = StrId::STR_HIDE;
@@ -214,13 +229,50 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
 
     std::vector<SettingInfo> v = {
         // --- Display ---
-        SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
-                          "sleepScreen", StrId::STR_CAT_DISPLAY),
+        // No JSON key: the full range is hand-serialised in CrossPointSettings.cpp
+        // ("sleepScreen mode"), same reason as loraBeaconSec above -- a DynamicEnum
+        // row writing through a key would store the narrowed 0-4 index instead of
+        // the real 0-6 mode.
+        SettingInfo::DynamicEnum(
+            StrId::STR_SLEEP_SCREEN,
+            {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_LOCATION, StrId::STR_NONE_OPT, StrId::STR_QUICK_RESUME},
+            [] {
+              switch (SETTINGS.sleepScreen) {
+                case CrossPointSettings::LIGHT:
+                  return uint8_t{1};
+                case CrossPointSettings::LOCATION:
+                  return uint8_t{2};
+                case CrossPointSettings::BLANK:
+                  return uint8_t{3};
+                case CrossPointSettings::QUICK_RESUME:
+                  return uint8_t{4};
+                default:
+                  // DARK, LocationCustom until fromJson() migrates it away, and
+                  // Custom -- which fromJson() deliberately leaves alone (see
+                  // the comment above kVisibleSleepScreenModes), so a device
+                  // with a real Custom BMP set shows "Dark" here until the
+                  // rider picks something from this list, at which point it is
+                  // a real DARK rather than a mislabeled Custom. The render
+                  // path is unaffected either way: SleepActivity.cpp switches
+                  // on the raw stored value, not on this display mapping.
+                  return uint8_t{0};
+              }
+            },
+            [](const uint8_t idx) {
+              if (idx < std::size(kVisibleSleepScreenModes)) SETTINGS.sleepScreen = kVisibleSleepScreenModes[idx];
+            },
+            nullptr, StrId::STR_CAT_DISPLAY),
+        // Configures the Custom/LocationCustom BMP the menu no longer offers
+        // picking (see the Sleep Screen row above) -- hidden rather than deleted,
+        // same reason as every other row in this file: the field keeps existing
+        // and keeps working for a settings.json that still names Custom by hand.
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
-                          {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY),
+                          {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY)
+            .withHidden(),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &CrossPointSettings::sleepScreenCoverFilter,
                           {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED},
-                          "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY),
+                          "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY)
+            .withHidden(),
         SettingInfo::Enum(StrId::STR_QUICK_RESUME_TIMEOUT, &CrossPointSettings::quickResumeSleepScreen,
                           {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "quickResumeSleepScreen",
                           StrId::STR_CAT_DISPLAY),
