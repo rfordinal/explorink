@@ -3834,6 +3834,29 @@ void loop() {
                              (unsigned)BoardT5S3::getLastScanMs(), (unsigned)BoardT5S3::getTextLutLen());
           }
         }
+      } else if (cmd.startsWith("TEXTLUT")) {
+        // Swap the clean-frame waveform for a pure-drive table of N passes.
+        //
+        //   CMD:TEXTLUT 16  ->  TEXTLUT_OK:16
+        //   CMD:TEXTLUT 7   ->  TEXTLUT_ERR:range:8,16,32,64
+        //
+        // Board B needs far more drive than board A for the same black: five
+        // passes leave it almost white, thirty-seven leave it grey, and the
+        // stock table plus eight pure drive rows moved it darker without
+        // arriving. Board A is solid black at all of those. Finding how much
+        // drive B actually needs costs a four-minute reflash per point unless
+        // the table can be swapped live, which is what this does.
+        //
+        // Pair it with CMD:TESTPAGE, which fills and refreshes without the
+        // 64 kB transfer that makes the refresh log unreadable.
+        String rest = cmd.length() > 7 ? cmd.substring(8) : String("");
+        rest.trim();
+        const int applied = freeink::setTextLutVariant(rest.toInt());
+        if (applied < 0) {
+          logSerial.println("TEXTLUT_ERR:range:8,16,32,64");
+        } else {
+          logSerial.printf("TEXTLUT_OK:%d\n", applied);
+        }
       } else if (cmd == "LASTSCAN") {
         // How long the last panel refresh actually drove, and which table was
         // live for it.
