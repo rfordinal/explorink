@@ -3697,6 +3697,65 @@ void loop() {
           const int applied = explorink_set_text_idle(rest.toInt());
           logSerial.printf(applied < 0 ? "EPDIDLE_ERR:range\n" : "EPDIDLE_OK:%d\n", applied);
         }
+      } else if (cmd == "VCOM" || cmd.startsWith("VCOM ")) {
+        // Set the VCOM the EPD PMIC is programmed with, in millivolts, negative.
+        //
+        //   CMD:VCOM          ->  VCOM_OK:-1600:default:-1600   (report)
+        //   CMD:VCOM -1400    ->  VCOM_OK:-1400:default:-1600
+        //   CMD:VCOM -900     ->  VCOM_ERR:range:-2600..-1000
+        //
+        // Why this is a command and not a constant: VCOM is an **assigned
+        // per-panel value with a +/-0.1 V window** and the factory does not
+        // calibrate per unit, so the one number in the board profile is a guess
+        // for every panel it drives (docs/panel-ed047tc1.md, and T-253). The
+        // field a pixel actually sees is source - VCOM, so a VCOM that is too
+        // negative weakens the black drive and strengthens the white one -- a
+        // full-black frame lands grey. Two T5 S3 Pro boards here do exactly
+        // that against each other on identical firmware, identical settings and
+        // identical power-up timings (pca 28-33 ms, tps 0-1 ms, powerGood 0xFA
+        // on both), which is what ruled the rails out and left this.
+        //
+        // The value lands on the next epdPowerOn(), and that runs before every
+        // refresh, so the next frame carries it -- no reboot, no reflash. Push
+        // a frame with CMD:SHOWIMAGE between steps and judge it on the glass:
+        // the framebuffer is identical at every VCOM, so CMD:SCREENSHOT cannot
+        // see this and a photo is the only instrument.
+        //
+        // Bounds are deliberately tighter than the part's range. The panel's
+        // rails are +/-15 V and its assigned VCOM sits near -1.5 V; a sweep
+        // wants the neighbourhood, not the extremes, and a typo should not park
+        // a panel at a voltage nobody intended. Devel builds only, same gate
+        // and same reasoning as CMD:EPDLUT above: a bench instrument that
+        // degrades the image by design.
+        String rest = cmd.length() > 4 ? cmd.substring(5) : String("");
+        rest.trim();
+        if (rest.isEmpty()) {
+          logSerial.printf("VCOM_OK:%d:default:%d\n", BoardT5S3::getEpdVcomMv(), BoardT5S3::getEpdDefaultVcomMv());
+        } else {
+          const long mv = rest.toInt();
+          // -1000 and -2600 bracket the datasheet's +/-0.1 V window around every
+          // plausible assigned value for this panel with room to overshoot both
+          // ways; LilyGo ship -1560 and our profile -1600.
+          if (mv < -2600 || mv > -1000) {
+            logSerial.println("VCOM_ERR:range:-2600..-1000");
+          } else {
+            BoardT5S3::setEpdVcomMv(static_cast<int>(mv));
+            logSerial.printf("VCOM_OK:%d:default:%d\n", BoardT5S3::getEpdVcomMv(), BoardT5S3::getEpdDefaultVcomMv());
+          }
+        }
+      } else if (cmd == "TPS") {
+        // Dump the EPD PMIC's own registers to the log: temperature, enable
+        // mask, the VCOM pair as the part holds it, power-good and the revision
+        // id. Answers two things a power-good bit cannot -- whether the VCOM
+        // write actually took, and what the part thinks the temperature is,
+        // which matters because this board's waveform has no temperature
+        // compensation at all (docs/panel-ed047tc1.md, "fixed 20 C").
+        //
+        //   CMD:TPS  ->  the register lines on the log, then TPS_OK
+        //
+        // Read-only, devel builds only.
+        BoardT5S3::dumpTpsRegisters();
+        logSerial.println("TPS_OK");
 #endif  // ENABLE_EPDLUT_CMD
 #ifdef ENABLE_TOUCHLOG_CMD
       } else if (cmd == "TOUCHLOG" || cmd.startsWith("TOUCHLOG ")) {
