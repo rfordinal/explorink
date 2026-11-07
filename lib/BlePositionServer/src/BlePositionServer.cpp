@@ -110,6 +110,15 @@ constexpr uint16_t kModelNumberCharUuid = 0x2A24;
 // The two names the active board answers to, resolved in one switch so a board
 // added here cannot get one of them and silently keep the fallback for the
 // other.
+//
+// **A third table of board names already exists**, DeviceIdentity::name()
+// (lib/DeviceIdentity/DeviceIdentity.cpp), which answers `X4Pro` / `T5S3Pro`
+// for the OTA release list -- and its own comment asks the next person to keep
+// it in step with this function. Three strings per board across two files with
+// no shared source is a merge waiting to be done; it is not done here because
+// DeviceIdentity's strings are wire-visible to the release server and changing
+// them is its own change with its own hardware pass. Adding a board means
+// editing both files.
 struct BoardNames {
   // Wire-visible, matched by BleLink.kt's KNOWN_DEVICE_NAMES and shown in the
   // CompanionDeviceManager dialog. Must not change casually.
@@ -502,6 +511,10 @@ bool BlePositionServer::begin(const char* deviceName) {
   // is long gone. Same reasoning as the command ring above.
   pendingStatusHead_ = 0;
   pendingStatusTail_ = 0;
+  // Redundant against end(), which clears it too, and kept anyway: every other
+  // cross-task field here is cleared on both sides of the bracket, and the one
+  // that is not is the one a later rewrite of end() silently leaves stale.
+  clientVersion_[0] = '\0';
   portEXIT_CRITICAL(&g_mux);
   transferSubscribed_ = false;
   commandSubscribed_ = false;
@@ -536,6 +549,10 @@ void BlePositionServer::end() {
   g_commandChar = nullptr;
   g_transferChar = nullptr;
   g_transferStatusChar = nullptr;
+  g_clientInfoChar = nullptr;
+  // The device information service's two characteristics have no global: they
+  // are written once in begin() and never touched again, so there is no
+  // pointer here to stale. deinit() below frees them with the rest.
   g_server = nullptr;  // owned by the NimBLE stack; freed by deinit() below
 
   // Nothing can call a hook once the stack is down, and leaving a pointer to
@@ -565,6 +582,12 @@ void BlePositionServer::end() {
   commandTail_ = 0;
   pendingStatusHead_ = 0;
   pendingStatusTail_ = 0;
+  // Not covered by onCentralDisconnect: the radio can be stopped with a phone
+  // still connected -- entering Observe mode does exactly that
+  // (docs/ble-advertising.md) -- and NimBLE fires no disconnect callback for a
+  // link torn down from this side. Left set, the next screen to raise the radio
+  // would start out believing a client had already introduced itself.
+  clientVersion_[0] = '\0';
   portEXIT_CRITICAL(&g_mux);
 
   const uint32_t heapAfterEnd = esp_get_free_heap_size();
@@ -691,17 +714,27 @@ void BlePositionServer::onClientInfoIngest(const uint8_t* data, size_t len) {
   // Sanitised into a local first, so the critical section below is a memcpy and
   // nothing else -- this runs on the NimBLE host task.
   //
-  // Printable ASCII only. The bytes come from whoever is in radio range, with
-  // no pairing and no ownership check (CLAUDE.md, "Security"), and their one
-  // destination is a log line and a crash report. A control character in there
-  // garbles a terminal or a log file for everything that follows it, and that
-  // is a whole class of mischief closed by one comparison. '?' rather than a
-  // drop so a mangled string still shows its own length.
+  // The bytes come from whoever is in radio range, with no pairing and no
+  // ownership check (CLAUDE.md, "Security"), and their destination is a log
+  // line -- which reaches the SD crash report through getLastLogs()
+  // (lib/hal/HalSystem.cpp). Two classes are filtered, both because of where
+  // the string ends up rather than because of what it means:
+  //
+  //   - Anything outside printable ASCII. A control character garbles a
+  //     terminal or a log file for everything that follows it.
+  //   - `,` `"` `%` `\`. Exactly what scripts/git_branch.py strips from
+  //     TRAILINK_VERSION, and for the same stated reason: a value that lands in
+  //     a CSV column or a printf format string must not be able to break
+  //     either. This string shares that fate, so it shares the rule.
+  //
+  // '?' rather than a drop so a mangled string still shows its own length.
   char clean[kClientVersionBytes];
   const size_t copied = len < sizeof(clean) - 1 ? len : sizeof(clean) - 1;
   for (size_t i = 0; i < copied; ++i) {
     const char c = static_cast<char>(data[i]);
-    clean[i] = (c >= 0x20 && c <= 0x7E) ? c : '?';
+    const bool printable = c >= 0x20 && c <= 0x7E;
+    const bool hostile = c == ',' || c == '"' || c == '%' || c == '\\';
+    clean[i] = (printable && !hostile) ? c : '?';
   }
   clean[copied] = '\0';
 
@@ -726,9 +759,13 @@ bool BlePositionServer::clientVersion(char* out, size_t max) const {
     ++i;
   }
   out[i] = '\0';
+  // The answer is about the stored string, not about how much of it fitted.
+  // `i != 0` would read as "did not say" to a caller whose buffer is one byte
+  // long, with a version sitting right there.
+  const bool have = clientVersion_[0] != '\0';
   portEXIT_CRITICAL(&g_mux);
 
-  return i != 0;
+  return have;
 }
 
 bool BlePositionServer::sendCommandReply(const char* line) {

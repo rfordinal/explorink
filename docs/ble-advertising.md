@@ -305,6 +305,12 @@ What it **leaks** to an unauthenticated peer, with no ownership check:
   (`../../docs/ble-version-handshake.md`, "Security"). The model number next to
   it adds nothing, because the advertised name already names the board before a
   connect. Neither is position, route, pins or wallet data.
+  **On `env:default` that string carries the git branch name and short SHA**
+  (`scripts/git_branch.py`), so a bench board answers something like
+  `0.1.0-dev-feat-map-command-console-05c6cf8` to an unauthenticated read. No
+  release env does this -- `gh_release` sets a plain version and the per-board
+  envs set their own literals -- so it is a development-board exposure, not a
+  shipped one.
 
 What it **lets someone do to the device or the rider**:
 

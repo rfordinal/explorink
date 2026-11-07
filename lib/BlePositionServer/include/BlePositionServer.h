@@ -453,9 +453,16 @@ class BlePositionServer {
   //
   // **Diagnostic only.** This is an unauthenticated string from whoever is in
   // radio range (no pairing, no bonding -- CLAUDE.md, "Security"), so it may
-  // name any app and any version. It is for a log line and a crash report. It
-  // must never gate a capability, pick a wire format, or decide anything a
-  // caller would be sorry to have decided on a stranger's say-so.
+  // name any app and any version. It must never gate a capability, pick a wire
+  // format, or decide anything a caller would be sorry to have decided on a
+  // stranger's say-so.
+  //
+  // **Nothing calls this today**, and that is worth saying rather than leaving
+  // to be discovered: what records the string is the LOG_INF in
+  // onClientInfoIngest, which reaches the SD crash report through
+  // getLastLogs() (lib/hal/HalSystem.cpp) without going through here. This
+  // accessor exists so a screen or a report can ask, and the rule above is a
+  // rule for the first caller rather than a description of the current state.
   bool clientVersion(char* out, size_t max) const;
 
   // Internal: called by the NimBLE backend (not for app use). Keeps the
