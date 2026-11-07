@@ -49,6 +49,45 @@ constexpr const char* kCommandCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0003";
 // it is already holding for position updates is the one the file rides on.
 constexpr const char* kTransferCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0004";
 constexpr const char* kTransferStatusCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0005";
+// The client half of the version handshake: the companion app writes what it
+// is. Same service again, for the same reason the three above are -- a phone
+// that found the position service has this with it. Custom because the
+// standard service below describes a peripheral and is read-only by
+// definition; the Bluetooth SIG has no characteristic for "the central tells
+// the peripheral what it is".
+constexpr const char* kClientInfoCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0006";
+
+// Device Information Service, Bluetooth SIG 0x180A, and the two characteristics
+// of it this device answers: Firmware Revision String (0x2A26) and Model Number
+// String (0x2A24).
+//
+// SIG-adopted rather than two more of our own UUIDs above, because the point of
+// this half of the handshake is that it answers a stranger. nRF Connect,
+// LightBlue and every other generic BLE tool render 0x180A with no knowledge of
+// this project, so a rider reporting a problem can read the firmware version off
+// their phone without our app installed. A custom UUID would show up as an
+// unnamed blob of hex.
+//
+// Deliberately NOT advertised. The advertisement payload is already 21 of its 31
+// bytes (see the scan-response comment in begin()), and nothing needs this
+// before connecting: a central discovers services after the link is up.
+//
+// Manufacturer Name String (0x2A29) is the third of the usual trio and is left
+// out on purpose. The model number below already names the hardware vendor, and
+// the one honest value for "who made this device" is that vendor rather than
+// us -- so the characteristic would either repeat the model or misstate whose
+// hardware this is. Firmware revision plus model answers every support question
+// this was built for.
+constexpr uint16_t kDeviceInfoServiceUuid = 0x180A;
+constexpr uint16_t kFirmwareRevisionCharUuid = 0x2A26;
+constexpr uint16_t kModelNumberCharUuid = 0x2A24;
+
+// What this build reports as its firmware revision. TRAILINK_VERSION is set per
+// environment in platformio.ini (scripts/git_branch.py adds branch and short SHA
+// for env:default), so it names the build rather than the product.
+#ifndef TRAILINK_VERSION
+#define TRAILINK_VERSION "unknown"
+#endif
 
 // The advertised BLE name for the board this binary is running on right now.
 // BoardConfig::ACTIVE is set once at boot (HalGPIO::begin(), from runtime
@@ -68,27 +107,42 @@ constexpr const char* kTransferStatusCharUuid = "5a1e6d00-73a4-4f1e-9b8f-2c6e1a8
 // both; everything else (M5Stack/Murphy/DeLink/PaperMono/...) exists in one
 // header and not the other, so listing it out would fail to compile in
 // whichever build doesn't have it.
-const char* bleDeviceNameForActiveBoard() {
+// The two names the active board answers to, resolved in one switch so a board
+// added here cannot get one of them and silently keep the fallback for the
+// other.
+struct BoardNames {
+  // Wire-visible, matched by BleLink.kt's KNOWN_DEVICE_NAMES and shown in the
+  // CompanionDeviceManager dialog. Must not change casually.
+  const char* bleName;
+  // DIS Model Number String (0x2A24). Read by a human or logged by the app,
+  // never matched on, so it is spelled for reading rather than for parsing.
+  const char* modelName;
+};
+
+BoardNames boardNamesForActiveBoard() {
   using BoardConfig::Board;
   switch (BoardConfig::ACTIVE.board) {
     case Board::XteinkX4:
-      return "XteinkX4Map";
+      return {"XteinkX4Map", "Xteink X4"};
     // Same DeviceType::X3 as far as the phone or the rider needs to know --
     // Uc8279 is a newer X3 production run's panel controller
-    // (BoardConfig.h:307), not a different device.
+    // (BoardConfig.h:307), not a different device. That holds for the model
+    // number too: a production run is not a model.
     case Board::XteinkX3:
     case Board::XteinkX3Uc8279:
-      return "XteinkX3Map";
+      return {"XteinkX3Map", "Xteink X3"};
     case Board::XteinkX4Pro:
-      return "XteinkX4ProMap";
+      return {"XteinkX4ProMap", "Xteink X4 Pro"};
     case Board::LilyGoT5S3:
-      return "LilyGoT5S3Map";
+      return {"LilyGoT5S3Map", "LilyGo T5 S3 Pro"};
     default:
       // Not an ExplorInk map target today -- falls through to the generic
       // name below rather than adding one nobody uses.
-      return kBleDeviceNameFallback;
+      return {kBleDeviceNameFallback, "ExplorInk"};
   }
 }
+
+const char* bleDeviceNameForActiveBoard() { return boardNamesForActiveBoard().bleName; }
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -97,6 +151,7 @@ NimBLECharacteristic* g_positionChar = nullptr;
 NimBLECharacteristic* g_commandChar = nullptr;
 NimBLECharacteristic* g_transferChar = nullptr;
 NimBLECharacteristic* g_transferStatusChar = nullptr;
+NimBLECharacteristic* g_clientInfoChar = nullptr;
 
 // Signaled from CommandCharCallbacks::onStatus when the peer actually
 // confirms an indication -- see sendCommandReply for why this matters more
@@ -180,6 +235,17 @@ class TransferStatusCharCallbacks : public NimBLECharacteristicCallbacks {
     // is created INDICATE-only, so notify is not a subscription a central can
     // even make.
     self().onTransferSubscribe((subValue & 0x0002) != 0);
+  }
+};
+
+// The client half of the version handshake. One short write, no reply, no
+// parsing -- the bytes are sanitised and stored, and that is the whole
+// contract. Same shape as PositionCharCallbacks above and for the same reason:
+// this runs on the NimBLE host task, where the less that happens the better.
+class ClientInfoCharCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+    const NimBLEAttValue value = characteristic->getValue();
+    self().onClientInfoIngest(value.data(), value.size());
   }
 };
 
@@ -277,6 +343,7 @@ PositionCharCallbacks g_charCallbacks;
 CommandCharCallbacks g_commandCallbacks;
 TransferCharCallbacks g_transferCallbacks;
 TransferStatusCharCallbacks g_transferStatusCallbacks;
+ClientInfoCharCallbacks g_clientInfoCallbacks;
 ServerCallbacks g_serverCallbacks;
 
 }  // namespace
@@ -288,7 +355,10 @@ bool BlePositionServer::begin(const char* deviceName) {
   // Resolved once and reused for both init() and setName() below -- the two
   // must agree, or the GAP Device Name characteristic and the scan-response
   // name a phone actually filters on would name two different boards.
-  const char* resolvedName = deviceName ? deviceName : bleDeviceNameForActiveBoard();
+  // The model number is read off the board whatever the caller passed: an
+  // override names what this advertises as, not what hardware it is.
+  const BoardNames boardNames = boardNamesForActiveBoard();
+  const char* resolvedName = deviceName ? deviceName : boardNames.bleName;
 
   // The NimBLE host + BT controller are the single biggest heap consumer on the
   // map screen: measured on hardware 2026-08-10, entering the map costs 75 KB of
@@ -362,6 +432,34 @@ bool BlePositionServer::begin(const char* deviceName) {
   g_transferChar->setCallbacks(&g_transferCallbacks);
   g_transferStatusChar = service->createCharacteristic(kTransferStatusCharUuid, NIMBLE_PROPERTY::INDICATE);
   g_transferStatusChar->setCallbacks(&g_transferStatusCallbacks);
+
+  // Write-only: the device never reads this back out to anyone. A client that
+  // wants to know what it told us already knows.
+  g_clientInfoChar = service->createCharacteristic(kClientInfoCharUuid, NIMBLE_PROPERTY::WRITE);
+  g_clientInfoChar->setCallbacks(&g_clientInfoCallbacks);
+
+  // The standard half of the version handshake -- see kDeviceInfoServiceUuid.
+  // A second service on the same server; g_server->start() below starts both.
+  // Values are set once here and never change for the life of this link: the
+  // firmware cannot update itself while running, and the board it is running on
+  // cannot change either.
+  //
+  // Not stored in a global: nothing writes to these after construction, so
+  // there is no later caller to keep a handle for.
+  NimBLEService* deviceInfo = g_server->createService(NimBLEUUID(kDeviceInfoServiceUuid));
+  if (deviceInfo) {
+    NimBLECharacteristic* firmwareRevision =
+        deviceInfo->createCharacteristic(NimBLEUUID(kFirmwareRevisionCharUuid), NIMBLE_PROPERTY::READ);
+    if (firmwareRevision) firmwareRevision->setValue(TRAILINK_VERSION);
+    NimBLECharacteristic* modelNumber =
+        deviceInfo->createCharacteristic(NimBLEUUID(kModelNumberCharUuid), NIMBLE_PROPERTY::READ);
+    if (modelNumber) modelNumber->setValue(boardNames.modelName);
+  } else {
+    // Not fatal, deliberately. Losing the map service is losing the feature;
+    // losing this one costs a version string in a bug report, and a rider
+    // whose device still works is worth more than a clean failure here.
+    LOG_ERR("BLEPOS", "device information service failed to create");
+  }
 
   // Explicit, though NimBLEAdvertising::start() would call it: the GATT table
   // is built here, and building it before advertising is announced is the
@@ -587,6 +685,52 @@ size_t BlePositionServer::readCommandBytes(char* out, size_t max) {
   return count;
 }
 
+void BlePositionServer::onClientInfoIngest(const uint8_t* data, size_t len) {
+  if (!data || len == 0) return;
+
+  // Sanitised into a local first, so the critical section below is a memcpy and
+  // nothing else -- this runs on the NimBLE host task.
+  //
+  // Printable ASCII only. The bytes come from whoever is in radio range, with
+  // no pairing and no ownership check (CLAUDE.md, "Security"), and their one
+  // destination is a log line and a crash report. A control character in there
+  // garbles a terminal or a log file for everything that follows it, and that
+  // is a whole class of mischief closed by one comparison. '?' rather than a
+  // drop so a mangled string still shows its own length.
+  char clean[kClientVersionBytes];
+  const size_t copied = len < sizeof(clean) - 1 ? len : sizeof(clean) - 1;
+  for (size_t i = 0; i < copied; ++i) {
+    const char c = static_cast<char>(data[i]);
+    clean[i] = (c >= 0x20 && c <= 0x7E) ? c : '?';
+  }
+  clean[copied] = '\0';
+
+  portENTER_CRITICAL(&g_mux);
+  std::memcpy(clientVersion_, clean, copied + 1);
+  portEXIT_CRITICAL(&g_mux);
+
+  // INF rather than DBG: this is the one line that says which app build a
+  // session ran against, and a release env logs nothing below INF.
+  LOG_INF("BLEPOS", "client: %s", clean);
+}
+
+bool BlePositionServer::clientVersion(char* out, size_t max) const {
+  if (!out || max == 0) return false;
+
+  portENTER_CRITICAL(&g_mux);
+  // Bounded by the destination, not by the source: a caller with a short
+  // buffer gets a truncated string rather than a smashed stack.
+  size_t i = 0;
+  while (i + 1 < max && clientVersion_[i] != '\0') {
+    out[i] = clientVersion_[i];
+    ++i;
+  }
+  out[i] = '\0';
+  portEXIT_CRITICAL(&g_mux);
+
+  return i != 0;
+}
+
 bool BlePositionServer::sendCommandReply(const char* line) {
   if (line == nullptr) return false;
 
@@ -784,6 +928,11 @@ void BlePositionServer::onCentralDisconnect() {
   // would go out on the next link, about a transfer that connection never made.
   pendingStatusHead_ = 0;
   pendingStatusTail_ = 0;
+  // Same reasoning as the MTU above: the client's version belongs to the
+  // connection that stated it. The next phone may be a different build, or an
+  // older one that never writes it at all -- and a stale string there would be
+  // read as that phone's answer.
+  clientVersion_[0] = '\0';
   portEXIT_CRITICAL(&g_mux);
 
   if (hooks.onDisconnect) hooks.onDisconnect(hooks.ctx);
@@ -1084,6 +1233,13 @@ void BlePositionServer::onWriteIngest(const uint8_t*, size_t) {}
 bool BlePositionServer::localTimeNow(uint32_t&) const { return false; }
 bool BlePositionServer::utcNow(uint32_t&) const { return false; }
 void BlePositionServer::onCommandIngest(const uint8_t*, size_t) {}
+void BlePositionServer::onClientInfoIngest(const uint8_t*, size_t) {}
+bool BlePositionServer::clientVersion(char* out, size_t max) const {
+  // Still null-terminates: a caller that ignores the false and prints the
+  // buffer anyway gets an empty string, not whatever was on its stack.
+  if (out && max > 0) out[0] = '\0';
+  return false;
+}
 size_t BlePositionServer::readCommandBytes(char*, size_t) { return 0; }
 bool BlePositionServer::sendCommandReply(const char*) { return false; }
 bool BlePositionServer::sendCommandBlock(const char*, size_t) { return false; }

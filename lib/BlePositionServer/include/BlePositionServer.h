@@ -105,6 +105,14 @@ inline constexpr size_t kPositionPacketBytes = 21;
 // vendor's device.
 inline constexpr const char* kBleDeviceNameFallback = "ExplorInkMap";
 
+// Bytes kept of the connected client's version string, terminator included.
+//
+// The companion app writes this once per connection (see onClientInfoIngest).
+// 32 is generous for what it holds -- an app version plus a platform word,
+// "android 1.4.2" -- and anything longer is truncated rather than refused: the
+// string is diagnostic, so half of it in a crash report beats none.
+inline constexpr size_t kClientVersionBytes = 32;
+
 // Payload bytes one chunk frame can carry at this ATT MTU.
 //
 // **Not `mtu - 8`.** That formula is right only below MTU 515 and it is the
@@ -430,10 +438,31 @@ class BlePositionServer {
   // relies on, made explicit because here it decides whether to begin.
   bool isTransferSubscribed() const { return transferSubscribed_; }
 
+  // What the connected companion app says it is, e.g. "android 1.4.2".
+  //
+  // False when no client has written one on this connection -- which is not
+  // the same as "no client". An older app, a `bleak` script or anything else
+  // that just connects and writes positions never sends it, so an empty answer
+  // means "did not say", never "nothing connected". Cleared on disconnect: the
+  // string belongs to one link, and the next phone may be a different build.
+  //
+  // Copied out under the same critical section that guards the write, rather
+  // than handing back a pointer: the writer is the NimBLE host task and every
+  // reader is the activity task, so a borrowed pointer could be rewritten
+  // mid-read.
+  //
+  // **Diagnostic only.** This is an unauthenticated string from whoever is in
+  // radio range (no pairing, no bonding -- CLAUDE.md, "Security"), so it may
+  // name any app and any version. It is for a log line and a crash report. It
+  // must never gate a capability, pick a wire format, or decide anything a
+  // caller would be sorry to have decided on a stranger's say-so.
+  bool clientVersion(char* out, size_t max) const;
+
   // Internal: called by the NimBLE backend (not for app use). Keeps the
   // public header free of NimBLE types.
   void onWriteIngest(const uint8_t* data, size_t len);
   void onCommandIngest(const uint8_t* data, size_t len);
+  void onClientInfoIngest(const uint8_t* data, size_t len);
   void onTransferIngest(const uint8_t* data, size_t len);
   void onTransferSubscribe(bool subscribed);
   void onCommandSubscribe(bool subscribed);
@@ -458,6 +487,11 @@ class BlePositionServer {
   char commandRing_[kCommandRingBytes] = {};
   volatile size_t commandHead_ = 0;  // write index, BLE task
   volatile size_t commandTail_ = 0;  // read index, activity task
+
+  // What the client wrote to the client-info characteristic, sanitised to
+  // printable ASCII and null-terminated. Written on the NimBLE host task,
+  // read on the activity task, both under g_mux -- see clientVersion().
+  char clientVersion_[kClientVersionBytes] = {};
 
   // Status lines that found the indication slot busy, waiting for the activity
   // task to put them on the link (flushTransferStatus). Fixed size, no heap --
