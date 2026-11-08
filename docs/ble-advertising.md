@@ -263,6 +263,15 @@ number is `setMinInterval(0x140)`/`setMaxInterval(0x1E0)` explicitly.
 Connection mode is undirected connectable, general discoverable, no pairing and
 no bonding (`BlePositionServer.cpp:248`).
 
+**The second service is not in there, on purpose.** Since 2026-11-07 the GATT
+table also carries the Bluetooth SIG Device Information Service (`0x180A`) with
+the firmware revision and the model number -- the version handshake,
+`../../docs/ble-version-handshake.md` in the parent repo. It is never
+advertised: there is no room (21 of 31 bytes are spent above), nothing needs a
+version before connecting, and a central discovers services once the link is
+up. The map service's fifth characteristic, `...0006`, is the other half of that
+handshake and is likewise invisible until after a connect.
+
 ## What the open channel now demonstrably allows
 
 "No pairing and no bonding" above is a one-line fact with consequences that used
@@ -288,6 +297,20 @@ What it **leaks** to an unauthenticated peer, with no ownership check:
 - The list of tiles the device is missing and the content id of every tile it
   holds (`missing`, `have`), which is a coarse history of where the device has
   been asked to draw.
+- **Since 2026-11-07, the firmware revision**, off the Device Information
+  Service (`0x180A`) -- so a peer in range learns which build's defects apply.
+  Accepted deliberately: that is what the SIG service is for and what every BLE
+  product publishes, and it is the price of a rider being able to read their
+  firmware version with a generic BLE app
+  (`../../docs/ble-version-handshake.md`, "Security"). The model number next to
+  it adds nothing, because the advertised name already names the board before a
+  connect. Neither is position, route, pins or wallet data.
+  **On `env:default` that string carries the git branch name and short SHA**
+  (`scripts/git_branch.py`), so a bench board answers something like
+  `0.1.0-dev-feat-map-command-console-05c6cf8` to an unauthenticated read. No
+  release env does this -- `gh_release` sets a plain version and the per-board
+  envs set their own literals -- so it is a development-board exposure, not a
+  shipped one.
 
 What it **lets someone do to the device or the rider**:
 
@@ -326,6 +349,11 @@ What it **lets someone do to the device or the rider**:
   30 s, and **create directories without bound** by sending `begin` frames that
   never write a byte. Both in
   [`missing-tiles.md`](missing-tiles.md), "The transfer path, driven end to end".
+- **Claim to be any companion app, at any version** (`...0006`, since
+  2026-11-07). Bounded at 31 bytes and sanitised to printable ASCII before it is
+  stored or logged, so it cannot garble a log file -- and nothing branches on it,
+  which is the rule that keeps it harmless rather than an accident of there
+  being no caller yet (`../../docs/ble-version-handshake.md`, "Security").
 
 **None of this is new in kind** -- `MapCommandParser.h` already documents the
 serial and BLE channels as one shared, unauthenticated grammar, and T-222 tracks
