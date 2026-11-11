@@ -181,7 +181,9 @@ corrected there in the same pass as this doc.
 **Static DRAM has no map in it.** Largest `.bss`/`.data` symbols on this build
 are `g_cnxMgr` (WiFi, 3,880), `xIsrStack` (2,096), `BidiUtils` shaping buffers
 (1,536 each), `s_wifi_nvs` (1,308). Everything above 16 KB in the symbol table
-is flash-mapped font and hyphenation data at `0x3c...`, not DRAM.
+is flash-mapped font and hyphenation data at `0x3c...`, not DRAM. (The
+hyphenation half of that sentence is historical: the Liang pattern tries were
+deleted 2026-11-11, 343 kB of flash. The font data is still there.)
 
 ## Verified not the problem
 
