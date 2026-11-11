@@ -251,6 +251,29 @@ This is not the same thing as a device branch. A `release/<device>` branch is
 hardware-conditional work that *does* go back into `develop` once the board is
 stable. This is finished work waiting for something else to exist.
 
+## `strip/e-reader` is a long-lived branch, not a topic branch
+
+Cut from `develop` 2026-11-11. It carries the removal of the inherited
+CrossPoint e-reader stack -- EPUB, OPDS, the dictionary, KOReaderSync, the
+reader activities, the reader fonts, the hyphenation tries. The plan and the
+measured per-candidate flash figures are in the parent repo's
+`docs/firmware-cleanup-plan.md`; T-220 tracks it.
+
+It works the opposite way to the feature branch above. **Each step merges into
+`develop` on its own**, after its own hardware pass, because a deletion is only
+safe once a board has booted without the thing. The branch then **stays** and
+syncs forward from `develop` for the next step. Do not delete it when a step
+lands -- "fully merged" is its resting state between steps, same reasoning as a
+`release/*` branch.
+
+Two reasons it is one branch rather than eleven topic branches: the steps are
+ordered (the compression libs cannot go until the fonts and i18n are settled),
+and T-281 wants a stripped branch to merge a large upstream CrossPoint batch
+**into**, so every future modify/delete conflict resolves as "keep deleted".
+
+**Strip first, merge upstream second.** Stripping during a conflict resolution
+deletes things upstream had just fixed for a reason nobody read.
+
 ## A stable device branch goes back into `develop`, whole
 
 **Same decision.** When a device branch is stable — everything on it works —
