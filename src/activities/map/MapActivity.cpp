@@ -1014,8 +1014,8 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   if (autoSyncPending_ > 0) {
     // The count is the honest part: it says the device asked for something
     // specific and is waiting, rather than that it is thinking.
-    snprintf(fetching, sizeof(fetching), "%s (%u)", tr(STR_MAP_NO_DATA_FETCHING),
-             static_cast<unsigned>(autoSyncPending_));
+    snprintf(fetching, sizeof(fetching), "%s (%d)", tr(STR_MAP_NO_DATA_FETCHING),
+             static_cast<int>(autoSyncPending_));
     action = fetching;
   } else if (linkUp && SETTINGS.mapAutoSyncTiles != 0) {
     // A refused tile is the phone's 404 against the CDN, which is also what
@@ -1028,7 +1028,7 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
     } else if (waitMs < 60u * 1000u) {
       action = tr(STR_MAP_NO_DATA_RETRY_SOON);
     } else {
-      snprintf(retry, sizeof(retry), tr(STR_MAP_NO_DATA_RETRY_MIN), static_cast<unsigned>(waitMs / 60000u));
+      snprintf(retry, sizeof(retry), tr(STR_MAP_NO_DATA_RETRY_MIN), static_cast<int>(waitMs / 60000u));
       action = retry;
     }
   } else if (linkUp) {
