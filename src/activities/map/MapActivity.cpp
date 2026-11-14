@@ -989,6 +989,92 @@ Rect MapActivity::mapScaleRect() const {
               layout.clearanceY - layout.tickTop + 2 * pad};
 }
 
+void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
+  if (tileCount == 0 || tileCount > MapViewport::kMaxTiles) return;
+  // Every tile, not most of them: a partially drawn map explains itself, and a
+  // box over one hole would cover the map the rider does have.
+  const uint32_t allMissing = (tileCount >= 32u) ? 0xFFFFFFFFu : ((1u << tileCount) - 1u);
+  if ((missingMask & allMissing) != allMissing) return;
+
+  auto& ble = freeink::BlePositionServer::getInstance();
+  const bool linkUp = bleInUse_ && ble.connIntervalMs() != 0;
+
+  // Three lines under the title. The middle one is the only one that changes:
+  // what the rider can do depends on whether a phone is there to do it with.
+  char fetching[48];
+  const char* action = nullptr;
+  // No minutes anywhere in this box, deliberately. The honest wait for ONE
+  // screen is a handful of seconds to a couple of minutes (a reactive-sync
+  // tile is 6 kB to 75 kB, a city tile 258 kB on average, over a link measured
+  // at 8.9 kB/s -- firmware docs/missing-tiles.md), and the only figure anyone
+  // had written down was the 20 to 40 minutes a WHOLE CITY takes on the sync
+  // screen. Printing that here would promise a wait forty times too long for
+  // what this frame is waiting for. The sync screen measures and shows its own
+  // remaining time; this box shows how many squares are outstanding and
+  // nothing it cannot back up.
+  const char* patience = nullptr;
+  if (autoSyncPending_ > 0) {
+    // The count is the honest part: it says the device asked for something
+    // specific and is waiting, rather than that it is thinking.
+    snprintf(fetching, sizeof(fetching), "%s (%u)", tr(STR_MAP_NO_DATA_FETCHING),
+             static_cast<unsigned>(autoSyncPending_));
+    action = fetching;
+  } else if (linkUp) {
+    action = tr(STR_MAP_NO_DATA_ASK_PHONE);
+  } else {
+    action = tr(STR_MAP_NO_DATA_CONNECT);
+  }
+  // Last line on every variant, because the fear this notice exists to answer
+  // is "I bought a broken device", not "where are my tiles".
+  const char* reassurance = tr(STR_MAP_NO_DATA_WORKS);
+
+  const char* title = tr(STR_MAP_NO_DATA_TITLE);
+  const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  constexpr int kPadX = 14;
+  constexpr int kPadY = 12;
+  constexpr int kGap = 4;
+
+  const int bodyLines = patience != nullptr ? 3 : 2;
+  int textW = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
+  for (const char* line : {action, patience, reassurance}) {
+    if (line == nullptr) continue;
+    const int w = renderer.getTextWidth(UI_10_FONT_ID, line);
+    if (w > textW) textW = w;
+  }
+
+  // Never under the side hints: the zoom boxes are drawn after this and would
+  // sit on top of the text's last characters (seen on the first simulator
+  // capture, 2026-11-14).
+  const int maxBoxW = renderer.getScreenWidth() - 2 * (kSideHintReservedPx + 6);
+  int boxW = textW + 2 * kPadX;
+  if (boxW > maxBoxW) boxW = maxBoxW;
+  const int boxH = titleH + bodyLines * (lineH + kGap) + 2 * kPadY;
+  const int boxX = (renderer.getScreenWidth() - boxW) / 2;
+  // Above the marker rather than centred on the panel: the marker is the one
+  // thing on this frame that is working, and covering it would say the
+  // opposite of what the text says.
+  const int contentTop = mapContentTop();
+  int boxY = contentTop + (MapViewport::markerYForStep(markerStep()) - contentTop - boxH) / 2;
+  if (boxY < contentTop + 8) boxY = contentTop + 8;
+
+  // Opaque, with a frame: the hatch runs under it, and text straight on hatch
+  // is unreadable on the panel at this stroke weight.
+  renderer.fillRect(boxX, boxY, boxW, boxH, false);
+  renderer.drawRect(boxX, boxY, boxW, boxH, 2, true);
+
+  int y = boxY + kPadY;
+  renderer.drawCenteredText(UI_12_FONT_ID, y, title, true, EpdFontFamily::BOLD);
+  y += titleH + kGap;
+  renderer.drawCenteredText(UI_10_FONT_ID, y, action, true);
+  y += lineH + kGap;
+  if (patience != nullptr) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, patience, true);
+    y += lineH + kGap;
+  }
+  renderer.drawCenteredText(UI_10_FONT_ID, y, reassurance, true);
+}
+
 void MapActivity::drawMapScale() {
   const ScaleBarLayout layout = scaleBarLayout();
   const double niceMeters = layout.niceMeters;
@@ -7872,6 +7958,7 @@ void MapActivity::composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingS
   drawHeaderStatus();
   drawHikeElevationLine();  // no-op outside Hike mode
   drawMapScale();
+  drawNoDataNotice(missing, range.count());
 
   // Does not count the marker or its patch save, both of which happen after the
   // readout is composed -- this is the tile-and-geometry cost, which is the one

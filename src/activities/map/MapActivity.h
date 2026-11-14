@@ -568,6 +568,14 @@ class MapActivity final : public Activity,
   // labels rounded to a nice ground distance (1/2/5 x 10^n) for the current
   // zoom step's mpp (MapViewport::kZoomLadder).
   void drawMapScale();
+  // The whole viewport hatched means the rider is looking at a screen that says
+  // nothing except "no data", and on a fresh device that is every first frame.
+  // Hatch alone reads as a broken product rather than as a card with no tiles
+  // on it yet, so a frame with nothing under it carries a notice saying what is
+  // happening and what the rider can do. Drawn only when *every* tile in the
+  // range is missing: one hole in an otherwise drawn map is self-explanatory,
+  // and a box over it would cover the map the rider does have.
+  void drawNoDataNotice(uint32_t missingMask, uint32_t tileCount);
   // The scale bar's geometry, worked out once and used twice: drawMapScale()
   // draws from it, and the chrome register reserves what it covers. Two copies
   // of this arithmetic is how the bar and the place label came to share pixels
