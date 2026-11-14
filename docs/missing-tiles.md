@@ -118,6 +118,10 @@ with `pos` to ground the card does not cover:
 - **Negative tests both pass**: a viewport with 2 of 4 tiles present draws hatch
   and no box, and a fully covered viewport is untouched.
 - Checked at zoom rungs 0, 4 and 6 -- the box is unchanged across the ladder.
+- **Second geometry, same day**: `env:t5s3pro` at `bacbf137` on a LilyGo T5 S3
+  Pro (960x540 against the X4 Pro's 800x480). The box centres and the three
+  lines fit without touching the side hints, so the width clamp holds on both
+  panels. That board had no phone, so it drew the no-link variant.
 
 ## A valid tile can still be a hole
 
