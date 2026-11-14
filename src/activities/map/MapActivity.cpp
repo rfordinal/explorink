@@ -132,6 +132,12 @@ static portMUX_TYPE mapFrameRequestSpinlock = portMUX_INITIALIZER_UNLOCKED;
 // list that has barely changed.
 constexpr uint32_t kAutoSyncIntervalMs = 60 * 1000;
 
+// How often the main task re-reads the refusal schedule for the no-data notice.
+// One second is far finer than the notice needs -- it is only ever painted by a
+// full frame, which costs seconds -- and keeps the walk over MISSING_TILES (up
+// to 200 entries) off every loop tick.
+constexpr uint32_t kNoDataRetryPollMs = 1000;
+
 // How long an ask may go **completely quiet** before the device gives up on it.
 // Not a budget for the whole fetch: expireAutoSync() rearms this every time the
 // receiver's byte counters move, so a slow transfer stays alive and only real
@@ -989,40 +995,68 @@ Rect MapActivity::mapScaleRect() const {
               layout.clearanceY - layout.tickTop + 2 * pad};
 }
 
+void MapActivity::refreshNoDataRetry() {
+  const uint32_t now = millis();
+  if (noDataRetryPollMs_ != 0 && static_cast<int32_t>(now - noDataRetryPollMs_) < 0) return;
+  noDataRetryPollMs_ = now + kNoDataRetryPollMs;
+  // Main task only. See noDataRetryMs_'s comment for why the frame must not do
+  // this walk itself.
+  noDataRetryMs_ = MISSING_TILES.msUntilNextRetry(now);
+}
+
 void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   if (tileCount == 0 || tileCount > MapViewport::kMaxTiles) return;
   // Every tile, not most of them: a partially drawn map explains itself, and a
-  // box over one hole would cover the map the rider does have.
-  const uint32_t allMissing = (tileCount >= 32u) ? 0xFFFFFFFFu : ((1u << tileCount) - 1u);
+  // box over one hole would cover the map the rider does have. kMaxTiles is 16,
+  // so the shift cannot reach the width of the type.
+  const uint32_t allMissing = (1u << tileCount) - 1u;
   if ((missingMask & allMissing) != allMissing) return;
 
   auto& ble = freeink::BlePositionServer::getInstance();
   const bool linkUp = bleInUse_ && ble.connIntervalMs() != 0;
+  // A card that is out, unseated or dead fails every tile in the range exactly
+  // the way unbuilt ground does (MapTileSource::unavailableMask()). Telling that
+  // rider the device is fine and to connect their phone is both false and
+  // useless, so the card is checked first. `ready()` is a plain bool
+  // (SDCardManager::initialized), safe to read from the render task.
+  const bool cardReady = Storage.ready();
 
-  // Three lines under the title. The middle one is the only one that changes:
-  // what the rider can do depends on whether a phone is there to do it with.
   char fetching[48];
   char retry[48];
   const char* action = nullptr;
-  // No minutes anywhere unless the device actually knows one. The only figure
-  // anybody had written down was the 20 to 40 minutes a WHOLE CITY takes on the
-  // sync screen, and one screenful is a reactive-sync tile of 6 kB to 75 kB
-  // over a link measured at 8.9 kB/s -- forty times smaller (firmware
-  // docs/missing-tiles.md). The one honest number here is the refusal
-  // schedule, which is a real timer the store owns.
+  // No minutes anywhere unless the device knows one. The only figure anybody
+  // had written down was the 20 to 40 minutes a WHOLE CITY takes on the sync
+  // screen, and one screenful is a reactive-sync tile of 6 kB to 75 kB over a
+  // link measured at 8.9 kB/s -- forty times smaller (docs/missing-tiles.md).
+  // The one honest number here is the refusal schedule.
   const char* extra = nullptr;
-  if (autoSyncPending_ > 0) {
-    // The count is the honest part: it says the device asked for something
-    // specific and is waiting, rather than that it is thinking.
-    snprintf(fetching, sizeof(fetching), "%s (%d)", tr(STR_MAP_NO_DATA_FETCHING),
-             static_cast<int>(autoSyncPending_));
+  if (!cardReady) {
+    action = tr(STR_MAP_NO_DATA_NO_CARD);
+    extra = tr(STR_MAP_NO_DATA_CHECK_CARD);
+  } else if (linkUp && autoSyncPending_ > 0) {
+    // Gated on the link like every other branch: nothing clears
+    // autoSyncPending_ until expireAutoSync()'s quiet timer, so without this a
+    // dropped link leaves "sending it now" on the glass for 45 s after the
+    // phone stopped being there.
+    snprintf(fetching, sizeof(fetching), "%s (%d)", tr(STR_MAP_NO_DATA_FETCHING), static_cast<int>(autoSyncPending_));
     action = fetching;
   } else if (linkUp && SETTINGS.mapAutoSyncTiles != 0) {
     // A refused tile is the phone's 404 against the CDN, which is also what
-    // queues the build (../../../docs/tile-autobuild.md). So "not built yet"
-    // is the truth, the wait is scheduled, and the rider can be told both
-    // rather than being left to guess whether anything is still happening.
-    const uint32_t waitMs = MISSING_TILES.msUntilNextRetry(millis());
+    // queues the build (../../../docs/tile-autobuild.md). So "not built yet" is
+    // the truth, the wait is scheduled, and the rider can be told both.
+    //
+    // Read off a member the MAIN task publishes, never walked here:
+    // MissingTilesStore::msUntilNextRetry() iterates the same lock-free vector
+    // the main task erases from and sorts on ordinary loop ticks, and those
+    // ticks run while this frame is composing (see hatchedThisFrame_'s comment
+    // and refreshNoDataRetry()).
+    //
+    // Clamped to the schedule's own ceiling. millis() aliases every ~24.8 days
+    // and the signed difference then reads a long-expired retry as a positive
+    // wait -- harmless in isRefused(), but here it would print "auto retry in
+    // 35584 min" on the panel.
+    uint32_t waitMs = noDataRetryMs_;
+    if (waitMs > MissingTilesStore::kRefusalMaxMs) waitMs = MissingTilesStore::kRefusalMaxMs;
     if (waitMs == 0) {
       action = tr(STR_MAP_NO_DATA_AUTO_ON);
     } else if (waitMs < 60u * 1000u) {
@@ -1040,9 +1074,10 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   } else {
     action = tr(STR_MAP_NO_DATA_CONNECT);
   }
-  // Last line on every variant, because the fear this notice exists to answer
-  // is "I bought a broken device", not "where are my tiles".
-  const char* reassurance = tr(STR_MAP_NO_DATA_WORKS);
+  // Last line whenever the device really is fine, because the fear this notice
+  // exists to answer is "I bought a broken device". With the card unreadable it
+  // would be a lie, so that branch does without it.
+  const char* reassurance = cardReady ? tr(STR_MAP_NO_DATA_WORKS) : nullptr;
 
   const char* title = tr(STR_MAP_NO_DATA_TITLE);
   const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
@@ -1051,7 +1086,30 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   constexpr int kPadY = 12;
   constexpr int kGap = 4;
 
-  const int bodyLines = extra != nullptr ? 3 : 2;
+  // Never under the side hints: the zoom boxes are drawn after this and would
+  // sit on top of the text's last characters.
+  const int maxBoxW = renderer.getScreenWidth() - 2 * (kSideHintReservedPx + 6);
+  const int maxTextW = maxBoxW - 2 * kPadX;
+
+  // Each line is fitted to that interior rather than merely measured. Clamping
+  // the BOX alone does not clamp the text: every line is centred, so a line
+  // wider than the interior spills out of the white fill on both sides, onto
+  // the hatch it exists to cover and under the side hints. English fits on
+  // every panel today with 380 px to spare; a German or Russian translation of
+  // these strings runs 30-40 % longer and would not.
+  char titleFit[56];
+  char actionFit[56];
+  char extraFit[56];
+  char reassuranceFit[56];
+  title = fitTextToWidth(UI_12_FONT_ID, title, maxTextW, titleFit, sizeof(titleFit), EpdFontFamily::BOLD);
+  action = fitTextToWidth(UI_10_FONT_ID, action, maxTextW, actionFit, sizeof(actionFit));
+  extra = fitTextToWidth(UI_10_FONT_ID, extra, maxTextW, extraFit, sizeof(extraFit));
+  reassurance = fitTextToWidth(UI_10_FONT_ID, reassurance, maxTextW, reassuranceFit, sizeof(reassuranceFit));
+
+  int bodyLines = 1;  // action
+  if (extra != nullptr) ++bodyLines;
+  if (reassurance != nullptr) ++bodyLines;
+
   int textW = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
   for (const char* line : {action, extra, reassurance}) {
     if (line == nullptr) continue;
@@ -1059,17 +1117,12 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
     if (w > textW) textW = w;
   }
 
-  // Never under the side hints: the zoom boxes are drawn after this and would
-  // sit on top of the text's last characters (seen on the first simulator
-  // capture, 2026-11-14).
-  const int maxBoxW = renderer.getScreenWidth() - 2 * (kSideHintReservedPx + 6);
-  int boxW = textW + 2 * kPadX;
-  if (boxW > maxBoxW) boxW = maxBoxW;
+  const int boxW = textW + 2 * kPadX;
   const int boxH = titleH + bodyLines * (lineH + kGap) + 2 * kPadY;
   const int boxX = (renderer.getScreenWidth() - boxW) / 2;
   // Above the marker rather than centred on the panel: the marker is the one
-  // thing on this frame that is working, and covering it would say the
-  // opposite of what the text says.
+  // thing on this frame that is working, and covering it would say the opposite
+  // of what the text says.
   const int contentTop = mapContentTop();
   int boxY = contentTop + (MapViewport::markerYForStep(markerStep()) - contentTop - boxH) / 2;
   if (boxY < contentTop + 8) boxY = contentTop + 8;
@@ -1079,16 +1132,52 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   renderer.fillRect(boxX, boxY, boxW, boxH, false);
   renderer.drawRect(boxX, boxY, boxW, boxH, 2, true);
 
+  // Centred in the BOX, not on the panel -- drawCenteredText() uses the screen
+  // width and knows nothing about boxW.
+  auto drawLine = [&](int fontId, int y, const char* text, EpdFontFamily::Style style) {
+    const int w = renderer.getTextWidth(fontId, text, style);
+    renderer.drawText(fontId, boxX + (boxW - w) / 2, y, text, true, style);
+  };
+
   int y = boxY + kPadY;
-  renderer.drawCenteredText(UI_12_FONT_ID, y, title, true, EpdFontFamily::BOLD);
+  drawLine(UI_12_FONT_ID, y, title, EpdFontFamily::BOLD);
   y += titleH + kGap;
-  renderer.drawCenteredText(UI_10_FONT_ID, y, action, true);
+  drawLine(UI_10_FONT_ID, y, action, EpdFontFamily::REGULAR);
   y += lineH + kGap;
   if (extra != nullptr) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, extra, true);
+    drawLine(UI_10_FONT_ID, y, extra, EpdFontFamily::REGULAR);
     y += lineH + kGap;
   }
-  renderer.drawCenteredText(UI_10_FONT_ID, y, reassurance, true);
+  if (reassurance != nullptr) drawLine(UI_10_FONT_ID, y, reassurance, EpdFontFamily::REGULAR);
+}
+
+// Returns `text` when it already fits `maxWidth`, otherwise a truncated copy in
+// `buf` ending in an ellipsis. nullptr in, nullptr out.
+//
+// Cuts on a UTF-8 character boundary: trimming to a byte count alone can leave
+// half a multi-byte sequence, which the font renderer draws as a replacement
+// glyph or nothing at all. Continuation bytes are 0b10xxxxxx.
+const char* MapActivity::fitTextToWidth(int fontId, const char* text, int maxWidth, char* buf, size_t bufSize,
+                                        EpdFontFamily::Style style) const {
+  if (text == nullptr) return nullptr;
+  if (maxWidth <= 0 || bufSize < 8) return text;
+  if (renderer.getTextWidth(fontId, text, style) <= maxWidth) return text;
+
+  static constexpr char kEllipsis[] = "...";
+  size_t len = strlen(text);
+  if (len >= bufSize) len = bufSize - 1;
+  while (len > 0) {
+    --len;
+    while (len > 0 && (static_cast<unsigned char>(text[len]) & 0xC0) == 0x80) --len;
+    if (len + sizeof(kEllipsis) > bufSize) continue;
+    memcpy(buf, text, len);
+    memcpy(buf + len, kEllipsis, sizeof(kEllipsis));
+    if (renderer.getTextWidth(fontId, buf, style) <= maxWidth) return buf;
+  }
+  // Even the ellipsis alone is too wide for the box: draw nothing rather than
+  // one dot hanging in the middle of it.
+  buf[0] = '\0';
+  return buf;
 }
 
 void MapActivity::drawMapScale() {
@@ -3577,6 +3666,10 @@ void MapActivity::loop() {
   // exact minute for a while (clockIsCoarse()). Read, not consumed -- the checks
   // below and the input handling further down all still see this frame's press.
   if (mappedInput.wasAnyPressed()) clockFineUntilMs_ = millis() + kClockFineAfterInputMs;
+
+  // Cheap, rate-capped, and on the right task: the notice's countdown is read
+  // off MISSING_TILES here and published as a scalar for the frame.
+  refreshNoDataRetry();
 
   if (pendingPinPopup_ != PinPopup::None) servicePendingPinPopup();
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS

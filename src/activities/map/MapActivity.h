@@ -576,6 +576,22 @@ class MapActivity final : public Activity,
   // range is missing: one hole in an otherwise drawn map is self-explanatory,
   // and a box over it would cover the map the rider does have.
   void drawNoDataNotice(uint32_t missingMask, uint32_t tileCount);
+  // Fits one line to a pixel width, truncating with an ellipsis on a UTF-8
+  // boundary. The notice needs it because its box is clamped away from the side
+  // hints while the text is not, and a translated string is not measured until
+  // it is on the panel.
+  const char* fitTextToWidth(int fontId, const char* text, int maxWidth, char* buf, size_t bufSize,
+                             EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  // What drawNoDataNotice() prints as its countdown, published by the main task
+  // in refreshNoDataRetry(). **Not read from MISSING_TILES in the frame**:
+  // msUntilNextRetry() walks the same lock-free vector the main task erases
+  // from, sorts (the `missing` console verb) and push_backs into (`fake`,
+  // record()), on ordinary loop ticks that run while a frame is composing. A
+  // reallocation under the render task's iterator is heap corruption hours away
+  // from its cause -- the same reason hatchedThisFrame_ exists.
+  uint32_t noDataRetryMs_ = 0;
+  uint32_t noDataRetryPollMs_ = 0;
+  void refreshNoDataRetry();
   // The scale bar's geometry, worked out once and used twice: drawMapScale()
   // draws from it, and the chrome register reserves what it covers. Two copies
   // of this arithmetic is how the bar and the place label came to share pixels
