@@ -143,6 +143,13 @@ three, plus an airtime budget the console never had.
 with nobody reading it, costing 5.4 mA continuously (`lora-bringup.md`) with
 nothing on screen to say why.
 
+**So a `PING` sent while the mesh is running is not a test of the radios.** The
+console path is dead for the duration, the far end answers nothing, and the
+listening board reports `rx=0` -- which reads exactly like an RF fault. That is
+what happened on 2026-11-02 and it cost twelve days; see "`Keepalive` covered,
+and the two-board false alarm" below. **`MESH OFF` on both boards before any
+`PING`.**
+
 ## The identity lives on the card
 
 `/explorink/lora/identity.bin`, 96 bytes: 64 of private key then 32 of public,
@@ -684,21 +691,33 @@ on first sight and `rssi=-28 ... adv=5` roughly an hour later, while every
 distant public station that session sat between -91 and -105 dBm. An antenna or
 RF fault does not sort packets by type.
 
-**So what is actually broken is `CMD:LORA PING` / `PONG`, the bench
-instrument.** It is the one path that has never worked between two boards here,
-while the product path above it works. Whatever it does differently -- a
-frequency, a radio state it leaves behind, a code path MeshCore does not take --
-is unknown and is now the only open question. T-2056.
+**And `CMD:LORA PING` / `PONG` is not broken either.** It has worked between two
+T5 S3 Pro boards -- four exchanges, four replies, nothing lost
+(`lora-bringup.md`, "Two T5 S3 Pro boards on one desk"). Calling it the one
+path that never worked was this file's own error, made 2026-11-14 without
+reading that pass.
+
+**The leading explanation is two sections above, in this file.**
+`CMD:LORA MESH ON` hands the SX126x to the Dispatcher and `loraServiceStep()`
+returns early, so the console's PING/PONG path, its re-arm watchdog and its
+transmit timeout do not run ("Mesh mode and the bring-up console are
+exclusive"). A listening board with the mesh running cannot answer a `PING`,
+and `rx=0` on it is exactly what that produces.
+
+**Not confirmed**: nobody recorded whether the mesh was running on board B that
+day. **What settles it:** `CMD:LORA MESH OFF` on both boards, then `PONG ON` on
+one and `PING` on the other. If it answers, T-2056 is not a bug and closes.
 
 **The lesson is the one this repo keeps paying for.** An instrument's answer is
 not the product's behaviour (`docs/research-rules.md`, "An instrument that
 answers correctly"), and when an instrument disagrees with a harder signal, the
-instrument is the suspect. Here the instrument was `CMD:LORA PING`, the harder
-signal was a position on a panel, and the instrument held the conclusion for
-twelve days -- long enough to keep LoRa out of a public repo description and to
-be listed to LilyGo as an open hardware problem on their board. **Do not
-diagnose a radio from a debug command when the feature itself can be looked
-at.**
+instrument is the suspect -- including when the instrument is sound and was
+simply pointed at a radio it does not own. Here the instrument was
+`CMD:LORA PING`, the harder signal was a position on a panel, and the wrong
+reading held for twelve days -- long enough to keep LoRa out of a public repo
+description and to be listed to LilyGo as an open hardware problem on their
+board. **Do not diagnose a radio from a debug command when the feature itself
+can be looked at.**
 
 ### Two traps the bench pass paid for
 
