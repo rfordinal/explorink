@@ -632,7 +632,7 @@ before.
 `Keepalive` (an hour), and anything two boards answer -- that the advert
 lands and moves a marker. Board A only.
 
-### `Keepalive` covered, two boards not -- 2026-11-02
+### `Keepalive` covered, and the two-board false alarm -- 2026-11-02
 
 **`Keepalive` now fires at the shortened cap, confirmed on board A
 (`t5s3pro`) alone.** `BeaconPolicy::kMaxSilenceSec` moved from 3600 s to 600 s
@@ -649,60 +649,56 @@ still=608s why=keepalive sent_ago=8s     <- new advert between 563s and 608s
 Matches the new cap, not the old hourly one. `LORA_STATE`'s `pool_free`/
 `pool_out` stayed 16/0 throughout -- the send queue was never the bottleneck.
 
-**Board B never heard any of it, and that is still open.** Three independent
-sends from board A during this same session -- the `FixChanged` send, the
-`Keepalive` send above, and one manual `CMD:LORA ADVERT` -- and board B
-(`t5s3pro-b`) logged no `[LORAMESH] new node` for board A's key at any point,
-only ambient third-party MeshCore adverts (Austrian ham stations, `rssi -98`
-to `-105`). Both boards reported identical `freq=869.618 bw=62.5 sf=8 cr=5
-power=14` over `CMD:LORA` at the time. Board A's own bookkeeping says every
-send succeeded (no `LORA_ERR` line, `sent_ago` reset each time) -- MeshCore's
-`sendSelfAdvert()` reports queued-to-the-radio, not received-by-a-peer, so
-"board A thinks it sent" and "board B heard nothing" are not a contradiction,
-just two different questions. Three misses from two boards sitting on the
-same desk, after both were confirmed receiving distant weak stations fine, is
-more than sampling noise. Not diagnosed: antenna seating, a MeshCore-side
-channel/region parameter neither `CMD:LORA`'s read-only `freq`/`bw`/`sf`/`cr`
-fields nor this pass checked, or something specific to these two boards'
-current state. T-2056. Next step before anything else: `CMD:LORA PONG ON` on
-B, `CMD:LORA PING` on A -- the raw bench-level round trip this file's own
-earlier pass used to prove the link, bypassing MeshCore's advert/roster layer
-entirely, to split "the radios can't hear each other" from "the radios hear
-each other and MeshCore drops it".
+**Board B heard none of it on the day, and the reason was never the radios.**
+Three independent sends from board A during this same session -- the
+`FixChanged` send, the `Keepalive` send above, and one manual
+`CMD:LORA ADVERT` -- and board B (`t5s3pro-b`) logged no `[LORAMESH] new node`
+for board A's key at any point, only ambient third-party MeshCore adverts
+(Austrian ham stations, `rssi -98` to `-105`). Both boards reported identical
+`freq=869.618 bw=62.5 sf=8 cr=5 power=14` over `CMD:LORA` at the time. Board
+A's own bookkeeping said every send succeeded (no `LORA_ERR` line, `sent_ago`
+reset each time) -- MeshCore's `sendSelfAdvert()` reports queued-to-the-radio,
+not received-by-a-peer, so "board A thinks it sent" and "board B heard nothing"
+were two different questions, not a contradiction.
 
-**That round trip ran, same day: the radios themselves cannot hear each
-other.** `CMD:LORA PONG ON` on B, `CMD:LORA PING` on A --
+**The raw bench round trip failed too, and that is what sent the diagnosis the
+wrong way.** `CMD:LORA PONG ON` on B, `CMD:LORA PING` on A --
 
 ```
 A: LORA_OK:ping=1 air=170ms  ... 10s later ...  LORA_PING_TIMEOUT:seq=1 after=10000ms
 B: LORA_STATE: ... rx=0 ...   (never saw the packet at all)
 ```
 
--- and the reverse direction, B pinging A with A on `PONG ON`, timed out the
-same way. Symmetric: not a one-sided TX or RX fault, and `rx=0` on B rules out
-"it arrived but something above the radio dropped it" -- the packet never
-reached B's radio hardware. This is below MeshCore entirely: `CMD:LORA PING`
-talks straight to the SX1262 driver (`lib/LoraRadio`), no advert, no roster, no
-signature. Whatever is wrong is RF, not code this session's change touched.
-T-2056 narrows to: antenna seating on one or both boards, a hardware fault, or
-something about these two boards' current physical state -- not firmware.
+-- symmetric, both directions, and `rx=0` on the listening side. `CMD:LORA
+PING` talks straight to the SX1262 driver (`lib/LoraRadio`): no advert, no
+roster, no signature. The conclusion drawn that day was "RF, antenna, or a
+hardware fault on these two boards, not firmware".
 
-**Addendum, 2026-11-02, from the T-2042 hardware pass, and it does not sit
-comfortably next to the paragraph above.** With both boards' mesh left running
-(not the raw `CMD:LORA PING`/`PONG` path -- the real `MeshCore` advert/roster
-layer), board A's `CMD:LORA PEERS` logged board B's own advert repeatedly and
-at strong signal: `key=c6c28a10 name=EI-c6c2 rssi=-21 ... adv=2` on first
-sight, `rssi=-28 ... adv=5` roughly an hour later. That is a packet reaching
-board A's radio hardware from board B, several times, at a strength distant
-public stations never come close to (-91 to -105 dBm for everyone else heard
-that session). The PING/PONG pass's own conclusion was "the packet never
-reached B's radio hardware" (`rx=0`), which an RF/antenna fault should affect
-identically regardless of packet type. **Not reconciled**: whether `CMD:LORA
-PING`/`PONG` exercises a different code path, frequency, or radio state than
-a mesh advert does, or whether "RF/antenna/hardware fault" was the wrong
-narrowing from the start. Whoever picks T-2056 back up should read this before
-trusting the PING/PONG conclusion further -- measured here, not reasoned, and
-the measurement contradicts it.
+**That conclusion is wrong, and the group screen is what settles it.** Two
+T5 S3 Pro boards show each other's position on the Group screen -- maintainer,
+2026-11-14. That is the whole path working end to end: advert, roster, position
+payload, panel. The first sign was already in the data on the day, from the
+T-2042 hardware pass: board A's `CMD:LORA PEERS` logged board B's own advert
+repeatedly and at strong signal, `key=c6c28a10 name=EI-c6c2 rssi=-21 ... adv=2`
+on first sight and `rssi=-28 ... adv=5` roughly an hour later, while every
+distant public station that session sat between -91 and -105 dBm. An antenna or
+RF fault does not sort packets by type.
+
+**So what is actually broken is `CMD:LORA PING` / `PONG`, the bench
+instrument.** It is the one path that has never worked between two boards here,
+while the product path above it works. Whatever it does differently -- a
+frequency, a radio state it leaves behind, a code path MeshCore does not take --
+is unknown and is now the only open question. T-2056.
+
+**The lesson is the one this repo keeps paying for.** An instrument's answer is
+not the product's behaviour (`docs/research-rules.md`, "An instrument that
+answers correctly"), and when an instrument disagrees with a harder signal, the
+instrument is the suspect. Here the instrument was `CMD:LORA PING`, the harder
+signal was a position on a panel, and the instrument held the conclusion for
+twelve days -- long enough to keep LoRa out of a public repo description and to
+be listed to LilyGo as an open hardware problem on their board. **Do not
+diagnose a radio from a debug command when the feature itself can be looked
+at.**
 
 ### Two traps the bench pass paid for
 
