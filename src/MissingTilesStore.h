@@ -140,6 +140,16 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // and the schedule is testable without waiting for real time to pass.
   bool isRefused(uint8_t z, uint32_t col, uint32_t row, uint32_t nowMs) const;
 
+  // How long until the soonest refused tile may be asked for again, in
+  // milliseconds from nowMs, or 0 when nothing is waiting on a refusal.
+  //
+  // The map's "no map data here" notice reads this so it can tell the rider a
+  // real number instead of a reassuring guess: a refused tile is the CDN
+  // saying "not built yet", and the retry really is scheduled
+  // (docs/missing-tiles.md). Same signed-difference wrap handling as
+  // isRefused(), and for the same reason.
+  uint32_t msUntilNextRetry(uint32_t nowMs) const;
+
   // The delay a tile gets after its `refusals`-th refusal: kRefusalBaseMs
   // doubled per refusal, capped at kRefusalMaxMs. Public because the schedule is
   // the interesting part of this class to test.

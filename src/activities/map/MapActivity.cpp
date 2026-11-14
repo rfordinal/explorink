@@ -1002,25 +1002,41 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   // Three lines under the title. The middle one is the only one that changes:
   // what the rider can do depends on whether a phone is there to do it with.
   char fetching[48];
+  char retry[48];
   const char* action = nullptr;
-  // No minutes anywhere in this box, deliberately. The honest wait for ONE
-  // screen is a handful of seconds to a couple of minutes (a reactive-sync
-  // tile is 6 kB to 75 kB, a city tile 258 kB on average, over a link measured
-  // at 8.9 kB/s -- firmware docs/missing-tiles.md), and the only figure anyone
-  // had written down was the 20 to 40 minutes a WHOLE CITY takes on the sync
-  // screen. Printing that here would promise a wait forty times too long for
-  // what this frame is waiting for. The sync screen measures and shows its own
-  // remaining time; this box shows how many squares are outstanding and
-  // nothing it cannot back up.
-  const char* patience = nullptr;
+  // No minutes anywhere unless the device actually knows one. The only figure
+  // anybody had written down was the 20 to 40 minutes a WHOLE CITY takes on the
+  // sync screen, and one screenful is a reactive-sync tile of 6 kB to 75 kB
+  // over a link measured at 8.9 kB/s -- forty times smaller (firmware
+  // docs/missing-tiles.md). The one honest number here is the refusal
+  // schedule, which is a real timer the store owns.
+  const char* extra = nullptr;
   if (autoSyncPending_ > 0) {
     // The count is the honest part: it says the device asked for something
     // specific and is waiting, rather than that it is thinking.
     snprintf(fetching, sizeof(fetching), "%s (%u)", tr(STR_MAP_NO_DATA_FETCHING),
              static_cast<unsigned>(autoSyncPending_));
     action = fetching;
+  } else if (linkUp && SETTINGS.mapAutoSyncTiles != 0) {
+    // A refused tile is the phone's 404 against the CDN, which is also what
+    // queues the build (../../../docs/tile-autobuild.md). So "not built yet"
+    // is the truth, the wait is scheduled, and the rider can be told both
+    // rather than being left to guess whether anything is still happening.
+    const uint32_t waitMs = MISSING_TILES.msUntilNextRetry(millis());
+    if (waitMs == 0) {
+      action = tr(STR_MAP_NO_DATA_AUTO_ON);
+    } else if (waitMs < 60u * 1000u) {
+      action = tr(STR_MAP_NO_DATA_RETRY_SOON);
+    } else {
+      snprintf(retry, sizeof(retry), tr(STR_MAP_NO_DATA_RETRY_MIN), static_cast<unsigned>(waitMs / 60000u));
+      action = retry;
+    }
   } else if (linkUp) {
-    action = tr(STR_MAP_NO_DATA_ASK_PHONE);
+    // Autosync is off by default and spends the rider's mobile data, so the
+    // notice says it is off rather than quietly turning it on -- and still
+    // names the screen that works without it.
+    action = tr(STR_MAP_NO_DATA_AUTO_OFF);
+    extra = tr(STR_MAP_NO_DATA_ASK_PHONE);
   } else {
     action = tr(STR_MAP_NO_DATA_CONNECT);
   }
@@ -1035,9 +1051,9 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   constexpr int kPadY = 12;
   constexpr int kGap = 4;
 
-  const int bodyLines = patience != nullptr ? 3 : 2;
+  const int bodyLines = extra != nullptr ? 3 : 2;
   int textW = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
-  for (const char* line : {action, patience, reassurance}) {
+  for (const char* line : {action, extra, reassurance}) {
     if (line == nullptr) continue;
     const int w = renderer.getTextWidth(UI_10_FONT_ID, line);
     if (w > textW) textW = w;
@@ -1068,8 +1084,8 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   y += titleH + kGap;
   renderer.drawCenteredText(UI_10_FONT_ID, y, action, true);
   y += lineH + kGap;
-  if (patience != nullptr) {
-    renderer.drawCenteredText(UI_10_FONT_ID, y, patience, true);
+  if (extra != nullptr) {
+    renderer.drawCenteredText(UI_10_FONT_ID, y, extra, true);
     y += lineH + kGap;
   }
   renderer.drawCenteredText(UI_10_FONT_ID, y, reassurance, true);

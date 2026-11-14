@@ -120,6 +120,18 @@ bool MissingTilesStore::isRefused(uint8_t z, uint32_t col, uint32_t row, uint32_
   return static_cast<int32_t>(nowMs - it->retryAtMs) < 0;
 }
 
+uint32_t MissingTilesStore::msUntilNextRetry(uint32_t nowMs) const {
+  uint32_t soonest = 0;
+  for (const MissingTileHit& hit : hits_) {
+    if (hit.retryAtMs == 0) continue;
+    const int32_t remaining = static_cast<int32_t>(hit.retryAtMs - nowMs);
+    if (remaining <= 0) continue;  // due already, or the clock wrapped past it
+    const uint32_t remainingMs = static_cast<uint32_t>(remaining);
+    if (soonest == 0 || remainingMs < soonest) soonest = remainingMs;
+  }
+  return soonest;
+}
+
 bool MissingTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {
   auto it = std::find_if(hits_.begin(), hits_.end(),
                          [&](const MissingTileHit& hit) { return hit.z == z && hit.col == col && hit.row == row; });
