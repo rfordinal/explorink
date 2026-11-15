@@ -1079,16 +1079,35 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   // would be a lie, so that branch does without it.
   const char* reassurance = cardReady ? tr(STR_MAP_NO_DATA_WORKS) : nullptr;
 
+  // One step down from the screens this borrows its shape from
+  // (composeLoadingTiles uses UI_12 over UI_10). This box sits on a working
+  // map rather than replacing it, and at UI_12/UI_10 it read as an alert.
+  // Maintainer's call, 2026-11-14.
   const char* title = tr(STR_MAP_NO_DATA_TITLE);
-  const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
-  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
-  constexpr int kPadX = 14;
-  constexpr int kPadY = 12;
-  constexpr int kGap = 4;
+  constexpr int kTitleFont = UI_10_FONT_ID;
+  constexpr int kBodyFont = SMALL_FONT_ID;
+  const int titleH = renderer.getLineHeight(kTitleFont);
+  const int lineH = renderer.getLineHeight(kBodyFont);
+  constexpr int kPadX = 12;
+  constexpr int kPadY = 10;
+  constexpr int kGap = 3;
 
-  // Never under the side hints: the zoom boxes are drawn after this and would
-  // sit on top of the text's last characters.
-  const int maxBoxW = renderer.getScreenWidth() - 2 * (kSideHintReservedPx + 6);
+  // Never over the side hints. The notice is composed AFTER them in this frame
+  // (drawZoomSideHints() runs earlier), so an unclamped box would paint over
+  // the zoom boxes rather than being painted over -- the rider would lose the
+  // hints, not the text.
+  //
+  // Taken from the rect the theme actually draws, not from kSideHintReservedPx:
+  // that constant was read off an X4 screenshot and does not follow
+  // `sideButtonHintsWidth` when a panel scales it, which left 1 px of overlap
+  // on the T5 S3 Pro at the clamp limit. The X3 draws one box per side as a
+  // full-width band, and its rect says nothing about the horizontal clearance,
+  // so that board keeps the constant.
+  const Rect sideHintRect = GUI.sideButtonHintsRect(renderer);
+  const int screenW = renderer.getScreenWidth();
+  const int sideReserved =
+      (sideHintRect.width > 0 && sideHintRect.width < screenW) ? screenW - sideHintRect.x : kSideHintReservedPx;
+  const int maxBoxW = screenW - 2 * (sideReserved + 4);
   const int maxTextW = maxBoxW - 2 * kPadX;
 
   // Each line is fitted to that interior rather than merely measured. Clamping
@@ -1110,16 +1129,16 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   if (extra != nullptr) ++bodyLines;
   if (reassurance != nullptr) ++bodyLines;
 
-  int textW = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
+  int textW = renderer.getTextWidth(kTitleFont, title, EpdFontFamily::BOLD);
   for (const char* line : {action, extra, reassurance}) {
     if (line == nullptr) continue;
-    const int w = renderer.getTextWidth(UI_10_FONT_ID, line);
+    const int w = renderer.getTextWidth(kBodyFont, line);
     if (w > textW) textW = w;
   }
 
   const int boxW = textW + 2 * kPadX;
   const int boxH = titleH + bodyLines * (lineH + kGap) + 2 * kPadY;
-  const int boxX = (renderer.getScreenWidth() - boxW) / 2;
+  const int boxX = (screenW - boxW) / 2;
   // Above the marker rather than centred on the panel: the marker is the one
   // thing on this frame that is working, and covering it would say the opposite
   // of what the text says.
@@ -1140,15 +1159,15 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
   };
 
   int y = boxY + kPadY;
-  drawLine(UI_12_FONT_ID, y, title, EpdFontFamily::BOLD);
+  drawLine(kTitleFont, y, title, EpdFontFamily::BOLD);
   y += titleH + kGap;
-  drawLine(UI_10_FONT_ID, y, action, EpdFontFamily::REGULAR);
+  drawLine(kBodyFont, y, action, EpdFontFamily::REGULAR);
   y += lineH + kGap;
   if (extra != nullptr) {
-    drawLine(UI_10_FONT_ID, y, extra, EpdFontFamily::REGULAR);
+    drawLine(kBodyFont, y, extra, EpdFontFamily::REGULAR);
     y += lineH + kGap;
   }
-  if (reassurance != nullptr) drawLine(UI_10_FONT_ID, y, reassurance, EpdFontFamily::REGULAR);
+  if (reassurance != nullptr) drawLine(kBodyFont, y, reassurance, EpdFontFamily::REGULAR);
 }
 
 // Returns `text` when it already fits `maxWidth`, otherwise a truncated copy in
