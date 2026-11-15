@@ -153,6 +153,23 @@ when they match. Verified by repeating the jump: the second frame at the parked
 spot shows `Not built yet, auto retry shortly`, and the first frame 300 km away
 shows `Auto sync on, the phone will fetch it`.
 
+**Repeated on the T5 S3 Pro with a real phone, 2026-11-15.** That board runs
+`mapGnssPosition=1`, so its map session owns the receiver and starts no radio
+for a phone ("Autosync needs the phone link, so a GNSS session has none",
+above) -- the setting has to go to 0 and the map be re-entered before any of
+this is reachable there. **No pairing was needed**: the bridge scans for the
+names in `BleLink.KNOWN_DEVICE_NAMES`, `LilyGoT5S3Map` among them, so it
+attached by name as soon as the X4 Pro left the map and stopped advertising.
+One reader at a time, in practice, because the phone holds one link.
+
+The run then reproduced the whole chain on that panel: `autosync: asked for 1
+tiles on screen`, `rx: skip 13 4882 3039 nosource`, `z13 4882/3039 refused,
+not asking again`, the second frame at that range printing `Not built yet,
+auto retry shortly`, and the first frame 300 km away printing `Auto sync on,
+the phone will fetch it`. Both boards restored afterwards: `mapGnssPosition`
+back to 1 and the X4 Pro back on the map, which is what the phone reconnects
+to.
+
 **Neither review round caught it.** Both found that the countdown was about the
 wrong tiles, and the fix for the steady state was right; the extra frame only
 showed up because the board was actually moved. Reviews read the code, the
