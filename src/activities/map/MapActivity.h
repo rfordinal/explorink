@@ -588,10 +588,17 @@ class MapActivity final : public Activity,
   // from, sorts (the `missing` console verb) and push_backs into (`fake`,
   // record()), on ordinary loop ticks that run while a frame is composing. A
   // reallocation under the render task's iterator is heap corruption hours away
-  // from its cause -- the same reason hatchedThisFrame_ exists.
+  // from its cause -- the same reason hatchedThisFrame_ exists. It counts only
+  // the tiles the last frame drew, so the countdown is about what is hatched on
+  // screen rather than the soonest retry anywhere in a ride-long store.
   uint32_t noDataRetryMs_ = 0;
-  uint32_t noDataRetryPollMs_ = 0;
-  void refreshNoDataRetry();
+  uint32_t noDataPollMs_ = 0;
+  // Whether the card still answers, probed by the main task rather than read
+  // off SDCardManager::initialized -- that flag is a boot-time verdict and a
+  // card pulled mid-ride never clears it, which is the one cause the notice
+  // must not get wrong.
+  bool cardReadable_ = true;
+  void refreshNoDataState();
   // The scale bar's geometry, worked out once and used twice: drawMapScale()
   // draws from it, and the chrome register reserves what it covers. Two copies
   // of this arithmetic is how the bar and the place label came to share pixels
