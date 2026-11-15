@@ -593,6 +593,15 @@ class MapActivity final : public Activity,
   // screen rather than the soonest retry anywhere in a ride-long store.
   uint32_t noDataRetryMs_ = 0;
   uint32_t noDataPollMs_ = 0;
+  // Which line the no-data notice is showing. Computed from one place
+  // (noDataVariantFor()) so the frame and the main task cannot disagree about
+  // it: the frame draws it, the main task watches it, and a change is the only
+  // thing worth spending a full-panel redraw on.
+  enum class NoDataVariant : uint8_t { None, NoCard, Fetching, RetryPending, AutoSyncOn, AutoSyncOff, NoLink };
+  static NoDataVariant noDataVariantFor(bool cardReady, bool linkUp, bool autoSyncOn, uint32_t pending,
+                                        uint32_t retryMs);
+  NoDataVariant noDataVariant_ = NoDataVariant::None;
+
   // Set by the frame that draws the no-data notice, read by the main task to
   // decide whether any of this is worth computing. One aligned bool, one
   // writer, one reader; a tick of staleness costs nothing because the only

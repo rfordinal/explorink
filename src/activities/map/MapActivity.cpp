@@ -997,6 +997,20 @@ Rect MapActivity::mapScaleRect() const {
               layout.clearanceY - layout.tickTop + 2 * pad};
 }
 
+// The notice's branch decision, in one place. The frame turns the answer into
+// text; the main task compares it against the last one to decide whether the
+// panel is out of date. Two copies of this ladder would drift the first time
+// one of them moved, and the drift would be invisible -- the panel would simply
+// stop being asked to redraw.
+MapActivity::NoDataVariant MapActivity::noDataVariantFor(bool cardReady, bool linkUp, bool autoSyncOn, uint32_t pending,
+                                                         uint32_t retryMs) {
+  if (!cardReady) return NoDataVariant::NoCard;
+  if (linkUp && pending > 0) return NoDataVariant::Fetching;
+  if (linkUp && autoSyncOn) return retryMs != 0 ? NoDataVariant::RetryPending : NoDataVariant::AutoSyncOn;
+  if (linkUp) return NoDataVariant::AutoSyncOff;
+  return NoDataVariant::NoLink;
+}
+
 void MapActivity::refreshNoDataState() {
   // Nothing to publish unless the last frame actually drew the notice -- which
   // is almost never: a drawn map, the overview, a popup. It keeps the walk over
@@ -1022,20 +1036,27 @@ void MapActivity::refreshNoDataState() {
                                                           lastTileRange_.col1, lastTileRange_.row1, now)
                        : 0;
 
-  // **And ask for the frame that shows it.** A full compose happens only on
-  // MapFollow::Action::ReAnchor; Skip and MoveMarker never call
+  // **And ask for the frame that shows what changed.** A full compose happens
+  // only on MapFollow::Action::ReAnchor; Skip and MoveMarker never call
   // composeViewport() (applyFix()). So a rider who stops -- which is what you
-  // do when the screen is blank -- gets the frame that says "the phone will
-  // fetch it" and then no frame at all, and the countdown this feature exists
-  // for never appears. Nothing else schedules one: no tile arrives, so no
-  // arrival redraw is armed either. The hardware check that "confirmed" the
-  // countdown drove `redraw` over the console, which manufactured the second
-  // frame the product does not produce.
+  // do when the screen is blank -- gets one frame and then nothing, and the
+  // panel keeps whatever sentence it had.
   //
-  // Only on the 0 -> pending edge, so a ticking countdown does not cost a
-  // full-panel redraw a minute on e-ink.
-  if (was == 0 && noDataRetryMs_ != 0) {
-    LOG_DBG(kLogTag, "no-data notice: retry scheduled, asking for the frame that shows it");
+  // Measured on an X4 Pro, 2026-11-15, with an earlier version of this that
+  // fired only when the countdown appeared: the panel sat on "Your phone is
+  // sending it now (3)" while all three of those tiles were refused over the
+  // radio a minute later. The right trigger is the line changing, not one
+  // branch of it arming.
+  //
+  // Variant changes only, never the ticking minutes: a redraw a minute on
+  // e-ink is not worth a number nobody is watching.
+  const NoDataVariant variant =
+      noDataVariantFor(Storage.ready(), bleInUse_ && freeink::BlePositionServer::getInstance().connIntervalMs() != 0,
+                       SETTINGS.mapAutoSyncTiles != 0, autoSyncPending_, noDataRetryMs_);
+  if (variant != noDataVariant_) {
+    LOG_DBG(kLogTag, "no-data notice: line changed (%u -> %u), asking for a frame",
+            static_cast<unsigned>(noDataVariant_), static_cast<unsigned>(variant));
+    noDataVariant_ = variant;
     requestFrame(FrameRequest::Current);
   }
 }
@@ -1091,64 +1112,61 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, const MapViewport::Tile
   char fetching[48];
   char retry[48];
   const char* action = nullptr;
+  const char* extra = nullptr;
   // No minutes anywhere unless the device knows one. The only figure anybody
   // had written down was the 20 to 40 minutes a WHOLE CITY takes on the sync
   // screen, and one screenful is a reactive-sync tile of 6 kB to 75 kB over a
   // link measured at 8.9 kB/s -- forty times smaller (docs/missing-tiles.md).
   // The one honest number here is the refusal schedule.
-  const char* extra = nullptr;
-  if (!cardReady) {
-    action = tr(STR_MAP_NO_DATA_NO_CARD);
-    extra = tr(STR_MAP_NO_DATA_CHECK_CARD);
-  } else if (linkUp && autoSyncPending_ > 0) {
-    // Gated on the link like every other branch: nothing clears
-    // autoSyncPending_ until expireAutoSync()'s quiet timer, so without this a
-    // dropped link leaves "sending it now" on the glass for 45 s after the
-    // phone stopped being there.
-    snprintf(fetching, sizeof(fetching), "%s (%d)", tr(STR_MAP_NO_DATA_FETCHING), static_cast<int>(autoSyncPending_));
-    action = fetching;
-  } else if (linkUp && SETTINGS.mapAutoSyncTiles != 0) {
-    // A refused tile is the phone's 404 against the CDN, which is also what
-    // queues the build (../../../docs/tile-autobuild.md). So "not built yet" is
-    // the truth, the wait is scheduled, and the rider can be told both.
-    //
-    // Read off a member the MAIN task publishes, never walked here:
-    // msUntilNextRetryIn() iterates the same lock-free vector the main task
-    // erases from and sorts on ordinary loop ticks, and those ticks run while
-    // this frame is composing (see hatchedThisFrame_'s comment and
-    // refreshNoDataState()). It is already capped at the refusal ceiling, so
-    // nothing is clamped here -- MissingTileRetry.h owns that rule.
-    //
-    // **But it belongs to the range the main task last saw, and this frame may
-    // be the one that moves.** lastTileRange_ is still the PREVIOUS frame's
-    // range at this point (the snapshot further down is what updates it), so a
-    // mismatch means the published figure was computed somewhere else. Measured
-    // on an X4 Pro, 2026-11-15: parked over the Black Sea until the retry line
-    // appeared, then jumped 500 km east to ground that had never been asked
-    // for, and the first frame there printed the same countdown. On e-ink that
-    // frame can sit for minutes. A move prints "the phone will fetch it", which
-    // is what is about to happen, and the countdown returns on the next frame
-    // once the main task has caught up.
-    const bool retryIsForThisRange = lastTileRange_.valid && lastTileRange_.z == range.z &&
-                                     lastTileRange_.col0 == range.col0 && lastTileRange_.row0 == range.row0 &&
-                                     lastTileRange_.col1 == range.col1 && lastTileRange_.row1 == range.row1;
-    const uint32_t waitMs = retryIsForThisRange ? noDataRetryMs_ : 0;
-    if (waitMs == 0) {
+  //
+  // **The countdown belongs to the range the main task last saw**, and this
+  // frame may be the one that moves. lastTileRange_ still holds the PREVIOUS
+  // frame's range here (the snapshot further down updates it), so a mismatch
+  // means the published figure was computed somewhere else. Measured on an X4
+  // Pro, 2026-11-15: parked over the Black Sea until the retry line appeared,
+  // then jumped 500 km east to ground nothing had asked for, and the first
+  // frame there printed the same countdown.
+  const bool retryIsForThisRange = lastTileRange_.valid && lastTileRange_.z == range.z &&
+                                   lastTileRange_.col0 == range.col0 && lastTileRange_.row0 == range.row0 &&
+                                   lastTileRange_.col1 == range.col1 && lastTileRange_.row1 == range.row1;
+  const uint32_t waitMs = retryIsForThisRange ? noDataRetryMs_ : 0;
+  switch (noDataVariantFor(cardReady, linkUp, SETTINGS.mapAutoSyncTiles != 0, autoSyncPending_, waitMs)) {
+    case NoDataVariant::NoCard:
+      action = tr(STR_MAP_NO_DATA_NO_CARD);
+      extra = tr(STR_MAP_NO_DATA_CHECK_CARD);
+      break;
+    case NoDataVariant::Fetching:
+      // The count is the honest part: it says the device asked for something
+      // specific and is waiting, rather than that it is thinking.
+      snprintf(fetching, sizeof(fetching), "%s (%d)", tr(STR_MAP_NO_DATA_FETCHING), static_cast<int>(autoSyncPending_));
+      action = fetching;
+      break;
+    case NoDataVariant::RetryPending:
+      // A refused tile is the phone's 404 against the CDN, which is also what
+      // queues the build (../../../docs/tile-autobuild.md). So "not built yet"
+      // is the truth and the wait is scheduled.
+      if (waitMs < 60u * 1000u) {
+        action = tr(STR_MAP_NO_DATA_RETRY_SOON);
+      } else {
+        snprintf(retry, sizeof(retry), tr(STR_MAP_NO_DATA_RETRY_MIN), static_cast<int>(waitMs / 60000u));
+        action = retry;
+      }
+      break;
+    case NoDataVariant::AutoSyncOn:
       action = tr(STR_MAP_NO_DATA_AUTO_ON);
-    } else if (waitMs < 60u * 1000u) {
-      action = tr(STR_MAP_NO_DATA_RETRY_SOON);
-    } else {
-      snprintf(retry, sizeof(retry), tr(STR_MAP_NO_DATA_RETRY_MIN), static_cast<int>(waitMs / 60000u));
-      action = retry;
-    }
-  } else if (linkUp) {
-    // Autosync is off by default and spends the rider's mobile data, so the
-    // notice says it is off rather than quietly turning it on -- and still
-    // names the screen that works without it.
-    action = tr(STR_MAP_NO_DATA_AUTO_OFF);
-    extra = tr(STR_MAP_NO_DATA_ASK_PHONE);
-  } else {
-    action = tr(STR_MAP_NO_DATA_CONNECT);
+      break;
+    case NoDataVariant::AutoSyncOff:
+      // Autosync is off by default and spends the rider's mobile data, so the
+      // notice says it is off rather than quietly turning it on -- and still
+      // names the screen that works without it.
+      action = tr(STR_MAP_NO_DATA_AUTO_OFF);
+      extra = tr(STR_MAP_NO_DATA_ASK_PHONE);
+      break;
+    case NoDataVariant::NoLink:
+      action = tr(STR_MAP_NO_DATA_CONNECT);
+      break;
+    case NoDataVariant::None:
+      return;
   }
   // Last line whenever the device really is fine, because the fear this notice
   // exists to answer is "I bought a broken device". With the card unreadable it
