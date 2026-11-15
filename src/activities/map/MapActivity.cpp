@@ -132,6 +132,14 @@ static portMUX_TYPE mapFrameRequestSpinlock = portMUX_INITIALIZER_UNLOCKED;
 // list that has barely changed.
 constexpr uint32_t kAutoSyncIntervalMs = 60 * 1000;
 
+// How often the main task re-reads what the no-data notice needs: the refusal
+// schedule for the tiles on screen, and whether the card still answers. One
+// second is far finer than the notice needs -- it is only ever painted by a
+// full frame, which costs seconds -- and it keeps both the walk over
+// MISSING_TILES (up to 200 entries) and an SD directory lookup off every loop
+// tick.
+constexpr uint32_t kNoDataPollMs = 1000;
+
 // How long an ask may go **completely quiet** before the device gives up on it.
 // Not a budget for the whole fetch: expireAutoSync() rearms this every time the
 // receiver's byte counters move, so a slow transfer stays alive and only real
@@ -987,6 +995,318 @@ Rect MapActivity::mapScaleRect() const {
   const int pad = kScaleHaloPx;
   return Rect{kScaleMarginLeft - pad, layout.tickTop - pad, layout.totalPx + 2 * pad,
               layout.clearanceY - layout.tickTop + 2 * pad};
+}
+
+// The notice's branch decision, in one place. The frame turns the answer into
+// text; the main task compares it against the last one to decide whether the
+// panel is out of date. Two copies of this ladder would drift the first time
+// one of them moved, and the drift would be invisible -- the panel would simply
+// stop being asked to redraw.
+MapActivity::NoDataVariant MapActivity::noDataVariantFor(bool cardReady, bool linkUp, bool autoSyncOn, uint32_t pending,
+                                                         uint32_t retryMs) {
+  if (!cardReady) return NoDataVariant::NoCard;
+  if (linkUp && pending > 0) return NoDataVariant::Fetching;
+  if (linkUp && autoSyncOn) return retryMs != 0 ? NoDataVariant::RetryPending : NoDataVariant::AutoSyncOn;
+  if (linkUp) return NoDataVariant::AutoSyncOff;
+  return NoDataVariant::NoLink;
+}
+
+void MapActivity::refreshNoDataState() {
+  // Nothing to publish unless the last frame actually drew the notice -- which
+  // is almost never: a drawn map, the overview, a popup. It keeps the walk over
+  // MISSING_TILES (up to 200 entries) off the ordinary tick.
+  if (!noDataNoticeShown_) {
+    noDataRetryMs_ = 0;
+    return;
+  }
+  const uint32_t now = millis();
+  if (noDataPollMs_ != 0 && static_cast<int32_t>(now - noDataPollMs_) < 0) return;
+  noDataPollMs_ = now + kNoDataPollMs;
+
+  // Main task only, and only with no frame in flight (see the caller). The
+  // frame must not walk MISSING_TILES itself -- noDataRetryMs_'s comment has
+  // the reason -- and it must not read lastTileRange_ while the render task is
+  // writing it.
+  //
+  // Restricted to the tiles the last frame drew: the store spans a whole ride,
+  // so its soonest retry can belong to ground the rider left an hour ago.
+  const uint32_t was = noDataRetryMs_;
+  noDataRetryMs_ = lastTileRange_.valid
+                       ? MISSING_TILES.msUntilNextRetryIn(lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0,
+                                                          lastTileRange_.col1, lastTileRange_.row1, now)
+                       : 0;
+
+  // **And ask for the frame that shows what changed.** A full compose happens
+  // only on MapFollow::Action::ReAnchor; Skip and MoveMarker never call
+  // composeViewport() (applyFix()). So a rider who stops -- which is what you
+  // do when the screen is blank -- gets one frame and then nothing, and the
+  // panel keeps whatever sentence it had.
+  //
+  // Measured on an X4 Pro, 2026-11-15, with an earlier version of this that
+  // fired only when the countdown appeared: the panel sat on "Your phone is
+  // sending it now (3)" while all three of those tiles were refused over the
+  // radio a minute later. The right trigger is the line changing, not one
+  // branch of it arming.
+  //
+  // Variant changes only, never the ticking minutes: a redraw a minute on
+  // e-ink is not worth a number nobody is watching.
+  const NoDataVariant variant =
+      noDataVariantFor(Storage.ready(), bleInUse_ && freeink::BlePositionServer::getInstance().connIntervalMs() != 0,
+                       SETTINGS.mapAutoSyncTiles != 0, autoSyncPending_, noDataRetryMs_);
+  if (variant != noDataVariant_) {
+    LOG_DBG(kLogTag, "no-data notice: line changed (%u -> %u), asking for a frame",
+            static_cast<unsigned>(noDataVariant_), static_cast<unsigned>(variant));
+    noDataVariant_ = variant;
+    requestFrame(FrameRequest::Current);
+  }
+}
+
+void MapActivity::drawNoDataNotice(uint32_t missingMask, const MapViewport::TileRange& range) {
+  const uint32_t tileCount = range.count();
+  // Published for refreshNoDataState(): every early return here means the
+  // main task has nothing to compute for this screen.
+  noDataNoticeShown_ = false;
+  // **A range CAN exceed kMaxTiles, and the mask is what bounds this.** An
+  // X4 Pro in Hike mode at rung 6 logged `tile range 1119..1122 x 708..712 =
+  // 20 tiles, over the 3x3 worst case` on 2026-11-15, and composeViewport()
+  // only LOGS that -- it draws the frame anyway. So the guard cannot be
+  // kMaxTiles and cannot be dropped either: `unavailableMask()` carries one
+  // bit per tile for index < 32 (MapTileSource), so past 32 the "every tile
+  // missing" question has no answer in it, and `1u << 32` is undefined on top.
+  // A review called this arm dead on the strength of a bail-out in
+  // composeViewport() that is not there; the board settled it.
+  if (tileCount == 0 || tileCount > 32u) return;
+  // Every tile, not most of them: a partially drawn map explains itself, and a
+  // box over one hole would cover the map the rider does have. kMaxTiles is 16,
+  // so the shift cannot reach the width of the type.
+  const uint32_t allMissing = (tileCount == 32u) ? 0xFFFFFFFFu : ((1u << tileCount) - 1u);
+  if ((missingMask & allMissing) != allMissing) return;
+  noDataNoticeShown_ = true;
+
+  auto& ble = freeink::BlePositionServer::getInstance();
+  const bool linkUp = bleInUse_ && ble.connIntervalMs() != 0;
+  // A card that never mounted says so, and is told apart from unbuilt ground.
+  // A card pulled MID-RIDE is not -- see the limit below.
+  //
+  // `Storage.ready()` is SDCardManager::initialized, set by begin() and by
+  // shutdown()/detachFilesystemForRawAccess(), none of which runs on a ride.
+  // So it answers "the card mounted at boot", which is the never-mounted case
+  // exactly. Plain bool, free to read from the render task.
+  //
+  // **An exists() probe does not close the gap, which is why there is not
+  // one.** SdFat answers a directory lookup out of FsCache when the sector is
+  // already resident, with no SPI transaction at all (FsCache::prepare(), the
+  // `m_sector != sector` branch), and a failed read never updates `m_sector`
+  // -- so the root sector stays cached after the card is gone and the probe
+  // keeps answering true. A 1 Hz version of it bought that wrong answer plus
+  // an SD lookup every second on a screen whose power story counts SD traffic
+  // per minute (docs/power-idle-sleep.md).
+  //
+  // **The limit, written down rather than papered over**: with the card pulled
+  // mid-ride every tile fails to open, which is pixel-for-pixel what riding
+  // onto unbuilt ground looks like, and this notice tells that rider the
+  // device is fine. Telling the two apart needs MapTileSource to report *why*
+  // an open failed -- I/O error against not-found -- which it does not today.
+  const bool cardReady = Storage.ready();
+
+  char fetching[48];
+  char retry[48];
+  const char* action = nullptr;
+  const char* extra = nullptr;
+  // No minutes anywhere unless the device knows one. The only figure anybody
+  // had written down was the 20 to 40 minutes a WHOLE CITY takes on the sync
+  // screen, and one screenful is a reactive-sync tile of 6 kB to 75 kB over a
+  // link measured at 8.9 kB/s -- forty times smaller (docs/missing-tiles.md).
+  // The one honest number here is the refusal schedule.
+  //
+  // **The countdown belongs to the range the main task last saw**, and this
+  // frame may be the one that moves. lastTileRange_ still holds the PREVIOUS
+  // frame's range here (the snapshot further down updates it), so a mismatch
+  // means the published figure was computed somewhere else. Measured on an X4
+  // Pro, 2026-11-15: parked over the Black Sea until the retry line appeared,
+  // then jumped 500 km east to ground nothing had asked for, and the first
+  // frame there printed the same countdown.
+  const bool retryIsForThisRange = lastTileRange_.valid && lastTileRange_.z == range.z &&
+                                   lastTileRange_.col0 == range.col0 && lastTileRange_.row0 == range.row0 &&
+                                   lastTileRange_.col1 == range.col1 && lastTileRange_.row1 == range.row1;
+  const uint32_t waitMs = retryIsForThisRange ? noDataRetryMs_ : 0;
+  switch (noDataVariantFor(cardReady, linkUp, SETTINGS.mapAutoSyncTiles != 0, autoSyncPending_, waitMs)) {
+    case NoDataVariant::NoCard:
+      action = tr(STR_MAP_NO_DATA_NO_CARD);
+      extra = tr(STR_MAP_NO_DATA_CHECK_CARD);
+      break;
+    case NoDataVariant::Fetching:
+      // The count is the honest part: it says the device asked for something
+      // specific and is waiting, rather than that it is thinking.
+      snprintf(fetching, sizeof(fetching), "%s (%d)", tr(STR_MAP_NO_DATA_FETCHING), static_cast<int>(autoSyncPending_));
+      action = fetching;
+      break;
+    case NoDataVariant::RetryPending:
+      // A refused tile is the phone's 404 against the CDN, which is also what
+      // queues the build (../../../docs/tile-autobuild.md). So "not built yet"
+      // is the truth and the wait is scheduled.
+      if (waitMs < 60u * 1000u) {
+        action = tr(STR_MAP_NO_DATA_RETRY_SOON);
+      } else {
+        snprintf(retry, sizeof(retry), tr(STR_MAP_NO_DATA_RETRY_MIN), static_cast<int>(waitMs / 60000u));
+        action = retry;
+      }
+      break;
+    case NoDataVariant::AutoSyncOn:
+      action = tr(STR_MAP_NO_DATA_AUTO_ON);
+      break;
+    case NoDataVariant::AutoSyncOff:
+      // Autosync is off by default and spends the rider's mobile data, so the
+      // notice says it is off rather than quietly turning it on -- and still
+      // names the screen that works without it.
+      action = tr(STR_MAP_NO_DATA_AUTO_OFF);
+      extra = tr(STR_MAP_NO_DATA_ASK_PHONE);
+      break;
+    case NoDataVariant::NoLink:
+      action = tr(STR_MAP_NO_DATA_CONNECT);
+      break;
+    case NoDataVariant::None:
+      return;
+  }
+  // Last line whenever the device really is fine, because the fear this notice
+  // exists to answer is "I bought a broken device". With the card unreadable it
+  // would be a lie, so that branch does without it.
+  const char* reassurance = cardReady ? tr(STR_MAP_NO_DATA_WORKS) : nullptr;
+
+  // One step down from the screens this borrows its shape from
+  // (composeLoadingTiles uses UI_12 over UI_10). This box sits on a working
+  // map rather than replacing it, and at UI_12/UI_10 it read as an alert.
+  // Maintainer's call, 2026-11-14.
+  const char* title = tr(STR_MAP_NO_DATA_TITLE);
+  constexpr int kTitleFont = UI_10_FONT_ID;
+  constexpr int kBodyFont = SMALL_FONT_ID;
+  const int titleH = renderer.getLineHeight(kTitleFont);
+  const int lineH = renderer.getLineHeight(kBodyFont);
+  constexpr int kPadX = 12;
+  constexpr int kPadY = 10;
+  constexpr int kGap = 3;
+
+  // Clear of the side hints, which are painted AFTER this box in the same frame
+  // (drawMapButtonHints(), further down composeViewport). So the hints would
+  // survive an unclamped box; what would not is the chrome snapshot taken
+  // between the two -- captureRegion(chromeSide_, ...) would store the notice's
+  // white fill as if it were map pixels, and the next swapChrome() on a
+  // touch-lock toggle would paint that box back into the hint band.
+  //
+  // Taken from BaseTheme's own rect rather than kSideHintReservedPx, which was
+  // read off an X4 screenshot and does not follow `sideButtonHintsWidth` when a
+  // panel scales it -- 1 px of overlap on the T5 S3 Pro at the clamp limit. Two
+  // cases keep the constant: the X3 draws one box per side as a full-width
+  // band, whose rect says nothing about horizontal clearance, and hidden hints
+  // report an empty rect. `sideButtonHintsRect()` is not virtual, so a theme
+  // that draws its boxes elsewhere (LyraTheme, flush right) is described by the
+  // base rect rather than by its own -- it over-reserves there, which is the
+  // safe direction.
+  const Rect sideHintRect = GUI.sideButtonHintsRect(renderer);
+  const int screenW = renderer.getScreenWidth();
+  const int sideReserved =
+      (sideHintRect.width > 0 && sideHintRect.width < screenW) ? screenW - sideHintRect.x : kSideHintReservedPx;
+  const int maxBoxW = screenW - 2 * (sideReserved + 4);
+  const int maxTextW = maxBoxW - 2 * kPadX;
+
+  // Each line is fitted to that interior rather than merely measured. Clamping
+  // the BOX alone does not clamp the text: every line is centred, so a line
+  // wider than the interior spills out of the white fill on both sides, onto
+  // the hatch it exists to cover and under the side hints. English fits on
+  // every panel today with 380 px to spare; a German or Russian translation of
+  // these strings runs 30-40 % longer and would not.
+  char titleFit[56];
+  char actionFit[56];
+  char extraFit[56];
+  char reassuranceFit[56];
+  // Measured with the fonts that draw, not the ones this box used before the
+  // step-down: SMALL is 0.82x UI_10 and ubuntu_10_bold 0.83x ubuntu_12_bold,
+  // so fitting against the larger pair truncated lines that fit perfectly well
+  // -- which is exactly the long-translation case this function exists for.
+  title = fitTextToWidth(kTitleFont, title, maxTextW, titleFit, sizeof(titleFit), EpdFontFamily::BOLD);
+  action = fitTextToWidth(kBodyFont, action, maxTextW, actionFit, sizeof(actionFit));
+  extra = fitTextToWidth(kBodyFont, extra, maxTextW, extraFit, sizeof(extraFit));
+  reassurance = fitTextToWidth(kBodyFont, reassurance, maxTextW, reassuranceFit, sizeof(reassuranceFit));
+
+  int bodyLines = 1;  // action
+  if (extra != nullptr) ++bodyLines;
+  if (reassurance != nullptr) ++bodyLines;
+
+  int textW = renderer.getTextWidth(kTitleFont, title, EpdFontFamily::BOLD);
+  for (const char* line : {action, extra, reassurance}) {
+    if (line == nullptr) continue;
+    const int w = renderer.getTextWidth(kBodyFont, line);
+    if (w > textW) textW = w;
+  }
+
+  const int boxW = textW + 2 * kPadX;
+  const int boxH = titleH + bodyLines * (lineH + kGap) + 2 * kPadY;
+  const int boxX = (screenW - boxW) / 2;
+  // Above the marker rather than centred on the panel: the marker is the one
+  // thing on this frame that is working, and covering it would say the opposite
+  // of what the text says.
+  const int contentTop = mapContentTop();
+  int boxY = contentTop + (MapViewport::markerYForStep(markerStep()) - contentTop - boxH) / 2;
+  if (boxY < contentTop + 8) boxY = contentTop + 8;
+
+  // Opaque, with a frame: the hatch runs under it, and text straight on hatch
+  // is unreadable on the panel at this stroke weight.
+  renderer.fillRect(boxX, boxY, boxW, boxH, false);
+  renderer.drawRect(boxX, boxY, boxW, boxH, 2, true);
+
+  // Centred in the BOX, not on the panel -- drawCenteredText() uses the screen
+  // width and knows nothing about boxW.
+  auto drawLine = [&](int fontId, int y, const char* text, EpdFontFamily::Style style) {
+    const int w = renderer.getTextWidth(fontId, text, style);
+    renderer.drawText(fontId, boxX + (boxW - w) / 2, y, text, true, style);
+  };
+
+  int y = boxY + kPadY;
+  drawLine(kTitleFont, y, title, EpdFontFamily::BOLD);
+  y += titleH + kGap;
+  drawLine(kBodyFont, y, action, EpdFontFamily::REGULAR);
+  y += lineH + kGap;
+  if (extra != nullptr) {
+    drawLine(kBodyFont, y, extra, EpdFontFamily::REGULAR);
+    y += lineH + kGap;
+  }
+  if (reassurance != nullptr) drawLine(kBodyFont, y, reassurance, EpdFontFamily::REGULAR);
+}
+
+// Returns `text` when it already fits `maxWidth`, otherwise a truncated copy in
+// `buf` ending in an ellipsis. nullptr in, nullptr out.
+//
+// GfxRenderer::truncatedText() does the same job and is not used here: it
+// builds std::strings and concatenates one per loop iteration, which is heap
+// traffic on the render task during compose (CLAUDE.md's string policy). The
+// price of the stack version is a different ellipsis -- "..." against that
+// one's U+2026 -- because the 8 pt body face is not guaranteed to carry the
+// single glyph.
+//
+// Cuts on a UTF-8 character boundary: trimming to a byte count alone can leave
+// half a multi-byte sequence, which the font renderer draws as a replacement
+// glyph or nothing at all. Continuation bytes are 0b10xxxxxx.
+const char* MapActivity::fitTextToWidth(int fontId, const char* text, int maxWidth, char* buf, size_t bufSize,
+                                        EpdFontFamily::Style style) const {
+  if (text == nullptr) return nullptr;
+  if (maxWidth <= 0 || bufSize < 8) return text;
+  if (renderer.getTextWidth(fontId, text, style) <= maxWidth) return text;
+
+  static constexpr char kEllipsis[] = "...";
+  size_t len = strlen(text);
+  if (len >= bufSize) len = bufSize - 1;
+  while (len > 0) {
+    --len;
+    while (len > 0 && (static_cast<unsigned char>(text[len]) & 0xC0) == 0x80) --len;
+    if (len + sizeof(kEllipsis) > bufSize) continue;
+    memcpy(buf, text, len);
+    memcpy(buf + len, kEllipsis, sizeof(kEllipsis));
+    if (renderer.getTextWidth(fontId, buf, style) <= maxWidth) return buf;
+  }
+  // Even the ellipsis alone is too wide for the box: draw nothing rather than
+  // one dot hanging in the middle of it.
+  buf[0] = '\0';
+  return buf;
 }
 
 void MapActivity::drawMapScale() {
@@ -3825,6 +4145,16 @@ void MapActivity::loop() {
     drainTransferredTiles();
     expireAutoSync();
     maybeAutoSyncTiles();
+    // Same reason as the four above, and it was outside this block until a
+    // review asked the right question: refreshNoDataState() reads
+    // lastTileRange_, which the render task writes field by field with no lock
+    // (composeViewport()'s snapshot). A read torn across that write yields a
+    // rectangle that is neither frame's -- wider than the screen, able to cover
+    // a refused tile that is not on it -- and the frame after that one matches
+    // the range, so the guard in drawNoDataNotice() waves the stale number
+    // through. The window is only open while a frame is in flight, so standing
+    // aside closes it completely.
+    refreshNoDataState();
   }
   maybeCheckTileFreshness();
   maybeSyncPointsLive();
@@ -7872,6 +8202,7 @@ void MapActivity::composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingS
   drawHeaderStatus();
   drawHikeElevationLine();  // no-op outside Hike mode
   drawMapScale();
+  drawNoDataNotice(missing, range);
 
   // Does not count the marker or its patch save, both of which happen after the
   // readout is composed -- this is the tile-and-geometry cost, which is the one

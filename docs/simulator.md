@@ -70,6 +70,34 @@ The semantics do not have to match the device's, and sometimes must not.
 the simulator, because there the firmware calls `update()` several times inside
 one frame. The fork's `EXPLORINK.md` is where that reasoning lives.
 
+### The debt accumulates in silence, and it is not only the HAL
+
+Nobody builds the simulator on a schedule, so the gap is only ever found by
+whoever next needs it -- and by then it is several changes deep. On 2026-11-14
+`develop` needed **three** fixes before it linked, each a different kind:
+
+1. **A HAL signature that grew a parameter.** `displayWindow()` took
+   `PowerTelemetry::WindowSite` on the device and five arguments in the fork.
+   The error names `lib/GfxRenderer/GfxRenderer.cpp`, which is correct firmware
+   code.
+2. **A shim that was missing API the firmware started using.** `NimBLEUUID` and
+   `NimBLECharacteristic::setValue()`, both pulled in when `BlePositionServer`
+   added the standard device information service. Reads as
+   `'NimBLEUUID' was not declared in this scope` inside a library that compiles
+   fine for every real board.
+3. **A link-time hole from an excluded source file.** `network/FirmwareFlasher.cpp`
+   is deliberately out of the native build, but `SdFirmwareUpdateActivity` calls
+   into it, so the link failed on two `firmware_flash::` symbols. The fix is a
+   stub in `src/firmware_link_stubs.cpp` that **refuses** -- a host binary has no
+   OTA partition, and a stub answering OK would be worse than no stub.
+
+So the rule above widens: it is not only `lib/hal/` members. **Anything the
+firmware newly calls that the simulator fakes** -- the NimBLE shim, the Arduino
+shims, the deliberately excluded `.cpp` files -- is the fork's problem in the
+same pass. A cheap guard is to build `-e simulator` once alongside whatever
+board env a change is already built for; it is a native build and takes under a
+minute once warm, against the 8 to 9 minutes an ESP32 env costs.
+
 ## A brand-new file under `lib/hal/` does not exist in the simulator at all
 
 Different failure from the member-mismatch above, hit 2026-09-15 building

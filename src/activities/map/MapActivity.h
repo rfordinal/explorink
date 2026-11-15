@@ -568,6 +568,46 @@ class MapActivity final : public Activity,
   // labels rounded to a nice ground distance (1/2/5 x 10^n) for the current
   // zoom step's mpp (MapViewport::kZoomLadder).
   void drawMapScale();
+  // The whole viewport hatched means the rider is looking at a screen that says
+  // nothing except "no data", and on a fresh device that is every first frame.
+  // Hatch alone reads as a broken product rather than as a card with no tiles
+  // on it yet, so a frame with nothing under it carries a notice saying what is
+  // happening and what the rider can do. Drawn only when *every* tile in the
+  // range is missing: one hole in an otherwise drawn map is self-explanatory,
+  // and a box over it would cover the map the rider does have.
+  void drawNoDataNotice(uint32_t missingMask, const MapViewport::TileRange& range);
+  // Fits one line to a pixel width, truncating with an ellipsis on a UTF-8
+  // boundary. The notice needs it because its box is clamped away from the side
+  // hints while the text is not, and a translated string is not measured until
+  // it is on the panel.
+  const char* fitTextToWidth(int fontId, const char* text, int maxWidth, char* buf, size_t bufSize,
+                             EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  // What drawNoDataNotice() prints as its countdown, published by the main task
+  // in refreshNoDataRetry(). **Not read from MISSING_TILES in the frame**:
+  // msUntilNextRetryIn() walks the same lock-free vector the main task erases
+  // from, sorts (the `missing` console verb) and push_backs into (`fake`,
+  // record()), on ordinary loop ticks. A
+  // reallocation under the render task's iterator is heap corruption hours away
+  // from its cause -- the same reason hatchedThisFrame_ exists. It counts only
+  // the tiles the last frame drew, so the countdown is about what is hatched on
+  // screen rather than the soonest retry anywhere in a ride-long store.
+  uint32_t noDataRetryMs_ = 0;
+  uint32_t noDataPollMs_ = 0;
+  // Which line the no-data notice is showing. Computed from one place
+  // (noDataVariantFor()) so the frame and the main task cannot disagree about
+  // it: the frame draws it, the main task watches it, and a change is the only
+  // thing worth spending a full-panel redraw on.
+  enum class NoDataVariant : uint8_t { None, NoCard, Fetching, RetryPending, AutoSyncOn, AutoSyncOff, NoLink };
+  static NoDataVariant noDataVariantFor(bool cardReady, bool linkUp, bool autoSyncOn, uint32_t pending,
+                                        uint32_t retryMs);
+  NoDataVariant noDataVariant_ = NoDataVariant::None;
+
+  // Set by the frame that draws the no-data notice, read by the main task to
+  // decide whether any of this is worth computing. One aligned bool, one
+  // writer, one reader; a tick of staleness costs nothing because the only
+  // consequence is a walk that happens a second later.
+  bool noDataNoticeShown_ = false;
+  void refreshNoDataState();
   // The scale bar's geometry, worked out once and used twice: drawMapScale()
   // draws from it, and the chrome register reserves what it covers. Two copies
   // of this arithmetic is how the bar and the place label came to share pixels

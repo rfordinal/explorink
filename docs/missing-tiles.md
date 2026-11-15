@@ -47,6 +47,190 @@ of this store make it the wrong home:
 instead, empty on every boot. See [`tile-freshness.md`](tile-freshness.md) for
 the signal, the setting and the loop guard.
 
+## A fully hatched frame says nothing, so it carries a notice
+
+Hatch is the honest answer for one missing tile. For a frame where **every**
+tile is missing it is not an answer at all: the rider sees diagonal lines, a
+compass and a scale bar, and nothing on the panel says whether the device is
+broken, the card is empty, or the ground is simply unbuilt. On a fresh device
+that is the first frame of the product.
+
+`MapActivity::drawNoDataNotice()`, called from `composeViewport()`, draws a
+boxed notice over the hatch
+when the whole range is missing.
+
+**Only when every tile is missing.** A partially drawn map explains itself --
+the rider can see where the data stops -- and a box over it would cover the map
+they do have. The guard is the full-range mask, not a count threshold.
+
+**Six variants, each from a state the device already knows:**
+
+| State | Line under the title |
+|---|---|
+| `autoSyncPending_ > 0` | `Your phone is sending it now (N)` |
+| link up, autosync on, nothing refused | `Auto sync on, the phone will fetch it` |
+| link up, autosync on, a refusal pending under 60 s | `Not built yet, auto retry shortly` |
+| link up, autosync on, a refusal pending over 60 s | `Not built yet, auto retry in N min` |
+| link up, autosync off (the default) | `Auto sync is off` + `Get it from Home > Sync` |
+| no link | `Connect the phone app to get it` |
+| the card never mounted | `Map card not readable` + `Check the SD card` |
+
+Every variant **except the card one** ends with `Device is fine, map data is
+missing`, because the fear the notice exists to answer is "I bought a broken
+device", not "where are my tiles". With the card unreadable that line would be
+the lie, so that branch does without it.
+
+**And one case the notice gets wrong, on purpose rather than by accident.** A
+card pulled *mid-ride* fails every tile exactly as unbuilt ground does, and
+`Storage.ready()` only answers "it mounted at boot" -- so that rider is told the
+device is fine. An `exists()` probe was tried and removed: SdFat answers a
+directory lookup out of `FsCache` when the sector is resident, and a failed read
+never updates `m_sector`, so the probe keeps returning true after the card is
+gone (`FsCache::prepare()`). Closing this needs `MapTileSource` to report *why*
+an open failed -- I/O error against not-found -- which it does not today.
+
+**"Not built yet" is accurate, not a comfort.** A refusal is the phone's 404
+against the CDN, and that 404 is what queues the build
+(`../../docs/tile-autobuild.md`). The countdown is the refusal schedule this
+store already keeps, read through `MissingTilesStore::msUntilNextRetryIn()`
+-- the same `retryAtMs` that decides when autosync may ask again, so the text
+cannot drift from the behaviour. Rectangle-scoped, and the per-tile half of it
+lives in `MissingTileRetry.h` with host tests.
+
+**The frame it needs is asked for, not waited for.** A full compose happens only
+on `MapFollow::Action::ReAnchor`; `Skip` and `MoveMarker` never call
+`composeViewport()`. So a rider who stops -- which is what you do when the
+screen is blank -- would get "the phone will fetch it" and then no frame at all,
+and the countdown would never appear. `refreshNoDataState()` requests one frame
+on the 0 -> pending edge, and only that edge, so a ticking countdown costs no
+redraws.
+
+### No minutes unless the device knows the minutes
+
+The first draft of this notice said "the first area takes 20 to 40 minutes".
+That number is real and belongs to a different screen. It comes from a whole
+city on the sync screen -- 55 tiles, 16 MB -- and the notice is about **one
+viewport**, which is what autosync asks for: at most four tiles, and a
+reactive-sync tile is 6 kB to 75 kB ("What the panel says while a batch runs",
+below) against a city tile's 258 kB average. Over the 8.9 kB/s this link was
+measured at, one screenful is seconds to a couple of minutes. The draft was
+promising a wait roughly forty times too long.
+
+So the box prints no duration it cannot source. The outstanding square count
+comes from `autoSyncPending_`, the countdown from the refusal timer, and the
+remaining-time estimate stays on the sync screen, which measures its own.
+
+### Confirmed on hardware, 2026-11-14, X4 Pro
+
+Flashed `env:x4pro` at `cfbc32ea`, a phone bridge connected over BLE, driven
+with `pos` to ground the card does not cover:
+
+- Right after the move: `Auto sync on, the phone will fetch it`.
+- After the ask went out and the phone answered `skip` (the area is genuinely
+  unbuilt): `Not built yet, auto retry shortly`, then
+  `Not built yet, auto retry in 1 min` on a later frame. So the countdown came
+  from a refusal that really happened over the radio.
+- `mapAutoSyncTiles` toggled off over `CMD:SETTING`: the four-line
+  `Auto sync is off` / `Get it from Home > Sync` variant.
+- Bluetooth off on both phones, map re-entered: `Connect the phone app to get
+  it`.
+- **Negative tests both pass**: a viewport with 2 of 4 tiles present draws hatch
+  and no box, and a fully covered viewport is untouched.
+- Checked at zoom rungs 0, 4 and 6 -- the box is unchanged across the ladder.
+**The hands-off run, 2026-11-15, and what it took to pass it.** Parked an X4
+Pro on unbuilt sea, touched nothing afterwards -- no `pos`, no `redraw` -- and
+watched the log. First attempt: every ask came back `nosource` over the radio
+while the panel sat on `Your phone is sending it now (3)` indefinitely. The
+redraw request existed by then, but it fired on the countdown *arming*, and at
+that moment the fetching branch was still winning the ladder; by the time the
+line would have changed, the edge was spent.
+
+So the trigger is the **line**, not a branch. `noDataVariantFor()` is the one
+copy of the ladder: the frame turns its answer into text, the main task
+compares it with the last one and asks for a frame when it differs. Second
+attempt logged `no-data notice: line changed (2 -> 3), asking for a frame` and
+the panel, read without touching it, showed `Not built yet, auto retry in
+2 min`. That is the feature working rather than being driven.
+
+Variant changes only, never the ticking minutes: a full-panel redraw a minute
+on e-ink is not worth a number nobody is watching.
+
+**And the hardware check that "confirmed" the countdown was driven by
+`redraw`.** The console command forces a compose, which is the frame the
+product does not produce on its own -- so the pass proved the text and the
+arithmetic and said nothing about whether a rider would ever see it. Found by
+review, 2026-11-15, after two hardware passes had called it verified. **A
+`CMD:` that makes something happen is not evidence the device makes it happen**
+(parent `docs/research-rules.md`, "An instrument that answers correctly").
+
+- **Second geometry, same day**: `env:t5s3pro` on a LilyGo T5 S3 Pro (960x540
+  against the X4 Pro's 800x480). The box centres and the three lines fit
+  without touching the side hints, so the width clamp holds on both panels.
+  That board had no phone, so it drew the no-link variant.
+
+### Second pass, 2026-11-15, after an adversarial review of the diff
+
+The review found three real defects (see the commit history; the thread-safety
+one is the reason `noDataRetryMs_` exists). The whole sweep was re-run on both
+boards at `74f3316c`:
+
+- **The fetching variant, with a real transfer this time**: `Your phone is
+  sending it now (11)` while eleven tiles were actually on the wire. The first
+  pass had only caught that variant as a transient.
+- Then `Not built yet, auto retry shortly` once the supplier refused, the
+  four-line `Auto sync is off` variant, and the no-link one. Negative cases
+  again clean: 4 of 12 tiles present draws hatch and map with no box.
+- The 960x540 panel re-checked with the clamp now taken from
+  `GUI.sideButtonHintsRect()` rather than `kSideHintReservedPx`.
+
+**Third pass, same day: the countdown leaked across a jump.** With the
+viewport filter in and the store-wide figure gone, an X4 Pro parked over the
+Black Sea until `auto retry shortly` appeared, then jumped 500 km east to
+ground nothing had ever asked for -- and the first frame there printed the same
+line. The filter was right and the timing was not: the published figure belongs
+to the range the main task last saw, and the frame that *moves* is painted
+before that task catches up. On e-ink that frame can sit for minutes.
+
+`drawNoDataNotice()` compares the range it is drawing against `lastTileRange_`,
+which still holds the previous frame's range at that point (the snapshot that
+updates it is further down `composeViewport()`), and prints the countdown only
+when they match. Verified by repeating the jump: the second frame at the parked
+spot shows `Not built yet, auto retry shortly`, and the first frame 300 km away
+shows `Auto sync on, the phone will fetch it`.
+
+**Repeated on the T5 S3 Pro with a real phone, 2026-11-15.** That board runs
+`mapGnssPosition=1`, so its map session owns the receiver and starts no radio
+for a phone ("Autosync needs the phone link, so a GNSS session has none",
+above) -- the setting has to go to 0 and the map be re-entered before any of
+this is reachable there. **No pairing was needed**: the bridge scans for the
+names in `BleLink.KNOWN_DEVICE_NAMES`, `LilyGoT5S3Map` among them, so it
+attached by name as soon as the X4 Pro left the map and stopped advertising.
+One reader at a time, in practice, because the phone holds one link.
+
+The run then reproduced the whole chain on that panel: `autosync: asked for 1
+tiles on screen`, `rx: skip 13 4882 3039 nosource`, `z13 4882/3039 refused,
+not asking again`, the second frame at that range printing `Not built yet,
+auto retry shortly`, and the first frame 300 km away printing `Auto sync on,
+the phone will fetch it`. Both boards restored afterwards: `mapGnssPosition`
+back to 1 and the X4 Pro back on the map, which is what the phone reconnects
+to.
+
+**Neither review round caught it.** Both found that the countdown was about the
+wrong tiles, and the fix for the steady state was right; the extra frame only
+showed up because the board was actually moved. Reviews read the code, the
+board reads the behaviour.
+
+**Two traps worth keeping.** A screenshot taken right after `CMD:SETTING
+mapAutoSyncTiles 0` still showed the *previous* variant -- the frame had been
+composed before the setting landed, and only a forced `redraw` showed the real
+one. Read it as a defect and you would "fix" working code.
+
+And ground that was bare on 2026-11-14 reported `tiles_ok=20, tiles_missing=0`
+on 2026-11-15 without anyone asking for it: the first day's 404s queued the
+build on the CDN, `tilequeue` built that ground overnight, and autosync pulled
+it down. The loop this notice describes -- hatch, ask, 404, build, fetch --
+closed on its own between two test sessions.
+
 ## A valid tile can still be a hole
 
 `MapTileSource` counts a tile as unavailable when it has **no geometry in any
