@@ -1030,7 +1030,8 @@ void MapActivity::refreshNoDataState() {
   cardReadable_ = Storage.ready() && Storage.exists(kTileRoot);
 }
 
-void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
+void MapActivity::drawNoDataNotice(uint32_t missingMask, const MapViewport::TileRange& range) {
+  const uint32_t tileCount = range.count();
   if (tileCount == 0 || tileCount > MapViewport::kMaxTiles) return;
   // Every tile, not most of them: a partially drawn map explains itself, and a
   // box over one hole would cover the map the rider does have. kMaxTiles is 16,
@@ -1081,10 +1082,23 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, uint32_t tileCount) {
     // msUntilNextRetryIn() iterates the same lock-free vector the main task
     // erases from and sorts on ordinary loop ticks, and those ticks run while
     // this frame is composing (see hatchedThisFrame_'s comment and
-    // refreshNoDataState()). It is already restricted to the tiles this frame
-    // drew, and already capped at the refusal ceiling, so there is nothing to
-    // clamp or filter here -- MissingTileRetry.h owns both rules.
-    const uint32_t waitMs = noDataRetryMs_;
+    // refreshNoDataState()). It is already capped at the refusal ceiling, so
+    // nothing is clamped here -- MissingTileRetry.h owns that rule.
+    //
+    // **But it belongs to the range the main task last saw, and this frame may
+    // be the one that moves.** lastTileRange_ is still the PREVIOUS frame's
+    // range at this point (the snapshot further down is what updates it), so a
+    // mismatch means the published figure was computed somewhere else. Measured
+    // on an X4 Pro, 2026-11-15: parked over the Black Sea until the retry line
+    // appeared, then jumped 500 km east to ground that had never been asked
+    // for, and the first frame there printed the same countdown. On e-ink that
+    // frame can sit for minutes. A move prints "the phone will fetch it", which
+    // is what is about to happen, and the countdown returns on the next frame
+    // once the main task has caught up.
+    const bool retryIsForThisRange = lastTileRange_.valid && lastTileRange_.z == range.z &&
+                                     lastTileRange_.col0 == range.col0 && lastTileRange_.row0 == range.row0 &&
+                                     lastTileRange_.col1 == range.col1 && lastTileRange_.row1 == range.row1;
+    const uint32_t waitMs = retryIsForThisRange ? noDataRetryMs_ : 0;
     if (waitMs == 0) {
       action = tr(STR_MAP_NO_DATA_AUTO_ON);
     } else if (waitMs < 60u * 1000u) {
@@ -8130,7 +8144,7 @@ void MapActivity::composeViewport(int32_t latE7, int32_t lonE7, uint8_t headingS
   drawHeaderStatus();
   drawHikeElevationLine();  // no-op outside Hike mode
   drawMapScale();
-  drawNoDataNotice(missing, range.count());
+  drawNoDataNotice(missing, range);
 
   // Does not count the marker or its patch save, both of which happen after the
   // readout is composed -- this is the tile-and-geometry cost, which is the one

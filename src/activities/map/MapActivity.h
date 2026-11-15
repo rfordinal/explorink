@@ -575,7 +575,7 @@ class MapActivity final : public Activity,
   // happening and what the rider can do. Drawn only when *every* tile in the
   // range is missing: one hole in an otherwise drawn map is self-explanatory,
   // and a box over it would cover the map the rider does have.
-  void drawNoDataNotice(uint32_t missingMask, uint32_t tileCount);
+  void drawNoDataNotice(uint32_t missingMask, const MapViewport::TileRange& range);
   // Fits one line to a pixel width, truncating with an ellipsis on a UTF-8
   // boundary. The notice needs it because its box is clamped away from the side
   // hints while the text is not, and a translated string is not measured until
