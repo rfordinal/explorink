@@ -138,6 +138,26 @@ boards at `74f3316c`:
 - The 960x540 panel re-checked with the clamp now taken from
   `GUI.sideButtonHintsRect()` rather than `kSideHintReservedPx`.
 
+**Third pass, same day: the countdown leaked across a jump.** With the
+viewport filter in and the store-wide figure gone, an X4 Pro parked over the
+Black Sea until `auto retry shortly` appeared, then jumped 500 km east to
+ground nothing had ever asked for -- and the first frame there printed the same
+line. The filter was right and the timing was not: the published figure belongs
+to the range the main task last saw, and the frame that *moves* is painted
+before that task catches up. On e-ink that frame can sit for minutes.
+
+`drawNoDataNotice()` compares the range it is drawing against `lastTileRange_`,
+which still holds the previous frame's range at that point (the snapshot that
+updates it is further down `composeViewport()`), and prints the countdown only
+when they match. Verified by repeating the jump: the second frame at the parked
+spot shows `Not built yet, auto retry shortly`, and the first frame 300 km away
+shows `Auto sync on, the phone will fetch it`.
+
+**Neither review round caught it.** Both found that the countdown was about the
+wrong tiles, and the fix for the steady state was right; the extra frame only
+showed up because the board was actually moved. Reviews read the code, the
+board reads the behaviour.
+
 **Two traps worth keeping.** A screenshot taken right after `CMD:SETTING
 mapAutoSyncTiles 0` still showed the *previous* variant -- the frame had been
 composed before the setting landed, and only a forced `redraw` showed the real
