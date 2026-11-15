@@ -118,10 +118,36 @@ with `pos` to ground the card does not cover:
 - **Negative tests both pass**: a viewport with 2 of 4 tiles present draws hatch
   and no box, and a fully covered viewport is untouched.
 - Checked at zoom rungs 0, 4 and 6 -- the box is unchanged across the ladder.
-- **Second geometry, same day**: `env:t5s3pro` at `bacbf137` on a LilyGo T5 S3
-  Pro (960x540 against the X4 Pro's 800x480). The box centres and the three
-  lines fit without touching the side hints, so the width clamp holds on both
-  panels. That board had no phone, so it drew the no-link variant.
+- **Second geometry, same day**: `env:t5s3pro` on a LilyGo T5 S3 Pro (960x540
+  against the X4 Pro's 800x480). The box centres and the three lines fit
+  without touching the side hints, so the width clamp holds on both panels.
+  That board had no phone, so it drew the no-link variant.
+
+### Second pass, 2026-11-15, after an adversarial review of the diff
+
+The review found three real defects (see the commit history; the thread-safety
+one is the reason `noDataRetryMs_` exists). The whole sweep was re-run on both
+boards at `74f3316c`:
+
+- **The fetching variant, with a real transfer this time**: `Your phone is
+  sending it now (11)` while eleven tiles were actually on the wire. The first
+  pass had only caught that variant as a transient.
+- Then `Not built yet, auto retry shortly` once the supplier refused, the
+  four-line `Auto sync is off` variant, and the no-link one. Negative cases
+  again clean: 4 of 12 tiles present draws hatch and map with no box.
+- The 960x540 panel re-checked with the clamp now taken from
+  `GUI.sideButtonHintsRect()` rather than `kSideHintReservedPx`.
+
+**Two traps worth keeping.** A screenshot taken right after `CMD:SETTING
+mapAutoSyncTiles 0` still showed the *previous* variant -- the frame had been
+composed before the setting landed, and only a forced `redraw` showed the real
+one. Read it as a defect and you would "fix" working code.
+
+And ground that was bare on 2026-11-14 reported `tiles_ok=20, tiles_missing=0`
+on 2026-11-15 without anyone asking for it: the first day's 404s queued the
+build on the CDN, `tilequeue` built that ground overnight, and autosync pulled
+it down. The loop this notice describes -- hatch, ask, 404, build, fetch --
+closed on its own between two test sessions.
 
 ## A valid tile can still be a hole
 
