@@ -1045,11 +1045,20 @@ void MapActivity::drawNoDataNotice(uint32_t missingMask, const MapViewport::Tile
   // Published for refreshNoDataState(): every early return here means the
   // main task has nothing to compute for this screen.
   noDataNoticeShown_ = false;
-  if (tileCount == 0) return;
+  // **A range CAN exceed kMaxTiles, and the mask is what bounds this.** An
+  // X4 Pro in Hike mode at rung 6 logged `tile range 1119..1122 x 708..712 =
+  // 20 tiles, over the 3x3 worst case` on 2026-11-15, and composeViewport()
+  // only LOGS that -- it draws the frame anyway. So the guard cannot be
+  // kMaxTiles and cannot be dropped either: `unavailableMask()` carries one
+  // bit per tile for index < 32 (MapTileSource), so past 32 the "every tile
+  // missing" question has no answer in it, and `1u << 32` is undefined on top.
+  // A review called this arm dead on the strength of a bail-out in
+  // composeViewport() that is not there; the board settled it.
+  if (tileCount == 0 || tileCount > 32u) return;
   // Every tile, not most of them: a partially drawn map explains itself, and a
   // box over one hole would cover the map the rider does have. kMaxTiles is 16,
   // so the shift cannot reach the width of the type.
-  const uint32_t allMissing = (1u << tileCount) - 1u;
+  const uint32_t allMissing = (tileCount == 32u) ? 0xFFFFFFFFu : ((1u << tileCount) - 1u);
   if ((missingMask & allMissing) != allMissing) return;
   noDataNoticeShown_ = true;
 
