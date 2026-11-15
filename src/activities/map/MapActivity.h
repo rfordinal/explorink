@@ -584,20 +584,20 @@ class MapActivity final : public Activity,
                              EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   // What drawNoDataNotice() prints as its countdown, published by the main task
   // in refreshNoDataRetry(). **Not read from MISSING_TILES in the frame**:
-  // msUntilNextRetry() walks the same lock-free vector the main task erases
+  // msUntilNextRetryIn() walks the same lock-free vector the main task erases
   // from, sorts (the `missing` console verb) and push_backs into (`fake`,
-  // record()), on ordinary loop ticks that run while a frame is composing. A
+  // record()), on ordinary loop ticks. A
   // reallocation under the render task's iterator is heap corruption hours away
   // from its cause -- the same reason hatchedThisFrame_ exists. It counts only
   // the tiles the last frame drew, so the countdown is about what is hatched on
   // screen rather than the soonest retry anywhere in a ride-long store.
   uint32_t noDataRetryMs_ = 0;
   uint32_t noDataPollMs_ = 0;
-  // Whether the card still answers, probed by the main task rather than read
-  // off SDCardManager::initialized -- that flag is a boot-time verdict and a
-  // card pulled mid-ride never clears it, which is the one cause the notice
-  // must not get wrong.
-  bool cardReadable_ = true;
+  // Set by the frame that draws the no-data notice, read by the main task to
+  // decide whether any of this is worth computing. One aligned bool, one
+  // writer, one reader; a tick of staleness costs nothing because the only
+  // consequence is a walk that happens a second later.
+  bool noDataNoticeShown_ = false;
   void refreshNoDataState();
   // The scale bar's geometry, worked out once and used twice: drawMapScale()
   // draws from it, and the chrome register reserves what it covers. Two copies

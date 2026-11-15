@@ -998,61 +998,86 @@ Rect MapActivity::mapScaleRect() const {
 }
 
 void MapActivity::refreshNoDataState() {
+  // Nothing to publish unless the last frame actually drew the notice -- which
+  // is almost never: a drawn map, the overview, a popup. It keeps the walk over
+  // MISSING_TILES (up to 200 entries) off the ordinary tick.
+  if (!noDataNoticeShown_) {
+    noDataRetryMs_ = 0;
+    return;
+  }
   const uint32_t now = millis();
   if (noDataPollMs_ != 0 && static_cast<int32_t>(now - noDataPollMs_) < 0) return;
   noDataPollMs_ = now + kNoDataPollMs;
 
-  // Main task only. See noDataRetryMs_'s comment for why the frame must not
-  // walk MISSING_TILES itself.
+  // Main task only, and only with no frame in flight (see the caller). The
+  // frame must not walk MISSING_TILES itself -- noDataRetryMs_'s comment has
+  // the reason -- and it must not read lastTileRange_ while the render task is
+  // writing it.
   //
-  // Restricted to the tiles the last frame actually drew. The store spans a
-  // whole ride, so its soonest retry can belong to ground the rider left an
-  // hour ago, and printing that under "no map data here" would be a countdown
-  // about somewhere else. lastTileRange_ is the frame's own snapshot of what
-  // is on screen (recheckHatchedTiles() reads it from here the same way).
-  if (lastTileRange_.valid) {
-    noDataRetryMs_ = MISSING_TILES.msUntilNextRetryIn(lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0,
-                                                      lastTileRange_.col1, lastTileRange_.row1, now);
-  } else {
-    noDataRetryMs_ = 0;
-  }
+  // Restricted to the tiles the last frame drew: the store spans a whole ride,
+  // so its soonest retry can belong to ground the rider left an hour ago.
+  const uint32_t was = noDataRetryMs_;
+  noDataRetryMs_ = lastTileRange_.valid
+                       ? MISSING_TILES.msUntilNextRetryIn(lastTileRange_.z, lastTileRange_.col0, lastTileRange_.row0,
+                                                          lastTileRange_.col1, lastTileRange_.row1, now)
+                       : 0;
 
-  // And the card, for real rather than from a boot-time flag. `ready()` is
-  // written once in begin() and never again (SDCardManager.cpp:201), so a card
-  // pulled mid-ride still reads ready -- while every tile in the viewport
-  // fails exactly as unbuilt ground does. An exists() on the map root is one
-  // directory lookup; at this cadence it is nothing against a tile read, and
-  // it is the difference between telling a rider their device is fine and
-  // telling them to check the card.
+  // **And ask for the frame that shows it.** A full compose happens only on
+  // MapFollow::Action::ReAnchor; Skip and MoveMarker never call
+  // composeViewport() (applyFix()). So a rider who stops -- which is what you
+  // do when the screen is blank -- gets the frame that says "the phone will
+  // fetch it" and then no frame at all, and the countdown this feature exists
+  // for never appears. Nothing else schedules one: no tile arrives, so no
+  // arrival redraw is armed either. The hardware check that "confirmed" the
+  // countdown drove `redraw` over the console, which manufactured the second
+  // frame the product does not produce.
   //
-  // Main task, because it takes the storage mutex and touches SdFat; the frame
-  // only reads the bool.
-  cardReadable_ = Storage.ready() && Storage.exists(kTileRoot);
+  // Only on the 0 -> pending edge, so a ticking countdown does not cost a
+  // full-panel redraw a minute on e-ink.
+  if (was == 0 && noDataRetryMs_ != 0) {
+    LOG_DBG(kLogTag, "no-data notice: retry scheduled, asking for the frame that shows it");
+    requestFrame(FrameRequest::Current);
+  }
 }
 
 void MapActivity::drawNoDataNotice(uint32_t missingMask, const MapViewport::TileRange& range) {
   const uint32_t tileCount = range.count();
-  if (tileCount == 0 || tileCount > MapViewport::kMaxTiles) return;
+  // Published for refreshNoDataState(): every early return here means the
+  // main task has nothing to compute for this screen.
+  noDataNoticeShown_ = false;
+  if (tileCount == 0) return;
   // Every tile, not most of them: a partially drawn map explains itself, and a
   // box over one hole would cover the map the rider does have. kMaxTiles is 16,
   // so the shift cannot reach the width of the type.
   const uint32_t allMissing = (1u << tileCount) - 1u;
   if ((missingMask & allMissing) != allMissing) return;
+  noDataNoticeShown_ = true;
 
   auto& ble = freeink::BlePositionServer::getInstance();
   const bool linkUp = bleInUse_ && ble.connIntervalMs() != 0;
-  // A card that is out, unseated or dead fails every tile in the range exactly
-  // the way unbuilt ground does (MapTileSource::unavailableMask()). Telling
-  // that rider the device is fine and to connect their phone is both false and
-  // useless, so the card is checked first.
+  // A card that never mounted says so, and is told apart from unbuilt ground.
+  // A card pulled MID-RIDE is not -- see the limit below.
   //
-  // **`Storage.ready()` alone cannot answer this.** It returns
-  // SDCardManager::initialized, which is written in begin() and never again
-  // (SDCardManager.cpp:201) -- a card popped out mid-ride still reads ready,
-  // which is the single most likely hardware cause of this exact screen. So
-  // the main task probes the map root for real and publishes the verdict; this
-  // frame reads the bool (refreshNoDataState()).
-  const bool cardReady = cardReadable_;
+  // `Storage.ready()` is SDCardManager::initialized, set by begin() and by
+  // shutdown()/detachFilesystemForRawAccess(), none of which runs on a ride.
+  // So it answers "the card mounted at boot", which is the never-mounted case
+  // exactly. Plain bool, free to read from the render task.
+  //
+  // **An exists() probe does not close the gap, which is why there is not
+  // one.** SdFat answers a directory lookup out of FsCache when the sector is
+  // already resident, with no SPI transaction at all (FsCache::prepare(), the
+  // `m_sector != sector` branch), and a failed read never updates `m_sector`
+  // -- so the root sector stays cached after the card is gone and the probe
+  // keeps answering true. A 1 Hz version of it bought that wrong answer plus
+  // an SD lookup every second on a screen whose power story counts SD traffic
+  // per minute (docs/power-idle-sleep.md).
+  //
+  // **The limit, written down rather than papered over**: with the card pulled
+  // mid-ride every tile fails to open, which is pixel-for-pixel what riding
+  // onto unbuilt ground looks like, and this notice tells that rider the
+  // device is fine. Telling the two apart needs MapTileSource to report *why*
+  // an open failed -- I/O error against not-found -- which it does not today.
+  const bool cardReady = Storage.ready();
 
   char fetching[48];
   char retry[48];
@@ -3744,10 +3769,6 @@ void MapActivity::loop() {
   // below and the input handling further down all still see this frame's press.
   if (mappedInput.wasAnyPressed()) clockFineUntilMs_ = millis() + kClockFineAfterInputMs;
 
-  // Cheap, rate-capped, and on the right task: the notice's countdown and its
-  // card verdict are worked out here and published as scalars for the frame.
-  refreshNoDataState();
-
   if (pendingPinPopup_ != PinPopup::None) servicePendingPinPopup();
 #if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
   if (pendingGroupPopup_ != GroupPopup::None) servicePendingGroupPopup();
@@ -4097,6 +4118,16 @@ void MapActivity::loop() {
     drainTransferredTiles();
     expireAutoSync();
     maybeAutoSyncTiles();
+    // Same reason as the four above, and it was outside this block until a
+    // review asked the right question: refreshNoDataState() reads
+    // lastTileRange_, which the render task writes field by field with no lock
+    // (composeViewport()'s snapshot). A read torn across that write yields a
+    // rectangle that is neither frame's -- wider than the screen, able to cover
+    // a refused tile that is not on it -- and the frame after that one matches
+    // the range, so the guard in drawNoDataNotice() waves the stale number
+    // through. The window is only open while a frame is in flight, so standing
+    // aside closes it completely.
+    refreshNoDataState();
   }
   maybeCheckTileFreshness();
   maybeSyncPointsLive();

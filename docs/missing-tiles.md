@@ -55,15 +55,15 @@ compass and a scale bar, and nothing on the panel says whether the device is
 broken, the card is empty, or the ground is simply unbuilt. On a fresh device
 that is the first frame of the product.
 
-`MapActivity::drawNoDataNotice()` (`src/activities/map/MapActivity.cpp:992`,
-called from `composeViewport()` at `:7977`) draws a boxed notice over the hatch
+`MapActivity::drawNoDataNotice()`, called from `composeViewport()`, draws a
+boxed notice over the hatch
 when the whole range is missing.
 
 **Only when every tile is missing.** A partially drawn map explains itself --
 the rider can see where the data stops -- and a box over it would cover the map
 they do have. The guard is the full-range mask, not a count threshold.
 
-**Five variants, each from a state the device already knows:**
+**Six variants, each from a state the device already knows:**
 
 | State | Line under the title |
 |---|---|
@@ -73,18 +73,37 @@ they do have. The guard is the full-range mask, not a count threshold.
 | link up, autosync on, a refusal pending over 60 s | `Not built yet, auto retry in N min` |
 | link up, autosync off (the default) | `Auto sync is off` + `Get it from Home > Sync` |
 | no link | `Connect the phone app to get it` |
+| the card never mounted | `Map card not readable` + `Check the SD card` |
 
-Every variant ends with `Device is fine, map data is missing`, because the fear
-the notice exists to answer is "I bought a broken device", not "where are my
-tiles".
+Every variant **except the card one** ends with `Device is fine, map data is
+missing`, because the fear the notice exists to answer is "I bought a broken
+device", not "where are my tiles". With the card unreadable that line would be
+the lie, so that branch does without it.
+
+**And one case the notice gets wrong, on purpose rather than by accident.** A
+card pulled *mid-ride* fails every tile exactly as unbuilt ground does, and
+`Storage.ready()` only answers "it mounted at boot" -- so that rider is told the
+device is fine. An `exists()` probe was tried and removed: SdFat answers a
+directory lookup out of `FsCache` when the sector is resident, and a failed read
+never updates `m_sector`, so the probe keeps returning true after the card is
+gone (`FsCache::prepare()`). Closing this needs `MapTileSource` to report *why*
+an open failed -- I/O error against not-found -- which it does not today.
 
 **"Not built yet" is accurate, not a comfort.** A refusal is the phone's 404
 against the CDN, and that 404 is what queues the build
 (`../../docs/tile-autobuild.md`). The countdown is the refusal schedule this
-store already keeps, read through `MissingTilesStore::msUntilNextRetry()`
-(`src/MissingTilesStore.h:151`, `src/MissingTilesStore.cpp:123`) -- the same
-`retryAtMs` that decides when autosync may ask again, so the text cannot drift
-from the behaviour.
+store already keeps, read through `MissingTilesStore::msUntilNextRetryIn()`
+-- the same `retryAtMs` that decides when autosync may ask again, so the text
+cannot drift from the behaviour. Rectangle-scoped, and the per-tile half of it
+lives in `MissingTileRetry.h` with host tests.
+
+**The frame it needs is asked for, not waited for.** A full compose happens only
+on `MapFollow::Action::ReAnchor`; `Skip` and `MoveMarker` never call
+`composeViewport()`. So a rider who stops -- which is what you do when the
+screen is blank -- would get "the phone will fetch it" and then no frame at all,
+and the countdown would never appear. `refreshNoDataState()` requests one frame
+on the 0 -> pending edge, and only that edge, so a ticking countdown costs no
+redraws.
 
 ### No minutes unless the device knows the minutes
 
@@ -118,6 +137,14 @@ with `pos` to ground the card does not cover:
 - **Negative tests both pass**: a viewport with 2 of 4 tiles present draws hatch
   and no box, and a fully covered viewport is untouched.
 - Checked at zoom rungs 0, 4 and 6 -- the box is unchanged across the ladder.
+**And the hardware check that "confirmed" the countdown was driven by
+`redraw`.** The console command forces a compose, which is the frame the
+product does not produce on its own -- so the pass proved the text and the
+arithmetic and said nothing about whether a rider would ever see it. Found by
+review, 2026-11-15, after two hardware passes had called it verified. **A
+`CMD:` that makes something happen is not evidence the device makes it happen**
+(parent `docs/research-rules.md`, "An instrument that answers correctly").
+
 - **Second geometry, same day**: `env:t5s3pro` on a LilyGo T5 S3 Pro (960x540
   against the X4 Pro's 800x480). The box centres and the three lines fit
   without touching the side hints, so the width clamp holds on both panels.

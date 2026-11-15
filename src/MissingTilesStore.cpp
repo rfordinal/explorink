@@ -132,17 +132,6 @@ uint32_t MissingTilesStore::msUntilNextRetryIn(uint8_t z, uint32_t col0, uint32_
   return soonest;
 }
 
-uint32_t MissingTilesStore::msUntilNextRetry(uint32_t nowMs) const {
-  uint32_t soonest = 0;
-  for (const MissingTileHit& hit : hits_) {
-    // 0 covers all three: never refused, due already, or the clock wrapped past it.
-    const uint32_t remainingMs = missingTileRetryRemainingMs(hit.retryAtMs, nowMs);
-    if (remainingMs == 0) continue;
-    if (soonest == 0 || remainingMs < soonest) soonest = remainingMs;
-  }
-  return soonest;
-}
-
 bool MissingTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {
   auto it = std::find_if(hits_.begin(), hits_.end(),
                          [&](const MissingTileHit& hit) { return hit.z == z && hit.col == col && hit.row == row; });

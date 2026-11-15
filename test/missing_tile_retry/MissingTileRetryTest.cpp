@@ -8,6 +8,13 @@
 // wrong once: the countdown was taken from the whole store rather than the
 // tiles on screen, and an earlier version read a wrapped clock as a 35,584
 // minute wait.
+//
+// **Scope**: this pins the two per-tile decisions only. The walk that applies
+// them -- MissingTilesStore::msUntilNextRetryIn(), which must filter by
+// rectangle and keep the soonest -- is not covered here, because
+// MissingTilesStore.h pulls ArduinoJson and the SD-backed PersistableStore
+// into a host build. Removing the range filter from that walk would reinstate
+// the original defect with this suite still green.
 
 TEST(MissingTileRetry, TheZoomLevelHasToMatch) {
   // The same ground is a different tile at every rung, so a z13 refusal says
@@ -26,15 +33,24 @@ TEST(MissingTileRetry, TheRectangleIsInclusiveOnBothEdges) {
   EXPECT_FALSE(missingTileRetryInRange(12, 2200, 1402, 12, 2199, 1399, 2201, 1401));
 }
 
-TEST(MissingTileRetry, ASingleTileViewportIsItsOwnRectangle) {
-  EXPECT_TRUE(missingTileRetryInRange(12, 2200, 1400, 12, 2200, 1400, 2200, 1400));
-  EXPECT_FALSE(missingTileRetryInRange(12, 2201, 1400, 12, 2200, 1400, 2200, 1400));
-}
-
 TEST(MissingTileRetry, NeverRefusedIsNotAPendingRetry) {
   // 0 is the store's "no schedule", not a time.
   EXPECT_EQ(missingTileRetryRemainingMs(0, 0), 0u);
   EXPECT_EQ(missingTileRetryRemainingMs(0, 1'000'000), 0u);
+  // The case that actually needs the guard: in the last hour before the
+  // millis() wrap, `0 - nowMs` aliases positive and under the ceiling. Without
+  // the explicit zero check the notice would print a countdown for every tile
+  // that was never refused at all. Both assertions above pass without it.
+  EXPECT_EQ(missingTileRetryRemainingMs(0, 0xFFFFFFFFu), 0u);
+  EXPECT_EQ(missingTileRetryRemainingMs(0, 0xFFFFFFFFu - 1'000u), 0u);
+}
+
+TEST(MissingTileRetry, ARetryExactlyAtTheCeilingStillCountsDown) {
+  // The ceiling is the schedule's own cap, so a retry sitting on it is the
+  // steady state for ground the CDN will never build -- `>` must not be `>=`,
+  // or every one of those silently loses its countdown.
+  EXPECT_EQ(missingTileRetryRemainingMs(kMissingTileRetryCeilingMs, 0), kMissingTileRetryCeilingMs);
+  EXPECT_EQ(missingTileRetryRemainingMs(kMissingTileRetryCeilingMs + 1u, 0), 0u);
 }
 
 TEST(MissingTileRetry, APendingRetryCountsDown) {

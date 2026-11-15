@@ -151,11 +151,11 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // saying "not built yet", and the retry really is scheduled
   // (docs/missing-tiles.md). Same signed-difference wrap handling as
   // isRefused(), and for the same reason.
-  uint32_t msUntilNextRetry(uint32_t nowMs) const;
-
-  // The same answer, restricted to one tile rectangle.
+  // How long until the soonest refused tile inside one tile rectangle may be
+  // asked for again, in milliseconds from nowMs, or 0 when nothing there is
+  // waiting on a refusal.
   //
-  // The map's notice needs this one, not the store-wide figure: the store
+  // Rectangle-scoped, never store-wide: the store
   // accumulates across a whole ride, so the soonest retry anywhere in it can
   // belong to a tile 40 km behind the rider while the hatch they are looking
   // at was never asked for at all. A countdown printed under "no map data
