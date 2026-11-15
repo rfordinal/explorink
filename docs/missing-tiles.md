@@ -137,6 +137,24 @@ with `pos` to ground the card does not cover:
 - **Negative tests both pass**: a viewport with 2 of 4 tiles present draws hatch
   and no box, and a fully covered viewport is untouched.
 - Checked at zoom rungs 0, 4 and 6 -- the box is unchanged across the ladder.
+**The hands-off run, 2026-11-15, and what it took to pass it.** Parked an X4
+Pro on unbuilt sea, touched nothing afterwards -- no `pos`, no `redraw` -- and
+watched the log. First attempt: every ask came back `nosource` over the radio
+while the panel sat on `Your phone is sending it now (3)` indefinitely. The
+redraw request existed by then, but it fired on the countdown *arming*, and at
+that moment the fetching branch was still winning the ladder; by the time the
+line would have changed, the edge was spent.
+
+So the trigger is the **line**, not a branch. `noDataVariantFor()` is the one
+copy of the ladder: the frame turns its answer into text, the main task
+compares it with the last one and asks for a frame when it differs. Second
+attempt logged `no-data notice: line changed (2 -> 3), asking for a frame` and
+the panel, read without touching it, showed `Not built yet, auto retry in
+2 min`. That is the feature working rather than being driven.
+
+Variant changes only, never the ticking minutes: a full-panel redraw a minute
+on e-ink is not worth a number nobody is watching.
+
 **And the hardware check that "confirmed" the countdown was driven by
 `redraw`.** The console command forces a compose, which is the frame the
 product does not produce on its own -- so the pass proved the text and the
