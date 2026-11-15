@@ -51,8 +51,8 @@ TEST(MissingTileRetry, AWrappedClockDoesNotInventAWait) {
   // millis() aliases every ~24.8 days against a signed difference. A retry
   // stamped before the wrap is long expired; reading it as positive is what
   // printed "auto retry in 35584 min" on the panel.
-  constexpr uint32_t kLongExpired = 180'000;          // stamped early in the run
-  constexpr uint32_t kDeepIntoTheRun = 2'160'000'000; // ~25 days of uptime
+  constexpr uint32_t kLongExpired = 180'000;           // stamped early in the run
+  constexpr uint32_t kDeepIntoTheRun = 2'160'000'000;  // ~25 days of uptime
   EXPECT_EQ(missingTileRetryRemainingMs(kLongExpired, kDeepIntoTheRun), 0u);
 }
 
