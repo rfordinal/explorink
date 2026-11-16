@@ -105,12 +105,20 @@ class GfxRenderer {
   // appears at the same point size as the surrounding UI text. Populated by the
   // app-level SD font setup when an SD family is loaded. See resolveTextFontId().
   std::map<int, int> fallbackFontMap_;
+  int defaultFontId_ = 0;
 
   // If `text` contains a CJK codepoint that `fontId` cannot render and `fontId`
   // has a registered fallback, returns the fallback id; otherwise returns
   // fontId unchanged. The whole string is routed as a unit so each draw/measure
   // call stays single-font (consistent bit depth, metrics, wrapping).
   int resolveTextFontId(int fontId, const char* text, EpdFontFamily::Style style) const;
+
+  // Returns fontId when it is registered; otherwise a registered fallback
+  // (the app-designated default font when set, else any registered font).
+  // Layout math must never see a missing font: 0 width/height metrics made
+  // EPUB layout accumulate lines on one page forever and abort on OOM when
+  // the selected reader font was not compiled into the build.
+  int resolveFontIdOrFallback(int fontId) const;
 
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
@@ -139,6 +147,9 @@ class GfxRenderer {
   // Setup
   void begin();  // must be called right after display.begin()
   void insertFont(int fontId, EpdFontFamily font);
+  // The font resolveFontIdOrFallback() degrades to when a requested font is
+  // not registered. Set once at startup to an always-compiled-in font.
+  void setDefaultFontId(int fontId) { defaultFontId_ = fontId; }
   // Clears both the flash-font map and any SD-font registration for fontId.
   // Coupled to avoid dangling SdCardFont* in sdCardFonts_ when callers free
   // the underlying SdCardFont and forget the SD-side unregister.
