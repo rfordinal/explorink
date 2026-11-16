@@ -29,6 +29,8 @@ BlePositionServer& BlePositionServer::getInstance() {
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <host/ble_gap.h>  // ble_gap_conn_rssi() -- no NimBLEServer/NimBLEConnInfo wrapper exists for it
+#include <esp_bt.h>        // esp_bt_controller_get_status/disable/deinit -- resetStuckBtController() below
+#include <esp_heap_caps.h>  // heap_caps_get_largest_free_block() -- logged when init fails, to tell NO_MEM apart from state errors
 
 #include <cstdio>
 #include <cstring>
@@ -355,6 +357,27 @@ TransferStatusCharCallbacks g_transferStatusCallbacks;
 ClientInfoCharCallbacks g_clientInfoCallbacks;
 ServerCallbacks g_serverCallbacks;
 
+// Force the BT controller back to IDLE if a previous start left it
+// initialized (or enabled) without the NimBLE host ever coming up.
+// NimBLEDevice::init() can die in exactly that gap -- esp_bt_controller_init()
+// has succeeded, esp_bt_controller_enable() then fails, e.g. on a fragmented
+// heap -- and it leaves NimBLE's m_initialized flag clear, so
+// NimBLEDevice::deinit() (which only acts when that flag is set) cannot clean
+// it up. Every later esp_bt_controller_init() then returns
+// ESP_ERR_INVALID_STATE, so Bluetooth fails on every attempt until the
+// device is rebooted. Resetting the controller directly, below NimBLE, is
+// what turns that back into a one-off failure.
+void resetStuckBtController() {
+  const esp_bt_controller_status_t status = esp_bt_controller_get_status();
+  if (status == ESP_BT_CONTROLLER_STATUS_IDLE) return;
+  LOG_ERR("BLEPOS", "begin: BT controller stuck in state %d, resetting it", static_cast<int>(status));
+  if (status == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+    esp_bt_controller_disable();
+  }
+  esp_bt_controller_deinit();
+  vTaskDelay(pdMS_TO_TICKS(20));
+}
+
 }  // namespace
 
 bool BlePositionServer::begin(const char* deviceName) {
@@ -385,10 +408,25 @@ bool BlePositionServer::begin(const char* deviceName) {
     LOG_DBG("BLEPOS", "begin: self-heal deinit done");
   }
 
+  // Clear a controller left stuck by an earlier failed start (see
+  // resetStuckBtController()) before it can fail this attempt too.
+  resetStuckBtController();
+
   LOG_DBG("BLEPOS", "begin: calling NimBLEDevice::init");
   if (!NimBLEDevice::init(resolvedName)) {
-    LOG_DBG("BLEPOS", "begin: NimBLEDevice::init failed");
-    return false;
+    // One retry after a full cleanup: the first attempt may have failed
+    // transiently (heap pressure at map entry), and a partway failure may
+    // itself have left the controller stuck for the next attempt.
+    LOG_ERR("BLEPOS", "begin: NimBLEDevice::init failed (free heap %lu, largest block %lu), cleaning up and retrying once",
+            static_cast<unsigned long>(esp_get_free_heap_size()),
+            static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)));
+    NimBLEDevice::deinit(true);
+    resetStuckBtController();
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (!NimBLEDevice::init(resolvedName)) {
+      LOG_ERR("BLEPOS", "begin: NimBLEDevice::init failed again, giving up until the next map entry");
+      return false;
+    }
   }
   LOG_DBG("BLEPOS", "begin: NimBLEDevice::init done");
 
