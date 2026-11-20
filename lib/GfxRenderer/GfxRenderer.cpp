@@ -210,6 +210,22 @@ int GfxRenderer::resolveTextFontId(const int fontId, const char* text, const Epd
   return fontId;
 }
 
+int GfxRenderer::resolveFontIdOrFallback(const int fontId) const {
+  if (fontMap.find(fontId) != fontMap.end()) return fontId;
+  // The requested font is not registered in this build (e.g. a reader font
+  // dropped by OMIT_FONTS, or an SD font that failed to load). Degrade to a
+  // registered font instead of reporting 0 metrics: a 0 line height kept
+  // every line on a single page, growing the section build until it aborted.
+  static int lastLoggedMissingId = 0;
+  if (fontId != lastLoggedMissingId) {
+    lastLoggedMissingId = fontId;
+    LOG_ERR("GFX", "Font %d not registered, using fallback font", fontId);
+  }
+  if (defaultFontId_ != 0 && fontMap.find(defaultFontId_) != fontMap.end()) return defaultFontId_;
+  if (!fontMap.empty()) return fontMap.begin()->first;
+  return fontId;
+}
+
 // Translate logical (x,y) coordinates to physical panel coordinates based on current orientation
 // This should always be inlined for better performance
 static inline void rotateCoordinates(const GfxRenderer::Orientation orientation, const int x, const int y, int* phyX,
@@ -546,7 +562,7 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
 
   // Measure with the same font drawText would render with (see resolveTextFontId)
   // so wrapping, truncation and centering of CJK strings stay consistent.
-  const int resolvedFontId = resolveTextFontId(fontId, text, style);
+  const int resolvedFontId = resolveFontIdOrFallback(resolveTextFontId(fontId, text, style));
   const auto fontIt = fontMap.find(resolvedFontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", resolvedFontId);
@@ -576,7 +592,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
 
   // Route CJK-bearing strings to the fallback font when the requested font
   // lacks the glyphs (e.g. Chinese book titles drawn with a Latin UI font).
-  const int resolvedFontId = resolveTextFontId(fontId, text, style);
+  const int resolvedFontId = resolveFontIdOrFallback(resolveTextFontId(fontId, text, style));
 
   std::string visual;
   const char* renderedText = resolveVisualText(text, visual, baseDir);
@@ -1873,9 +1889,8 @@ int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style styl
     return fp4::toPixel(sdIt->second->getAdvance(' ', resolvedStyle));
   }
 
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(resolveFontIdOrFallback(fontId));
   if (fontIt == fontMap.end()) {
-    LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
 
@@ -1894,7 +1909,7 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
     return fp4::toPixel(sdIt->second->getAdvance(' ', resolvedStyle));
   }
 
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(resolveFontIdOrFallback(fontId));
   if (fontIt == fontMap.end()) return 0;
   const auto& font = fontIt->second;
   const EpdGlyph* spaceGlyph = font.getGlyph(' ', style);
@@ -1908,7 +1923,7 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
 
 int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
                             const EpdFontFamily::Style style) const {
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(resolveFontIdOrFallback(fontId));
   if (fontIt == fontMap.end()) return 0;
   const int kernFP = fontIt->second.getKerning(leftCp, rightCp, style);  // 4.4 fixed-point
   return fp4::toPixel(kernFP);                                           // snap 4.4 fixed-point to nearest pixel
@@ -1916,7 +1931,7 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
 
 int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style) const {
   // Match the font drawText would use for CJK-bearing strings (see resolveTextFontId).
-  const int resolvedFontId = resolveTextFontId(fontId, text, style);
+  const int resolvedFontId = resolveFontIdOrFallback(resolveTextFontId(fontId, text, style));
   // Measure the exact codepoint stream drawText renders: bidi-reordered and
   // Arabic-shaped (contextual presentation forms, Lam-Alef collapse).
   // Measuring the raw logical text counts the Alef a ligature absorbs and
@@ -1995,7 +2010,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
 }
 
 int GfxRenderer::getFontAscenderSize(const int fontId) const {
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(resolveFontIdOrFallback(fontId));
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
@@ -2005,7 +2020,7 @@ int GfxRenderer::getFontAscenderSize(const int fontId) const {
 }
 
 int GfxRenderer::getLineHeight(const int fontId) const {
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(resolveFontIdOrFallback(fontId));
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
@@ -2019,7 +2034,7 @@ int GfxRenderer::getLineHeight(const int fontId, const float compression) const 
 }
 
 int GfxRenderer::getTextHeight(const int fontId) const {
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(resolveFontIdOrFallback(fontId));
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
@@ -2035,7 +2050,7 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   }
 
   // Route CJK-bearing strings to the fallback font (see resolveTextFontId).
-  const int resolvedFontId = resolveTextFontId(fontId, text, style);
+  const int resolvedFontId = resolveFontIdOrFallback(resolveTextFontId(fontId, text, style));
   const auto fontIt = fontMap.find(resolvedFontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", resolvedFontId);
@@ -2105,9 +2120,8 @@ bool GfxRenderer::renderTextMask(const int fontId, const char* text, const EpdFo
   // string's ghosts with no way to know why. A contract that has to be remembered
   // is the shape of defect this file keeps producing, so it is enforced instead.
   std::memset(bits, 0, static_cast<size_t>((strideBits * maxH + 7) / 8));
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(resolveFontIdOrFallback(fontId));
   if (fontIt == fontMap.end()) {
-    LOG_ERR("GFX", "Font %d not found", fontId);
     return false;
   }
   const auto& font = fontIt->second;

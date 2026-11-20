@@ -1634,7 +1634,12 @@ void ChapterHtmlSlimParser::makePages() {
     currentPageNextY = 0;
   }
 
-  const int lineHeight = renderer.getLineHeight(fontId, lineCompression);
+  int lineHeight = renderer.getLineHeight(fontId, lineCompression);
+  if (lineHeight <= 0) {
+    // A font reporting no line height would keep every line on one page
+    // forever, growing the build until it aborts. Always make progress.
+    lineHeight = 1;
+  }
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();

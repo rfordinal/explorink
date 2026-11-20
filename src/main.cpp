@@ -2879,6 +2879,10 @@ void setupDisplayAndFonts(bool seamless = false) {
   fontCacheManager.setFontDecompressor(&fontDecompressor);
   renderer.setFontCacheManager(&fontCacheManager);
   renderer.insertFont(NOTOSERIF_14_FONT_ID, notoserif14FontFamily);
+  // NotoSerif 14 is always compiled in, so it is the renderer's fallback for
+  // any font ID that is not registered (omitted reader fonts, unloaded SD
+  // fonts): metrics and drawing degrade to it instead of returning 0.
+  renderer.setDefaultFontId(NOTOSERIF_14_FONT_ID);
 #ifndef OMIT_FONTS
   renderer.insertFont(NOTOSERIF_12_FONT_ID, notoserif12FontFamily);
   renderer.insertFont(NOTOSERIF_16_FONT_ID, notoserif16FontFamily);
