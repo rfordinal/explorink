@@ -46,9 +46,8 @@ in the picker, as its fifth entry -- an earlier draft of this pass cut it too,
 on an incorrect assumption, caught before merge.
 `docs/settings-menu.md`, "Pruning Sleep Screen, 2026-11-06", has the why and the
 migration.
-Persisted at `/.crosspoint/settings.json` (`CrossPointSettings.h:376`).
-Default is still `DARK` (`CrossPointSettings.h:179`) on this branch — see
-"Default" below.
+Persisted at `/.crosspoint/settings.json` (`CrossPointSettings.h:228`).
+Default is `LIGHT` on `develop` — see "Default" below.
 
 Dispatch in `onEnter()` (`SleepActivity.cpp:38-57`):
 
@@ -559,15 +558,18 @@ avoid repeats: `CrossPointState.h:14,17-19` (16-slot ring buffer,
 `recentSleepImages`/`recentSleepPos`/`recentSleepFill`), used via
 `isRecentSleep()` / `pushRecentSleep()` (`SleepActivity.cpp:128,131`).
 
-## Default: still DARK upstream; ExplorInk flips to LIGHT on a separate branch
+## Default: upstream is DARK, ExplorInk is LIGHT
 
-Upstream CrossPoint's default is `DARK` (`CrossPointSettings.h:179` reads
-`uint8_t sleepScreen = DARK;`, unaffected by this branch). ExplorInk flips the
-default to `LIGHT` in commit `088f7b57` ("feat: default the sleep screen to
-LIGHT", 2026-08-05) on a separate branch, `feat/boot-splash-blink`
-(worktree `trailink-worktrees/boot-blink`) — not yet merged into `develop`,
-and not touched by this change. Full writeup:
-`/home/rfordinal/Development/xteink/docs/PROGRESS.md:166-189` (parent repo).
+Upstream CrossPoint defaults to `DARK`. ExplorInk flips it to `LIGHT` in commit
+`088f7b57` ("feat: default the sleep screen to LIGHT", 2026-08-05), **and that
+landed on `develop`**: `CrossPointSettings.h:228` reads `uint8_t sleepScreen =
+LIGHT;`, with the reason in the comment above it -- this fork's screens are
+black-on-white throughout, and a dark sleep image also stays in the controller
+as the baseline the next boot paints over.
+
+This section said the flip was still sitting unmerged on `feat/boot-splash-blink`
+until 2026-11-20, when it was read off the code. Full writeup in the parent
+repo's `docs/PROGRESS.md`, the 2026-08-05 entry.
 
 ## Open — not fully designed yet
 

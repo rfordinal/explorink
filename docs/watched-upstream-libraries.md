@@ -21,7 +21,7 @@ maintained (commits as recent as the day this doc was written, 2026-09-01).
 [`fastepd.md`](fastepd.md)**, not duplicated here — this entry is the pointer,
 that doc is where the content lives. Headline items: it surfaced an
 already-merged sunlight-fix setting in our own tree that defaults off
-(`fadingFix`, `src/CrossPointSettings.h:376` — now T-584/T-585 in
+(`fadingFix`, `src/CrossPointSettings.h:520` — now T-584/T-585 in
 `docs/TODO.md`), a documented ESP32-S3 parallel-bus erratum relevant to T-576,
 and a gray-matrix design worth reading before any tunable-waveform work.
 

@@ -77,15 +77,15 @@ update."*
 **Confirmed present in `firmware/explorink` today**, not a hypothetical
 port:
 
-- `src/CrossPointSettings.h:376` -- `uint8_t fadingFix = 0;` (comment:
+- `src/CrossPointSettings.h:520` -- `uint8_t fadingFix = 0;` (comment:
   "Sunlight fading compensation"). **Default is off.**
-- `src/SettingsList.h:233` -- exposed as a toggle, Settings -> Display ->
+- `src/SettingsList.h:294` -- exposed as a toggle, Settings -> Display ->
   "Sunlight Fading Fix".
 - Threaded as `turnOffScreen` through `GfxRenderer::displayBuffer` ->
   `HalDisplay::displayBuffer` -> `FreeInkDisplay::displayBuffer` (e.g.
   `freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp:500`) ->
   the panel driver's `refreshDisplay`.
-- `lib/GfxRenderer/GfxRenderer.cpp:1575` notes the async refresh path has
+- `lib/GfxRenderer/GfxRenderer.cpp:1589` notes the async refresh path has
   no turn-off-screen hook, so a `fadingFix` user is kept on the blocking
   path deliberately.
 
