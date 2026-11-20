@@ -67,8 +67,14 @@ bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHou
 }
 
 bool HalClock::syncFromNTP() {
-  if (!_available) return false;
-
+  // Deliberately no `if (!_available) return false` here. On a board with no
+  // RTC chip (the plain X4) the ESP32 system (POSIX) clock is the only clock
+  // there is, and SNTP sets it directly -- bailing out made Clock Sync a
+  // permanent no-op on exactly the boards that need it most (the Wartau
+  // departure board reads the system clock). The system clock is kept by
+  // the internal RTC timer while the device is powered and across deep
+  // sleep; on the X4 it is lost when a sleep cuts the battery latch (a full
+  // power-off), after which the user syncs again.
   if (WiFi.status() != WL_CONNECTED) {
     LOG_ERR("CLK", "WiFi not connected, cannot sync NTP");
     return false;
@@ -84,6 +90,15 @@ bool HalClock::syncFromNTP() {
       time_t now = time(nullptr);
       struct tm timeinfo;
       gmtime_r(&now, &timeinfo);
+
+      if (!_available) {
+        // SNTP completion means the system clock has been set from the
+        // network time. Nothing else to write the time into.
+        LOG_INF("CLK", "System clock set to %04d-%02d-%02d %02d:%02d:%02d UTC (no RTC chip)",
+                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min,
+                timeinfo.tm_sec);
+        return true;
+      }
 
       Rtc::DateTime dt;
       dt.year = static_cast<uint16_t>(timeinfo.tm_year + 1900);

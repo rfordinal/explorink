@@ -399,10 +399,13 @@ void WifiSelectionActivity::checkConnectionStatus() {
             WiFi.RSSI());
 #endif
 
-    // Sync RTC from NTP on the first successful WiFi connection only. The DS3231
+    // Sync the clock from NTP on the first successful WiFi connection only. The DS3231
     // drifts ~2 ppm so one sync is enough; users can force a re-sync from
-    // Settings > Customise Status Bar > Sync clock now.
-    if (halClock.isAvailable() && !SETTINGS.clockHasBeenSynced) {
+    // Settings > Customise Status Bar > Sync clock now. No isAvailable() gate:
+    // on RTC-less boards (plain X4) syncFromNTP sets the system clock instead,
+    // and that first-connect sync is the only one such a board ever gets
+    // without a manual trip through Settings.
+    if (!SETTINGS.clockHasBeenSynced) {
       if (halClock.syncFromNTP()) {
         SETTINGS.clockHasBeenSynced = 1;
         SETTINGS.saveToFile();
