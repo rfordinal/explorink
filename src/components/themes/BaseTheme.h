@@ -239,7 +239,24 @@ class BaseTheme {
   // `iconWidth` is the rect width the icon is drawn into (metrics.batteryWidth
   // at every call site today), passed rather than read from a metrics
   // singleton so this file keeps knowing nothing about the active theme.
-  virtual int batteryIconStep(uint16_t percentage, int iconWidth) const;
+  //
+  // `charging` is not decoration: fillBatteryIcon() draws a *fixed* shape while
+  // charging in both themes (this one clamps the fill to a minimum, Lyra paints
+  // a solid bar), so a step that ignored it would report movement the glyph
+  // does not have. Left out of the first version, which cost three repaints of
+  // bit-identical pixels over one Lyra charge cycle and seven over a Classic
+  // one.
+  virtual int batteryIconStep(uint16_t percentage, int iconWidth, bool charging) const;
+
+  // Whether drawHeader() puts anything on the panel when `title` is nullptr --
+  // which is how the Home screen calls it, to get the battery and no heading.
+  // False in RoundedRaff, whose drawHeader() returns immediately in that case
+  // because Home's header is drawn inside drawRecentBookCover() instead.
+  //
+  // Exists so a caller that repaints the band on its own
+  // (HomeActivity::updateBatteryStatus()) can tell a band with a battery in it
+  // from an empty one, rather than spending a waveform pass on nothing.
+  virtual bool drawsHeaderWithoutTitle() const { return true; }
   // fontId 0 means "this theme's own default" -- NOT a default argument
   // (BaseTheme, LyraTheme and RoundedRaffTheme each want a *different*
   // fallback font, but GUI is `const BaseTheme&` (UITheme.h), a fixed

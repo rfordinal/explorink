@@ -152,15 +152,23 @@ void BaseTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t
   }
 }
 
-int BaseTheme::batteryIconStep(uint16_t percentage, int iconWidth) const {
+int BaseTheme::batteryIconStep(uint16_t percentage, int iconWidth, bool charging) const {
   // The same arithmetic fillBatteryIcon() fills with, deliberately duplicated
   // next to it rather than factored out: the fill is a pixel count and not the
   // percentage, so the glyph moves once per (100 / maxFillWidth) percent --
-  // ten steps at the shipped batteryWidth of 15. Keep the two in step.
+  // ten steps at the shipped batteryWidth of 15. Keep the two in step,
+  // including the charging clamp below.
   const int maxFillWidth = iconWidth - 5;
   if (maxFillWidth <= 0) return 0;
   int filledWidth = percentage * maxFillWidth / 100 + 1;
   if (filledWidth > maxFillWidth) filledWidth = maxFillWidth;
+  // Mirrors fillBatteryIcon()'s minFillForBolt: while charging the fill never
+  // drops below 8 px, so every percentage under roughly 70 draws the same
+  // glyph and reports the same step.
+  constexpr int minFillForBolt = 8;
+  if (charging && filledWidth < minFillForBolt) {
+    filledWidth = std::min(minFillForBolt, maxFillWidth);
+  }
   return filledWidth;
 }
 

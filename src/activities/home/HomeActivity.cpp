@@ -36,6 +36,14 @@ constexpr int kRowHeight = 60;
 // cable that was just plugged in.
 constexpr uint32_t kBatteryPollMs = 2000;
 
+// And the floor between two repaints caused by nothing but the battery level
+// moving. A plug or an unplug ignores it -- that one is caused by the rider
+// and is never cosmetic. Same figure as the map's kHeaderBarsRepaintMs, and
+// the same reason: the quantity can dither (a gaugeless board's percentage is
+// a truncated EMA with no hysteresis) and every flip is a real waveform pass,
+// a whole-panel one on a driver with no scoped window.
+constexpr uint32_t kLevelRepaintFloorMs = 30 * 1000;
+
 constexpr const char* kLogTag = "Home";
 }  // namespace
 
@@ -121,7 +129,10 @@ void HomeActivity::onEnter() {
   // headerDrawn_ for exactly this instant.
   headerDrawn_ = false;
   drawnBatteryStep_ = -1;
+  drawnBatteryPercent_ = 0;
+  drawnCharging_ = false;
   nextBatteryPollMs_ = 0;
+  nextLevelRepaintMs_ = 0;
 
   // Trigger first update
   requestUpdate();
@@ -222,28 +233,46 @@ Rect HomeActivity::headerRect() const {
   return Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.homeTopPadding};
 }
 
-void HomeActivity::recordDrawnBattery() {
+void HomeActivity::recordDrawnBattery(uint16_t percentage, bool charging) {
+  // Takes what the caller read rather than reading again. Two reasons, and the
+  // second one is the expensive one:
+  //
+  // - A re-read answers a later moment than the one the glyph was drawn from,
+  //   and a repaint can sit behind a blocking panel refresh of well over a
+  //   second. The first version recorded after displayBuffer() and could store
+  //   "not charging" while the bolt was on the glass, which then stayed there
+  //   until the percentage happened to move.
+  // - getBatteryPercentage() is only cached on a board with a fuel gauge
+  //   (HalPowerManager.cpp -- gaugeAddr != 0). On a gaugeless board, the plain
+  //   X4 among them, every call is a fresh ADC read **and a step of an EMA
+  //   filter**, so three calls in one pass return three different numbers and
+  //   change the filter three times.
   const auto& metrics = UITheme::getInstance().getMetrics();
-  drawnBatteryPercent_ = powerManager.getBatteryPercentage();
-  drawnBatteryStep_ = GUI.batteryIconStep(drawnBatteryPercent_, metrics.batteryWidth);
-  // gpio.isUsbConnected(), not powerManager.isCharging(): this has to be the
-  // same question fillBatteryIcon() asks, or the bolt on the panel and the
-  // bolt this tracks would be two different facts.
-  drawnCharging_ = gpio.isUsbConnected();
+  drawnBatteryPercent_ = percentage;
+  drawnBatteryStep_ = GUI.batteryIconStep(percentage, metrics.batteryWidth, charging);
+  drawnCharging_ = charging;
 }
 
 void HomeActivity::updateBatteryStatus() {
-  // Nothing to patch before the first frame, and nothing to patch into a frame
-  // the render task is composing right now -- it reads the live percentage
-  // itself and would race this one's framebuffer writes.
-  if (!headerDrawn_ || RenderLock::peek()) return;
+  // Nothing to patch before the first frame exists.
+  if (!headerDrawn_) return;
+  // Nothing to draw at all on a theme whose drawHeader() ignores a null title:
+  // the band would be refreshed with no battery in it.
+  if (!GUI.drawsHeaderWithoutTitle()) return;
+  // And stand aside for a frame -- both halves of that. RenderLock::peek()
+  // answers "being composed right now"; activityManager.updatePending()
+  // answers "asked for and not started yet", which peek() cannot see because
+  // the render task is notified only at the end of ActivityManager::loop().
+  // Without the second half a button press on Home spends a windowed pass on
+  // a band the full frame behind it overwrites a moment later. Same pair as
+  // MapActivity::frameInFlight().
+  if (activityManager.updatePending() || RenderLock::peek()) return;
 
-  // Polled rather than read every pass. The percentage itself is cached for
-  // BATTERY_POLL_MS behind an ADC read (HalPowerManager.h) and the charge line
-  // for CHARGING_POLL_MS behind an I2C transaction on boards with no usbDetect
-  // pin, so asking at loop rate would spend a shared I2C bus on a 16 px glyph.
-  // Same interval as the map's kHeaderPollMs, and prompt enough that a plugged
-  // cable lights the bolt within two seconds.
+  // Polled rather than read every pass: on a board with no usbDetect pin the
+  // charge question is an I2C transaction on the bus the touch controller
+  // shares, and on a gaugeless board the percentage is an ADC read that also
+  // steps a filter. Same interval as the map's kHeaderPollMs, and prompt
+  // enough that a plugged cable lights the bolt within two seconds.
   const uint32_t now = millis();
   if (nextBatteryPollMs_ != 0 && now < nextBatteryPollMs_) return;
   nextBatteryPollMs_ = now + kBatteryPollMs;
@@ -251,7 +280,7 @@ void HomeActivity::updateBatteryStatus() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const uint16_t percentage = powerManager.getBatteryPercentage();
   const bool charging = gpio.isUsbConnected();
-  const int step = GUI.batteryIconStep(percentage, metrics.batteryWidth);
+  const int step = GUI.batteryIconStep(percentage, metrics.batteryWidth, charging);
 
   // Two different readers of this glyph, and they move at different rates.
   // With the number printed, a rider reads the number, so one percent is a
@@ -266,6 +295,14 @@ void HomeActivity::updateBatteryStatus() {
   const bool chargingChanged = charging != drawnCharging_;
   if (!levelMoved && !chargingChanged) return;
 
+  // A floor under the level, and none under the bolt. The level is the one
+  // that can dither: a gaugeless board reports a truncated EMA with no
+  // hysteresis, so a value sitting on an integer boundary can alternate every
+  // poll, and **on this hardware a repaint of this band is not cheap** -- see
+  // the window comment below. Thirty seconds is the same floor the map puts
+  // under its signal bars, and for the same reason.
+  if (levelMoved && !chargingChanged && nextLevelRepaintMs_ != 0 && now < nextLevelRepaintMs_) return;
+
   // The header band goes through GUI.drawHeader() and nothing else, exactly as
   // render() draws it. The active theme's drawHeader() **clears the full width
   // of the rect it is given before drawing anything** -- LyraTheme.cpp opens
@@ -278,12 +315,31 @@ void HomeActivity::updateBatteryStatus() {
   // Home passes no title, so the band holds the battery and nothing else and
   // the clear costs nothing else on this screen.
   RenderLock lock;
+  // Taking the lock can wait out a whole frame, and that frame redraws this
+  // band and records what it drew. Re-ask against the refreshed state instead
+  // of trusting the decision taken before the wait -- otherwise the pass just
+  // waited for is followed by a second one that changes nothing.
+  if (percentage == drawnBatteryPercent_ && step == drawnBatteryStep_ && charging == drawnCharging_) return;
+
+  // Armed here and not at the gate above, so a pass that turns out to be
+  // unnecessary -- the re-check just took that exit -- does not hold a real
+  // change off for the next thirty seconds.
+  if (levelMoved) nextLevelRepaintMs_ = now + kLevelRepaintFloorMs;
+
   const Rect header = headerRect();
   GUI.drawHeader(renderer, header, nullptr);
-  recordDrawnBattery();
+  // Before the refresh, never after it: the refresh blocks for as long as the
+  // waveform takes and the battery can move underneath it.
+  recordDrawnBattery(percentage, charging);
 
-  // Windowed: the brand block and the menu below are untouched, and a full
-  // refresh would throw the whole screen away for a glyph.
+  // Windowed, which is a scoped refresh only on a driver that implements one.
+  // Ssd1677Driver and PaperMonoDriver do; every other panel inherits
+  // PanelDriver::displayWindow()'s base body, which drops the rectangle and
+  // pushes a whole Fast frame (freeink-sdk .../driver/PanelDriver.h, and
+  // HalDisplay::displayWindow()'s own comment). So on the T5 S3 Pro
+  // (LgfxEpdDriver) and the X4 Pro (Uc8279X4Driver) this costs a full-panel
+  // Fast pass -- which is the real reason the conditions above are as tight as
+  // they are, and why the level carries a floor.
   if (!renderer.displayBufferWindow(header.x, header.y, header.width, header.height,
                                     PowerTelemetry::WindowSite::Status)) {
     LOG_ERR(kLogTag, "battery header window rejected: %d,%d %dx%d", header.x, header.y, header.width, header.height);
@@ -297,7 +353,17 @@ void HomeActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+  // Read once and record what this frame's header is drawn from. The read has
+  // to bracket the draw and not the refresh: displayBuffer() below blocks for
+  // the whole waveform, and a value read after it is a later moment than the
+  // pixels (recordDrawnBattery()).
+  const uint16_t headerPercent = powerManager.getBatteryPercentage();
+  // gpio.isUsbConnected(), not powerManager.isCharging(): this has to be the
+  // same question fillBatteryIcon() asks, or the bolt on the panel and the
+  // bolt this tracks would be two different facts.
+  const bool headerCharging = gpio.isUsbConnected();
   GUI.drawHeader(renderer, headerRect(), nullptr);
+  recordDrawnBattery(headerPercent, headerCharging);
 
   const int headerTop = metrics.homeTopPadding + kHeaderGap;
   renderer.drawMono1bpp(HomeHeader, (pageWidth - HOMEHEADER_WIDTH) / 2, headerTop, HOMEHEADER_WIDTH, HOMEHEADER_HEIGHT,
@@ -323,9 +389,9 @@ void HomeActivity::render(RenderLock&&) {
 
   renderer.displayBuffer();
 
-  // The header is on the panel now, so updateBatteryStatus()'s windowed path
-  // may start keeping it live -- and what it compares against is this frame.
-  recordDrawnBattery();
+  // Last, and after the three drawn* stores above: this is the flag
+  // updateBatteryStatus() gates on, so publishing it first would let the next
+  // loop pass compare against values from the previous frame.
   headerDrawn_ = true;
 }
 

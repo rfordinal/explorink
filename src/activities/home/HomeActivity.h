@@ -67,7 +67,8 @@ class HomeActivity final : public Activity {
   uint16_t drawnBatteryPercent_ = 0;
   bool drawnCharging_ = false;
   uint32_t nextBatteryPollMs_ = 0;
-  void recordDrawnBattery();
+  uint32_t nextLevelRepaintMs_ = 0;
+  void recordDrawnBattery(uint16_t percentage, bool charging);
   // Keeps the header's battery honest while the rider is not touching
   // anything. Ported from MapActivity::updateHeaderStatus(), which is where
   // this screen's staleness was already solved (../../../docs/home-screen.md,

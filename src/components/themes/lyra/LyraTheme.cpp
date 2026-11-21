@@ -125,10 +125,15 @@ void LyraTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t
   }
 }
 
-int LyraTheme::batteryIconStep(uint16_t percentage, int /*iconWidth*/) const {
+int LyraTheme::batteryIconStep(uint16_t percentage, int /*iconWidth*/, bool charging) const {
   // Three bars at fixed offsets, so the glyph has four states and the width it
   // is drawn into does not enter into it -- the thresholds in fillBatteryIcon()
   // above are the whole story.
+  //
+  // Except while charging, where fillBatteryIcon() paints one solid bar and
+  // ignores the percentage entirely. One state, so one step, and a charge from
+  // empty to full moves the glyph exactly once: when the bolt appears.
+  if (charging) return 4;
   if (percentage > 70) return 3;
   if (percentage > 40) return 2;
   if (percentage > 10) return 1;
