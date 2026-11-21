@@ -130,8 +130,23 @@ chrg_stat=3`. And `CMD:CHARGE OFF` does not help, because
 `HalPowerManager::isCharging()`, already false once the charger terminates. In
 the parent repo's `device-test-protocol.md` trap table.
 
-**Still unverified**: `env:default` (ESP32-C3) and `env:x4pro`, which compile
-clean but have not run this; and the hidden-percentage path through
+**Also confirmed on an X4 Pro (`env:x4pro`), 2026-11-21.** Boot clean on the
+UC8279 panel, Home drew `100 %` with the bolt, and pulling the cable cleared
+the bolt at once with nobody touching the device. The input path is unbroken
+there too: a `down` press changes only `(20, 298)-(460, 417)`. The percentage
+branch was not re-run on this board -- it sat at 100 %, which is hours away
+from its first step -- and it does not need to be: the two boards run the same
+code and the T5 S3 Pro already walked it.
+
+**A note on the instrument.** `CMD:SCREENSHOT` dumps `display.getFrameBuffer()`
+with no re-render (`src/main.cpp`), so the pixel diffs above are of the
+framebuffer. The two claims that matter -- the number moving, the bolt
+clearing -- were read off the glass by a person, not off a screenshot.
+
+**Still unverified**: `env:default` (ESP32-C3, X3 or X4), which compiles clean
+but has not run this, and where `HalGPIO::isUsbConnected()` takes a different
+route -- on X3 it reads the BQ27220's current sign rather than the charger, so
+the bolt is a different path. And the hidden-percentage route through
 `BaseTheme::batteryIconStep()`, which needs `hideBatteryPercentage = always`.
 
 ## The rows
