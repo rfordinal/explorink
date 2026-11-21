@@ -1,7 +1,11 @@
 #include "HomeActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <I18n.h>
+#include <Logging.h>
+#include <PowerTelemetry.h>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -24,6 +28,15 @@ constexpr int kHeaderGap = 8;
 // end 16 px above the button hints, which reads as the list running into them.
 // At 60 the list ends at 716 with 44 px of air, and a 32 px glyph still has room.
 constexpr int kRowHeight = 60;
+
+// How often the header's battery state is looked at
+// (HomeActivity::updateBatteryStatus()). Same figure as the map's
+// kHeaderPollMs, and for the same reason: it bounds how often an ADC read and
+// an I2C charge-line read are asked for, and two seconds is still prompt for a
+// cable that was just plugged in.
+constexpr uint32_t kBatteryPollMs = 2000;
+
+constexpr const char* kLogTag = "Home";
 }  // namespace
 
 // The menu, in the order it is drawn. Flash-resident: static constexpr, so the
@@ -103,6 +116,13 @@ void HomeActivity::onEnter() {
 
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : indexOf(initialMenuItem);
 
+  // Nothing of this screen is on the panel yet, whatever the last visit left
+  // in these. The windowed repaint in updateBatteryStatus() is gated on
+  // headerDrawn_ for exactly this instant.
+  headerDrawn_ = false;
+  drawnBatteryStep_ = -1;
+  nextBatteryPollMs_ = 0;
+
   // Trigger first update
   requestUpdate();
 }
@@ -143,6 +163,11 @@ void HomeActivity::activate(const int index) {
 void HomeActivity::loop() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   constexpr int count = kRowCount;
+
+  // Before the input handling, and unconditional: this is the one condition on
+  // this screen that fires while the rider is doing nothing at all, which is
+  // the whole case it exists for.
+  updateBatteryStatus();
 
   buttonNavigator.onNext([this] {
     selectorIndex = stepRow(selectorIndex, 1);
@@ -189,6 +214,82 @@ void HomeActivity::loop() {
   }
 }
 
+Rect HomeActivity::headerRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  // Ends above the brand block: the band is [topPadding, topPadding +
+  // homeTopPadding) = [5, 61) in Lyra and the logo starts at homeTopPadding +
+  // kHeaderGap = 64, so a window over this rect cannot clip the mountain art.
+  return Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.homeTopPadding};
+}
+
+void HomeActivity::recordDrawnBattery() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  drawnBatteryPercent_ = powerManager.getBatteryPercentage();
+  drawnBatteryStep_ = GUI.batteryIconStep(drawnBatteryPercent_, metrics.batteryWidth);
+  // gpio.isUsbConnected(), not powerManager.isCharging(): this has to be the
+  // same question fillBatteryIcon() asks, or the bolt on the panel and the
+  // bolt this tracks would be two different facts.
+  drawnCharging_ = gpio.isUsbConnected();
+}
+
+void HomeActivity::updateBatteryStatus() {
+  // Nothing to patch before the first frame, and nothing to patch into a frame
+  // the render task is composing right now -- it reads the live percentage
+  // itself and would race this one's framebuffer writes.
+  if (!headerDrawn_ || RenderLock::peek()) return;
+
+  // Polled rather than read every pass. The percentage itself is cached for
+  // BATTERY_POLL_MS behind an ADC read (HalPowerManager.h) and the charge line
+  // for CHARGING_POLL_MS behind an I2C transaction on boards with no usbDetect
+  // pin, so asking at loop rate would spend a shared I2C bus on a 16 px glyph.
+  // Same interval as the map's kHeaderPollMs, and prompt enough that a plugged
+  // cable lights the bolt within two seconds.
+  const uint32_t now = millis();
+  if (nextBatteryPollMs_ != 0 && now < nextBatteryPollMs_) return;
+  nextBatteryPollMs_ = now + kBatteryPollMs;
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const uint16_t percentage = powerManager.getBatteryPercentage();
+  const bool charging = gpio.isUsbConnected();
+  const int step = GUI.batteryIconStep(percentage, metrics.batteryWidth);
+
+  // Two different readers of this glyph, and they move at different rates.
+  // With the number printed, a rider reads the number, so one percent is a
+  // real change. With it hidden the icon is all there is, and that has four
+  // states in Lyra -- repainting it per percent would buy nothing and cost a
+  // waveform pass each time.
+  const bool textShown = SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
+  const bool levelMoved = textShown ? percentage != drawnBatteryPercent_ : step != drawnBatteryStep_;
+  // A plug or an unplug is instantaneous and the bolt appears or goes with it,
+  // unlike the percentage this interval was sized for. Not rate-capped beyond
+  // the poll: it is caused by the rider and is never cosmetic.
+  const bool chargingChanged = charging != drawnCharging_;
+  if (!levelMoved && !chargingChanged) return;
+
+  // The header band goes through GUI.drawHeader() and nothing else, exactly as
+  // render() draws it. The active theme's drawHeader() **clears the full width
+  // of the rect it is given before drawing anything** -- LyraTheme.cpp opens
+  // with fillRect(rect.x, rect.y, rect.width, rect.height), all 480 columns,
+  // while only BaseTheme confines itself to an 80px battery box. A hand-rolled
+  // "just repaint the battery" path here would have to reproduce that order and
+  // keep reproducing it; the map paid for learning that on hardware on
+  // 2026-08-15 (docs/map-header-status.md, "The clock").
+  //
+  // Home passes no title, so the band holds the battery and nothing else and
+  // the clear costs nothing else on this screen.
+  RenderLock lock;
+  const Rect header = headerRect();
+  GUI.drawHeader(renderer, header, nullptr);
+  recordDrawnBattery();
+
+  // Windowed: the brand block and the menu below are untouched, and a full
+  // refresh would throw the whole screen away for a glyph.
+  if (!renderer.displayBufferWindow(header.x, header.y, header.width, header.height,
+                                    PowerTelemetry::WindowSite::Status)) {
+    LOG_ERR(kLogTag, "battery header window rejected: %d,%d %dx%d", header.x, header.y, header.width, header.height);
+  }
+}
+
 void HomeActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
@@ -196,7 +297,7 @@ void HomeActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
+  GUI.drawHeader(renderer, headerRect(), nullptr);
 
   const int headerTop = metrics.homeTopPadding + kHeaderGap;
   renderer.drawMono1bpp(HomeHeader, (pageWidth - HOMEHEADER_WIDTH) / 2, headerTop, HOMEHEADER_WIDTH, HOMEHEADER_HEIGHT,
@@ -221,6 +322,11 @@ void HomeActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
+
+  // The header is on the panel now, so updateBatteryStatus()'s windowed path
+  // may start keeping it live -- and what it compares against is this frame.
+  recordDrawnBattery();
+  headerDrawn_ = true;
 }
 
 void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }

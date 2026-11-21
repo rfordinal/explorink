@@ -125,6 +125,16 @@ void LyraTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t
   }
 }
 
+int LyraTheme::batteryIconStep(uint16_t percentage, int /*iconWidth*/) const {
+  // Three bars at fixed offsets, so the glyph has four states and the width it
+  // is drawn into does not enter into it -- the thresholds in fillBatteryIcon()
+  // above are the whole story.
+  if (percentage > 70) return 3;
+  if (percentage > 40) return 2;
+  if (percentage > 10) return 1;
+  return 0;
+}
+
 void LyraTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const {
   renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
 

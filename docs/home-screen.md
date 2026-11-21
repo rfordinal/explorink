@@ -47,6 +47,68 @@ four-row menu -- which is what buys the brand block its 224 px. `HomeActivity::l
 height as the step for the same reason
 (`src/activities/home/HomeActivity.cpp`, `rowTouch`).
 
+## The battery goes stale
+
+Until 2026-11-21 the battery in the status header only changed when the rider
+touched something. `HomeActivity::loop()` called `requestUpdate()` on a button,
+a swipe or a touch and on nothing else, so the band kept the pixels of the last
+frame. The percentage behind it was never stale -- `drawBatteryRight()` reads
+`powerManager.getBatteryPercentage()` live
+(`src/components/themes/BaseTheme.cpp`, `drawBatteryRight`) and that is cached
+for 1.5 s (`BATTERY_POLL_MS`, `lib/hal/HalPowerManager.h`). Only the panel was.
+A device left on Home showed the charge it had when the rider last pressed a
+key, and the next press made it jump.
+
+The map screen had already solved this for its own header with
+`MapActivity::updateHeaderStatus()`, and Home now does the same thing in
+`HomeActivity::updateBatteryStatus()`:
+
+- **Polled at `kBatteryPollMs` (2,000 ms)**, the same figure as the map's
+  `kHeaderPollMs`. The poll bounds the ADC read behind the percentage and the
+  I2C charge-line read behind the bolt -- on a board with no `usbDetect` pin
+  that read shares a bus with the touch controller.
+- **Repaints on what the glyph actually shows, not on the raw number.** With
+  the percentage text on (`SETTINGS.hideBatteryPercentage != HIDE_ALWAYS`, the
+  default) one percent is a real change, because the number is what gets read.
+  With the text hidden the icon is all there is, and
+  `BaseTheme::batteryIconStep()` says how many states it has -- four in Lyra
+  (three bars at 10/40/70), ten in BaseTheme (a proportional fill in a
+  10 px box). Repainting per percent with the text hidden would be about a
+  hundred waveform passes per discharge for a four-state glyph.
+- **A plug or unplug repaints at once**, within the poll. It is instantaneous
+  and the rider caused it, unlike the percentage the interval was sized for.
+  Tracked against `gpio.isUsbConnected()`, which is the same question
+  `fillBatteryIcon()` asks.
+- **Windowed, not a full frame.** `displayBufferWindow()` over
+  `HomeActivity::headerRect()` -- the band is `[5, 61)` in Lyra and the brand
+  block starts at 64, so the window cannot clip the mountain art. The rows and
+  the logo keep what is on the glass.
+
+Two traps carried over from the map's version of this, both already paid for
+there:
+
+1. **The band goes through `GUI.drawHeader()` and nothing else.** The active
+   theme's `drawHeader()` clears the full width of the rect it is handed --
+   `LyraTheme::drawHeader()` opens with `fillRect(rect.x, rect.y, rect.width,
+   rect.height)`, all 480 columns, while only `BaseTheme` confines itself to an
+   80 px battery box. A hand-rolled "repaint just the battery" path has to
+   reproduce that clear-then-draw order and keep reproducing it. The map found
+   that on hardware on 2026-08-15 by wiping its own clock (`map-header-status.md`,
+   "The clock").
+2. **It does not draw while the render task is composing a frame.** The guard
+   is `RenderLock::peek()`; that frame reads the same live percentage and draws
+   it itself, so a windowed patch underneath it buys nothing and races its
+   framebuffer writes.
+
+Home passes no title to `drawHeader()`, so this band holds the battery and
+nothing else -- there is no clock here to wipe, which is why the full-width
+clear costs nothing on this screen.
+
+**Not yet confirmed on hardware.** What a pass has to check: the battery on
+Home moves without touching the device; plugging USB lights the bolt within a
+couple of seconds; the brand block and the rows are untouched by the window;
+and no ghosting builds up in the band over a long sit.
+
 ## The rows
 
 | Row | Destination | Icon |

@@ -224,6 +224,22 @@ class BaseTheme {
   void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
                         bool showPercentage = true) const;  // Right aligned (UI headers)
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
+  // What the battery glyph actually distinguishes, as a number that changes
+  // exactly when fillBatteryIcon() would draw something different. Virtual
+  // because the themes disagree: this one draws a proportional fill measured
+  // in pixels, Lyra draws three fixed bars.
+  //
+  // A caller that repaints on a battery change needs this and not the raw
+  // percentage. With the percentage text hidden
+  // (SETTINGS.hideBatteryPercentage == HIDE_ALWAYS) one repaint per percent
+  // would be about a hundred waveform passes per discharge for a glyph with
+  // ten states, and e-ink pays for every one of them
+  // (HomeActivity::updateBatteryStatus()).
+  //
+  // `iconWidth` is the rect width the icon is drawn into (metrics.batteryWidth
+  // at every call site today), passed rather than read from a metrics
+  // singleton so this file keeps knowing nothing about the active theme.
+  virtual int batteryIconStep(uint16_t percentage, int iconWidth) const;
   // fontId 0 means "this theme's own default" -- NOT a default argument
   // (BaseTheme, LyraTheme and RoundedRaffTheme each want a *different*
   // fallback font, but GUI is `const BaseTheme&` (UITheme.h), a fixed
