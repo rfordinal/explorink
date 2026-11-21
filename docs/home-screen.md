@@ -104,16 +104,35 @@ Home passes no title to `drawHeader()`, so this band holds the battery and
 nothing else -- there is no clock here to wipe, which is why the full-width
 clear costs nothing on this screen.
 
+**A repaint of this band is not cheap on every board, and the first version of
+this section said otherwise.** `displayBufferWindow()` is a scoped refresh only
+where the driver implements one: `Ssd1677Driver` and `PaperMonoDriver` override
+`PanelDriver::displayWindow()`, and every other panel inherits its base body,
+which drops the rectangle and pushes a whole Fast frame. That includes the
+T5 S3 Pro (`LgfxEpdDriver`) and the X4 Pro (`Uc8279X4Driver`) -- the two boards
+this feature was signed off on. `HalDisplay::displayWindow()`'s own comment and
+[`t5s3-partial-refresh.md`](t5s3-partial-refresh.md), section 1, both said so
+since 2026-09-07; this code was written without reading either.
+
+It does not *look* like a full frame, and that is not a contradiction: Fast maps
+to `lgfx::epd_mode::epd_fast` and Panel_EPD diffs per pixel, so only pixels that
+changed move. Confirmed on the glass 2026-11-21 -- the maintainer saw the header
+update with no panel-wide flash. The cost is panel time and energy, not
+flashing, and it is why the conditions above are as tight as they are and why
+the level carries a 30 s floor.
+
 **Confirmed on `t5s3pro-b`, 2026-11-21.** Both branches, and the window:
 
 - **The percentage moves with no input.** Board on Home, USB out, nobody
   touching it: 59 % became 58 % on the panel. That is the whole defect, gone.
 - **A plug lights the bolt at once.** Cable back in at 58 %, so the charger
   actually resumed, and the bolt appeared immediately.
-- **The window touches nothing else.** Between the frame before the unplug and
+- **Nothing else on the panel changes.** Between the frame before the unplug and
   the frame after the replug, the only pixels that differ on the whole 540x960
   panel are `(484, 16)-(525, 29)` -- the number and the icon. The wordmark, the
-  mountain art and all five rows are byte-identical.
+  mountain art and all five rows are byte-identical. That is the framebuffer and
+  the per-pixel diff, not evidence of a scoped refresh -- see the paragraph
+  above.
 - **An idle board pays nothing.** 29 minutes on Home with no state change: not
   one pixel moved, so the 2 s poll never turns into a waveform pass on its own.
 - **The input path is unbroken.** A `down` press changes only
