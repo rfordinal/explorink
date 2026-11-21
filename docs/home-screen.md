@@ -104,10 +104,35 @@ Home passes no title to `drawHeader()`, so this band holds the battery and
 nothing else -- there is no clock here to wipe, which is why the full-width
 clear costs nothing on this screen.
 
-**Not yet confirmed on hardware.** What a pass has to check: the battery on
-Home moves without touching the device; plugging USB lights the bolt within a
-couple of seconds; the brand block and the rows are untouched by the window;
-and no ghosting builds up in the band over a long sit.
+**Confirmed on `t5s3pro-b`, 2026-11-21.** Both branches, and the window:
+
+- **The percentage moves with no input.** Board on Home, USB out, nobody
+  touching it: 59 % became 58 % on the panel. That is the whole defect, gone.
+- **A plug lights the bolt at once.** Cable back in at 58 %, so the charger
+  actually resumed, and the bolt appeared immediately.
+- **The window touches nothing else.** Between the frame before the unplug and
+  the frame after the replug, the only pixels that differ on the whole 540x960
+  panel are `(484, 16)-(525, 29)` -- the number and the icon. The wordmark, the
+  mountain art and all five rows are byte-identical.
+- **An idle board pays nothing.** 29 minutes on Home with no state change: not
+  one pixel moved, so the 2 s poll never turns into a waveform pass on its own.
+- **The input path is unbroken.** A `down` press changes only
+  `(20, 298)-(520, 417)`, the selector row.
+
+Shot: `docs/device-shots/2026-11-21-t5s3prob-home-battery-58-charging-540x960.png`
+in the parent repo, 1:1.
+
+**A tethered board cannot produce either change**, which is why this pass
+needed a person and a cable. The cell neither charges nor discharges while USB
+is in: 29 one-minute `CMD:BATT` reads, all `mv=4106..4107 pct=59 curr_ma=0
+chrg_stat=3`. And `CMD:CHARGE OFF` does not help, because
+`HalGPIO::isUsbConnected()` on a board with no `usbDetect` pin *is*
+`HalPowerManager::isCharging()`, already false once the charger terminates. In
+the parent repo's `device-test-protocol.md` trap table.
+
+**Still unverified**: `env:default` (ESP32-C3) and `env:x4pro`, which compile
+clean but have not run this; and the hidden-percentage path through
+`BaseTheme::batteryIconStep()`, which needs `hideBatteryPercentage = always`.
 
 ## The rows
 
