@@ -176,6 +176,13 @@ chrg_stat=3`. And `CMD:CHARGE OFF` does not help, because
 `HalPowerManager::isCharging()`, already false once the charger terminates. In
 the parent repo's `device-test-protocol.md` trap table.
 
+**Final state, 2026-11-22 (`475bc987`), fourth pass on `t5s3pro-b`**: clean
+boot, heap flat, input path unchanged, 6.5 idle minutes with no pixel moving,
+and 60 % to 57 % on the panel over twenty-five minutes with the cable out --
+three steps, so the 30 s floor swallowed none of them. That is the whole of
+what this function does now; the bolt belongs to `main.cpp`, see the note at
+the top.
+
 **A second review found five more, 2026-11-22 (`925d56d4`).** The worst was
 that the first fix did not fix what it claimed: `drawHeader()` reads the
 battery *inside* (`drawBatteryRight()` calls `getBatteryPercentage()`,
