@@ -67,6 +67,14 @@ byte-identical framebuffer apart from the bolt. The level evidence below is
 unaffected -- nothing else in the firmware repaints on a battery percentage
 change, which is the whole reason this function exists.
 
+**The consequence is deliberate and worth knowing before touching either
+file**: the bolt now has exactly one owner, that line in `main.cpp`. Delete
+it and the charging indicator stops updating on every screen, and nothing in
+`HomeActivity` will catch it. The alternative -- keeping a second, unreachable
+copy of the logic here as a backstop -- was rejected on 2026-11-22 because
+dead code that cannot fire is not a backstop, it is a thing the next reader
+has to disprove.
+
 
 Until 2026-11-21 the battery in the status header only changed when the rider
 touched something. `HomeActivity::loop()` called `requestUpdate()` on a button,
