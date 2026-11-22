@@ -44,13 +44,6 @@ constexpr uint32_t kBatteryPollMs = 2000;
 // a whole-panel one on a driver with no scoped window.
 constexpr uint32_t kLevelRepaintFloorMs = 30 * 1000;
 
-// And a shorter one under the charging bolt. Shorter because a plug or an
-// unplug is a thing a person is usually watching, so a second one held back
-// is more visible than a second level step; present at all because the signal
-// has no hysteresis either -- on the X3 it is a raw current-sign test, and
-// once the charger terminates the device's own load sits either side of zero.
-constexpr uint32_t kChargeRepaintFloorMs = 10 * 1000;
-
 constexpr const char* kLogTag = "Home";
 }  // namespace
 
@@ -140,7 +133,6 @@ void HomeActivity::onEnter() {
   drawnCharging_ = false;
   nextBatteryPollMs_ = 0;
   nextLevelRepaintMs_ = 0;
-  nextChargeRepaintMs_ = 0;
 
   // Trigger first update
   requestUpdate();
@@ -232,8 +224,13 @@ void HomeActivity::loop() {
   // its own updateHeaderStatus(). Called first, its frame guard would still
   // read "no update pending" for a press that has already been latched this
   // pass, and the band would be repainted a moment before the full frame that
-  // press asks for. The paths above that return early all did something, and
-  // all of them asked for a frame.
+  // press asks for.
+  //
+  // Every early return above either asked for a frame or handed off to another
+  // activity, with one exception: a touch Down on the row that is *already*
+  // selected returns having done nothing. A finger resting there skips this
+  // poll for as long as it rests, which costs a late battery reading and
+  // nothing else.
   updateBatteryStatus();
 }
 
@@ -283,11 +280,14 @@ void HomeActivity::updateBatteryStatus() {
   // for.
   if (activityManager.updatePending() || RenderLock::peek()) return;
 
-  // Polled rather than read every pass: on a board with no usbDetect pin the
-  // charge question is an I2C transaction on the bus the touch controller
-  // shares, and on a gaugeless board the percentage is an ADC read that also
-  // steps a filter. Same interval as the map's kHeaderPollMs, and prompt
-  // enough that a plugged cable lights the bolt within two seconds.
+  // Polled rather than read every pass, for one reason and not the two an
+  // earlier version of this comment claimed: on a gaugeless board
+  // getBatteryPercentage() is an ADC read that also steps an EMA filter, so
+  // asking at loop rate would both cost the read and move the filter. The
+  // charge line is *not* a reason -- HalGPIO::update() already asks it once
+  // per main-loop iteration, and HalPowerManager::isCharging() caches it for
+  // CHARGING_POLL_MS precisely because of that. Same interval as the map's
+  // kHeaderPollMs.
   const uint32_t now = millis();
   if (beforeDeadline(now, nextBatteryPollMs_)) return;
   nextBatteryPollMs_ = now + kBatteryPollMs;
@@ -304,30 +304,28 @@ void HomeActivity::updateBatteryStatus() {
   // waveform pass each time.
   const bool textShown = SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
   const auto levelDiffers = [&]() { return textShown ? percentage != drawnBatteryPercent_ : step != drawnBatteryStep_; };
-  const bool levelMoved = levelDiffers();
-  const bool chargingChanged = charging != drawnCharging_;
-  if (!levelMoved && !chargingChanged) return;
+  if (!levelDiffers()) return;
 
-  // A floor under each, and they are not the same number.
+  // **The charging bolt is deliberately not a condition here.** It looks like
+  // the obvious second trigger and it is already somebody else's job:
+  // HalGPIO::update() raises a one-iteration usbStateChanged on every plug and
+  // unplug, and main.cpp asks for a full frame on it -- "Refresh the battery
+  // icon when USB is plugged or unplugged" -- before activityManager.loop()
+  // even runs. A branch here would never fire: by the time this poll comes
+  // round, that frame has redrawn the band and recorded what it drew.
   //
-  // Neither signal has hysteresis at the source, and on this hardware a
-  // repaint of this band is a whole-panel pass on most drivers (see the window
-  // comment below), so an undamped dither would refresh the panel for as long
-  // as it lasts. The level is a truncated EMA on a gaugeless board and can
-  // alternate on an integer boundary; the charge line is a raw current-sign
-  // test on the X3 (HalGPIO.cpp) and the device's own load puts it either side
-  // of zero once the charger terminates.
+  // This cost a round of hardware testing to learn. Three cable cycles across
+  // two boards were read as proof that the repaint path works, and every one
+  // of them was the main.cpp path answering in ~10 ms. So the level is the
+  // whole of what this function adds, and it is the half nothing else covers.
   //
-  // The first change after a quiet period always goes through at once -- the
-  // floors are armed on repaint, not on the change -- so a rider's plug or
-  // unplug is never delayed. Only a second flip inside the window is held.
-  // Charging gets the shorter one because it is the one a person is usually
-  // watching; the level gets the map's own 30 s.
-  if (chargingChanged) {
-    if (beforeDeadline(now, nextChargeRepaintMs_)) return;
-  } else if (beforeDeadline(now, nextLevelRepaintMs_)) {
-    return;
-  }
+  // A floor under it, because the level has no hysteresis at the source -- a
+  // gaugeless board reports a truncated EMA that can alternate on an integer
+  // boundary -- and on this hardware a repaint of this band is a whole-panel
+  // pass on most drivers (see the window comment below). The first change
+  // after a quiet period always goes through at once: the floor is armed on
+  // repaint, not on the change.
+  if (beforeDeadline(now, nextLevelRepaintMs_)) return;
 
   // The header band goes through GUI.drawHeader() and nothing else, exactly as
   // render() draws it. The active theme's drawHeader() **clears the full width
@@ -363,13 +361,12 @@ void HomeActivity::updateBatteryStatus() {
   // band and records what it drew. Re-ask against the refreshed state -- in
   // the same terms the decision above used, the printed number or the glyph
   // step, never both -- instead of trusting a decision taken before the wait.
-  if (!levelDiffers() && charging == drawnCharging_) return;
+  if (!levelDiffers()) return;
 
   // Armed here and not at the gate above, so a pass that turns out to be
   // unnecessary -- the re-check just took that exit -- does not hold a real
-  // change off for the next window.
-  if (chargingChanged) nextChargeRepaintMs_ = now + kChargeRepaintFloorMs;
-  if (levelMoved) nextLevelRepaintMs_ = now + kLevelRepaintFloorMs;
+  // change off for the next thirty seconds.
+  nextLevelRepaintMs_ = now + kLevelRepaintFloorMs;
 
   const Rect header = headerRect();
   GUI.drawHeader(renderer, header, nullptr);
@@ -389,6 +386,11 @@ void HomeActivity::updateBatteryStatus() {
   if (!renderer.displayBufferWindow(header.x, header.y, header.width, header.height,
                                     PowerTelemetry::WindowSite::Status)) {
     LOG_ERR(kLogTag, "battery header window rejected: %d,%d %dx%d", header.x, header.y, header.width, header.height);
+    // The record above already says this value is on the glass, and a refused
+    // window means it is not -- so without a fallback the panel would keep the
+    // old number and every later poll would agree with itself. Same answer
+    // GnssAcquireActivity::refreshBand() gives a refused window.
+    renderer.displayBuffer();
   }
 }
 

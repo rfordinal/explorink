@@ -278,6 +278,13 @@ class BaseTheme {
     uint16_t percentage = 0;
     bool charging = false;
   };
+  //
+  // **Not synchronised.** HomeActivity's two writers both hold a RenderLock,
+  // which is what makes its own reads sound. MapActivity::updateHeaderStatus()
+  // reaches drawBatteryRight() from the main task with no RenderLock at all,
+  // so a second reader on another screen would be reading a two-field struct
+  // written without one. Take a lock, or give this an atomic, before relying
+  // on it anywhere else.
   const BatteryReading& lastBatteryDrawn() const { return lastBatteryDrawn_; }
   // fontId 0 means "this theme's own default" -- NOT a default argument
   // (BaseTheme, LyraTheme and RoundedRaffTheme each want a *different*
