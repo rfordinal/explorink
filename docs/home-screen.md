@@ -169,9 +169,12 @@ percentage even with the number hidden.
 **Third pass on `t5s3pro-b`, 2026-11-22**: clean boot, heap flat over 7.5
 minutes, input path unchanged, 6.5 idle minutes with no pixel moving, and a
 cable cycle lit the bolt -- changing `(517, 18)-(525, 26)`, eight pixels
-square, and nothing else on the panel. The level branch could not be exercised
-there, because that board's charger terminates at 4.116 V while its gauge
-reports 58 % (T-2076 in the parent repo).
+square, and nothing else on the panel. The level branch cannot be exercised on that
+board while it is tethered, because its charger terminates at 4.116 V while
+its gauge reports 58 % (T-2076 in the parent repo) -- so the cable came out
+for it: 58 % became 56 % on the panel over twenty minutes with the frontlight
+at full and nobody touching the device. Two steps, which also says the 30 s
+floor did not swallow the second one.
 
 **Re-run on the fixed build (`3d2de4d9`), 2026-11-21/22.** The review above
 rewrote the decision logic, so the first pass's evidence belonged to the old
