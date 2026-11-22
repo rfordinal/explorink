@@ -49,6 +49,25 @@ height as the step for the same reason
 
 ## The battery goes stale
 
+**Read this first: the charging bolt is not part of what this screen's poll
+does, and for one day it looked like it was.** `HalGPIO::update()` raises a
+one-iteration `usbStateChanged` on every plug and unplug, and `src/main.cpp`
+asks for a full frame on it -- "Refresh the battery icon when USB is plugged
+or unplugged" -- before `activityManager.loop()` runs. That path predates this
+work and covers every screen. The first three versions of
+`HomeActivity::updateBatteryStatus()` also compared the charging state, and
+that branch could never fire: the full frame had already redrawn the band and
+recorded what it drew. It was removed on 2026-11-22.
+
+The cost of not knowing: **three cable cycles across two boards were run as
+hardware evidence for this feature and every one of them exercised the
+`main.cpp` path**, answering in about 10 ms rather than within the 2 s poll. A
+`CMD:SCREENSHOT` diff cannot tell them apart, because a full render rebuilds a
+byte-identical framebuffer apart from the bolt. The level evidence below is
+unaffected -- nothing else in the firmware repaints on a battery percentage
+change, which is the whole reason this function exists.
+
+
 Until 2026-11-21 the battery in the status header only changed when the rider
 touched something. `HomeActivity::loop()` called `requestUpdate()` on a button,
 a swipe or a touch and on nothing else, so the band kept the pixels of the last
@@ -75,10 +94,10 @@ The map screen had already solved this for its own header with
   (three bars at 10/40/70), ten in BaseTheme (a proportional fill in a
   10 px box). Repainting per percent with the text hidden would be about a
   hundred waveform passes per discharge for a four-state glyph.
-- **A plug or unplug repaints at once**, within the poll. It is instantaneous
-  and the rider caused it, unlike the percentage the interval was sized for.
-  Tracked against `gpio.isUsbConnected()`, which is the same question
-  `fillBatteryIcon()` asks.
+- **A plug or unplug is somebody else's job** -- `main.cpp`'s
+  `usbStateChanged` path, see the note at the top of this section. The
+  charging state is still read here, because `batteryIconStep()` needs it to
+  say what the glyph shows, but it is not a trigger.
 - **Windowed, not a full frame.** `displayBufferWindow()` over
   `HomeActivity::headerRect()` -- the band is `[5, 61)` in Lyra and the brand
   block starts at 64, so the window cannot clip the mountain art. The rows and
