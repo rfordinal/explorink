@@ -223,7 +223,12 @@ class BaseTheme {
                        bool showPercentage = true) const;  // Left aligned (reader mode)
   void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
                         bool showPercentage = true) const;  // Right aligned (UI headers)
-  virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
+  // `charging` is read once by drawBatteryLeft/Right and handed down rather
+  // than asked for again here. Two reasons: on a board with no usbDetect pin
+  // the question is an I2C transaction on the bus the touch controller shares,
+  // and a second read can answer a different moment than the percentage next
+  // to it -- which is the whole point of lastBatteryDrawn() below.
+  virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage, bool charging) const;
   // What the battery glyph actually distinguishes, as a number that changes
   // exactly when fillBatteryIcon() would draw something different. Virtual
   // because the themes disagree: this one draws a proportional fill measured
@@ -257,6 +262,23 @@ class BaseTheme {
   // (HomeActivity::updateBatteryStatus()) can tell a band with a battery in it
   // from an empty one, rather than spending a waveform pass on nothing.
   virtual bool drawsHeaderWithoutTitle() const { return true; }
+
+  // What the last battery glyph this theme drew was drawn from. Recorded by
+  // drawBatteryLeft/Right at the moment they read it.
+  //
+  // Exists because the reads are *inside* the draw: drawBatteryRight() calls
+  // getBatteryPercentage() itself, and on a board with no fuel gauge that
+  // function is uncached and steps an EMA on every call, so a caller that read
+  // the battery before calling drawHeader() and then stored its own number
+  // would be storing something the panel never showed. A caller that repaints
+  // on change (HomeActivity::updateBatteryStatus()) compares against this
+  // value, so it has to be the drawn one or the panel can sit on a number
+  // nothing ever corrects.
+  struct BatteryReading {
+    uint16_t percentage = 0;
+    bool charging = false;
+  };
+  const BatteryReading& lastBatteryDrawn() const { return lastBatteryDrawn_; }
   // fontId 0 means "this theme's own default" -- NOT a default argument
   // (BaseTheme, LyraTheme and RoundedRaffTheme each want a *different*
   // fallback font, but GUI is `const BaseTheme&` (UITheme.h), a fixed
@@ -365,6 +387,9 @@ class BaseTheme {
  private:
   mutable bool frontLabelDrawn[4] = {false, false, false, false};
   mutable bool sideLabelDrawn[2] = {false, false};
+  // Mutable because GUI is a `const BaseTheme&` (UITheme.h) and every draw
+  // method is const; this is a record of what was drawn, not configuration.
+  mutable BatteryReading lastBatteryDrawn_;
 
  public:
   virtual int getListRowStep(bool hasSubtitle) const;

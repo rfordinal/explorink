@@ -125,9 +125,7 @@ void BaseTheme::drawBatteryLightningBolt(const GfxRenderer& renderer, int boltX,
   renderer.drawLine(boltX + 1, boltY + 7, boltX + 2, boltY + 7, false);
 }
 
-void BaseTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const {
-  const bool charging = gpio.isUsbConnected();
-
+void BaseTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage, bool charging) const {
   const int maxFillWidth = rect.width - 5;
   const int fillHeight = rect.height - 4;
   if (maxFillWidth <= 0 || fillHeight <= 0) {
@@ -174,7 +172,15 @@ int BaseTheme::batteryIconStep(uint16_t percentage, int iconWidth, bool charging
 
 void BaseTheme::drawBatteryLeft(const GfxRenderer& renderer, Rect rect, const bool showPercentage) const {
   // Left aligned: icon on left, percentage on right (reader mode)
+  // Read once, here, and remembered: lastBatteryDrawn() is how a caller that
+  // repaints this glyph on change knows what the glyph it is comparing against
+  // was actually drawn from.
   const uint16_t percentage = powerManager.getBatteryPercentage();
+  // gpio.isUsbConnected(), not powerManager.isCharging(): on a board with no
+  // usbDetect pin the former resolves to the latter anyway, and on the X3 it
+  // does not -- the glyph and anything tracking it have to ask one question.
+  const bool charging = gpio.isUsbConnected();
+  lastBatteryDrawn_ = BatteryReading{percentage, charging};
   const int y = rect.y + 6;
 
   if (showPercentage) {
@@ -184,13 +190,21 @@ void BaseTheme::drawBatteryLeft(const GfxRenderer& renderer, Rect rect, const bo
 
   const Rect iconRect{rect.x, y, rect.width, rect.height};
   drawBatteryOutline(renderer, rect.x, y, rect.width, rect.height);
-  fillBatteryIcon(renderer, iconRect, percentage);
+  fillBatteryIcon(renderer, iconRect, percentage, charging);
 }
 
 void BaseTheme::drawBatteryRight(const GfxRenderer& renderer, Rect rect, const bool showPercentage) const {
   // Right aligned: percentage on left, icon on right (UI headers)
   // rect.x is already positioned for the icon (drawHeader calculated it)
+  // Read once, here, and remembered: lastBatteryDrawn() is how a caller that
+  // repaints this glyph on change knows what the glyph it is comparing against
+  // was actually drawn from.
   const uint16_t percentage = powerManager.getBatteryPercentage();
+  // gpio.isUsbConnected(), not powerManager.isCharging(): on a board with no
+  // usbDetect pin the former resolves to the latter anyway, and on the X3 it
+  // does not -- the glyph and anything tracking it have to ask one question.
+  const bool charging = gpio.isUsbConnected();
+  lastBatteryDrawn_ = BatteryReading{percentage, charging};
   const int y = rect.y + 6;
 
   if (showPercentage) {
@@ -201,7 +215,7 @@ void BaseTheme::drawBatteryRight(const GfxRenderer& renderer, Rect rect, const b
 
   const Rect iconRect{rect.x, y, rect.width, rect.height};
   drawBatteryOutline(renderer, rect.x, y, rect.width, rect.height);
-  fillBatteryIcon(renderer, iconRect, percentage);
+  fillBatteryIcon(renderer, iconRect, percentage, charging);
 }
 
 void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const size_t current,

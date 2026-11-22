@@ -105,9 +105,7 @@ const uint8_t* iconForName(UIIcon icon, int size) {
 }
 }  // namespace
 
-void LyraTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const {
-  const bool charging = gpio.isUsbConnected();
-
+void LyraTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage, bool charging) const {
   if (charging) {
     // Solid fill when charging so lightning bolt is visible
     renderer.fillRect(rect.x + 2, rect.y + 2, rect.width - 5, rect.height - 4);
