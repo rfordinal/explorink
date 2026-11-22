@@ -149,6 +149,30 @@ chrg_stat=3`. And `CMD:CHARGE OFF` does not help, because
 `HalPowerManager::isCharging()`, already false once the charger terminates. In
 the parent repo's `device-test-protocol.md` trap table.
 
+**A second review found five more, 2026-11-22 (`925d56d4`).** The worst was
+that the first fix did not fix what it claimed: `drawHeader()` reads the
+battery *inside* (`drawBatteryRight()` calls `getBatteryPercentage()`,
+`fillBatteryIcon()` called `isUsbConnected()`), so recording the caller's own
+earlier read stored a value the panel had never shown -- and because that
+stored value is also the comparison basis, the panel could sit on a percentage
+nothing would ever correct. The theme now remembers what it drew
+(`BaseTheme::lastBatteryDrawn()`) and `fillBatteryIcon()` takes `charging` as a
+parameter, so one read each per repaint. Also: the poll ran at the *top* of
+`loop()`, before input is dispatched, so the frame guard could not see a press
+already latched -- it is at the end now, where `MapActivity` calls its own;
+there was no `HalPowerManager::Lock` around a blocking panel pass, while
+`ActivityManager` wraps every `render()` in one, and on a board with no PSRAM
+the idle floor is 10 MHz; the charging branch had no floor at all, and its
+signal has no hysteresis either; and the post-lock re-check compared the
+percentage even with the number hidden.
+
+**Third pass on `t5s3pro-b`, 2026-11-22**: clean boot, heap flat over 7.5
+minutes, input path unchanged, 6.5 idle minutes with no pixel moving, and a
+cable cycle lit the bolt -- changing `(517, 18)-(525, 26)`, eight pixels
+square, and nothing else on the panel. The level branch could not be exercised
+there, because that board's charger terminates at 4.116 V while its gauge
+reports 58 % (T-2076 in the parent repo).
+
 **Re-run on the fixed build (`3d2de4d9`), 2026-11-21/22.** The review above
 rewrote the decision logic, so the first pass's evidence belonged to the old
 binary. On `t5s3pro-b` with the fixed build: boot clean, heap unchanged, input
