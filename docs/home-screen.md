@@ -149,6 +149,14 @@ chrg_stat=3`. And `CMD:CHARGE OFF` does not help, because
 `HalPowerManager::isCharging()`, already false once the charger terminates. In
 the parent repo's `device-test-protocol.md` trap table.
 
+**Re-run on the fixed build (`3d2de4d9`), 2026-11-21/22.** The review above
+rewrote the decision logic, so the first pass's evidence belonged to the old
+binary. On `t5s3pro-b` with the fixed build: boot clean, heap unchanged, input
+path unchanged, five minutes of idle with no pixel moving, the bolt clearing at
+once on an unplug, and the percentage stepping down on its own with the cable
+out. An X4 Pro stepped down too, but it was still running the pre-review build
+-- that board has not run the fixed one.
+
 **Also confirmed on an X4 Pro (`env:x4pro`), 2026-11-21.** Boot clean on the
 UC8279 panel, Home drew `100 %` with the bolt, and pulling the cable cleared
 the bolt at once with nobody touching the device. The input path is unbroken
