@@ -341,13 +341,24 @@ void HomeActivity::updateBatteryStatus() {
   // Home passes no title, so the band holds the battery and nothing else and
   // the clear costs nothing else on this screen.
   //
-  // The power lock is not optional. ActivityManager wraps every render() in
+  // RenderLock first, power lock second -- the same order ActivityManager's
+  // render task takes them in, and the order is not cosmetic.
+  // HalPowerManager::Lock refuses to nest: a second one finds
+  // currentLockMode != None, logs "Lock already held, ignore" and comes back
+  // **invalid**, which means it does not pin the clock
+  // (HalPowerManager.cpp). Taken the other way round, a repaint that lands
+  // while the render task is mid-frame gets exactly that -- an error line and
+  // a panel pass on a throttled clock, which is what the lock was added to
+  // prevent. Holding RenderLock first makes it impossible: whoever holds it
+  // is not rendering, so the power lock is free.
+  //
+  // The lock is not optional either. ActivityManager wraps every render() in
   // one so a panel pass never runs on a throttled clock, and this is the same
   // kind of pass from the other task -- on Home, idle, which is exactly when
   // the main loop has already dropped to LOW_POWER_FREQ (10 MHz on a board
   // with no PSRAM, HalPowerManager.h).
-  HalPowerManager::Lock powerLock;
   RenderLock lock;
+  HalPowerManager::Lock powerLock;
   // Taking the lock can wait out a whole frame, and that frame redraws this
   // band and records what it drew. Re-ask against the refreshed state -- in
   // the same terms the decision above used, the printed number or the glyph
