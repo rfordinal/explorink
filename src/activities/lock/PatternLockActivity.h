@@ -88,4 +88,9 @@ class PatternLockActivity final : public Activity {
   patternlock::Entry entry_;
   bool lockedOut_ = false;
   bool lastAttemptWrong_ = false;
+  // finish() is a deferred pop -- the manager runs it at the end of the loop, so
+  // everything after it in this frame still executes. Without this flag the
+  // auto-submit path draws the gate one more time on its way out, which on e-ink
+  // is a visible refresh of a screen that is leaving.
+  bool finished_ = false;
 };

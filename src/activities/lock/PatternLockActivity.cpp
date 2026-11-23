@@ -51,6 +51,7 @@ void PatternLockActivity::onExit() {
 
 void PatternLockActivity::loop() {
   Activity::loop();
+  if (finished_) return;
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (entry_.undo()) {
@@ -60,6 +61,7 @@ void PatternLockActivity::loop() {
     }
     // Nothing entered and BACK: leave, cancelled. A gate the caller pushed is the
     // caller's to re-push; this screen does not decide that nobody may go back.
+    finished_ = true;
     setResult(ActivityResult{PatternLockResult{false}});
     finish();
     return;
@@ -101,8 +103,9 @@ void PatternLockActivity::onStep(const patternlock::Step step) {
 
   if (config_.autoSubmit && entry_.longEnough()) {
     submit(true);
-    // submit() either left the screen or decided nothing is to be said about a
-    // speculative miss. Either way the cursor moved, so draw it.
+    // A hit already finished the screen; drawing the grid again here would be a
+    // refresh of a frame nobody will look at.
+    if (finished_) return;
     if (lockedOut_) {
       render(HalDisplay::HALF_REFRESH);
       return;
@@ -147,6 +150,7 @@ void PatternLockActivity::submit(const bool speculative) {
 
 void PatternLockActivity::finishUnlocked() {
   entry_.wipe();
+  finished_ = true;
   setResult(ActivityResult{PatternLockResult{true}});
   finish();
 }
@@ -173,7 +177,10 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
   const int availableHeight = bottomLimit - gridTop;
   const int availableWidth = pageWidth - metrics.contentSidePadding * 2;
   const int span = availableWidth < availableHeight ? availableWidth : availableHeight;
-  const int pitch = span / patternlock::kCols;
+  // A panel too short for the grid would otherwise derive a negative pitch and
+  // draw the whole screen inside out. The floor is deliberately ugly rather than
+  // clever: if a board ever hits it, the grid looks cramped and says so.
+  const int pitch = span > patternlock::kCols * 8 ? span / patternlock::kCols : 8;
 
   int nodeRadius = pitch / kNodeRadiusDiv;
   if (nodeRadius < kMinNodeRadius) nodeRadius = kMinNodeRadius;

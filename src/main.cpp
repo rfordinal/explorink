@@ -3633,7 +3633,7 @@ void loop() {
           config.autoSubmit = mode == "auto";
           config.startCell = patternlock::cellFromChar(want[0]);
           activityManager.pushActivity(std::make_unique<PatternLockActivity>(
-              renderer, mappedInput, config,
+              renderer, mappedInputManager, config,
               [want](const char* path, bool speculative) {
                 // A literal compare, which is exactly what a bench harness should
                 // be: no key derivation, no failure counter, nothing persisted. A
