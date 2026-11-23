@@ -16,14 +16,24 @@ constexpr const char* kLogTag = "PATTERNLOCK";
 // Geometry is derived from the panel, never written in X4 pixels: the same screen
 // has to read right on 480x800 and on 540x960 (CLAUDE.md, "Styles must be
 // universal"). Everything below is a fraction of the grid pitch the panel allows.
-constexpr int kNodeRadiusDiv = 6;   // node ring radius = pitch / 6
-constexpr int kCursorRadiusDiv = 4; // the filled cursor is bigger than a node ring
+//
+// The grid is a lattice of small solid dots, and the cursor is one of those dots
+// inside a ring. The first cut drew big hollow rings with a filled blob for the
+// cursor; on the T5 S3 Pro, 2026-11-23, that read as sixteen empty holes with one
+// of them swallowed. A ring says "you are here" without making the cursor a
+// different kind of point from the one it is standing on.
+constexpr int kNodeRadiusDiv = 12;      // node dot radius = pitch / 12
 constexpr int kMinNodeRadius = 4;
+constexpr int kCursorRingMul = 26;      // ring radius = node radius * 2.6
+constexpr int kCursorRingDiv = 10;
+constexpr int kCursorRingWidth = 3;     // thin enough to read, thick enough to survive a FAST refresh
 
 // One dot per entered point, under the grid. Same role as the wallet PIN's dots:
-// a rider counts how far they are without the path being on screen.
-constexpr int kDotRadius = 6;
-constexpr int kDotGap = 22;
+// a rider counts how far they are without the path being on screen. The gap comes
+// off the panel width rather than a pixel count, for the same reason the grid does.
+constexpr int kDotGapDiv = 24;
+constexpr int kDotRadiusDiv = 4;        // filled dot radius = gap / 4
+constexpr int kEmptyDotRadius = 2;
 
 }  // namespace
 
@@ -175,7 +185,9 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
   const int bandBottom = (hints.height > 0 ? hints.y : pageHeight) - metrics.verticalSpacing;
   const int band = bandBottom - bandTop;
   // What the grid does not get: the dots and the status line under it.
-  const int reserved = lineHeight * 3 + kDotRadius * 3;
+  const int dotGap = pageWidth / kDotGapDiv;
+  const int dotRadius = dotGap / kDotRadiusDiv;
+  const int reserved = lineHeight * 3 + dotRadius * 3;
   const int availableWidth = pageWidth - metrics.contentSidePadding * 2;
   const int availableHeight = band - reserved;
   const int span = availableWidth < availableHeight ? availableWidth : availableHeight;
@@ -193,39 +205,37 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
 
   int nodeRadius = pitch / kNodeRadiusDiv;
   if (nodeRadius < kMinNodeRadius) nodeRadius = kMinNodeRadius;
-  int cursorRadius = pitch / kCursorRadiusDiv;
-  if (cursorRadius <= nodeRadius) cursorRadius = nodeRadius + 2;
+  int ringRadius = nodeRadius * kCursorRingMul / kCursorRingDiv;
+  // The ring has to clear the dot it surrounds by more than its own width, or the
+  // two merge into a blob at the first FAST refresh.
+  if (ringRadius < nodeRadius + kCursorRingWidth * 2) ringRadius = nodeRadius + kCursorRingWidth * 2;
 
   // Half a pitch of inset, so the grid's ink is centred rather than its cell boxes.
   const int gridLeft = (pageWidth - pitch * (patternlock::kCols - 1)) / 2;
   for (uint8_t cell = 0; cell < patternlock::kCells; ++cell) {
     const int cx = gridLeft + (cell % patternlock::kCols) * pitch;
     const int cy = gridTop + (cell / patternlock::kCols) * pitch;
+    // Every cell draws its dot, the cursor's included -- the cursor is a position,
+    // not a seventeenth kind of point.
+    renderer.fillRoundedRect(cx - nodeRadius, cy - nodeRadius, nodeRadius * 2, nodeRadius * 2, nodeRadius,
+                             Color::Black);
     if (cell == entry_.cursor()) {
-      // The cursor is the only thing on the grid that moves, and the only thing a
-      // rider has to find in gloves: filled, and bigger than a node.
-      renderer.fillRoundedRect(cx - cursorRadius, cy - cursorRadius, cursorRadius * 2, cursorRadius * 2, cursorRadius,
-                               Color::Black);
-    } else {
-      renderer.drawRoundedRect(cx - nodeRadius, cy - nodeRadius, nodeRadius * 2, nodeRadius * 2, 1, nodeRadius, true);
+      renderer.drawRoundedRect(cx - ringRadius, cy - ringRadius, ringRadius * 2, ringRadius * 2, kCursorRingWidth,
+                               ringRadius, true);
     }
   }
 
-  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch / 2 + kDotRadius * 2;
+  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch / 2 + dotRadius * 2;
 
   // The dots: how many points are in, and nothing about which ones.
-  const int dotsWidth = static_cast<int>(patternlock::kMaxPoints - 1) * kDotGap;
+  const int dotsWidth = static_cast<int>(patternlock::kMaxPoints - 1) * dotGap;
   const int dotsLeft = (pageWidth - dotsWidth) / 2;
   for (size_t i = 0; i < patternlock::kMaxPoints; ++i) {
-    const int cx = dotsLeft + static_cast<int>(i) * kDotGap;
-    if (i < entry_.points()) {
-      renderer.fillRoundedRect(cx - kDotRadius, y - kDotRadius, kDotRadius * 2, kDotRadius * 2, kDotRadius,
-                               Color::Black);
-    } else {
-      // An outline for a slot not reached yet, so the length a rider is used to is
-      // visible as they go without the pattern being spelled out.
-      renderer.drawRoundedRect(cx - 3, y - 3, 6, 6, 1, 3, true);
-    }
+    const int cx = dotsLeft + static_cast<int>(i) * dotGap;
+    // A slot not reached yet is a smaller dot of the same shape, not an outline:
+    // the row then reads as one scale filling up rather than as two kinds of mark.
+    const int r = i < entry_.points() ? dotRadius : kEmptyDotRadius;
+    renderer.fillRoundedRect(cx - r, y - r, r * 2, r * 2, r, Color::Black);
   }
   y += lineHeight * 2;
 
