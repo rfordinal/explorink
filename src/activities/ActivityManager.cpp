@@ -29,9 +29,11 @@
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "wallet/WalletActivity.h"
 #include "wallet/WalletCryptoDevice.h"
 #include "wallet/WalletUnlockActivity.h"
+#endif
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -261,6 +263,7 @@ void ActivityManager::goToWebServerStation() {
 }
 
 void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
   // An encrypted tree with no key in the session cannot list anything -- the titles
   // are inside the encrypted manifest -- so the PIN screen comes first and carries
   // the requested target through the unlock. A cleartext tree, and an already
@@ -271,6 +274,14 @@ void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
     return;
   }
   replaceActivity(std::make_unique<WalletActivity>(renderer, mappedInput, itemIndex, codeIndex));
+#else
+  // No wallet in this build -- env:simulator, which has neither NVS nor mbedtls.
+  // Home has no row for it either, so this is only reachable through a stale
+  // HomeMenuItem::WALLET, exactly like goToPreview() below.
+  (void)itemIndex;
+  (void)codeIndex;
+  goHome();
+#endif
 }
 
 void ActivityManager::goToPreview() {

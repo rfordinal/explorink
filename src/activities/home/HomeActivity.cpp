@@ -75,9 +75,15 @@ const HomeActivity::Row* HomeActivity::rows() {
       // rider who has to find where the radio lives has one place to look.
       {HomeMenuItem::GROUP, StrId::STR_GROUP_TITLE, &icon_group, StrId::STR_LORA_BADGE, &icon_lora_badge},
 #endif
-      // The document wallet. Its activity lives on this branch; on develop the
-      // enum value has no row at all (../../../docs/wallet-viewer.md).
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+      // The document wallet. Back in this list on 2026-11-23, as an ordinary row
+      // with a real destination rather than the dimmed one it used to be
+      // (../../../docs/home-screen.md, "Dimmed rows, removed 2026-10-25").
+      // Above Sync for the same reason Group is: the top of the list is what a
+      // rider reaches for before walking out, and papers are that. Off in
+      // env:simulator, which has no NVS and no mbedtls (platformio.ini).
       {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet},
+#endif
       {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync},
       {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer},
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
@@ -125,9 +131,11 @@ void HomeActivity::activate(const int index) {
     case HomeMenuItem::TILE_SYNC:
       onTileSyncOpen();
       break;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
     case HomeMenuItem::WALLET:
       onWalletOpen();
       break;
+#endif
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     case HomeMenuItem::PREVIEW:
       onPreviewOpen();

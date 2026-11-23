@@ -1,6 +1,6 @@
 # The Home screen
 
-The first screen after boot. One brand block, one list of five rows, nothing
+The first screen after boot. One brand block, one list of six rows, nothing
 live. Redesigned 2026-08-21 from a design sketch: mountain line art with the
 ExplorInk mark and wordmark over it, then the rows.
 
@@ -11,10 +11,18 @@ building toward on any fixed date -- so both rows are gone rather than
 dimmed. See "Dimmed rows, removed 2026-10-25" below for what that
 mechanism used to do and why it is gone, not just unused.
 
+**Wallet came back on 2026-11-23**, as that section said it would have to: a
+new row with a real destination (`goToWallet()`, `WalletViewActivity`), not a
+reinstated disabled one. Pins still has none and stays out -- it lives inside
+the map's own popup. Six rows now, seven with the LoRa build flag.
+
 Status: the seven-row layout was **verified on the X4 2026-08-21** -- flashed,
 screenshotted off the panel (`tools/screenshot_gate.py`), heap read off serial.
 The five-row layout (Pins and Wallet removed) is **unverified** as of
-2026-10-25 -- builds clean, not yet flashed. See the end.
+2026-10-25 -- builds clean, not yet flashed. The six-row layout (Wallet back)
+is **unverified** as of 2026-11-23 -- builds clean on `default` and `t5s3pro`,
+not yet flashed, and the row geometry below is arithmetic rather than a
+screenshot. See the end.
 
 ## Layout, in device pixels
 
@@ -26,16 +34,16 @@ The panel is 480x800 in Portrait. Lyra is the default theme
 |---|---|---|---|
 | status header | 5 | 56 | `metrics.topPadding`, `metrics.homeTopPadding` |
 | brand block | 64 | 224 | `kHeaderGap` + `HOMEHEADER_HEIGHT` |
-| rows | 296 | 5 x 60 = 300 | `kRowHeight` |
+| rows | 296 | 6 x 60 = 360 | `kRowHeight` |
 | button hints | 760 | 40 | `metrics.buttonHintsHeight` |
 
-That leaves 164 px of air above the hints, up from 44 px when the list held
-seven rows (`src/activities/home/HomeActivity.cpp`, `render()` passes
+That leaves 104 px of air above the hints -- 164 px while the list held five
+rows, 44 px when it held seven (`src/activities/home/HomeActivity.cpp`, `render()` passes
 `pageHeight - menuTop - metrics.buttonHintsHeight` as the menu rect height, so
 the rect shrinks to match `kRowCount` and the extra space falls below the last
 row, not into it -- `BaseTheme::drawHomeMenu` top-aligns and never stretches
 rows to fill a taller rect). Left as open air rather than taller rows or
-vertical centering: not asked for, and a bigger gap under a five-row list is
+vertical centering: not asked for, and a bigger gap under a short list is
 not a defect to design around until someone judges it wrong on the glass.
 
 The row height is Home's own constant, not `metrics.menuRowHeight` (64 in
@@ -54,6 +62,7 @@ height as the step for the same reason
 | Explore | `goToMap()` -- straight to the map, no picker | the ExplorInk mark |
 | Trips | `goToRouteSelect()` (falls through to the map with no trips) | lucide `backpack` |
 | Group `(LoRa `antenna`)` | `goToGroup()`, only with `ENABLE_LORA_MESH` | lucide `users` |
+| Wallet | `goToWallet()` -- the document browse list | lucide `wallet` |
 | Sync | `goToTileSync()` | lucide `refresh-cw` |
 | File Transfer | `goToFileTransfer()` | lucide `wifi` |
 | Settings | `goToSettings()` | lucide `settings` |
@@ -140,6 +149,10 @@ time (`BaseTheme::dimDisabledRow`, `kDimStep` in `BaseTheme.cpp`), refusing
 selection (`HomeActivity::nextSelectable()` skipped them, `activate()`
 checked `enabled` before dispatch). `HomeActivity::Row` and
 `BaseTheme::HomeRow` each carried an `enabled` bool to drive that.
+
+**This is what happened on 2026-11-23**: Wallet got its destination and came
+back as an ordinary row. Nothing about the `enabled` mechanism came back with
+it, which is the outcome this section asked for.
 
 Taken out because a dimmed row visually promises "coming soon", and neither
 feature has a ship date -- so it kept reading as a promise this product was

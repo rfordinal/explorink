@@ -114,11 +114,13 @@ static inline void sampleInput() {
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "activities/wallet/WalletAsset.h"
 #include "activities/wallet/WalletCryptoDevice.h"
 #include "activities/wallet/WalletGreyPage.h"
 #include "activities/wallet/WalletKeyStore.h"
 #include "activities/wallet/WalletStore.h"
+#endif
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
@@ -2804,12 +2806,14 @@ static bool loadSleepFrameBuffer() {
 
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
   // The wallet key goes first, before anything here can fail or take a lock. Deep
   // sleep is a chip reset on wake, so RAM does not survive it -- but "the RAM is
   // gone anyway" is an argument about what usually happens, and a key is wiped
   // because it is asked to be, not because something else probably did it
   // (docs/wallet-crypto.md, "The key's lifetime").
   wallet::Session::instance().clear("sleep");
+#endif
 
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
@@ -3262,6 +3266,12 @@ void setup() {
   allowSleepAt = millis() + 2000;
 }
 
+namespace {
+
+#if defined(ENABLE_WALLET_TEST_CMDS) && ENABLE_WALLET_TEST_CMDS
+// Compiled only where CMD:WALLETBENCH itself is, which is also the only caller.
+// It reads wallet asset headers, so a build without the wallet (env:simulator)
+// cannot compile it either.
 // --- CMD:WALLETBENCH -------------------------------------------------------
 //
 // Measures what a design-B wallet window actually costs off the card. Design B
@@ -3303,7 +3313,6 @@ void setup() {
 //   x, y    window origin in native pixels; x must be a multiple of 8, because
 //           an 8-aligned window is the whole reason B needs no bit rotation
 //   iters   1..kWalletBenchMaxIters
-namespace {
 
 constexpr int kWalletBenchMaxIters = 32;
 constexpr size_t kWalletBenchOversizedRead = 512;
@@ -3534,6 +3543,7 @@ void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t o
   // activity repaint fixes it.
   logSerial.printf("WALLETBENCH_OK\n");
 }
+#endif  // ENABLE_WALLET_TEST_CMDS
 
 }  // namespace
 

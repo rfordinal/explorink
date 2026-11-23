@@ -212,14 +212,17 @@ presses moved the Home selector not at all: the run went straight into whatever
 row was already selected, and nothing in the log said a key had been dropped.
 600 ms apart works. Measured 2026-09-07.
 
-**Home skips its disabled rows.** Pins and Wallet are drawn but not selectable
-(`HomeActivity::nextSelectable()`), so from a fresh boot the Settings row is
-**four** `DOWN` presses away, not six. A full Settings-tab sweep, one run per
-tab:
+**Count the rows before scripting `DOWN` presses.** This paragraph used to say
+Home skips its disabled Pins and Wallet rows -- that mechanism is gone
+(`../docs/home-screen.md`, "Dimmed rows, removed 2026-10-25"), every row is
+selectable now, and the list itself has changed size twice since: five rows on
+2026-10-25, six on 2026-11-23 when Wallet came back with a destination, seven
+with `ENABLE_LORA_MESH`. From a fresh boot on a six-row build, Settings is
+**five** `DOWN` presses away. A full Settings-tab sweep, one run per tab:
 
 ```bash
 SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software \
-CROSSPOINT_SIM_INPUT_SCRIPT='4000:DOWN;4600:DOWN;5200:DOWN;5800:DOWN;6600:ENTER;7600:ENTER;13000:QUIT' \
+CROSSPOINT_SIM_INPUT_SCRIPT='4000:DOWN;4600:DOWN;5200:DOWN;5800:DOWN;6400:DOWN;7000:ENTER;8000:ENTER;13000:QUIT' \
 CROSSPOINT_SIM_SCREENSHOTS='11000:./qa-artifacts/tab1.bmp' \
   ./.pio/build/simulator/program
 ```

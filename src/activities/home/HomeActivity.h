@@ -27,11 +27,14 @@ class HomeActivity final : public Activity {
     StrId badgeLabel = StrId::STR_NONE_OPT;
     const freeink::Icon* badgeIcon = nullptr;
   };
-  // Five rider rows, plus one per bench row this build carries. Spelled as a
-  // sum rather than as four literals because the static_assert in
-  // HomeActivity.cpp checks it against the table, and two independent flags
-  // would otherwise need four spellings of the same number.
-  static constexpr int kRowCount = 6
+  // Five always-on rows, plus one per optional row this build carries. Spelled
+  // as a sum rather than as literals because the static_assert in
+  // HomeActivity.cpp checks it against the table, and three independent flags
+  // would otherwise need eight spellings of the same number.
+  static constexpr int kRowCount = 5
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+                                   + 1  // the document wallet
+#endif
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
                                    + 1  // the grayscale bench
 #endif
