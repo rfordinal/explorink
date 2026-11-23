@@ -17,6 +17,17 @@ NimBLE host plus controller is 57 KB of heap — measured 2026-08-10 after the B
 config trim (56,972 B; 64,544 B before it), `map-memory.md:203`. The pre-trim
 64.5 KB figure was still quoted here until 2026-08-18.
 
+**On a board with its own GNSS the map does not start it at all unless the
+setting says the position comes from the phone.** `MapActivity.cpp`, inside
+`ENABLE_GNSS_CMD`: `bleInUse_ = SETTINGS.mapGnssPosition == 0 ||
+forcePhonePosition_`, and `begin()` runs only when that is true. One position
+source per map session, and the receiver is the other one. The symptom on a
+T5 S3 Pro is that `CMD:GOTO_MAP` opens the map, the log says nothing about BLE,
+and every scan from a laptop comes back empty -- which reads as a dead radio and
+is a setting. `CMD:SETTING mapGnssPosition 0` opens it. **Put it back
+afterwards:** it is the rider's own persisted choice, not a test switch. Measured
+2026-11-23, while pushing a wallet tree to that board.
+
 So advertising is not a background beacon. It is a statement that the rider is
 looking at the map right now (or the sync screen is moving bytes), and the phone
 app treats it as one: the OS watches for this device's advertisement and starts

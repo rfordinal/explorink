@@ -94,9 +94,23 @@ relative to `/explorink`), `CMD:WALLETPROVISION` stored the wrap, 18,000 PBKDF2
 iterations in 1,047 ms, `CMD:WALLETUNLOCK` unwrapped it in 1,027 ms, and the
 browse list and the page both drew -- one 48,000-byte FIT asset, 165 ms off the
 card, decrypted with the payload-hash IV before it reached the panel. A page that
-rendered at all is the proof: a wrong IV is noise, not a document
+rendered at all is the proof: a wrong IV is noise, not a document. **Both timings
+are one run per board**, ESP32-S3: 1,047 ms to provision on the X4 Pro, 1,047 ms
+to provision and 1,027 ms to unwrap on the T5 S3 Pro. The C3 figure further down
+stays unmeasured -- an S3 does not answer for it
 (`docs/device-shots/2026-11-23-x4pro-wallet-page-contentiv-480x800.png` in the
 parent repo).
+
+**Not a new idea.** An IV derived from the plaintext's own hash is convergent
+encryption -- Tahoe-LAFS, ZFS `dedup=on` -- and the nearest standard is AES-SIV,
+RFC 5297. **The difference is named rather than glossed over:** SIV computes its
+synthetic IV with a MAC under a key, so nothing about the plaintext leaks out of
+it. Here it is an unkeyed `sha256(payload)[0:8]`, and that value already sits in
+the asset header in the clear. So somebody who guesses a document can confirm the
+guess from the header -- which was true before this change too, because the
+header is cleartext on purpose (a recovery scan rebuilds a lost manifest from
+it). A collision on 64 bits arrives around 2^32 assets, orders of magnitude above
+what a wallet holds. `read`, not measured.
 
 **And once more with no test command anywhere in the binary.** Both boards were
 re-flashed from the branch itself -- `CMD:WALLETSTATUS` answers nothing on it,
@@ -122,6 +136,42 @@ Found by review on 2026-11-23, while bringing the wallet branch up to `develop`.
 Fixed on all three implementations at once (device, phone, `tools/walletgen.py`)
 behind the flag bit, and the parity fixtures were regenerated, which is what proves
 the three agree.
+
+## Driving the whole chain from a host
+
+The bench path, end to end, as it was run on 2026-11-23. **`ENABLE_WALLET_TEST_CMDS`
+lives only in `env:default`** (`platformio.ini`), so every other environment needs
+it added for the run and taken away afterwards -- a release build must never carry
+these commands.
+
+```bash
+# 1. a tree, its key and its PIN. --panel picks the board: x4, x3 or t5s3.
+python3 tools/walletgen.py --demo --title "Bench" --panel x4 \
+  --out /tmp/wt/tree --new-key /tmp/wt/key.hex --pin UDLRUD \
+  --provision-file /tmp/wt/provision.json
+
+# 2. a build that answers the wallet commands, on a board that is not env:default
+PLATFORMIO_BUILD_FLAGS="-DENABLE_WALLET_TEST_CMDS=1" pio run -e t5s3pro
+
+# 3. the card. BLE only advertises with the map open (see ble-advertising.md),
+#    and --chunk is not optional here (../../docs/synchro.md, blepush and the MTU).
+printf 'CMD:GOTO_MAP\n' > /dev/serial/by-id/<board>
+python3 tools/blepush.py /tmp/wt/tree/manifest.enc wallet/manifest.enc --chunk 180
+for f in /tmp/wt/tree/*/*.dat; do
+  python3 tools/blepush.py "$f" "wallet/$(basename $(dirname $f))/$(basename $f)" --chunk 180
+done
+
+# 4. the wrap, then the key in the session. Both take ~1 s at 18,000 iterations.
+#    key, PIN, salt and iteration count all come out of provision.json.
+CMD:WALLETPROVISION <keyhex64> UDLRUD <salthex32> 18000
+CMD:WALLETUNLOCK UDLRUD
+```
+
+**The last step has a version with no command in it at all**, and it is the one
+worth running: reboot the board, open Home > Wallet, and type the PIN on the
+buttons -- `up down left right up down`, then confirm. That path uses nothing a
+release build lacks, which is why it is the one that proves the feature rather
+than the plumbing.
 
 ## The plaintext hash is not a MAC
 
