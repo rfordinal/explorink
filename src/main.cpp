@@ -2516,7 +2516,19 @@ constexpr uint16_t kCfgUpdateBit = 0x0400;  // OperationStatus()[CFGUPDATE], SLU
 constexpr uint16_t kSubSealed = 0x0030;
 constexpr uint16_t kSubEnterCfgUpdate = 0x0090;
 constexpr uint16_t kSubExitCfgUpdateReinit = 0x0091;
-constexpr uint16_t kUnsealKey = 0x8000;  // "two identical words ... 0x8000 8000", SLUUBD4A 3.3
+// **The TRM gives two different unseal keys and does not acknowledge either.**
+// SLUUBD4A 3.3 says "two identical words stored in ROM with a value of
+// 0x8000 8000"; its own worked example at 6.1 step 1 writes 0x0414 then 0x3672
+// instead. Linux's bq27xxx table carries 0x04143672 as the unseal key for the
+// bq27425, so that pair is not a typo in the example either. Both are tried,
+// 3.3's first because it is the normative text.
+//
+// **Neither has ever run here.** Board B arrived UNSEALED, which is TI's
+// documented default state, so the provisioning that fixed T-2076 never touched
+// this path. On a sealed board (board A) it is unverified.
+constexpr uint16_t kUnsealKeyA = 0x8000;   // SLUUBD4A 3.3
+constexpr uint16_t kUnsealKeyB1 = 0x0414;  // SLUUBD4A 6.1 step 1
+constexpr uint16_t kUnsealKeyB2 = 0x3672;
 
 // Control() takes its subcommand little-endian at 0x00/0x01.
 bool controlSub(uint8_t addr, uint16_t sub) {
@@ -2609,13 +2621,21 @@ bool writeWord(uint8_t addr, uint16_t dmAddr, uint16_t value) {
   return w.endTransmission(true) == 0;
 }
 
-bool unseal(uint8_t addr) {
-  if (!controlSub(addr, kUnsealKey)) return false;
+// The keys must be sent consecutively "with no other data being written to the
+// Control() register in between" (SLUUBD4A 3.3), so the security check happens
+// after a pair, never between the two halves of one.
+bool unsealWithKeys(uint8_t addr, uint16_t first, uint16_t second) {
+  if (!controlSub(addr, first)) return false;
   delay(5);
-  if (!controlSub(addr, kUnsealKey)) return false;
+  if (!controlSub(addr, second)) return false;
   delay(5);
   uint8_t sec = 0;
   return security(addr, sec) && sec != 3;
+}
+
+bool unseal(uint8_t addr) {
+  if (unsealWithKeys(addr, kUnsealKeyA, kUnsealKeyA)) return true;
+  return unsealWithKeys(addr, kUnsealKeyB1, kUnsealKeyB2);
 }
 
 // ENTER_CFG_UPDATE's own note says the host must wait at least 2 s before the
