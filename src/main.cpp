@@ -2493,6 +2493,162 @@ bool write8(uint8_t addr, uint8_t reg, uint8_t value) {
 }
 
 }  // namespace powerbus
+
+#ifdef ENABLE_BATT_CMD
+// The BQ27220's data memory, read and write. Register access alone cannot reach
+// it: a data-memory parameter is moved through ManufacturerAccessControl
+// (0x3E/0x3F) into the MACData block (0x40..0x5F), with MACDataSum() (0x60) and
+// MACDataLen() (0x61) closing the transfer. SLUUBD4A 2.29-2.31 and 3.1.
+//
+// **Why this exists as a namespace rather than inline in the command.** The read
+// half was written inline for CMD:BATT DM, and the write half needs the same
+// arming sequence and the same checksum with one byte of difference. Two copies
+// of the trickiest I2C sequence in this tree is how they drift apart, and a
+// drifted *write* corrupts a gauge rather than printing a wrong number.
+namespace gaugedm {
+
+constexpr uint8_t kMacControl = 0x3E;  // ManufacturerAccessControl
+constexpr uint8_t kMacData = 0x40;     // MACData()
+constexpr uint8_t kMacDataSum = 0x60;  // MACDataSum(), MACDataLen() follows at 0x61
+constexpr uint8_t kOperationStatus = 0x3A;
+constexpr uint16_t kCfgUpdateBit = 0x0400;  // OperationStatus()[CFGUPDATE], SLUUBD4A 2.27
+
+constexpr uint16_t kSubSealed = 0x0030;
+constexpr uint16_t kSubEnterCfgUpdate = 0x0090;
+constexpr uint16_t kSubExitCfgUpdateReinit = 0x0091;
+constexpr uint16_t kUnsealKey = 0x8000;  // "two identical words ... 0x8000 8000", SLUUBD4A 3.3
+
+// Control() takes its subcommand little-endian at 0x00/0x01.
+bool controlSub(uint8_t addr, uint16_t sub) {
+  TwoWire& w = powerbus::wire();
+  w.beginTransmission(addr);
+  w.write(0x00);
+  w.write(static_cast<uint8_t>(sub & 0xFF));
+  w.write(static_cast<uint8_t>((sub >> 8) & 0xFF));
+  return w.endTransmission(true) == 0;
+}
+
+// SEC[1:0] from OperationStatus: 3 sealed, 2 unsealed, 1 full access.
+bool security(uint8_t addr, uint8_t& out) {
+  uint16_t opStatus = 0;
+  if (!powerbus::read16(addr, kOperationStatus, opStatus)) return false;
+  out = static_cast<uint8_t>((opStatus >> 1) & 0x03);
+  return true;
+}
+
+// Arm the block transfer and read it back in ONE incremental read from 0x3E.
+// Reading each byte at its own address re-arms the transfer and never delivers
+// it -- paid for on the bench, see CMD:BATT DM.
+bool readBlock(uint8_t addr, uint16_t dmAddr, uint8_t* block, uint8_t& dataLen, bool& echoOk, bool& sumOk) {
+  echoOk = sumOk = false;
+  TwoWire& w = powerbus::wire();
+  w.beginTransmission(addr);
+  w.write(kMacControl);
+  w.write(static_cast<uint8_t>(dmAddr & 0xFF));
+  w.write(static_cast<uint8_t>((dmAddr >> 8) & 0xFF));
+  if (w.endTransmission(true) != 0) return false;
+  delay(15);  // the transfer is not instant; the TRM polls, this waits past it
+
+  uint8_t mac[36] = {0};
+  w.beginTransmission(addr);
+  w.write(kMacControl);
+  if (w.endTransmission(false) != 0) return false;
+  if (w.requestFrom(addr, static_cast<uint8_t>(sizeof(mac)), static_cast<uint8_t>(true)) !=
+      static_cast<int>(sizeof(mac))) {
+    return false;
+  }
+  for (size_t i = 0; i < sizeof(mac); ++i) mac[i] = w.read();
+  memcpy(block, mac + 2, 32);
+
+  // MACDataLen counts the two address bytes, the data, and the sum and length
+  // bytes themselves -- the TRM's 32-byte example writes 0x24 (36).
+  const int len = static_cast<int>(mac[35]) - 4;
+  if (len <= 0 || len > 32) return true;  // answered, but not a believable block
+  dataLen = static_cast<uint8_t>(len);
+  uint8_t calc = static_cast<uint8_t>(mac[0] + mac[1]);
+  for (int i = 0; i < len; ++i) calc = static_cast<uint8_t>(calc + block[i]);
+  calc = static_cast<uint8_t>(255 - calc);
+  echoOk = mac[0] == static_cast<uint8_t>(dmAddr & 0xFF) && mac[1] == static_cast<uint8_t>((dmAddr >> 8) & 0xFF);
+  sumOk = calc == mac[34] && echoOk;
+  return true;
+}
+
+// Write one 16-bit data-memory parameter. Big-endian, because the TRM's own
+// Design Capacity example reads the MSB at 0x40 -- the opposite order to every
+// standard command on this chip, which is exactly the kind of detail that only
+// shows up as a gauge reporting nonsense afterwards.
+bool writeWord(uint8_t addr, uint16_t dmAddr, uint16_t value) {
+  const uint8_t addrLo = static_cast<uint8_t>(dmAddr & 0xFF);
+  const uint8_t addrHi = static_cast<uint8_t>((dmAddr >> 8) & 0xFF);
+  const uint8_t hi = static_cast<uint8_t>((value >> 8) & 0xFF);
+  const uint8_t lo = static_cast<uint8_t>(value & 0xFF);
+
+  TwoWire& w = powerbus::wire();
+  w.beginTransmission(addr);
+  w.write(kMacControl);
+  w.write(addrLo);
+  w.write(addrHi);
+  if (w.endTransmission(true) != 0) return false;
+  delay(5);
+
+  w.beginTransmission(addr);
+  w.write(kMacData);
+  w.write(hi);
+  w.write(lo);
+  if (w.endTransmission(true) != 0) return false;
+  delay(5);
+
+  // "Subcommands that require block data are not executed until MACDataSum()
+  // and MACDataLen() are written together as a word" (SLUUBD4A 2.31), so this
+  // is one transaction and not two.
+  const uint8_t sum = static_cast<uint8_t>(255 - static_cast<uint8_t>(addrLo + addrHi + hi + lo));
+  w.beginTransmission(addr);
+  w.write(kMacDataSum);
+  w.write(sum);
+  w.write(static_cast<uint8_t>(2 + 2 + 2));  // two address bytes, two data bytes, sum and length
+  return w.endTransmission(true) == 0;
+}
+
+bool unseal(uint8_t addr) {
+  if (!controlSub(addr, kUnsealKey)) return false;
+  delay(5);
+  if (!controlSub(addr, kUnsealKey)) return false;
+  delay(5);
+  uint8_t sec = 0;
+  return security(addr, sec) && sec != 3;
+}
+
+// ENTER_CFG_UPDATE's own note says the host must wait at least 2 s before the
+// flag can be read (SLUUBD4A 2.2.21), so this polls well past that rather than
+// trusting one read.
+bool enterCfgUpdate(uint8_t addr) {
+  if (!controlSub(addr, kSubEnterCfgUpdate)) return false;
+  for (int i = 0; i < 40; ++i) {
+    delay(100);
+    uint16_t opStatus = 0;
+    if (powerbus::read16(addr, kOperationStatus, opStatus) && (opStatus & kCfgUpdateBit)) return true;
+  }
+  return false;
+}
+
+// Exit WITH re-initialisation, deliberately: FullChargeCapacity() is loaded
+// from the data memory "on initialization" (SLUUBD4A 1.1.2), so a capacity
+// written without a re-init would sit in data memory and not reach the register
+// the percentage is computed from.
+bool exitCfgUpdate(uint8_t addr) {
+  if (!controlSub(addr, kSubExitCfgUpdateReinit)) return false;
+  for (int i = 0; i < 40; ++i) {
+    delay(100);
+    uint16_t opStatus = 0;
+    if (powerbus::read16(addr, kOperationStatus, opStatus) && !(opStatus & kCfgUpdateBit)) return true;
+  }
+  return false;
+}
+
+bool seal(uint8_t addr) { return controlSub(addr, kSubSealed); }
+
+}  // namespace gaugedm
+#endif  // ENABLE_BATT_CMD
 #endif  // ENABLE_BATT_CMD || ENABLE_CHARGE_CMD
 
 #ifdef ENABLE_CHARGE_CMD
@@ -4729,8 +4885,124 @@ void loop() {
         if (g.gaugeAddr == 0) {
           logSerial.printf("BATT_ERR:no gauge on this board\n");
         } else if (battArg.length() > 0 && !battArg.startsWith("DM") && battArg != "SCAN" &&
-                   !battArg.startsWith("PROBE") && battArg != "GAUGE") {
-          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE,GAUGE\n");
+                   !battArg.startsWith("PROBE") && battArg != "GAUGE" && !battArg.startsWith("PROVISION")) {
+          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE,GAUGE,PROVISION\n");
+        } else if (battArg.startsWith("PROVISION")) {
+          // **Teach the gauge what cell it is attached to.** T-2076: both T5 S3
+          // Pro boards carry TI's factory `Design Capacity` and `Learned Full
+          // Charge Capacity` of 3000 mAh against LilyGo's own 1500 mAh cell, and
+          // StateOfCharge() is RemainingCapacity() over FullChargeCapacity()
+          // (SLUUBD4A 2.21) -- so a full pack reads near half. Nothing in our
+          // stack ever configured this gauge; the same SDK file uploads a
+          // profile for the CW2017 and has no equivalent for the BQ27220.
+          //
+          //   CMD:BATT PROVISION        ->  BATT_PROV:dry sec=2 dc=3000->1500 fcc=3000->1500 writes=2
+          //   CMD:BATT PROVISION WRITE  ->  BATT_PROV:wrote=2 dc=1500 fcc=1500 verify=ok sec=2
+          //
+          // **Three deliberate limits, each one someone else's lesson.**
+          //
+          // *It compares before it writes, and writes nothing on a board that
+          // already matches.* The data memory is flash with finite endurance,
+          // which is the reason Linux refuses to push a devicetree capacity into
+          // an NVM-backed bq27xxx at all unless a build option says otherwise
+          // (`bq27xxx_battery_update_dm_block()`, "update to %u disallowed for
+          // flash/NVM data memory").
+          //
+          // *It is two parameters, not a profile.* LilyGo's own driver for this
+          // board writes a full CEDV table, but its header says that table was
+          // fitted for the T-Embed CC1101; a discharge curve fitted to another
+          // board's cell, written into flash, is worse than TI's defaults.
+          // Capacity is a fact about this board and is all that is claimed here.
+          //
+          // *It never writes an arbitrary address.* Same rule as CMD:CHARGE:
+          // named parameters only, no generic write. "None of the data written
+          // to memory is bounded by the fuel gauge" (SLUUBD4A 3.1), so a typo in
+          // a hex address is a misconfigured gauge rather than an error.
+          //
+          // The procedure is TI's, not anyone's code: unseal (3.3),
+          // ENTER_CFG_UPDATE (2.2.21), block write through MACData with
+          // MACDataSum and MACDataLen written together as a word (2.29-2.31),
+          // EXIT_CFG_UPDATE_REINIT so FullChargeCapacity() is reloaded, then
+          // read back and verify.
+          constexpr uint16_t kCedvProfile1Base = 0x929B;  // GaugingConfig, then FCC, then DesignCapacity
+          constexpr uint8_t kFccOffset = 2;
+          constexpr uint8_t kDesignOffset = 4;
+          constexpr uint16_t kCellMah = 1500;  // LilyGo's parameter table: "3.7 V 1500 mAh LiPo"
+
+          String provArg = battArg.substring(9);
+          provArg.trim();
+          const bool doWrite = provArg == "WRITE";
+          if (provArg.length() > 0 && !doWrite) {
+            logSerial.printf("BATT_ERR:provision:WRITE or nothing\n");
+          } else {
+            powerbus::begin();
+            uint8_t block[32] = {0};
+            uint8_t dataLen = 0;
+            bool echoOk = false, sumOk = false;
+            uint8_t sec = 0;
+            const bool secOk = gaugedm::security(g.gaugeAddr, sec);
+            if (!gaugedm::readBlock(g.gaugeAddr, kCedvProfile1Base, block, dataLen, echoOk, sumOk) || !sumOk) {
+              // A sealed or unresponsive gauge answers with bytes that look
+              // exactly like a real block, so a bad checksum is a refusal to
+              // act, not a warning to print beside a write.
+              logSerial.printf("BATT_PROV_ERR:block echo=%s sum=%s sec=%u\n", echoOk ? "ok" : "bad",
+                               sumOk ? "ok" : "bad", static_cast<unsigned>(sec));
+            } else {
+              const uint16_t fccNow = static_cast<uint16_t>((block[kFccOffset] << 8) | block[kFccOffset + 1]);
+              const uint16_t dcNow = static_cast<uint16_t>((block[kDesignOffset] << 8) | block[kDesignOffset + 1]);
+              const unsigned writes = (dcNow != kCellMah ? 1u : 0u) + (fccNow != kCellMah ? 1u : 0u);
+              if (writes == 0) {
+                logSerial.printf("BATT_PROV:match dc=%u fcc=%u sec=%u writes=0\n", static_cast<unsigned>(dcNow),
+                                 static_cast<unsigned>(fccNow), static_cast<unsigned>(sec));
+              } else if (!doWrite) {
+                logSerial.printf("BATT_PROV:dry sec=%u dc=%u->%u fcc=%u->%u writes=%u\n", static_cast<unsigned>(sec),
+                                 static_cast<unsigned>(dcNow), static_cast<unsigned>(kCellMah),
+                                 static_cast<unsigned>(fccNow), static_cast<unsigned>(kCellMah), writes);
+              } else {
+                // Restore the seal only if this command broke it. The seal is a
+                // state the board arrived in and is not ours to change as a side
+                // effect of a capacity fix.
+                const bool wasSealed = secOk && sec == 3;
+                bool ok = !wasSealed || gaugedm::unseal(g.gaugeAddr);
+                const char* stage = ok ? "" : "unseal";
+                if (ok) {
+                  ok = gaugedm::enterCfgUpdate(g.gaugeAddr);
+                  if (!ok) stage = "cfgupdate";
+                }
+                if (ok && dcNow != kCellMah) {
+                  ok = gaugedm::writeWord(g.gaugeAddr, kCedvProfile1Base + kDesignOffset, kCellMah);
+                  if (!ok) stage = "write_dc";
+                  delay(10);
+                }
+                if (ok && fccNow != kCellMah) {
+                  ok = gaugedm::writeWord(g.gaugeAddr, kCedvProfile1Base + kFccOffset, kCellMah);
+                  if (!ok) stage = "write_fcc";
+                  delay(10);
+                }
+                // Leaving the gauge in CONFIG UPDATE suspends gauging, so the
+                // exit is attempted even when a write failed.
+                const bool exited = gaugedm::exitCfgUpdate(g.gaugeAddr);
+                if (ok && !exited) {
+                  ok = false;
+                  stage = "exit";
+                }
+                uint16_t dcAfter = 0, fccAfter = 0;
+                const bool dcOk = powerbus::read16(g.gaugeAddr, 0x3C, dcAfter);
+                const bool fccOk = powerbus::read16(g.gaugeAddr, 0x12, fccAfter);
+                const bool verified = ok && dcOk && fccOk && dcAfter == kCellMah && fccAfter == kCellMah;
+                if (wasSealed) gaugedm::seal(g.gaugeAddr);
+                uint8_t secAfter = 0;
+                gaugedm::security(g.gaugeAddr, secAfter);
+                if (!ok) {
+                  logSerial.printf("BATT_PROV_ERR:%s sec=%u\n", stage, static_cast<unsigned>(secAfter));
+                } else {
+                  logSerial.printf("BATT_PROV:wrote=%u dc=%u fcc=%u verify=%s sec=%u\n", writes,
+                                   static_cast<unsigned>(dcAfter), static_cast<unsigned>(fccAfter),
+                                   verified ? "ok" : "bad", static_cast<unsigned>(secAfter));
+                }
+              }
+            }
+          }
         } else if (battArg == "GAUGE") {
           // **The capacity half of the gauge, which `CMD:BATT` cannot reach.**
           // `pct` alone cannot say why it is wrong: StateOfCharge() is
