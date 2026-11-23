@@ -33,15 +33,21 @@ constexpr int kCursorRingMul = 26;      // ring radius = node radius * 2.6
 constexpr int kCursorRingDiv = 10;
 constexpr int kCursorRingWidth = 3;     // thin enough to read, thick enough to survive a FAST refresh
 
-// One dot per entered point, under the grid. Same role as the wallet PIN's dots:
-// a rider counts how far they are without the path being on screen.
+// How far along the entry is: a segmented meter, one segment per possible point,
+// filled left to right. Same job as the wallet PIN's dots -- count without the
+// path -- and deliberately NOT the same mark.
 //
-// The row is exactly as wide as the grid above it and its spacing falls out of
-// that, so the two read as one object instead of two things that happen to be
-// stacked. Nothing here is a pixel count: the grid's pitch is already derived
-// from the panel, and this inherits it.
-constexpr int kDotRadiusDiv = 3;        // filled dot radius = gap / 3
-constexpr int kEmptyDotRadius = 2;
+// A row of dots under a lattice of dots reads as a fifth row of the lattice, and
+// a box around those dots only makes it a tray of them. Changing the shape is
+// what separates the two at a glance; the box is what makes it look like a
+// control rather than a stray graphic, and it matches the hint boxes the theme
+// already draws. Decided on the panel, 2026-11-23, against three alternatives.
+//
+// The meter is exactly as wide as the grid above it, and every size here comes
+// off the grid's pitch, so a different panel moves both together.
+constexpr int kMeterHeightMul = 3;      // meter height = node radius * 3
+constexpr int kMeterBorder = 2;
+constexpr int kMeterInsetDiv = 3;       // a filled segment's inset = height / 3
 
 }  // namespace
 
@@ -233,23 +239,32 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
     }
   }
 
-  // The dots: how many points are in, and nothing about which ones.
-  const int dotsWidth = pitch * (patternlock::kCols - 1);
-  const int dotGap = dotsWidth / static_cast<int>(patternlock::kMaxPoints - 1);
-  int dotRadius = dotGap / kDotRadiusDiv;
-  if (dotRadius > nodeRadius) dotRadius = nodeRadius;  // never louder than the grid itself
-  const int dotsLeft = (pageWidth - dotsWidth) / 2;
+  // The meter: how many points are in, and nothing about which ones.
+  const int meterWidth = pitch * (patternlock::kCols - 1);
+  const int meterHeight = nodeRadius * kMeterHeightMul;
+  const int meterLeft = (pageWidth - meterWidth) / 2;
   // A full pitch of air under the last grid row, not half of one. At half, the row
   // read as a fifth row of the lattice rather than as a scale beside it -- the
   // maintainer's call off the panel, 2026-11-23.
-  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch + dotRadius * 2;
+  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch;
+  const int meterTop = y - meterHeight / 2;
+  renderer.drawRoundedRect(meterLeft, meterTop, meterWidth, meterHeight, kMeterBorder, meterHeight / 2, true);
+
+  const int segInset = meterHeight / kMeterInsetDiv;
+  const int innerLeft = meterLeft + kMeterBorder + segInset / 2;
+  const int innerWidth = meterWidth - (kMeterBorder + segInset / 2) * 2;
   for (size_t i = 0; i < patternlock::kMaxPoints; ++i) {
-    const int cx = dotsLeft + static_cast<int>(i) * dotGap;
-    // A slot not reached yet is a smaller dot of the same shape, not an outline:
-    // the row then reads as one scale filling up rather than as two kinds of mark.
-    const int r = i < entry_.points() ? dotRadius : kEmptyDotRadius;
-    renderer.fillRoundedRect(cx - r, y - r, r * 2, r * 2, r, Color::Black);
+    const int x0 = innerLeft + static_cast<int>(i) * innerWidth / static_cast<int>(patternlock::kMaxPoints);
+    const int x1 = innerLeft + static_cast<int>(i + 1) * innerWidth / static_cast<int>(patternlock::kMaxPoints);
+    if (i < entry_.points()) {
+      renderer.fillRect(x0, meterTop + segInset, x1 - x0 - kMeterBorder, meterHeight - segInset * 2, true);
+    } else if (i + 1 < patternlock::kMaxPoints) {
+      // A hairline between the slots still to come, so the scale is readable when
+      // it is nearly empty. No tick after the last one: that is the border.
+      renderer.drawLine(x1, meterTop + segInset, x1, meterTop + meterHeight - segInset, true);
+    }
   }
+  y = meterTop + meterHeight;
   y += lineHeight * 2;
 
   char line[96];
