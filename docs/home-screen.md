@@ -176,7 +176,38 @@ chrg_stat=3`. And `CMD:CHARGE OFF` does not help, because
 `HalPowerManager::isCharging()`, already false once the charger terminates. In
 the parent repo's `device-test-protocol.md` trap table.
 
-**Final state, 2026-11-22 (`475bc987`), fourth pass on `t5s3pro-b`**: clean
+**Fourth review, 2026-11-23 (`f5d4f1a5`) -- the first to find no defect in
+behaviour.** What it found was the debris of the previous cut: both constants
+still documented the deleted charging branch, `drawnCharging_` had become a
+write-only field with no reader (and GCC does not warn on an unused private
+field), the "charging is not a condition here" comment was a half-truth
+because the glyph step still depends on it with the percentage hidden, the
+post-lock re-check reused the pre-lock reading, and
+`drawsHeaderWithoutTitle()`'s comment blamed `drawRecentBookCover()` -- which
+is upstream CrossPoint's home screen and is called by no activity in this
+tree. The truth behind that gate is worse and is now written down: **on the
+RoundedRaff theme this firmware's Home screen has no battery at all.**
+
+**Fifth pass, 2026-11-23, on the other T5 S3 Pro (`t5s3pro`, board A -- the
+maintainer's words: identical hardware, different serial)**: clean boot, flat
+heap, input path unchanged, 6.5 idle minutes with no pixel moving, and 63 % to
+61 % on the panel over twenty-five minutes with the cable out. Board A also
+reads low with its charger terminated, 63 % against board B's 58 %, which
+makes T-2076 a property of the model and not of one cell.
+
+**Two bounds on all of this, worth knowing before trusting it:**
+
+- `HomeActivity` does not override `preventAutoSleep()`, and
+  `sleepTimeoutMinutes` defaults to 10, so the window in which this feature
+  can show anything is ten idle minutes -- one or two ticks in practice,
+  unless the rider sets the timeout to Never.
+- Every board it has run on carries an I2C fuel gauge, where
+  `getBatteryPercentage()` is cached and there is no EMA at all. The dither
+  the 30 s floor exists for, and the ADC cost the 2 s poll exists for, both
+  belong to a gaugeless board -- the plain X4 -- which has never run this
+  code.
+
+**Fourth build state, 2026-11-22 (`475bc987`), fourth pass on `t5s3pro-b`**: clean
 boot, heap flat, input path unchanged, 6.5 idle minutes with no pixel moving,
 and 60 % to 57 % on the panel over twenty-five minutes with the cable out --
 three steps, so the 30 s floor swallowed none of them. That is the whole of
