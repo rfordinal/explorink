@@ -167,20 +167,29 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
                  config_.title != nullptr ? config_.title : tr(STR_PATTERN_LOCK),
                  config_.hint != nullptr ? config_.hint : tr(STR_PATTERN_LOCK_HINT));
 
-  const int gridTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 2;
-  // What the grid may have: the panel minus the header above and minus the dots,
-  // the status line and the hint band below. Asking the theme for the hint band
-  // rather than guessing it is the cheap half of a lesson the map screen paid for
-  // (BaseTheme.h, sideButtonHintsRect()).
+  // The band the screen owns: below the header, above the hint boxes. Asking the
+  // theme for the hint band rather than guessing it is the cheap half of a lesson
+  // the map screen paid for (BaseTheme.h, sideButtonHintsRect()).
+  const int bandTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 2;
   const Rect hints = GUI.buttonHintsRect(renderer);
-  const int bottomLimit = (hints.height > 0 ? hints.y : pageHeight) - lineHeight * 3 - kDotRadius * 3;
-  const int availableHeight = bottomLimit - gridTop;
+  const int bandBottom = (hints.height > 0 ? hints.y : pageHeight) - metrics.verticalSpacing;
+  const int band = bandBottom - bandTop;
+  // What the grid does not get: the dots and the status line under it.
+  const int reserved = lineHeight * 3 + kDotRadius * 3;
   const int availableWidth = pageWidth - metrics.contentSidePadding * 2;
+  const int availableHeight = band - reserved;
   const int span = availableWidth < availableHeight ? availableWidth : availableHeight;
   // A panel too short for the grid would otherwise derive a negative pitch and
   // draw the whole screen inside out. The floor is deliberately ugly rather than
   // clever: if a board ever hits it, the grid looks cramped and says so.
   const int pitch = span > patternlock::kCols * 8 ? span / patternlock::kCols : 8;
+
+  // Centred in the band rather than hung from the header. On a 540x960 panel the
+  // grid is limited by the width, which left ~250 px of white under the status
+  // line when the block was top-aligned -- seen on the T5 S3 Pro, 2026-11-23.
+  const int contentHeight = pitch * (patternlock::kRows - 1) + reserved;
+  const int slack = band - contentHeight;
+  const int gridTop = bandTop + (slack > 0 ? slack / 2 : 0);
 
   int nodeRadius = pitch / kNodeRadiusDiv;
   if (nodeRadius < kMinNodeRadius) nodeRadius = kMinNodeRadius;
