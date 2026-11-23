@@ -1,7 +1,13 @@
 # CMD:BATT -- the gauge's numbers on demand
 
-`CMD:BATT` prints the BQ27220's voltage, state of charge and **average current**,
-plus the BQ25896's charge status, in one line, when the host asks.
+`CMD:BATT` prints the BQ27220's voltage, state of charge and **instantaneous
+current**, plus the BQ25896's charge status, in one line, when the host asks.
+
+**It is `Current()`, not `AverageCurrent()`**, whatever the field is called
+elsewhere: `0x0C` is `Current()`, updated every second, and `AverageCurrent()`
+is `0x14` with a 14.5 s filter (SLUUBD4A 2.8 and 4.9.9). The freeink-sdk mirror
+still names `0x0C` "average current" in a comment; the register is the same one
+either way, so this is a wording defect rather than a wrong read.
 
 ```
 CMD:BATT  ->  BATT:mv=4102 pct=100 curr_ma=-38 chg=1 gauge=0x55 charger=0x6b
@@ -13,7 +19,8 @@ two bits: 0 not charging, 1 pre-charge, 2 fast charge, 3 done.
 `CMD:BATT DM <addr>` reads the gauge's data memory instead -- see "The data
 memory, and why it reads nothing useful on this board" below. `CMD:BATT SCAN`
 sweeps the whole gauge bus -- see "The I2C sweep, and what it found on X3"
-below.
+below. `CMD:BATT GAUGE` prints the capacity registers behind that `pct` -- see
+"The capacities behind the percentage" below.
 
 **`curr_ma` is signed the way TI signs it**: positive is current *into* the cell,
 negative is current *out* of it. A charging board therefore reports the opposite
@@ -159,6 +166,41 @@ incremental read starting at 0x3E** (SLUUBD4A 2.2's own worked example does
 exactly that); an addressed read of each byte re-arms it and never delivers it.
 0x3E..0x61 is contiguous: two address bytes, 32 data bytes, `MACDataSum()`,
 `MACDataLen()`.
+
+## The capacities behind the percentage
+
+`pct` on its own cannot say why it is wrong. `StateOfCharge()` is
+`RemainingCapacity()` divided by `FullChargeCapacity()` (SLUUBD4A 2.21), so a
+wrong percentage is either a wrong RM over a right FCC or the reverse, and the
+reply does not distinguish them. Both registers live above `0x0F`, which is
+where `CMD:BATT PROBE` stops.
+
+```
+CMD:BATT GAUGE  ->  BATT_GAUGE:volt_mv=4145 curr_ma=1030 avg_ma=1160 rm_mah=1016 fcc_mah=3000
+                    dc_mah=3000 soc_pct=34 soh_pct=100 chgv_mv=4200 chgi_ma=200 temp_dk=3117
+                    battstat=0x4028 fc=0 tca=0 dsg=0 opstat=0x00A4 sec=2
+```
+
+That is board B charging, 2026-11-23, and it is the reply T-2076 turns on:
+`1016 / 3000` is 33.9 %, which is the `soc_pct=34` beside it, so the percentage
+is arithmetic over a `fcc_mah` the board's 1500 mAh cell cannot reach.
+
+Every register in that reply is read-only and readable in TI's SEALED mode, so
+the command works on a sealed gauge too and nothing it does changes what the
+gauge reports next.
+
+**`fc` is the field a full-cell question turns on.** The gauge pins RM to FCC
+only at a charge termination **it qualified itself** -- `AverageCurrent()` below
+`Taper Current` for two consecutive 40 s periods, with more than 0.25 mAh still
+accumulating in those periods, and `Voltage()` above `Charging Voltage - Taper
+Voltage` (SLUUBD4A 4.4.1). The charger's own `chrg_stat=3` is a different event.
+A board can therefore sit at a terminated charge with `fc=0` for good, which is
+what T-2076 is -- the parent repo's `docs/t5s3-power-path.md`, "A full cell
+reads half", has the measurement and the mechanism.
+
+`temp_dk` is tenths of a kelvin, TI's unit, not a conversion. `chgv_mv` and
+`chgi_ma` are the gauge's *own* `ChargeVoltage()` and `ChargeCurrent()`
+recommendations, not what the BQ25896 is doing -- `CMD:CHARGE` answers that.
 
 ## The I2C sweep, and what it found on X3
 

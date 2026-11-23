@@ -4729,8 +4729,79 @@ void loop() {
         if (g.gaugeAddr == 0) {
           logSerial.printf("BATT_ERR:no gauge on this board\n");
         } else if (battArg.length() > 0 && !battArg.startsWith("DM") && battArg != "SCAN" &&
-                   !battArg.startsWith("PROBE")) {
-          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE\n");
+                   !battArg.startsWith("PROBE") && battArg != "GAUGE") {
+          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE,GAUGE\n");
+        } else if (battArg == "GAUGE") {
+          // **The capacity half of the gauge, which `CMD:BATT` cannot reach.**
+          // `pct` alone cannot say why it is wrong: StateOfCharge() is
+          // RemainingCapacity() / FullChargeCapacity() (SLUUBD4A 2.21), so a
+          // believable-looking percentage can come from a right RM over a wrong
+          // FCC just as easily as the reverse. Both live above 0x0F, which is
+          // past where `CMD:BATT PROBE` stops.
+          //
+          //   CMD:BATT GAUGE  ->  BATT_GAUGE:volt_mv=4145 curr_ma=1030 avg_ma=1160
+          //                       rm_mah=1016 fcc_mah=3000 dc_mah=3000 soc_pct=34
+          //                       soh_pct=100 chgv_mv=4200 chgi_ma=200 temp_dk=3117
+          //                       battstat=0x4028 fc=0 tca=0 dsg=0 opstat=0x00A4 sec=2
+          //
+          // `fc` is the one field a full-cell question turns on. The gauge only
+          // pins RM to FCC at a *qualified* charge termination of its own, and
+          // the charger's own "done" is not that event, so a board can sit at a
+          // terminated charge with fc=0 forever. T-2076.
+          //
+          // Read-only, every register in TI's SEALED-readable set, so nothing
+          // here depends on the gauge being unsealed and nothing here can
+          // change what the gauge reports next.
+          powerbus::begin();
+          struct GaugeReg {
+            const char* name;
+            uint8_t reg;
+            bool isSigned;
+          };
+          // Order is the reply's order, not the register map's: the three
+          // capacities sit together because they are read together.
+          static constexpr GaugeReg kRegs[] = {
+              {"volt_mv", 0x08, false}, {"curr_ma", 0x0C, true},  {"avg_ma", 0x14, true},   {"rm_mah", 0x10, false},
+              {"fcc_mah", 0x12, false}, {"dc_mah", 0x3C, false},  {"soc_pct", 0x2C, false}, {"soh_pct", 0x2E, false},
+              {"chgv_mv", 0x30, false}, {"chgi_ma", 0x32, false}, {"temp_dk", 0x06, false},
+          };
+          char line[320];
+          size_t pos = 0;
+          pos += static_cast<size_t>(snprintf(line + pos, sizeof(line) - pos, "BATT_GAUGE:"));
+          for (const GaugeReg& r : kRegs) {
+            uint16_t raw = 0;
+            if (!powerbus::read16(g.gaugeAddr, r.reg, raw)) {
+              pos += static_cast<size_t>(snprintf(line + pos, sizeof(line) - pos, "%s=? ", r.name));
+            } else if (r.isSigned) {
+              pos += static_cast<size_t>(snprintf(line + pos, sizeof(line) - pos, "%s=%d ", r.name,
+                                                  static_cast<int>(static_cast<int16_t>(raw))));
+            } else {
+              pos += static_cast<size_t>(
+                  snprintf(line + pos, sizeof(line) - pos, "%s=%u ", r.name, static_cast<unsigned>(raw)));
+            }
+          }
+          uint16_t battStat = 0, opStat = 0;
+          const bool statOk = powerbus::read16(g.gaugeAddr, 0x0A, battStat);
+          const bool opOk = powerbus::read16(g.gaugeAddr, 0x3A, opStat);
+          // Spelled out rather than left to the reader of a hex word, because
+          // these three are what a reading is judged on and SLUUBD4A 2.7 splits
+          // them across both bytes: FC is high-byte bit 1, TCA low-byte bit 6,
+          // DSG low-byte bit 0.
+          if (statOk) {
+            pos += static_cast<size_t>(
+                snprintf(line + pos, sizeof(line) - pos, "battstat=0x%04X fc=%u tca=%u dsg=%u ",
+                         static_cast<unsigned>(battStat), static_cast<unsigned>((battStat >> 9) & 1),
+                         static_cast<unsigned>((battStat >> 6) & 1), static_cast<unsigned>(battStat & 1)));
+          } else {
+            pos += static_cast<size_t>(snprintf(line + pos, sizeof(line) - pos, "battstat=? "));
+          }
+          if (opOk) {
+            snprintf(line + pos, sizeof(line) - pos, "opstat=0x%04X sec=%u", static_cast<unsigned>(opStat),
+                     static_cast<unsigned>((opStat >> 1) & 0x03));
+          } else {
+            snprintf(line + pos, sizeof(line) - pos, "opstat=?");
+          }
+          logSerial.printf("%s\n", line);
         } else if (battArg == "SCAN") {
           // Whether a charger IC sits on the gauge bus at all is unknown for X3
           // (BoardConfig.h: chargerAddr=0, unlike the T5 S3 Pro's BQ25896 or the
